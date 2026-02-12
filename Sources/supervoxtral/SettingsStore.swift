@@ -1,0 +1,80 @@
+import Foundation
+
+@MainActor
+final class SettingsStore: ObservableObject {
+    private enum Keys {
+        static let endpointURL = "settings.endpoint_url"
+        static let apiKey = "settings.api_key"
+        static let modelName = "settings.model_name"
+        static let commitIntervalSeconds = "settings.commit_interval_seconds"
+        static let autoCopyEnabled = "settings.auto_copy_enabled"
+    }
+
+    private let defaults = UserDefaults.standard
+
+    @Published var endpointURL: String {
+        didSet { defaults.set(endpointURL, forKey: Keys.endpointURL) }
+    }
+
+    @Published var apiKey: String {
+        didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
+    }
+
+    @Published var modelName: String {
+        didSet { defaults.set(modelName, forKey: Keys.modelName) }
+    }
+
+    @Published var commitIntervalSeconds: Double {
+        didSet { defaults.set(commitIntervalSeconds, forKey: Keys.commitIntervalSeconds) }
+    }
+
+    @Published var autoCopyEnabled: Bool {
+        didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
+    }
+
+    init() {
+        endpointURL = defaults.string(forKey: Keys.endpointURL)
+            ?? ProcessInfo.processInfo.environment["REALTIME_ENDPOINT"]
+            ?? "ws://127.0.0.1:8000/v1/realtime"
+
+        apiKey = defaults.string(forKey: Keys.apiKey)
+            ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            ?? ""
+
+        modelName = defaults.string(forKey: Keys.modelName)
+            ?? ProcessInfo.processInfo.environment["REALTIME_MODEL"]
+            ?? "voxtral-mini-latest"
+
+        let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
+        commitIntervalSeconds = storedInterval > 0 ? storedInterval : 0.9
+
+        if defaults.object(forKey: Keys.autoCopyEnabled) == nil {
+            autoCopyEnabled = false
+        } else {
+            autoCopyEnabled = defaults.bool(forKey: Keys.autoCopyEnabled)
+        }
+    }
+
+    var trimmedAPIKey: String {
+        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var resolvedWebSocketURL: URL? {
+        let trimmed = endpointURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
+            return URL(string: trimmed)
+        }
+
+        if trimmed.hasPrefix("http://") {
+            return URL(string: "ws://" + trimmed.dropFirst("http://".count))
+        }
+
+        if trimmed.hasPrefix("https://") {
+            return URL(string: "wss://" + trimmed.dropFirst("https://".count))
+        }
+
+        return URL(string: "ws://\(trimmed)")
+    }
+}
