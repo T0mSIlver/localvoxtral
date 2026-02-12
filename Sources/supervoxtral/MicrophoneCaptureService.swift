@@ -41,7 +41,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
         stop()
-        try configureInputDevice(preferredDeviceID)
+        configureInputDevice(preferredDeviceID)
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -75,30 +75,27 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
     }
 
-    private func configureInputDevice(_ preferredDeviceID: String?) throws {
-        let targetDeviceID: AudioObjectID?
+    private func configureInputDevice(_ preferredDeviceID: String?) {
         if let preferredDeviceID,
            !preferredDeviceID.isEmpty,
-           let resolvedDeviceID = audioDeviceID(forUID: preferredDeviceID)
+           let preferredObjectID = audioDeviceID(forUID: preferredDeviceID),
+           setInputDevice(preferredObjectID)
         {
-            targetDeviceID = resolvedDeviceID
-        } else {
-            targetDeviceID = defaultInputDeviceObjectID()
+            return
         }
 
-        guard let targetDeviceID else { return }
+        if let defaultObjectID = defaultInputDeviceObjectID() {
+            _ = setInputDevice(defaultObjectID)
+        }
+    }
 
+    @discardableResult
+    private func setInputDevice(_ deviceID: AudioObjectID) -> Bool {
         do {
-            try audioEngine.inputNode.auAudioUnit.setDeviceID(targetDeviceID)
+            try audioEngine.inputNode.auAudioUnit.setDeviceID(deviceID)
+            return true
         } catch {
-            throw NSError(
-                domain: "supervoxtral.microphone",
-                code: -1,
-                userInfo: [
-                    NSLocalizedDescriptionKey: "Failed to select microphone input device.",
-                    NSUnderlyingErrorKey: error,
-                ]
-            )
+            return false
         }
     }
 

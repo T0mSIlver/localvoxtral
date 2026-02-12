@@ -85,15 +85,10 @@ if [[ -z "$MENUBAR_SVG_SOURCE" ]]; then
 fi
 
 if [[ -n "$MENUBAR_SVG_SOURCE" ]]; then
-  MENUBAR_PREVIEW_DIR="$ROOT_DIR/.build/MenubarIcon.preview"
-  rm -rf "$MENUBAR_PREVIEW_DIR"
-  mkdir -p "$MENUBAR_PREVIEW_DIR"
-
-  if qlmanage -t -s 128 -o "$MENUBAR_PREVIEW_DIR" "$MENUBAR_SVG_SOURCE" >/dev/null 2>&1; then
-    MENUBAR_PREVIEW_PNG="$MENUBAR_PREVIEW_DIR/$(basename "$MENUBAR_SVG_SOURCE").png"
-    if [[ -f "$MENUBAR_PREVIEW_PNG" ]]; then
-      sips -z 18 18 "$MENUBAR_PREVIEW_PNG" --out "$APP_DIR/Contents/Resources/MenubarIconTemplate.png" >/dev/null
-    fi
+  MENUBAR_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
+  if sips -s format png "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_TARGET" >/dev/null 2>&1; then
+    # Keep a small template image for the menu bar while preserving transparency.
+    sips -z 36 36 "$MENUBAR_TARGET" --out "$MENUBAR_TARGET" >/dev/null 2>&1 || true
   fi
 fi
 

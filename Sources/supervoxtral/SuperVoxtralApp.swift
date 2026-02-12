@@ -44,7 +44,6 @@ private enum MenuBarIconAsset {
         }
 
         image.isTemplate = true
-        image.size = NSSize(width: 18, height: 18)
         return image
     }()
 }
@@ -55,6 +54,9 @@ private struct MenuBarIconView: View {
 
     var body: some View {
         Image(nsImage: icon)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 18, height: 18)
             .overlay(alignment: .topTrailing) {
                 if isDictating {
                     Circle()
