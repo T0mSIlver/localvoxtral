@@ -2,15 +2,17 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
+import Network
 
 @MainActor
 final class DictationViewModel: ObservableObject {
     @Published private(set) var isDictating = false
     @Published private(set) var transcriptText = ""
     @Published private(set) var livePartialText = ""
-    @Published private(set) var statusText = "Idle"
+    @Published private(set) var statusText = "Ready"
     @Published private(set) var lastError: String?
     @Published private(set) var lastFinalSegment = ""
+    @Published private(set) var isAccessibilityTrusted = false
 
     let settings: SettingsStore
 
@@ -22,8 +24,11 @@ final class DictationViewModel: ObservableObject {
     private var audioSendTimer: Timer?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
+    private var hasRunPermissionPreflight = false
     private var hasPromptedForAccessibilityPermission = false
     private var hasShownAccessibilityError = false
+    private var localNetworkBrowser: NWBrowser?
+    private var localNetworkProbeCancelWorkItem: DispatchWorkItem?
 
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private static let accessibilityErrorMessage =
@@ -39,6 +44,8 @@ final class DictationViewModel: ObservableObject {
         }
 
         registerGlobalHotkey()
+        refreshAccessibilityTrustState()
+        runStartupPermissionPreflightIfNeeded()
     }
 
     private func registerGlobalHotkey() {
@@ -107,6 +114,80 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
+    private func runStartupPermissionPreflightIfNeeded() {
+        guard !hasRunPermissionPreflight else { return }
+        hasRunPermissionPreflight = true
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            self.promptAccessibilityPermissionAtLaunchIfNeeded()
+
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self.requestMicrophonePermissionAtLaunch()
+
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self.requestLocalNetworkPermissionAtLaunch()
+        }
+    }
+
+    private func promptAccessibilityPermissionAtLaunchIfNeeded() {
+        refreshAccessibilityTrustState()
+        guard !isAccessibilityTrusted else { return }
+
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        hasPromptedForAccessibilityPermission = true
+        refreshAccessibilityTrustState()
+    }
+
+    private func requestMicrophonePermissionAtLaunch() {
+        microphone.requestAccess { _ in }
+    }
+
+    private func requestLocalNetworkPermissionAtLaunch() {
+        stopLocalNetworkPermissionProbe()
+
+        let parameters = NWParameters.tcp
+        parameters.includePeerToPeer = true
+
+        let browser = NWBrowser(
+            for: .bonjour(type: "_services._dns-sd._udp", domain: nil),
+            using: parameters
+        )
+
+        browser.stateUpdateHandler = { [weak self] state in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+
+                switch state {
+                case .ready, .failed:
+                    self.stopLocalNetworkPermissionProbe()
+                default:
+                    break
+                }
+            }
+        }
+
+        localNetworkBrowser = browser
+        browser.start(queue: .main)
+
+        let cancelWork = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.stopLocalNetworkPermissionProbe()
+            }
+        }
+        localNetworkProbeCancelWorkItem = cancelWork
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: cancelWork)
+    }
+
+    private func stopLocalNetworkPermissionProbe() {
+        localNetworkProbeCancelWorkItem?.cancel()
+        localNetworkProbeCancelWorkItem = nil
+        localNetworkBrowser?.cancel()
+        localNetworkBrowser = nil
+    }
+
     func toggleDictation() {
         if isDictating {
             stopDictation()
@@ -149,7 +230,10 @@ final class DictationViewModel: ObservableObject {
 
         isDictating = false
         livePartialText = ""
-        statusText = "Stopped."
+        statusText = "Ready"
+        if lastError?.localizedCaseInsensitiveContains("websocket receive failed") == true {
+            lastError = nil
+        }
     }
 
     func clearTranscript() {
@@ -170,9 +254,38 @@ final class DictationViewModel: ObservableObject {
         statusText = "Transcript copied."
     }
 
+    func copyLatestSegment(updateStatus: Bool = true) {
+        let segment = lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !segment.isEmpty else { return }
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(segment, forType: .string)
+
+        if updateStatus {
+            statusText = "Latest segment copied."
+        }
+    }
+
+    func requestAccessibilityPermission() {
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        refreshAccessibilityTrustState()
+
+        if isAccessibilityTrusted {
+            clearAccessibilityErrorIfNeeded()
+            statusText = "Accessibility permission enabled."
+        } else {
+            setAccessibilityErrorIfNeeded()
+            statusText = "Waiting for Accessibility permission."
+        }
+    }
+
     func pasteLatestSegment() {
         let segment = lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !segment.isEmpty else { return }
+
+        refreshAccessibilityTrustState()
 
         if insertTextIntoFocusedField(segment) {
             statusText = "Pasted latest segment."
@@ -184,7 +297,7 @@ final class DictationViewModel: ObservableObject {
             return
         }
 
-        if !AXIsProcessTrusted() {
+        if !isAccessibilityTrusted {
             setAccessibilityErrorIfNeeded()
             statusText = "Paste blocked by Accessibility permission."
         } else {
@@ -208,12 +321,7 @@ final class DictationViewModel: ObservableObject {
             return
         }
 
-        let model = settings.modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if model.isEmpty {
-            statusText = "Model is required."
-            lastError = "Set a realtime model name in Settings."
-            return
-        }
+        let model = settings.effectiveModelName
 
         do {
             let client = realtimeClient
@@ -285,10 +393,20 @@ final class DictationViewModel: ObservableObject {
     private func handle(event: RealtimeWebSocketClient.Event) {
         switch event {
         case .connected:
-            statusText = "Connected to realtime endpoint."
+            statusText = isDictating ? "Listening..." : "Ready"
 
         case .status(let message):
-            statusText = message
+            let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !isDictating {
+                statusText = "Ready"
+                return
+            }
+
+            if normalized.contains("session") || normalized.contains("connected") || normalized.contains("disconnected") {
+                statusText = "Listening..."
+            } else {
+                statusText = message
+            }
 
         case .partialTranscript(let delta):
             guard !delta.isEmpty else { return }
@@ -297,27 +415,41 @@ final class DictationViewModel: ObservableObject {
             statusText = "Transcribing..."
 
         case .finalTranscript(let text):
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
+            let finalizedSegment = resolvedFinalizedSegment(from: text)
+            guard !finalizedSegment.isEmpty else {
                 livePartialText = ""
                 return
             }
 
             if transcriptText.isEmpty {
-                transcriptText = trimmed
+                transcriptText = finalizedSegment
             } else {
-                transcriptText += "\n" + trimmed
+                transcriptText += "\n" + finalizedSegment
             }
 
-            lastFinalSegment = trimmed
+            lastFinalSegment = finalizedSegment
             livePartialText = ""
             statusText = "Listening..."
 
             if settings.autoCopyEnabled {
-                copyTranscript()
+                copyLatestSegment(updateStatus: false)
             }
 
         case .error(let message):
+            let normalized = message.lowercased()
+            if !isDictating {
+                if normalized.contains("websocket receive failed")
+                    || normalized.contains("cancelled")
+                    || normalized.contains("socket is not connected")
+                {
+                    statusText = "Ready"
+                    return
+                }
+
+                statusText = "Ready"
+                return
+            }
+
             statusText = "Realtime error."
             lastError = message
         }
@@ -326,6 +458,7 @@ final class DictationViewModel: ObservableObject {
     @discardableResult
     private func insertTextIntoFocusedField(_ text: String) -> Bool {
         guard !text.isEmpty else { return true }
+        refreshAccessibilityTrustState()
 
         if insertTextUsingAccessibility(text) {
             clearAccessibilityErrorIfNeeded()
@@ -337,7 +470,7 @@ final class DictationViewModel: ObservableObject {
             return true
         }
 
-        if !AXIsProcessTrusted() {
+        if !isAccessibilityTrusted {
             promptForAccessibilityPermissionIfNeeded()
             setAccessibilityErrorIfNeeded()
         }
@@ -346,7 +479,7 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func insertTextUsingAccessibility(_ text: String) -> Bool {
-        guard AXIsProcessTrusted() else { return false }
+        guard isAccessibilityTrusted else { return false }
 
         let systemWideElement = AXUIElementCreateSystemWide()
         var focusedObject: AnyObject?
@@ -444,6 +577,15 @@ final class DictationViewModel: ObservableObject {
         return true
     }
 
+    private func resolvedFinalizedSegment(from finalText: String) -> String {
+        let trimmedFinal = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedFinal.isEmpty {
+            return trimmedFinal
+        }
+
+        return livePartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func postUnicodeTextEvents(_ text: String) -> Bool {
         guard !text.isEmpty,
               let source = CGEventSource(stateID: .combinedSessionState)
@@ -467,8 +609,8 @@ final class DictationViewModel: ObservableObject {
 
             keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
             keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
-            keyDown.post(tap: .cghidEventTap)
-            keyUp.post(tap: .cghidEventTap)
+            keyDown.post(tap: .cgAnnotatedSessionEventTap)
+            keyUp.post(tap: .cgAnnotatedSessionEventTap)
             didPostAnyEvent = true
         }
 
@@ -490,8 +632,8 @@ final class DictationViewModel: ObservableObject {
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
 
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        keyUp.post(tap: .cgAnnotatedSessionEventTap)
         return true
     }
 
@@ -501,6 +643,11 @@ final class DictationViewModel: ObservableObject {
 
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        refreshAccessibilityTrustState()
+    }
+
+    private func refreshAccessibilityTrustState() {
+        isAccessibilityTrusted = AXIsProcessTrusted()
     }
 
     private func setAccessibilityErrorIfNeeded() {
@@ -510,6 +657,7 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func clearAccessibilityErrorIfNeeded() {
+        refreshAccessibilityTrustState()
         guard hasShownAccessibilityError else { return }
         hasShownAccessibilityError = false
         if lastError == Self.accessibilityErrorMessage {

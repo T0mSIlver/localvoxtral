@@ -66,8 +66,6 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
         stateQueue.sync {
             disconnectLocked()
         }
-
-        emit(.status("Disconnected."))
     }
 
     func sendAudioChunk(_ pcm16Data: Data) {
@@ -132,6 +130,14 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
                 self.handle(message: message)
                 self.listenForMessages()
             case .failure(let error):
+                let shouldReport: Bool = self.stateQueue.sync {
+                    self.isConnected
+                }
+
+                guard shouldReport else {
+                    return
+                }
+
                 self.emit(.error("WebSocket receive failed: \(error.localizedDescription)"))
                 self.disconnect()
             }

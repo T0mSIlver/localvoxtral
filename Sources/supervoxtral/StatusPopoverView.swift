@@ -5,11 +5,6 @@ struct StatusPopoverView: View {
     @Environment(\.openSettings) private var openSettings
 
     @ObservedObject var viewModel: DictationViewModel
-    @ObservedObject var settings: SettingsStore
-
-    private var hasTranscript: Bool {
-        !viewModel.fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
 
     private var hasLatestSegment: Bool {
         !viewModel.lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -20,20 +15,10 @@ struct StatusPopoverView: View {
             viewModel.toggleDictation()
         }
 
-        Button("Copy Transcript") {
-            viewModel.copyTranscript()
-        }
-        .disabled(!hasTranscript)
-
-        Button("Paste Latest Segment") {
-            viewModel.pasteLatestSegment()
+        Button("Copy Latest Segment") {
+            viewModel.copyLatestSegment()
         }
         .disabled(!hasLatestSegment)
-
-        Button("Clear Transcript") {
-            viewModel.clearTranscript()
-        }
-        .disabled(!hasTranscript)
 
         Divider()
 
@@ -43,12 +28,16 @@ struct StatusPopoverView: View {
             openSettings()
         }
 
+        if !viewModel.isAccessibilityTrusted {
+            Button("Enable Accessibility…") {
+                viewModel.requestAccessibilityPermission()
+                openAccessibilitySettings()
+            }
+        }
+
         Divider()
 
         Text("Status: \(viewModel.statusText)")
-            .foregroundStyle(.secondary)
-
-        Text("Model: \(settings.modelName)")
             .foregroundStyle(.secondary)
 
         if let lastError = viewModel.lastError {
@@ -58,8 +47,15 @@ struct StatusPopoverView: View {
 
         Divider()
 
-        Button("Quit SuperVoxtral") {
+        Button("Quit") {
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 }

@@ -13,6 +13,18 @@ A clean native macOS menu bar dictation app with a superwhisper-like flow:
 swift run SuperVoxtral
 ```
 
+## Run as an app bundle (recommended)
+
+Accessibility permission is much more reliable when launched as a `.app`:
+
+```bash
+./scripts/package_app.sh release
+open ./dist/SuperVoxtral.app
+```
+
+Then enable `SuperVoxtral` in:
+`System Settings > Privacy & Security > Accessibility`
+
 ## Configure
 
 Open `Settings` from the popover and set:

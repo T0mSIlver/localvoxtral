@@ -13,7 +13,7 @@ struct SuperVoxtralApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            StatusPopoverView(viewModel: viewModel, settings: settingsStore)
+            StatusPopoverView(viewModel: viewModel)
         } label: {
             Label(
                 "SuperVoxtral",
@@ -24,7 +24,7 @@ struct SuperVoxtralApp: App {
 
         Settings {
             SettingsView(settings: settingsStore)
-                .frame(minWidth: 520, minHeight: 430)
+                .frame(minWidth: 420, minHeight: 280)
         }
         .windowResizability(.contentSize)
     }

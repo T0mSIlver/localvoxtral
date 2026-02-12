@@ -41,9 +41,11 @@ final class SettingsStore: ObservableObject {
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
 
-        modelName = defaults.string(forKey: Keys.modelName)
+        let configuredModel = defaults.string(forKey: Keys.modelName)
             ?? ProcessInfo.processInfo.environment["REALTIME_MODEL"]
             ?? "voxtral-mini-latest"
+        let normalizedModel = Self.normalizedModelName(from: configuredModel)
+        modelName = normalizedModel.isEmpty ? "voxtral-mini-latest" : normalizedModel
 
         let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
         commitIntervalSeconds = storedInterval > 0 ? storedInterval : 0.9
@@ -57,6 +59,15 @@ final class SettingsStore: ObservableObject {
 
     var trimmedAPIKey: String {
         apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var effectiveModelName: String {
+        let normalized = Self.normalizedModelName(from: modelName)
+        return normalized.isEmpty ? "voxtral-mini-latest" : normalized
+    }
+
+    var displayModelName: String {
+        effectiveModelName
     }
 
     var resolvedWebSocketURL: URL? {
@@ -76,5 +87,28 @@ final class SettingsStore: ObservableObject {
         }
 
         return URL(string: "ws://\(trimmed)")
+    }
+
+    private static func normalizedModelName(from raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+
+        let lines = trimmed
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard let candidate = lines.last else {
+            return trimmed
+        }
+
+        if candidate.contains(" ") {
+            let tokens = candidate.split(whereSeparator: \.isWhitespace).map(String.init)
+            if let token = tokens.last {
+                return token
+            }
+        }
+
+        return candidate
     }
 }

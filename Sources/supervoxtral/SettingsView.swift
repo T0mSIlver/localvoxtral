@@ -5,62 +5,49 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("SuperVoxtral Settings")
-                    .font(.title3)
-                    .fontWeight(.semibold)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Settings")
+                .font(.headline)
 
-                VStack(alignment: .leading, spacing: 10) {
-                    SettingsField(title: "Realtime endpoint") {
-                        TextField("ws://127.0.0.1:8000/v1/realtime", text: $settings.endpointURL)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    SettingsField(title: "Model name") {
-                        TextField("voxtral-mini-latest", text: $settings.modelName)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    SettingsField(title: "API key (optional for local vLLM)") {
-                        SecureField("Optional", text: $settings.apiKey)
-                            .textFieldStyle(.roundedBorder)
-                    }
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsField(title: "Realtime endpoint") {
+                    TextField("ws://127.0.0.1:8000/v1/realtime", text: $settings.endpointURL)
+                        .textFieldStyle(.roundedBorder)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Commit interval")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Text(String(format: "%.2fs", settings.commitIntervalSeconds))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Slider(value: $settings.commitIntervalSeconds, in: 0.25 ... 2.5, step: 0.05)
+                SettingsField(title: "Model") {
+                    TextField("voxtral-mini-latest", text: $settings.modelName)
+                        .textFieldStyle(.roundedBorder)
                 }
 
-                Toggle("Auto-copy transcript when segment finalizes", isOn: $settings.autoCopyEnabled)
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Tips")
-                        .font(.system(size: 12, weight: .medium))
-
-                    Text("Use a local vLLM realtime endpoint like `ws://127.0.0.1:8000/v1/realtime`.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    Text("For command+V auto-paste, macOS may ask for Accessibility permission.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                SettingsField(title: "API key") {
+                    SecureField("", text: $settings.apiKey)
+                        .textFieldStyle(.roundedBorder)
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Commit interval")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Text(String(format: "%.2fs", settings.commitIntervalSeconds))
+                        .foregroundStyle(.secondary)
+                }
+
+                Slider(value: $settings.commitIntervalSeconds, in: 0.25 ... 2.5, step: 0.05)
+
+                Text("How often finalized transcript chunks are requested from the realtime server.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            Toggle("Auto-copy latest segment when finalized", isOn: $settings.autoCopyEnabled)
+
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(14)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 NSApp.activate(ignoringOtherApps: true)
@@ -79,7 +66,7 @@ private struct SettingsField<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
             content
