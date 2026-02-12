@@ -25,6 +25,11 @@ open ./dist/SuperVoxtral.app
 Then enable `SuperVoxtral` in:
 `System Settings > Privacy & Security > Accessibility`
 
+## Icons
+
+- App icon source: `assets/icons/app/AppIcon.png`
+- Menubar icon source: `assets/icons/menubar/MenubarIcon.svg`
+
 ## Configure
 
 Open `Settings` from the popover and set:

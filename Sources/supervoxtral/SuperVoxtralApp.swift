@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -15,10 +16,14 @@ struct SuperVoxtralApp: App {
         MenuBarExtra {
             StatusPopoverView(viewModel: viewModel)
         } label: {
-            Label(
-                "SuperVoxtral",
-                systemImage: viewModel.isDictating ? "waveform.circle.fill" : "waveform.circle"
-            )
+            if let icon = MenuBarIconAsset.icon {
+                MenuBarIconView(icon: icon, isDictating: viewModel.isDictating)
+            } else {
+                Label(
+                    "SuperVoxtral",
+                    systemImage: viewModel.isDictating ? "waveform.circle.fill" : "waveform.circle"
+                )
+            }
         }
         .menuBarExtraStyle(.menu)
 
@@ -27,5 +32,37 @@ struct SuperVoxtralApp: App {
                 .frame(minWidth: 420, minHeight: 280)
         }
         .windowResizability(.contentSize)
+    }
+}
+
+private enum MenuBarIconAsset {
+    static let icon: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "MenubarIconTemplate", withExtension: "png"),
+              let image = NSImage(contentsOf: url)
+        else {
+            return nil
+        }
+
+        image.isTemplate = true
+        image.size = NSSize(width: 18, height: 18)
+        return image
+    }()
+}
+
+private struct MenuBarIconView: View {
+    let icon: NSImage
+    let isDictating: Bool
+
+    var body: some View {
+        Image(nsImage: icon)
+            .overlay(alignment: .topTrailing) {
+                if isDictating {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 2, y: -2)
+                }
+            }
+            .accessibilityLabel("SuperVoxtral")
     }
 }

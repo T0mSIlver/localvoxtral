@@ -8,6 +8,7 @@ final class SettingsStore: ObservableObject {
         static let modelName = "settings.model_name"
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
+        static let selectedInputDeviceUID = "settings.selected_input_device_uid"
     }
 
     private let defaults = UserDefaults.standard
@@ -30,6 +31,10 @@ final class SettingsStore: ObservableObject {
 
     @Published var autoCopyEnabled: Bool {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
+    }
+
+    @Published var selectedInputDeviceUID: String {
+        didSet { defaults.set(selectedInputDeviceUID, forKey: Keys.selectedInputDeviceUID) }
     }
 
     init() {
@@ -55,6 +60,8 @@ final class SettingsStore: ObservableObject {
         } else {
             autoCopyEnabled = defaults.bool(forKey: Keys.autoCopyEnabled)
         }
+
+        selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
     }
 
     var trimmedAPIKey: String {

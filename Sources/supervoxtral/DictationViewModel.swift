@@ -13,6 +13,8 @@ final class DictationViewModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastFinalSegment = ""
     @Published private(set) var isAccessibilityTrusted = false
+    @Published private(set) var availableInputDevices: [MicrophoneInputDevice] = []
+    @Published private(set) var selectedInputDeviceID = ""
 
     let settings: SettingsStore
 
@@ -45,6 +47,7 @@ final class DictationViewModel: ObservableObject {
 
         registerGlobalHotkey()
         refreshAccessibilityTrustState()
+        refreshMicrophoneInputs()
         runStartupPermissionPreflightIfNeeded()
     }
 
@@ -196,8 +199,48 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
+    func refreshMicrophoneInputs() {
+        let devices = microphone.availableInputDevices()
+        availableInputDevices = devices
+
+        guard !devices.isEmpty else {
+            selectedInputDeviceID = ""
+            settings.selectedInputDeviceUID = ""
+            return
+        }
+
+        let savedSelection = settings.selectedInputDeviceUID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedSelection: String
+
+        if devices.contains(where: { $0.id == savedSelection }) {
+            resolvedSelection = savedSelection
+        } else if let defaultID = microphone.defaultInputDeviceID(),
+                  devices.contains(where: { $0.id == defaultID })
+        {
+            resolvedSelection = defaultID
+        } else {
+            resolvedSelection = devices[0].id
+        }
+
+        selectedInputDeviceID = resolvedSelection
+        settings.selectedInputDeviceUID = resolvedSelection
+    }
+
+    func selectMicrophoneInput(id: String) {
+        guard !id.isEmpty else { return }
+        guard selectedInputDeviceID != id else { return }
+
+        selectedInputDeviceID = id
+        settings.selectedInputDeviceUID = id
+
+        guard isDictating else { return }
+        stopDictation()
+        startDictation()
+    }
+
     func startDictation() {
         guard !isDictating else { return }
+        refreshMicrophoneInputs()
         lastError = nil
         statusText = "Checking microphone permission..."
 
@@ -334,7 +377,8 @@ final class DictationViewModel: ObservableObject {
 
             let chunkBuffer = audioChunkBuffer
             chunkBuffer.clear()
-            try microphone.start { chunk in
+            let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+            try microphone.start(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
             }
 

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 82 102" width="22" height="27.5">
+  <!-- All squares are 20x20, touching edges. With fill="none" and uniform stroke,
+       shared edges overlap perfectly giving uniform border width everywhere. -->
+
+  <!-- Column 0: 1 square at row 2 -->
+  <rect x="0" y="40" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+
+  <!-- Column 1: 5 squares, rows 0-4 -->
+  <rect x="20" y="0"  width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+  <rect x="20" y="20" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+  <rect x="20" y="40" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+  <rect x="20" y="60" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+  <rect x="20" y="80" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+
+  <!-- Column 2: 3 squares, rows 1-3 -->
+  <rect x="40" y="20" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+  <rect x="40" y="40" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+  <rect x="40" y="60" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+
+  <!-- Column 3: 1 square at row 2 -->
+  <rect x="60" y="40" width="20" height="20" rx="1" ry="1" fill="none" stroke="#1d1d1f" stroke-width="2"/>
+</svg>

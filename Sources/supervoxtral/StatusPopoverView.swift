@@ -11,44 +11,67 @@ struct StatusPopoverView: View {
     }
 
     var body: some View {
-        Button(viewModel.isDictating ? "Stop Dictation" : "Start Dictation") {
-            viewModel.toggleDictation()
-        }
+        Group {
+            Button(viewModel.isDictating ? "Stop Dictation" : "Start Dictation") {
+                viewModel.toggleDictation()
+            }
 
-        Button("Copy Latest Segment") {
-            viewModel.copyLatestSegment()
-        }
-        .disabled(!hasLatestSegment)
+            Menu("Microphone") {
+                if viewModel.availableInputDevices.isEmpty {
+                    Text("No Input Devices")
+                } else {
+                    ForEach(viewModel.availableInputDevices) { device in
+                        Button {
+                            viewModel.selectMicrophoneInput(id: device.id)
+                        } label: {
+                            if viewModel.selectedInputDeviceID == device.id {
+                                Label(device.name, systemImage: "checkmark")
+                            } else {
+                                Text(device.name)
+                            }
+                        }
+                    }
+                }
+            }
 
-        Divider()
+            Button("Copy Latest Segment") {
+                viewModel.copyLatestSegment()
+            }
+            .disabled(!hasLatestSegment)
 
-        Button("Settings…") {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
-            openSettings()
-        }
+            Divider()
 
-        if !viewModel.isAccessibilityTrusted {
-            Button("Enable Accessibility…") {
-                viewModel.requestAccessibilityPermission()
-                openAccessibilitySettings()
+            Button("Settings…") {
+                NSApp.setActivationPolicy(.regular)
+                NSApp.activate(ignoringOtherApps: true)
+                openSettings()
+            }
+
+            if !viewModel.isAccessibilityTrusted {
+                Button("Enable Accessibility…") {
+                    viewModel.requestAccessibilityPermission()
+                    openAccessibilitySettings()
+                }
+            }
+
+            Divider()
+
+            Text("Status: \(viewModel.statusText)")
+                .foregroundStyle(.secondary)
+
+            if let lastError = viewModel.lastError {
+                Text(lastError)
+                    .foregroundStyle(.red)
+            }
+
+            Divider()
+
+            Button("Quit") {
+                NSApplication.shared.terminate(nil)
             }
         }
-
-        Divider()
-
-        Text("Status: \(viewModel.statusText)")
-            .foregroundStyle(.secondary)
-
-        if let lastError = viewModel.lastError {
-            Text(lastError)
-                .foregroundStyle(.red)
-        }
-
-        Divider()
-
-        Button("Quit") {
-            NSApplication.shared.terminate(nil)
+        .onAppear {
+            viewModel.refreshMicrophoneInputs()
         }
     }
 
