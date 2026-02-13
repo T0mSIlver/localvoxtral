@@ -22,6 +22,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
     private var isConnected = false
     private var onEvent: (@Sendable (Event) -> Void)?
     private var pingTimer: DispatchSourceTimer?
+    private var hasUncommittedAudio = false
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         stateQueue.sync {
@@ -61,10 +62,6 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
         if !modelName.isEmpty {
             send(event: ["type": "session.update", "model": modelName])
         }
-
-        // Match vLLM's microphone example handshake:
-        // session.update -> input_audio_buffer.commit -> input_audio_buffer.append...
-        sendCommit(final: false)
     }
 
     func disconnect() {
@@ -81,6 +78,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
 
     func sendAudioChunk(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
+        stateQueue.sync { hasUncommittedAudio = true }
         let payload: [String: Any] = [
             "type": "input_audio_buffer.append",
             "audio": pcm16Data.base64EncodedString(),
@@ -89,6 +87,13 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
     }
 
     func sendCommit(final: Bool) {
+        let shouldCommit: Bool = stateQueue.sync {
+            guard hasUncommittedAudio else { return false }
+            hasUncommittedAudio = false
+            return true
+        }
+        guard shouldCommit else { return }
+
         var payload: [String: Any] = ["type": "input_audio_buffer.commit"]
         if final {
             payload["final"] = true
@@ -249,6 +254,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
         urlSession = nil
 
         isConnected = false
+        hasUncommittedAudio = false
     }
 
     private func startPingTimerLocked() {

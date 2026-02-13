@@ -62,6 +62,9 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         tapInstalled = true
 
+        audioEngine.prepare()
+        try audioEngine.start()
+
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: audioEngine,
@@ -69,9 +72,6 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         ) { [weak self] _ in
             self?.onConfigurationChange?()
         }
-
-        audioEngine.prepare()
-        try audioEngine.start()
     }
 
     func stop() {
@@ -87,9 +87,8 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         if audioEngine.isRunning {
             audioEngine.stop()
+            audioEngine.reset()
         }
-
-        audioEngine.reset()
     }
 
     private func configureInputDevice(_ preferredDeviceID: String?) {
