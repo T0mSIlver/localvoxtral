@@ -72,6 +72,7 @@ struct StatusPopoverView: View {
         }
         .onAppear {
             viewModel.refreshMicrophoneInputs()
+            viewModel.refreshAccessibilityTrustState()
         }
     }
 

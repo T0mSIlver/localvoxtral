@@ -45,6 +45,14 @@ final class DictationViewModel: ObservableObject {
             }
         }
 
+        microphone.onConfigurationChange = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.isDictating else { return }
+                self.stopDictation()
+                self.lastError = "Audio device changed. Dictation stopped."
+            }
+        }
+
         registerGlobalHotkey()
         refreshAccessibilityTrustState()
         refreshMicrophoneInputs()
@@ -126,10 +134,10 @@ final class DictationViewModel: ObservableObject {
 
             self.promptAccessibilityPermissionAtLaunchIfNeeded()
 
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
             self.requestMicrophonePermissionAtLaunch()
 
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
             self.requestLocalNetworkPermissionAtLaunch()
         }
     }
@@ -439,6 +447,11 @@ final class DictationViewModel: ObservableObject {
         case .connected:
             statusText = isDictating ? "Listening..." : "Ready"
 
+        case .disconnected:
+            guard isDictating else { return }
+            stopDictation()
+            lastError = "Connection lost. Dictation stopped."
+
         case .status(let message):
             let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if !isDictating {
@@ -453,7 +466,7 @@ final class DictationViewModel: ObservableObject {
             }
 
         case .partialTranscript(let delta):
-            guard !delta.isEmpty else { return }
+            guard isDictating, !delta.isEmpty else { return }
             livePartialText += delta
             _ = insertTextIntoFocusedField(delta)
             statusText = "Transcribing..."
@@ -690,7 +703,7 @@ final class DictationViewModel: ObservableObject {
         refreshAccessibilityTrustState()
     }
 
-    private func refreshAccessibilityTrustState() {
+    func refreshAccessibilityTrustState() {
         isAccessibilityTrusted = AXIsProcessTrusted()
     }
 

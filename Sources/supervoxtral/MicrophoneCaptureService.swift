@@ -15,6 +15,8 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     private let processingQueue = DispatchQueue(label: "supervoxtral.microphone.processing")
     private let targetSampleRate: Double = 16_000
     private var tapInstalled = false
+    private var configChangeObserver: NSObjectProtocol?
+    var onConfigurationChange: (@Sendable () -> Void)?
 
     func requestAccess(completion: @escaping @Sendable (Bool) -> Void) {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -60,11 +62,24 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         tapInstalled = true
 
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.onConfigurationChange?()
+        }
+
         audioEngine.prepare()
         try audioEngine.start()
     }
 
     func stop() {
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+
         if tapInstalled {
             audioEngine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
@@ -73,6 +88,8 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         if audioEngine.isRunning {
             audioEngine.stop()
         }
+
+        audioEngine.reset()
     }
 
     private func configureInputDevice(_ preferredDeviceID: String?) {

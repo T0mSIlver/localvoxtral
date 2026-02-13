@@ -9,6 +9,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
 
     enum Event {
         case connected
+        case disconnected
         case status(String)
         case partialTranscript(String)
         case finalTranscript(String)
@@ -20,6 +21,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
     private var webSocketTask: URLSessionWebSocketTask?
     private var isConnected = false
     private var onEvent: (@Sendable (Event) -> Void)?
+    private var pingTimer: DispatchSourceTimer?
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         stateQueue.sync {
@@ -49,6 +51,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
             isConnected = true
 
             task.resume()
+            startPingTimerLocked()
         }
 
         emit(.connected)
@@ -65,8 +68,14 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
     }
 
     func disconnect() {
-        stateQueue.sync {
+        let wasConnected: Bool = stateQueue.sync {
+            let was = isConnected
             disconnectLocked()
+            return was
+        }
+
+        if wasConnected {
+            emit(.disconnected)
         }
     }
 
@@ -230,6 +239,7 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
     }
 
     private func disconnectLocked() {
+        stopPingTimerLocked()
         guard isConnected else { return }
 
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -239,6 +249,33 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
         urlSession = nil
 
         isConnected = false
+    }
+
+    private func startPingTimerLocked() {
+        stopPingTimerLocked()
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 30, repeating: 30)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let task: URLSessionWebSocketTask? = self.stateQueue.sync {
+                guard self.isConnected else { return nil }
+                return self.webSocketTask
+            }
+            guard let task else { return }
+            task.sendPing { [weak self] error in
+                guard let self, let error else { return }
+                self.emit(.error("Connection lost: \(error.localizedDescription)"))
+                self.disconnect()
+            }
+        }
+        pingTimer = timer
+        timer.resume()
+    }
+
+    private func stopPingTimerLocked() {
+        pingTimer?.cancel()
+        pingTimer = nil
     }
 
     private func emit(_ event: Event) {
