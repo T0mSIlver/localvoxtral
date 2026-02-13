@@ -35,7 +35,7 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Slider(value: $settings.commitIntervalSeconds, in: 0.25 ... 2.5, step: 0.05)
+                Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
 
                 Text("How often finalized transcript chunks are requested from the realtime server.")
                     .font(.system(size: 11))

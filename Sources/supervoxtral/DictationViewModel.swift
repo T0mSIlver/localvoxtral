@@ -398,7 +398,7 @@ final class DictationViewModel: ObservableObject {
     private func restartCommitTimer() {
         commitTimer?.invalidate()
 
-        let interval = max(0.25, settings.commitIntervalSeconds)
+        let interval = min(1.0, max(0.1, settings.commitIntervalSeconds))
         let client = realtimeClient
         commitTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             guard self != nil else { return }

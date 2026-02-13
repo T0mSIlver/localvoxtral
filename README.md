@@ -28,7 +28,9 @@ Then enable `SuperVoxtral` in:
 ## Icons
 
 - App icon source: `assets/icons/app/AppIcon.png`
-- Menubar icon source: `assets/icons/menubar/MenubarIcon.svg`
+- Menubar icon source priority:
+  - `menubar-icon.pdf` (project root, preferred)
+  - `assets/icons/menubar/MenubarIcon.svg` (fallback)
 
 ## Configure
 

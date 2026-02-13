@@ -65,29 +65,47 @@ if [[ -n "$ICON_SOURCE" ]]; then
   iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
 
-MENUBAR_SVG_SOURCE=""
+MENUBAR_PDF_SOURCE=""
 for candidate in \
-  "$ROOT_DIR/assets/icons/menubar/MenubarIcon.svg" \
-  "$ROOT_DIR/assets/icons/menubar/icon.svg" \
-  "$ROOT_DIR/menubar-icon.svg"
+  "$ROOT_DIR/menubar-icon.pdf" \
+  "$ROOT_DIR/MenubarIconTemplate.pdf" \
+  "$ROOT_DIR/assets/icons/menubar/MenubarIconTemplate.pdf" \
+  "$ROOT_DIR/assets/icons/menubar/MenubarIcon.pdf"
 do
   if [[ -f "$candidate" ]]; then
-    MENUBAR_SVG_SOURCE="$candidate"
+    MENUBAR_PDF_SOURCE="$candidate"
     break
   fi
 done
 
-if [[ -z "$MENUBAR_SVG_SOURCE" ]]; then
-  FIRST_MENUBAR_SVG="$(find "$ROOT_DIR/assets/icons/menubar" -maxdepth 1 -type f -name '*.svg' | head -n 1 || true)"
-  if [[ -n "$FIRST_MENUBAR_SVG" ]]; then
-    MENUBAR_SVG_SOURCE="$FIRST_MENUBAR_SVG"
+MENUBAR_SVG_SOURCE=""
+if [[ -z "$MENUBAR_PDF_SOURCE" ]]; then
+  for candidate in \
+    "$ROOT_DIR/assets/icons/menubar/MenubarIcon.svg" \
+    "$ROOT_DIR/assets/icons/menubar/icon.svg" \
+    "$ROOT_DIR/menubar-icon.svg"
+  do
+    if [[ -f "$candidate" ]]; then
+      MENUBAR_SVG_SOURCE="$candidate"
+      break
+    fi
+  done
+
+  if [[ -z "$MENUBAR_SVG_SOURCE" ]]; then
+    FIRST_MENUBAR_SVG="$(find "$ROOT_DIR/assets/icons/menubar" -maxdepth 1 -type f -name '*.svg' | head -n 1 || true)"
+    if [[ -n "$FIRST_MENUBAR_SVG" ]]; then
+      MENUBAR_SVG_SOURCE="$FIRST_MENUBAR_SVG"
+    fi
   fi
 fi
 
-if [[ -n "$MENUBAR_SVG_SOURCE" ]]; then
-  MENUBAR_PDF_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.pdf"
-  MENUBAR_PNG_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
+MENUBAR_PDF_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.pdf"
+MENUBAR_PNG_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
 
+if [[ -n "$MENUBAR_PDF_SOURCE" ]]; then
+  cp "$MENUBAR_PDF_SOURCE" "$MENUBAR_PDF_TARGET"
+  sips -s format png -Z 36 "$MENUBAR_PDF_TARGET" --out "$MENUBAR_PNG_TARGET" >/dev/null 2>&1 || true
+elif [[ -n "$MENUBAR_SVG_SOURCE" ]]; then
   # Keep a vector copy so SwiftUI can render it sharply in the menu bar.
   sips -s format pdf "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_PDF_TARGET" >/dev/null 2>&1 || true
 

@@ -53,7 +53,11 @@ final class SettingsStore: ObservableObject {
         modelName = normalizedModel.isEmpty ? "voxtral-mini-latest" : normalizedModel
 
         let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
-        commitIntervalSeconds = storedInterval > 0 ? storedInterval : 0.9
+        if storedInterval > 0 {
+            commitIntervalSeconds = min(max(storedInterval, 0.1), 1.0)
+        } else {
+            commitIntervalSeconds = 0.9
+        }
 
         if defaults.object(forKey: Keys.autoCopyEnabled) == nil {
             autoCopyEnabled = false
