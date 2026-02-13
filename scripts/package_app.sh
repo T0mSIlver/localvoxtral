@@ -85,11 +85,14 @@ if [[ -z "$MENUBAR_SVG_SOURCE" ]]; then
 fi
 
 if [[ -n "$MENUBAR_SVG_SOURCE" ]]; then
-  MENUBAR_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
-  if sips -s format png "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_TARGET" >/dev/null 2>&1; then
-    # Keep a small template image for the menu bar while preserving transparency.
-    sips -z 36 36 "$MENUBAR_TARGET" --out "$MENUBAR_TARGET" >/dev/null 2>&1 || true
-  fi
+  MENUBAR_PDF_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.pdf"
+  MENUBAR_PNG_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
+
+  # Keep a vector copy so SwiftUI can render it sharply in the menu bar.
+  sips -s format pdf "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_PDF_TARGET" >/dev/null 2>&1 || true
+
+  # Produce a retina-sized PNG fallback.
+  sips -s format png -Z 36 "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_PNG_TARGET" >/dev/null 2>&1 || true
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'

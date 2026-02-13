@@ -37,8 +37,12 @@ struct SuperVoxtralApp: App {
 
 private enum MenuBarIconAsset {
     static let icon: NSImage? = {
-        guard let url = Bundle.main.url(forResource: "MenubarIconTemplate", withExtension: "png"),
-              let image = NSImage(contentsOf: url)
+        let bundle = Bundle.main
+        let iconURL = bundle.url(forResource: "MenubarIconTemplate", withExtension: "pdf")
+            ?? bundle.url(forResource: "MenubarIconTemplate", withExtension: "png")
+
+        guard let iconURL,
+              let image = NSImage(contentsOf: iconURL)
         else {
             return nil
         }
@@ -55,13 +59,14 @@ private struct MenuBarIconView: View {
     var body: some View {
         Image(nsImage: icon)
             .resizable()
+            .renderingMode(.template)
             .scaledToFit()
-            .frame(width: 18, height: 18)
+            .frame(width: 13, height: 16)
             .overlay(alignment: .topTrailing) {
                 if isDictating {
                     Circle()
                         .fill(.red)
-                        .frame(width: 6, height: 6)
+                        .frame(width: 5, height: 5)
                         .offset(x: 2, y: -2)
                 }
             }

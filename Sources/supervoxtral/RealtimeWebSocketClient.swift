@@ -59,6 +59,8 @@ final class RealtimeWebSocketClient: @unchecked Sendable {
             send(event: ["type": "session.update", "model": modelName])
         }
 
+        // Match vLLM's microphone example handshake:
+        // session.update -> input_audio_buffer.commit -> input_audio_buffer.append...
         sendCommit(final: false)
     }
 

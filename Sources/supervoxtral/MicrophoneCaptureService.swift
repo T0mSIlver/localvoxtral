@@ -78,14 +78,10 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     private func configureInputDevice(_ preferredDeviceID: String?) {
         if let preferredDeviceID,
            !preferredDeviceID.isEmpty,
-           let preferredObjectID = audioDeviceID(forUID: preferredDeviceID),
-           setInputDevice(preferredObjectID)
+           preferredDeviceID != defaultInputDeviceID(),
+           let preferredObjectID = audioDeviceID(forUID: preferredDeviceID)
         {
-            return
-        }
-
-        if let defaultObjectID = defaultInputDeviceObjectID() {
-            _ = setInputDevice(defaultObjectID)
+            _ = setInputDevice(preferredObjectID)
         }
     }
 
