@@ -136,6 +136,18 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         send(event: payload)
     }
 
+    private func sendStartupCommitIfNeeded() {
+        let shouldCommit: Bool = stateQueue.sync {
+            guard socketState == .connected else { return false }
+            guard !isGenerationInProgress else { return false }
+            isGenerationInProgress = true
+            return true
+        }
+        guard shouldCommit else { return }
+
+        send(event: ["type": "input_audio_buffer.commit"])
+    }
+
     private enum SendAction {
         case send(task: URLSessionWebSocketTask, text: String)
         case queued
@@ -387,6 +399,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         if !modelName.isEmpty {
             send(event: ["type": "session.update", "model": modelName])
         }
+        sendStartupCommitIfNeeded()
 
         let queuedEvents: [[String: Any]] = stateQueue.sync {
             let queued = pendingEvents
