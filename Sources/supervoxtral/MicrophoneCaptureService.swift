@@ -229,46 +229,69 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     private func allInputDevices() -> [MicrophoneInputDevice] {
         allAudioDeviceIDs().compactMap { deviceID in
-            guard deviceHasInput(deviceID) else { return nil }
+            guard isSelectableInputDevice(deviceID) else { return nil }
             guard let uid = deviceUID(for: deviceID) else { return nil }
             let name = deviceName(for: deviceID) ?? "Input \(uid)"
-            guard !isFilteredPlaceholderInput(name: name, uid: uid) else { return nil }
             return MicrophoneInputDevice(id: uid, name: name)
         }
     }
 
-    private func isFilteredPlaceholderInput(name: String, uid: String) -> Bool {
-        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedUID = uid.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    private func isSelectableInputDevice(_ deviceID: AudioObjectID) -> Bool {
+        guard deviceHasInput(deviceID) else { return false }
+        guard deviceIsAlive(deviceID) else { return false }
+        guard !deviceIsHidden(deviceID) else { return false }
+        guard deviceCanBeDefaultInput(deviceID) else { return false }
+        return true
+    }
 
-        if normalizedName == "cac default device"
-            || normalizedName == "cac default input device"
-            || normalizedName == "cac default output device"
-        {
-            return true
-        }
+    private func deviceIsAlive(_ deviceID: AudioObjectID) -> Bool {
+        (deviceUInt32Property(
+            selector: kAudioDevicePropertyDeviceIsAlive,
+            scope: kAudioObjectPropertyScopeGlobal,
+            deviceID: deviceID
+        ) ?? 0) != 0
+    }
 
-        if normalizedName.hasPrefix("cac "),
-           normalizedName.contains("default"),
-           normalizedName.contains("device")
-        {
-            return true
-        }
+    private func deviceIsHidden(_ deviceID: AudioObjectID) -> Bool {
+        (deviceUInt32Property(
+            selector: kAudioDevicePropertyIsHidden,
+            scope: kAudioObjectPropertyScopeGlobal,
+            deviceID: deviceID
+        ) ?? 0) != 0
+    }
 
-        if normalizedUID.contains("cac"),
-           (normalizedUID.contains("default") || normalizedUID.contains("coreaudio"))
-        {
-            return true
-        }
+    private func deviceCanBeDefaultInput(_ deviceID: AudioObjectID) -> Bool {
+        (deviceUInt32Property(
+            selector: kAudioDevicePropertyDeviceCanBeDefaultDevice,
+            scope: kAudioDevicePropertyScopeInput,
+            deviceID: deviceID
+        ) ?? 0) != 0
+    }
 
-        if normalizedUID.contains("coreaudio"),
-           normalizedUID.contains("default"),
-           normalizedName.contains("default")
-        {
-            return true
-        }
+    private func deviceUInt32Property(
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope,
+        deviceID: AudioObjectID
+    ) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: scope,
+            mElement: kAudioObjectPropertyElementMain
+        )
 
-        return false
+        var value: UInt32 = 0
+        var dataSize = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &dataSize,
+            &value
+        )
+
+        guard status == noErr else { return nil }
+        return value
     }
 
     private func allAudioDeviceIDs() -> [AudioObjectID] {
