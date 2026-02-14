@@ -14,5 +14,9 @@ let package = Package(
         .executableTarget(
             name: "supervoxtral"
         ),
+        .testTarget(
+            name: "supervoxtralTests",
+            dependencies: ["supervoxtral"]
+        ),
     ]
 )

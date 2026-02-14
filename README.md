@@ -63,6 +63,42 @@ It handles incoming events:
 
 and common OpenAI-style transcript variants.
 
+## Realtime connection lifecycle
+
+Recommended global flow for robust vLLM realtime handling:
+
+1. Open WebSocket to `/v1/realtime`.
+2. Wait for `session.created` before sending protocol events.
+3. Send `session.update` with the served model.
+4. Send startup `input_audio_buffer.commit` to begin generation.
+5. Stream `input_audio_buffer.append` chunks (base64 PCM16 mono @ 16kHz).
+6. Read `transcription.delta` / `transcription.done` continuously.
+7. On stop, send `input_audio_buffer.commit` with `final: true`, then disconnect gracefully.
+8. Keep heartbeat ping + handshake timeout to detect dead or half-open connections.
+
+References:
+
+- [vLLM Realtime API docs](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#realtime-api)
+- [vLLM realtime endpoint/router source](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/realtime/api_router.py)
+- [vLLM realtime connection state machine](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/realtime/connection.py)
+- [vLLM realtime file client example](https://github.com/vllm-project/vllm/blob/main/examples/online_serving/openai_realtime_client.py)
+- [vLLM realtime microphone client example](https://github.com/vllm-project/vllm/blob/main/examples/online_serving/openai_realtime_microphone_client.py)
+
+## Integration tests (vLLM)
+
+These tests are opt-in and validate live WebSocket behavior against a running vLLM realtime server.
+
+```bash
+VLLM_REALTIME_TEST_ENABLE=1 \
+VLLM_REALTIME_TEST_ENDPOINT=ws://127.0.0.1:8000/v1/realtime \
+VLLM_REALTIME_TEST_MODEL=mistralai/Voxtral-Mini-4B-Realtime-2602 \
+swift test --filter RealtimeWebSocketVLLMIntegrationTests
+```
+
+Optional auth:
+
+- `VLLM_REALTIME_TEST_API_KEY` (falls back to `OPENAI_API_KEY`)
+
 ## Permissions
 
 - Microphone permission is required.
