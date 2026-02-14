@@ -56,7 +56,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
     }
 
-    private let audioEngine = AVAudioEngine()
+    private var audioEngine: AVAudioEngine?
     private let processingQueue = DispatchQueue(label: "supervoxtral.microphone.processing")
     private static let targetSampleRate: Double = 16_000
     private let targetOutputFormat: AVAudioFormat
@@ -124,12 +124,15 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     func isCapturing() -> Bool {
-        audioEngine.isRunning && tapInstalled
+        guard let audioEngine else { return false }
+        return audioEngine.isRunning && tapInstalled
     }
 
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
         stop()
-        try configureInputDevice(preferredDeviceID)
+        let audioEngine = AVAudioEngine()
+        self.audioEngine = audioEngine
+        try configureInputDevice(preferredDeviceID, on: audioEngine)
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -176,27 +179,31 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             configChangeObserver = nil
         }
 
-        if tapInstalled {
-            audioEngine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+        if let audioEngine {
+            if tapInstalled {
+                audioEngine.inputNode.removeTap(onBus: 0)
+            }
+
+            if audioEngine.isRunning {
+                audioEngine.stop()
+            }
+
+            audioEngine.reset()
         }
 
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-
-        audioEngine.reset()
+        audioEngine = nil
+        tapInstalled = false
         converter = nil
         converterInputFormatKey = nil
     }
 
-    private func configureInputDevice(_ preferredDeviceID: String?) throws {
+    private func configureInputDevice(_ preferredDeviceID: String?, on audioEngine: AVAudioEngine) throws {
         if let preferredDeviceID,
            !preferredDeviceID.isEmpty,
            preferredDeviceID != defaultInputDeviceID(),
            let preferredObjectID = audioDeviceID(forUID: preferredDeviceID)
         {
-            guard setInputDevice(preferredObjectID) else {
+            guard setInputDevice(preferredObjectID, on: audioEngine) else {
                 throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
             }
             return
@@ -211,7 +218,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     @discardableResult
-    private func setInputDevice(_ deviceID: AudioObjectID) -> Bool {
+    private func setInputDevice(_ deviceID: AudioObjectID, on audioEngine: AVAudioEngine) -> Bool {
         do {
             try audioEngine.inputNode.auAudioUnit.setDeviceID(deviceID)
             return true
@@ -232,12 +239,32 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     private func isFilteredPlaceholderInput(name: String, uid: String) -> Bool {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalizedName == "cac default device" {
+        let normalizedUID = uid.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalizedName == "cac default device"
+            || normalizedName == "cac default input device"
+            || normalizedName == "cac default output device"
+        {
             return true
         }
 
-        let normalizedUID = uid.lowercased()
-        if normalizedName.hasPrefix("cac "), normalizedUID.contains("coreaudio"), normalizedUID.contains("default") {
+        if normalizedName.hasPrefix("cac "),
+           normalizedName.contains("default"),
+           normalizedName.contains("device")
+        {
+            return true
+        }
+
+        if normalizedUID.contains("cac"),
+           (normalizedUID.contains("default") || normalizedUID.contains("coreaudio"))
+        {
+            return true
+        }
+
+        if normalizedUID.contains("coreaudio"),
+           normalizedUID.contains("default"),
+           normalizedName.contains("default")
+        {
             return true
         }
 

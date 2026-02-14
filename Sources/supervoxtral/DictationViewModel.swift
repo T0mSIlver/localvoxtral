@@ -140,11 +140,17 @@ final class DictationViewModel: ObservableObject {
 
     func refreshMicrophoneInputs() {
         let devices = microphone.availableInputDevices()
-        availableInputDevices = devices
+        if availableInputDevices != devices {
+            availableInputDevices = devices
+        }
 
         guard !devices.isEmpty else {
-            selectedInputDeviceID = ""
-            settings.selectedInputDeviceUID = ""
+            if !selectedInputDeviceID.isEmpty {
+                selectedInputDeviceID = ""
+            }
+            if !settings.selectedInputDeviceUID.isEmpty {
+                settings.selectedInputDeviceUID = ""
+            }
             return
         }
 
@@ -161,8 +167,12 @@ final class DictationViewModel: ObservableObject {
             resolvedSelection = devices[0].id
         }
 
-        selectedInputDeviceID = resolvedSelection
-        settings.selectedInputDeviceUID = resolvedSelection
+        if selectedInputDeviceID != resolvedSelection {
+            selectedInputDeviceID = resolvedSelection
+        }
+        if settings.selectedInputDeviceUID != resolvedSelection {
+            settings.selectedInputDeviceUID = resolvedSelection
+        }
     }
 
     func selectMicrophoneInput(id: String) {
@@ -761,7 +771,9 @@ final class DictationViewModel: ObservableObject {
 
     func refreshAccessibilityTrustState() {
         let trusted = AXIsProcessTrusted()
-        isAccessibilityTrusted = trusted
+        if isAccessibilityTrusted != trusted {
+            isAccessibilityTrusted = trusted
+        }
 
         guard trusted else { return }
         hasShownAccessibilityError = false

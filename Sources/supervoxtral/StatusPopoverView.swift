@@ -5,7 +5,6 @@ struct StatusPopoverView: View {
     @Environment(\.openSettings) private var openSettings
 
     @ObservedObject var viewModel: DictationViewModel
-    private let accessibilityRefreshTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     private var hasLatestSegment: Bool {
         !viewModel.lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -75,7 +74,7 @@ struct StatusPopoverView: View {
             viewModel.refreshMicrophoneInputs()
             viewModel.refreshAccessibilityTrustState()
         }
-        .onReceive(accessibilityRefreshTimer) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshAccessibilityTrustState()
         }
     }
