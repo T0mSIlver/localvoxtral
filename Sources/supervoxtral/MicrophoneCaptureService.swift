@@ -8,25 +8,107 @@ struct MicrophoneInputDevice: Identifiable, Hashable {
     let name: String
 }
 
+enum MicrophoneAuthorizationStatus {
+    case authorized
+    case denied
+    case restricted
+    case notDetermined
+}
+
+enum MicrophoneCaptureError: LocalizedError {
+    case preferredDeviceUnavailable(String)
+    case failedToSetPreferredDevice(String)
+    case invalidInputFormat
+    case converterCreationFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .preferredDeviceUnavailable(let deviceID):
+            return "Selected microphone (\(deviceID)) is no longer available."
+        case .failedToSetPreferredDevice(let deviceID):
+            return "Failed to activate selected microphone (\(deviceID))."
+        case .invalidInputFormat:
+            return "Microphone input format is invalid."
+        case .converterCreationFailed:
+            return "Failed to create audio converter for microphone input."
+        }
+    }
+}
+
 final class MicrophoneCaptureService: @unchecked Sendable {
     typealias ChunkHandler = @Sendable (Data) -> Void
 
+    private final class ConverterInputState: @unchecked Sendable {
+        var didConsumeBuffer = false
+    }
+
+    private struct ConverterInputFormatKey: Equatable {
+        let sampleRate: Double
+        let channelCount: AVAudioChannelCount
+        let commonFormat: AVAudioCommonFormat
+        let isInterleaved: Bool
+
+        init(format: AVAudioFormat) {
+            sampleRate = format.sampleRate
+            channelCount = format.channelCount
+            commonFormat = format.commonFormat
+            isInterleaved = format.isInterleaved
+        }
+    }
+
     private let audioEngine = AVAudioEngine()
     private let processingQueue = DispatchQueue(label: "supervoxtral.microphone.processing")
-    private let targetSampleRate: Double = 16_000
+    private static let targetSampleRate: Double = 16_000
+    private let targetOutputFormat: AVAudioFormat
     private var tapInstalled = false
     private var configChangeObserver: NSObjectProtocol?
+    private var converter: AVAudioConverter?
+    private var converterInputFormatKey: ConverterInputFormatKey?
+    private var didInstallInputDeviceListeners = false
     var onConfigurationChange: (@Sendable () -> Void)?
+    var onInputDevicesChanged: (@Sendable () -> Void)?
+
+    init() {
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: Self.targetSampleRate,
+            channels: 1,
+            interleaved: true
+        ) else {
+            preconditionFailure("Unable to create PCM16 output format for microphone conversion.")
+        }
+
+        targetOutputFormat = outputFormat
+        startMonitoringInputDevices()
+    }
+
+    deinit {
+        stop()
+        stopMonitoringInputDevices()
+    }
+
+    func authorizationStatus() -> MicrophoneAuthorizationStatus {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return .authorized
+        case .denied:
+            return .denied
+        case .restricted:
+            return .restricted
+        case .notDetermined:
+            return .notDetermined
+        @unknown default:
+            return .restricted
+        }
+    }
 
     func requestAccess(completion: @escaping @Sendable (Bool) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        switch authorizationStatus() {
         case .authorized:
             completion(true)
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
         case .denied, .restricted:
-            completion(false)
-        @unknown default:
             completion(false)
         }
     }
@@ -41,17 +123,26 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         return deviceUID(for: objectID)
     }
 
+    func isCapturing() -> Bool {
+        audioEngine.isRunning && tapInstalled
+    }
+
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
         stop()
-        configureInputDevice(preferredDeviceID)
+        try configureInputDevice(preferredDeviceID)
 
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
-        let sourceSampleRate = format.sampleRate
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw MicrophoneCaptureError.invalidInputFormat
+        }
+
+        converter = nil
+        converterInputFormatKey = nil
 
         inputNode.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
             guard let self else { return }
-            guard let chunk = self.convertToPCM16Mono(buffer: buffer, sourceSampleRate: sourceSampleRate) else {
+            guard let chunk = self.convertToPCM16Mono(buffer: buffer) else {
                 return
             }
 
@@ -63,7 +154,12 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         tapInstalled = true
 
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            stop()
+            throw error
+        }
 
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
@@ -87,17 +183,30 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         if audioEngine.isRunning {
             audioEngine.stop()
-            audioEngine.reset()
         }
+
+        audioEngine.reset()
+        converter = nil
+        converterInputFormatKey = nil
     }
 
-    private func configureInputDevice(_ preferredDeviceID: String?) {
+    private func configureInputDevice(_ preferredDeviceID: String?) throws {
         if let preferredDeviceID,
            !preferredDeviceID.isEmpty,
            preferredDeviceID != defaultInputDeviceID(),
            let preferredObjectID = audioDeviceID(forUID: preferredDeviceID)
         {
-            _ = setInputDevice(preferredObjectID)
+            guard setInputDevice(preferredObjectID) else {
+                throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
+            }
+            return
+        }
+
+        if let preferredDeviceID,
+           !preferredDeviceID.isEmpty,
+           preferredDeviceID != defaultInputDeviceID()
+        {
+            throw MicrophoneCaptureError.preferredDeviceUnavailable(preferredDeviceID)
         }
     }
 
@@ -116,8 +225,23 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             guard deviceHasInput(deviceID) else { return nil }
             guard let uid = deviceUID(for: deviceID) else { return nil }
             let name = deviceName(for: deviceID) ?? "Input \(uid)"
+            guard !isFilteredPlaceholderInput(name: name, uid: uid) else { return nil }
             return MicrophoneInputDevice(id: uid, name: name)
         }
+    }
+
+    private func isFilteredPlaceholderInput(name: String, uid: String) -> Bool {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedName == "cac default device" {
+            return true
+        }
+
+        let normalizedUID = uid.lowercased()
+        if normalizedName.hasPrefix("cac "), normalizedUID.contains("coreaudio"), normalizedUID.contains("default") {
+            return true
+        }
+
+        return false
     }
 
     private func allAudioDeviceIDs() -> [AudioObjectID] {
@@ -143,14 +267,16 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
         var deviceIDs = [AudioObjectID](repeating: 0, count: count)
 
-        let dataStatus = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &deviceIDs
-        )
+        let dataStatus = deviceIDs.withUnsafeMutableBufferPointer { buffer in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &dataSize,
+                buffer.baseAddress!
+            )
+        }
 
         guard dataStatus == noErr else {
             return []
@@ -263,100 +389,163 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         return channelCount > 0
     }
 
-    private func convertToPCM16Mono(buffer: AVAudioPCMBuffer, sourceSampleRate: Double) -> Data? {
-        let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return nil }
+    private static let inputDevicePropertyListener: AudioObjectPropertyListenerProc = {
+        _, _, _, clientData in
+        guard let clientData else { return noErr }
+        let service = Unmanaged<MicrophoneCaptureService>.fromOpaque(clientData).takeUnretainedValue()
+        service.notifyInputDevicesChanged()
+        return noErr
+    }
 
-        let monoSamples = extractMonoSamples(from: buffer, frameCount: frameCount)
-        guard !monoSamples.isEmpty else { return nil }
+    private func startMonitoringInputDevices() {
+        guard !didInstallInputDeviceListeners else { return }
 
-        let outputSamples = resample(
-            samples: monoSamples,
-            sourceRate: sourceSampleRate,
-            targetRate: targetSampleRate
+        var devicesAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
         )
-        guard !outputSamples.isEmpty else { return nil }
+        var defaultInputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
 
-        var pcm16 = [Int16]()
-        pcm16.reserveCapacity(outputSamples.count)
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        let clientData = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
 
-        for sample in outputSamples {
-            let clamped = max(-1.0, min(1.0, sample))
-            pcm16.append(Int16(clamped * Float(Int16.max)))
+        let devicesStatus = AudioObjectAddPropertyListener(
+            systemObject,
+            &devicesAddress,
+            Self.inputDevicePropertyListener,
+            clientData
+        )
+        let defaultStatus = AudioObjectAddPropertyListener(
+            systemObject,
+            &defaultInputAddress,
+            Self.inputDevicePropertyListener,
+            clientData
+        )
+
+        if devicesStatus == noErr, defaultStatus == noErr {
+            didInstallInputDeviceListeners = true
+            return
         }
 
-        return pcm16.withUnsafeBufferPointer { Data(buffer: $0) }
+        if devicesStatus == noErr {
+            _ = AudioObjectRemovePropertyListener(
+                systemObject,
+                &devicesAddress,
+                Self.inputDevicePropertyListener,
+                clientData
+            )
+        }
+        if defaultStatus == noErr {
+            _ = AudioObjectRemovePropertyListener(
+                systemObject,
+                &defaultInputAddress,
+                Self.inputDevicePropertyListener,
+                clientData
+            )
+        }
     }
 
-    private func extractMonoSamples(from buffer: AVAudioPCMBuffer, frameCount: Int) -> [Float] {
-        let channelCount = Int(buffer.format.channelCount)
-        guard channelCount > 0 else { return [] }
+    private func stopMonitoringInputDevices() {
+        guard didInstallInputDeviceListeners else { return }
 
-        var output = [Float](repeating: 0, count: frameCount)
+        var devicesAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var defaultInputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
 
-        if let floatChannels = buffer.floatChannelData {
-            for frame in 0 ..< frameCount {
-                var summed: Float = 0
-                for channel in 0 ..< channelCount {
-                    summed += floatChannels[channel][frame]
-                }
-                output[frame] = summed / Float(channelCount)
-            }
-            return output
-        }
+        let systemObject = AudioObjectID(kAudioObjectSystemObject)
+        let clientData = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
 
-        if let int16Channels = buffer.int16ChannelData {
-            let scale = 1.0 / Float(Int16.max)
-            for frame in 0 ..< frameCount {
-                var summed: Float = 0
-                for channel in 0 ..< channelCount {
-                    summed += Float(int16Channels[channel][frame]) * scale
-                }
-                output[frame] = summed / Float(channelCount)
-            }
-            return output
-        }
+        _ = AudioObjectRemovePropertyListener(
+            systemObject,
+            &devicesAddress,
+            Self.inputDevicePropertyListener,
+            clientData
+        )
+        _ = AudioObjectRemovePropertyListener(
+            systemObject,
+            &defaultInputAddress,
+            Self.inputDevicePropertyListener,
+            clientData
+        )
 
-        if let int32Channels = buffer.int32ChannelData {
-            let scale = 1.0 / Float(Int32.max)
-            for frame in 0 ..< frameCount {
-                var summed: Float = 0
-                for channel in 0 ..< channelCount {
-                    summed += Float(int32Channels[channel][frame]) * scale
-                }
-                output[frame] = summed / Float(channelCount)
-            }
-            return output
-        }
-
-        return []
+        didInstallInputDeviceListeners = false
     }
 
-    private func resample(samples: [Float], sourceRate: Double, targetRate: Double) -> [Float] {
-        guard !samples.isEmpty else { return [] }
-        guard sourceRate > 0, targetRate > 0 else { return samples }
+    private func notifyInputDevicesChanged() {
+        DispatchQueue.main.async { [weak self] in
+            self?.onInputDevicesChanged?()
+        }
+    }
 
-        if abs(sourceRate - targetRate) < 0.001 {
-            return samples
+    private func converter(for inputFormat: AVAudioFormat) -> AVAudioConverter? {
+        let formatKey = ConverterInputFormatKey(format: inputFormat)
+        if converterInputFormatKey == formatKey, let converter {
+            return converter
         }
 
-        let ratio = targetRate / sourceRate
-        let outputCount = max(1, Int(Double(samples.count) * ratio))
-
-        var output = [Float](repeating: 0, count: outputCount)
-        let maxInputIndex = samples.count - 1
-
-        for index in 0 ..< outputCount {
-            let sourcePosition = Double(index) / ratio
-            let lowerIndex = min(maxInputIndex, Int(sourcePosition))
-            let upperIndex = min(maxInputIndex, lowerIndex + 1)
-            let fraction = Float(sourcePosition - Double(lowerIndex))
-
-            let lowerSample = samples[lowerIndex]
-            let upperSample = samples[upperIndex]
-            output[index] = lowerSample + (upperSample - lowerSample) * fraction
+        guard let converter = AVAudioConverter(from: inputFormat, to: targetOutputFormat) else {
+            return nil
         }
 
-        return output
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        self.converter = converter
+        converterInputFormatKey = formatKey
+        return converter
+    }
+
+    private func convertToPCM16Mono(buffer: AVAudioPCMBuffer) -> Data? {
+        guard buffer.frameLength > 0 else { return nil }
+        guard let converter = converter(for: buffer.format) else { return nil }
+
+        let inputFrameCount = Double(buffer.frameLength)
+        let inputSampleRate = max(1, buffer.format.sampleRate)
+        let conversionRatio = targetOutputFormat.sampleRate / inputSampleRate
+        let estimatedOutputFrames = max(1, Int(ceil(inputFrameCount * conversionRatio)) + 32)
+
+        guard let convertedBuffer = AVAudioPCMBuffer(
+            pcmFormat: targetOutputFormat,
+            frameCapacity: AVAudioFrameCount(estimatedOutputFrames)
+        ) else {
+            return nil
+        }
+
+        let sourceBuffer = buffer
+        let inputState = ConverterInputState()
+        var conversionError: NSError?
+        let status = converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
+            if !inputState.didConsumeBuffer {
+                inputState.didConsumeBuffer = true
+                outStatus.pointee = .haveData
+                return sourceBuffer
+            }
+
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+
+        guard conversionError == nil else { return nil }
+        guard status == .haveData || status == .inputRanDry else { return nil }
+
+        let frameCount = Int(convertedBuffer.frameLength)
+        guard frameCount > 0,
+              let int16ChannelData = convertedBuffer.int16ChannelData
+        else {
+            return nil
+        }
+
+        let byteCount = frameCount * MemoryLayout<Int16>.size * Int(targetOutputFormat.channelCount)
+        return Data(bytes: int16ChannelData[0], count: byteCount)
     }
 }

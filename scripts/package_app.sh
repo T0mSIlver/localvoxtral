@@ -145,10 +145,6 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <string>SuperVoxtral needs microphone access for live dictation.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>SuperVoxtral needs local network access to reach realtime transcription endpoints.</string>
-  <key>NSBonjourServices</key>
-  <array>
-    <string>_services._dns-sd._udp</string>
-  </array>
 </dict>
 </plist>
 PLIST

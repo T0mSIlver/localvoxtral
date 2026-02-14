@@ -48,12 +48,12 @@ Defaults can also be pre-set via environment variables:
 
 ## Realtime protocol notes
 
-This client sends the same key events used by the vLLM OpenAI realtime example:
+This client sends realtime events in a vLLM-safe sequence:
 
 - `session.update` with model
-- `input_audio_buffer.commit` once right after session setup (ready signal)
 - `input_audio_buffer.append` with base64 PCM16 mono audio at 16kHz (batched every 100ms)
-- `input_audio_buffer.commit` periodically, and with `final: true` on stop
+- `input_audio_buffer.commit` only after audio has been appended and no generation is currently in progress
+- `input_audio_buffer.commit` with `final: true` on stop (only when there is active/pending audio)
 
 It handles incoming events:
 

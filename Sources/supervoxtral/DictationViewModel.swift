@@ -2,7 +2,6 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
-import Network
 
 @MainActor
 final class DictationViewModel: ObservableObject {
@@ -26,11 +25,14 @@ final class DictationViewModel: ObservableObject {
     private var audioSendTimer: Timer?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
-    private var hasRunPermissionPreflight = false
     private var hasPromptedForAccessibilityPermission = false
     private var hasShownAccessibilityError = false
-    private var localNetworkBrowser: NWBrowser?
-    private var localNetworkProbeCancelWorkItem: DispatchWorkItem?
+    private var pendingAudioChangeWorkItem: DispatchWorkItem?
+    private var pendingRealtimeInsertionText = ""
+    private var insertionRetryTimer: Timer?
+    private var axInsertionSuccessCount = 0
+    private var keyboardFallbackSuccessCount = 0
+    private var modifierDeferredInsertionCount = 0
 
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private static let accessibilityErrorMessage =
@@ -47,16 +49,19 @@ final class DictationViewModel: ObservableObject {
 
         microphone.onConfigurationChange = { [weak self] in
             Task { @MainActor [weak self] in
-                guard let self, self.isDictating else { return }
-                self.stopDictation()
-                self.lastError = "Audio device changed. Dictation stopped."
+                self?.scheduleAudioChangeEvaluation()
+            }
+        }
+
+        microphone.onInputDevicesChanged = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleAudioChangeEvaluation()
             }
         }
 
         registerGlobalHotkey()
         refreshAccessibilityTrustState()
         refreshMicrophoneInputs()
-        runStartupPermissionPreflightIfNeeded()
     }
 
     private func registerGlobalHotkey() {
@@ -125,80 +130,6 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
-    private func runStartupPermissionPreflightIfNeeded() {
-        guard !hasRunPermissionPreflight else { return }
-        hasRunPermissionPreflight = true
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
-            self.promptAccessibilityPermissionAtLaunchIfNeeded()
-
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            self.requestMicrophonePermissionAtLaunch()
-
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            self.requestLocalNetworkPermissionAtLaunch()
-        }
-    }
-
-    private func promptAccessibilityPermissionAtLaunchIfNeeded() {
-        refreshAccessibilityTrustState()
-        guard !isAccessibilityTrusted else { return }
-
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        hasPromptedForAccessibilityPermission = true
-        refreshAccessibilityTrustState()
-    }
-
-    private func requestMicrophonePermissionAtLaunch() {
-        microphone.requestAccess { _ in }
-    }
-
-    private func requestLocalNetworkPermissionAtLaunch() {
-        stopLocalNetworkPermissionProbe()
-
-        let parameters = NWParameters.tcp
-        parameters.includePeerToPeer = true
-
-        let browser = NWBrowser(
-            for: .bonjour(type: "_services._dns-sd._udp", domain: nil),
-            using: parameters
-        )
-
-        browser.stateUpdateHandler = { [weak self] state in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-
-                switch state {
-                case .ready, .failed:
-                    self.stopLocalNetworkPermissionProbe()
-                default:
-                    break
-                }
-            }
-        }
-
-        localNetworkBrowser = browser
-        browser.start(queue: .main)
-
-        let cancelWork = DispatchWorkItem { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.stopLocalNetworkPermissionProbe()
-            }
-        }
-        localNetworkProbeCancelWorkItem = cancelWork
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: cancelWork)
-    }
-
-    private func stopLocalNetworkPermissionProbe() {
-        localNetworkProbeCancelWorkItem?.cancel()
-        localNetworkProbeCancelWorkItem = nil
-        localNetworkBrowser?.cancel()
-        localNetworkBrowser = nil
-    }
-
     func toggleDictation() {
         if isDictating {
             stopDictation()
@@ -250,19 +181,27 @@ final class DictationViewModel: ObservableObject {
         guard !isDictating else { return }
         refreshMicrophoneInputs()
         lastError = nil
-        statusText = "Checking microphone permission..."
+        let deniedMessage = "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
-        microphone.requestAccess { [weak self] granted in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard granted else {
-                    self.statusText = "Microphone access denied."
-                    self.lastError = "Grant microphone access in System Settings > Privacy & Security > Microphone."
-                    return
+        switch microphone.authorizationStatus() {
+        case .authorized:
+            beginDictationSession()
+        case .notDetermined:
+            statusText = "Requesting microphone permission..."
+            microphone.requestAccess { [weak self] granted in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard granted else {
+                        self.statusText = "Microphone access denied."
+                        self.lastError = deniedMessage
+                        return
+                    }
+                    self.beginDictationSession()
                 }
-
-                self.beginDictationSession()
             }
+        case .denied, .restricted:
+            statusText = "Microphone access denied."
+            lastError = deniedMessage
         }
     }
 
@@ -273,6 +212,10 @@ final class DictationViewModel: ObservableObject {
         commitTimer = nil
         audioSendTimer?.invalidate()
         audioSendTimer = nil
+        insertionRetryTimer?.invalidate()
+        insertionRetryTimer = nil
+        pendingAudioChangeWorkItem?.cancel()
+        pendingAudioChangeWorkItem = nil
 
         microphone.stop()
         flushBufferedAudio()
@@ -282,6 +225,13 @@ final class DictationViewModel: ObservableObject {
         isDictating = false
         livePartialText = ""
         statusText = "Ready"
+        logInsertionDiagnostics()
+
+        if !pendingRealtimeInsertionText.isEmpty {
+            lastError = "Some realtime text could not be inserted into the focused app."
+            pendingRealtimeInsertionText = ""
+        }
+
         if lastError?.localizedCaseInsensitiveContains("websocket receive failed") == true {
             lastError = nil
         }
@@ -338,7 +288,10 @@ final class DictationViewModel: ObservableObject {
 
         refreshAccessibilityTrustState()
 
-        if insertTextIntoFocusedField(segment) {
+        let directInsertResult = insertTextIntoFocusedField(segment)
+        if directInsertResult == .insertedByAccessibility
+            || directInsertResult == .insertedByKeyboardFallback
+        {
             statusText = "Pasted latest segment."
             return
         }
@@ -393,8 +346,11 @@ final class DictationViewModel: ObservableObject {
             isDictating = true
             livePartialText = ""
             statusText = "Listening..."
+            pendingRealtimeInsertionText = ""
+            resetInsertionDiagnostics()
             restartAudioSendTimer()
             restartCommitTimer()
+            restartInsertionRetryTimer()
         } catch {
             statusText = "Failed to start dictation."
             lastError = error.localizedDescription
@@ -468,7 +424,7 @@ final class DictationViewModel: ObservableObject {
         case .partialTranscript(let delta):
             guard isDictating, !delta.isEmpty else { return }
             livePartialText += delta
-            _ = insertTextIntoFocusedField(delta)
+            enqueueRealtimeInsertion(delta)
             statusText = "Transcribing..."
 
         case .finalTranscript(let text):
@@ -512,19 +468,68 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
-    @discardableResult
-    private func insertTextIntoFocusedField(_ text: String) -> Bool {
-        guard !text.isEmpty else { return true }
+    private enum TextInsertResult {
+        case insertedByAccessibility
+        case insertedByKeyboardFallback
+        case deferredByActiveModifiers
+        case failed
+    }
+
+    private enum KeyboardFallbackBehavior {
+        case always
+        case deferIfModifierActive
+    }
+
+    private func enqueueRealtimeInsertion(_ text: String) {
+        guard !text.isEmpty else { return }
+        pendingRealtimeInsertionText.append(text)
+        flushPendingRealtimeInsertion()
+    }
+
+    private func flushPendingRealtimeInsertion() {
+        guard !pendingRealtimeInsertionText.isEmpty else { return }
+
+        let result = insertTextIntoFocusedField(
+            pendingRealtimeInsertionText,
+            keyboardFallbackBehavior: .deferIfModifierActive
+        )
+
+        switch result {
+        case .insertedByAccessibility, .insertedByKeyboardFallback:
+            pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+        case .deferredByActiveModifiers:
+            // Retry timer will flush once modifiers are released.
+            break
+        case .failed:
+            // Keep pending text and retry on subsequent timer ticks.
+            break
+        }
+    }
+
+    private func insertTextIntoFocusedField(
+        _ text: String,
+        keyboardFallbackBehavior: KeyboardFallbackBehavior = .always
+    ) -> TextInsertResult {
+        guard !text.isEmpty else { return .insertedByAccessibility }
         refreshAccessibilityTrustState()
 
         if insertTextUsingAccessibility(text) {
             clearAccessibilityErrorIfNeeded()
-            return true
+            axInsertionSuccessCount += 1
+            return .insertedByAccessibility
+        }
+
+        if keyboardFallbackBehavior == .deferIfModifierActive,
+           shouldSuppressKeyboardFallbackForActiveModifiers()
+        {
+            modifierDeferredInsertionCount += 1
+            return .deferredByActiveModifiers
         }
 
         if postUnicodeTextEvents(text) {
             clearAccessibilityErrorIfNeeded()
-            return true
+            keyboardFallbackSuccessCount += 1
+            return .insertedByKeyboardFallback
         }
 
         if !isAccessibilityTrusted {
@@ -532,7 +537,7 @@ final class DictationViewModel: ObservableObject {
             setAccessibilityErrorIfNeeded()
         }
 
-        return false
+        return .failed
     }
 
     private func insertTextUsingAccessibility(_ text: String) -> Bool {
@@ -664,6 +669,8 @@ final class DictationViewModel: ObservableObject {
                 continue
             }
 
+            keyDown.flags = []
+            keyUp.flags = []
             keyDown.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
             keyUp.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: &chunk)
             keyDown.post(tap: .cgAnnotatedSessionEventTap)
@@ -672,6 +679,55 @@ final class DictationViewModel: ObservableObject {
         }
 
         return didPostAnyEvent
+    }
+
+    private func shouldSuppressKeyboardFallbackForActiveModifiers() -> Bool {
+        let modifierKeyCodes: [CGKeyCode] = [
+            54, // right command
+            55, // left command
+            58, // left option
+            61, // right option
+            59, // left control
+            62, // right control
+            63, // function
+        ]
+
+        return modifierKeyCodes.contains { CGEventSource.keyState(.combinedSessionState, key: $0) }
+    }
+
+    private func restartInsertionRetryTimer() {
+        insertionRetryTimer?.invalidate()
+
+        insertionRetryTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard self.isDictating else { return }
+                guard !self.pendingRealtimeInsertionText.isEmpty else { return }
+                self.flushPendingRealtimeInsertion()
+            }
+        }
+
+        if let insertionRetryTimer {
+            RunLoop.main.add(insertionRetryTimer, forMode: .common)
+        }
+    }
+
+    private func resetInsertionDiagnostics() {
+        axInsertionSuccessCount = 0
+        keyboardFallbackSuccessCount = 0
+        modifierDeferredInsertionCount = 0
+    }
+
+    private func logInsertionDiagnostics() {
+        let totalInsertions = axInsertionSuccessCount + keyboardFallbackSuccessCount + modifierDeferredInsertionCount
+        guard totalInsertions > 0 else { return }
+
+        print(
+            "[SuperVoxtral] insertion-paths "
+                + "ax=\(axInsertionSuccessCount) "
+                + "keyboard_fallback=\(keyboardFallbackSuccessCount) "
+                + "deferred_modifiers=\(modifierDeferredInsertionCount)"
+        )
     }
 
     private func pasteUsingCommandV(_ text: String) -> Bool {
@@ -704,7 +760,52 @@ final class DictationViewModel: ObservableObject {
     }
 
     func refreshAccessibilityTrustState() {
-        isAccessibilityTrusted = AXIsProcessTrusted()
+        let trusted = AXIsProcessTrusted()
+        isAccessibilityTrusted = trusted
+
+        guard trusted else { return }
+        hasShownAccessibilityError = false
+        if lastError == Self.accessibilityErrorMessage {
+            lastError = nil
+        }
+    }
+
+    private func scheduleAudioChangeEvaluation() {
+        pendingAudioChangeWorkItem?.cancel()
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.evaluateAudioChange()
+        }
+        pendingAudioChangeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+    }
+
+    private func evaluateAudioChange() {
+        pendingAudioChangeWorkItem = nil
+        let previousSelection = selectedInputDeviceID
+        refreshMicrophoneInputs()
+
+        guard isDictating else { return }
+        guard !selectedInputDeviceID.isEmpty else {
+            stopDictation()
+            lastError = "No microphone is currently available. Dictation stopped."
+            return
+        }
+
+        let selectedDeviceStillAvailable = !previousSelection.isEmpty
+            && availableInputDevices.contains(where: { $0.id == previousSelection })
+
+        if !selectedDeviceStillAvailable {
+            stopDictation()
+            lastError = "Selected microphone is unavailable. Dictation stopped."
+            return
+        }
+
+        guard microphone.isCapturing() else {
+            stopDictation()
+            lastError = "Microphone capture was interrupted. Dictation stopped."
+            return
+        }
     }
 
     private func setAccessibilityErrorIfNeeded() {
