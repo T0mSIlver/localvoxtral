@@ -1,28 +1,23 @@
 import Foundation
+import Synchronization
 
-final class AudioChunkBuffer: @unchecked Sendable {
-    private var buffer = Data()
-    private let lock = NSLock()
+final class AudioChunkBuffer: Sendable {
+    private let buffer = Mutex(Data())
 
     func append(_ chunk: Data) {
         guard !chunk.isEmpty else { return }
-        lock.lock()
-        buffer.append(chunk)
-        lock.unlock()
+        buffer.withLock { $0.append(chunk) }
     }
 
     func takeAll() -> Data {
-        lock.lock()
-        defer { lock.unlock() }
-
-        let output = buffer
-        buffer.removeAll(keepingCapacity: true)
-        return output
+        buffer.withLock {
+            let output = $0
+            $0.removeAll(keepingCapacity: true)
+            return output
+        }
     }
 
     func clear() {
-        lock.lock()
-        buffer.removeAll(keepingCapacity: true)
-        lock.unlock()
+        buffer.withLock { $0.removeAll(keepingCapacity: true) }
     }
 }

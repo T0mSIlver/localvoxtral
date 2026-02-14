@@ -4,7 +4,7 @@ import SwiftUI
 struct StatusPopoverView: View {
     @Environment(\.openSettings) private var openSettings
 
-    @ObservedObject var viewModel: DictationViewModel
+    var viewModel: DictationViewModel
 
     private var hasLatestSegment: Bool {
         !viewModel.lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

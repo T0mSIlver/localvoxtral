@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var settings: SettingsStore
+    @Bindable var settings: SettingsStore
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

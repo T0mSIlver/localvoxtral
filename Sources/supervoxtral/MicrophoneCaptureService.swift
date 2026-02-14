@@ -2,6 +2,7 @@
 import AudioToolbox
 import CoreAudio
 import Foundation
+import Synchronization
 
 struct MicrophoneInputDevice: Identifiable, Hashable {
     let id: String
@@ -38,32 +39,12 @@ enum MicrophoneCaptureError: LocalizedError {
 final class MicrophoneCaptureService: @unchecked Sendable {
     typealias ChunkHandler = @Sendable (Data) -> Void
 
-    private final class ConverterInputState: @unchecked Sendable {
-        var didConsumeBuffer = false
-    }
-
-    private struct ConverterInputFormatKey: Equatable {
-        let sampleRate: Double
-        let channelCount: AVAudioChannelCount
-        let commonFormat: AVAudioCommonFormat
-        let isInterleaved: Bool
-
-        init(format: AVAudioFormat) {
-            sampleRate = format.sampleRate
-            channelCount = format.channelCount
-            commonFormat = format.commonFormat
-            isInterleaved = format.isInterleaved
-        }
-    }
-
     private var audioEngine: AVAudioEngine?
     private let processingQueue = DispatchQueue(label: "supervoxtral.microphone.processing")
     private static let targetSampleRate: Double = 16_000
     private let targetOutputFormat: AVAudioFormat
     private var tapInstalled = false
     private var configChangeObserver: NSObjectProtocol?
-    private var converter: AVAudioConverter?
-    private var converterInputFormatKey: ConverterInputFormatKey?
     private var didInstallInputDeviceListeners = false
     var onConfigurationChange: (@Sendable () -> Void)?
     var onInputDevicesChanged: (@Sendable () -> Void)?
@@ -135,21 +116,25 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         try configureInputDevice(preferredDeviceID, on: audioEngine)
 
         let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
+        let inputFormat = inputNode.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw MicrophoneCaptureError.invalidInputFormat
         }
 
-        converter = nil
-        converterInputFormatKey = nil
+        let outputFormat = targetOutputFormat
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            throw MicrophoneCaptureError.converterCreationFailed
+        }
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
 
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
-            guard let self else { return }
-            guard let chunk = self.convertToPCM16Mono(buffer: buffer) else {
+        let processingQueue = processingQueue
+
+        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { buffer, _ in
+            guard let chunk = Self.convertToPCM16Mono(buffer: buffer, converter: converter, outputFormat: outputFormat) else {
                 return
             }
 
-            self.processingQueue.async {
+            processingQueue.async {
                 chunkHandler(chunk)
             }
         }
@@ -193,8 +178,6 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         audioEngine = nil
         tapInstalled = false
-        converter = nil
-        converterInputFormatKey = nil
     }
 
     private func configureInputDevice(_ preferredDeviceID: String?, on audioEngine: AVAudioEngine) throws {
@@ -539,44 +522,31 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
     }
 
-    private func converter(for inputFormat: AVAudioFormat) -> AVAudioConverter? {
-        let formatKey = ConverterInputFormatKey(format: inputFormat)
-        if converterInputFormatKey == formatKey, let converter {
-            return converter
-        }
-
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetOutputFormat) else {
-            return nil
-        }
-
-        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
-        self.converter = converter
-        converterInputFormatKey = formatKey
-        return converter
-    }
-
-    private func convertToPCM16Mono(buffer: AVAudioPCMBuffer) -> Data? {
+    private static func convertToPCM16Mono(buffer: AVAudioPCMBuffer, converter: AVAudioConverter, outputFormat: AVAudioFormat) -> Data? {
         guard buffer.frameLength > 0 else { return nil }
-        guard let converter = converter(for: buffer.format) else { return nil }
 
         let inputFrameCount = Double(buffer.frameLength)
         let inputSampleRate = max(1, buffer.format.sampleRate)
-        let conversionRatio = targetOutputFormat.sampleRate / inputSampleRate
+        let conversionRatio = outputFormat.sampleRate / inputSampleRate
         let estimatedOutputFrames = max(1, Int(ceil(inputFrameCount * conversionRatio)) + 32)
 
         guard let convertedBuffer = AVAudioPCMBuffer(
-            pcmFormat: targetOutputFormat,
+            pcmFormat: outputFormat,
             frameCapacity: AVAudioFrameCount(estimatedOutputFrames)
         ) else {
             return nil
         }
 
         let sourceBuffer = buffer
-        let inputState = ConverterInputState()
+        let didConsume = Mutex(false)
         var conversionError: NSError?
         let status = converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
-            if !inputState.didConsumeBuffer {
-                inputState.didConsumeBuffer = true
+            let alreadyConsumed = didConsume.withLock { consumed in
+                let was = consumed
+                consumed = true
+                return was
+            }
+            if !alreadyConsumed {
                 outStatus.pointee = .haveData
                 return sourceBuffer
             }
@@ -595,7 +565,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             return nil
         }
 
-        let byteCount = frameCount * MemoryLayout<Int16>.size * Int(targetOutputFormat.channelCount)
+        let byteCount = frameCount * MemoryLayout<Int16>.size * Int(outputFormat.channelCount)
         return Data(bytes: int16ChannelData[0], count: byteCount)
     }
 }

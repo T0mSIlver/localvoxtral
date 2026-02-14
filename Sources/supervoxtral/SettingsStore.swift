@@ -1,7 +1,9 @@
 import Foundation
+import Observation
 
 @MainActor
-final class SettingsStore: ObservableObject {
+@Observable
+final class SettingsStore {
     private enum Keys {
         static let endpointURL = "settings.endpoint_url"
         static let apiKey = "settings.api_key"
@@ -13,27 +15,27 @@ final class SettingsStore: ObservableObject {
 
     private let defaults = UserDefaults.standard
 
-    @Published var endpointURL: String {
+    var endpointURL: String {
         didSet { defaults.set(endpointURL, forKey: Keys.endpointURL) }
     }
 
-    @Published var apiKey: String {
+    var apiKey: String {
         didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
     }
 
-    @Published var modelName: String {
+    var modelName: String {
         didSet { defaults.set(modelName, forKey: Keys.modelName) }
     }
 
-    @Published var commitIntervalSeconds: Double {
+    var commitIntervalSeconds: Double {
         didSet { defaults.set(commitIntervalSeconds, forKey: Keys.commitIntervalSeconds) }
     }
 
-    @Published var autoCopyEnabled: Bool {
+    var autoCopyEnabled: Bool {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
     }
 
-    @Published var selectedInputDeviceUID: String {
+    var selectedInputDeviceUID: String {
         didSet { defaults.set(selectedInputDeviceUID, forKey: Keys.selectedInputDeviceUID) }
     }
 

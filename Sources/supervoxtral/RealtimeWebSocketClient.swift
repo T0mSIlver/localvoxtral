@@ -1,13 +1,14 @@
 import Foundation
+import Synchronization
 
-final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, @unchecked Sendable {
-    struct Configuration {
+final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable {
+    struct Configuration: Sendable {
         let endpoint: URL
         let apiKey: String
         let model: String
     }
 
-    enum Event {
+    enum Event: Sendable {
         case connected
         case disconnected
         case status(String)
@@ -22,23 +23,24 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         case connected
     }
 
-    private let stateQueue = DispatchQueue(label: "supervoxtral.realtime.websocket")
-    private var urlSession: URLSession?
-    private var webSocketTask: URLSessionWebSocketTask?
-    private var socketState: SocketState = .disconnected
-    private var onEvent: (@Sendable (Event) -> Void)?
-    private var pingTimer: DispatchSourceTimer?
-    private var hasUncommittedAudio = false
-    private var isGenerationInProgress = false
-    private var isUserInitiatedDisconnect = false
-    private var pendingEvents: [[String: Any]] = []
-    private var pendingModelName = ""
+    private struct State {
+        var urlSession: URLSession?
+        var webSocketTask: URLSessionWebSocketTask?
+        var socketState: SocketState = .disconnected
+        var onEvent: (@Sendable (Event) -> Void)?
+        var pingTimer: DispatchSourceTimer?
+        var hasUncommittedAudio = false
+        var isGenerationInProgress = false
+        var isUserInitiatedDisconnect = false
+        var pendingMessages: [String] = []
+        var pendingModelName = ""
+    }
+
+    private let state = Mutex(State())
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
-        stateQueue.sync {
-            onEvent = handler
-        }
+        state.withLock { $0.onEvent = handler }
     }
 
     func connect(configuration: Configuration) throws {
@@ -64,8 +66,8 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         let modelName = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
         debugLog("connect endpoint=\(configuration.endpoint.absoluteString) model=\(modelName)")
 
-        stateQueue.sync {
-            closeSocketLocked(cancelTask: true)
+        state.withLock { s in
+            closeSocketLocked(&s, cancelTask: true)
 
             let sessionConfiguration = URLSessionConfiguration.default
             sessionConfiguration.waitsForConnectivity = true
@@ -75,25 +77,25 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
             let session = URLSession(configuration: sessionConfiguration, delegate: self, delegateQueue: nil)
             let task = session.webSocketTask(with: request)
 
-            urlSession = session
-            webSocketTask = task
-            socketState = .connecting
-            isUserInitiatedDisconnect = false
-            pendingEvents.removeAll(keepingCapacity: true)
-            pendingModelName = modelName
-            hasUncommittedAudio = false
-            isGenerationInProgress = false
+            s.urlSession = session
+            s.webSocketTask = task
+            s.socketState = .connecting
+            s.isUserInitiatedDisconnect = false
+            s.pendingMessages.removeAll(keepingCapacity: true)
+            s.pendingModelName = modelName
+            s.hasUncommittedAudio = false
+            s.isGenerationInProgress = false
 
             task.resume()
         }
     }
 
     func disconnect() {
-        let wasConnected: Bool = stateQueue.sync {
-            let was = socketState != .disconnected
+        let wasConnected: Bool = state.withLock { s in
+            let was = s.socketState != .disconnected
             guard was else { return false }
-            isUserInitiatedDisconnect = true
-            closeSocketLocked(cancelTask: true)
+            s.isUserInitiatedDisconnect = true
+            closeSocketLocked(&s, cancelTask: true)
             return was
         }
 
@@ -105,7 +107,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     func sendAudioChunk(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
-        stateQueue.sync { hasUncommittedAudio = true }
+        state.withLock { $0.hasUncommittedAudio = true }
         debugLog("send append bytes=\(pcm16Data.count)")
         let payload: [String: Any] = [
             "type": "input_audio_buffer.append",
@@ -115,20 +117,20 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     }
 
     func sendCommit(final: Bool) {
-        let shouldCommit: Bool = stateQueue.sync {
-            guard socketState != .disconnected else { return false }
+        let shouldCommit: Bool = state.withLock { s in
+            guard s.socketState != .disconnected else { return false }
 
             if final {
-                let shouldSignalFinal = hasUncommittedAudio || isGenerationInProgress
-                hasUncommittedAudio = false
-                isGenerationInProgress = false
+                let shouldSignalFinal = s.hasUncommittedAudio || s.isGenerationInProgress
+                s.hasUncommittedAudio = false
+                s.isGenerationInProgress = false
                 return shouldSignalFinal
             }
 
-            guard hasUncommittedAudio else { return false }
-            guard !isGenerationInProgress else { return false }
-            hasUncommittedAudio = false
-            isGenerationInProgress = true
+            guard s.hasUncommittedAudio else { return false }
+            guard !s.isGenerationInProgress else { return false }
+            s.hasUncommittedAudio = false
+            s.isGenerationInProgress = true
             return true
         }
         guard shouldCommit else { return }
@@ -142,10 +144,10 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     }
 
     private func sendStartupCommitIfNeeded() {
-        let shouldCommit: Bool = stateQueue.sync {
-            guard socketState == .connected else { return false }
-            guard !isGenerationInProgress else { return false }
-            isGenerationInProgress = true
+        let shouldCommit: Bool = state.withLock { s in
+            guard s.socketState == .connected else { return false }
+            guard !s.isGenerationInProgress else { return false }
+            s.isGenerationInProgress = true
             return true
         }
         guard shouldCommit else { return }
@@ -154,7 +156,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         send(event: ["type": "input_audio_buffer.commit"])
     }
 
-    private enum SendAction {
+    private enum SendAction: Sendable {
         case send(task: URLSessionWebSocketTask, text: String)
         case queued
         case dropped
@@ -173,35 +175,39 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
                 return
             }
 
-            let action: SendAction = stateQueue.sync {
-                switch socketState {
-                case .connected:
-                    guard let webSocketTask else { return .dropped }
-                    return .send(task: webSocketTask, text: text)
-                case .connecting:
-                    if let type = event["type"] as? String {
-                        self.debugLog("queue event type=\(type)")
-                    }
-                    pendingEvents.append(event)
-                    return .queued
-                case .disconnected:
-                    return .dropped
-                }
+            if let type = event["type"] as? String {
+                debugLog("queue event type=\(type)")
             }
-
-            guard case .send(let task, let payloadText) = action else {
-                return
-            }
-
-            task.send(.string(payloadText)) { [weak self] error in
-                guard let self, let error else { return }
-                self.handleTerminalSocketError(
-                    for: task,
-                    errorMessage: "WebSocket send failed: \(error.localizedDescription)"
-                )
-            }
+            sendText(text)
         } catch {
             emit(.error("Failed to serialize WebSocket payload: \(error.localizedDescription)"))
+        }
+    }
+
+    private func sendText(_ text: String) {
+        let action: SendAction = state.withLock { s in
+            switch s.socketState {
+            case .connected:
+                guard let webSocketTask = s.webSocketTask else { return .dropped }
+                return .send(task: webSocketTask, text: text)
+            case .connecting:
+                s.pendingMessages.append(text)
+                return .queued
+            case .disconnected:
+                return .dropped
+            }
+        }
+
+        guard case .send(let task, let payloadText) = action else {
+            return
+        }
+
+        task.send(.string(payloadText)) { [weak self] error in
+            guard let self, let error else { return }
+            self.handleTerminalSocketError(
+                for: task,
+                errorMessage: "WebSocket send failed: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -209,8 +215,8 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         task.receive { [weak self] result in
             guard let self else { return }
 
-            let shouldHandleResult: Bool = self.stateQueue.sync {
-                self.socketState == .connected && self.webSocketTask === task
+            let shouldHandleResult: Bool = self.state.withLock { s in
+                s.socketState == .connected && s.webSocketTask === task
             }
             guard shouldHandleResult else { return }
 
@@ -273,16 +279,12 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         case "transcription.done",
              "response.audio_transcript.done",
              "conversation.item.input_audio_transcription.completed":
-            stateQueue.sync {
-                isGenerationInProgress = false
-            }
+            state.withLock { $0.isGenerationInProgress = false }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
                 emit(.finalTranscript(text))
             }
         case "error":
-            stateQueue.sync {
-                isGenerationInProgress = false
-            }
+            state.withLock { $0.isGenerationInProgress = false }
             let message = findString(in: json, matching: ["message", "error", "detail"]) ?? "Unknown realtime error."
             emit(.error(message))
         default:
@@ -319,41 +321,39 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         return nil
     }
 
-    private func closeSocketLocked(cancelTask: Bool) {
-        stopPingTimerLocked()
+    private func closeSocketLocked(_ s: inout State, cancelTask: Bool) {
+        stopPingTimerLocked(&s)
         if cancelTask {
-            webSocketTask?.cancel(with: .normalClosure, reason: nil)
+            s.webSocketTask?.cancel(with: .normalClosure, reason: nil)
         }
 
-        webSocketTask = nil
+        s.webSocketTask = nil
 
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
+        s.urlSession?.invalidateAndCancel()
+        s.urlSession = nil
 
-        socketState = .disconnected
-        hasUncommittedAudio = false
-        isGenerationInProgress = false
-        pendingEvents.removeAll(keepingCapacity: false)
-        pendingModelName = ""
-        isUserInitiatedDisconnect = false
+        s.socketState = .disconnected
+        s.hasUncommittedAudio = false
+        s.isGenerationInProgress = false
+        s.pendingMessages.removeAll(keepingCapacity: false)
+        s.pendingModelName = ""
+        s.isUserInitiatedDisconnect = false
     }
 
     private func startPingTimer() {
-        stateQueue.sync {
-            startPingTimerLocked()
-        }
+        state.withLock { startPingTimerLocked(&$0) }
     }
 
-    private func startPingTimerLocked() {
-        stopPingTimerLocked()
+    private func startPingTimerLocked(_ s: inout State) {
+        stopPingTimerLocked(&s)
 
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + 30, repeating: 30)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            let task: URLSessionWebSocketTask? = self.stateQueue.sync {
-                guard self.socketState == .connected else { return nil }
-                return self.webSocketTask
+            let task: URLSessionWebSocketTask? = self.state.withLock { s in
+                guard s.socketState == .connected else { return nil }
+                return s.webSocketTask
             }
             guard let task else { return }
             task.sendPing { [weak self] error in
@@ -364,23 +364,23 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
                 )
             }
         }
-        pingTimer = timer
+        s.pingTimer = timer
         timer.resume()
     }
 
-    private func stopPingTimerLocked() {
-        pingTimer?.cancel()
-        pingTimer = nil
+    private func stopPingTimerLocked(_ s: inout State) {
+        s.pingTimer?.cancel()
+        s.pingTimer = nil
     }
 
     private func handleTerminalSocketError(for task: URLSessionWebSocketTask, errorMessage: String?) {
-        let outcome: (error: String?, disconnected: Bool) = stateQueue.sync {
-            guard socketState != .disconnected, webSocketTask === task else {
+        let outcome: (error: String?, disconnected: Bool) = state.withLock { s in
+            guard s.socketState != .disconnected, s.webSocketTask === task else {
                 return (nil, false)
             }
 
-            let shouldEmitError = !isUserInitiatedDisconnect
-            closeSocketLocked(cancelTask: false)
+            let shouldEmitError = !s.isUserInitiatedDisconnect
+            closeSocketLocked(&s, cancelTask: false)
             return (shouldEmitError ? errorMessage : nil, true)
         }
 
@@ -397,9 +397,9 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol _: String?
     ) {
-        let isCurrentTask: Bool = stateQueue.sync {
-            guard self.webSocketTask === webSocketTask else { return false }
-            socketState = .connected
+        let isCurrentTask: Bool = state.withLock { s in
+            guard s.webSocketTask === webSocketTask else { return false }
+            s.socketState = .connected
             return true
         }
         guard isCurrentTask else { return }
@@ -408,19 +408,19 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         emit(.connected)
         startPingTimer()
 
-        let modelName: String = stateQueue.sync { pendingModelName }
+        let modelName: String = state.withLock { $0.pendingModelName }
         if !modelName.isEmpty {
             send(event: ["type": "session.update", "model": modelName])
         }
         sendStartupCommitIfNeeded()
 
-        let queuedEvents: [[String: Any]] = stateQueue.sync {
-            let queued = pendingEvents
-            pendingEvents.removeAll(keepingCapacity: true)
+        let queuedMessages: [String] = state.withLock { s in
+            let queued = s.pendingMessages
+            s.pendingMessages.removeAll(keepingCapacity: true)
             return queued
         }
-        for event in queuedEvents {
-            send(event: event)
+        for message in queuedMessages {
+            sendText(message)
         }
 
         listenForMessages(on: webSocketTask)
@@ -479,9 +479,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     }
 
     private func emit(_ event: Event) {
-        let handler: (@Sendable (Event) -> Void)? = stateQueue.sync {
-            onEvent
-        }
+        let handler: (@Sendable (Event) -> Void)? = state.withLock { $0.onEvent }
 
         guard let handler else { return }
         handler(event)

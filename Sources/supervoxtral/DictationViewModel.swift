@@ -2,18 +2,20 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Foundation
+import Observation
 
 @MainActor
-final class DictationViewModel: ObservableObject {
-    @Published private(set) var isDictating = false
-    @Published private(set) var transcriptText = ""
-    @Published private(set) var livePartialText = ""
-    @Published private(set) var statusText = "Ready"
-    @Published private(set) var lastError: String?
-    @Published private(set) var lastFinalSegment = ""
-    @Published private(set) var isAccessibilityTrusted = false
-    @Published private(set) var availableInputDevices: [MicrophoneInputDevice] = []
-    @Published private(set) var selectedInputDeviceID = ""
+@Observable
+final class DictationViewModel {
+    private(set) var isDictating = false
+    private(set) var transcriptText = ""
+    private(set) var livePartialText = ""
+    private(set) var statusText = "Ready"
+    private(set) var lastError: String?
+    private(set) var lastFinalSegment = ""
+    private(set) var isAccessibilityTrusted = false
+    private(set) var availableInputDevices: [MicrophoneInputDevice] = []
+    private(set) var selectedInputDeviceID = ""
 
     let settings: SettingsStore
 
@@ -21,18 +23,18 @@ final class DictationViewModel: ObservableObject {
     private let realtimeClient = RealtimeWebSocketClient()
     private let audioChunkBuffer = AudioChunkBuffer()
     private let audioSendInterval: TimeInterval = 0.1
-    private var commitTimer: Timer?
-    private var audioSendTimer: Timer?
+    private var commitTask: Task<Void, Never>?
+    private var audioSendTask: Task<Void, Never>?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
     private var hasPromptedForAccessibilityPermission = false
     private var hasShownAccessibilityError = false
-    private var pendingAudioChangeWorkItem: DispatchWorkItem?
+    private var pendingAudioChangeTask: Task<Void, Never>?
     private var captureInterruptionDetectedAt: Date?
     private var startupCaptureGraceUntil: Date?
     private var hasAttemptedCaptureRecovery = false
     private var pendingRealtimeInsertionText = ""
-    private var insertionRetryTimer: Timer?
+    private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
     private var modifierDeferredInsertionCount = 0
@@ -221,14 +223,14 @@ final class DictationViewModel: ObservableObject {
     func stopDictation() {
         guard isDictating else { return }
 
-        commitTimer?.invalidate()
-        commitTimer = nil
-        audioSendTimer?.invalidate()
-        audioSendTimer = nil
-        insertionRetryTimer?.invalidate()
-        insertionRetryTimer = nil
-        pendingAudioChangeWorkItem?.cancel()
-        pendingAudioChangeWorkItem = nil
+        commitTask?.cancel()
+        commitTask = nil
+        audioSendTask?.cancel()
+        audioSendTask = nil
+        insertionRetryTask?.cancel()
+        insertionRetryTask = nil
+        pendingAudioChangeTask?.cancel()
+        pendingAudioChangeTask = nil
         captureInterruptionDetectedAt = nil
         startupCaptureGraceUntil = nil
         hasAttemptedCaptureRecovery = false
@@ -367,9 +369,9 @@ final class DictationViewModel: ObservableObject {
                 model: model
             ))
 
-            restartAudioSendTimer()
-            restartCommitTimer()
-            restartInsertionRetryTimer()
+            restartAudioSendTask()
+            restartCommitTask()
+            restartInsertionRetryTask()
         } catch {
             statusText = "Failed to start dictation."
             lastError = error.localizedDescription
@@ -382,36 +384,36 @@ final class DictationViewModel: ObservableObject {
         }
     }
 
-    private func restartCommitTimer() {
-        commitTimer?.invalidate()
+    private func restartCommitTask() {
+        commitTask?.cancel()
 
         let interval = min(1.0, max(0.1, settings.commitIntervalSeconds))
         let client = realtimeClient
-        commitTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            guard self != nil else { return }
-            client.sendCommit(final: false)
-        }
-
-        if let commitTimer {
-            RunLoop.main.add(commitTimer, forMode: .common)
+        commitTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled else { break }
+                guard self != nil else { break }
+                client.sendCommit(final: false)
+            }
         }
     }
 
-    private func restartAudioSendTimer() {
-        audioSendTimer?.invalidate()
+    private func restartAudioSendTask() {
+        audioSendTask?.cancel()
 
         let client = realtimeClient
         let chunkBuffer = audioChunkBuffer
-        audioSendTimer = Timer.scheduledTimer(withTimeInterval: audioSendInterval, repeats: true) { [weak self] _ in
-            guard self != nil else { return }
+        audioSendTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(self?.audioSendInterval ?? 0.1))
+                guard !Task.isCancelled else { break }
+                guard self != nil else { break }
 
-            let bufferedChunk = chunkBuffer.takeAll()
-            guard !bufferedChunk.isEmpty else { return }
-            client.sendAudioChunk(bufferedChunk)
-        }
-
-        if let audioSendTimer {
-            RunLoop.main.add(audioSendTimer, forMode: .common)
+                let bufferedChunk = chunkBuffer.takeAll()
+                guard !bufferedChunk.isEmpty else { continue }
+                client.sendAudioChunk(bufferedChunk)
+            }
         }
     }
 
@@ -521,10 +523,10 @@ final class DictationViewModel: ObservableObject {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
         case .deferredByActiveModifiers:
-            // Retry timer will flush once modifiers are released.
+            // Retry task will flush once modifiers are released.
             break
         case .failed:
-            // Keep pending text and retry on subsequent timer ticks.
+            // Keep pending text and retry on subsequent task ticks.
             break
         }
     }
@@ -718,20 +720,18 @@ final class DictationViewModel: ObservableObject {
         return modifierKeyCodes.contains { CGEventSource.keyState(.combinedSessionState, key: $0) }
     }
 
-    private func restartInsertionRetryTimer() {
-        insertionRetryTimer?.invalidate()
+    private func restartInsertionRetryTask() {
+        insertionRetryTask?.cancel()
 
-        insertionRetryTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard self.isDictating else { return }
-                guard !self.pendingRealtimeInsertionText.isEmpty else { return }
+        insertionRetryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { break }
+                guard let self else { break }
+                guard self.isDictating else { continue }
+                guard !self.pendingRealtimeInsertionText.isEmpty else { continue }
                 self.flushPendingRealtimeInsertion()
             }
-        }
-
-        if let insertionRetryTimer {
-            RunLoop.main.add(insertionRetryTimer, forMode: .common)
         }
     }
 
@@ -796,17 +796,17 @@ final class DictationViewModel: ObservableObject {
     }
 
     private func scheduleAudioChangeEvaluation() {
-        pendingAudioChangeWorkItem?.cancel()
+        pendingAudioChangeTask?.cancel()
 
-        let workItem = DispatchWorkItem { [weak self] in
+        pendingAudioChangeTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
             self?.evaluateAudioChange()
         }
-        pendingAudioChangeWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
     }
 
     private func evaluateAudioChange() {
-        pendingAudioChangeWorkItem = nil
+        pendingAudioChangeTask = nil
         let previousSelection = selectedInputDeviceID
         refreshMicrophoneInputs()
 

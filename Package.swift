@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "supervoxtral",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         .executable(name: "SuperVoxtral", targets: ["supervoxtral"]),
