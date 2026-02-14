@@ -50,10 +50,11 @@ Defaults can also be pre-set via environment variables:
 
 This client sends realtime events in a vLLM-safe sequence:
 
+- waits for `session.created`
 - `session.update` with model
+- startup `input_audio_buffer.commit` to begin realtime generation
 - `input_audio_buffer.append` with base64 PCM16 mono audio at 16kHz (batched every 100ms)
-- `input_audio_buffer.commit` only after audio has been appended and no generation is currently in progress
-- `input_audio_buffer.commit` with `final: true` on stop (only when there is active/pending audio)
+- `input_audio_buffer.commit` with `final: true` before disconnect when there is active/pending audio
 
 It handles incoming events:
 

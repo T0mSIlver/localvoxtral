@@ -237,8 +237,7 @@ final class DictationViewModel {
 
         microphone.stop()
         flushBufferedAudio()
-        realtimeClient.sendCommit(final: true)
-        realtimeClient.disconnect()
+        realtimeClient.disconnectAfterFinalCommitIfNeeded()
 
         isDictating = false
         livePartialText = ""

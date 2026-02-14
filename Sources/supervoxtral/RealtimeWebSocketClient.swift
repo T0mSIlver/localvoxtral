@@ -29,6 +29,8 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         var socketState: SocketState = .disconnected
         var onEvent: (@Sendable (Event) -> Void)?
         var pingTimer: DispatchSourceTimer?
+        var sessionReadyTimer: DispatchSourceTimer?
+        var hasReceivedSessionCreated = false
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
         var isUserInitiatedDisconnect = false
@@ -83,6 +85,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
             s.isUserInitiatedDisconnect = false
             s.pendingMessages.removeAll(keepingCapacity: true)
             s.pendingModelName = modelName
+            s.hasReceivedSessionCreated = false
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = false
 
@@ -102,6 +105,62 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         if wasConnected {
             debugLog("disconnect")
             emit(.disconnected)
+        }
+    }
+
+    func disconnectAfterFinalCommitIfNeeded() {
+        enum DisconnectAction {
+            case none
+            case closeNow
+            case sendFinalCommit(URLSessionWebSocketTask)
+        }
+
+        let action: DisconnectAction = state.withLock { s in
+            guard s.socketState != .disconnected else { return .none }
+            s.isUserInitiatedDisconnect = true
+
+            guard s.socketState == .connected,
+                  s.hasReceivedSessionCreated,
+                  let webSocketTask = s.webSocketTask,
+                  (s.hasUncommittedAudio || s.isGenerationInProgress)
+            else {
+                closeSocketLocked(&s, cancelTask: true)
+                return .closeNow
+            }
+
+            s.hasUncommittedAudio = false
+            s.isGenerationInProgress = false
+            return .sendFinalCommit(webSocketTask)
+        }
+
+        switch action {
+        case .none:
+            return
+        case .closeNow:
+            debugLog("disconnect")
+            emit(.disconnected)
+        case .sendFinalCommit(let task):
+            debugLog("send final commit before disconnect")
+            let payload = #"{"type":"input_audio_buffer.commit","final":true}"#
+            task.send(.string(payload)) { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.emit(.status("Final commit send failed: \(error.localizedDescription)"))
+                }
+
+                let shouldEmitDisconnected: Bool = self.state.withLock { s in
+                    guard s.socketState != .disconnected, s.webSocketTask === task else {
+                        return false
+                    }
+                    self.closeSocketLocked(&s, cancelTask: true)
+                    return true
+                }
+
+                if shouldEmitDisconnected {
+                    self.debugLog("disconnect")
+                    self.emit(.disconnected)
+                }
+            }
         }
     }
 
@@ -146,6 +205,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     private func sendStartupCommitIfNeeded() {
         let shouldCommit: Bool = state.withLock { s in
             guard s.socketState == .connected else { return false }
+            guard s.hasReceivedSessionCreated else { return false }
             guard !s.isGenerationInProgress else { return false }
             s.isGenerationInProgress = true
             return true
@@ -188,6 +248,10 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         let action: SendAction = state.withLock { s in
             switch s.socketState {
             case .connected:
+                guard s.hasReceivedSessionCreated else {
+                    s.pendingMessages.append(text)
+                    return .queued
+                }
                 guard let webSocketTask = s.webSocketTask else { return .dropped }
                 return .send(task: webSocketTask, text: text)
             case .connecting:
@@ -268,6 +332,25 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         switch type {
         case "session.created":
             emit(.status("Session ready."))
+            let startup: (modelName: String, queuedMessages: [String])? = state.withLock { s in
+                guard s.socketState == .connected else { return nil }
+                guard !s.hasReceivedSessionCreated else { return nil }
+                s.hasReceivedSessionCreated = true
+                stopSessionReadyTimerLocked(&s)
+                let modelName = s.pendingModelName
+                let queuedMessages = s.pendingMessages
+                s.pendingMessages.removeAll(keepingCapacity: true)
+                return (modelName: modelName, queuedMessages: queuedMessages)
+            }
+
+            guard let startup else { return }
+            if !startup.modelName.isEmpty {
+                send(event: ["type": "session.update", "model": startup.modelName])
+            }
+            sendStartupCommitIfNeeded()
+            for message in startup.queuedMessages {
+                sendText(message)
+            }
         case "session.updated":
             emit(.status("Session updated."))
         case "transcription.delta",
@@ -323,6 +406,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private func closeSocketLocked(_ s: inout State, cancelTask: Bool) {
         stopPingTimerLocked(&s)
+        stopSessionReadyTimerLocked(&s)
         if cancelTask {
             s.webSocketTask?.cancel(with: .normalClosure, reason: nil)
         }
@@ -333,6 +417,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         s.urlSession = nil
 
         s.socketState = .disconnected
+        s.hasReceivedSessionCreated = false
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
         s.pendingMessages.removeAll(keepingCapacity: false)
@@ -342,6 +427,10 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private func startPingTimer() {
         state.withLock { startPingTimerLocked(&$0) }
+    }
+
+    private func startSessionReadyTimer() {
+        state.withLock { startSessionReadyTimerLocked(&$0) }
     }
 
     private func startPingTimerLocked(_ s: inout State) {
@@ -368,9 +457,36 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         timer.resume()
     }
 
+    private func startSessionReadyTimerLocked(_ s: inout State) {
+        stopSessionReadyTimerLocked(&s)
+
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 10)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let task: URLSessionWebSocketTask? = self.state.withLock { s in
+                guard s.socketState == .connected else { return nil }
+                guard !s.hasReceivedSessionCreated else { return nil }
+                return s.webSocketTask
+            }
+            guard let task else { return }
+            self.handleTerminalSocketError(
+                for: task,
+                errorMessage: "Timed out waiting for session.created from realtime server."
+            )
+        }
+        s.sessionReadyTimer = timer
+        timer.resume()
+    }
+
     private func stopPingTimerLocked(_ s: inout State) {
         s.pingTimer?.cancel()
         s.pingTimer = nil
+    }
+
+    private func stopSessionReadyTimerLocked(_ s: inout State) {
+        s.sessionReadyTimer?.cancel()
+        s.sessionReadyTimer = nil
     }
 
     private func handleTerminalSocketError(for task: URLSessionWebSocketTask, errorMessage: String?) {
@@ -407,21 +523,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         debugLog("didOpen")
         emit(.connected)
         startPingTimer()
-
-        let modelName: String = state.withLock { $0.pendingModelName }
-        if !modelName.isEmpty {
-            send(event: ["type": "session.update", "model": modelName])
-        }
-        sendStartupCommitIfNeeded()
-
-        let queuedMessages: [String] = state.withLock { s in
-            let queued = s.pendingMessages
-            s.pendingMessages.removeAll(keepingCapacity: true)
-            return queued
-        }
-        for message in queuedMessages {
-            sendText(message)
-        }
+        startSessionReadyTimer()
 
         listenForMessages(on: webSocketTask)
     }
