@@ -28,6 +28,8 @@ final class DictationViewModel: ObservableObject {
     private var hasPromptedForAccessibilityPermission = false
     private var hasShownAccessibilityError = false
     private var pendingAudioChangeWorkItem: DispatchWorkItem?
+    private var captureInterruptionDetectedAt: Date?
+    private var startupCaptureGraceUntil: Date?
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTimer: Timer?
     private var axInsertionSuccessCount = 0
@@ -226,6 +228,8 @@ final class DictationViewModel: ObservableObject {
         insertionRetryTimer = nil
         pendingAudioChangeWorkItem?.cancel()
         pendingAudioChangeWorkItem = nil
+        captureInterruptionDetectedAt = nil
+        startupCaptureGraceUntil = nil
 
         microphone.stop()
         flushBufferedAudio()
@@ -349,6 +353,8 @@ final class DictationViewModel: ObservableObject {
             livePartialText = ""
             statusText = "Listening..."
             pendingRealtimeInsertionText = ""
+            captureInterruptionDetectedAt = nil
+            startupCaptureGraceUntil = Date().addingTimeInterval(1.2)
             resetInsertionDiagnostics()
 
             let client = realtimeClient
@@ -367,6 +373,8 @@ final class DictationViewModel: ObservableObject {
             microphone.stop()
             realtimeClient.disconnect()
             isDictating = false
+            captureInterruptionDetectedAt = nil
+            startupCaptureGraceUntil = nil
         }
     }
 
@@ -798,8 +806,34 @@ final class DictationViewModel: ObservableObject {
         let previousSelection = selectedInputDeviceID
         refreshMicrophoneInputs()
 
-        guard isDictating else { return }
-        guard microphone.isCapturing() else {
+        guard isDictating else {
+            captureInterruptionDetectedAt = nil
+            return
+        }
+
+        if microphone.isCapturing() {
+            captureInterruptionDetectedAt = nil
+        } else {
+            if let graceDeadline = startupCaptureGraceUntil, Date() < graceDeadline {
+                scheduleAudioChangeEvaluation()
+                return
+            }
+
+            startupCaptureGraceUntil = nil
+
+            if captureInterruptionDetectedAt == nil {
+                captureInterruptionDetectedAt = Date()
+                scheduleAudioChangeEvaluation()
+                return
+            }
+
+            if let detectedAt = captureInterruptionDetectedAt,
+               Date().timeIntervalSince(detectedAt) < 0.9
+            {
+                scheduleAudioChangeEvaluation()
+                return
+            }
+
             stopDictation()
             lastError = "Microphone capture was interrupted. Dictation stopped."
             return
