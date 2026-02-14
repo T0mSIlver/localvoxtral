@@ -33,6 +33,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     private var isUserInitiatedDisconnect = false
     private var pendingEvents: [[String: Any]] = []
     private var pendingModelName = ""
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         stateQueue.sync {
@@ -61,6 +62,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
         request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
         let modelName = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        debugLog("connect endpoint=\(configuration.endpoint.absoluteString) model=\(modelName)")
 
         stateQueue.sync {
             closeSocketLocked(cancelTask: true)
@@ -96,6 +98,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         }
 
         if wasConnected {
+            debugLog("disconnect")
             emit(.disconnected)
         }
     }
@@ -103,6 +106,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     func sendAudioChunk(_ pcm16Data: Data) {
         guard !pcm16Data.isEmpty else { return }
         stateQueue.sync { hasUncommittedAudio = true }
+        debugLog("send append bytes=\(pcm16Data.count)")
         let payload: [String: Any] = [
             "type": "input_audio_buffer.append",
             "audio": pcm16Data.base64EncodedString(),
@@ -133,6 +137,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         if final {
             payload["final"] = true
         }
+        debugLog("send commit final=\(final)")
         send(event: payload)
     }
 
@@ -145,6 +150,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         }
         guard shouldCommit else { return }
 
+        debugLog("send startup commit")
         send(event: ["type": "input_audio_buffer.commit"])
     }
 
@@ -173,6 +179,9 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
                     guard let webSocketTask else { return .dropped }
                     return .send(task: webSocketTask, text: text)
                 case .connecting:
+                    if let type = event["type"] as? String {
+                        self.debugLog("queue event type=\(type)")
+                    }
                     pendingEvents.append(event)
                     return .queued
                 case .disconnected:
@@ -246,6 +255,9 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private func handle(json: [String: Any]) {
         let type = json["type"] as? String ?? ""
+        if !type.isEmpty {
+            debugLog("recv event type=\(type)")
+        }
 
         switch type {
         case "session.created":
@@ -392,6 +404,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         }
         guard isCurrentTask else { return }
 
+        debugLog("didOpen")
         emit(.connected)
         startPingTimer()
 
@@ -419,6 +432,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
+        debugLog("didClose code=\(closeCode.rawValue)")
         guard closeCode != .normalClosure, closeCode != .goingAway else {
             handleTerminalSocketError(for: webSocketTask, errorMessage: nil)
             return
@@ -451,6 +465,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
             return
         }
 
+        debugLog("task didCompleteWithError=\(error.localizedDescription)")
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
             handleTerminalSocketError(for: webSocketTask, errorMessage: nil)
@@ -470,5 +485,10 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
         guard let handler else { return }
         handler(event)
+    }
+
+    private func debugLog(_ message: String) {
+        guard debugLoggingEnabled else { return }
+        print("[SuperVoxtral][Realtime] \(message)")
     }
 }
