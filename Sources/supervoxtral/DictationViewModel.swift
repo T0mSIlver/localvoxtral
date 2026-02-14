@@ -30,6 +30,7 @@ final class DictationViewModel: ObservableObject {
     private var pendingAudioChangeWorkItem: DispatchWorkItem?
     private var captureInterruptionDetectedAt: Date?
     private var startupCaptureGraceUntil: Date?
+    private var hasAttemptedCaptureRecovery = false
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTimer: Timer?
     private var axInsertionSuccessCount = 0
@@ -230,6 +231,7 @@ final class DictationViewModel: ObservableObject {
         pendingAudioChangeWorkItem = nil
         captureInterruptionDetectedAt = nil
         startupCaptureGraceUntil = nil
+        hasAttemptedCaptureRecovery = false
 
         microphone.stop()
         flushBufferedAudio()
@@ -355,6 +357,7 @@ final class DictationViewModel: ObservableObject {
             pendingRealtimeInsertionText = ""
             captureInterruptionDetectedAt = nil
             startupCaptureGraceUntil = Date().addingTimeInterval(1.2)
+            hasAttemptedCaptureRecovery = false
             resetInsertionDiagnostics()
 
             let client = realtimeClient
@@ -375,6 +378,7 @@ final class DictationViewModel: ObservableObject {
             isDictating = false
             captureInterruptionDetectedAt = nil
             startupCaptureGraceUntil = nil
+            hasAttemptedCaptureRecovery = false
         }
     }
 
@@ -813,6 +817,7 @@ final class DictationViewModel: ObservableObject {
 
         if microphone.isCapturing() {
             captureInterruptionDetectedAt = nil
+            hasAttemptedCaptureRecovery = false
         } else {
             if let graceDeadline = startupCaptureGraceUntil, Date() < graceDeadline {
                 scheduleAudioChangeEvaluation()
@@ -832,6 +837,16 @@ final class DictationViewModel: ObservableObject {
             {
                 scheduleAudioChangeEvaluation()
                 return
+            }
+
+            if !hasAttemptedCaptureRecovery {
+                hasAttemptedCaptureRecovery = true
+                if attemptMicrophoneRecovery() {
+                    captureInterruptionDetectedAt = nil
+                    startupCaptureGraceUntil = Date().addingTimeInterval(1.0)
+                    scheduleAudioChangeEvaluation()
+                    return
+                }
             }
 
             stopDictation()
@@ -865,6 +880,24 @@ final class DictationViewModel: ObservableObject {
         hasShownAccessibilityError = false
         if lastError == Self.accessibilityErrorMessage {
             lastError = nil
+        }
+    }
+
+    private func attemptMicrophoneRecovery() -> Bool {
+        let chunkBuffer = audioChunkBuffer
+        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+
+        microphone.stop()
+
+        do {
+            try microphone.start(preferredDeviceID: preferredInputID) { chunk in
+                chunkBuffer.append(chunk)
+            }
+            statusText = "Listening..."
+            return true
+        } catch {
+            lastError = "Failed to recover microphone capture: \(error.localizedDescription)"
+            return false
         }
     }
 }
