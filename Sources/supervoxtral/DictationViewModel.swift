@@ -338,14 +338,6 @@ final class DictationViewModel: ObservableObject {
         let model = settings.effectiveModelName
 
         do {
-            let client = realtimeClient
-
-            try client.connect(configuration: .init(
-                endpoint: endpoint,
-                apiKey: settings.trimmedAPIKey,
-                model: model
-            ))
-
             let chunkBuffer = audioChunkBuffer
             chunkBuffer.clear()
             let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
@@ -358,6 +350,14 @@ final class DictationViewModel: ObservableObject {
             statusText = "Listening..."
             pendingRealtimeInsertionText = ""
             resetInsertionDiagnostics()
+
+            let client = realtimeClient
+            try client.connect(configuration: .init(
+                endpoint: endpoint,
+                apiKey: settings.trimmedAPIKey,
+                model: model
+            ))
+
             restartAudioSendTimer()
             restartCommitTimer()
             restartInsertionRetryTimer()
@@ -366,6 +366,7 @@ final class DictationViewModel: ObservableObject {
             lastError = error.localizedDescription
             microphone.stop()
             realtimeClient.disconnect()
+            isDictating = false
         }
     }
 
@@ -798,24 +799,22 @@ final class DictationViewModel: ObservableObject {
         refreshMicrophoneInputs()
 
         guard isDictating else { return }
-        guard !selectedInputDeviceID.isEmpty else {
-            stopDictation()
-            lastError = "No microphone is currently available. Dictation stopped."
-            return
-        }
-
-        let selectedDeviceStillAvailable = !previousSelection.isEmpty
-            && availableInputDevices.contains(where: { $0.id == previousSelection })
-
-        if !selectedDeviceStillAvailable {
-            stopDictation()
-            lastError = "Selected microphone is unavailable. Dictation stopped."
-            return
-        }
-
         guard microphone.isCapturing() else {
             stopDictation()
             lastError = "Microphone capture was interrupted. Dictation stopped."
+            return
+        }
+
+        guard !selectedInputDeviceID.isEmpty else {
+            // Device enumeration can be transient; keep an active capture session running.
+            return
+        }
+
+        if !previousSelection.isEmpty,
+           !availableInputDevices.contains(where: { $0.id == previousSelection })
+        {
+            stopDictation()
+            lastError = "Selected microphone is unavailable. Dictation stopped."
             return
         }
     }
