@@ -5,8 +5,23 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 CONFIGURATION="${1:-release}"
+APP_VERSION="${2:-0.1.0}"
+BUILD_NUMBER="${3:-1}"
+
 if [[ "$CONFIGURATION" != "release" && "$CONFIGURATION" != "debug" ]]; then
-  echo "Usage: ./scripts/package_app.sh [release|debug]"
+  echo "Usage: ./scripts/package_app.sh [release|debug] [app-version] [build-number]"
+  exit 1
+fi
+
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+  echo "Invalid app version: $APP_VERSION"
+  echo "Expected semantic version like 0.1.0"
+  exit 1
+fi
+
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "Invalid build number: $BUILD_NUMBER"
+  echo "Expected a positive integer like 1"
   exit 1
 fi
 
@@ -56,7 +71,7 @@ iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 cp "$MENUBAR_ICON_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate.png"
 cp "$MENUBAR_ICON_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x.png"
 
-cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -75,9 +90,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>${APP_VERSION}</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${BUILD_NUMBER}</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIconName</key>
