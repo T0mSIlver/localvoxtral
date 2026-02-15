@@ -38,6 +38,7 @@ final class DictationViewModel {
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
     private var captureHealthTask: Task<Void, Never>?
+    private var accessibilityTrustPollingTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
     private var modifierDeferredInsertionCount = 0
@@ -91,6 +92,7 @@ final class DictationViewModel {
         audioSendTask?.cancel()
         insertionRetryTask?.cancel()
         captureHealthTask?.cancel()
+        accessibilityTrustPollingTask?.cancel()
         pendingAudioChangeTask?.cancel()
         microphone.stop()
         unregisterGlobalHotkey()
@@ -296,6 +298,8 @@ final class DictationViewModel {
         insertionRetryTask = nil
         captureHealthTask?.cancel()
         captureHealthTask = nil
+        accessibilityTrustPollingTask?.cancel()
+        accessibilityTrustPollingTask = nil
         pendingAudioChangeTask?.cancel()
         pendingAudioChangeTask = nil
         captureInterruptionDetectedAt = nil
@@ -358,6 +362,7 @@ final class DictationViewModel {
     func requestAccessibilityPermission() {
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        startAccessibilityTrustPolling()
         refreshAccessibilityTrustState()
 
         if isAccessibilityTrusted {
@@ -895,19 +900,50 @@ final class DictationViewModel {
 
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
+        startAccessibilityTrustPolling()
         refreshAccessibilityTrustState()
     }
 
     func refreshAccessibilityTrustState() {
+        let wasTrusted = isAccessibilityTrusted
         let trusted = AXIsProcessTrusted()
         if isAccessibilityTrusted != trusted {
             isAccessibilityTrusted = trusted
         }
 
         guard trusted else { return }
+        accessibilityTrustPollingTask?.cancel()
+        accessibilityTrustPollingTask = nil
         hasShownAccessibilityError = false
         if lastError == Self.accessibilityErrorMessage {
             lastError = nil
+        }
+        if !wasTrusted, !isDictating,
+           statusText == "Waiting for Accessibility permission."
+            || statusText == "Paste blocked by Accessibility permission."
+        {
+            statusText = "Accessibility permission enabled."
+        }
+    }
+
+    private func startAccessibilityTrustPolling() {
+        guard !isAccessibilityTrusted else { return }
+        guard accessibilityTrustPollingTask == nil else { return }
+
+        accessibilityTrustPollingTask = Task { [weak self] in
+            guard let self else { return }
+            let deadline = Date().addingTimeInterval(90)
+            defer {
+                self.accessibilityTrustPollingTask = nil
+            }
+
+            while !Task.isCancelled, Date() < deadline {
+                try? await Task.sleep(for: .milliseconds(400))
+                self.refreshAccessibilityTrustState()
+                if self.isAccessibilityTrusted {
+                    break
+                }
+            }
         }
     }
 
