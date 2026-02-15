@@ -23,10 +23,6 @@ Build and run as an app bundle (recommended):
 open ./dist/localvoxtral.app
 ```
 
-## Tested setup
-
-- Tested with a local `vllm` server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/raw/main/README.md).
-
 ## Settings
 
 - Open **Settings** from the menu bar popover to set:
@@ -36,10 +32,9 @@ open ./dist/localvoxtral.app
   - Commit interval
   - Auto-copy finalized segment
 
-## Permissions
+## Tested setup
 
-- Microphone access is required.
-- Accessibility access is recommended for reliable text insertion into the focused app.
+- Tested with a local `vllm` server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/raw/main/README.md).
 
 ## Roadmap
 
