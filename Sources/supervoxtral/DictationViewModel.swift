@@ -32,7 +32,8 @@ final class DictationViewModel {
     private var pendingAudioChangeTask: Task<Void, Never>?
     private var captureInterruptionDetectedAt: Date?
     private var startupCaptureGraceUntil: Date?
-    private var hasAttemptedCaptureRecovery = false
+    private var startupConfigurationChangeDetected = false
+    private var captureRecoveryAttemptCount = 0
     private var isAwaitingMicrophonePermission = false
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
@@ -50,6 +51,11 @@ final class DictationViewModel {
     private static let captureInterruptionConfirmationSeconds: TimeInterval = 4.0
     private static let recentAudioToleranceSeconds: TimeInterval = 1.2
     private static let startupNoAudioRecoverySeconds: TimeInterval = 1.5
+    private static let startupCaptureGraceSeconds: TimeInterval = 1.4
+    private static let startupConfigChangeGraceSeconds: TimeInterval = 0.25
+    private static let startupConfigChangeRecoverySeconds: TimeInterval = 0.35
+    private static let maxCaptureRecoveryAttempts = 3
+    private static let fastAudioChangeEvaluationDelayMilliseconds = 120
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -294,7 +300,8 @@ final class DictationViewModel {
         pendingAudioChangeTask = nil
         captureInterruptionDetectedAt = nil
         startupCaptureGraceUntil = nil
-        hasAttemptedCaptureRecovery = false
+        startupConfigurationChangeDetected = false
+        captureRecoveryAttemptCount = 0
         isAwaitingMicrophonePermission = false
         lastNoAudioDiagnosticAt = nil
 
@@ -429,8 +436,9 @@ final class DictationViewModel {
             statusText = "Listening..."
             pendingRealtimeInsertionText = ""
             captureInterruptionDetectedAt = nil
-            startupCaptureGraceUntil = Date().addingTimeInterval(1.2)
-            hasAttemptedCaptureRecovery = false
+            startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupCaptureGraceSeconds)
+            startupConfigurationChangeDetected = false
+            captureRecoveryAttemptCount = 0
             resetInsertionDiagnostics()
 
             let client = realtimeClient
@@ -452,7 +460,8 @@ final class DictationViewModel {
             isDictating = false
             captureInterruptionDetectedAt = nil
             startupCaptureGraceUntil = nil
-            hasAttemptedCaptureRecovery = false
+            startupConfigurationChangeDetected = false
+            captureRecoveryAttemptCount = 0
             captureHealthTask?.cancel()
             captureHealthTask = nil
             debugLog("beginDictationSession failed error=\(error.localizedDescription)")
@@ -833,7 +842,7 @@ final class DictationViewModel {
                 )
                 if hasRecentAudio {
                     self.captureInterruptionDetectedAt = nil
-                    self.hasAttemptedCaptureRecovery = false
+                    self.captureRecoveryAttemptCount = 0
                     continue
                 }
 
@@ -902,11 +911,11 @@ final class DictationViewModel {
         }
     }
 
-    private func scheduleAudioChangeEvaluation() {
+    private func scheduleAudioChangeEvaluation(delayMilliseconds: Int = 350) {
         pendingAudioChangeTask?.cancel()
 
         pendingAudioChangeTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: .milliseconds(delayMilliseconds))
             guard !Task.isCancelled else { return }
             self?.evaluateAudioChange()
         }
@@ -915,6 +924,12 @@ final class DictationViewModel {
     private func handleMicrophoneConfigurationChange() {
         if isDictating {
             debugLog("configuration changed while dictating; deferring to health evaluation")
+            if !microphone.hasCapturedAudioInCurrentRun() {
+                startupConfigurationChangeDetected = true
+                startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupConfigChangeGraceSeconds)
+                scheduleAudioChangeEvaluation(delayMilliseconds: Self.fastAudioChangeEvaluationDelayMilliseconds)
+                return
+            }
         }
         scheduleAudioChangeEvaluation()
     }
@@ -945,11 +960,16 @@ final class DictationViewModel {
         let isEngineRunning = microphone.isCapturing()
         if isEngineRunning && hasRecentAudio {
             captureInterruptionDetectedAt = nil
-            hasAttemptedCaptureRecovery = false
+            startupConfigurationChangeDetected = false
+            captureRecoveryAttemptCount = 0
             lastNoAudioDiagnosticAt = nil
         } else {
             if let graceDeadline = startupCaptureGraceUntil, Date() < graceDeadline {
-                scheduleAudioChangeEvaluation()
+                scheduleAudioChangeEvaluation(
+                    delayMilliseconds: startupConfigurationChangeDetected
+                        ? Self.fastAudioChangeEvaluationDelayMilliseconds
+                        : 350
+                )
                 return
             }
 
@@ -957,20 +977,34 @@ final class DictationViewModel {
 
             if captureInterruptionDetectedAt == nil {
                 captureInterruptionDetectedAt = Date()
-                scheduleAudioChangeEvaluation()
+                scheduleAudioChangeEvaluation(
+                    delayMilliseconds: startupConfigurationChangeDetected
+                        ? Self.fastAudioChangeEvaluationDelayMilliseconds
+                        : 350
+                )
                 return
             }
 
+            let startupRecoverySeconds = startupConfigurationChangeDetected
+                ? Self.startupConfigChangeRecoverySeconds
+                : Self.startupNoAudioRecoverySeconds
             if !hasCapturedAnyAudio,
                let detectedAt = captureInterruptionDetectedAt,
-               Date().timeIntervalSince(detectedAt) >= Self.startupNoAudioRecoverySeconds
+               Date().timeIntervalSince(detectedAt) >= startupRecoverySeconds
             {
-                if !hasAttemptedCaptureRecovery {
-                    hasAttemptedCaptureRecovery = true
-                    debugLog("startup produced no audio; attempting capture restart on selected input")
+                if captureRecoveryAttemptCount < Self.maxCaptureRecoveryAttempts {
+                    captureRecoveryAttemptCount += 1
+                    debugLog(
+                        "startup produced no audio; attempting capture restart on selected input "
+                            + "attempt=\(captureRecoveryAttemptCount)/\(Self.maxCaptureRecoveryAttempts)"
+                    )
                     if attemptMicrophoneRecovery() {
                         captureInterruptionDetectedAt = nil
-                        startupCaptureGraceUntil = Date().addingTimeInterval(1.0)
+                        startupCaptureGraceUntil = Date().addingTimeInterval(
+                            startupConfigurationChangeDetected
+                                ? Self.startupConfigChangeGraceSeconds
+                                : Self.startupCaptureGraceSeconds
+                        )
                         scheduleAudioChangeEvaluation()
                         return
                     }
@@ -980,23 +1014,31 @@ final class DictationViewModel {
             if let detectedAt = captureInterruptionDetectedAt,
                Date().timeIntervalSince(detectedAt) < Self.captureInterruptionConfirmationSeconds
             {
-                scheduleAudioChangeEvaluation()
+                scheduleAudioChangeEvaluation(
+                    delayMilliseconds: startupConfigurationChangeDetected
+                        ? Self.fastAudioChangeEvaluationDelayMilliseconds
+                        : 350
+                )
                 return
             }
 
             if !isEngineRunning, microphone.resumeIfNeeded() {
                 captureInterruptionDetectedAt = nil
-                hasAttemptedCaptureRecovery = false
-                startupCaptureGraceUntil = Date().addingTimeInterval(1.0)
+                captureRecoveryAttemptCount = 0
+                startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupCaptureGraceSeconds)
                 scheduleAudioChangeEvaluation()
                 return
             }
 
-            if !hasAttemptedCaptureRecovery {
-                hasAttemptedCaptureRecovery = true
+            if captureRecoveryAttemptCount < Self.maxCaptureRecoveryAttempts {
+                captureRecoveryAttemptCount += 1
+                debugLog(
+                    "attempting capture recovery on selected input "
+                        + "attempt=\(captureRecoveryAttemptCount)/\(Self.maxCaptureRecoveryAttempts)"
+                )
                 if attemptMicrophoneRecovery() {
                     captureInterruptionDetectedAt = nil
-                    startupCaptureGraceUntil = Date().addingTimeInterval(1.0)
+                    startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupCaptureGraceSeconds)
                     scheduleAudioChangeEvaluation()
                     return
                 }
@@ -1009,7 +1051,11 @@ final class DictationViewModel {
             }
             statusText = "Listening... (waiting for microphone audio)"
             lastError = "No microphone audio frames captured yet."
-            scheduleAudioChangeEvaluation()
+            scheduleAudioChangeEvaluation(
+                delayMilliseconds: startupConfigurationChangeDetected
+                    ? Self.fastAudioChangeEvaluationDelayMilliseconds
+                    : 350
+            )
             return
         }
     }
