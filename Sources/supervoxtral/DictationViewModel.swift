@@ -38,6 +38,8 @@ final class DictationViewModel {
     private var captureRecoveryAttemptCount = 0
     private var isAwaitingMicrophonePermission = false
     private var pendingRealtimeInsertionText = ""
+    private var pendingRealtimeFinalizationText = ""
+    private var currentDictationEventText = ""
     private var insertionRetryTask: Task<Void, Never>?
     private var captureHealthTask: Task<Void, Never>?
     private var accessibilityTrustPollingTask: Task<Void, Never>?
@@ -318,9 +320,11 @@ final class DictationViewModel {
         microphone.stop()
         flushBufferedAudio()
         realtimeClient.disconnectAfterFinalCommitIfNeeded()
+        promotePendingRealtimeTextToLatestSegment()
 
         isDictating = false
         livePartialText = ""
+        pendingRealtimeFinalizationText = ""
         statusText = "Ready"
         logInsertionDiagnostics()
 
@@ -338,6 +342,8 @@ final class DictationViewModel {
         transcriptText = ""
         livePartialText = ""
         lastFinalSegment = ""
+        pendingRealtimeFinalizationText = ""
+        currentDictationEventText = ""
         lastError = nil
     }
 
@@ -444,6 +450,8 @@ final class DictationViewModel {
 
             isDictating = true
             livePartialText = ""
+            pendingRealtimeFinalizationText = ""
+            currentDictationEventText = ""
             statusText = "Listening..."
             pendingRealtimeInsertionText = ""
             captureInterruptionDetectedAt = nil
@@ -555,7 +563,8 @@ final class DictationViewModel {
 
         case .partialTranscript(let delta):
             guard isDictating, !delta.isEmpty else { return }
-            livePartialText += delta
+            pendingRealtimeFinalizationText += delta
+            livePartialText = pendingRealtimeFinalizationText
             enqueueRealtimeInsertion(delta)
             statusText = "Transcribing..."
 
@@ -563,6 +572,7 @@ final class DictationViewModel {
             let finalizedSegment = resolvedFinalizedSegment(from: text)
             guard !finalizedSegment.isEmpty else {
                 livePartialText = ""
+                pendingRealtimeFinalizationText = ""
                 return
             }
 
@@ -572,9 +582,14 @@ final class DictationViewModel {
                 transcriptText += "\n" + finalizedSegment
             }
 
-            lastFinalSegment = finalizedSegment
+            currentDictationEventText = appendToCurrentDictationEvent(
+                segment: finalizedSegment,
+                existingText: currentDictationEventText
+            )
+            lastFinalSegment = currentDictationEventText
             livePartialText = ""
-            statusText = "Listening..."
+            pendingRealtimeFinalizationText = ""
+            statusText = isDictating ? "Listening..." : "Ready"
 
             if settings.autoCopyEnabled {
                 copyLatestSegment(updateStatus: false)
@@ -785,12 +800,68 @@ final class DictationViewModel {
     }
 
     private func resolvedFinalizedSegment(from finalText: String) -> String {
-        let trimmedFinal = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedFinal.isEmpty {
-            return trimmedFinal
+        let finalizedText = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bufferedText = pendingRealtimeFinalizationText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackBufferedText = livePartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pendingText = bufferedText.isEmpty ? fallbackBufferedText : bufferedText
+
+        if finalizedText.isEmpty {
+            return pendingText
         }
 
-        return livePartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if pendingText.isEmpty {
+            return finalizedText
+        }
+
+        if finalizedText.count > pendingText.count, finalizedText.hasPrefix(pendingText) {
+            return finalizedText
+        }
+        if pendingText.hasSuffix(finalizedText) {
+            return pendingText
+        }
+        if pendingText.hasPrefix(finalizedText) {
+            return pendingText
+        }
+
+        if let pendingLast = pendingText.last,
+           let finalizedFirst = finalizedText.first,
+           !pendingLast.isWhitespace,
+           !finalizedFirst.isWhitespace
+        {
+            return pendingText + " " + finalizedText
+        }
+        return pendingText + finalizedText
+    }
+
+    private func promotePendingRealtimeTextToLatestSegment() {
+        let pendingSegment = resolvedFinalizedSegment(from: "")
+        guard !pendingSegment.isEmpty else { return }
+
+        currentDictationEventText = appendToCurrentDictationEvent(
+            segment: pendingSegment,
+            existingText: currentDictationEventText
+        )
+        lastFinalSegment = currentDictationEventText
+
+        if settings.autoCopyEnabled {
+            copyLatestSegment(updateStatus: false)
+        }
+    }
+
+    private func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
+        let normalizedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSegment.isEmpty else { return existingText }
+
+        let normalizedExisting = existingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedExisting.isEmpty else { return normalizedSegment }
+
+        if normalizedSegment.count > normalizedExisting.count,
+           normalizedSegment.hasPrefix(normalizedExisting)
+        {
+            return normalizedSegment
+        }
+
+        return normalizedExisting + "\n" + normalizedSegment
     }
 
     private func postUnicodeTextEvents(_ text: String) -> Bool {
