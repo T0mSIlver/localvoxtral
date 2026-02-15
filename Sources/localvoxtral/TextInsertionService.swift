@@ -58,22 +58,29 @@ final class TextInsertionService {
             return .deferredByActiveModifiers
         }
 
+        if keyboardFallbackBehavior == .deferIfModifierActive,
+           postUnicodeTextEvents(text)
+        {
+            clearAccessibilityErrorIfNeeded()
+            keyboardFallbackSuccessCount += 1
+            return .insertedByKeyboardFallback
+        }
+
         if insertTextUsingAccessibility(text) {
             clearAccessibilityErrorIfNeeded()
             axInsertionSuccessCount += 1
             return .insertedByAccessibility
         }
 
-        if !isAccessibilityTrusted {
-            promptForAccessibilityPermissionIfNeeded()
-            setAccessibilityErrorIfNeeded()
-            return .failed
-        }
-
         if postUnicodeTextEvents(text) {
             clearAccessibilityErrorIfNeeded()
             keyboardFallbackSuccessCount += 1
             return .insertedByKeyboardFallback
+        }
+
+        if !isAccessibilityTrusted {
+            promptForAccessibilityPermissionIfNeeded()
+            setAccessibilityErrorIfNeeded()
         }
 
         return .failed

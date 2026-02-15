@@ -565,6 +565,9 @@ final class DictationViewModel {
             pendingRealtimeFinalizationText += delta
             livePartialText = pendingRealtimeFinalizationText
             textInsertion.enqueueRealtimeInsertion(delta)
+            if let accessibilityError = textInsertion.lastAccessibilityError {
+                lastError = accessibilityError
+            }
             statusText = "Transcribing..."
 
         case .finalTranscript(let text):
@@ -599,6 +602,9 @@ final class DictationViewModel {
             // Some providers emit only finalized transcript events. Ensure text is still inserted.
             if !hadLiveDelta {
                 textInsertion.enqueueRealtimeInsertion(finalizedSegment)
+                if let accessibilityError = textInsertion.lastAccessibilityError {
+                    lastError = accessibilityError
+                }
             }
 
             if settings.autoCopyEnabled {
