@@ -963,6 +963,21 @@ final class DictationViewModel {
             if !microphone.hasCapturedAudioInCurrentRun() {
                 startupConfigurationChangeDetected = true
                 startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupConfigChangeGraceSeconds)
+                if captureRecoveryAttemptCount == 0 {
+                    captureRecoveryAttemptCount = 1
+                    debugLog(
+                        "startup config-change before first audio; immediate recovery "
+                            + "attempt=\(captureRecoveryAttemptCount)/\(Self.maxCaptureRecoveryAttempts)"
+                    )
+                    if attemptMicrophoneRecovery() {
+                        captureInterruptionDetectedAt = nil
+                        startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupConfigChangeGraceSeconds)
+                        scheduleAudioChangeEvaluation(
+                            delayMilliseconds: Self.fastAudioChangeEvaluationDelayMilliseconds
+                        )
+                        return
+                    }
+                }
                 scheduleAudioChangeEvaluation(delayMilliseconds: Self.fastAudioChangeEvaluationDelayMilliseconds)
                 return
             }
