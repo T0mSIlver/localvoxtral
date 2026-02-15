@@ -9,6 +9,11 @@ It keeps the loop simple: start dictation, speak, get text fast.
 
 It connects to OpenAI Realtime-compatible endpoints, including local vLLM.
 
+<p>
+  <img src="assets/icons/menubar/MicIconTemplate@2x.png" alt="localvoxtral menubar icon" width="18" height="18" />
+  Menubar icon
+</p>
+
 ## Features
 
 - Global shortcut: `Cmd + Option + Space` to start/stop from anywhere
