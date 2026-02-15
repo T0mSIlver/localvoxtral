@@ -29,9 +29,9 @@ struct SuperVoxtralApp: App {
 
         Settings {
             SettingsView(settings: settingsStore)
-                .frame(minWidth: 420, minHeight: 280)
+                .frame(minWidth: 332, minHeight: 430)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.automatic)
     }
 }
 
