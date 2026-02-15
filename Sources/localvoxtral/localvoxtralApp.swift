@@ -35,6 +35,7 @@ struct localvoxtralApp: App {
     }
 }
 
+@MainActor
 private enum MenuBarIconAsset {
     static let icon: NSImage? = {
         let bundle = Bundle.main
