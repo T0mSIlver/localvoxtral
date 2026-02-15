@@ -1,5 +1,9 @@
 # localvoxtral
 
+<p align="center">
+  <img src="assets/icons/app/AppIcon.png" alt="localvoxtral app icon" width="128" height="128" />
+</p>
+
 localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
 
@@ -22,17 +26,6 @@ Build and run as an app bundle (recommended):
 ./scripts/package_app.sh release
 open ./dist/localvoxtral.app
 ```
-
-## Distribution (GitHub Releases)
-
-One-time setup now exists in this repo:
-
-- GitHub Actions workflow: `/Users/tom/Desktop/projects/supervoxtral/.github/workflows/release.yml`
-  - Trigger: push a tag matching `v*.*.*` (example: `v0.1.0`)
-  - Action: builds/tests on `macos-latest`, packages `dist/localvoxtral.app`, zips it, creates/updates the GitHub Release, and uploads the zip asset
-- Local release flow: `/Users/tom/Desktop/projects/supervoxtral/scripts/release.sh`
-  - Trigger: run `./scripts/release.sh vX.Y.Z` from a clean `main`
-  - Action: validates repo state, runs build/tests, packages + zips app locally, pushes `main`, creates/pushes the tag that triggers GitHub Actions publishing
 
 ## Settings
 
