@@ -5,14 +5,14 @@ It keeps the loop simple: start dictation, speak, get text fast.
 
 It connects to OpenAI Realtime-compatible endpoints, including local vLLM.
 
-## Core features
+## Features
 
-- Menu bar-first UX with a small Settings window
-- Start/stop dictation from the menu or `Cmd + Option + Space`
-- Live partial + finalized transcript handling
-- Microphone input selection
-- Copy latest finalized segment
-- Optional auto-copy for each finalized segment
+- Global shortcut: `Cmd + Option + Space` to start/stop from anywhere
+- Native menu bar app with instant open, no heavy UI
+- Live dictation that writes into your active text field as you speak
+- Pick your preferred microphone input device
+- Copy the latest segment in one click
+- Works with local or remote OpenAI Realtime-compatible endpoints
 
 ## Quick start
 
@@ -23,42 +23,16 @@ Build and run as an app bundle (recommended):
 open ./dist/SuperVoxtral.app
 ```
 
-Or run directly during development:
+## Settings
 
-```bash
-swift run SuperVoxtral
-```
-
-## Configure
-
-Open **Settings** and set:
-
-- Realtime endpoint (default: `ws://127.0.0.1:8000/v1/realtime`)
-- Model name (default: `voxtral-mini-latest`)
-- API key (optional for local setups)
-
-You can also preconfigure with:
-
-- `REALTIME_ENDPOINT`
-- `REALTIME_MODEL`
-- `OPENAI_API_KEY`
+- Open **Settings** from the menu bar popover to set:
+  - Realtime endpoint
+  - Model name
+  - API key
+  - Commit interval
+  - Auto-copy finalized segment
 
 ## Permissions
 
 - Microphone access is required.
 - Accessibility access is recommended for reliable text insertion into the focused app.
-
-## Development
-
-```bash
-swift test
-```
-
-Optional live vLLM integration tests:
-
-```bash
-VLLM_REALTIME_TEST_ENABLE=1 \
-VLLM_REALTIME_TEST_ENDPOINT=ws://127.0.0.1:8000/v1/realtime \
-VLLM_REALTIME_TEST_MODEL=mistralai/Voxtral-Mini-4B-Realtime-2602 \
-swift test --filter RealtimeWebSocketVLLMIntegrationTests
-```
