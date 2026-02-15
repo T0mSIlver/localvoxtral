@@ -9,11 +9,6 @@ It keeps the loop simple: start dictation, speak, get text fast.
 
 It connects to OpenAI Realtime-compatible endpoints, including local vLLM.
 
-<p>
-  <img src="assets/icons/menubar/MicIconTemplate@2x.png" alt="localvoxtral menubar icon" width="18" height="18" />
-  Menubar icon
-</p>
-
 ## Features
 
 - Global shortcut: `Cmd + Option + Space` to start/stop from anywhere
@@ -40,6 +35,17 @@ open ./dist/localvoxtral.app
   - API key
   - Commit interval
   - Auto-copy finalized segment
+
+## Screenshots
+
+<p>
+  <img src="assets/icons/menubar/MicIconTemplate@2x.png" alt="localvoxtral menubar icon" width="22" height="22" />
+  Menubar icon
+</p>
+
+<p>
+  <img src="assets/settings.png" alt="localvoxtral settings view" width="420" />
+</p>
 
 ## Tested setup
 
