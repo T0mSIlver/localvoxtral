@@ -27,9 +27,11 @@ Then enable `SuperVoxtral` in:
 
 ## Icons
 
+- All icon source files live under `assets/icons/`.
 - App icon source: `assets/icons/app/AppIcon.png`
 - Menubar icon source priority:
-  - `menubar-icon.pdf` (project root, preferred)
+  - `assets/icons/menubar/MicIconTemplate.png` + `assets/icons/menubar/MicIconTemplate@2x.png` (preferred)
+  - `assets/icons/menubar/menubar-icon.pdf` (fallback)
   - `assets/icons/menubar/MenubarIcon.svg` (fallback)
 
 ## Configure
@@ -52,8 +54,8 @@ This client sends realtime events in a vLLM-safe sequence:
 
 - waits for `session.created`
 - `session.update` with model
-- startup `input_audio_buffer.commit` to begin realtime generation
 - `input_audio_buffer.append` with base64 PCM16 mono audio at 16kHz (batched every 100ms)
+- `input_audio_buffer.commit` only after buffered audio is present
 - `input_audio_buffer.commit` with `final: true` before disconnect when there is active/pending audio
 
 It handles incoming events:
@@ -70,8 +72,8 @@ Recommended global flow for robust vLLM realtime handling:
 1. Open WebSocket to `/v1/realtime`.
 2. Wait for `session.created` before sending protocol events.
 3. Send `session.update` with the served model.
-4. Send startup `input_audio_buffer.commit` to begin generation.
-5. Stream `input_audio_buffer.append` chunks (base64 PCM16 mono @ 16kHz).
+4. Stream `input_audio_buffer.append` chunks (base64 PCM16 mono @ 16kHz).
+5. Send `input_audio_buffer.commit` only after audio has been appended.
 6. Read `transcription.delta` / `transcription.done` continuously.
 7. On stop, send `input_audio_buffer.commit` with `final: true`, then disconnect gracefully.
 8. Keep heartbeat ping + handshake timeout to detect dead or half-open connections.

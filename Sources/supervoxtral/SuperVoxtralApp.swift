@@ -38,18 +38,24 @@ struct SuperVoxtralApp: App {
 private enum MenuBarIconAsset {
     static let icon: NSImage? = {
         let bundle = Bundle.main
-        let iconURL = bundle.url(forResource: "MenubarIconTemplate", withExtension: "pdf")
-            ?? bundle.url(forResource: "MenubarIconTemplate", withExtension: "png")
-
-        guard let iconURL,
-              let image = NSImage(contentsOf: iconURL)
-        else {
-            return nil
+        for name in ["MicIconTemplate", "MenubarIconTemplate"] {
+            if let image = bundle.image(forResource: NSImage.Name(name))
+                ?? imageFromURL(in: bundle, name: name, ext: "pdf")
+                ?? imageFromURL(in: bundle, name: name, ext: "png") {
+                image.isTemplate = true
+                return image
+            }
         }
 
-        image.isTemplate = true
-        return image
+        return nil
     }()
+
+    private static func imageFromURL(in bundle: Bundle, name: String, ext: String) -> NSImage? {
+        guard let iconURL = bundle.url(forResource: name, withExtension: ext) else {
+            return nil
+        }
+        return NSImage(contentsOf: iconURL)
+    }
 }
 
 private struct MenuBarIconView: View {

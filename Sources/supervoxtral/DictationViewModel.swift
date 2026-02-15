@@ -33,15 +33,23 @@ final class DictationViewModel {
     private var captureInterruptionDetectedAt: Date?
     private var startupCaptureGraceUntil: Date?
     private var hasAttemptedCaptureRecovery = false
+    private var isAwaitingMicrophonePermission = false
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
+    private var captureHealthTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
     private var modifierDeferredInsertionCount = 0
+    private var lastNoAudioDiagnosticAt: Date?
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
 
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private static let accessibilityErrorMessage =
         "Enable Accessibility for SuperVoxtral in System Settings > Privacy & Security > Accessibility."
+    private static weak var hotKeyTarget: DictationViewModel?
+    private static let captureInterruptionConfirmationSeconds: TimeInterval = 4.0
+    private static let recentAudioToleranceSeconds: TimeInterval = 1.2
+    private static let startupNoAudioRecoverySeconds: TimeInterval = 1.5
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -54,7 +62,7 @@ final class DictationViewModel {
 
         microphone.onConfigurationChange = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.scheduleAudioChangeEvaluation()
+                self?.handleMicrophoneConfigurationChange()
             }
         }
 
@@ -64,12 +72,27 @@ final class DictationViewModel {
             }
         }
 
+        Self.hotKeyTarget = self
         registerGlobalHotkey()
         refreshAccessibilityTrustState()
         refreshMicrophoneInputs()
     }
 
+    @MainActor
+    deinit {
+        Self.hotKeyTarget = nil
+        commitTask?.cancel()
+        audioSendTask?.cancel()
+        insertionRetryTask?.cancel()
+        captureHealthTask?.cancel()
+        pendingAudioChangeTask?.cancel()
+        microphone.stop()
+        unregisterGlobalHotkey()
+    }
+
     private func registerGlobalHotkey() {
+        unregisterGlobalHotkey()
+
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -78,7 +101,7 @@ final class DictationViewModel {
         let installStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, eventRef, userData in
-                guard let eventRef, let userData else { return noErr }
+                guard let eventRef else { return noErr }
 
                 var hotKeyID = EventHotKeyID()
                 let status = GetEventParameter(
@@ -98,16 +121,15 @@ final class DictationViewModel {
                     return noErr
                 }
 
-                let viewModel = Unmanaged<DictationViewModel>.fromOpaque(userData).takeUnretainedValue()
-                Task { @MainActor in
-                    viewModel.toggleDictation()
+                DispatchQueue.main.async {
+                    DictationViewModel.hotKeyTarget?.toggleDictation()
                 }
 
                 return noErr
             },
             1,
             &eventType,
-            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+            nil,
             &hotKeyHandlerRef
         )
 
@@ -128,16 +150,25 @@ final class DictationViewModel {
 
         if registerStatus != noErr {
             statusText = "Failed to register global hotkey."
-            if let hotKeyHandlerRef {
-                RemoveEventHandler(hotKeyHandlerRef)
-                self.hotKeyHandlerRef = nil
-            }
+            unregisterGlobalHotkey()
+        }
+    }
+
+    private func unregisterGlobalHotkey() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+
+        if let hotKeyHandlerRef {
+            RemoveEventHandler(hotKeyHandlerRef)
+            self.hotKeyHandlerRef = nil
         }
     }
 
     func toggleDictation() {
         if isDictating {
-            stopDictation()
+            stopDictation(reason: "manual toggle")
         } else {
             startDictation()
         }
@@ -149,23 +180,35 @@ final class DictationViewModel {
             availableInputDevices = devices
         }
 
-        guard !devices.isEmpty else {
-            if !selectedInputDeviceID.isEmpty {
-                selectedInputDeviceID = ""
-            }
-            if !settings.selectedInputDeviceUID.isEmpty {
-                settings.selectedInputDeviceUID = ""
+        let savedSelection = settings.selectedInputDeviceUID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentSelection = selectedInputDeviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitSelection = !savedSelection.isEmpty ? savedSelection : currentSelection
+
+        guard !devices.isEmpty else { return }
+
+        if !explicitSelection.isEmpty {
+            if devices.contains(where: { $0.id == explicitSelection }) {
+                if selectedInputDeviceID != explicitSelection {
+                    selectedInputDeviceID = explicitSelection
+                }
+                if settings.selectedInputDeviceUID != explicitSelection {
+                    settings.selectedInputDeviceUID = explicitSelection
+                }
+            } else {
+                // Keep the user-selected device pinned until they explicitly choose a different input.
+                if selectedInputDeviceID != explicitSelection {
+                    selectedInputDeviceID = explicitSelection
+                }
+                if settings.selectedInputDeviceUID != explicitSelection {
+                    settings.selectedInputDeviceUID = explicitSelection
+                }
             }
             return
         }
 
-        let savedSelection = settings.selectedInputDeviceUID.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedSelection: String
-
-        if devices.contains(where: { $0.id == savedSelection }) {
-            resolvedSelection = savedSelection
-        } else if let defaultID = microphone.defaultInputDeviceID(),
-                  devices.contains(where: { $0.id == defaultID })
+        if let defaultID = microphone.defaultInputDeviceID(),
+           devices.contains(where: { $0.id == defaultID })
         {
             resolvedSelection = defaultID
         } else {
@@ -188,13 +231,23 @@ final class DictationViewModel {
         settings.selectedInputDeviceUID = id
 
         guard isDictating else { return }
-        stopDictation()
+        stopDictation(reason: "input device changed by user")
         startDictation()
     }
 
     func startDictation() {
         guard !isDictating else { return }
+        guard !isAwaitingMicrophonePermission else {
+            statusText = "Awaiting microphone permission..."
+            return
+        }
+        debugLog("startDictation requested")
         refreshMicrophoneInputs()
+        if debugLoggingEnabled {
+            let inputs = availableInputDevices.map { "\($0.name)=\($0.id)" }.joined(separator: ", ")
+            debugLog("available inputs: \(inputs)")
+            debugLog("selected input id=\(selectedInputDeviceID)")
+        }
         lastError = nil
         let deniedMessage = "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
@@ -202,10 +255,14 @@ final class DictationViewModel {
         case .authorized:
             beginDictationSession()
         case .notDetermined:
+            isAwaitingMicrophonePermission = true
             statusText = "Requesting microphone permission..."
+            debugLog("microphone permission prompt requested")
             microphone.requestAccess { [weak self] granted in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    self.isAwaitingMicrophonePermission = false
+                    self.debugLog("microphone permission result granted=\(granted)")
                     guard granted else {
                         self.statusText = "Microphone access denied."
                         self.lastError = deniedMessage
@@ -217,11 +274,13 @@ final class DictationViewModel {
         case .denied, .restricted:
             statusText = "Microphone access denied."
             lastError = deniedMessage
+            debugLog("microphone access denied or restricted")
         }
     }
 
-    func stopDictation() {
+    func stopDictation(reason: String = "unspecified") {
         guard isDictating else { return }
+        debugLog("stopDictation reason=\(reason)")
 
         commitTask?.cancel()
         commitTask = nil
@@ -229,11 +288,15 @@ final class DictationViewModel {
         audioSendTask = nil
         insertionRetryTask?.cancel()
         insertionRetryTask = nil
+        captureHealthTask?.cancel()
+        captureHealthTask = nil
         pendingAudioChangeTask?.cancel()
         pendingAudioChangeTask = nil
         captureInterruptionDetectedAt = nil
         startupCaptureGraceUntil = nil
         hasAttemptedCaptureRecovery = false
+        isAwaitingMicrophonePermission = false
+        lastNoAudioDiagnosticAt = nil
 
         microphone.stop()
         flushBufferedAudio()
@@ -342,12 +405,21 @@ final class DictationViewModel {
             return
         }
 
+        if !selectedInputDeviceID.isEmpty,
+           !availableInputDevices.contains(where: { $0.id == selectedInputDeviceID })
+        {
+            statusText = "Selected microphone unavailable."
+            lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
+            return
+        }
+
         let model = settings.effectiveModelName
 
         do {
             let chunkBuffer = audioChunkBuffer
             chunkBuffer.clear()
             let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+            debugLog("beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")")
             try microphone.start(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
             }
@@ -371,6 +443,7 @@ final class DictationViewModel {
             restartAudioSendTask()
             restartCommitTask()
             restartInsertionRetryTask()
+            restartCaptureHealthTask()
         } catch {
             statusText = "Failed to start dictation."
             lastError = error.localizedDescription
@@ -380,6 +453,9 @@ final class DictationViewModel {
             captureInterruptionDetectedAt = nil
             startupCaptureGraceUntil = nil
             hasAttemptedCaptureRecovery = false
+            captureHealthTask?.cancel()
+            captureHealthTask = nil
+            debugLog("beginDictationSession failed error=\(error.localizedDescription)")
         }
     }
 
@@ -388,11 +464,10 @@ final class DictationViewModel {
 
         let interval = min(1.0, max(0.1, settings.commitIntervalSeconds))
         let client = realtimeClient
-        commitTask = Task { [weak self] in
+        commitTask = Task.detached(priority: .utility) {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { break }
-                guard self != nil else { break }
                 client.sendCommit(final: false)
             }
         }
@@ -401,16 +476,25 @@ final class DictationViewModel {
     private func restartAudioSendTask() {
         audioSendTask?.cancel()
 
+        let interval = audioSendInterval
         let client = realtimeClient
         let chunkBuffer = audioChunkBuffer
-        audioSendTask = Task { [weak self] in
+        let debugLoggingEnabled = debugLoggingEnabled
+        audioSendTask = Task.detached(priority: .utility) {
+            var emptyBufferTicks = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.audioSendInterval ?? 0.1))
+                try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { break }
-                guard self != nil else { break }
 
                 let bufferedChunk = chunkBuffer.takeAll()
-                guard !bufferedChunk.isEmpty else { continue }
+                guard !bufferedChunk.isEmpty else {
+                    emptyBufferTicks += 1
+                    if debugLoggingEnabled, emptyBufferTicks % 20 == 0 {
+                        print("[SuperVoxtral][Dictation] audio send loop has no buffered chunks")
+                    }
+                    continue
+                }
+                emptyBufferTicks = 0
                 client.sendAudioChunk(bufferedChunk)
             }
         }
@@ -429,7 +513,7 @@ final class DictationViewModel {
 
         case .disconnected:
             guard isDictating else { return }
-            stopDictation()
+            stopDictation(reason: "websocket disconnected")
             lastError = "Connection lost. Dictation stopped."
 
         case .status(let message):
@@ -734,6 +818,30 @@ final class DictationViewModel {
         }
     }
 
+    private func restartCaptureHealthTask() {
+        captureHealthTask?.cancel()
+
+        captureHealthTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(600))
+                guard !Task.isCancelled else { break }
+                guard let self else { break }
+                guard self.isDictating else { continue }
+
+                let hasRecentAudio = self.microphone.hasRecentCapturedAudio(
+                    within: Self.recentAudioToleranceSeconds
+                )
+                if hasRecentAudio {
+                    self.captureInterruptionDetectedAt = nil
+                    self.hasAttemptedCaptureRecovery = false
+                    continue
+                }
+
+                self.scheduleAudioChangeEvaluation()
+            }
+        }
+    }
+
     private func resetInsertionDiagnostics() {
         axInsertionSuccessCount = 0
         keyboardFallbackSuccessCount = 0
@@ -804,6 +912,13 @@ final class DictationViewModel {
         }
     }
 
+    private func handleMicrophoneConfigurationChange() {
+        if isDictating {
+            debugLog("configuration changed while dictating; deferring to health evaluation")
+        }
+        scheduleAudioChangeEvaluation()
+    }
+
     private func evaluateAudioChange() {
         pendingAudioChangeTask = nil
         let previousSelection = selectedInputDeviceID
@@ -814,9 +929,24 @@ final class DictationViewModel {
             return
         }
 
-        if microphone.isCapturing() {
+        if !previousSelection.isEmpty,
+           selectedInputDeviceID == previousSelection,
+           !availableInputDevices.contains(where: { $0.id == previousSelection })
+        {
+            stopDictation(reason: "selected input unavailable")
+            lastError = "Selected microphone became unavailable. Reconnect it or select another input."
+            return
+        }
+
+        let hasRecentAudio = microphone.hasRecentCapturedAudio(
+            within: Self.recentAudioToleranceSeconds
+        )
+        let hasCapturedAnyAudio = microphone.hasCapturedAudioInCurrentRun()
+        let isEngineRunning = microphone.isCapturing()
+        if isEngineRunning && hasRecentAudio {
             captureInterruptionDetectedAt = nil
             hasAttemptedCaptureRecovery = false
+            lastNoAudioDiagnosticAt = nil
         } else {
             if let graceDeadline = startupCaptureGraceUntil, Date() < graceDeadline {
                 scheduleAudioChangeEvaluation()
@@ -831,9 +961,33 @@ final class DictationViewModel {
                 return
             }
 
-            if let detectedAt = captureInterruptionDetectedAt,
-               Date().timeIntervalSince(detectedAt) < 0.9
+            if !hasCapturedAnyAudio,
+               let detectedAt = captureInterruptionDetectedAt,
+               Date().timeIntervalSince(detectedAt) >= Self.startupNoAudioRecoverySeconds
             {
+                if !hasAttemptedCaptureRecovery {
+                    hasAttemptedCaptureRecovery = true
+                    debugLog("startup produced no audio; attempting capture restart on selected input")
+                    if attemptMicrophoneRecovery() {
+                        captureInterruptionDetectedAt = nil
+                        startupCaptureGraceUntil = Date().addingTimeInterval(1.0)
+                        scheduleAudioChangeEvaluation()
+                        return
+                    }
+                }
+            }
+
+            if let detectedAt = captureInterruptionDetectedAt,
+               Date().timeIntervalSince(detectedAt) < Self.captureInterruptionConfirmationSeconds
+            {
+                scheduleAudioChangeEvaluation()
+                return
+            }
+
+            if !isEngineRunning, microphone.resumeIfNeeded() {
+                captureInterruptionDetectedAt = nil
+                hasAttemptedCaptureRecovery = false
+                startupCaptureGraceUntil = Date().addingTimeInterval(1.0)
                 scheduleAudioChangeEvaluation()
                 return
             }
@@ -848,21 +1002,14 @@ final class DictationViewModel {
                 }
             }
 
-            stopDictation()
-            lastError = "Microphone capture was interrupted. Dictation stopped."
-            return
-        }
-
-        guard !selectedInputDeviceID.isEmpty else {
-            // Device enumeration can be transient; keep an active capture session running.
-            return
-        }
-
-        if !previousSelection.isEmpty,
-           !availableInputDevices.contains(where: { $0.id == previousSelection })
-        {
-            stopDictation()
-            lastError = "Selected microphone is unavailable. Dictation stopped."
+            if shouldEmitNoAudioDiagnosticNow() {
+                debugLog(
+                    "no recent audio; engineRunning=\(isEngineRunning) selectedInput=\(selectedInputDeviceID)"
+                )
+            }
+            statusText = "Listening... (waiting for microphone audio)"
+            lastError = "No microphone audio frames captured yet."
+            scheduleAudioChangeEvaluation()
             return
         }
     }
@@ -886,17 +1033,32 @@ final class DictationViewModel {
         let chunkBuffer = audioChunkBuffer
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
 
-        microphone.stop()
-
         do {
+            debugLog("attempting microphone recovery input=\(preferredInputID ?? "default")")
             try microphone.start(preferredDeviceID: preferredInputID) { chunk in
                 chunkBuffer.append(chunk)
             }
             statusText = "Listening..."
+            debugLog("microphone recovery succeeded")
             return true
         } catch {
             lastError = "Failed to recover microphone capture: \(error.localizedDescription)"
+            debugLog("microphone recovery failed error=\(error.localizedDescription)")
             return false
         }
+    }
+
+    private func shouldEmitNoAudioDiagnosticNow() -> Bool {
+        let now = Date()
+        if let last = lastNoAudioDiagnosticAt, now.timeIntervalSince(last) < 1.0 {
+            return false
+        }
+        lastNoAudioDiagnosticAt = now
+        return true
+    }
+
+    private func debugLog(_ message: String) {
+        guard debugLoggingEnabled else { return }
+        print("[SuperVoxtral][Dictation] \(message)")
     }
 }

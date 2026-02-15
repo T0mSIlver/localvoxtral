@@ -39,13 +39,30 @@ enum MicrophoneCaptureError: LocalizedError {
 final class MicrophoneCaptureService: @unchecked Sendable {
     typealias ChunkHandler = @Sendable (Data) -> Void
 
+    private struct InputFormatDescriptor: Equatable {
+        let sampleRate: Double
+        let channelCount: AVAudioChannelCount
+        let commonFormat: AVAudioCommonFormat
+        let isInterleaved: Bool
+    }
+
+    private final class ConverterState {
+        var inputFormatDescriptor: InputFormatDescriptor?
+        var converter: AVAudioConverter?
+        var consecutiveFailureCount = 0
+    }
+
     private var audioEngine: AVAudioEngine?
     private let processingQueue = DispatchQueue(label: "supervoxtral.microphone.processing")
+    private let lastCapturedAudioAt = Mutex<Date?>(nil)
+    private let hasCapturedAudioInCurrentRunFlag = Mutex(false)
     private static let targetSampleRate: Double = 16_000
     private let targetOutputFormat: AVAudioFormat
     private var tapInstalled = false
     private var configChangeObserver: NSObjectProtocol?
     private var didInstallInputDeviceListeners = false
+    private var previousDefaultInputDeviceObjectID: AudioObjectID?
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
     var onConfigurationChange: (@Sendable () -> Void)?
     var onInputDevicesChanged: (@Sendable () -> Void)?
 
@@ -109,32 +126,109 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         return audioEngine.isRunning && tapInstalled
     }
 
+    func hasRecentCapturedAudio(within interval: TimeInterval) -> Bool {
+        guard interval > 0 else { return false }
+        let recentCutoff = Date().addingTimeInterval(-interval)
+        return lastCapturedAudioAt.withLock { timestamp in
+            guard let timestamp else { return false }
+            return timestamp >= recentCutoff
+        }
+    }
+
+    func hasCapturedAudioInCurrentRun() -> Bool {
+        hasCapturedAudioInCurrentRunFlag.withLock { $0 }
+    }
+
+    @discardableResult
+    func resumeIfNeeded() -> Bool {
+        guard let audioEngine else { return false }
+        guard !audioEngine.isRunning else {
+            return false
+        }
+
+        do {
+            try audioEngine.start()
+            let resumed = audioEngine.isRunning && tapInstalled
+            debugLog("resumeIfNeeded resumed=\(resumed)")
+            return resumed
+        } catch {
+            debugLog("resumeIfNeeded failed error=\(error.localizedDescription)")
+            return false
+        }
+    }
+
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
-        stop()
+        stop(restoreDefaultInput: false)
+        hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
+        debugLog("start preferredDeviceID=\(preferredDeviceID ?? "default")")
+        // Important: select/switch the input route before creating AVAudioEngine.
+        // Creating the engine first can bind to a stale route and cause -10868 on start.
+        try configureInputDevice(preferredDeviceID)
+
         let audioEngine = AVAudioEngine()
         self.audioEngine = audioEngine
-        try configureInputDevice(preferredDeviceID, on: audioEngine)
 
         let inputNode = audioEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw MicrophoneCaptureError.invalidInputFormat
-        }
-
         let outputFormat = targetOutputFormat
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            throw MicrophoneCaptureError.converterCreationFailed
-        }
-        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
 
         let processingQueue = processingQueue
+        let hasLoggedFirstChunk = Mutex(false)
+        let converterState = ConverterState()
 
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { buffer, _ in
-            guard let chunk = Self.convertToPCM16Mono(buffer: buffer, converter: converter, outputFormat: outputFormat) else {
+        inputNode.installTap(onBus: 0, bufferSize: 2048, format: nil) { buffer, _ in
+            let inputFormat = buffer.format
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
                 return
             }
 
+            let inputFormatDescriptor = Self.inputFormatDescriptor(for: inputFormat)
+            if converterState.converter == nil || converterState.inputFormatDescriptor != inputFormatDescriptor {
+                guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+                    if self.debugLoggingEnabled {
+                        self.debugLog(
+                            "converter creation failed sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount)"
+                        )
+                    }
+                    return
+                }
+                converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+                converterState.converter = converter
+                converterState.inputFormatDescriptor = inputFormatDescriptor
+                converterState.consecutiveFailureCount = 0
+                self.debugLog(
+                    "converter configured sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount) interleaved=\(inputFormat.isInterleaved)"
+                )
+            }
+
+            guard let converter = converterState.converter,
+                  let chunk = Self.convertToPCM16Mono(buffer: buffer, converter: converter, outputFormat: outputFormat)
+            else {
+                converterState.consecutiveFailureCount += 1
+                if self.debugLoggingEnabled,
+                   (converterState.consecutiveFailureCount == 1
+                       || converterState.consecutiveFailureCount % 50 == 0)
+                {
+                    self.debugLog(
+                        "converter produced no PCM chunk sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount)"
+                    )
+                }
+                return
+            }
+
+            converterState.consecutiveFailureCount = 0
             processingQueue.async {
+                self.lastCapturedAudioAt.withLock { $0 = Date() }
+                self.hasCapturedAudioInCurrentRunFlag.withLock { $0 = true }
+                if self.debugLoggingEnabled {
+                    let shouldLog = hasLoggedFirstChunk.withLock { hasLogged in
+                        if hasLogged { return false }
+                        hasLogged = true
+                        return true
+                    }
+                    if shouldLog {
+                        self.debugLog("received first microphone chunk bytes=\(chunk.count)")
+                    }
+                }
                 chunkHandler(chunk)
             }
         }
@@ -154,11 +248,12 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             object: audioEngine,
             queue: .main
         ) { [weak self] _ in
+            self?.debugLog("AVAudioEngineConfigurationChange observed")
             self?.onConfigurationChange?()
         }
     }
 
-    func stop() {
+    func stop(restoreDefaultInput: Bool = true) {
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
@@ -178,36 +273,107 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         audioEngine = nil
         tapInstalled = false
+        if restoreDefaultInput {
+            restoreDefaultInputDeviceIfNeeded()
+        }
+        lastCapturedAudioAt.withLock { $0 = nil }
+        hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
+        debugLog("stop")
     }
 
-    private func configureInputDevice(_ preferredDeviceID: String?, on audioEngine: AVAudioEngine) throws {
+    private func configureInputDevice(_ preferredDeviceID: String?) throws {
         if let preferredDeviceID,
-           !preferredDeviceID.isEmpty,
-           preferredDeviceID != defaultInputDeviceID(),
-           let preferredObjectID = audioDeviceID(forUID: preferredDeviceID)
+           !preferredDeviceID.isEmpty
         {
-            guard setInputDevice(preferredObjectID, on: audioEngine) else {
+            guard let preferredObjectID = audioDeviceID(forUID: preferredDeviceID) else {
+                throw MicrophoneCaptureError.preferredDeviceUnavailable(preferredDeviceID)
+            }
+
+            guard let currentDefaultInputID = defaultInputDeviceObjectID() else {
                 throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
             }
+
+            if preferredObjectID == currentDefaultInputID {
+                debugLog("preferred input matches current default uid=\(preferredDeviceID)")
+                return
+            }
+
+            let preferredName = deviceName(for: preferredObjectID) ?? preferredDeviceID
+            debugLog(
+                "attempting set preferred input uid=\(preferredDeviceID) name=\(preferredName) objectID=\(preferredObjectID) via default-input route"
+            )
+            previousDefaultInputDeviceObjectID = currentDefaultInputID
+            guard setSystemDefaultInputDevice(preferredObjectID) else {
+                previousDefaultInputDeviceObjectID = nil
+                throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
+            }
+
+            guard waitForDefaultInputDevice(preferredObjectID) else {
+                debugLog("default input did not settle to objectID=\(preferredObjectID)")
+                previousDefaultInputDeviceObjectID = nil
+                throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
+            }
+
+            // Give CoreAudio a short moment to settle after route switch.
+            Thread.sleep(forTimeInterval: 0.06)
+            debugLog("set preferred input succeeded uid=\(preferredDeviceID)")
             return
         }
 
-        if let preferredDeviceID,
-           !preferredDeviceID.isEmpty,
-           preferredDeviceID != defaultInputDeviceID()
-        {
-            throw MicrophoneCaptureError.preferredDeviceUnavailable(preferredDeviceID)
-        }
+        previousDefaultInputDeviceObjectID = nil
     }
 
     @discardableResult
-    private func setInputDevice(_ deviceID: AudioObjectID, on audioEngine: AVAudioEngine) -> Bool {
-        do {
-            try audioEngine.inputNode.auAudioUnit.setDeviceID(deviceID)
-            return true
-        } catch {
+    private func setSystemDefaultInputDevice(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var newDeviceID = deviceID
+        let dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            dataSize,
+            &newDeviceID
+        )
+
+        guard status == noErr else {
+            debugLog("setSystemDefaultInputDevice failed objectID=\(deviceID) status=\(status)")
             return false
         }
+
+        return true
+    }
+
+    private func restoreDefaultInputDeviceIfNeeded() {
+        guard let previousDefaultInputDeviceObjectID else { return }
+        defer {
+            self.previousDefaultInputDeviceObjectID = nil
+        }
+
+        guard defaultInputDeviceObjectID() != previousDefaultInputDeviceObjectID else { return }
+        guard setSystemDefaultInputDevice(previousDefaultInputDeviceObjectID) else { return }
+        debugLog("restored previous default input objectID=\(previousDefaultInputDeviceObjectID)")
+    }
+
+    private func waitForDefaultInputDevice(
+        _ expectedDeviceID: AudioObjectID,
+        timeout: TimeInterval = 0.8
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if defaultInputDeviceObjectID() == expectedDeviceID {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+
+        return defaultInputDeviceObjectID() == expectedDeviceID
     }
 
     private func allInputDevices() -> [MicrophoneInputDevice] {
@@ -342,7 +508,18 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     private func audioDeviceID(forUID uid: String) -> AudioObjectID? {
-        allAudioDeviceIDs().first { deviceUID(for: $0) == uid }
+        let inputMatches = allAudioDeviceIDs().filter { deviceID in
+            guard deviceUID(for: deviceID) == uid else { return false }
+            return isSelectableInputDevice(deviceID)
+        }
+
+        guard !inputMatches.isEmpty else { return nil }
+        if let defaultInputID = defaultInputDeviceObjectID(),
+           inputMatches.contains(defaultInputID)
+        {
+            return defaultInputID
+        }
+        return inputMatches[0]
     }
 
     private func deviceUID(for deviceID: AudioObjectID) -> String? {
@@ -518,8 +695,23 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     private func notifyInputDevicesChanged() {
         DispatchQueue.main.async { [weak self] in
+            self?.debugLog("input devices changed")
             self?.onInputDevicesChanged?()
         }
+    }
+
+    private func debugLog(_ message: String) {
+        guard debugLoggingEnabled else { return }
+        print("[SuperVoxtral][Microphone] \(message)")
+    }
+
+    private static func inputFormatDescriptor(for format: AVAudioFormat) -> InputFormatDescriptor {
+        InputFormatDescriptor(
+            sampleRate: format.sampleRate,
+            channelCount: format.channelCount,
+            commonFormat: format.commonFormat,
+            isInterleaved: format.isInterleaved
+        )
     }
 
     private static func convertToPCM16Mono(buffer: AVAudioPCMBuffer, converter: AVAudioConverter, outputFormat: AVAudioFormat) -> Data? {
