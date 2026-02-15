@@ -645,17 +645,25 @@ final class DictationViewModel {
         guard !text.isEmpty else { return .insertedByAccessibility }
         refreshAccessibilityTrustState()
 
-        if insertTextUsingAccessibility(text) {
-            clearAccessibilityErrorIfNeeded()
-            axInsertionSuccessCount += 1
-            return .insertedByAccessibility
-        }
-
         if keyboardFallbackBehavior == .deferIfModifierActive,
            shouldSuppressKeyboardFallbackForActiveModifiers()
         {
             modifierDeferredInsertionCount += 1
             return .deferredByActiveModifiers
+        }
+
+        if keyboardFallbackBehavior == .deferIfModifierActive,
+           postUnicodeTextEvents(text)
+        {
+            clearAccessibilityErrorIfNeeded()
+            keyboardFallbackSuccessCount += 1
+            return .insertedByKeyboardFallback
+        }
+
+        if insertTextUsingAccessibility(text) {
+            clearAccessibilityErrorIfNeeded()
+            axInsertionSuccessCount += 1
+            return .insertedByAccessibility
         }
 
         if postUnicodeTextEvents(text) {
@@ -689,13 +697,18 @@ final class DictationViewModel {
             return false
         }
 
-        let focusedElement = focusedObject as! AXUIElement
+        guard CFGetTypeID(focusedObject) == AXUIElementGetTypeID() else {
+            return false
+        }
 
-        if AXUIElementSetAttributeValue(
-            focusedElement,
-            kAXSelectedTextAttribute as CFString,
-            text as CFTypeRef
-        ) == .success {
+        let focusedElement = focusedObject as! AXUIElement
+        var focusedPID: pid_t = 0
+        AXUIElementGetPid(focusedElement, &focusedPID)
+        if focusedPID == getpid() {
+            return false
+        }
+
+        if replaceSelectedTextRange(in: focusedElement, with: text) {
             return true
         }
 
