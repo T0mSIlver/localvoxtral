@@ -1,6 +1,6 @@
-# SuperVoxtral
+# localvoxtral
 
-SuperVoxtral is a native macOS menu bar app for realtime dictation.
+localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
 
 It connects to OpenAI Realtime-compatible endpoints, including local vLLM.
@@ -20,8 +20,12 @@ Build and run as an app bundle (recommended):
 
 ```bash
 ./scripts/package_app.sh release
-open ./dist/SuperVoxtral.app
+open ./dist/localvoxtral.app
 ```
+
+## Tested setup
+
+- Tested with a local `vllm` server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/raw/main/README.md).
 
 ## Settings
 
@@ -36,3 +40,12 @@ open ./dist/SuperVoxtral.app
 
 - Microphone access is required.
 - Accessibility access is recommended for reliable text insertion into the focused app.
+
+## Roadmap
+
+- [ ] Customize keyboard shortcut
+- [ ] Implement one of the on-device Voxtral Realtime integrations recommended in the model README:
+  - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
+  - [mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)
+  - [MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)
+  - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
