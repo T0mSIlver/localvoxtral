@@ -28,10 +28,7 @@ chmod +x "$APP_DIR/Contents/MacOS/SuperVoxtral"
 ICON_SOURCE=""
 for candidate in \
   "$ROOT_DIR/assets/icons/app/AppIcon.png" \
-  "$ROOT_DIR/assets/icons/app/icon.png" \
-  "$ROOT_DIR/AppIcon.png" \
-  "$ROOT_DIR/icon.png" \
-  "$ROOT_DIR/icon_v1.png"
+  "$ROOT_DIR/assets/icons/app/icon.png"
 do
   if [[ -f "$candidate" ]]; then
     ICON_SOURCE="$candidate"
@@ -40,9 +37,9 @@ do
 done
 
 if [[ -z "$ICON_SOURCE" ]]; then
-  FIRST_PNG="$(find "$ROOT_DIR" -maxdepth 1 -type f -name '*.png' | head -n 1 || true)"
-  if [[ -n "$FIRST_PNG" ]]; then
-    ICON_SOURCE="$FIRST_PNG"
+  FIRST_APP_ICON="$(find "$ROOT_DIR/assets/icons/app" -maxdepth 1 -type f -name '*.png' 2>/dev/null | head -n 1 || true)"
+  if [[ -n "$FIRST_APP_ICON" ]]; then
+    ICON_SOURCE="$FIRST_APP_ICON"
   fi
 fi
 
@@ -65,25 +62,62 @@ if [[ -n "$ICON_SOURCE" ]]; then
   iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 fi
 
-MENUBAR_PDF_SOURCE=""
+MENUBAR_PNG_SOURCE=""
 for candidate in \
-  "$ROOT_DIR/menubar-icon.pdf" \
-  "$ROOT_DIR/MenubarIconTemplate.pdf" \
-  "$ROOT_DIR/assets/icons/menubar/MenubarIconTemplate.pdf" \
-  "$ROOT_DIR/assets/icons/menubar/MenubarIcon.pdf"
+  "$ROOT_DIR/assets/icons/menubar/MicIconTemplate.png" \
+  "$ROOT_DIR/assets/icons/menubar/MenubarIconTemplate.png" \
+  "$ROOT_DIR/assets/icons/menubar/MenubarIcon.png"
 do
   if [[ -f "$candidate" ]]; then
-    MENUBAR_PDF_SOURCE="$candidate"
+    MENUBAR_PNG_SOURCE="$candidate"
     break
   fi
 done
 
+if [[ -z "$MENUBAR_PNG_SOURCE" ]]; then
+  MENUBAR_PNG_SOURCE="$(find "$ROOT_DIR/assets/icons/menubar" -maxdepth 1 -type f -name '*.png' ! -name '*@2x.png' 2>/dev/null | head -n 1 || true)"
+fi
+
+MENUBAR_PNG_2X_SOURCE=""
+if [[ -n "$MENUBAR_PNG_SOURCE" ]]; then
+  MENUBAR_PNG_BASE="${MENUBAR_PNG_SOURCE%.png}"
+  if [[ -f "${MENUBAR_PNG_BASE}@2x.png" ]]; then
+    MENUBAR_PNG_2X_SOURCE="${MENUBAR_PNG_BASE}@2x.png"
+  fi
+fi
+
+if [[ -z "$MENUBAR_PNG_2X_SOURCE" ]]; then
+  for candidate in \
+    "$ROOT_DIR/assets/icons/menubar/MicIconTemplate@2x.png" \
+    "$ROOT_DIR/assets/icons/menubar/MenubarIconTemplate@2x.png" \
+    "$ROOT_DIR/assets/icons/menubar/MenubarIcon@2x.png"
+  do
+    if [[ -f "$candidate" ]]; then
+      MENUBAR_PNG_2X_SOURCE="$candidate"
+      break
+    fi
+  done
+fi
+
+MENUBAR_PDF_SOURCE=""
+if [[ -z "$MENUBAR_PNG_SOURCE" ]]; then
+  for candidate in \
+    "$ROOT_DIR/assets/icons/menubar/menubar-icon.pdf" \
+    "$ROOT_DIR/assets/icons/menubar/MenubarIconTemplate.pdf" \
+    "$ROOT_DIR/assets/icons/menubar/MenubarIcon.pdf"
+  do
+    if [[ -f "$candidate" ]]; then
+      MENUBAR_PDF_SOURCE="$candidate"
+      break
+    fi
+  done
+fi
+
 MENUBAR_SVG_SOURCE=""
-if [[ -z "$MENUBAR_PDF_SOURCE" ]]; then
+if [[ -z "$MENUBAR_PNG_SOURCE" && -z "$MENUBAR_PDF_SOURCE" ]]; then
   for candidate in \
     "$ROOT_DIR/assets/icons/menubar/MenubarIcon.svg" \
-    "$ROOT_DIR/assets/icons/menubar/icon.svg" \
-    "$ROOT_DIR/menubar-icon.svg"
+    "$ROOT_DIR/assets/icons/menubar/icon.svg"
   do
     if [[ -f "$candidate" ]]; then
       MENUBAR_SVG_SOURCE="$candidate"
@@ -92,7 +126,7 @@ if [[ -z "$MENUBAR_PDF_SOURCE" ]]; then
   done
 
   if [[ -z "$MENUBAR_SVG_SOURCE" ]]; then
-    FIRST_MENUBAR_SVG="$(find "$ROOT_DIR/assets/icons/menubar" -maxdepth 1 -type f -name '*.svg' | head -n 1 || true)"
+    FIRST_MENUBAR_SVG="$(find "$ROOT_DIR/assets/icons/menubar" -maxdepth 1 -type f -name '*.svg' 2>/dev/null | head -n 1 || true)"
     if [[ -n "$FIRST_MENUBAR_SVG" ]]; then
       MENUBAR_SVG_SOURCE="$FIRST_MENUBAR_SVG"
     fi
@@ -100,17 +134,39 @@ if [[ -z "$MENUBAR_PDF_SOURCE" ]]; then
 fi
 
 MENUBAR_PDF_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.pdf"
-MENUBAR_PNG_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
+MENUBAR_PNG_TARGET="$APP_DIR/Contents/Resources/MicIconTemplate.png"
+MENUBAR_PNG_2X_TARGET="$APP_DIR/Contents/Resources/MicIconTemplate@2x.png"
+LEGACY_MENUBAR_PNG_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate.png"
+LEGACY_MENUBAR_PNG_2X_TARGET="$APP_DIR/Contents/Resources/MenubarIconTemplate@2x.png"
 
-if [[ -n "$MENUBAR_PDF_SOURCE" ]]; then
+if [[ -n "$MENUBAR_PNG_SOURCE" ]]; then
+  cp "$MENUBAR_PNG_SOURCE" "$MENUBAR_PNG_TARGET"
+  cp "$MENUBAR_PNG_SOURCE" "$LEGACY_MENUBAR_PNG_TARGET"
+
+  if [[ -n "$MENUBAR_PNG_2X_SOURCE" ]]; then
+    cp "$MENUBAR_PNG_2X_SOURCE" "$MENUBAR_PNG_2X_TARGET"
+    cp "$MENUBAR_PNG_2X_SOURCE" "$LEGACY_MENUBAR_PNG_2X_TARGET"
+  else
+    sips -z 32 32 "$MENUBAR_PNG_SOURCE" --out "$MENUBAR_PNG_2X_TARGET" >/dev/null 2>&1 || true
+    if [[ -f "$MENUBAR_PNG_2X_TARGET" ]]; then
+      cp "$MENUBAR_PNG_2X_TARGET" "$LEGACY_MENUBAR_PNG_2X_TARGET"
+    fi
+  fi
+elif [[ -n "$MENUBAR_PDF_SOURCE" ]]; then
   cp "$MENUBAR_PDF_SOURCE" "$MENUBAR_PDF_TARGET"
   sips -s format png -Z 36 "$MENUBAR_PDF_TARGET" --out "$MENUBAR_PNG_TARGET" >/dev/null 2>&1 || true
+  if [[ -f "$MENUBAR_PNG_TARGET" ]]; then
+    cp "$MENUBAR_PNG_TARGET" "$LEGACY_MENUBAR_PNG_TARGET"
+  fi
 elif [[ -n "$MENUBAR_SVG_SOURCE" ]]; then
   # Keep a vector copy so SwiftUI can render it sharply in the menu bar.
   sips -s format pdf "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_PDF_TARGET" >/dev/null 2>&1 || true
 
   # Produce a retina-sized PNG fallback.
   sips -s format png -Z 36 "$MENUBAR_SVG_SOURCE" --out "$MENUBAR_PNG_TARGET" >/dev/null 2>&1 || true
+  if [[ -f "$MENUBAR_PNG_TARGET" ]]; then
+    cp "$MENUBAR_PNG_TARGET" "$LEGACY_MENUBAR_PNG_TARGET"
+  fi
 fi
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
