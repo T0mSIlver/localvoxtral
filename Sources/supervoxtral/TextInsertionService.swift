@@ -21,6 +21,7 @@ final class TextInsertionService {
     private(set) var isAccessibilityTrusted = false
     var lastAccessibilityError: String?
 
+    var onAccessibilityTrustChanged: (() -> Void)?
     private var hasPromptedForAccessibilityPermission = false
     private var hasShownAccessibilityError = false
     private var pendingRealtimeInsertionText = ""
@@ -164,7 +165,7 @@ final class TextInsertionService {
             lastAccessibilityError = nil
         }
         if !wasTrusted {
-            clearAccessibilityErrorIfNeeded()
+            onAccessibilityTrustChanged?()
         }
     }
 

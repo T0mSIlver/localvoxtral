@@ -58,6 +58,19 @@ final class DictationViewModel {
             }
         }
 
+        textInsertion.onAccessibilityTrustChanged = { [weak self] in
+            guard let self else { return }
+            if self.lastError == TextInsertionService.accessibilityErrorMessage {
+                self.lastError = nil
+            }
+            if !self.isDictating,
+               self.statusText == "Waiting for Accessibility permission."
+                || self.statusText == "Paste blocked by Accessibility permission."
+            {
+                self.statusText = "Ready"
+            }
+        }
+
         Self.hotKeyTarget = self
         registerGlobalHotkey()
         textInsertion.refreshAccessibilityTrustState()
