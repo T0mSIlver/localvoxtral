@@ -4,11 +4,6 @@ import CoreAudio
 import Foundation
 import Synchronization
 
-struct MicrophoneInputDevice: Identifiable, Hashable {
-    let id: String
-    let name: String
-}
-
 enum MicrophoneAuthorizationStatus {
     case authorized
     case denied
@@ -113,13 +108,12 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     func availableInputDevices() -> [MicrophoneInputDevice] {
-        allInputDevices()
+        AudioDeviceManager.allInputDevices()
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func defaultInputDeviceID() -> String? {
-        guard let objectID = defaultInputDeviceObjectID() else { return nil }
-        return deviceUID(for: objectID)
+        AudioDeviceManager.defaultInputDeviceID()
     }
 
     func isCapturing() -> Bool {
@@ -308,11 +302,11 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         if let preferredDeviceID,
            !preferredDeviceID.isEmpty
         {
-            guard let preferredObjectID = audioDeviceID(forUID: preferredDeviceID) else {
+            guard let preferredObjectID = AudioDeviceManager.audioDeviceID(forUID: preferredDeviceID) else {
                 throw MicrophoneCaptureError.preferredDeviceUnavailable(preferredDeviceID)
             }
 
-            guard let currentDefaultInputID = defaultInputDeviceObjectID() else {
+            guard let currentDefaultInputID = AudioDeviceManager.defaultInputDeviceObjectID() else {
                 throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
             }
 
@@ -321,12 +315,12 @@ final class MicrophoneCaptureService: @unchecked Sendable {
                 return
             }
 
-            let preferredName = deviceName(for: preferredObjectID) ?? preferredDeviceID
+            let preferredName = AudioDeviceManager.deviceName(for: preferredObjectID) ?? preferredDeviceID
             debugLog(
                 "attempting set preferred input uid=\(preferredDeviceID) name=\(preferredName) objectID=\(preferredObjectID) via default-input route"
             )
             previousDefaultInputDeviceObjectID = currentDefaultInputID
-            guard setSystemDefaultInputDevice(preferredObjectID) else {
+            guard AudioDeviceManager.setSystemDefaultInputDevice(preferredObjectID) else {
                 previousDefaultInputDeviceObjectID = nil
                 throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
             }
@@ -346,41 +340,14 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         previousDefaultInputDeviceObjectID = nil
     }
 
-    @discardableResult
-    private func setSystemDefaultInputDevice(_ deviceID: AudioObjectID) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var newDeviceID = deviceID
-        let dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = AudioObjectSetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            dataSize,
-            &newDeviceID
-        )
-
-        guard status == noErr else {
-            debugLog("setSystemDefaultInputDevice failed objectID=\(deviceID) status=\(status)")
-            return false
-        }
-
-        return true
-    }
-
     private func restoreDefaultInputDeviceIfNeeded() {
         guard let previousDefaultInputDeviceObjectID else { return }
         defer {
             self.previousDefaultInputDeviceObjectID = nil
         }
 
-        guard defaultInputDeviceObjectID() != previousDefaultInputDeviceObjectID else { return }
-        guard setSystemDefaultInputDevice(previousDefaultInputDeviceObjectID) else { return }
+        guard AudioDeviceManager.defaultInputDeviceObjectID() != previousDefaultInputDeviceObjectID else { return }
+        guard AudioDeviceManager.setSystemDefaultInputDevice(previousDefaultInputDeviceObjectID) else { return }
         debugLog("restored previous default input objectID=\(previousDefaultInputDeviceObjectID)")
     }
 
@@ -390,236 +357,13 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if defaultInputDeviceObjectID() == expectedDeviceID {
+            if AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID {
                 return true
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
 
-        return defaultInputDeviceObjectID() == expectedDeviceID
-    }
-
-    private func allInputDevices() -> [MicrophoneInputDevice] {
-        allAudioDeviceIDs().compactMap { deviceID in
-            guard isSelectableInputDevice(deviceID) else { return nil }
-            guard let uid = deviceUID(for: deviceID) else { return nil }
-            let name = deviceName(for: deviceID) ?? "Input \(uid)"
-            return MicrophoneInputDevice(id: uid, name: name)
-        }
-    }
-
-    private func isSelectableInputDevice(_ deviceID: AudioObjectID) -> Bool {
-        guard deviceHasInput(deviceID) else { return false }
-        guard deviceIsAlive(deviceID) else { return false }
-        guard !deviceIsHidden(deviceID) else { return false }
-        guard deviceCanBeDefaultInput(deviceID) else { return false }
-        return true
-    }
-
-    private func deviceIsAlive(_ deviceID: AudioObjectID) -> Bool {
-        (deviceUInt32Property(
-            selector: kAudioDevicePropertyDeviceIsAlive,
-            scope: kAudioObjectPropertyScopeGlobal,
-            deviceID: deviceID
-        ) ?? 0) != 0
-    }
-
-    private func deviceIsHidden(_ deviceID: AudioObjectID) -> Bool {
-        (deviceUInt32Property(
-            selector: kAudioDevicePropertyIsHidden,
-            scope: kAudioObjectPropertyScopeGlobal,
-            deviceID: deviceID
-        ) ?? 0) != 0
-    }
-
-    private func deviceCanBeDefaultInput(_ deviceID: AudioObjectID) -> Bool {
-        (deviceUInt32Property(
-            selector: kAudioDevicePropertyDeviceCanBeDefaultDevice,
-            scope: kAudioDevicePropertyScopeInput,
-            deviceID: deviceID
-        ) ?? 0) != 0
-    }
-
-    private func deviceUInt32Property(
-        selector: AudioObjectPropertySelector,
-        scope: AudioObjectPropertyScope,
-        deviceID: AudioObjectID
-    ) -> UInt32? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var value: UInt32 = 0
-        var dataSize = UInt32(MemoryLayout<UInt32>.size)
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &value
-        )
-
-        guard status == noErr else { return nil }
-        return value
-    }
-
-    private func allAudioDeviceIDs() -> [AudioObjectID] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        let sizeStatus = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &dataSize
-        )
-
-        guard sizeStatus == noErr, dataSize > 0 else {
-            return []
-        }
-
-        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
-        var deviceIDs = [AudioObjectID](repeating: 0, count: count)
-
-        let dataStatus = deviceIDs.withUnsafeMutableBufferPointer { buffer in
-            AudioObjectGetPropertyData(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                0,
-                nil,
-                &dataSize,
-                buffer.baseAddress!
-            )
-        }
-
-        guard dataStatus == noErr else {
-            return []
-        }
-
-        return deviceIDs
-    }
-
-    private func defaultInputDeviceObjectID() -> AudioObjectID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var deviceID = AudioObjectID(0)
-        var dataSize = UInt32(MemoryLayout<AudioObjectID>.size)
-
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &deviceID
-        )
-
-        guard status == noErr, deviceID != 0 else { return nil }
-        return deviceID
-    }
-
-    private func audioDeviceID(forUID uid: String) -> AudioObjectID? {
-        let inputMatches = allAudioDeviceIDs().filter { deviceID in
-            guard deviceUID(for: deviceID) == uid else { return false }
-            return isSelectableInputDevice(deviceID)
-        }
-
-        guard !inputMatches.isEmpty else { return nil }
-        if let defaultInputID = defaultInputDeviceObjectID(),
-           inputMatches.contains(defaultInputID)
-        {
-            return defaultInputID
-        }
-        return inputMatches[0]
-    }
-
-    private func deviceUID(for deviceID: AudioObjectID) -> String? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var unmanagedCFString: Unmanaged<CFString>?
-        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &unmanagedCFString
-        )
-        guard status == noErr, let unmanagedCFString else { return nil }
-
-        let uid = unmanagedCFString.takeUnretainedValue() as String
-        return uid.isEmpty ? nil : uid
-    }
-
-    private func deviceName(for deviceID: AudioObjectID) -> String? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var unmanagedCFString: Unmanaged<CFString>?
-        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &unmanagedCFString
-        )
-        guard status == noErr, let unmanagedCFString else { return nil }
-
-        let name = unmanagedCFString.takeUnretainedValue() as String
-        return name.isEmpty ? nil : name
-    }
-
-    private func deviceHasInput(_ deviceID: AudioObjectID) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeInput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
-        guard sizeStatus == noErr, dataSize > 0 else { return false }
-
-        let rawPointer = UnsafeMutableRawPointer.allocate(
-            byteCount: Int(dataSize),
-            alignment: MemoryLayout<AudioBufferList>.alignment
-        )
-        defer { rawPointer.deallocate() }
-
-        let dataStatus = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, rawPointer)
-        guard dataStatus == noErr else { return false }
-
-        let audioBufferList = rawPointer.assumingMemoryBound(to: AudioBufferList.self)
-        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
-        let channelCount = buffers.reduce(0) { partialResult, buffer in
-            partialResult + Int(buffer.mNumberChannels)
-        }
-
-        return channelCount > 0
+        return AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID
     }
 
     private static let inputDevicePropertyListener: AudioObjectPropertyListenerProc = {

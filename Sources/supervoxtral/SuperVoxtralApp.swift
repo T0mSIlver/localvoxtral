@@ -29,33 +29,23 @@ struct SuperVoxtralApp: App {
 
         Settings {
             SettingsView(settings: settingsStore)
-                .frame(minWidth: 332, minHeight: 430)
+                .frame(minWidth: 332, maxWidth: 332, minHeight: 430)
         }
-        .windowResizability(.automatic)
+        .windowResizability(.contentSize)
     }
 }
 
 private enum MenuBarIconAsset {
     static let icon: NSImage? = {
         let bundle = Bundle.main
-        for name in ["MicIconTemplate", "MenubarIconTemplate"] {
-            if let image = bundle.image(forResource: NSImage.Name(name))
-                ?? imageFromURL(in: bundle, name: name, ext: "pdf")
-                ?? imageFromURL(in: bundle, name: name, ext: "png") {
-                image.isTemplate = true
-                return image
-            }
-        }
-
-        return nil
-    }()
-
-    private static func imageFromURL(in bundle: Bundle, name: String, ext: String) -> NSImage? {
-        guard let iconURL = bundle.url(forResource: name, withExtension: ext) else {
+        guard let iconURL = bundle.url(forResource: "MicIconTemplate", withExtension: "png"),
+              let image = NSImage(contentsOf: iconURL)
+        else {
             return nil
         }
-        return NSImage(contentsOf: iconURL)
-    }
+        image.isTemplate = true
+        return image
+    }()
 }
 
 private struct MenuBarIconView: View {
