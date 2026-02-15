@@ -59,6 +59,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     private static let targetSampleRate: Double = 16_000
     private let targetOutputFormat: AVAudioFormat
     private var tapInstalled = false
+    private var activeChunkHandler: ChunkHandler?
     private var configChangeObserver: NSObjectProtocol?
     private var didInstallInputDeviceListeners = false
     private var previousDefaultInputDeviceObjectID: AudioObjectID?
@@ -157,6 +158,21 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    func refreshInputTapIfNeeded() -> Bool {
+        guard let audioEngine, let activeChunkHandler else { return false }
+
+        let inputNode = audioEngine.inputNode
+        if tapInstalled {
+            inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        installInputTap(on: inputNode, chunkHandler: activeChunkHandler)
+        tapInstalled = true
+        debugLog("refreshed input tap")
+        return true
+    }
+
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
         stop(restoreDefaultInput: false)
         hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
@@ -169,8 +185,62 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         self.audioEngine = audioEngine
 
         let inputNode = audioEngine.inputNode
-        let outputFormat = targetOutputFormat
+        activeChunkHandler = chunkHandler
+        installInputTap(on: inputNode, chunkHandler: chunkHandler)
+        tapInstalled = true
 
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+        } catch {
+            stop()
+            throw error
+        }
+
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: audioEngine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.debugLog("AVAudioEngineConfigurationChange observed")
+            self?.onConfigurationChange?()
+        }
+    }
+
+    func stop(restoreDefaultInput: Bool = true) {
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+
+        if let audioEngine {
+            if tapInstalled {
+                audioEngine.inputNode.removeTap(onBus: 0)
+            }
+
+            if audioEngine.isRunning {
+                audioEngine.stop()
+            }
+
+            audioEngine.reset()
+        }
+
+        audioEngine = nil
+        tapInstalled = false
+        activeChunkHandler = nil
+        if restoreDefaultInput {
+            restoreDefaultInputDeviceIfNeeded()
+        }
+        lastCapturedAudioAt.withLock { $0 = nil }
+        hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
+        debugLog("stop")
+    }
+
+    private func installInputTap(
+        on inputNode: AVAudioInputNode,
+        chunkHandler: @escaping ChunkHandler
+    ) {
+        let outputFormat = targetOutputFormat
         let processingQueue = processingQueue
         let hasLoggedFirstChunk = Mutex(false)
         let converterState = ConverterState()
@@ -232,53 +302,6 @@ final class MicrophoneCaptureService: @unchecked Sendable {
                 chunkHandler(chunk)
             }
         }
-
-        tapInstalled = true
-
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-        } catch {
-            stop()
-            throw error
-        }
-
-        configChangeObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: audioEngine,
-            queue: .main
-        ) { [weak self] _ in
-            self?.debugLog("AVAudioEngineConfigurationChange observed")
-            self?.onConfigurationChange?()
-        }
-    }
-
-    func stop(restoreDefaultInput: Bool = true) {
-        if let observer = configChangeObserver {
-            NotificationCenter.default.removeObserver(observer)
-            configChangeObserver = nil
-        }
-
-        if let audioEngine {
-            if tapInstalled {
-                audioEngine.inputNode.removeTap(onBus: 0)
-            }
-
-            if audioEngine.isRunning {
-                audioEngine.stop()
-            }
-
-            audioEngine.reset()
-        }
-
-        audioEngine = nil
-        tapInstalled = false
-        if restoreDefaultInput {
-            restoreDefaultInputDeviceIfNeeded()
-        }
-        lastCapturedAudioAt.withLock { $0 = nil }
-        hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
-        debugLog("stop")
     }
 
     private func configureInputDevice(_ preferredDeviceID: String?) throws {

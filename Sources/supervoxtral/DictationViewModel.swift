@@ -34,6 +34,7 @@ final class DictationViewModel {
     private var startupCaptureGraceUntil: Date?
     private var startupConfigurationChangeDetected = false
     private var startupRouteStabilizationUntil: Date?
+    private var startupTapRefreshAttempted = false
     private var captureRecoveryAttemptCount = 0
     private var isAwaitingMicrophonePermission = false
     private var pendingRealtimeInsertionText = ""
@@ -309,6 +310,7 @@ final class DictationViewModel {
         startupCaptureGraceUntil = nil
         startupConfigurationChangeDetected = false
         startupRouteStabilizationUntil = nil
+        startupTapRefreshAttempted = false
         captureRecoveryAttemptCount = 0
         isAwaitingMicrophonePermission = false
         lastNoAudioDiagnosticAt = nil
@@ -448,6 +450,7 @@ final class DictationViewModel {
             startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupCaptureGraceSeconds)
             startupConfigurationChangeDetected = false
             startupRouteStabilizationUntil = nil
+            startupTapRefreshAttempted = false
             captureRecoveryAttemptCount = 0
             resetInsertionDiagnostics()
 
@@ -472,6 +475,7 @@ final class DictationViewModel {
             startupCaptureGraceUntil = nil
             startupConfigurationChangeDetected = false
             startupRouteStabilizationUntil = nil
+            startupTapRefreshAttempted = false
             captureRecoveryAttemptCount = 0
             captureHealthTask?.cancel()
             captureHealthTask = nil
@@ -970,6 +974,7 @@ final class DictationViewModel {
                 startupConfigurationChangeDetected = true
                 startupRouteStabilizationUntil = Date().addingTimeInterval(startupRouteStabilizationSeconds())
                 startupCaptureGraceUntil = Date().addingTimeInterval(Self.startupConfigChangeGraceSeconds)
+                startupTapRefreshAttempted = false
                 scheduleAudioChangeEvaluation(delayMilliseconds: Self.fastAudioChangeEvaluationDelayMilliseconds)
                 return
             }
@@ -1005,10 +1010,20 @@ final class DictationViewModel {
             captureInterruptionDetectedAt = nil
             startupConfigurationChangeDetected = false
             startupRouteStabilizationUntil = nil
+            startupTapRefreshAttempted = false
             captureRecoveryAttemptCount = 0
             lastNoAudioDiagnosticAt = nil
         } else {
             if startupConfigurationChangeDetected, !hasCapturedAnyAudio {
+                if !startupTapRefreshAttempted, microphone.refreshInputTapIfNeeded() {
+                    startupTapRefreshAttempted = true
+                    debugLog("startup config-change detected; refreshed tap before hard recovery")
+                    scheduleAudioChangeEvaluation(
+                        delayMilliseconds: Self.fastAudioChangeEvaluationDelayMilliseconds
+                    )
+                    return
+                }
+
                 if !isEngineRunning, microphone.resumeIfNeeded() {
                     scheduleAudioChangeEvaluation(
                         delayMilliseconds: Self.fastAudioChangeEvaluationDelayMilliseconds
