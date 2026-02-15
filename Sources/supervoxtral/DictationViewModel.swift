@@ -171,22 +171,14 @@ final class DictationViewModel {
 
         guard !devices.isEmpty else { return }
 
-        if !explicitSelection.isEmpty {
-            if devices.contains(where: { $0.id == explicitSelection }) {
-                if selectedInputDeviceID != explicitSelection {
-                    selectedInputDeviceID = explicitSelection
-                }
-                if settings.selectedInputDeviceUID != explicitSelection {
-                    settings.selectedInputDeviceUID = explicitSelection
-                }
-            } else {
-                // Keep the user-selected device pinned until they explicitly choose a different input.
-                if selectedInputDeviceID != explicitSelection {
-                    selectedInputDeviceID = explicitSelection
-                }
-                if settings.selectedInputDeviceUID != explicitSelection {
-                    settings.selectedInputDeviceUID = explicitSelection
-                }
+        if !explicitSelection.isEmpty,
+           devices.contains(where: { $0.id == explicitSelection })
+        {
+            if selectedInputDeviceID != explicitSelection {
+                selectedInputDeviceID = explicitSelection
+            }
+            if settings.selectedInputDeviceUID != explicitSelection {
+                settings.selectedInputDeviceUID = explicitSelection
             }
             return
         }
