@@ -367,7 +367,7 @@ final class DictationViewModel {
 
         if isAccessibilityTrusted {
             clearAccessibilityErrorIfNeeded()
-            statusText = "Accessibility permission enabled."
+            statusText = "Ready"
         } else {
             setAccessibilityErrorIfNeeded()
             statusText = "Waiting for Accessibility permission."
@@ -922,7 +922,7 @@ final class DictationViewModel {
            statusText == "Waiting for Accessibility permission."
             || statusText == "Paste blocked by Accessibility permission."
         {
-            statusText = "Accessibility permission enabled."
+            statusText = "Ready"
         }
     }
 
