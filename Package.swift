@@ -3,20 +3,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "supervoxtral",
+    name: "localvoxtral",
     platforms: [
         .macOS(.v15),
     ],
     products: [
-        .executable(name: "SuperVoxtral", targets: ["supervoxtral"]),
+        .executable(name: "localvoxtral", targets: ["localvoxtral"]),
     ],
     targets: [
         .executableTarget(
-            name: "supervoxtral"
+            name: "localvoxtral"
         ),
         .testTarget(
-            name: "supervoxtralTests",
-            dependencies: ["supervoxtral"]
+            name: "localvoxtralTests",
+            dependencies: ["localvoxtral"]
         ),
     ]
 )

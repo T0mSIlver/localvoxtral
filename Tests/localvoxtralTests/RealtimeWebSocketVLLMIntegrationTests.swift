@@ -1,14 +1,14 @@
 import Foundation
 import XCTest
-@testable import supervoxtral
+@testable import localvoxtral
 
 final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
     private static let enableEnv = "VLLM_REALTIME_TEST_ENABLE"
     private static let endpointEnv = "VLLM_REALTIME_TEST_ENDPOINT"
     private static let modelEnv = "VLLM_REALTIME_TEST_MODEL"
     private static let apiKeyEnv = "VLLM_REALTIME_TEST_API_KEY"
-    private static let micCaptureEnableEnv = "SUPERVOXTRAL_MIC_CAPTURE_TEST_ENABLE"
-    private static let micCaptureDeviceEnv = "SUPERVOXTRAL_MIC_CAPTURE_DEVICE_UID"
+    private static let micCaptureEnableEnv = "LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE"
+    private static let micCaptureDeviceEnv = "LOCALVOXTRAL_MIC_CAPTURE_DEVICE_UID"
 
     private func integrationConfiguration() throws -> RealtimeWebSocketClient.Configuration {
         let env = ProcessInfo.processInfo.environment
@@ -126,7 +126,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
 
     func testMicrophoneStartFailsForUnavailablePreferredDevice() {
         let microphone = MicrophoneCaptureService()
-        let unavailableID = "supervoxtral.invalid-input-device"
+        let unavailableID = "localvoxtral.invalid-input-device"
 
         XCTAssertThrowsError(
             try microphone.start(preferredDeviceID: unavailableID) { _ in }
@@ -222,7 +222,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
     func testVLLMProcessesSpokenSyntheticAudio() async throws {
         let configuration = try integrationConfiguration()
         let longPhrase = [
-            "hello from super voxtral realtime test.",
+            "hello from localvoxtral realtime test.",
             "this is a longer synthetic audio passage for integration testing.",
             "we are verifying that the vllm realtime server performs generation and returns transcript text.",
             "the websocket client sends pcm sixteen audio at sixteen kilohertz in sequential chunks.",

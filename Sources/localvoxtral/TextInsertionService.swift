@@ -32,7 +32,7 @@ final class TextInsertionService {
     private var modifierDeferredInsertionCount = 0
 
     static let accessibilityErrorMessage =
-        "Enable Accessibility for SuperVoxtral in System Settings > Privacy & Security > Accessibility."
+        "Enable Accessibility for localvoxtral in System Settings > Privacy & Security > Accessibility."
 
     var hasPendingInsertionText: Bool {
         !pendingRealtimeInsertionText.isEmpty
@@ -58,29 +58,22 @@ final class TextInsertionService {
             return .deferredByActiveModifiers
         }
 
-        if keyboardFallbackBehavior == .deferIfModifierActive,
-           postUnicodeTextEvents(text)
-        {
-            clearAccessibilityErrorIfNeeded()
-            keyboardFallbackSuccessCount += 1
-            return .insertedByKeyboardFallback
-        }
-
         if insertTextUsingAccessibility(text) {
             clearAccessibilityErrorIfNeeded()
             axInsertionSuccessCount += 1
             return .insertedByAccessibility
         }
 
+        if !isAccessibilityTrusted {
+            promptForAccessibilityPermissionIfNeeded()
+            setAccessibilityErrorIfNeeded()
+            return .failed
+        }
+
         if postUnicodeTextEvents(text) {
             clearAccessibilityErrorIfNeeded()
             keyboardFallbackSuccessCount += 1
             return .insertedByKeyboardFallback
-        }
-
-        if !isAccessibilityTrusted {
-            promptForAccessibilityPermissionIfNeeded()
-            setAccessibilityErrorIfNeeded()
         }
 
         return .failed
@@ -187,7 +180,7 @@ final class TextInsertionService {
         guard totalInsertions > 0 else { return }
 
         print(
-            "[SuperVoxtral] insertion-paths "
+            "[localvoxtral] insertion-paths "
                 + "ax=\(axInsertionSuccessCount) "
                 + "keyboard_fallback=\(keyboardFallbackSuccessCount) "
                 + "deferred_modifiers=\(modifierDeferredInsertionCount)"

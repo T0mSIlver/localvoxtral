@@ -32,7 +32,7 @@ final class DictationViewModel {
     private var isAwaitingMicrophonePermission = false
     private var pendingRealtimeFinalizationText = ""
     private var currentDictationEventText = ""
-    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private static weak var hotKeyTarget: DictationViewModel?
@@ -521,7 +521,7 @@ final class DictationViewModel {
                 guard !bufferedChunk.isEmpty else {
                     emptyBufferTicks += 1
                     if debugLoggingEnabled, emptyBufferTicks % 20 == 0 {
-                        print("[SuperVoxtral][Dictation] audio send loop has no buffered chunks")
+                        print("[localvoxtral][Dictation] audio send loop has no buffered chunks")
                     }
                     continue
                 }
@@ -569,6 +569,12 @@ final class DictationViewModel {
 
         case .finalTranscript(let text):
             let finalizedSegment = resolvedFinalizedSegment(from: text)
+            let hadLiveDelta = !pendingRealtimeFinalizationText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+                || !livePartialText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
             guard !finalizedSegment.isEmpty else {
                 livePartialText = ""
                 pendingRealtimeFinalizationText = ""
@@ -589,6 +595,11 @@ final class DictationViewModel {
             livePartialText = ""
             pendingRealtimeFinalizationText = ""
             statusText = isDictating ? "Listening..." : "Ready"
+
+            // Some providers emit only finalized transcript events. Ensure text is still inserted.
+            if !hadLiveDelta {
+                textInsertion.enqueueRealtimeInsertion(finalizedSegment)
+            }
 
             if settings.autoCopyEnabled {
                 copyLatestSegment(updateStatus: false)
@@ -681,6 +692,6 @@ final class DictationViewModel {
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[SuperVoxtral][Dictation] \(message)")
+        print("[localvoxtral][Dictation] \(message)")
     }
 }

@@ -1,6 +1,6 @@
 # Icon Assets
 
-This folder contains source icons used when packaging `SuperVoxtral.app`.
+This folder contains source icons used when packaging `localvoxtral.app`.
 
 ## Used files
 

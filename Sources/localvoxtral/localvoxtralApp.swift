@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct SuperVoxtralApp: App {
+struct localvoxtralApp: App {
     @State private var settingsStore: SettingsStore
     @State private var viewModel: DictationViewModel
 
@@ -20,7 +20,7 @@ struct SuperVoxtralApp: App {
                 MenuBarIconView(icon: icon, isDictating: viewModel.isDictating)
             } else {
                 Label(
-                    "SuperVoxtral",
+                    "localvoxtral",
                     systemImage: viewModel.isDictating ? "waveform.circle.fill" : "waveform.circle"
                 )
             }
@@ -66,6 +66,6 @@ private struct MenuBarIconView: View {
                         .offset(x: 2, y: -2)
                 }
             }
-            .accessibilityLabel("SuperVoxtral")
+            .accessibilityLabel("localvoxtral")
     }
 }

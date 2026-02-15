@@ -48,7 +48,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     private var audioEngine: AVAudioEngine?
-    private let processingQueue = DispatchQueue(label: "supervoxtral.microphone.processing")
+    private let processingQueue = DispatchQueue(label: "localvoxtral.microphone.processing")
     private let lastCapturedAudioAt = Mutex<Date?>(nil)
     private let hasCapturedAudioInCurrentRunFlag = Mutex(false)
     private static let targetSampleRate: Double = 16_000
@@ -58,7 +58,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     private var configChangeObserver: NSObjectProtocol?
     private var didInstallInputDeviceListeners = false
     private var previousDefaultInputDeviceObjectID: AudioObjectID?
-    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
     var onConfigurationChange: (@Sendable () -> Void)?
     var onInputDevicesChanged: (@Sendable () -> Void)?
 
@@ -469,7 +469,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[SuperVoxtral][Microphone] \(message)")
+        print("[localvoxtral][Microphone] \(message)")
     }
 
     private static func inputFormatDescriptor(for format: AVAudioFormat) -> InputFormatDescriptor {

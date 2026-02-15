@@ -21,20 +21,20 @@ for required_asset in "$APP_ICON_SOURCE" "$MENUBAR_ICON_SOURCE" "$MENUBAR_ICON_2
   fi
 done
 
-swift build -c "$CONFIGURATION" --product SuperVoxtral
+swift build -c "$CONFIGURATION" --product localvoxtral
 
-BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/SuperVoxtral" | head -n 1)"
+BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
 if [[ -z "$BINARY_PATH" ]]; then
-  echo "Unable to find built SuperVoxtral binary under .build."
+  echo "Unable to find built localvoxtral binary under .build."
   exit 1
 fi
 
-APP_DIR="$ROOT_DIR/dist/SuperVoxtral.app"
+APP_DIR="$ROOT_DIR/dist/localvoxtral.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/SuperVoxtral"
-chmod +x "$APP_DIR/Contents/MacOS/SuperVoxtral"
+cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/localvoxtral"
+chmod +x "$APP_DIR/Contents/MacOS/localvoxtral"
 
 ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
 rm -rf "$ICONSET_DIR"
@@ -65,13 +65,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleExecutable</key>
-  <string>SuperVoxtral</string>
+  <string>localvoxtral</string>
   <key>CFBundleIdentifier</key>
-  <string>com.supervoxtral.app</string>
+  <string>com.localvoxtral.app</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>SuperVoxtral</string>
+  <string>localvoxtral</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -87,9 +87,9 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
-  <string>SuperVoxtral needs microphone access for live dictation.</string>
+  <string>localvoxtral needs microphone access for live dictation.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>SuperVoxtral needs local network access to reach realtime transcription endpoints.</string>
+  <string>localvoxtral needs local network access to reach realtime transcription endpoints.</string>
 </dict>
 </plist>
 PLIST

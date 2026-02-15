@@ -24,7 +24,7 @@ final class AudioCaptureHealthMonitor {
     private var startupTapRefreshAttempted = false
     private var captureRecoveryAttemptCount = 0
     private var lastNoAudioDiagnosticAt: Date?
-    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     static let captureInterruptionConfirmationSeconds: TimeInterval = 4.0
     static let recentAudioToleranceSeconds: TimeInterval = 1.2
@@ -326,6 +326,6 @@ final class AudioCaptureHealthMonitor {
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[SuperVoxtral][Dictation] \(message)")
+        print("[localvoxtral][Dictation] \(message)")
     }
 }

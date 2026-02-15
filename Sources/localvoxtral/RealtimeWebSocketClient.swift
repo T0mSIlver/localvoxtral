@@ -41,7 +41,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     }
 
     private let state = Mutex(State())
-    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["SUPERVOXTRAL_DEBUG"] == "1"
+    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         state.withLock { $0.onEvent = handler }
@@ -52,7 +52,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
               scheme == "ws" || scheme == "wss"
         else {
             throw NSError(
-                domain: "supervoxtral.realtime.websocket",
+                domain: "localvoxtral.realtime.websocket",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Realtime endpoint must use ws:// or wss://."]
             )
@@ -597,6 +597,6 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[SuperVoxtral][Realtime] \(message)")
+        print("[localvoxtral][Realtime] \(message)")
     }
 }
