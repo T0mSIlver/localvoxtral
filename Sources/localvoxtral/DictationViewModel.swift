@@ -6,6 +6,11 @@ import Observation
 @MainActor
 @Observable
 final class DictationViewModel {
+    private enum ActiveClientSource {
+        case openAICompatible
+        case mlxAudio
+    }
+
     private(set) var isDictating = false
     private(set) var transcriptText = ""
     private(set) var livePartialText = ""
@@ -21,7 +26,9 @@ final class DictationViewModel {
     let textInsertion = TextInsertionService()
 
     private let microphone = MicrophoneCaptureService()
-    private let realtimeClient = RealtimeWebSocketClient()
+    private let openAIRealtimeClient = RealtimeWebSocketClient()
+    private let mlxAudioRealtimeClient = MlxAudioRealtimeWebSocketClient()
+    private var activeClientSource: ActiveClientSource?
     private let audioChunkBuffer = AudioChunkBuffer()
     private let healthMonitor = AudioCaptureHealthMonitor()
     private let audioSendInterval: TimeInterval = 0.1
@@ -40,9 +47,15 @@ final class DictationViewModel {
     init(settings: SettingsStore) {
         self.settings = settings
 
-        realtimeClient.setEventHandler { [weak self] event in
+        openAIRealtimeClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.handle(event: event)
+                self?.handle(event: event, source: .openAICompatible)
+            }
+        }
+
+        mlxAudioRealtimeClient.setEventHandler { [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handle(event: event, source: .mlxAudio)
             }
         }
 
@@ -85,6 +98,8 @@ final class DictationViewModel {
         textInsertion.stopAllTasks()
         healthMonitor.cancelTasks()
         microphone.stop()
+        openAIRealtimeClient.disconnect()
+        mlxAudioRealtimeClient.disconnect()
         unregisterGlobalHotkey()
     }
 
@@ -282,13 +297,14 @@ final class DictationViewModel {
 
         microphone.stop()
         flushBufferedAudio()
-        realtimeClient.disconnectAfterFinalCommitIfNeeded()
+        activeRealtimeClient().disconnectAfterFinalCommitIfNeeded()
         promotePendingRealtimeTextToLatestSegment()
 
         isDictating = false
         livePartialText = ""
         pendingRealtimeFinalizationText = ""
         statusText = "Ready"
+        activeClientSource = nil
         textInsertion.logDiagnostics()
 
         if textInsertion.hasPendingInsertionText {
@@ -400,9 +416,10 @@ final class DictationViewModel {
     }
 
     private func beginDictationSession() {
-        guard let endpoint = settings.resolvedWebSocketURL else {
+        let provider = settings.realtimeProvider
+        guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
             statusText = "Invalid endpoint URL."
-            lastError = "Set a valid `ws://` or `wss://` realtime endpoint in Settings."
+            lastError = "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings."
             return
         }
 
@@ -414,7 +431,10 @@ final class DictationViewModel {
             return
         }
 
-        let model = settings.effectiveModelName
+        let model = settings.effectiveModelName(for: provider)
+        let client = selectedRealtimeClient()
+        let source = selectedClientSource()
+        inactiveRealtimeClient(for: source).disconnect()
 
         do {
             let chunkBuffer = audioChunkBuffer
@@ -433,7 +453,7 @@ final class DictationViewModel {
             textInsertion.clearPendingText()
             textInsertion.resetDiagnostics()
 
-            let client = realtimeClient
+            activeClientSource = source
             try client.connect(configuration: .init(
                 endpoint: endpoint,
                 apiKey: settings.trimmedAPIKey,
@@ -450,9 +470,10 @@ final class DictationViewModel {
             statusText = "Failed to start dictation."
             lastError = error.localizedDescription
             microphone.stop()
-            realtimeClient.disconnect()
+            client.disconnect()
             isDictating = false
             healthMonitor.stop()
+            activeClientSource = nil
             debugLog("beginDictationSession failed error=\(error.localizedDescription)")
         }
     }
@@ -492,10 +513,12 @@ final class DictationViewModel {
 
     private func restartCommitTask() {
         commitTask?.cancel()
+        commitTask = nil
 
         let interval = min(1.0, max(0.1, settings.commitIntervalSeconds))
-        let client = realtimeClient
-        commitTask = Task.detached(priority: .utility) {
+        let client = activeRealtimeClient()
+        guard client.supportsPeriodicCommit else { return }
+        commitTask = Task(priority: .utility) {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
                 guard !Task.isCancelled else { break }
@@ -508,10 +531,10 @@ final class DictationViewModel {
         audioSendTask?.cancel()
 
         let interval = audioSendInterval
-        let client = realtimeClient
+        let client = activeRealtimeClient()
         let chunkBuffer = audioChunkBuffer
         let debugLoggingEnabled = debugLoggingEnabled
-        audioSendTask = Task.detached(priority: .utility) {
+        audioSendTask = Task(priority: .utility) {
             var emptyBufferTicks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(interval))
@@ -534,10 +557,12 @@ final class DictationViewModel {
     private func flushBufferedAudio() {
         let chunk = audioChunkBuffer.takeAll()
         guard !chunk.isEmpty else { return }
-        realtimeClient.sendAudioChunk(chunk)
+        activeRealtimeClient().sendAudioChunk(chunk)
     }
 
-    private func handle(event: RealtimeWebSocketClient.Event) {
+    private func handle(event: RealtimeWebSocketClient.Event, source: ActiveClientSource) {
+        guard source == activeClientSource else { return }
+
         switch event {
         case .connected:
             statusText = isDictating ? "Listening..." : "Ready"
@@ -562,9 +587,17 @@ final class DictationViewModel {
 
         case .partialTranscript(let delta):
             guard isDictating, !delta.isEmpty else { return }
-            pendingRealtimeFinalizationText += delta
-            livePartialText = pendingRealtimeFinalizationText
-            textInsertion.enqueueRealtimeInsertion(delta)
+            let mergedPartial = mergeIncrementalText(
+                existing: pendingRealtimeFinalizationText,
+                incoming: delta
+            )
+            pendingRealtimeFinalizationText = mergedPartial.merged
+            livePartialText = mergedPartial.merged
+            // mlx-audio may revise early tokens while speech is still flowing.
+            // Insert finalized text only to avoid duplicated/replaced phrases in target apps.
+            if source == .openAICompatible, !mergedPartial.appendedDelta.isEmpty {
+                textInsertion.enqueueRealtimeInsertion(mergedPartial.appendedDelta)
+            }
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
@@ -599,8 +632,10 @@ final class DictationViewModel {
             pendingRealtimeFinalizationText = ""
             statusText = isDictating ? "Listening..." : "Ready"
 
-            // Some providers emit only finalized transcript events. Ensure text is still inserted.
-            if !hadLiveDelta {
+            // Some providers emit only finalized transcript events.
+            // For mlx-audio we intentionally insert on final events only.
+            let shouldInsertFinal = source == .mlxAudio || !hadLiveDelta
+            if shouldInsertFinal {
                 textInsertion.enqueueRealtimeInsertion(finalizedSegment)
                 if let accessibilityError = textInsertion.lastAccessibilityError {
                     lastError = accessibilityError
@@ -628,6 +663,44 @@ final class DictationViewModel {
 
             statusText = "Realtime error."
             lastError = message
+        }
+    }
+
+    private func selectedClientSource() -> ActiveClientSource {
+        switch settings.realtimeProvider {
+        case .openAICompatible:
+            return .openAICompatible
+        case .mlxAudio:
+            return .mlxAudio
+        }
+    }
+
+    private func selectedRealtimeClient() -> RealtimeClient {
+        switch selectedClientSource() {
+        case .openAICompatible:
+            return openAIRealtimeClient
+        case .mlxAudio:
+            return mlxAudioRealtimeClient
+        }
+    }
+
+    private func activeRealtimeClient() -> RealtimeClient {
+        switch activeClientSource {
+        case .openAICompatible:
+            return openAIRealtimeClient
+        case .mlxAudio:
+            return mlxAudioRealtimeClient
+        case nil:
+            return selectedRealtimeClient()
+        }
+    }
+
+    private func inactiveRealtimeClient(for source: ActiveClientSource) -> RealtimeClient {
+        switch source {
+        case .openAICompatible:
+            return mlxAudioRealtimeClient
+        case .mlxAudio:
+            return openAIRealtimeClient
         }
     }
 
@@ -687,13 +760,69 @@ final class DictationViewModel {
         let normalizedExisting = existingText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedExisting.isEmpty else { return normalizedSegment }
 
-        if normalizedSegment.count > normalizedExisting.count,
-           normalizedSegment.hasPrefix(normalizedExisting)
-        {
+        if normalizedSegment == normalizedExisting {
+            return normalizedExisting
+        }
+
+        if normalizedSegment.hasPrefix(normalizedExisting) {
             return normalizedSegment
         }
 
+        if normalizedExisting.hasSuffix(normalizedSegment) {
+            return normalizedExisting
+        }
+
+        let overlap = longestSuffixPrefixOverlap(lhs: normalizedExisting, rhs: normalizedSegment)
+        if overlap > 0 {
+            let overlapIndex = normalizedSegment.index(normalizedSegment.startIndex, offsetBy: overlap)
+            let suffix = String(normalizedSegment[overlapIndex...])
+            return normalizedExisting + suffix
+        }
+
         return normalizedExisting + "\n" + normalizedSegment
+    }
+
+    private func mergeIncrementalText(existing: String, incoming: String) -> (merged: String, appendedDelta: String) {
+        guard !incoming.isEmpty else { return (existing, "") }
+        guard !existing.isEmpty else { return (incoming, incoming) }
+
+        if incoming == existing {
+            return (existing, "")
+        }
+
+        if incoming.hasPrefix(existing) {
+            let start = incoming.index(incoming.startIndex, offsetBy: existing.count)
+            let delta = String(incoming[start...])
+            return (incoming, delta)
+        }
+
+        if existing.hasSuffix(incoming) || existing.contains(incoming) {
+            return (existing, "")
+        }
+
+        let overlap = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
+        if overlap > 0 {
+            let start = incoming.index(incoming.startIndex, offsetBy: overlap)
+            let delta = String(incoming[start...])
+            return (existing + delta, delta)
+        }
+
+        return (existing + incoming, incoming)
+    }
+
+    private func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
+        let maxOverlap = min(lhs.count, rhs.count)
+        guard maxOverlap > 0 else { return 0 }
+
+        for overlap in stride(from: maxOverlap, through: 1, by: -1) {
+            let lhsStart = lhs.index(lhs.endIndex, offsetBy: -overlap)
+            let rhsEnd = rhs.index(rhs.startIndex, offsetBy: overlap)
+            if lhs[lhsStart...] == rhs[..<rhsEnd] {
+                return overlap
+            }
+        }
+
+        return 0
     }
 
     private func debugLog(_ message: String) {

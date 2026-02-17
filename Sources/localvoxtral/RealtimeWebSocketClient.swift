@@ -1,7 +1,7 @@
 import Foundation
 import Synchronization
 
-final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable {
+final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     struct Configuration: Sendable {
         let endpoint: URL
         let apiKey: String
@@ -42,6 +42,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private let state = Mutex(State())
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
+    let supportsPeriodicCommit = true
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         state.withLock { $0.onEvent = handler }

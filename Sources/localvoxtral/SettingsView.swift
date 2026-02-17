@@ -4,6 +4,38 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
 
+    private var endpointBinding: Binding<String> {
+        Binding(
+            get: {
+                settings.endpointURL(for: settings.realtimeProvider)
+            },
+            set: { newValue in
+                switch settings.realtimeProvider {
+                case .openAICompatible:
+                    settings.openAIEndpointURL = newValue
+                case .mlxAudio:
+                    settings.mlxAudioEndpointURL = newValue
+                }
+            }
+        )
+    }
+
+    private var modelBinding: Binding<String> {
+        Binding(
+            get: {
+                settings.modelName(for: settings.realtimeProvider)
+            },
+            set: { newValue in
+                switch settings.realtimeProvider {
+                case .openAICompatible:
+                    settings.openAIModelName = newValue
+                case .mlxAudio:
+                    settings.mlxAudioModelName = newValue
+                }
+            }
+        )
+    }
+
     var body: some View {
         ZStack {
             Color(nsColor: .windowBackgroundColor)
@@ -21,35 +53,58 @@ struct SettingsView: View {
                     }
 
                     SettingsSection(title: "Connection") {
+                        SettingsField(title: "Backend") {
+                            Picker("Backend", selection: $settings.realtimeProvider) {
+                                ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+
                         SettingsField(title: "Realtime endpoint") {
-                            TextField("ws://127.0.0.1:8000/v1/realtime", text: $settings.endpointURL)
+                            TextField(settings.endpointPlaceholder, text: endpointBinding)
                                 .textFieldStyle(.roundedBorder)
                         }
 
                         SettingsField(title: "Model") {
-                            TextField("voxtral-mini-latest", text: $settings.modelName)
+                            TextField(settings.modelPlaceholder, text: modelBinding)
                                 .textFieldStyle(.roundedBorder)
                         }
 
-                        SettingsField(title: "API key") {
-                            SecureField("Required for remote providers", text: $settings.apiKey)
-                                .textFieldStyle(.roundedBorder)
+                        if settings.realtimeProvider == .openAICompatible {
+                            SettingsField(title: "API key") {
+                                SecureField("Required for remote providers", text: $settings.apiKey)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                        } else {
+                            Text("`mlx-audio` usually runs locally and does not require an API key.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
                     SettingsSection(title: "Transcription") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Commit interval")
-                                    .font(.system(size: 12, weight: .medium))
-                                Spacer()
-                                Text(String(format: "%.2fs", settings.commitIntervalSeconds))
+                        if settings.realtimeProvider == .openAICompatible {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Commit interval")
+                                        .font(.system(size: 12, weight: .medium))
+                                    Spacer()
+                                    Text(String(format: "%.2fs", settings.commitIntervalSeconds))
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
+
+                                Text("How often finalized transcript chunks are requested from the realtime server.")
+                                    .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
-
-                            Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
-
-                            Text("How often finalized transcript chunks are requested from the realtime server.")
+                        } else {
+                            Text("`mlx-audio` performs segmentation server-side, so commit interval is ignored.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

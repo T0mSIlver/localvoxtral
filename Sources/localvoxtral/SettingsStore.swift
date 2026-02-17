@@ -4,10 +4,47 @@ import Observation
 @MainActor
 @Observable
 final class SettingsStore {
+    enum RealtimeProvider: String, CaseIterable, Identifiable {
+        case openAICompatible = "openai_compatible"
+        case mlxAudio = "mlx_audio"
+
+        var id: String { rawValue }
+
+        var displayName: String {
+            switch self {
+            case .openAICompatible:
+                return "OpenAI/vLLM"
+            case .mlxAudio:
+                return "mlx-audio"
+            }
+        }
+
+        var defaultEndpoint: String {
+            switch self {
+            case .openAICompatible:
+                return "ws://127.0.0.1:8000/v1/realtime"
+            case .mlxAudio:
+                return "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"
+            }
+        }
+
+        var defaultModelName: String {
+            switch self {
+            case .openAICompatible:
+                return "voxtral-mini-latest"
+            case .mlxAudio:
+                return "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+            }
+        }
+    }
+
     private enum Keys {
-        static let endpointURL = "settings.endpoint_url"
+        static let realtimeProvider = "settings.realtime_provider"
+        static let openAIEndpointURL = "settings.endpoint_url"
+        static let mlxAudioEndpointURL = "settings.mlx_audio_endpoint_url"
         static let apiKey = "settings.api_key"
-        static let modelName = "settings.model_name"
+        static let openAIModelName = "settings.model_name"
+        static let mlxAudioModelName = "settings.mlx_audio_model_name"
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
@@ -15,16 +52,28 @@ final class SettingsStore {
 
     private let defaults = UserDefaults.standard
 
-    var endpointURL: String {
-        didSet { defaults.set(endpointURL, forKey: Keys.endpointURL) }
+    var realtimeProvider: RealtimeProvider {
+        didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
+    }
+
+    var openAIEndpointURL: String {
+        didSet { defaults.set(openAIEndpointURL, forKey: Keys.openAIEndpointURL) }
+    }
+
+    var mlxAudioEndpointURL: String {
+        didSet { defaults.set(mlxAudioEndpointURL, forKey: Keys.mlxAudioEndpointURL) }
     }
 
     var apiKey: String {
         didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
     }
 
-    var modelName: String {
-        didSet { defaults.set(modelName, forKey: Keys.modelName) }
+    var openAIModelName: String {
+        didSet { defaults.set(openAIModelName, forKey: Keys.openAIModelName) }
+    }
+
+    var mlxAudioModelName: String {
+        didSet { defaults.set(mlxAudioModelName, forKey: Keys.mlxAudioModelName) }
     }
 
     var commitIntervalSeconds: Double {
@@ -40,19 +89,40 @@ final class SettingsStore {
     }
 
     init() {
-        endpointURL = defaults.string(forKey: Keys.endpointURL)
+        let configuredProvider = defaults.string(forKey: Keys.realtimeProvider)
+            ?? ProcessInfo.processInfo.environment["REALTIME_PROVIDER"]
+            ?? RealtimeProvider.openAICompatible.rawValue
+
+        let resolvedProvider = RealtimeProvider(rawValue: configuredProvider) ?? .openAICompatible
+        realtimeProvider = resolvedProvider
+
+        openAIEndpointURL = defaults.string(forKey: Keys.openAIEndpointURL)
             ?? ProcessInfo.processInfo.environment["REALTIME_ENDPOINT"]
-            ?? "ws://127.0.0.1:8000/v1/realtime"
+            ?? resolvedProvider.defaultEndpoint
+
+        mlxAudioEndpointURL = defaults.string(forKey: Keys.mlxAudioEndpointURL)
+            ?? ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_ENDPOINT"]
+            ?? RealtimeProvider.mlxAudio.defaultEndpoint
 
         apiKey = defaults.string(forKey: Keys.apiKey)
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
 
-        let configuredModel = defaults.string(forKey: Keys.modelName)
+        let configuredOpenAIModel = defaults.string(forKey: Keys.openAIModelName)
             ?? ProcessInfo.processInfo.environment["REALTIME_MODEL"]
-            ?? "voxtral-mini-latest"
-        let normalizedModel = Self.normalizedModelName(from: configuredModel)
-        modelName = normalizedModel.isEmpty ? "voxtral-mini-latest" : normalizedModel
+            ?? RealtimeProvider.openAICompatible.defaultModelName
+        let normalizedOpenAIModel = Self.normalizedModelName(from: configuredOpenAIModel)
+        openAIModelName = normalizedOpenAIModel.isEmpty
+            ? RealtimeProvider.openAICompatible.defaultModelName
+            : normalizedOpenAIModel
+
+        let configuredMlxAudioModel = defaults.string(forKey: Keys.mlxAudioModelName)
+            ?? ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_MODEL"]
+            ?? RealtimeProvider.mlxAudio.defaultModelName
+        let normalizedMlxAudioModel = Self.normalizedModelName(from: configuredMlxAudioModel)
+        mlxAudioModelName = normalizedMlxAudioModel.isEmpty
+            ? RealtimeProvider.mlxAudio.defaultModelName
+            : normalizedMlxAudioModel
 
         let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
         if storedInterval > 0 {
@@ -75,16 +145,50 @@ final class SettingsStore {
     }
 
     var effectiveModelName: String {
-        let normalized = Self.normalizedModelName(from: modelName)
-        return normalized.isEmpty ? "voxtral-mini-latest" : normalized
+        effectiveModelName(for: realtimeProvider)
     }
 
     var displayModelName: String {
         effectiveModelName
     }
 
+    var endpointPlaceholder: String {
+        realtimeProvider.defaultEndpoint
+    }
+
+    var modelPlaceholder: String {
+        realtimeProvider.defaultModelName
+    }
+
+    func modelName(for provider: RealtimeProvider) -> String {
+        switch provider {
+        case .openAICompatible:
+            return openAIModelName
+        case .mlxAudio:
+            return mlxAudioModelName
+        }
+    }
+
+    func effectiveModelName(for provider: RealtimeProvider) -> String {
+        let normalized = Self.normalizedModelName(from: modelName(for: provider))
+        return normalized.isEmpty ? provider.defaultModelName : normalized
+    }
+
+    func endpointURL(for provider: RealtimeProvider) -> String {
+        switch provider {
+        case .openAICompatible:
+            return openAIEndpointURL
+        case .mlxAudio:
+            return mlxAudioEndpointURL
+        }
+    }
+
     var resolvedWebSocketURL: URL? {
-        let trimmed = endpointURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        resolvedWebSocketURL(for: realtimeProvider)
+    }
+
+    func resolvedWebSocketURL(for provider: RealtimeProvider) -> URL? {
+        let trimmed = endpointURL(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
