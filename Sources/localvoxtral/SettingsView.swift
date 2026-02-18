@@ -60,21 +60,16 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Settings")
                             .font(.system(size: 22, weight: .semibold))
-                        Text("Configure connection and dictation defaults.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    SettingsSection(title: "Connection") {
-                        SettingsField(title: "Backend") {
-                            Picker("Backend", selection: $settings.realtimeProvider) {
-                                ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
-                                    Text(provider.displayName).tag(provider)
-                                }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Picker("", selection: $settings.realtimeProvider) {
+                            ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
+                                Text(provider.displayName).tag(provider)
                             }
-                            .pickerStyle(.segmented)
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
 
                         SettingsField(title: "Realtime endpoint") {
                             TextField(settings.endpointPlaceholder, text: endpointBinding)
@@ -91,11 +86,6 @@ struct SettingsView: View {
                                 SecureField("Required for remote providers", text: $settings.apiKey)
                                     .textFieldStyle(.roundedBorder)
                             }
-                        } else {
-                            Text("`mlx-audio` usually runs locally and does not require an API key.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
@@ -133,11 +123,6 @@ struct SettingsView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
-
-                                Text("Unlike vLLM commit interval, this does not control commit cadence. Commit interval controls how often vLLM finalization is requested.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
 
@@ -153,9 +138,10 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                     }
                 }
-                .frame(maxWidth: 336, alignment: .leading)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 18)
+                .frame(maxWidth: 332, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
             }
             .scrollIndicators(.never)
         }
@@ -163,8 +149,16 @@ struct SettingsView: View {
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 NSApp.activate(ignoringOtherApps: true)
-                NSApp.windows.first { $0.isVisible && $0.canBecomeKey }?
-                    .makeKeyAndOrderFront(nil)
+                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) else {
+                    return
+                }
+                window.styleMask.insert(.resizable)
+                window.minSize = NSSize(width: 336, height: 470)
+                window.maxSize = NSSize(width: 520, height: 960)
+                if window.frame.width < 336 || window.frame.width > 520 {
+                    window.setContentSize(NSSize(width: 360, height: max(520, window.frame.height)))
+                }
+                window.makeKeyAndOrderFront(nil)
             }
         }
         .onDisappear {
