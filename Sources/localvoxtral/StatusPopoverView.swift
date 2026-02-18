@@ -12,9 +12,12 @@ struct StatusPopoverView: View {
 
     var body: some View {
         Group {
-            Button(viewModel.isDictating ? "Stop Dictation" : "Start Dictation") {
-                viewModel.toggleDictation()
+            Button(viewModel.isFinalizingStop ? "Finalizing..." : (viewModel.isDictating ? "Stop Dictation" : "Start Dictation")) {
+                if !viewModel.isFinalizingStop {
+                    viewModel.toggleDictation()
+                }
             }
+            .disabled(viewModel.isFinalizingStop)
 
             Menu("Microphone") {
                 if viewModel.availableInputDevices.isEmpty {

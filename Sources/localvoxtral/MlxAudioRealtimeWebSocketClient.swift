@@ -19,6 +19,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         var pendingTextMessages: [String] = []
         var pendingBinaryMessages: [Data] = []
         var sawStreamingDeltaForCurrentChunk = false
+        var suppressDeltasUntilFinalComplete = false
+        var pendingTranscriptionDelayMilliseconds: Int?
         var delayedDisconnectWorkItem: DispatchWorkItem?
     }
 
@@ -43,7 +45,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
     private let state = Mutex(State())
     private let sampleRate = 16_000
     private let streamingModeEnabled = true
-    private let finalizationGracePeriodSeconds: TimeInterval = 0.8
+    private let finalizationGracePeriodSeconds: TimeInterval = 2.0
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     let supportsPeriodicCommit = false
@@ -92,6 +94,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             s.hasSentInitialConfiguration = false
             s.pendingModelName = modelName
             s.sawStreamingDeltaForCurrentChunk = false
+            s.suppressDeltasUntilFinalComplete = false
+            s.pendingTranscriptionDelayMilliseconds = configuration.transcriptionDelayMilliseconds
 
             task.resume()
         }
@@ -213,7 +217,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             guard !s.hasSentInitialConfiguration else { return nil }
             s.hasSentInitialConfiguration = true
 
-            let configuration: [String: Any] = [
+            var configuration: [String: Any] = [
                 "model": s.pendingModelName.isEmpty
                     ? "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
                     : s.pendingModelName,
@@ -221,6 +225,9 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
                 // Keep realtime streaming enabled; duplicate overlap is handled client-side.
                 "streaming": streamingModeEnabled,
             ]
+            if let delayMs = s.pendingTranscriptionDelayMilliseconds {
+                configuration["transcription_delay_ms"] = delayMs
+            }
 
             guard JSONSerialization.isValidJSONObject(configuration),
                   let data = try? JSONSerialization.data(withJSONObject: configuration),
@@ -331,7 +338,14 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             switch type {
             case "delta":
                 guard let delta = json["delta"] as? String, !delta.isEmpty else { return }
-                state.withLock { $0.sawStreamingDeltaForCurrentChunk = true }
+                let shouldSuppress: Bool = state.withLock { s in
+                    if s.suppressDeltasUntilFinalComplete {
+                        return true
+                    }
+                    s.sawStreamingDeltaForCurrentChunk = true
+                    return false
+                }
+                if shouldSuppress { return }
                 emit(.partialTranscript(delta))
                 return
 
@@ -368,8 +382,14 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sawStreamingDelta = state.withLock { s in
             let hadDelta = s.sawStreamingDeltaForCurrentChunk
-            if !isPartial {
+            if isPartial {
+                // The next pass may re-transcribe the same chunk from the beginning.
+                // Keep current partial text visible and suppress replacement deltas
+                // until final completion arrives.
+                s.suppressDeltasUntilFinalComplete = true
+            } else {
                 s.sawStreamingDeltaForCurrentChunk = false
+                s.suppressDeltasUntilFinalComplete = false
             }
             return hadDelta
         }
@@ -403,6 +423,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         s.hasSentInitialConfiguration = false
         s.pendingModelName = ""
         s.sawStreamingDeltaForCurrentChunk = false
+        s.suppressDeltasUntilFinalComplete = false
+        s.pendingTranscriptionDelayMilliseconds = nil
 
         if clearQueuedMessages {
             s.pendingTextMessages.removeAll(keepingCapacity: false)

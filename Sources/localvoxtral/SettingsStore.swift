@@ -46,6 +46,7 @@ final class SettingsStore {
         static let openAIModelName = "settings.model_name"
         static let mlxAudioModelName = "settings.mlx_audio_model_name"
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
+        static let mlxAudioTranscriptionDelayMilliseconds = "settings.mlx_audio_transcription_delay_ms"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
     }
@@ -78,6 +79,10 @@ final class SettingsStore {
 
     var commitIntervalSeconds: Double {
         didSet { defaults.set(commitIntervalSeconds, forKey: Keys.commitIntervalSeconds) }
+    }
+
+    var mlxAudioTranscriptionDelayMilliseconds: Int {
+        didSet { defaults.set(mlxAudioTranscriptionDelayMilliseconds, forKey: Keys.mlxAudioTranscriptionDelayMilliseconds) }
     }
 
     var autoCopyEnabled: Bool {
@@ -129,6 +134,19 @@ final class SettingsStore {
             commitIntervalSeconds = min(max(storedInterval, 0.1), 1.0)
         } else {
             commitIntervalSeconds = 0.9
+        }
+
+        let delayDefault = 900
+        if defaults.object(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds) != nil {
+            mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(
+                defaults.integer(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds)
+            )
+        } else if let envDelay = ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"],
+                  let parsedDelay = Int(envDelay)
+        {
+            mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(parsedDelay)
+        } else {
+            mlxAudioTranscriptionDelayMilliseconds = delayDefault
         }
 
         if defaults.object(forKey: Keys.autoCopyEnabled) == nil {
@@ -227,5 +245,9 @@ final class SettingsStore {
         }
 
         return candidate
+    }
+
+    private static func clampedTranscriptionDelay(_ value: Int) -> Int {
+        min(max(value, 0), 3_000)
     }
 }
