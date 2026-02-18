@@ -59,3 +59,23 @@ open ./dist/localvoxtral.app
   - [mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)
   - [MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)
   - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
+
+## Quick start
+
+### vLLM
+
+```bash
+VLLM_DISABLE_COMPILE_CACHE=1
+vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudagraph_mode": "PIECEWISE"}'
+```
+
+### mlx-audio
+
+```bash
+MLX_AUDIO_REALTIME_VAD_MODE=1
+MLX_AUDIO_REALTIME_MIN_CHUNK_SECONDS=1.6
+MLX_AUDIO_REALTIME_INITIAL_CHUNK_SECONDS=3.0
+MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=12.0
+MLX_AUDIO_REALTIME_SILENCE_SECONDS=1.2
+python -m mlx_audio.server
+```
