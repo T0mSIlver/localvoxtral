@@ -7,7 +7,7 @@
 localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
 
-It connects to OpenAI Realtime-compatible endpoints, including local vLLM and mlx-audio servers.
+It supports two realtime backend modes: OpenAI Realtime-compatible endpoints (for example local vLLM), and `mlx-audio` transcription endpoints.
 
 ## Features
 
@@ -15,8 +15,8 @@ It connects to OpenAI Realtime-compatible endpoints, including local vLLM and ml
 - Native menu bar app with instant open, no heavy UI
 - Live dictation that writes into your active text field as you speak
 - Pick your preferred microphone input device
-- Copy the latest segment in one click
-- Works with local or remote OpenAI Realtime-compatible endpoints and mlx-audio server endpoints
+- Copy the latest transcribed segment
+- Works with local or remote OpenAI Realtime-compatible endpoints, plus `mlx-audio` realtime transcription endpoints
 
 ## Quick start
 
@@ -55,9 +55,9 @@ open ./dist/localvoxtral.app
 ## Roadmap
 
 - [ ] Customize keyboard shortcut
-- [ ] Implement one of the on-device Voxtral Realtime integrations recommended in the model README:
+- [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
   - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
-  - [mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)
+  -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~
   - [MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)
   - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
 
