@@ -7,7 +7,7 @@
 localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
 
-It connects to OpenAI Realtime-compatible endpoints, including local vLLM.
+It connects to OpenAI Realtime-compatible endpoints, including local vLLM and mlx-audio servers.
 
 ## Features
 
@@ -16,7 +16,7 @@ It connects to OpenAI Realtime-compatible endpoints, including local vLLM.
 - Live dictation that writes into your active text field as you speak
 - Pick your preferred microphone input device
 - Copy the latest segment in one click
-- Works with local or remote OpenAI Realtime-compatible endpoints
+- Works with local or remote OpenAI Realtime-compatible endpoints and mlx-audio server endpoints
 
 ## Quick start
 
@@ -34,6 +34,7 @@ open ./dist/localvoxtral.app
   - Model name
   - API key
   - Commit interval
+  - Transcription delay (`mlx-audio`): adds right-context lookahead; higher is steadier, lower is faster
   - Auto-copy finalized segment
 
 ## Screenshots
