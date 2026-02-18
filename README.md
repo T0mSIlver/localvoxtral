@@ -33,8 +33,8 @@ open ./dist/localvoxtral.app
   - Realtime endpoint
   - Model name
   - API key
-  - Commit interval
-  - Transcription delay (`mlx-audio`): adds right-context lookahead; higher is steadier, lower is faster
+  - Commit interval (`vLLM`)
+  - Transcription delay (`mlx-audio`)
   - Auto-copy finalized segment
 
 ## Screenshots
@@ -50,20 +50,9 @@ open ./dist/localvoxtral.app
 
 ## Tested setup
 
-- Tested with a local `vllm` server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602).
-
-## Roadmap
-
-- [ ] Customize keyboard shortcut
-- [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
-  - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
-  -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~
-  - [MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)
-  - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
-
-## Quick start
-
 ### vLLM
+
+`vllm` server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602).
 
 ```bash
 VLLM_DISABLE_COMPILE_CACHE=1
@@ -71,6 +60,8 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 ```
 
 ### mlx-audio
+
+`mlx-audio` server on M1 Pro, running a [4bit quant](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) of Voxtral Mini 4B Realtime
 
 ```bash
 MLX_AUDIO_REALTIME_VAD_MODE=1
@@ -80,3 +71,12 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=12.0
 MLX_AUDIO_REALTIME_SILENCE_SECONDS=1.2
 python -m mlx_audio.server
 ```
+
+## Roadmap
+
+- [ ] Customize keyboard shortcut
+- [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
+  - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
+  -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~
+  - [MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)
+  - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
