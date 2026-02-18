@@ -1,11 +1,24 @@
 import Foundation
 import Synchronization
 
-final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable {
+final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     struct Configuration: Sendable {
         let endpoint: URL
         let apiKey: String
         let model: String
+        let transcriptionDelayMilliseconds: Int?
+
+        init(
+            endpoint: URL,
+            apiKey: String,
+            model: String,
+            transcriptionDelayMilliseconds: Int? = nil
+        ) {
+            self.endpoint = endpoint
+            self.apiKey = apiKey
+            self.model = model
+            self.transcriptionDelayMilliseconds = transcriptionDelayMilliseconds
+        }
     }
 
     enum Event: Sendable {
@@ -42,6 +55,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private let state = Mutex(State())
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
+    let supportsPeriodicCommit = true
 
     func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
         state.withLock { $0.onEvent = handler }
