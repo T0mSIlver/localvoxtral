@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -9,7 +8,7 @@ struct SettingsView: View {
             get: { Double(settings.mlxAudioTranscriptionDelayMilliseconds) / 1000.0 },
             set: { newValue in
                 let milliseconds = Int((newValue * 1000.0).rounded())
-                settings.mlxAudioTranscriptionDelayMilliseconds = min(max(milliseconds, 0), 3_000)
+                settings.mlxAudioTranscriptionDelayMilliseconds = min(max(milliseconds, 400), 2_000)
             }
         )
     }
@@ -117,9 +116,9 @@ struct SettingsView: View {
                                         .foregroundStyle(.secondary)
                                 }
 
-                                Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.0 ... 3.0, step: 0.05)
+                                Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.4 ... 2.0, step: 0.1)
 
-                                Text("How long `mlx-audio` waits for right-context before emitting tokens.")
+                                Text("How long mlx-audio waits for right-context before emitting tokens.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -139,30 +138,10 @@ struct SettingsView: View {
                     }
                 }
                 .frame(maxWidth: 332, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 14)
             }
             .scrollIndicators(.never)
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                NSApp.activate(ignoringOtherApps: true)
-                guard let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) else {
-                    return
-                }
-                window.styleMask.insert(.resizable)
-                window.minSize = NSSize(width: 336, height: 470)
-                window.maxSize = NSSize(width: 520, height: 960)
-                if window.frame.width < 336 || window.frame.width > 520 {
-                    window.setContentSize(NSSize(width: 360, height: max(520, window.frame.height)))
-                }
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
-        .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
         }
     }
 }

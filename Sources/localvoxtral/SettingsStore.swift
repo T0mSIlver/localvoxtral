@@ -248,6 +248,6 @@ final class SettingsStore {
     }
 
     private static func clampedTranscriptionDelay(_ value: Int) -> Int {
-        min(max(value, 0), 3_000)
+        min(max(value, 400), 2_000)
     }
 }

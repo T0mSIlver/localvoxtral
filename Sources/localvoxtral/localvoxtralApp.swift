@@ -29,9 +29,11 @@ struct localvoxtralApp: App {
 
         Settings {
             SettingsView(settings: settingsStore)
-                .frame(minWidth: 336, idealWidth: 360, maxWidth: 520, minHeight: 470, idealHeight: 520)
+                .frame(minWidth: 336, idealWidth: 360, maxWidth: 520, minHeight: 470, idealHeight: 520, maxHeight: 960)
         }
-        .windowResizability(.contentMinSize)
+        .defaultSize(width: 360, height: 520)
+        .windowResizability(.contentSize)
+        .restorationBehavior(.disabled)
     }
 }
 

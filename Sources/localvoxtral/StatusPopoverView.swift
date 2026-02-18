@@ -45,7 +45,6 @@ struct StatusPopoverView: View {
             Divider()
 
             Button("Settings…") {
-                NSApp.setActivationPolicy(.regular)
                 NSApp.activate(ignoringOtherApps: true)
                 openSettings()
             }
