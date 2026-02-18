@@ -4,6 +4,20 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
 
+    private var mlxTranscriptionDelaySecondsBinding: Binding<Double> {
+        Binding(
+            get: { Double(settings.mlxAudioTranscriptionDelayMilliseconds) / 1000.0 },
+            set: { newValue in
+                let milliseconds = Int((newValue * 1000.0).rounded())
+                settings.mlxAudioTranscriptionDelayMilliseconds = min(max(milliseconds, 0), 3_000)
+            }
+        )
+    }
+
+    private var mlxTranscriptionDelayLabel: String {
+        String(format: "%.2fs", Double(settings.mlxAudioTranscriptionDelayMilliseconds) / 1000.0)
+    }
+
     private var endpointBinding: Binding<String> {
         Binding(
             get: {
@@ -42,12 +56,12 @@ struct SettingsView: View {
                 .ignoresSafeArea()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 18) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Settings")
-                            .font(.system(size: 24, weight: .semibold))
+                            .font(.system(size: 22, weight: .semibold))
                         Text("Configure connection and dictation defaults.")
-                            .font(.callout)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -104,10 +118,27 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         } else {
-                            Text("`mlx-audio` performs segmentation server-side, so commit interval is ignored.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("Transcription delay")
+                                        .font(.system(size: 12, weight: .medium))
+                                    Spacer()
+                                    Text(mlxTranscriptionDelayLabel)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.0 ... 3.0, step: 0.05)
+
+                                Text("How long `mlx-audio` waits for right-context before emitting tokens.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                Text("Unlike vLLM commit interval, this does not control commit cadence. Commit interval controls how often vLLM finalization is requested.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
 
                         Toggle(isOn: $settings.autoCopyEnabled) {
@@ -122,9 +153,9 @@ struct SettingsView: View {
                         .toggleStyle(.switch)
                     }
                 }
-                .frame(maxWidth: 292, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 24)
+                .frame(maxWidth: 336, alignment: .leading)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 18)
             }
             .scrollIndicators(.never)
         }
@@ -147,13 +178,13 @@ private struct SettingsSection<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 10) {
             Text(title.uppercased())
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .tracking(0.6)
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 content
             }
         }
@@ -165,7 +196,7 @@ private struct SettingsField<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
             content
