@@ -129,7 +129,7 @@ enum TextMergingAlgorithms {
     }
 
     static func shouldAvoidLeadingSpace(before character: Character) -> Bool {
-        let noLeadingSpaceBefore = CharacterSet(charactersIn: ".,!?;:)]}\"'%")
+        let noLeadingSpaceBefore = CharacterSet(charactersIn: ".,!?;:)]}\"'%-")
         return character.unicodeScalars.allSatisfy { noLeadingSpaceBefore.contains($0) }
     }
 

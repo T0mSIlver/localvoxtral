@@ -64,12 +64,8 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 `mlx-audio` server on M1 Pro, running a [4bit quant](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) of Voxtral Mini 4B Realtime
 
 ```bash
-MLX_AUDIO_REALTIME_VAD_MODE=1
-MLX_AUDIO_REALTIME_MIN_CHUNK_SECONDS=1.6
-MLX_AUDIO_REALTIME_INITIAL_CHUNK_SECONDS=3.0
-MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=12.0
-MLX_AUDIO_REALTIME_SILENCE_SECONDS=1.2
-python -m mlx_audio.server
+# Default max_chunk (6s) force-splits continuous speech mid-sentence; 30 lets silence detection handle segmentation naturally
+MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 ```
 
 ## Roadmap

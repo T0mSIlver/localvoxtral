@@ -243,6 +243,10 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         XCTAssertTrue(TextMergingAlgorithms.shouldAvoidLeadingSpace(before: "]"))
     }
 
+    func testAvoidLeadingSpace_hyphen() {
+        XCTAssertTrue(TextMergingAlgorithms.shouldAvoidLeadingSpace(before: "-"))
+    }
+
     func testAvoidLeadingSpace_letter() {
         XCTAssertFalse(TextMergingAlgorithms.shouldAvoidLeadingSpace(before: "a"))
     }
@@ -283,6 +287,12 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "hello", incoming: ".")
         XCTAssertEqual(result.merged, "hello.")
         XCTAssertEqual(result.appendedDelta, ".")
+    }
+
+    func testTailOverlap_noOverlap_hyphenNoSpace() {
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "Est", incoming: "-ce")
+        XCTAssertEqual(result.merged, "Est-ce")
+        XCTAssertEqual(result.appendedDelta, "-ce")
     }
 
     func testTailOverlap_noOverlap_existingEndsWithWhitespace() {
