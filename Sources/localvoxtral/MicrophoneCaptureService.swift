@@ -395,8 +395,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
-
-        return AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID
+        return false
     }
 
     private static let inputDevicePropertyListener: AudioObjectPropertyListenerProc = {
