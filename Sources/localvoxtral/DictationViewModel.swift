@@ -57,6 +57,7 @@ final class DictationViewModel {
     private let mlxTrailingSilenceDurationSeconds: TimeInterval = 1.6
     private let mlxTrailingSilenceChunkDurationSeconds: TimeInterval = 0.1
     private let stopFinalizationTimeoutSeconds: TimeInterval = 7.0
+    private let mlxStopFinalizationTimeoutSeconds: TimeInterval = 25.0
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -708,16 +709,20 @@ final class DictationViewModel {
             // For openAI-compatible: send a final commit and disconnect after a
             // short grace period — the server responds quickly.
             // For mlx-audio: DON'T preemptively disconnect. The server needs time
-            // for model inference on the accumulated audio (can take 5+ seconds on
-            // 6-12s of speech). Keep the connection alive so the finalTranscript
-            // arrives and gets auto-pasted. The timeout below acts as backstop.
+            // for model inference on the accumulated audio (can take 10-20s with
+            // large buffers at MAX_CHUNK=30). Keep the connection alive so the
+            // finalTranscript arrives and gets auto-pasted. The 25s timeout below
+            // acts as backstop.
             if self.activeClientSource != .mlxAudio {
                 self.activeRealtimeClient().disconnectAfterFinalCommitIfNeeded()
             }
 
-            try? await Task.sleep(for: .seconds(self.stopFinalizationTimeoutSeconds))
+            let timeout = self.activeClientSource == .mlxAudio
+                ? self.mlxStopFinalizationTimeoutSeconds
+                : self.stopFinalizationTimeoutSeconds
+            try? await Task.sleep(for: .seconds(timeout))
             guard self.isFinalizingStop else { return }
-            self.debugLog("stop finalization timeout; forcing disconnect")
+            self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
             self.activeRealtimeClient().disconnect()
             self.finishStoppedSession(promotePendingSegment: true)
         }
@@ -987,12 +992,19 @@ final class DictationViewModel {
     }
 
     /// Promotes the remaining mlx hypothesis tail when the server disconnects
-    /// before emitting a final transcript.
+    /// before emitting a final transcript.  Returns only the unstabilized tail
+    /// that was NOT already inserted via the realtime insertion queue.
     @discardableResult
     private func promotePendingMlxTextToLatestSegment() -> String? {
         let hypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
             mlxSegmentLatestHypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
         )
+
+        // Capture the already-inserted prefix length before committing the tail.
+        // Everything up to mlxSegmentCommittedPrefix was already inserted
+        // word-by-word during partial processing via enqueueRealtimeInsertion.
+        let alreadyInsertedPrefix = mlxSegmentCommittedPrefix
+
         if !hypothesis.isEmpty {
             _ = commitMlxHypothesis(
                 hypothesis,
@@ -1001,13 +1013,15 @@ final class DictationViewModel {
             )
         }
 
-        let promoted = consumeMlxCommittedSinceLastFinal().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !promoted.isEmpty else { return nil }
+        let allCommitted = consumeMlxCommittedSinceLastFinal().trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if transcriptText.isEmpty {
-            transcriptText = promoted
-        } else {
-            transcriptText += "\n" + promoted
+        // Update transcript view with all committed text.
+        if !allCommitted.isEmpty {
+            if transcriptText.isEmpty {
+                transcriptText = allCommitted
+            } else {
+                transcriptText += "\n" + allCommitted
+            }
         }
 
         lastFinalSegment = currentDictationEventText
@@ -1021,7 +1035,27 @@ final class DictationViewModel {
             copyLatestSegment(updateStatus: false)
         }
 
-        return promoted
+        // For app insertion: only the tail beyond what was already inserted
+        // during partial processing.  The committed prefix was already sent
+        // to the focused app via enqueueRealtimeInsertion.
+        let newlyPromoted: String
+        if hypothesis.count > alreadyInsertedPrefix.count,
+           hypothesis.hasPrefix(alreadyInsertedPrefix)
+        {
+            let start = hypothesis.index(
+                hypothesis.startIndex,
+                offsetBy: alreadyInsertedPrefix.count
+            )
+            newlyPromoted = String(hypothesis[start...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else if alreadyInsertedPrefix.isEmpty {
+            newlyPromoted = allCommitted
+        } else {
+            newlyPromoted = ""
+        }
+
+        guard !newlyPromoted.isEmpty else { return nil }
+        return newlyPromoted
     }
 
     @discardableResult
