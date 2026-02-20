@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import os
 
 final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     struct Configuration: Sendable {
@@ -318,12 +319,17 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     private func handle(text: String) {
         guard let data = text.data(using: .utf8) else { return }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                debugLog("received non-dictionary JSON frame")
+                emit(.status("Received non-JSON frame."))
+                return
+            }
+            handle(json: json)
+        } catch {
+            debugLog("JSON parse error: \(error.localizedDescription)")
             emit(.status("Received non-JSON frame."))
-            return
         }
-
-        handle(json: json)
     }
 
     private func handle(json: [String: Any]) {
@@ -611,6 +617,6 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][Realtime] \(message)")
+        Log.realtime.debug("\(message)")
     }
 }

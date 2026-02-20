@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import os
 
 final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     private enum SocketState {
@@ -314,12 +315,17 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
     private func handle(text: String) {
         guard let data = text.data(using: .utf8) else { return }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                debugLog("received non-dictionary JSON frame")
+                emit(.status("Received non-JSON frame."))
+                return
+            }
+            handle(json: json)
+        } catch {
+            debugLog("JSON parse error: \(error.localizedDescription)")
             emit(.status("Received non-JSON frame."))
-            return
         }
-
-        handle(json: json)
     }
 
     private func handle(json: [String: Any]) {
@@ -529,6 +535,6 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][MlxRealtime] \(message)")
+        Log.mlxRealtime.debug("\(message)")
     }
 }

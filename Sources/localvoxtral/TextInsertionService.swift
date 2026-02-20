@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import Observation
+import os
 
 enum TextInsertResult {
     case insertedByAccessibility
@@ -42,6 +43,21 @@ final class TextInsertionService {
         let text = pendingRealtimeInsertionText
         pendingRealtimeInsertionText = ""
         return text
+    }
+
+    /// Try to insert text using only the Accessibility API (no keyboard event
+    /// fallback). Returns `true` if the text was inserted successfully.
+    /// Use this for delayed/finalized text blocks where keyboard events are
+    /// unreliable because focus context may have shifted.
+    func insertTextUsingAccessibilityOnly(_ text: String) -> Bool {
+        guard !text.isEmpty else { return true }
+        refreshAccessibilityTrustState()
+        if insertTextUsingAccessibility(text) {
+            clearAccessibilityErrorIfNeeded()
+            axInsertionSuccessCount += 1
+            return true
+        }
+        return false
     }
 
     func insertText(
@@ -186,11 +202,8 @@ final class TextInsertionService {
         let totalInsertions = axInsertionSuccessCount + keyboardFallbackSuccessCount + modifierDeferredInsertionCount
         guard totalInsertions > 0 else { return }
 
-        print(
-            "[localvoxtral] insertion-paths "
-                + "ax=\(axInsertionSuccessCount) "
-                + "keyboard_fallback=\(keyboardFallbackSuccessCount) "
-                + "deferred_modifiers=\(modifierDeferredInsertionCount)"
+        Log.insertion.info(
+            "insertion-paths ax=\(self.axInsertionSuccessCount) keyboard_fallback=\(self.keyboardFallbackSuccessCount) deferred_modifiers=\(self.modifierDeferredInsertionCount)"
         )
     }
 
@@ -235,10 +248,12 @@ final class TextInsertionService {
             return false
         }
 
+        // Retry once: the Accessibility API can fail on the first attempt when
+        // the focused element's attribute state hasn't fully settled (common with
+        // larger text blocks from mlx-audio finalization).
         if replaceSelectedTextRange(in: focusedElement, with: text) {
             return true
         }
-
         return replaceSelectedTextRange(in: focusedElement, with: text)
     }
 
