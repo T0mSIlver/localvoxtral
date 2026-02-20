@@ -2,6 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 import Foundation
 import Observation
+import os
 
 @MainActor
 @Observable
@@ -27,6 +28,7 @@ final class DictationViewModel {
     let textInsertion = TextInsertionService()
 
     private let microphone = MicrophoneCaptureService()
+    private let networkMonitor = NetworkMonitor()
     private let openAIRealtimeClient = RealtimeWebSocketClient()
     private let mlxAudioRealtimeClient = MlxAudioRealtimeWebSocketClient()
     private var activeClientSource: ActiveClientSource?
@@ -46,6 +48,7 @@ final class DictationViewModel {
     private let stopFinalizationTimeoutSeconds: TimeInterval = 7.0
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private static weak var hotKeyTarget: DictationViewModel?
 
@@ -76,6 +79,13 @@ final class DictationViewModel {
             }
         }
 
+        microphone.onError = { [weak self] message in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.lastError = message
+            }
+        }
+
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
             if self.lastError == TextInsertionService.accessibilityErrorMessage {
@@ -89,21 +99,34 @@ final class DictationViewModel {
             }
         }
 
+        networkMonitor.onChange = { [weak self] connected in
+            Task { @MainActor [weak self] in
+                self?.handleNetworkChange(connected: connected)
+            }
+        }
+        networkMonitor.start()
+
         Self.hotKeyTarget = self
         registerGlobalHotkey()
         textInsertion.refreshAccessibilityTrustState()
         refreshMicrophoneInputs()
+        registerLifecycleObservers()
     }
 
     @MainActor
     deinit {
         Self.hotKeyTarget = nil
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        lifecycleObservers.removeAll()
         commitTask?.cancel()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         textInsertion.stopAllTasks()
         healthMonitor.cancelTasks()
         microphone.stop()
+        networkMonitor.stop()
         openAIRealtimeClient.disconnect()
         mlxAudioRealtimeClient.disconnect()
         unregisterGlobalHotkey()
@@ -185,6 +208,67 @@ final class DictationViewModel {
         }
     }
 
+    private func registerLifecycleObservers() {
+        let nc = NotificationCenter.default
+
+        // Stop dictation when the system is about to sleep — no finalization
+        // since the network connection will be lost.
+        let sleepObserver = nc.addObserver(
+            forName: NSWorkspace.willSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isDictating else { return }
+                self.stopDictation(reason: "system sleep", finalizeRemainingAudio: false)
+            }
+        }
+
+        // Stop dictation when the app is about to terminate.
+        let terminateObserver = nc.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isDictating else { return }
+                self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
+            }
+        }
+
+        lifecycleObservers = [sleepObserver, terminateObserver]
+    }
+
+    private func handleNetworkChange(connected: Bool) {
+        if connected {
+            debugLog("network restored")
+            // Only update status if we're idle — don't overwrite active dictation status.
+            if !isDictating, !isFinalizingStop,
+               statusText == "Network lost. Dictation stopped."
+                || statusText == "No network connection."
+            {
+                statusText = "Ready"
+                lastError = nil
+            }
+        } else {
+            debugLog("network lost")
+            if isDictating {
+                // Network is gone — no point trying to finalize over a dead connection.
+                stopDictation(reason: "network lost", finalizeRemainingAudio: false)
+                statusText = "Network lost. Dictation stopped."
+                lastError = "Network connection was lost during dictation."
+            } else if isFinalizingStop {
+                // Already stopped mic, just abort the finalization attempt.
+                activeRealtimeClient().disconnect()
+                finishStoppedSession(promotePendingSegment: true)
+                statusText = "Network lost. Dictation stopped."
+                lastError = "Network connection was lost during dictation."
+            } else {
+                statusText = "No network connection."
+            }
+        }
+    }
+
     func toggleDictation() {
         if isDictating {
             stopDictation(reason: "manual toggle")
@@ -224,8 +308,10 @@ final class DictationViewModel {
            devices.contains(where: { $0.id == defaultID })
         {
             resolvedSelection = defaultID
+        } else if let firstDevice = devices.first {
+            resolvedSelection = firstDevice.id
         } else {
-            resolvedSelection = devices[0].id
+            return
         }
 
         if selectedInputDeviceID != resolvedSelection {
@@ -258,6 +344,11 @@ final class DictationViewModel {
             statusText = "Awaiting microphone permission..."
             return
         }
+        guard networkMonitor.isConnected else {
+            statusText = "No network connection."
+            lastError = "Connect to a network before starting dictation."
+            return
+        }
         debugLog("startDictation requested")
         refreshMicrophoneInputs()
         if debugLoggingEnabled {
@@ -287,6 +378,15 @@ final class DictationViewModel {
                     }
                     self.beginDictationSession()
                 }
+            }
+            // Safety timeout: reset the awaiting flag if the permission callback
+            // never fires (e.g. user dismisses the prompt without choosing).
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(120))
+                guard let self, self.isAwaitingMicrophonePermission else { return }
+                self.isAwaitingMicrophonePermission = false
+                self.statusText = "Ready"
+                self.debugLog("microphone permission prompt timed out")
             }
         case .denied, .restricted:
             statusText = "Microphone access denied."
@@ -555,7 +655,7 @@ final class DictationViewModel {
                 guard !bufferedChunk.isEmpty else {
                     emptyBufferTicks += 1
                     if debugLoggingEnabled, emptyBufferTicks % 20 == 0 {
-                        print("[localvoxtral][Dictation] audio send loop has no buffered chunks")
+                        Log.dictation.debug("audio send loop has no buffered chunks")
                     }
                     continue
                 }
@@ -583,7 +683,17 @@ final class DictationViewModel {
                 await self.sendTrailingSilenceForMlxAudio()
             }
             guard self.isFinalizingStop else { return }
-            self.activeRealtimeClient().disconnectAfterFinalCommitIfNeeded()
+
+            // For openAI-compatible: send a final commit and disconnect after a
+            // short grace period — the server responds quickly.
+            // For mlx-audio: DON'T preemptively disconnect. The server needs time
+            // for model inference on the accumulated audio (can take 5+ seconds on
+            // 6-12s of speech). Keep the connection alive so the finalTranscript
+            // arrives and gets auto-pasted. The timeout below acts as backstop.
+            if self.activeClientSource != .mlxAudio {
+                self.activeRealtimeClient().disconnectAfterFinalCommitIfNeeded()
+            }
+
             try? await Task.sleep(for: .seconds(self.stopFinalizationTimeoutSeconds))
             guard self.isFinalizingStop else { return }
             self.debugLog("stop finalization timeout; forcing disconnect")
@@ -609,8 +719,20 @@ final class DictationViewModel {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
 
+        let wasMlxAudio = activeClientSource == .mlxAudio
+
         if promotePendingSegment {
-            promotePendingRealtimeTextToLatestSegment()
+            let promoted = promotePendingRealtimeTextToLatestSegment()
+
+            // For mlx-audio, partial transcripts are NOT auto-pasted during
+            // dictation (the server may revise hypotheses). If finalization
+            // ended before a finalTranscript arrived (common due to higher
+            // model inference latency), auto-paste the promoted partial text.
+            if wasMlxAudio, let promoted, !promoted.isEmpty {
+                if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
+                    _ = textInsertion.pasteUsingCommandV(promoted)
+                }
+            }
         }
 
         isFinalizingStop = false
@@ -744,7 +866,18 @@ final class DictationViewModel {
             // finalized text should be inserted only when no live delta was seen.
             let shouldInsertFinal = source == .mlxAudio || !hadLiveDelta
             if shouldInsertFinal {
-                textInsertion.enqueueRealtimeInsertion(finalizedSegment)
+                if source == .mlxAudio {
+                    // mlx-audio transcripts arrive as a complete block after a
+                    // multi-second delay. Skip the keyboard-event path entirely
+                    // (postUnicodeTextEvents returns "success" even when events
+                    // don't reach the target). Try accessibility first; fall
+                    // back to Cmd+V paste which is reliable for complete blocks.
+                    if !textInsertion.insertTextUsingAccessibilityOnly(finalizedSegment) {
+                        _ = textInsertion.pasteUsingCommandV(finalizedSegment)
+                    }
+                } else {
+                    textInsertion.enqueueRealtimeInsertion(finalizedSegment)
+                }
                 if let accessibilityError = textInsertion.lastAccessibilityError {
                     lastError = accessibilityError
                 }
@@ -851,9 +984,12 @@ final class DictationViewModel {
         return pendingText + finalizedText
     }
 
-    private func promotePendingRealtimeTextToLatestSegment() {
+    /// Promotes any buffered partial transcript text to `lastFinalSegment`.
+    /// Returns the promoted segment text, or `nil` if there was nothing to promote.
+    @discardableResult
+    private func promotePendingRealtimeTextToLatestSegment() -> String? {
         let pendingSegment = resolvedFinalizedSegment(from: "")
-        guard !pendingSegment.isEmpty else { return }
+        guard !pendingSegment.isEmpty else { return nil }
 
         currentDictationEventText = appendToCurrentDictationEvent(
             segment: pendingSegment,
@@ -864,6 +1000,8 @@ final class DictationViewModel {
         if settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)
         }
+
+        return pendingSegment
     }
 
     private func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
@@ -940,6 +1078,6 @@ final class DictationViewModel {
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][Dictation] \(message)")
+        Log.dictation.debug("\(message)")
     }
 }
