@@ -20,7 +20,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         var pendingTextMessages: [String] = []
         var pendingBinaryMessages: [Data] = []
         var sawStreamingDeltaForCurrentChunk = false
-        var suppressDeltasUntilFinalComplete = false
+        var activeStreamingHypothesis = ""
         var pendingTranscriptionDelayMilliseconds: Int?
         var delayedDisconnectWorkItem: DispatchWorkItem?
     }
@@ -95,7 +95,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             s.hasSentInitialConfiguration = false
             s.pendingModelName = modelName
             s.sawStreamingDeltaForCurrentChunk = false
-            s.suppressDeltasUntilFinalComplete = false
+            s.activeStreamingHypothesis = ""
             s.pendingTranscriptionDelayMilliseconds = configuration.transcriptionDelayMilliseconds
 
             task.resume()
@@ -344,15 +344,12 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             switch type {
             case "delta":
                 guard let delta = json["delta"] as? String, !delta.isEmpty else { return }
-                let shouldSuppress: Bool = state.withLock { s in
-                    if s.suppressDeltasUntilFinalComplete {
-                        return true
-                    }
+                let partialHypothesis = state.withLock { s -> String in
                     s.sawStreamingDeltaForCurrentChunk = true
-                    return false
+                    s.activeStreamingHypothesis.append(delta)
+                    return s.activeStreamingHypothesis
                 }
-                if shouldSuppress { return }
-                emit(.partialTranscript(delta))
+                emit(.partialTranscript(partialHypothesis))
                 return
 
             case "complete":
@@ -388,15 +385,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sawStreamingDelta = state.withLock { s in
             let hadDelta = s.sawStreamingDeltaForCurrentChunk
-            if isPartial {
-                // The next pass may re-transcribe the same chunk from the beginning.
-                // Keep current partial text visible and suppress replacement deltas
-                // until final completion arrives.
-                s.suppressDeltasUntilFinalComplete = true
-            } else {
-                s.sawStreamingDeltaForCurrentChunk = false
-                s.suppressDeltasUntilFinalComplete = false
-            }
+            s.sawStreamingDeltaForCurrentChunk = false
+            s.activeStreamingHypothesis = ""
             return hadDelta
         }
 
@@ -429,7 +419,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         s.hasSentInitialConfiguration = false
         s.pendingModelName = ""
         s.sawStreamingDeltaForCurrentChunk = false
-        s.suppressDeltasUntilFinalComplete = false
+        s.activeStreamingHypothesis = ""
         s.pendingTranscriptionDelayMilliseconds = nil
 
         if clearQueuedMessages {

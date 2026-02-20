@@ -389,7 +389,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         }
     }
 
-    private func findString(in value: Any, matching keys: Set<String>) -> String? {
+    func findString(in value: Any, matching keys: Set<String>) -> String? {
         if let dict = value as? [String: Any] {
             // Direct key lookup first
             for key in keys {

@@ -12,6 +12,12 @@ final class DictationViewModel {
         case mlxAudio
     }
 
+    private enum MlxInsertionMode {
+        case realtime
+        case finalized
+        case none
+    }
+
     private(set) var isDictating = false
     private(set) var isFinalizingStop = false
     private(set) var transcriptText = ""
@@ -43,6 +49,11 @@ final class DictationViewModel {
     private var isAwaitingMicrophonePermission = false
     private var pendingRealtimeFinalizationText = ""
     private var currentDictationEventText = ""
+    private var mlxCommittedEventText = ""
+    private var mlxCommittedSinceLastFinal = ""
+    private var mlxSegmentLatestHypothesis = ""
+    private var mlxSegmentPreviousHypothesis = ""
+    private var mlxSegmentCommittedPrefix = ""
     private let mlxTrailingSilenceDurationSeconds: TimeInterval = 1.6
     private let mlxTrailingSilenceChunkDurationSeconds: TimeInterval = 0.1
     private let stopFinalizationTimeoutSeconds: TimeInterval = 7.0
@@ -427,6 +438,11 @@ final class DictationViewModel {
         lastFinalSegment = ""
         pendingRealtimeFinalizationText = ""
         currentDictationEventText = ""
+        mlxCommittedEventText = ""
+        mlxCommittedSinceLastFinal = ""
+        mlxSegmentLatestHypothesis = ""
+        mlxSegmentPreviousHypothesis = ""
+        mlxSegmentCommittedPrefix = ""
         lastError = nil
     }
 
@@ -557,6 +573,11 @@ final class DictationViewModel {
             livePartialText = ""
             pendingRealtimeFinalizationText = ""
             currentDictationEventText = ""
+            mlxCommittedEventText = ""
+            mlxCommittedSinceLastFinal = ""
+            mlxSegmentLatestHypothesis = ""
+            mlxSegmentPreviousHypothesis = ""
+            mlxSegmentCommittedPrefix = ""
             statusText = "Listening..."
             textInsertion.clearPendingText()
             textInsertion.resetDiagnostics()
@@ -722,12 +743,13 @@ final class DictationViewModel {
         let wasMlxAudio = activeClientSource == .mlxAudio
 
         if promotePendingSegment {
-            let promoted = promotePendingRealtimeTextToLatestSegment()
+            let promoted = wasMlxAudio
+                ? promotePendingMlxTextToLatestSegment()
+                : promotePendingRealtimeTextToLatestSegment()
 
-            // For mlx-audio, partial transcripts are NOT auto-pasted during
-            // dictation (the server may revise hypotheses). If finalization
-            // ended before a finalTranscript arrived (common due to higher
-            // model inference latency), auto-paste the promoted partial text.
+            // For mlx-audio, we incrementally insert only stabilized prefixes.
+            // If finalization ends before a finalTranscript arrives, promote
+            // the remaining unstabilized tail and insert it once.
             if wasMlxAudio, let promoted, !promoted.isEmpty {
                 if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
                     _ = textInsertion.pasteUsingCommandV(promoted)
@@ -738,6 +760,10 @@ final class DictationViewModel {
         isFinalizingStop = false
         livePartialText = ""
         pendingRealtimeFinalizationText = ""
+        mlxCommittedSinceLastFinal = ""
+        mlxSegmentLatestHypothesis = ""
+        mlxSegmentPreviousHypothesis = ""
+        mlxSegmentCommittedPrefix = ""
         statusText = "Ready"
         activeClientSource = nil
 
@@ -804,23 +830,19 @@ final class DictationViewModel {
 
         case .partialTranscript(let delta):
             guard acceptsRealtimeEvents, !delta.isEmpty else { return }
-            if source == .openAICompatible {
-                // vLLM/OpenAI-compatible realtime emits append-only transcription deltas.
-                // Merging by overlap can drop repeated characters (for example digits in "2021"),
-                // so append directly to preserve exact incremental output for live preview.
-                pendingRealtimeFinalizationText.append(delta)
-                livePartialText = pendingRealtimeFinalizationText
-                // For vLLM/OpenAI-compatible streams, deltas are append-only and safe to
-                // insert directly to avoid duplicate full-sentence insertion on frequent commits.
-                textInsertion.enqueueRealtimeInsertion(delta)
-            } else {
-                let mergedPartial = mergeIncrementalText(
-                    existing: pendingRealtimeFinalizationText,
-                    incoming: delta
-                )
-                pendingRealtimeFinalizationText = mergedPartial.merged
-                livePartialText = mergedPartial.merged
+            if source == .mlxAudio {
+                handleMlxPartialTranscript(delta)
+                return
             }
+
+            // vLLM/OpenAI-compatible realtime emits append-only transcription deltas.
+            // Merging by overlap can drop repeated characters (for example digits in "2021"),
+            // so append directly to preserve exact incremental output for live preview.
+            pendingRealtimeFinalizationText.append(delta)
+            livePartialText = pendingRealtimeFinalizationText
+            // For vLLM/OpenAI-compatible streams, deltas are append-only and safe to
+            // insert directly to avoid duplicate full-sentence insertion on frequent commits.
+            textInsertion.enqueueRealtimeInsertion(delta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
@@ -828,12 +850,12 @@ final class DictationViewModel {
 
         case .finalTranscript(let text):
             guard acceptsRealtimeEvents else { return }
-            let finalizedSegment: String
             if source == .mlxAudio {
-                finalizedSegment = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            } else {
-                finalizedSegment = resolvedFinalizedSegment(from: text)
+                handleMlxFinalTranscript(text)
+                return
             }
+
+            let finalizedSegment = resolvedFinalizedSegment(from: text)
             let hadLiveDelta = !pendingRealtimeFinalizationText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty
@@ -852,7 +874,7 @@ final class DictationViewModel {
                 transcriptText += "\n" + finalizedSegment
             }
 
-            currentDictationEventText = appendToCurrentDictationEvent(
+            currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
                 segment: finalizedSegment,
                 existingText: currentDictationEventText
             )
@@ -861,23 +883,11 @@ final class DictationViewModel {
             pendingRealtimeFinalizationText = ""
             statusText = isDictating ? "Listening..." : (isFinalizingStop ? "Finalizing..." : "Ready")
 
-            // mlx-audio may revise chunk hypotheses, so insert finalized text only.
             // vLLM/OpenAI-compatible streams already insert append-only deltas, so
             // finalized text should be inserted only when no live delta was seen.
-            let shouldInsertFinal = source == .mlxAudio || !hadLiveDelta
+            let shouldInsertFinal = !hadLiveDelta
             if shouldInsertFinal {
-                if source == .mlxAudio {
-                    // mlx-audio transcripts arrive as a complete block after a
-                    // multi-second delay. Skip the keyboard-event path entirely
-                    // (postUnicodeTextEvents returns "success" even when events
-                    // don't reach the target). Try accessibility first; fall
-                    // back to Cmd+V paste which is reliable for complete blocks.
-                    if !textInsertion.insertTextUsingAccessibilityOnly(finalizedSegment) {
-                        _ = textInsertion.pasteUsingCommandV(finalizedSegment)
-                    }
-                } else {
-                    textInsertion.enqueueRealtimeInsertion(finalizedSegment)
-                }
+                textInsertion.enqueueRealtimeInsertion(finalizedSegment)
                 if let accessibilityError = textInsertion.lastAccessibilityError {
                     lastError = accessibilityError
                 }
@@ -910,6 +920,264 @@ final class DictationViewModel {
             statusText = "Realtime error."
             lastError = message
         }
+    }
+
+    private func handleMlxPartialTranscript(_ delta: String) {
+        let mergedHypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
+            delta.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard !mergedHypothesis.isEmpty else { return }
+        _ = commitMlxHypothesis(
+            mergedHypothesis,
+            isFinal: false,
+            insertionMode: .realtime
+        )
+
+        if let accessibilityError = textInsertion.lastAccessibilityError {
+            lastError = accessibilityError
+        }
+        statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
+    }
+
+    private func handleMlxFinalTranscript(_ text: String) {
+        let hypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
+            text.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard !hypothesis.isEmpty else {
+            livePartialText = ""
+            pendingRealtimeFinalizationText = ""
+            mlxSegmentLatestHypothesis = ""
+            mlxSegmentPreviousHypothesis = ""
+            mlxSegmentCommittedPrefix = ""
+            return
+        }
+
+        // While dictating, keep mlx insertion on the same retry queue used by
+        // partial commits to avoid queue/direct race duplicates. During stop
+        // finalization we still prefer direct finalized insertion.
+        let insertionMode: MlxInsertionMode = isFinalizingStop ? .finalized : .realtime
+
+        _ = commitMlxHypothesis(
+            hypothesis,
+            isFinal: true,
+            insertionMode: insertionMode
+        )
+
+        let finalizedDelta = consumeMlxCommittedSinceLastFinal()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !finalizedDelta.isEmpty {
+            if transcriptText.isEmpty {
+                transcriptText = finalizedDelta
+            } else {
+                transcriptText += "\n" + finalizedDelta
+            }
+        }
+
+        lastFinalSegment = currentDictationEventText
+        livePartialText = ""
+        pendingRealtimeFinalizationText = ""
+        mlxSegmentLatestHypothesis = ""
+        mlxSegmentPreviousHypothesis = ""
+        mlxSegmentCommittedPrefix = ""
+        statusText = isDictating ? "Listening..." : (isFinalizingStop ? "Finalizing..." : "Ready")
+
+        if settings.autoCopyEnabled {
+            copyLatestSegment(updateStatus: false)
+        }
+    }
+
+    /// Promotes the remaining mlx hypothesis tail when the server disconnects
+    /// before emitting a final transcript.
+    @discardableResult
+    private func promotePendingMlxTextToLatestSegment() -> String? {
+        let hypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
+            mlxSegmentLatestHypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        if !hypothesis.isEmpty {
+            _ = commitMlxHypothesis(
+                hypothesis,
+                isFinal: true,
+                insertionMode: .none
+            )
+        }
+
+        let promoted = consumeMlxCommittedSinceLastFinal().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !promoted.isEmpty else { return nil }
+
+        if transcriptText.isEmpty {
+            transcriptText = promoted
+        } else {
+            transcriptText += "\n" + promoted
+        }
+
+        lastFinalSegment = currentDictationEventText
+        livePartialText = ""
+        pendingRealtimeFinalizationText = ""
+        mlxSegmentLatestHypothesis = ""
+        mlxSegmentPreviousHypothesis = ""
+        mlxSegmentCommittedPrefix = ""
+
+        if settings.autoCopyEnabled {
+            copyLatestSegment(updateStatus: false)
+        }
+
+        return promoted
+    }
+
+    @discardableResult
+    private func commitMlxHypothesis(
+        _ hypothesis: String,
+        isFinal: Bool,
+        insertionMode: MlxInsertionMode
+    ) -> String {
+        guard !hypothesis.isEmpty else { return "" }
+
+        if isFinal,
+           !mlxSegmentCommittedPrefix.isEmpty,
+           !hypothesis.hasPrefix(mlxSegmentCommittedPrefix)
+        {
+            // Final hypotheses can occasionally revise earlier words. We do not
+            // retract committed text, so only append a conservative suffix delta
+            // if it can be inferred safely from the previous hypothesis.
+            let safeDelta = resolvedMlxFinalMismatchDelta(
+                previousHypothesis: mlxSegmentLatestHypothesis,
+                finalHypothesis: hypothesis
+            )
+            let appended = appendCommittedMlxDeltaToEvent(
+                safeDelta,
+                insertionMode: insertionMode
+            )
+            mlxSegmentCommittedPrefix = hypothesis
+            mlxSegmentLatestHypothesis = hypothesis
+            mlxSegmentPreviousHypothesis = hypothesis
+            pendingRealtimeFinalizationText = ""
+            livePartialText = ""
+            return appended
+        }
+
+        let previousHypothesis = mlxSegmentPreviousHypothesis
+        var commitTarget = mlxSegmentCommittedPrefix
+
+        if isFinal {
+            if hypothesis.hasPrefix(mlxSegmentCommittedPrefix) {
+                commitTarget = hypothesis
+            }
+        } else if !previousHypothesis.isEmpty {
+            let stableLength = TextMergingAlgorithms.longestCommonPrefixLength(
+                lhs: previousHypothesis,
+                rhs: hypothesis
+            )
+            let boundaryLength = TextMergingAlgorithms.stableWordBoundaryLength(in: hypothesis, upTo: stableLength)
+            if boundaryLength > mlxSegmentCommittedPrefix.count {
+                commitTarget = String(hypothesis.prefix(boundaryLength))
+            }
+        }
+
+        var appendedDelta = ""
+        if commitTarget.count > mlxSegmentCommittedPrefix.count,
+           commitTarget.hasPrefix(mlxSegmentCommittedPrefix)
+        {
+            let start = commitTarget.index(
+                commitTarget.startIndex,
+                offsetBy: mlxSegmentCommittedPrefix.count
+            )
+            let newlyStableDelta = String(commitTarget[start...])
+            appendedDelta = appendCommittedMlxDeltaToEvent(
+                newlyStableDelta,
+                insertionMode: insertionMode
+            )
+            mlxSegmentCommittedPrefix = commitTarget
+        }
+
+        mlxSegmentLatestHypothesis = hypothesis
+        mlxSegmentPreviousHypothesis = hypothesis
+
+        if hypothesis.hasPrefix(mlxSegmentCommittedPrefix) {
+            let start = hypothesis.index(
+                hypothesis.startIndex,
+                offsetBy: mlxSegmentCommittedPrefix.count
+            )
+            let unstableTail = String(hypothesis[start...])
+            pendingRealtimeFinalizationText = unstableTail
+            livePartialText = unstableTail
+        } else {
+            pendingRealtimeFinalizationText = hypothesis
+            livePartialText = hypothesis
+        }
+
+        return appendedDelta
+    }
+
+    @discardableResult
+    private func appendCommittedMlxDeltaToEvent(
+        _ delta: String,
+        insertionMode: MlxInsertionMode
+    ) -> String {
+        guard !delta.isEmpty else { return "" }
+
+        let merged = TextMergingAlgorithms.appendWithTailOverlap(existing: mlxCommittedEventText, incoming: delta)
+        mlxCommittedEventText = merged.merged
+        currentDictationEventText = merged.merged
+
+        guard !merged.appendedDelta.isEmpty else { return "" }
+
+        let finalizedDeltaBuffer = TextMergingAlgorithms.appendWithTailOverlap(
+            existing: mlxCommittedSinceLastFinal,
+            incoming: merged.appendedDelta
+        )
+        mlxCommittedSinceLastFinal = finalizedDeltaBuffer.merged
+
+        switch insertionMode {
+        case .realtime:
+            textInsertion.enqueueRealtimeInsertion(merged.appendedDelta)
+        case .finalized:
+            if !textInsertion.insertTextUsingAccessibilityOnly(merged.appendedDelta) {
+                _ = textInsertion.pasteUsingCommandV(merged.appendedDelta)
+            }
+        case .none:
+            break
+        }
+
+        if let accessibilityError = textInsertion.lastAccessibilityError {
+            lastError = accessibilityError
+        }
+
+        return merged.appendedDelta
+    }
+
+    private func consumeMlxCommittedSinceLastFinal() -> String {
+        let delta = mlxCommittedSinceLastFinal
+        mlxCommittedSinceLastFinal = ""
+        return delta
+    }
+
+    private func resolvedMlxFinalMismatchDelta(
+        previousHypothesis: String,
+        finalHypothesis: String
+    ) -> String {
+        let previous = previousHypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !previous.isEmpty else { return finalHypothesis }
+
+        if finalHypothesis.hasPrefix(previous) {
+            let start = finalHypothesis.index(finalHypothesis.startIndex, offsetBy: previous.count)
+            return String(finalHypothesis[start...])
+        }
+
+        if previous.hasPrefix(finalHypothesis) || previous.contains(finalHypothesis) {
+            return ""
+        }
+
+        if let range = finalHypothesis.range(of: previous) {
+            return String(finalHypothesis[range.upperBound...])
+        }
+
+        let overlap = TextMergingAlgorithms.longestSuffixPrefixOverlap(
+            lhs: previous,
+            rhs: finalHypothesis
+        )
+        guard overlap > 0 else { return "" }
+        let start = finalHypothesis.index(finalHypothesis.startIndex, offsetBy: overlap)
+        return String(finalHypothesis[start...])
     }
 
     private func selectedClientSource() -> ActiveClientSource {
@@ -991,7 +1259,7 @@ final class DictationViewModel {
         let pendingSegment = resolvedFinalizedSegment(from: "")
         guard !pendingSegment.isEmpty else { return nil }
 
-        currentDictationEventText = appendToCurrentDictationEvent(
+        currentDictationEventText = TextMergingAlgorithms.appendToCurrentDictationEvent(
             segment: pendingSegment,
             existingText: currentDictationEventText
         )
@@ -1002,78 +1270,6 @@ final class DictationViewModel {
         }
 
         return pendingSegment
-    }
-
-    private func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
-        let normalizedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedSegment.isEmpty else { return existingText }
-
-        let normalizedExisting = existingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedExisting.isEmpty else { return normalizedSegment }
-
-        if normalizedSegment == normalizedExisting {
-            return normalizedExisting
-        }
-
-        if normalizedSegment.hasPrefix(normalizedExisting) {
-            return normalizedSegment
-        }
-
-        if normalizedExisting.hasSuffix(normalizedSegment) {
-            return normalizedExisting
-        }
-
-        let overlap = longestSuffixPrefixOverlap(lhs: normalizedExisting, rhs: normalizedSegment)
-        if overlap > 0 {
-            let overlapIndex = normalizedSegment.index(normalizedSegment.startIndex, offsetBy: overlap)
-            let suffix = String(normalizedSegment[overlapIndex...])
-            return normalizedExisting + suffix
-        }
-
-        return normalizedExisting + "\n" + normalizedSegment
-    }
-
-    private func mergeIncrementalText(existing: String, incoming: String) -> (merged: String, appendedDelta: String) {
-        guard !incoming.isEmpty else { return (existing, "") }
-        guard !existing.isEmpty else { return (incoming, incoming) }
-
-        if incoming == existing {
-            return (existing, "")
-        }
-
-        if incoming.hasPrefix(existing) {
-            let start = incoming.index(incoming.startIndex, offsetBy: existing.count)
-            let delta = String(incoming[start...])
-            return (incoming, delta)
-        }
-
-        if existing.hasSuffix(incoming) || existing.contains(incoming) {
-            return (existing, "")
-        }
-
-        let overlap = longestSuffixPrefixOverlap(lhs: existing, rhs: incoming)
-        if overlap > 0 {
-            let start = incoming.index(incoming.startIndex, offsetBy: overlap)
-            let delta = String(incoming[start...])
-            return (existing + delta, delta)
-        }
-
-        return (existing + incoming, incoming)
-    }
-
-    private func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
-        let maxOverlap = min(lhs.count, rhs.count)
-        guard maxOverlap > 0 else { return 0 }
-
-        for overlap in stride(from: maxOverlap, through: 1, by: -1) {
-            let lhsStart = lhs.index(lhs.endIndex, offsetBy: -overlap)
-            let rhsEnd = rhs.index(rhs.startIndex, offsetBy: overlap)
-            if lhs[lhsStart...] == rhs[..<rhsEnd] {
-                return overlap
-            }
-        }
-
-        return 0
     }
 
     private func debugLog(_ message: String) {
