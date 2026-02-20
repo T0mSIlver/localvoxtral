@@ -3,6 +3,7 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 import Synchronization
+import os
 
 enum MicrophoneAuthorizationStatus {
     case authorized
@@ -47,20 +48,52 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         var consecutiveFailureCount = 0
     }
 
-    private var audioEngine: AVAudioEngine?
+    /// Mutable state that must be accessed under `stateLock`.
+    private struct ProtectedState {
+        var audioEngine: AVAudioEngine?
+        var tapInstalled = false
+        var activeChunkHandler: ChunkHandler?
+        var configChangeObserver: NSObjectProtocol?
+        var didInstallInputDeviceListeners = false
+        var onConfigurationChange: (@Sendable () -> Void)?
+        var onInputDevicesChanged: (@Sendable () -> Void)?
+        var onError: (@Sendable (String) -> Void)?
+    }
+
+    private let stateLock = NSLock()
+    private var _state = ProtectedState()
+
+    /// Access protected state under the lock. All reads/writes of mutable
+    /// instance properties must go through this accessor.
+    private func withState<R>(_ body: (inout ProtectedState) -> R) -> R {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return body(&_state)
+    }
+
     private let processingQueue = DispatchQueue(label: "localvoxtral.microphone.processing")
     private let lastCapturedAudioAt = Mutex<Date?>(nil)
     private let hasCapturedAudioInCurrentRunFlag = Mutex(false)
     private static let targetSampleRate: Double = 16_000
     private let targetOutputFormat: AVAudioFormat
-    private var tapInstalled = false
-    private var activeChunkHandler: ChunkHandler?
-    private var configChangeObserver: NSObjectProtocol?
-    private var didInstallInputDeviceListeners = false
-    private var previousDefaultInputDeviceObjectID: AudioObjectID?
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
-    var onConfigurationChange: (@Sendable () -> Void)?
-    var onInputDevicesChanged: (@Sendable () -> Void)?
+
+    var onConfigurationChange: (@Sendable () -> Void)? {
+        get { withState { $0.onConfigurationChange } }
+        set { withState { $0.onConfigurationChange = newValue } }
+    }
+
+    var onInputDevicesChanged: (@Sendable () -> Void)? {
+        get { withState { $0.onInputDevicesChanged } }
+        set { withState { $0.onInputDevicesChanged = newValue } }
+    }
+
+    /// Called when the audio pipeline encounters a non-recoverable error
+    /// (e.g. converter creation failure). The message is suitable for display.
+    var onError: (@Sendable (String) -> Void)? {
+        get { withState { $0.onError } }
+        set { withState { $0.onError = newValue } }
+    }
 
     init() {
         guard let outputFormat = AVAudioFormat(
@@ -117,8 +150,10 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     func isCapturing() -> Bool {
-        guard let audioEngine else { return false }
-        return audioEngine.isRunning && tapInstalled
+        withState { s in
+            guard let audioEngine = s.audioEngine else { return false }
+            return audioEngine.isRunning && s.tapInstalled
+        }
     }
 
     func hasRecentCapturedAudio(within interval: TimeInterval) -> Bool {
@@ -136,14 +171,13 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     @discardableResult
     func resumeIfNeeded() -> Bool {
-        guard let audioEngine else { return false }
-        guard !audioEngine.isRunning else {
-            return false
-        }
+        let (engine, isTapInstalled) = withState { s in (s.audioEngine, s.tapInstalled) }
+        guard let engine else { return false }
+        guard !engine.isRunning else { return false }
 
         do {
-            try audioEngine.start()
-            let resumed = audioEngine.isRunning && tapInstalled
+            try engine.start()
+            let resumed = engine.isRunning && isTapInstalled
             debugLog("resumeIfNeeded resumed=\(resumed)")
             return resumed
         } catch {
@@ -154,34 +188,41 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     @discardableResult
     func refreshInputTapIfNeeded() -> Bool {
-        guard let audioEngine, let activeChunkHandler else { return false }
-
-        let inputNode = audioEngine.inputNode
-        if tapInstalled {
-            inputNode.removeTap(onBus: 0)
-            tapInstalled = false
+        let (engine, handler, isTapInstalled) = withState { s in
+            (s.audioEngine, s.activeChunkHandler, s.tapInstalled)
         }
-        installInputTap(on: inputNode, chunkHandler: activeChunkHandler)
-        tapInstalled = true
+        guard let engine, let handler else { return false }
+
+        let inputNode = engine.inputNode
+        if isTapInstalled {
+            inputNode.removeTap(onBus: 0)
+        }
+        installInputTap(on: inputNode, chunkHandler: handler)
+        withState { s in s.tapInstalled = true }
         debugLog("refreshed input tap")
         return true
     }
 
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
-        stop(restoreDefaultInput: false)
+        stop()
         hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
         debugLog("start preferredDeviceID=\(preferredDeviceID ?? "default")")
-        // Important: select/switch the input route before creating AVAudioEngine.
-        // Creating the engine first can bind to a stale route and cause -10868 on start.
+
+        // Set the system default input device BEFORE creating the engine so the
+        // engine picks up the correct device. We intentionally do NOT restore
+        // the previous default on stop — restoring activates the old device
+        // (e.g. a headset mic) even though our app is done recording.
         try configureInputDevice(preferredDeviceID)
 
         let audioEngine = AVAudioEngine()
-        self.audioEngine = audioEngine
-
         let inputNode = audioEngine.inputNode
-        activeChunkHandler = chunkHandler
         installInputTap(on: inputNode, chunkHandler: chunkHandler)
-        tapInstalled = true
+
+        withState { s in
+            s.audioEngine = audioEngine
+            s.activeChunkHandler = chunkHandler
+            s.tapInstalled = true
+        }
 
         audioEngine.prepare()
         do {
@@ -191,40 +232,47 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             throw error
         }
 
-        configChangeObserver = NotificationCenter.default.addObserver(
+        let observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: audioEngine,
             queue: .main
         ) { [weak self] _ in
-            self?.debugLog("AVAudioEngineConfigurationChange observed")
-            self?.onConfigurationChange?()
+            guard let self else { return }
+            self.debugLog("AVAudioEngineConfigurationChange observed")
+            let callback = self.withState { $0.onConfigurationChange }
+            callback?()
         }
+        withState { $0.configChangeObserver = observer }
     }
 
-    func stop(restoreDefaultInput: Bool = true) {
-        if let observer = configChangeObserver {
+    func stop() {
+        let (observer, engine, isTapInstalled) = withState { s in
+            let obs = s.configChangeObserver
+            s.configChangeObserver = nil
+            let eng = s.audioEngine
+            let tap = s.tapInstalled
+            s.audioEngine = nil
+            s.tapInstalled = false
+            s.activeChunkHandler = nil
+            return (obs, eng, tap)
+        }
+
+        if let observer {
             NotificationCenter.default.removeObserver(observer)
-            configChangeObserver = nil
         }
 
-        if let audioEngine {
-            if tapInstalled {
-                audioEngine.inputNode.removeTap(onBus: 0)
+        if let engine {
+            // Order matters: remove tap first to release the closure, then stop
+            // the engine to release audio hardware, then reset the graph.
+            if isTapInstalled {
+                engine.inputNode.removeTap(onBus: 0)
             }
-
-            if audioEngine.isRunning {
-                audioEngine.stop()
+            if engine.isRunning {
+                engine.stop()
             }
-
-            audioEngine.reset()
+            engine.reset()
         }
 
-        audioEngine = nil
-        tapInstalled = false
-        activeChunkHandler = nil
-        if restoreDefaultInput {
-            restoreDefaultInputDeviceIfNeeded()
-        }
         lastCapturedAudioAt.withLock { $0 = nil }
         hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
         debugLog("stop")
@@ -248,11 +296,13 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             let inputFormatDescriptor = Self.inputFormatDescriptor(for: inputFormat)
             if converterState.converter == nil || converterState.inputFormatDescriptor != inputFormatDescriptor {
                 guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-                    if self.debugLoggingEnabled {
-                        self.debugLog(
-                            "converter creation failed sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount)"
-                        )
-                    }
+                    self.debugLog(
+                        "converter creation failed sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount)"
+                    )
+                    let errorCallback = self.withState { $0.onError }
+                    errorCallback?(
+                        "Audio converter failed for microphone format (rate=\(Int(inputFormat.sampleRate)), ch=\(inputFormat.channelCount)). Try a different input device."
+                    )
                     return
                 }
                 converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
@@ -299,71 +349,45 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     private func configureInputDevice(_ preferredDeviceID: String?) throws {
-        if let preferredDeviceID,
-           !preferredDeviceID.isEmpty
-        {
-            guard let preferredObjectID = AudioDeviceManager.audioDeviceID(forUID: preferredDeviceID) else {
-                throw MicrophoneCaptureError.preferredDeviceUnavailable(preferredDeviceID)
-            }
-
-            guard let currentDefaultInputID = AudioDeviceManager.defaultInputDeviceObjectID() else {
-                throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
-            }
-
-            if preferredObjectID == currentDefaultInputID {
-                debugLog("preferred input matches current default uid=\(preferredDeviceID)")
-                return
-            }
-
-            let preferredName = AudioDeviceManager.deviceName(for: preferredObjectID) ?? preferredDeviceID
-            debugLog(
-                "attempting set preferred input uid=\(preferredDeviceID) name=\(preferredName) objectID=\(preferredObjectID) via default-input route"
-            )
-            previousDefaultInputDeviceObjectID = currentDefaultInputID
-            guard AudioDeviceManager.setSystemDefaultInputDevice(preferredObjectID) else {
-                previousDefaultInputDeviceObjectID = nil
-                throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
-            }
-
-            guard waitForDefaultInputDevice(preferredObjectID) else {
-                debugLog("default input did not settle to objectID=\(preferredObjectID)")
-                previousDefaultInputDeviceObjectID = nil
-                throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
-            }
-
-            // Give CoreAudio a short moment to settle after route switch.
-            Thread.sleep(forTimeInterval: 0.06)
-            debugLog("set preferred input succeeded uid=\(preferredDeviceID)")
+        guard let preferredDeviceID, !preferredDeviceID.isEmpty else {
+            debugLog("using system default input device")
             return
         }
 
-        previousDefaultInputDeviceObjectID = nil
-    }
-
-    private func restoreDefaultInputDeviceIfNeeded() {
-        guard let previousDefaultInputDeviceObjectID else { return }
-        defer {
-            self.previousDefaultInputDeviceObjectID = nil
+        guard let preferredObjectID = AudioDeviceManager.audioDeviceID(forUID: preferredDeviceID) else {
+            throw MicrophoneCaptureError.preferredDeviceUnavailable(preferredDeviceID)
         }
 
-        guard AudioDeviceManager.defaultInputDeviceObjectID() != previousDefaultInputDeviceObjectID else { return }
-        guard AudioDeviceManager.setSystemDefaultInputDevice(previousDefaultInputDeviceObjectID) else { return }
-        debugLog("restored previous default input objectID=\(previousDefaultInputDeviceObjectID)")
+        // Skip if already the system default.
+        if AudioDeviceManager.defaultInputDeviceObjectID() == preferredObjectID {
+            debugLog("preferred device already system default; no change needed")
+            return
+        }
+
+        let preferredName = AudioDeviceManager.deviceName(for: preferredObjectID) ?? preferredDeviceID
+        debugLog("setting system default input uid=\(preferredDeviceID) name=\(preferredName)")
+
+        guard AudioDeviceManager.setSystemDefaultInputDevice(preferredObjectID) else {
+            throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
+        }
+
+        // The system default change is asynchronous; wait for it to take effect
+        // before creating the AVAudioEngine.
+        waitForDefaultInputDevice(preferredObjectID)
+        debugLog("system default input device updated")
     }
 
     private func waitForDefaultInputDevice(
         _ expectedDeviceID: AudioObjectID,
         timeout: TimeInterval = 0.8
-    ) -> Bool {
+    ) {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID {
-                return true
+                return
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
-
-        return AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID
     }
 
     private static let inputDevicePropertyListener: AudioObjectPropertyListenerProc = {
@@ -375,7 +399,8 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     private func startMonitoringInputDevices() {
-        guard !didInstallInputDeviceListeners else { return }
+        let alreadyInstalled = withState { $0.didInstallInputDeviceListeners }
+        guard !alreadyInstalled else { return }
 
         var devicesAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -405,7 +430,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         )
 
         if devicesStatus == noErr, defaultStatus == noErr {
-            didInstallInputDeviceListeners = true
+            withState { $0.didInstallInputDeviceListeners = true }
             return
         }
 
@@ -428,7 +453,12 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     private func stopMonitoringInputDevices() {
-        guard didInstallInputDeviceListeners else { return }
+        let wasInstalled = withState { s in
+            let was = s.didInstallInputDeviceListeners
+            s.didInstallInputDeviceListeners = false
+            return was
+        }
+        guard wasInstalled else { return }
 
         var devicesAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -456,20 +486,20 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             Self.inputDevicePropertyListener,
             clientData
         )
-
-        didInstallInputDeviceListeners = false
     }
 
     private func notifyInputDevicesChanged() {
         DispatchQueue.main.async { [weak self] in
-            self?.debugLog("input devices changed")
-            self?.onInputDevicesChanged?()
+            guard let self else { return }
+            self.debugLog("input devices changed")
+            let callback = self.withState { $0.onInputDevicesChanged }
+            callback?()
         }
     }
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][Microphone] \(message)")
+        Log.microphone.debug("\(message)")
     }
 
     private static func inputFormatDescriptor(for format: AVAudioFormat) -> InputFormatDescriptor {
