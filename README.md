@@ -7,7 +7,7 @@
 localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
 
-It supports two realtime backend modes: OpenAI Realtime-compatible endpoints (for example local vLLM), and `mlx-audio` realtime transcription endpoints.
+It supports two realtime backend modes: OpenAI Realtime-compatible endpoints (for example `vLLM` or `voxmlx`), and `mlx-audio` realtime transcription endpoints.
 
 ## Features
 
@@ -33,7 +33,7 @@ open ./dist/localvoxtral.app
   - Realtime endpoint
   - Model name
   - API key
-  - Commit interval (`vLLM`)
+  - Commit interval (`vLLM`, `voxmlx`)
   - Transcription delay (`mlx-audio`)
   - Auto-copy finalized segment
 
@@ -52,16 +52,26 @@ open ./dist/localvoxtral.app
 
 ### vLLM
 
-`vllm` server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602).
+[vllm](https://github.com/vllm-project/vllm) OpenAI Realtime-compatible server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602).
 
 ```bash
 VLLM_DISABLE_COMPILE_CACHE=1
 vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudagraph_mode": "PIECEWISE"}'
 ```
 
-### mlx-audio
+### voxmlx
 
-`mlx-audio` server on M1 Pro, running a [4bit quant](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) of Voxtral Mini 4B Realtime
+[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol.
+
+```bash
+pip install -e ".[server]"
+voxmlx-serve --model T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+```
+
+### mlx-audio (deprecated)
+
+`mlx-audio` server on M1 Pro, running a [4bit quant](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) of Voxtral Mini 4B Realtime.
+Note the mlx-audio server doesn't provide true incremental inference (which is the flagship feature of the model) and is therefore not recommended. 
 
 ```bash
 # Default max_chunk (6s) force-splits continuous speech mid-sentence; 30 lets silence detection handle segmentation naturally
@@ -74,5 +84,5 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
   - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
   -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~
-  - [MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)
+  - **done** ~~[MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)~~
   - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
