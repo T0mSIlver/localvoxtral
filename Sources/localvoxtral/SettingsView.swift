@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
+    var viewModel: DictationViewModel
+    @State private var shortcutValidationError: String?
 
     private var mlxTranscriptionDelaySecondsBinding: Binding<Double> {
         Binding(
@@ -45,6 +47,17 @@ struct SettingsView: View {
                 case .mlxAudio:
                     settings.mlxAudioModelName = newValue
                 }
+            }
+        )
+    }
+
+    private var dictationShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: {
+                settings.dictationShortcut
+            },
+            set: { newValue in
+                viewModel.updateDictationShortcut(newValue)
             }
         )
     }
@@ -135,6 +148,44 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
+                    }
+
+                    SettingsSection(title: "Keyboard Shortcut") {
+                        SettingsField(title: "Toggle dictation") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ShortcutRecorderField(
+                                    shortcut: dictationShortcutBinding,
+                                    validationError: $shortcutValidationError
+                                )
+                                .frame(width: 220, height: 24)
+
+                                Text("Click the control, then press your desired shortcut.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if let shortcutValidationError {
+                            Text(shortcutValidationError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        if settings.dictationShortcut == nil {
+                            Text("Global dictation shortcut is currently disabled.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        HStack {
+                            Button("Reset to Default") {
+                                shortcutValidationError = nil
+                                viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
+                            }
+                            .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
+                        }
                     }
                 }
                 .frame(maxWidth: 332, alignment: .leading)

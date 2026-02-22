@@ -51,6 +51,47 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/localvoxtral"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral"
 
+# SwiftPM resource bundles for dependencies (e.g. ShortcutRecorder) must live
+# at the app bundle root so generated SWIFTPM_MODULE_BUNDLE lookup can find them.
+BUILD_PRODUCTS_DIR="$(cd "$(dirname "$BINARY_PATH")" && pwd)"
+while IFS= read -r bundle_path; do
+  bundle_name="$(basename "$bundle_path")"
+  cp -R "$bundle_path" "$APP_DIR/$bundle_name"
+  bundle_base_name="${bundle_name%.bundle}"
+  bundle_info_plist="$APP_DIR/$bundle_name/Info.plist"
+
+  # NSDataAsset lookups require a fully-formed bundle metadata record.
+  # SwiftPM resource bundles may omit keys like CFBundlePackageType.
+  if [[ -f "$bundle_info_plist" ]]; then
+    bundle_id_suffix="$(printf '%s' "$bundle_base_name" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
+    bundle_id_suffix="${bundle_id_suffix##-}"
+    bundle_id_suffix="${bundle_id_suffix%%-}"
+    if [[ -z "$bundle_id_suffix" ]]; then
+      bundle_id_suffix="resources"
+    fi
+
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName $bundle_base_name" "$bundle_info_plist" >/dev/null 2>&1 || \
+      /usr/libexec/PlistBuddy -c "Add :CFBundleName string $bundle_base_name" "$bundle_info_plist" >/dev/null
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.localvoxtral.bundle.$bundle_id_suffix" "$bundle_info_plist" >/dev/null 2>&1 || \
+      /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.localvoxtral.bundle.$bundle_id_suffix" "$bundle_info_plist" >/dev/null
+    /usr/libexec/PlistBuddy -c "Set :CFBundlePackageType BNDL" "$bundle_info_plist" >/dev/null 2>&1 || \
+      /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string BNDL" "$bundle_info_plist" >/dev/null
+  fi
+
+  # ShortcutRecorder expects data assets (e.g. sr-mojave-info) compiled into
+  # Assets.car. SwiftPM bundle copies may contain raw .xcassets only.
+  if [[ -d "$APP_DIR/$bundle_name/Images.xcassets" ]]; then
+    tmp_partial_plist="$(mktemp)"
+    xcrun actool "$APP_DIR/$bundle_name/Images.xcassets" \
+      --compile "$APP_DIR/$bundle_name" \
+      --platform macosx \
+      --minimum-deployment-target 15.0 \
+      --target-device mac \
+      --output-partial-info-plist "$tmp_partial_plist" >/dev/null
+    rm -f "$tmp_partial_plist"
+  fi
+done < <(find "$BUILD_PRODUCTS_DIR" -maxdepth 1 -type d -name "*.bundle" -print)
+
 ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"

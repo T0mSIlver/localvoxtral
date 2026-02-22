@@ -1,5 +1,153 @@
+import Carbon.HIToolbox
 import Foundation
 import Observation
+
+struct DictationShortcut: Equatable, Sendable {
+    var keyCode: UInt32
+    var carbonModifierFlags: UInt32
+
+    var normalized: DictationShortcut {
+        DictationShortcut(
+            keyCode: keyCode,
+            carbonModifierFlags: DictationShortcutValidation.normalizedModifierFlags(carbonModifierFlags)
+        )
+    }
+
+    var displayString: String {
+        "\(modifierDisplayString)\(keyDisplayString)"
+    }
+
+    private var modifierDisplayString: String {
+        let flags = DictationShortcutValidation.normalizedModifierFlags(carbonModifierFlags)
+        var tokens: [String] = []
+        if flags & UInt32(controlKey) != 0 {
+            tokens.append("⌃")
+        }
+        if flags & UInt32(optionKey) != 0 {
+            tokens.append("⌥")
+        }
+        if flags & UInt32(shiftKey) != 0 {
+            tokens.append("⇧")
+        }
+        if flags & UInt32(cmdKey) != 0 {
+            tokens.append("⌘")
+        }
+        return tokens.joined()
+    }
+
+    private var keyDisplayString: String {
+        switch Int(keyCode) {
+        case Int(kVK_Space):
+            return "Space"
+        case Int(kVK_Tab):
+            return "Tab"
+        case Int(kVK_Return):
+            return "Return"
+        case Int(kVK_Delete):
+            return "Delete"
+        case Int(kVK_ForwardDelete):
+            return "Forward Delete"
+        case Int(kVK_Escape):
+            return "Escape"
+        case Int(kVK_ANSI_A):
+            return "A"
+        case Int(kVK_ANSI_B):
+            return "B"
+        case Int(kVK_ANSI_C):
+            return "C"
+        case Int(kVK_ANSI_D):
+            return "D"
+        case Int(kVK_ANSI_E):
+            return "E"
+        case Int(kVK_ANSI_F):
+            return "F"
+        case Int(kVK_ANSI_G):
+            return "G"
+        case Int(kVK_ANSI_H):
+            return "H"
+        case Int(kVK_ANSI_I):
+            return "I"
+        case Int(kVK_ANSI_J):
+            return "J"
+        case Int(kVK_ANSI_K):
+            return "K"
+        case Int(kVK_ANSI_L):
+            return "L"
+        case Int(kVK_ANSI_M):
+            return "M"
+        case Int(kVK_ANSI_N):
+            return "N"
+        case Int(kVK_ANSI_O):
+            return "O"
+        case Int(kVK_ANSI_P):
+            return "P"
+        case Int(kVK_ANSI_Q):
+            return "Q"
+        case Int(kVK_ANSI_R):
+            return "R"
+        case Int(kVK_ANSI_S):
+            return "S"
+        case Int(kVK_ANSI_T):
+            return "T"
+        case Int(kVK_ANSI_U):
+            return "U"
+        case Int(kVK_ANSI_V):
+            return "V"
+        case Int(kVK_ANSI_W):
+            return "W"
+        case Int(kVK_ANSI_X):
+            return "X"
+        case Int(kVK_ANSI_Y):
+            return "Y"
+        case Int(kVK_ANSI_Z):
+            return "Z"
+        default:
+            return "Key \(keyCode)"
+        }
+    }
+}
+
+enum DictationShortcutValidation {
+    static let allowedModifierFlagsMask = UInt32(cmdKey | optionKey | shiftKey | controlKey)
+
+    static func normalizedModifierFlags(_ flags: UInt32) -> UInt32 {
+        flags & allowedModifierFlagsMask
+    }
+
+    static func persistenceErrorMessage(for shortcut: DictationShortcut) -> String? {
+        if shortcut.keyCode > UInt32(UInt16.max) {
+            return "Shortcut key is not supported."
+        }
+
+        if normalizedModifierFlags(shortcut.carbonModifierFlags) == 0 {
+            return "Shortcut must include at least one modifier key."
+        }
+
+        return nil
+    }
+
+    static func validationErrorMessage(for shortcut: DictationShortcut) -> String? {
+        if let persistenceError = persistenceErrorMessage(for: shortcut) {
+            return persistenceError
+        }
+
+        let normalized = shortcut.normalized
+        switch (normalized.keyCode, normalized.carbonModifierFlags) {
+        case (UInt32(kVK_Space), UInt32(cmdKey)):
+            return "Command-Space is reserved by Spotlight."
+        case (UInt32(kVK_Space), UInt32(cmdKey | optionKey)):
+            return "Option-Command-Space is reserved by Spotlight Finder search."
+        case (UInt32(kVK_Tab), UInt32(cmdKey)):
+            return "Command-Tab is reserved for app switching."
+        case (UInt32(kVK_ANSI_Q), UInt32(cmdKey)):
+            return "Command-Q is reserved for quitting apps."
+        case (UInt32(kVK_ANSI_W), UInt32(cmdKey)):
+            return "Command-W is reserved for closing windows."
+        default:
+            return nil
+        }
+    }
+}
 
 @MainActor
 @Observable
@@ -49,9 +197,17 @@ final class SettingsStore {
         static let mlxAudioTranscriptionDelayMilliseconds = "settings.mlx_audio_transcription_delay_ms"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
+        static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
+        static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
+        static let dictationShortcutCarbonModifierFlags = "settings.dictation_shortcut_carbon_modifiers"
     }
 
     private let defaults = UserDefaults.standard
+
+    static let defaultDictationShortcut = DictationShortcut(
+        keyCode: UInt32(kVK_Space),
+        carbonModifierFlags: UInt32(cmdKey | optionKey)
+    )
 
     var realtimeProvider: RealtimeProvider {
         didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
@@ -91,6 +247,18 @@ final class SettingsStore {
 
     var selectedInputDeviceUID: String {
         didSet { defaults.set(selectedInputDeviceUID, forKey: Keys.selectedInputDeviceUID) }
+    }
+
+    var dictationShortcutEnabled: Bool {
+        didSet { defaults.set(dictationShortcutEnabled, forKey: Keys.dictationShortcutEnabled) }
+    }
+
+    private var dictationShortcutKeyCode: UInt32 {
+        didSet { defaults.set(dictationShortcutKeyCode, forKey: Keys.dictationShortcutKeyCode) }
+    }
+
+    private var dictationShortcutCarbonModifierFlags: UInt32 {
+        didSet { defaults.set(dictationShortcutCarbonModifierFlags, forKey: Keys.dictationShortcutCarbonModifierFlags) }
     }
 
     init() {
@@ -156,6 +324,34 @@ final class SettingsStore {
         }
 
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
+
+        if defaults.object(forKey: Keys.dictationShortcutEnabled) == nil {
+            dictationShortcutEnabled = true
+        } else {
+            dictationShortcutEnabled = defaults.bool(forKey: Keys.dictationShortcutEnabled)
+        }
+
+        let storedKeyCode = (defaults.object(forKey: Keys.dictationShortcutKeyCode) as? NSNumber)?.uint32Value
+        let storedModifierFlags = (defaults.object(forKey: Keys.dictationShortcutCarbonModifierFlags) as? NSNumber)?.uint32Value
+        let fallbackShortcut = Self.defaultDictationShortcut
+
+        let resolvedShortcut: DictationShortcut
+        if let storedKeyCode, let storedModifierFlags {
+            let candidate = DictationShortcut(
+                keyCode: storedKeyCode,
+                carbonModifierFlags: storedModifierFlags
+            ).normalized
+            if DictationShortcutValidation.persistenceErrorMessage(for: candidate) == nil {
+                resolvedShortcut = candidate
+            } else {
+                resolvedShortcut = fallbackShortcut
+            }
+        } else {
+            resolvedShortcut = fallbackShortcut
+        }
+
+        dictationShortcutKeyCode = resolvedShortcut.keyCode
+        dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
     }
 
     var trimmedAPIKey: String {
@@ -176,6 +372,49 @@ final class SettingsStore {
 
     var modelPlaceholder: String {
         realtimeProvider.defaultModelName
+    }
+
+    var dictationShortcut: DictationShortcut? {
+        guard dictationShortcutEnabled else { return nil }
+
+        let candidate = DictationShortcut(
+            keyCode: dictationShortcutKeyCode,
+            carbonModifierFlags: dictationShortcutCarbonModifierFlags
+        ).normalized
+
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return Self.defaultDictationShortcut
+        }
+
+        return candidate
+    }
+
+    var dictationShortcutDisplayString: String {
+        guard let shortcut = dictationShortcut else { return "Disabled" }
+        return shortcut.displayString
+    }
+
+    func setDictationShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            dictationShortcutEnabled = false
+            return
+        }
+
+        let normalizedShortcut = shortcut.normalized
+        let resolvedShortcut: DictationShortcut
+        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
+            resolvedShortcut = normalizedShortcut
+        } else {
+            resolvedShortcut = Self.defaultDictationShortcut
+        }
+
+        dictationShortcutKeyCode = resolvedShortcut.keyCode
+        dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
+        dictationShortcutEnabled = true
+    }
+
+    func resetDictationShortcutToDefault() {
+        setDictationShortcut(Self.defaultDictationShortcut)
     }
 
     func modelName(for provider: RealtimeProvider) -> String {

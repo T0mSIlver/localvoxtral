@@ -1,9 +1,36 @@
+import Carbon.HIToolbox
 import Foundation
 import XCTest
 @testable import localvoxtral
 
 @MainActor
 final class SettingsStoreTests: XCTestCase {
+    private let defaults = UserDefaults.standard
+    private let settingsKeys = [
+        "settings.realtime_provider",
+        "settings.realtime_api_endpoint_url",
+        "settings.mlx_audio_endpoint_url",
+        "settings.api_key",
+        "settings.realtime_api_model_name",
+        "settings.mlx_audio_model_name",
+        "settings.commit_interval_seconds",
+        "settings.mlx_audio_transcription_delay_ms",
+        "settings.auto_copy_enabled",
+        "settings.selected_input_device_uid",
+        "settings.dictation_shortcut_enabled",
+        "settings.dictation_shortcut_key_code",
+        "settings.dictation_shortcut_carbon_modifiers",
+    ]
+
+    override func setUp() async throws {
+        try await super.setUp()
+        clearSettingsDefaults()
+    }
+
+    override func tearDown() async throws {
+        clearSettingsDefaults()
+        try await super.tearDown()
+    }
 
     // MARK: - resolvedWebSocketURL
 
@@ -119,5 +146,72 @@ final class SettingsStoreTests: XCTestCase {
             store.effectiveModelName,
             SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
         )
+    }
+
+    // MARK: - dictationShortcut
+
+    func testDictationShortcut_defaultsToEnabledCmdOptionSpace() {
+        let store = SettingsStore()
+        XCTAssertTrue(store.dictationShortcutEnabled)
+        XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
+    }
+
+    func testDictationShortcut_customPersistsAcrossReload() {
+        let store = SettingsStore()
+        let customShortcut = DictationShortcut(
+            keyCode: UInt32(kVK_ANSI_D),
+            carbonModifierFlags: UInt32(cmdKey | shiftKey)
+        )
+
+        store.setDictationShortcut(customShortcut)
+        XCTAssertTrue(store.dictationShortcutEnabled)
+        XCTAssertEqual(store.dictationShortcut, customShortcut)
+
+        let reloadedStore = SettingsStore()
+        XCTAssertTrue(reloadedStore.dictationShortcutEnabled)
+        XCTAssertEqual(reloadedStore.dictationShortcut, customShortcut)
+    }
+
+    func testDictationShortcut_clearDisablesAndPersists() {
+        let store = SettingsStore()
+
+        store.setDictationShortcut(nil)
+        XCTAssertFalse(store.dictationShortcutEnabled)
+        XCTAssertNil(store.dictationShortcut)
+
+        let reloadedStore = SettingsStore()
+        XCTAssertFalse(reloadedStore.dictationShortcutEnabled)
+        XCTAssertNil(reloadedStore.dictationShortcut)
+    }
+
+    func testDictationShortcut_resetRestoresDefault() {
+        let store = SettingsStore()
+        let customShortcut = DictationShortcut(
+            keyCode: UInt32(kVK_ANSI_D),
+            carbonModifierFlags: UInt32(cmdKey | shiftKey)
+        )
+        store.setDictationShortcut(customShortcut)
+
+        store.resetDictationShortcutToDefault()
+
+        XCTAssertTrue(store.dictationShortcutEnabled)
+        XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
+    }
+
+    func testDictationShortcut_invalidStoredValueFallsBackToDefault() {
+        defaults.set(true, forKey: "settings.dictation_shortcut_enabled")
+        defaults.set(UInt32.max, forKey: "settings.dictation_shortcut_key_code")
+        defaults.set(0, forKey: "settings.dictation_shortcut_carbon_modifiers")
+
+        let store = SettingsStore()
+
+        XCTAssertTrue(store.dictationShortcutEnabled)
+        XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
+    }
+
+    private func clearSettingsDefaults() {
+        for key in settingsKeys {
+            defaults.removeObject(forKey: key)
+        }
     }
 }

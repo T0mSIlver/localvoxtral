@@ -63,6 +63,7 @@ final class DictationViewModel {
     private var lifecycleObservers: [NSObjectProtocol] = []
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private static weak var hotKeyTarget: DictationViewModel?
+    private static let hotKeyUnavailableErrorMessage = "The selected keyboard shortcut is unavailable."
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -144,8 +145,13 @@ final class DictationViewModel {
         unregisterGlobalHotkey()
     }
 
-    private func registerGlobalHotkey() {
+    @discardableResult
+    private func registerGlobalHotkey() -> Bool {
         unregisterGlobalHotkey()
+
+        guard let shortcut = settings.dictationShortcut else {
+            return true
+        }
 
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
@@ -189,13 +195,14 @@ final class DictationViewModel {
 
         guard installStatus == noErr else {
             statusText = "Failed to register global hotkey handler."
-            return
+            lastError = "Failed to register global hotkey handler."
+            return false
         }
 
         let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: 1)
         let registerStatus = RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(cmdKey) | UInt32(optionKey),
+            shortcut.keyCode,
+            shortcut.carbonModifierFlags,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
@@ -204,8 +211,12 @@ final class DictationViewModel {
 
         if registerStatus != noErr {
             statusText = "Failed to register global hotkey."
+            lastError = Self.hotKeyUnavailableErrorMessage
             unregisterGlobalHotkey()
+            return false
         }
+
+        return true
     }
 
     private func unregisterGlobalHotkey() {
@@ -289,6 +300,39 @@ final class DictationViewModel {
         } else {
             startDictation()
         }
+    }
+
+    func updateDictationShortcut(_ shortcut: DictationShortcut?) {
+        let previousShortcut = settings.dictationShortcut
+        let previousWasEnabled = settings.dictationShortcutEnabled
+
+        settings.setDictationShortcut(shortcut)
+
+        if registerGlobalHotkey() {
+            if !isDictating, !isFinalizingStop,
+               (statusText == "Failed to register global hotkey handler."
+                || statusText == "Failed to register global hotkey.")
+            {
+                statusText = "Ready"
+            }
+
+            if lastError == Self.hotKeyUnavailableErrorMessage
+                || lastError == "Failed to register global hotkey handler."
+            {
+                lastError = nil
+            }
+            return
+        }
+
+        if previousWasEnabled {
+            settings.setDictationShortcut(previousShortcut ?? SettingsStore.defaultDictationShortcut)
+        } else {
+            settings.setDictationShortcut(nil)
+        }
+
+        _ = registerGlobalHotkey()
+        statusText = "Failed to register global hotkey."
+        lastError = Self.hotKeyUnavailableErrorMessage
     }
 
     func refreshMicrophoneInputs() {

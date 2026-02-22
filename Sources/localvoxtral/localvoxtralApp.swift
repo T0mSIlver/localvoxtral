@@ -28,7 +28,7 @@ struct localvoxtralApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(settings: settingsStore)
+            SettingsView(settings: settingsStore, viewModel: viewModel)
                 .frame(minWidth: 336, idealWidth: 360, maxWidth: 520, minHeight: 470, idealHeight: 520, maxHeight: 960)
         }
         .defaultSize(width: 360, height: 520)
