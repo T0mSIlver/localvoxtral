@@ -12,99 +12,6 @@ struct DictationShortcut: Equatable, Sendable {
             carbonModifierFlags: DictationShortcutValidation.normalizedModifierFlags(carbonModifierFlags)
         )
     }
-
-    var displayString: String {
-        "\(modifierDisplayString)\(keyDisplayString)"
-    }
-
-    private var modifierDisplayString: String {
-        let flags = DictationShortcutValidation.normalizedModifierFlags(carbonModifierFlags)
-        var tokens: [String] = []
-        if flags & UInt32(controlKey) != 0 {
-            tokens.append("⌃")
-        }
-        if flags & UInt32(optionKey) != 0 {
-            tokens.append("⌥")
-        }
-        if flags & UInt32(shiftKey) != 0 {
-            tokens.append("⇧")
-        }
-        if flags & UInt32(cmdKey) != 0 {
-            tokens.append("⌘")
-        }
-        return tokens.joined()
-    }
-
-    private var keyDisplayString: String {
-        switch Int(keyCode) {
-        case Int(kVK_Space):
-            return "Space"
-        case Int(kVK_Tab):
-            return "Tab"
-        case Int(kVK_Return):
-            return "Return"
-        case Int(kVK_Delete):
-            return "Delete"
-        case Int(kVK_ForwardDelete):
-            return "Forward Delete"
-        case Int(kVK_Escape):
-            return "Escape"
-        case Int(kVK_ANSI_A):
-            return "A"
-        case Int(kVK_ANSI_B):
-            return "B"
-        case Int(kVK_ANSI_C):
-            return "C"
-        case Int(kVK_ANSI_D):
-            return "D"
-        case Int(kVK_ANSI_E):
-            return "E"
-        case Int(kVK_ANSI_F):
-            return "F"
-        case Int(kVK_ANSI_G):
-            return "G"
-        case Int(kVK_ANSI_H):
-            return "H"
-        case Int(kVK_ANSI_I):
-            return "I"
-        case Int(kVK_ANSI_J):
-            return "J"
-        case Int(kVK_ANSI_K):
-            return "K"
-        case Int(kVK_ANSI_L):
-            return "L"
-        case Int(kVK_ANSI_M):
-            return "M"
-        case Int(kVK_ANSI_N):
-            return "N"
-        case Int(kVK_ANSI_O):
-            return "O"
-        case Int(kVK_ANSI_P):
-            return "P"
-        case Int(kVK_ANSI_Q):
-            return "Q"
-        case Int(kVK_ANSI_R):
-            return "R"
-        case Int(kVK_ANSI_S):
-            return "S"
-        case Int(kVK_ANSI_T):
-            return "T"
-        case Int(kVK_ANSI_U):
-            return "U"
-        case Int(kVK_ANSI_V):
-            return "V"
-        case Int(kVK_ANSI_W):
-            return "W"
-        case Int(kVK_ANSI_X):
-            return "X"
-        case Int(kVK_ANSI_Y):
-            return "Y"
-        case Int(kVK_ANSI_Z):
-            return "Z"
-        default:
-            return "Key \(keyCode)"
-        }
-    }
 }
 
 enum DictationShortcutValidation {
@@ -387,11 +294,6 @@ final class SettingsStore {
         }
 
         return candidate
-    }
-
-    var dictationShortcutDisplayString: String {
-        guard let shortcut = dictationShortcut else { return "Disabled" }
-        return shortcut.displayString
     }
 
     func setDictationShortcut(_ shortcut: DictationShortcut?) {
