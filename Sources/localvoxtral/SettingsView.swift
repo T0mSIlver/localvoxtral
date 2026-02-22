@@ -2,6 +2,8 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
+    var viewModel: DictationViewModel
+    @State private var shortcutValidationError: String?
 
     private var mlxTranscriptionDelaySecondsBinding: Binding<Double> {
         Binding(
@@ -24,8 +26,8 @@ struct SettingsView: View {
             },
             set: { newValue in
                 switch settings.realtimeProvider {
-                case .openAICompatible:
-                    settings.openAIEndpointURL = newValue
+                case .realtimeAPI:
+                    settings.realtimeAPIEndpointURL = newValue
                 case .mlxAudio:
                     settings.mlxAudioEndpointURL = newValue
                 }
@@ -40,11 +42,22 @@ struct SettingsView: View {
             },
             set: { newValue in
                 switch settings.realtimeProvider {
-                case .openAICompatible:
-                    settings.openAIModelName = newValue
+                case .realtimeAPI:
+                    settings.realtimeAPIModelName = newValue
                 case .mlxAudio:
                     settings.mlxAudioModelName = newValue
                 }
+            }
+        )
+    }
+
+    private var dictationShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: {
+                settings.dictationShortcut
+            },
+            set: { newValue in
+                viewModel.updateDictationShortcut(newValue)
             }
         )
     }
@@ -54,14 +67,14 @@ struct SettingsView: View {
             Color(nsColor: .windowBackgroundColor)
                 .ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Settings")
-                            .font(.system(size: 22, weight: .semibold))
-                    }
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Settings")
+                        .font(.system(size: 22, weight: .semibold))
+                }
 
-                    VStack(alignment: .leading, spacing: 10) {
+                SettingsSection(title: "Endpoint Settings") {
+                    SettingsField(title: "Provider") {
                         Picker("", selection: $settings.realtimeProvider) {
                             ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
                                 Text(provider.displayName).tag(provider)
@@ -69,79 +82,113 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+                    }
 
-                        SettingsField(title: "Realtime endpoint") {
-                            TextField(settings.endpointPlaceholder, text: endpointBinding)
+                    SettingsField(title: "Realtime endpoint") {
+                        TextField(settings.endpointPlaceholder, text: endpointBinding)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsField(title: "Model") {
+                        TextField(settings.modelPlaceholder, text: modelBinding)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    if settings.realtimeProvider == .realtimeAPI {
+                        SettingsField(title: "API key") {
+                            SecureField("Required for remote providers", text: $settings.apiKey)
                                 .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsField(title: "Model") {
-                            TextField(settings.modelPlaceholder, text: modelBinding)
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        if settings.realtimeProvider == .openAICompatible {
-                            SettingsField(title: "API key") {
-                                SecureField("Required for remote providers", text: $settings.apiKey)
-                                    .textFieldStyle(.roundedBorder)
-                            }
                         }
                     }
 
-                    SettingsSection(title: "Transcription") {
-                        if settings.realtimeProvider == .openAICompatible {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("Commit interval")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text(String(format: "%.2fs", settings.commitIntervalSeconds))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
-
-                                Text("How often finalized transcript chunks are requested from the realtime server.")
-                                    .font(.caption)
+                    if settings.realtimeProvider == .realtimeAPI {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Commit interval")
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                                Text(String(format: "%.2fs", settings.commitIntervalSeconds))
                                     .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
                             }
-                        } else {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("Transcription delay")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text(mlxTranscriptionDelayLabel)
-                                        .foregroundStyle(.secondary)
-                                }
 
-                                Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.4 ... 2.0, step: 0.1)
+                            Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
 
-                                Text("How long mlx-audio waits for right-context before emitting tokens.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                            Text("How often finalized transcript chunks are requested from the realtime server.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-
-                        Toggle(isOn: $settings.autoCopyEnabled) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Auto-copy finalized segment")
-                                Text("Copy each finalized segment to the clipboard automatically.")
-                                    .font(.caption)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Transcription delay")
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                                Text(mlxTranscriptionDelayLabel)
                                     .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
                             }
+
+                            Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.4 ... 2.0, step: 0.1)
+
+                            Text("How long mlx-audio waits for right-context before emitting tokens.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        .toggleStyle(.switch)
                     }
                 }
-                .frame(maxWidth: 332, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
+
+                SettingsSection(title: "Dictation") {
+                    ToggleSettingRow(
+                        title: "Auto-paste into input field",
+                        subtitle: "Insert streaming transcript text into the focused app.",
+                        isOn: $settings.autoPasteIntoInputFieldEnabled
+                    )
+
+                    ToggleSettingRow(
+                        title: "Auto-copy final segment",
+                        subtitle: "Copy each final segment to the clipboard automatically.",
+                        isOn: $settings.autoCopyEnabled
+                    )
+
+                    SettingsField(title: "Toggle dictation") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .center, spacing: 8) {
+                                ShortcutRecorderField(
+                                    shortcut: dictationShortcutBinding,
+                                    validationError: $shortcutValidationError,
+                                    fixedWidth: 132
+                                )
+                                .frame(height: 24, alignment: .leading)
+
+                                Button("Reset to Default") {
+                                    shortcutValidationError = nil
+                                    viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
+                                }
+                                .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
+                            }
+                        }
+                    }
+
+                    if let shortcutValidationError {
+                        Text(shortcutValidationError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if settings.dictationShortcut == nil {
+                        Text("Global dictation shortcut is currently disabled.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                }
             }
-            .scrollIndicators(.never)
+            .frame(width: 332, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
         }
     }
 }
@@ -160,6 +207,7 @@ private struct SettingsSection<Content: View>: View {
             VStack(alignment: .leading, spacing: 10) {
                 content
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -174,5 +222,28 @@ private struct SettingsField<Content: View>: View {
                 .font(.system(size: 12, weight: .medium))
             content
         }
+    }
+}
+
+private struct ToggleSettingRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 10)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

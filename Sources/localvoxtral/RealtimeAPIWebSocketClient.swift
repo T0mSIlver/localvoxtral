@@ -1,35 +1,8 @@
 import Foundation
 import Synchronization
+import os
 
-final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
-    struct Configuration: Sendable {
-        let endpoint: URL
-        let apiKey: String
-        let model: String
-        let transcriptionDelayMilliseconds: Int?
-
-        init(
-            endpoint: URL,
-            apiKey: String,
-            model: String,
-            transcriptionDelayMilliseconds: Int? = nil
-        ) {
-            self.endpoint = endpoint
-            self.apiKey = apiKey
-            self.model = model
-            self.transcriptionDelayMilliseconds = transcriptionDelayMilliseconds
-        }
-    }
-
-    enum Event: Sendable {
-        case connected
-        case disconnected
-        case status(String)
-        case partialTranscript(String)
-        case finalTranscript(String)
-        case error(String)
-    }
-
+final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     private enum SocketState {
         case disconnected
         case connecting
@@ -40,7 +13,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         var urlSession: URLSession?
         var webSocketTask: URLSessionWebSocketTask?
         var socketState: SocketState = .disconnected
-        var onEvent: (@Sendable (Event) -> Void)?
+        var onEvent: (@Sendable (RealtimeEvent) -> Void)?
         var pingTimer: DispatchSourceTimer?
         var sessionReadyTimer: DispatchSourceTimer?
         var hasReceivedSessionCreated = false
@@ -57,11 +30,11 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
     let supportsPeriodicCommit = true
 
-    func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
+    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
         state.withLock { $0.onEvent = handler }
     }
 
-    func connect(configuration: Configuration) throws {
+    func connect(configuration: RealtimeSessionConfiguration) throws {
         guard let scheme = configuration.endpoint.scheme?.lowercased(),
               scheme == "ws" || scheme == "wss"
         else {
@@ -162,7 +135,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
             task.send(.string(payload)) { [weak self] error in
                 guard let self else { return }
                 if let error {
-                    self.emit(.status("Final commit send failed: \(error.localizedDescription)"))
+                    self.emit(.status("Final commit send failed: \(self.describeSocketError(error))"))
                 }
 
                 let shouldEmitDisconnected: Bool = self.state.withLock { s in
@@ -273,7 +246,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
             guard let self, let error else { return }
             self.handleTerminalSocketError(
                 for: task,
-                errorMessage: "WebSocket send failed: \(error.localizedDescription)"
+                errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
             )
         }
     }
@@ -294,7 +267,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
             case .failure(let error):
                 self.handleTerminalSocketError(
                     for: task,
-                    errorMessage: "WebSocket receive failed: \(error.localizedDescription)"
+                    errorMessage: "WebSocket receive failed: \(self.describeSocketError(error))"
                 )
             }
         }
@@ -318,12 +291,17 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     private func handle(text: String) {
         guard let data = text.data(using: .utf8) else { return }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                debugLog("received non-dictionary JSON frame")
+                emit(.status("Received non-JSON frame."))
+                return
+            }
+            handle(json: json)
+        } catch {
+            debugLog("JSON parse error: \(error.localizedDescription)")
             emit(.status("Received non-JSON frame."))
-            return
         }
-
-        handle(json: json)
     }
 
     private func handle(json: [String: Any]) {
@@ -383,7 +361,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         }
     }
 
-    private func findString(in value: Any, matching keys: Set<String>) -> String? {
+    func findString(in value: Any, matching keys: Set<String>) -> String? {
         if let dict = value as? [String: Any] {
             // Direct key lookup first
             for key in keys {
@@ -459,7 +437,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
                 guard let self, let error else { return }
                 self.handleTerminalSocketError(
                     for: task,
-                    errorMessage: "Connection lost: \(error.localizedDescription)"
+                    errorMessage: "Connection lost: \(self.describeSocketError(error))"
                 )
             }
         }
@@ -598,12 +576,25 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
         handleTerminalSocketError(
             for: webSocketTask,
-            errorMessage: "WebSocket failed: \(error.localizedDescription)"
+            errorMessage: "WebSocket failed: \(describeSocketError(error))"
         )
     }
 
-    private func emit(_ event: Event) {
-        let handler: (@Sendable (Event) -> Void)? = state.withLock { $0.onEvent }
+    private func describeSocketError(_ error: Error) -> String {
+        let nsError = error as NSError
+        var components = [error.localizedDescription, "[\(nsError.domain):\(nsError.code)]"]
+
+        if let failingURL = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+            components.append("url=\(failingURL.absoluteString)")
+        } else if let failingURLString = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String {
+            components.append("url=\(failingURLString)")
+        }
+
+        return components.joined(separator: " ")
+    }
+
+    private func emit(_ event: RealtimeEvent) {
+        let handler: (@Sendable (RealtimeEvent) -> Void)? = state.withLock { $0.onEvent }
 
         guard let handler else { return }
         handler(event)
@@ -611,6 +602,6 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][Realtime] \(message)")
+        Log.realtime.debug("\(message)")
     }
 }

@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import Observation
+import os
 
 enum TextInsertResult {
     case insertedByAccessibility
@@ -18,6 +19,10 @@ enum KeyboardFallbackBehavior {
 @MainActor
 @Observable
 final class TextInsertionService {
+    private struct PasteboardSnapshot {
+        let items: [NSPasteboardItem]
+    }
+
     private(set) var isAccessibilityTrusted = false
     var lastAccessibilityError: String?
 
@@ -42,6 +47,21 @@ final class TextInsertionService {
         let text = pendingRealtimeInsertionText
         pendingRealtimeInsertionText = ""
         return text
+    }
+
+    /// Try to insert text using only the Accessibility API (no keyboard event
+    /// fallback). Returns `true` if the text was inserted successfully.
+    /// Use this for delayed/finalized text blocks where keyboard events are
+    /// unreliable because focus context may have shifted.
+    func insertTextUsingAccessibilityOnly(_ text: String) -> Bool {
+        guard !text.isEmpty else { return true }
+        refreshAccessibilityTrustState()
+        if insertTextUsingAccessibility(text) {
+            clearAccessibilityErrorIfNeeded()
+            axInsertionSuccessCount += 1
+            return true
+        }
+        return false
     }
 
     func insertText(
@@ -87,9 +107,7 @@ final class TextInsertionService {
     }
 
     func pasteUsingCommandV(_ text: String) -> Bool {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        guard !text.isEmpty else { return true }
 
         guard let eventSource = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: eventSource, virtualKey: 9, keyDown: true),
@@ -98,11 +116,25 @@ final class TextInsertionService {
             return false
         }
 
+        let pasteboard = NSPasteboard.general
+        let snapshot = capturePasteboardSnapshot(from: pasteboard)
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: pasteboard.changeCount)
+            return false
+        }
+        let insertedChangeCount = pasteboard.changeCount
+
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
 
         keyDown.post(tap: .cgAnnotatedSessionEventTap)
         keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        // Restore clipboard only if the user did not change it after our temporary write.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [snapshot] in
+            let pasteboard = NSPasteboard.general
+            Self.restorePasteboardSnapshot(snapshot, to: pasteboard, expectedChangeCount: insertedChangeCount)
+        }
         return true
     }
 
@@ -186,11 +218,8 @@ final class TextInsertionService {
         let totalInsertions = axInsertionSuccessCount + keyboardFallbackSuccessCount + modifierDeferredInsertionCount
         guard totalInsertions > 0 else { return }
 
-        print(
-            "[localvoxtral] insertion-paths "
-                + "ax=\(axInsertionSuccessCount) "
-                + "keyboard_fallback=\(keyboardFallbackSuccessCount) "
-                + "deferred_modifiers=\(modifierDeferredInsertionCount)"
+        Log.insertion.info(
+            "insertion-paths ax=\(self.axInsertionSuccessCount) keyboard_fallback=\(self.keyboardFallbackSuccessCount) deferred_modifiers=\(self.modifierDeferredInsertionCount)"
         )
     }
 
@@ -235,10 +264,12 @@ final class TextInsertionService {
             return false
         }
 
+        // Retry once: the Accessibility API can fail on the first attempt when
+        // the focused element's attribute state hasn't fully settled (common with
+        // larger text blocks from mlx-audio finalization).
         if replaceSelectedTextRange(in: focusedElement, with: text) {
             return true
         }
-
         return replaceSelectedTextRange(in: focusedElement, with: text)
     }
 
@@ -401,6 +432,26 @@ final class TextInsertionService {
         hasShownAccessibilityError = false
         if lastAccessibilityError == Self.accessibilityErrorMessage {
             lastAccessibilityError = nil
+        }
+    }
+
+    private func capturePasteboardSnapshot(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
+        let copiedItems = pasteboard.pasteboardItems?
+            .compactMap { $0.copy() as? NSPasteboardItem } ?? []
+        return PasteboardSnapshot(
+            items: copiedItems
+        )
+    }
+
+    nonisolated private static func restorePasteboardSnapshot(
+        _ snapshot: PasteboardSnapshot,
+        to pasteboard: NSPasteboard,
+        expectedChangeCount: Int
+    ) {
+        guard pasteboard.changeCount == expectedChangeCount else { return }
+        pasteboard.clearContents()
+        if !snapshot.items.isEmpty {
+            _ = pasteboard.writeObjects(snapshot.items)
         }
     }
 }

@@ -6,13 +6,13 @@ cd "$ROOT_DIR"
 
 TAG="${1:-}"
 if [[ -z "$TAG" ]]; then
-  echo "Usage: ./scripts/release.sh v0.1.0"
+  echo "Usage: ./scripts/release.sh v0.3.0"
   exit 1
 fi
 
 if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
   echo "Invalid tag: $TAG"
-  echo "Expected semantic tag like v0.1.0"
+  echo "Expected semantic tag like v0.3.0"
   exit 1
 fi
 

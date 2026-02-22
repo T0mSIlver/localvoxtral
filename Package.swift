@@ -10,9 +10,15 @@ let package = Package(
     products: [
         .executable(name: "localvoxtral", targets: ["localvoxtral"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/Kentzo/ShortcutRecorder.git", from: "3.4.0"),
+    ],
     targets: [
         .executableTarget(
-            name: "localvoxtral"
+            name: "localvoxtral",
+            dependencies: [
+                .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
+            ]
         ),
         .testTarget(
             name: "localvoxtralTests",

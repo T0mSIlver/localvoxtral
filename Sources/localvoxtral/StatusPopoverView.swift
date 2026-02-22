@@ -10,14 +10,24 @@ struct StatusPopoverView: View {
         !viewModel.lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var dictationButtonTitle: String {
+        if viewModel.isFinalizingStop {
+            return "Finalizing..."
+        }
+        if viewModel.isConnectingRealtimeSession {
+            return "Connecting..."
+        }
+        return viewModel.isDictating ? "Stop Dictation" : "Start Dictation"
+    }
+
     var body: some View {
         Group {
-            Button(viewModel.isFinalizingStop ? "Finalizing..." : (viewModel.isDictating ? "Stop Dictation" : "Start Dictation")) {
-                if !viewModel.isFinalizingStop {
+            Button(dictationButtonTitle) {
+                if !viewModel.isFinalizingStop, !viewModel.isConnectingRealtimeSession {
                     viewModel.toggleDictation()
                 }
             }
-            .disabled(viewModel.isFinalizingStop)
+            .disabled(viewModel.isFinalizingStop || viewModel.isConnectingRealtimeSession)
 
             Menu("Microphone") {
                 if viewModel.availableInputDevices.isEmpty {

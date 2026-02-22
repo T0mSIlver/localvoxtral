@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 @MainActor
 final class AudioCaptureHealthMonitor {
@@ -326,6 +327,6 @@ final class AudioCaptureHealthMonitor {
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][Dictation] \(message)")
+        Log.dictation.debug("\(message)")
     }
 }

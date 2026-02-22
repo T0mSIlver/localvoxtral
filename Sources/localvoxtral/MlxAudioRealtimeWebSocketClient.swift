@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import os
 
 final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     private enum SocketState {
@@ -12,14 +13,14 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         var urlSession: URLSession?
         var webSocketTask: URLSessionWebSocketTask?
         var socketState: SocketState = .disconnected
-        var onEvent: (@Sendable (RealtimeWebSocketClient.Event) -> Void)?
+        var onEvent: (@Sendable (RealtimeEvent) -> Void)?
         var isUserInitiatedDisconnect = false
         var hasSentInitialConfiguration = false
         var pendingModelName = ""
         var pendingTextMessages: [String] = []
         var pendingBinaryMessages: [Data] = []
         var sawStreamingDeltaForCurrentChunk = false
-        var suppressDeltasUntilFinalComplete = false
+        var activeStreamingHypothesis = ""
         var pendingTranscriptionDelayMilliseconds: Int?
         var delayedDisconnectWorkItem: DispatchWorkItem?
     }
@@ -50,11 +51,11 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
     let supportsPeriodicCommit = false
 
-    func setEventHandler(_ handler: @escaping @Sendable (RealtimeWebSocketClient.Event) -> Void) {
+    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
         state.withLock { $0.onEvent = handler }
     }
 
-    func connect(configuration: RealtimeWebSocketClient.Configuration) throws {
+    func connect(configuration: RealtimeSessionConfiguration) throws {
         guard let scheme = configuration.endpoint.scheme?.lowercased(),
               scheme == "ws" || scheme == "wss"
         else {
@@ -94,7 +95,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             s.hasSentInitialConfiguration = false
             s.pendingModelName = modelName
             s.sawStreamingDeltaForCurrentChunk = false
-            s.suppressDeltasUntilFinalComplete = false
+            s.activeStreamingHypothesis = ""
             s.pendingTranscriptionDelayMilliseconds = configuration.transcriptionDelayMilliseconds
 
             task.resume()
@@ -259,7 +260,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             guard let self, let error else { return }
             self.handleTerminalSocketError(
                 for: task,
-                errorMessage: "WebSocket send failed: \(error.localizedDescription)"
+                errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
             )
         }
     }
@@ -269,7 +270,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             guard let self, let error else { return }
             self.handleTerminalSocketError(
                 for: task,
-                errorMessage: "WebSocket audio send failed: \(error.localizedDescription)"
+                errorMessage: "WebSocket audio send failed: \(self.describeSocketError(error))"
             )
         }
     }
@@ -290,7 +291,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             case .failure(let error):
                 self.handleTerminalSocketError(
                     for: task,
-                    errorMessage: "WebSocket receive failed: \(error.localizedDescription)"
+                    errorMessage: "WebSocket receive failed: \(self.describeSocketError(error))"
                 )
             }
         }
@@ -314,12 +315,17 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
     private func handle(text: String) {
         guard let data = text.data(using: .utf8) else { return }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                debugLog("received non-dictionary JSON frame")
+                emit(.status("Received non-JSON frame."))
+                return
+            }
+            handle(json: json)
+        } catch {
+            debugLog("JSON parse error: \(error.localizedDescription)")
             emit(.status("Received non-JSON frame."))
-            return
         }
-
-        handle(json: json)
     }
 
     private func handle(json: [String: Any]) {
@@ -338,15 +344,12 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             switch type {
             case "delta":
                 guard let delta = json["delta"] as? String, !delta.isEmpty else { return }
-                let shouldSuppress: Bool = state.withLock { s in
-                    if s.suppressDeltasUntilFinalComplete {
-                        return true
-                    }
+                let partialHypothesis = state.withLock { s -> String in
                     s.sawStreamingDeltaForCurrentChunk = true
-                    return false
+                    s.activeStreamingHypothesis.append(delta)
+                    return s.activeStreamingHypothesis
                 }
-                if shouldSuppress { return }
-                emit(.partialTranscript(delta))
+                emit(.partialTranscript(partialHypothesis))
                 return
 
             case "complete":
@@ -382,15 +385,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let sawStreamingDelta = state.withLock { s in
             let hadDelta = s.sawStreamingDeltaForCurrentChunk
-            if isPartial {
-                // The next pass may re-transcribe the same chunk from the beginning.
-                // Keep current partial text visible and suppress replacement deltas
-                // until final completion arrives.
-                s.suppressDeltasUntilFinalComplete = true
-            } else {
-                s.sawStreamingDeltaForCurrentChunk = false
-                s.suppressDeltasUntilFinalComplete = false
-            }
+            s.sawStreamingDeltaForCurrentChunk = false
+            s.activeStreamingHypothesis = ""
             return hadDelta
         }
 
@@ -423,7 +419,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         s.hasSentInitialConfiguration = false
         s.pendingModelName = ""
         s.sawStreamingDeltaForCurrentChunk = false
-        s.suppressDeltasUntilFinalComplete = false
+        s.activeStreamingHypothesis = ""
         s.pendingTranscriptionDelayMilliseconds = nil
 
         if clearQueuedMessages {
@@ -517,18 +513,31 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
         handleTerminalSocketError(
             for: webSocketTask,
-            errorMessage: "WebSocket failed: \(error.localizedDescription)"
+            errorMessage: "WebSocket failed: \(describeSocketError(error))"
         )
     }
 
-    private func emit(_ event: RealtimeWebSocketClient.Event) {
-        let handler: (@Sendable (RealtimeWebSocketClient.Event) -> Void)? = state.withLock { $0.onEvent }
+    private func describeSocketError(_ error: Error) -> String {
+        let nsError = error as NSError
+        var components = [error.localizedDescription, "[\(nsError.domain):\(nsError.code)]"]
+
+        if let failingURL = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+            components.append("url=\(failingURL.absoluteString)")
+        } else if let failingURLString = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String {
+            components.append("url=\(failingURLString)")
+        }
+
+        return components.joined(separator: " ")
+    }
+
+    private func emit(_ event: RealtimeEvent) {
+        let handler: (@Sendable (RealtimeEvent) -> Void)? = state.withLock { $0.onEvent }
         guard let handler else { return }
         handler(event)
     }
 
     private func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        print("[localvoxtral][MlxRealtime] \(message)")
+        Log.mlxRealtime.debug("\(message)")
     }
 }

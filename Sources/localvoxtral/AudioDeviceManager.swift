@@ -183,6 +183,23 @@ enum AudioDeviceManager {
         ) ?? 0) != 0
     }
 
+    /// Set the input device on an Audio Unit directly, without changing the
+    /// system-wide default. This avoids activating the previous default device
+    /// on restore and eliminates the need to restore at all.
+    @discardableResult
+    static func setInputDevice(_ deviceID: AudioObjectID, on audioUnit: AudioUnit) -> Bool {
+        var deviceID = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioObjectID>.size)
+        )
+        return status == noErr
+    }
+
     static func deviceCanBeDefaultInput(_ deviceID: AudioObjectID) -> Bool {
         (deviceUInt32Property(
             selector: kAudioDevicePropertyDeviceCanBeDefaultDevice,
