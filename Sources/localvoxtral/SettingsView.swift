@@ -74,14 +74,16 @@ struct SettingsView: View {
                             .font(.system(size: 22, weight: .semibold))
                     }
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("", selection: $settings.realtimeProvider) {
-                            ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
-                                Text(provider.displayName).tag(provider)
+                    SettingsSection(title: "Endpoint Settings") {
+                        SettingsField(title: "Provider") {
+                            Picker("", selection: $settings.realtimeProvider) {
+                                ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
+                                    Text(provider.displayName).tag(provider)
+                                }
                             }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
 
                         SettingsField(title: "Realtime endpoint") {
                             TextField(settings.endpointPlaceholder, text: endpointBinding)
@@ -99,9 +101,7 @@ struct SettingsView: View {
                                     .textFieldStyle(.roundedBorder)
                             }
                         }
-                    }
 
-                    SettingsSection(title: "Transcription") {
                         if settings.realtimeProvider == .realtimeAPI {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(alignment: .firstTextBaseline) {
@@ -137,31 +137,37 @@ struct SettingsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-
-                        Toggle(isOn: $settings.autoCopyEnabled) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Auto-copy finalized segment")
-                                Text("Copy each finalized segment to the clipboard automatically.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                        .toggleStyle(.switch)
                     }
 
-                    SettingsSection(title: "Keyboard Shortcut") {
+                    SettingsSection(title: "Dictation") {
+                        ToggleSettingRow(
+                            title: "Auto-paste into input field",
+                            subtitle: "Insert streaming transcript text into the focused app.",
+                            isOn: $settings.autoPasteIntoInputFieldEnabled
+                        )
+
+                        ToggleSettingRow(
+                            title: "Auto-copy final segment",
+                            subtitle: "Copy each final segment to the clipboard automatically.",
+                            isOn: $settings.autoCopyEnabled
+                        )
+
                         SettingsField(title: "Toggle dictation") {
                             VStack(alignment: .leading, spacing: 6) {
-                                ShortcutRecorderField(
-                                    shortcut: dictationShortcutBinding,
-                                    validationError: $shortcutValidationError
-                                )
-                                .frame(width: 220, height: 24)
+                                HStack(alignment: .center, spacing: 8) {
+                                    ShortcutRecorderField(
+                                        shortcut: dictationShortcutBinding,
+                                        validationError: $shortcutValidationError,
+                                        fixedWidth: 132
+                                    )
+                                    .frame(height: 24, alignment: .leading)
 
-                                Text("Click the control, then press your desired shortcut.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    Button("Reset to Default") {
+                                        shortcutValidationError = nil
+                                        viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
+                                    }
+                                    .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
+                                }
                             }
                         }
 
@@ -179,16 +185,9 @@ struct SettingsView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
-                        HStack {
-                            Button("Reset to Default") {
-                                shortcutValidationError = nil
-                                viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
-                            }
-                            .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
-                        }
                     }
                 }
-                .frame(maxWidth: 332, alignment: .leading)
+                .frame(width: 332, alignment: .leading)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 14)
             }
@@ -211,6 +210,7 @@ private struct SettingsSection<Content: View>: View {
             VStack(alignment: .leading, spacing: 10) {
                 content
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -225,5 +225,28 @@ private struct SettingsField<Content: View>: View {
                 .font(.system(size: 12, weight: .medium))
             content
         }
+    }
+}
+
+private struct ToggleSettingRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 10)
+            Toggle("", isOn: $isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

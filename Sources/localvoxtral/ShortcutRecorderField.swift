@@ -5,6 +5,7 @@ import SwiftUI
 struct ShortcutRecorderField: NSViewRepresentable {
     @Binding var shortcut: DictationShortcut?
     @Binding var validationError: String?
+    var fixedWidth: CGFloat? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -12,6 +13,8 @@ struct ShortcutRecorderField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> RecorderControl {
         let control = RecorderControl(frame: .zero)
+        control.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        control.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         control.delegate = context.coordinator
         control.target = context.coordinator
         control.action = #selector(Coordinator.handleRecorderChange(_:))
@@ -24,6 +27,9 @@ struct ShortcutRecorderField: NSViewRepresentable {
             requiredModifierFlags: [],
             allowsEmptyModifierFlags: false
         )
+        if let fixedWidth {
+            control.widthAnchor.constraint(equalToConstant: fixedWidth).isActive = true
+        }
         context.coordinator.updateControlValue(control, from: shortcut)
         return control
     }

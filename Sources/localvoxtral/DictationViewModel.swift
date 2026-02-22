@@ -695,8 +695,12 @@ final class DictationViewModel {
             statusText = "Listening..."
             restartAudioSendTask()
             restartCommitTask()
-            textInsertion.restartInsertionRetryTask { [weak self] in
-                self?.acceptsRealtimeEvents ?? false
+            if settings.autoPasteIntoInputFieldEnabled {
+                textInsertion.restartInsertionRetryTask { [weak self] in
+                    self?.acceptsRealtimeEvents ?? false
+                }
+            } else {
+                textInsertion.stopInsertionRetryTask()
             }
             healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
         } catch {
@@ -860,8 +864,10 @@ final class DictationViewModel {
             // If finalization ends before a finalTranscript arrives, promote
             // the remaining unstabilized tail and insert it once.
             if wasMlxAudio, let promoted, !promoted.isEmpty {
-                if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
-                    _ = textInsertion.pasteUsingCommandV(promoted)
+                if settings.autoPasteIntoInputFieldEnabled {
+                    if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
+                        _ = textInsertion.pasteUsingCommandV(promoted)
+                    }
                 }
             }
         }
@@ -984,9 +990,11 @@ final class DictationViewModel {
             livePartialText = pendingRealtimeFinalizationText
             // For Realtime API streams, deltas are append-only and safe to
             // insert directly to avoid duplicate full-sentence insertion on frequent commits.
-            textInsertion.enqueueRealtimeInsertion(delta)
-            if let accessibilityError = textInsertion.lastAccessibilityError {
-                lastError = accessibilityError
+            if settings.autoPasteIntoInputFieldEnabled {
+                textInsertion.enqueueRealtimeInsertion(delta)
+                if let accessibilityError = textInsertion.lastAccessibilityError {
+                    lastError = accessibilityError
+                }
             }
             statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
 
@@ -1027,7 +1035,7 @@ final class DictationViewModel {
 
             // Realtime API streams already insert append-only deltas, so
             // finalized text should be inserted only when no live delta was seen.
-            let shouldInsertFinal = !hadLiveDelta
+            let shouldInsertFinal = !hadLiveDelta && settings.autoPasteIntoInputFieldEnabled
             if shouldInsertFinal {
                 textInsertion.enqueueRealtimeInsertion(finalizedSegment)
                 if let accessibilityError = textInsertion.lastAccessibilityError {
@@ -1079,13 +1087,14 @@ final class DictationViewModel {
             delta.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         guard !mergedHypothesis.isEmpty else { return }
+        let insertionMode: MlxInsertionMode = settings.autoPasteIntoInputFieldEnabled ? .realtime : .none
         _ = commitMlxHypothesis(
             mergedHypothesis,
             isFinal: false,
-            insertionMode: .realtime
+            insertionMode: insertionMode
         )
 
-        if let accessibilityError = textInsertion.lastAccessibilityError {
+        if settings.autoPasteIntoInputFieldEnabled, let accessibilityError = textInsertion.lastAccessibilityError {
             lastError = accessibilityError
         }
         statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
@@ -1107,7 +1116,12 @@ final class DictationViewModel {
         // While dictating, keep mlx insertion on the same retry queue used by
         // partial commits to avoid queue/direct race duplicates. During stop
         // finalization we still prefer direct finalized insertion.
-        let insertionMode: MlxInsertionMode = isFinalizingStop ? .finalized : .realtime
+        let insertionMode: MlxInsertionMode
+        if settings.autoPasteIntoInputFieldEnabled {
+            insertionMode = isFinalizingStop ? .finalized : .realtime
+        } else {
+            insertionMode = .none
+        }
 
         _ = commitMlxHypothesis(
             hypothesis,
@@ -1319,7 +1333,7 @@ final class DictationViewModel {
             break
         }
 
-        if let accessibilityError = textInsertion.lastAccessibilityError {
+        if insertionMode != .none, let accessibilityError = textInsertion.lastAccessibilityError {
             lastError = accessibilityError
         }
 

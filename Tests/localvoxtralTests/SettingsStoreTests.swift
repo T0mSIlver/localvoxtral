@@ -16,6 +16,7 @@ final class SettingsStoreTests: XCTestCase {
         "settings.commit_interval_seconds",
         "settings.mlx_audio_transcription_delay_ms",
         "settings.auto_copy_enabled",
+        "settings.auto_paste_into_input_field_enabled",
         "settings.selected_input_device_uid",
         "settings.dictation_shortcut_enabled",
         "settings.dictation_shortcut_key_code",
@@ -146,6 +147,21 @@ final class SettingsStoreTests: XCTestCase {
             store.effectiveModelName,
             SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
         )
+    }
+
+    // MARK: - autoPasteIntoInputFieldEnabled
+
+    func testAutoPasteIntoInputField_defaultsToEnabled() {
+        let store = SettingsStore()
+        XCTAssertTrue(store.autoPasteIntoInputFieldEnabled)
+    }
+
+    func testAutoPasteIntoInputField_persistsAcrossReload() {
+        let store = SettingsStore()
+        store.autoPasteIntoInputFieldEnabled = false
+
+        let reloadedStore = SettingsStore()
+        XCTAssertFalse(reloadedStore.autoPasteIntoInputFieldEnabled)
     }
 
     // MARK: - dictationShortcut

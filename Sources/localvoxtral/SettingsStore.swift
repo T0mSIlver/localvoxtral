@@ -103,6 +103,7 @@ final class SettingsStore {
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
         static let mlxAudioTranscriptionDelayMilliseconds = "settings.mlx_audio_transcription_delay_ms"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
+        static let autoPasteIntoInputFieldEnabled = "settings.auto_paste_into_input_field_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
         static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
@@ -150,6 +151,10 @@ final class SettingsStore {
 
     var autoCopyEnabled: Bool {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
+    }
+
+    var autoPasteIntoInputFieldEnabled: Bool {
+        didSet { defaults.set(autoPasteIntoInputFieldEnabled, forKey: Keys.autoPasteIntoInputFieldEnabled) }
     }
 
     var selectedInputDeviceUID: String {
@@ -228,6 +233,12 @@ final class SettingsStore {
             autoCopyEnabled = false
         } else {
             autoCopyEnabled = defaults.bool(forKey: Keys.autoCopyEnabled)
+        }
+
+        if defaults.object(forKey: Keys.autoPasteIntoInputFieldEnabled) == nil {
+            autoPasteIntoInputFieldEnabled = true
+        } else {
+            autoPasteIntoInputFieldEnabled = defaults.bool(forKey: Keys.autoPasteIntoInputFieldEnabled)
         }
 
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
