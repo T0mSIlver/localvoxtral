@@ -7,7 +7,7 @@
 localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
 
-It supports two realtime backend modes: OpenAI Realtime-compatible endpoints (for example `vLLM` or `voxmlx`), and `mlx-audio` realtime transcription endpoints.
+It supports two realtime backend modes: OpenAI-Compatible Realtime API endpoints (`vLLM` and `voxmlx` share this path), and `mlx-audio` realtime transcription endpoints.
 
 ## Features
 
@@ -33,7 +33,7 @@ open ./dist/localvoxtral.app
   - Realtime endpoint
   - Model name
   - API key
-  - Commit interval (`vLLM`, `voxmlx`)
+  - Commit interval (`vLLM`/`voxmlx`)
   - Transcription delay (`mlx-audio`)
   - Auto-copy finalized segment
 
@@ -61,7 +61,7 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 
 ### voxmlx
 
-[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol.
+[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol.
 
 ```bash
 pip install -e ".[server]"
