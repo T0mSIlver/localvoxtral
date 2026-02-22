@@ -56,6 +56,7 @@ final class DictationViewModel {
     private var stopFinalizationTask: Task<Void, Never>?
     private var connectTimeoutTask: Task<Void, Never>?
     private var recentFailureResetTask: Task<Void, Never>?
+    private var isShowingConnectionFailureAlert = false
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
     private var isAwaitingMicrophonePermission = false
@@ -291,11 +292,12 @@ final class DictationViewModel {
             debugLog("network lost")
             if isConnectingRealtimeSession {
                 abortConnectingSession()
-                statusText = "Network lost. Dictation stopped."
                 let message = "Network connection was lost while connecting."
-                lastError = message
-                logConnectionFailure(message)
-                markRecentConnectionFailureIndicator()
+                handleConnectFailure(
+                    status: "Network lost. Dictation stopped.",
+                    message: message,
+                    technicalDetails: "Network path changed to unavailable while opening websocket."
+                )
             } else if isDictating {
                 // Network is gone — no point trying to finalize over a dead connection.
                 stopDictation(reason: "network lost", finalizeRemainingAudio: false)
@@ -617,11 +619,12 @@ final class DictationViewModel {
 
         let provider = settings.realtimeProvider
         guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
-            statusText = "Invalid endpoint URL."
             let message = "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings."
-            lastError = message
-            logConnectionFailure("Invalid realtime endpoint URL.")
-            markRecentConnectionFailureIndicator()
+            handleConnectFailure(
+                status: "Invalid endpoint URL.",
+                message: message,
+                technicalDetails: "Settings value could not be normalized to a websocket endpoint URL."
+            )
             return
         }
 
@@ -670,10 +673,11 @@ final class DictationViewModel {
             scheduleConnectTimeout()
         } catch {
             abortConnectingSession(disconnectSocket: false)
-            statusText = "Failed to connect."
-            lastError = error.localizedDescription
-            logConnectionFailure("Failed to start realtime connection: \(error.localizedDescription)")
-            markRecentConnectionFailureIndicator()
+            handleConnectFailure(
+                status: "Failed to connect.",
+                message: "Unable to start the realtime connection.",
+                technicalDetails: error.localizedDescription
+            )
             debugLog("beginDictationSession failed error=\(error.localizedDescription)")
         }
     }
@@ -910,13 +914,14 @@ final class DictationViewModel {
             cancelConnectTimeout()
             if isConnectingRealtimeSession {
                 abortConnectingSession(disconnectSocket: false)
-                statusText = "Failed to connect."
                 let failureMessage = (lastError?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
                     ? (lastError ?? "Unable to establish realtime connection.")
                     : "Unable to establish realtime connection."
-                lastError = failureMessage
-                logConnectionFailure(failureMessage)
-                markRecentConnectionFailureIndicator()
+                handleConnectFailure(
+                    status: "Failed to connect.",
+                    message: "Unable to establish realtime connection.",
+                    technicalDetails: failureMessage
+                )
                 return
             }
 
@@ -940,7 +945,7 @@ final class DictationViewModel {
             let message = "Connection lost. Dictation stopped."
             statusText = message
             lastError = message
-            logConnectionFailure(message)
+            logConnectionFailure(message: message, technicalDetails: "Realtime websocket disconnected unexpectedly during active dictation.")
             markRecentConnectionFailureIndicator()
 
         case .status(let message):
@@ -1038,10 +1043,11 @@ final class DictationViewModel {
             let normalized = message.lowercased()
             if isConnectingRealtimeSession {
                 abortConnectingSession()
-                statusText = "Failed to connect."
-                lastError = message
-                logConnectionFailure(message)
-                markRecentConnectionFailureIndicator()
+                handleConnectFailure(
+                    status: "Failed to connect.",
+                    message: "Unable to establish realtime connection.",
+                    technicalDetails: message
+                )
                 return
             }
             if !acceptsRealtimeEvents {
@@ -1363,11 +1369,12 @@ final class DictationViewModel {
             guard let self, self.isConnectingRealtimeSession else { return }
 
             abortConnectingSession()
-            statusText = "Connection timed out."
             let message = "Could not connect to realtime backend within \(Int(timeout)) seconds."
-            lastError = message
-            logConnectionFailure(message)
-            markRecentConnectionFailureIndicator()
+            handleConnectFailure(
+                status: "Connection timed out.",
+                message: message,
+                technicalDetails: connectTimeoutTechnicalDetails(timeoutSeconds: timeout)
+            )
         }
     }
 
@@ -1415,8 +1422,87 @@ final class DictationViewModel {
         }
     }
 
-    private func logConnectionFailure(_ message: String) {
-        Log.dictation.error("Realtime connection failure: \(message, privacy: .public)")
+    private func handleConnectFailure(status: String, message: String, technicalDetails: String? = nil) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedMessage = trimmedMessage.isEmpty ? "Unable to establish realtime connection." : trimmedMessage
+        let resolvedDetails = normalizedFailureDetails(technicalDetails)
+
+        statusText = status
+        lastError = resolvedDetails ?? resolvedMessage
+        logConnectionFailure(message: resolvedMessage, technicalDetails: resolvedDetails)
+        markRecentConnectionFailureIndicator()
+        presentConnectionFailureAlert(message: resolvedMessage)
+    }
+
+    private func presentConnectionFailureAlert(message: String) {
+        guard !message.isEmpty else { return }
+        guard !isShowingConnectionFailureAlert else { return }
+
+        isShowingConnectionFailureAlert = true
+        defer { isShowingConnectionFailureAlert = false }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Realtime Connection Failed"
+        alert.informativeText = message
+        if let appIcon = NSApplication.shared.applicationIconImage.copy() as? NSImage {
+            appIcon.size = NSSize(width: 20, height: 20)
+            alert.icon = appIcon
+        }
+
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Open Console")
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            openSystemConsole()
+        }
+    }
+
+    private func openSystemConsole() {
+        guard let consoleURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Console") else {
+            return
+        }
+        _ = NSWorkspace.shared.open(consoleURL)
+    }
+
+    private func logConnectionFailure(message: String, technicalDetails: String?) {
+        let provider = settings.realtimeProvider.displayName
+        let endpoint = sanitizedRealtimeEndpointForLogging()
+        if let technicalDetails {
+            Log.dictation.error(
+                "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(technicalDetails, privacy: .public)"
+            )
+        } else {
+            Log.dictation.error(
+                "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public)"
+            )
+        }
+    }
+
+    private func sanitizedRealtimeEndpointForLogging() -> String {
+        guard let endpoint = settings.resolvedWebSocketURL(for: settings.realtimeProvider) else {
+            return "<invalid endpoint>"
+        }
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            return endpoint.absoluteString
+        }
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? endpoint.absoluteString
+    }
+
+    private func normalizedFailureDetails(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func connectTimeoutTechnicalDetails(timeoutSeconds: TimeInterval) -> String {
+        let endpoint = sanitizedRealtimeEndpointForLogging()
+        return "No connection response received in \(Int(timeoutSeconds)) seconds for endpoint \(endpoint)."
     }
 
     private func selectedClientSource() -> ActiveClientSource {

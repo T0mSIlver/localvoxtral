@@ -135,7 +135,7 @@ final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, U
             task.send(.string(payload)) { [weak self] error in
                 guard let self else { return }
                 if let error {
-                    self.emit(.status("Final commit send failed: \(error.localizedDescription)"))
+                    self.emit(.status("Final commit send failed: \(self.describeSocketError(error))"))
                 }
 
                 let shouldEmitDisconnected: Bool = self.state.withLock { s in
@@ -246,7 +246,7 @@ final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, U
             guard let self, let error else { return }
             self.handleTerminalSocketError(
                 for: task,
-                errorMessage: "WebSocket send failed: \(error.localizedDescription)"
+                errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
             )
         }
     }
@@ -267,7 +267,7 @@ final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, U
             case .failure(let error):
                 self.handleTerminalSocketError(
                     for: task,
-                    errorMessage: "WebSocket receive failed: \(error.localizedDescription)"
+                    errorMessage: "WebSocket receive failed: \(self.describeSocketError(error))"
                 )
             }
         }
@@ -437,7 +437,7 @@ final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, U
                 guard let self, let error else { return }
                 self.handleTerminalSocketError(
                     for: task,
-                    errorMessage: "Connection lost: \(error.localizedDescription)"
+                    errorMessage: "Connection lost: \(self.describeSocketError(error))"
                 )
             }
         }
@@ -576,8 +576,21 @@ final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, U
 
         handleTerminalSocketError(
             for: webSocketTask,
-            errorMessage: "WebSocket failed: \(error.localizedDescription)"
+            errorMessage: "WebSocket failed: \(describeSocketError(error))"
         )
+    }
+
+    private func describeSocketError(_ error: Error) -> String {
+        let nsError = error as NSError
+        var components = [error.localizedDescription, "[\(nsError.domain):\(nsError.code)]"]
+
+        if let failingURL = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
+            components.append("url=\(failingURL.absoluteString)")
+        } else if let failingURLString = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String {
+            components.append("url=\(failingURLString)")
+        }
+
+        return components.joined(separator: " ")
     }
 
     private func emit(_ event: RealtimeEvent) {
