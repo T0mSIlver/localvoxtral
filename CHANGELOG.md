@@ -21,6 +21,7 @@ All notable changes to this project are documented in this file.
 - Multiple microphone capture race/lifecycle edge cases in restart/reconfigure flows.
 - Transcript edge cases for formatting overlap, replay dedupe, and punctuation spacing.
 - Command-V fallback insertion now restores clipboard contents after temporary pasteboard use.
+- Realtime API stop finalization now disconnects on transcript inactivity instead of always waiting the full timeout.
 
 ### Validation
 - `swift build -c release`

@@ -57,6 +57,7 @@ final class DictationViewModel {
     private var connectTimeoutTask: Task<Void, Never>?
     private var recentFailureResetTask: Task<Void, Never>?
     private var isShowingConnectionFailureAlert = false
+    private var realtimeFinalizationLastActivityAt: Date?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
     private var isAwaitingMicrophonePermission = false
@@ -71,6 +72,9 @@ final class DictationViewModel {
     private let mlxTrailingSilenceChunkDurationSeconds: TimeInterval = 0.1
     private let stopFinalizationTimeoutSeconds: TimeInterval = 7.0
     private let mlxStopFinalizationTimeoutSeconds: TimeInterval = 25.0
+    private let realtimeFinalizationInactivitySeconds: TimeInterval = 0.7
+    private let realtimeFinalizationMinimumOpenSeconds: TimeInterval = 1.5
+    private let finalizationPollIntervalSeconds: TimeInterval = 0.1
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     private var lifecycleObservers: [NSObjectProtocol] = []
@@ -654,6 +658,7 @@ final class DictationViewModel {
         mlxSegmentLatestHypothesis = ""
         mlxSegmentPreviousHypothesis = ""
         mlxSegmentCommittedPrefix = ""
+        realtimeFinalizationLastActivityAt = nil
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 
@@ -816,21 +821,48 @@ final class DictationViewModel {
             }
             guard self.isFinalizingStop else { return }
 
-            // For Realtime API (vLLM/voxmlx): send a final commit and disconnect after a
-            // grace period timeout. Keep the websocket open so trailing transcript
-            // chunks can still arrive after dictation stops.
+            // For Realtime API (vLLM/voxmlx): send a final commit and keep the
+            // websocket open while transcript chunks are still arriving. Disconnect
+            // once transcript activity is idle for a short window.
             // For mlx-audio: DON'T preemptively disconnect. The server needs time
             // for model inference on the accumulated audio (can take 10-20s with
             // large buffers at MAX_CHUNK=30). Keep the connection alive so the
             // finalTranscript arrives and gets auto-pasted. The 25s timeout below
             // acts as backstop.
             if self.activeClientSource != .mlxAudio {
+                let startedAt = Date()
+                self.realtimeFinalizationLastActivityAt = startedAt
                 self.activeRealtimeClient().sendCommit(final: true)
+                while self.isFinalizingStop {
+                    let now = Date()
+                    let elapsed = now.timeIntervalSince(startedAt)
+                    let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
+                    let inactivity = now.timeIntervalSince(lastActivity)
+
+                    if elapsed >= self.stopFinalizationTimeoutSeconds {
+                        self.debugLog("stop finalization timeout (\(self.stopFinalizationTimeoutSeconds)s); forcing disconnect")
+                        self.activeRealtimeClient().disconnect()
+                        self.finishStoppedSession(promotePendingSegment: true)
+                        return
+                    }
+
+                    if elapsed >= self.realtimeFinalizationMinimumOpenSeconds,
+                       inactivity >= self.realtimeFinalizationInactivitySeconds
+                    {
+                        self.debugLog(
+                            "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
+                        )
+                        self.activeRealtimeClient().disconnect()
+                        self.finishStoppedSession(promotePendingSegment: true)
+                        return
+                    }
+
+                    try? await Task.sleep(for: .seconds(self.finalizationPollIntervalSeconds))
+                }
+                return
             }
 
-            let timeout = self.activeClientSource == .mlxAudio
-                ? self.mlxStopFinalizationTimeoutSeconds
-                : self.stopFinalizationTimeoutSeconds
+            let timeout = self.mlxStopFinalizationTimeoutSeconds
             try? await Task.sleep(for: .seconds(timeout))
             guard self.isFinalizingStop else { return }
             self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
@@ -878,6 +910,7 @@ final class DictationViewModel {
 
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        realtimeFinalizationLastActivityAt = nil
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingRealtimeFinalizationText = ""
@@ -986,6 +1019,9 @@ final class DictationViewModel {
                 handleMlxPartialTranscript(delta)
                 return
             }
+            if isFinalizingStop {
+                realtimeFinalizationLastActivityAt = Date()
+            }
 
             // Realtime API (vLLM/voxmlx) emits append-only transcription deltas.
             // Merging by overlap can drop repeated characters (for example digits in "2021"),
@@ -1007,6 +1043,9 @@ final class DictationViewModel {
             if source == .mlxAudio {
                 handleMlxFinalTranscript(text)
                 return
+            }
+            if isFinalizingStop {
+                realtimeFinalizationLastActivityAt = Date()
             }
 
             let finalizedSegment = resolvedFinalizedSegment(from: text)
@@ -1407,6 +1446,7 @@ final class DictationViewModel {
         isDictating = false
         isAwaitingMicrophonePermission = false
         microphone.stop()
+        realtimeFinalizationLastActivityAt = nil
         if disconnectSocket {
             activeRealtimeClient().disconnect()
         }
