@@ -2,35 +2,7 @@ import Foundation
 import Synchronization
 import os
 
-final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
-    struct Configuration: Sendable {
-        let endpoint: URL
-        let apiKey: String
-        let model: String
-        let transcriptionDelayMilliseconds: Int?
-
-        init(
-            endpoint: URL,
-            apiKey: String,
-            model: String,
-            transcriptionDelayMilliseconds: Int? = nil
-        ) {
-            self.endpoint = endpoint
-            self.apiKey = apiKey
-            self.model = model
-            self.transcriptionDelayMilliseconds = transcriptionDelayMilliseconds
-        }
-    }
-
-    enum Event: Sendable {
-        case connected
-        case disconnected
-        case status(String)
-        case partialTranscript(String)
-        case finalTranscript(String)
-        case error(String)
-    }
-
+final class RealtimeAPIWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
     private enum SocketState {
         case disconnected
         case connecting
@@ -41,7 +13,7 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         var urlSession: URLSession?
         var webSocketTask: URLSessionWebSocketTask?
         var socketState: SocketState = .disconnected
-        var onEvent: (@Sendable (Event) -> Void)?
+        var onEvent: (@Sendable (RealtimeEvent) -> Void)?
         var pingTimer: DispatchSourceTimer?
         var sessionReadyTimer: DispatchSourceTimer?
         var hasReceivedSessionCreated = false
@@ -58,11 +30,11 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
     private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
     let supportsPeriodicCommit = true
 
-    func setEventHandler(_ handler: @escaping @Sendable (Event) -> Void) {
+    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
         state.withLock { $0.onEvent = handler }
     }
 
-    func connect(configuration: Configuration) throws {
+    func connect(configuration: RealtimeSessionConfiguration) throws {
         guard let scheme = configuration.endpoint.scheme?.lowercased(),
               scheme == "ws" || scheme == "wss"
         else {
@@ -608,8 +580,8 @@ final class RealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLS
         )
     }
 
-    private func emit(_ event: Event) {
-        let handler: (@Sendable (Event) -> Void)? = state.withLock { $0.onEvent }
+    private func emit(_ event: RealtimeEvent) {
+        let handler: (@Sendable (RealtimeEvent) -> Void)? = state.withLock { $0.onEvent }
 
         guard let handler else { return }
         handler(event)

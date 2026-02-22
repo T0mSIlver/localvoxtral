@@ -8,7 +8,7 @@ import os
 @Observable
 final class DictationViewModel {
     private enum ActiveClientSource {
-        case openAICompatible
+        case realtimeAPI
         case mlxAudio
     }
 
@@ -35,7 +35,7 @@ final class DictationViewModel {
 
     private let microphone = MicrophoneCaptureService()
     private let networkMonitor = NetworkMonitor()
-    private let openAIRealtimeClient = RealtimeWebSocketClient()
+    private let realtimeAPIClient = RealtimeAPIWebSocketClient()
     private let mlxAudioRealtimeClient = MlxAudioRealtimeWebSocketClient()
     private var activeClientSource: ActiveClientSource?
     private let audioChunkBuffer = AudioChunkBuffer()
@@ -67,9 +67,9 @@ final class DictationViewModel {
     init(settings: SettingsStore) {
         self.settings = settings
 
-        openAIRealtimeClient.setEventHandler { [weak self] event in
+        realtimeAPIClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in
-                self?.handle(event: event, source: .openAICompatible)
+                self?.handle(event: event, source: .realtimeAPI)
             }
         }
 
@@ -139,7 +139,7 @@ final class DictationViewModel {
         healthMonitor.cancelTasks()
         microphone.stop()
         networkMonitor.stop()
-        openAIRealtimeClient.disconnect()
+        realtimeAPIClient.disconnect()
         mlxAudioRealtimeClient.disconnect()
         unregisterGlobalHotkey()
     }
@@ -706,7 +706,7 @@ final class DictationViewModel {
             }
             guard self.isFinalizingStop else { return }
 
-            // For openAI-compatible: send a final commit and disconnect after a
+            // For Realtime API (vLLM/voxmlx): send a final commit and disconnect after a
             // short grace period — the server responds quickly.
             // For mlx-audio: DON'T preemptively disconnect. The server needs time
             // for model inference on the accumulated audio (can take 10-20s with
@@ -785,7 +785,7 @@ final class DictationViewModel {
         }
     }
 
-    private func handle(event: RealtimeWebSocketClient.Event, source: ActiveClientSource) {
+    private func handle(event: RealtimeEvent, source: ActiveClientSource) {
         guard source == activeClientSource else { return }
 
         switch event {
@@ -840,12 +840,12 @@ final class DictationViewModel {
                 return
             }
 
-            // vLLM/OpenAI-compatible realtime emits append-only transcription deltas.
+            // Realtime API (vLLM/voxmlx) emits append-only transcription deltas.
             // Merging by overlap can drop repeated characters (for example digits in "2021"),
             // so append directly to preserve exact incremental output for live preview.
             pendingRealtimeFinalizationText.append(delta)
             livePartialText = pendingRealtimeFinalizationText
-            // For vLLM/OpenAI-compatible streams, deltas are append-only and safe to
+            // For Realtime API streams, deltas are append-only and safe to
             // insert directly to avoid duplicate full-sentence insertion on frequent commits.
             textInsertion.enqueueRealtimeInsertion(delta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
@@ -888,7 +888,7 @@ final class DictationViewModel {
             pendingRealtimeFinalizationText = ""
             statusText = isDictating ? "Listening..." : (isFinalizingStop ? "Finalizing..." : "Ready")
 
-            // vLLM/OpenAI-compatible streams already insert append-only deltas, so
+            // Realtime API streams already insert append-only deltas, so
             // finalized text should be inserted only when no live delta was seen.
             let shouldInsertFinal = !hadLiveDelta
             if shouldInsertFinal {
@@ -1216,8 +1216,8 @@ final class DictationViewModel {
 
     private func selectedClientSource() -> ActiveClientSource {
         switch settings.realtimeProvider {
-        case .openAICompatible:
-            return .openAICompatible
+        case .realtimeAPI:
+            return .realtimeAPI
         case .mlxAudio:
             return .mlxAudio
         }
@@ -1225,8 +1225,8 @@ final class DictationViewModel {
 
     private func selectedRealtimeClient() -> RealtimeClient {
         switch selectedClientSource() {
-        case .openAICompatible:
-            return openAIRealtimeClient
+        case .realtimeAPI:
+            return realtimeAPIClient
         case .mlxAudio:
             return mlxAudioRealtimeClient
         }
@@ -1234,8 +1234,8 @@ final class DictationViewModel {
 
     private func activeRealtimeClient() -> RealtimeClient {
         switch activeClientSource {
-        case .openAICompatible:
-            return openAIRealtimeClient
+        case .realtimeAPI:
+            return realtimeAPIClient
         case .mlxAudio:
             return mlxAudioRealtimeClient
         case nil:
@@ -1245,10 +1245,10 @@ final class DictationViewModel {
 
     private func inactiveRealtimeClient(for source: ActiveClientSource) -> RealtimeClient {
         switch source {
-        case .openAICompatible:
+        case .realtimeAPI:
             return mlxAudioRealtimeClient
         case .mlxAudio:
-            return openAIRealtimeClient
+            return realtimeAPIClient
         }
     }
 

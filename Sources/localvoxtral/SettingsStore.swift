@@ -5,15 +5,15 @@ import Observation
 @Observable
 final class SettingsStore {
     enum RealtimeProvider: String, CaseIterable, Identifiable {
-        case openAICompatible = "openai_compatible"
+        case realtimeAPI = "realtime_api"
         case mlxAudio = "mlx_audio"
 
         var id: String { rawValue }
 
         var displayName: String {
             switch self {
-            case .openAICompatible:
-                return "OpenAI/vLLM"
+            case .realtimeAPI:
+                return "vLLM/voxmlx"
             case .mlxAudio:
                 return "mlx-audio"
             }
@@ -21,7 +21,7 @@ final class SettingsStore {
 
         var defaultEndpoint: String {
             switch self {
-            case .openAICompatible:
+            case .realtimeAPI:
                 return "ws://127.0.0.1:8000/v1/realtime"
             case .mlxAudio:
                 return "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"
@@ -30,7 +30,7 @@ final class SettingsStore {
 
         var defaultModelName: String {
             switch self {
-            case .openAICompatible:
+            case .realtimeAPI:
                 return "voxtral-mini-latest"
             case .mlxAudio:
                 return "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
@@ -40,10 +40,10 @@ final class SettingsStore {
 
     private enum Keys {
         static let realtimeProvider = "settings.realtime_provider"
-        static let openAIEndpointURL = "settings.endpoint_url"
+        static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         static let mlxAudioEndpointURL = "settings.mlx_audio_endpoint_url"
         static let apiKey = "settings.api_key"
-        static let openAIModelName = "settings.model_name"
+        static let realtimeAPIModelName = "settings.realtime_api_model_name"
         static let mlxAudioModelName = "settings.mlx_audio_model_name"
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
         static let mlxAudioTranscriptionDelayMilliseconds = "settings.mlx_audio_transcription_delay_ms"
@@ -57,8 +57,8 @@ final class SettingsStore {
         didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
     }
 
-    var openAIEndpointURL: String {
-        didSet { defaults.set(openAIEndpointURL, forKey: Keys.openAIEndpointURL) }
+    var realtimeAPIEndpointURL: String {
+        didSet { defaults.set(realtimeAPIEndpointURL, forKey: Keys.realtimeAPIEndpointURL) }
     }
 
     var mlxAudioEndpointURL: String {
@@ -69,8 +69,8 @@ final class SettingsStore {
         didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
     }
 
-    var openAIModelName: String {
-        didSet { defaults.set(openAIModelName, forKey: Keys.openAIModelName) }
+    var realtimeAPIModelName: String {
+        didSet { defaults.set(realtimeAPIModelName, forKey: Keys.realtimeAPIModelName) }
     }
 
     var mlxAudioModelName: String {
@@ -96,14 +96,14 @@ final class SettingsStore {
     init() {
         let configuredProvider = defaults.string(forKey: Keys.realtimeProvider)
             ?? ProcessInfo.processInfo.environment["REALTIME_PROVIDER"]
-            ?? RealtimeProvider.openAICompatible.rawValue
+            ?? RealtimeProvider.realtimeAPI.rawValue
 
-        let resolvedProvider = RealtimeProvider(rawValue: configuredProvider) ?? .openAICompatible
+        let resolvedProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
         realtimeProvider = resolvedProvider
 
-        openAIEndpointURL = defaults.string(forKey: Keys.openAIEndpointURL)
+        realtimeAPIEndpointURL = defaults.string(forKey: Keys.realtimeAPIEndpointURL)
             ?? ProcessInfo.processInfo.environment["REALTIME_ENDPOINT"]
-            ?? resolvedProvider.defaultEndpoint
+            ?? RealtimeProvider.realtimeAPI.defaultEndpoint
 
         mlxAudioEndpointURL = defaults.string(forKey: Keys.mlxAudioEndpointURL)
             ?? ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_ENDPOINT"]
@@ -113,13 +113,13 @@ final class SettingsStore {
             ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
             ?? ""
 
-        let configuredOpenAIModel = defaults.string(forKey: Keys.openAIModelName)
+        let configuredRealtimeAPIModel = defaults.string(forKey: Keys.realtimeAPIModelName)
             ?? ProcessInfo.processInfo.environment["REALTIME_MODEL"]
-            ?? RealtimeProvider.openAICompatible.defaultModelName
-        let normalizedOpenAIModel = Self.normalizedModelName(from: configuredOpenAIModel)
-        openAIModelName = normalizedOpenAIModel.isEmpty
-            ? RealtimeProvider.openAICompatible.defaultModelName
-            : normalizedOpenAIModel
+            ?? RealtimeProvider.realtimeAPI.defaultModelName
+        let normalizedRealtimeAPIModel = Self.normalizedModelName(from: configuredRealtimeAPIModel)
+        realtimeAPIModelName = normalizedRealtimeAPIModel.isEmpty
+            ? RealtimeProvider.realtimeAPI.defaultModelName
+            : normalizedRealtimeAPIModel
 
         let configuredMlxAudioModel = defaults.string(forKey: Keys.mlxAudioModelName)
             ?? ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_MODEL"]
@@ -180,8 +180,8 @@ final class SettingsStore {
 
     func modelName(for provider: RealtimeProvider) -> String {
         switch provider {
-        case .openAICompatible:
-            return openAIModelName
+        case .realtimeAPI:
+            return realtimeAPIModelName
         case .mlxAudio:
             return mlxAudioModelName
         }
@@ -194,8 +194,8 @@ final class SettingsStore {
 
     func endpointURL(for provider: RealtimeProvider) -> String {
         switch provider {
-        case .openAICompatible:
-            return openAIEndpointURL
+        case .realtimeAPI:
+            return realtimeAPIEndpointURL
         case .mlxAudio:
             return mlxAudioEndpointURL
         }

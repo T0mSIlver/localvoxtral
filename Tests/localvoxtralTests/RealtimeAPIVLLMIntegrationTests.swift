@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import localvoxtral
 
-final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
+final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
     private static let enableEnv = "VLLM_REALTIME_TEST_ENABLE"
     private static let endpointEnv = "VLLM_REALTIME_TEST_ENDPOINT"
     private static let modelEnv = "VLLM_REALTIME_TEST_MODEL"
@@ -10,7 +10,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
     private static let micCaptureEnableEnv = "LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE"
     private static let micCaptureDeviceEnv = "LOCALVOXTRAL_MIC_CAPTURE_DEVICE_UID"
 
-    private func integrationConfiguration() throws -> RealtimeWebSocketClient.Configuration {
+    private func integrationConfiguration() throws -> RealtimeSessionConfiguration {
         let env = ProcessInfo.processInfo.environment
         guard env[Self.enableEnv] == "1" else {
             throw XCTSkip(
@@ -141,7 +141,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
 
     func testVLLMHandshakeAndDisconnectCycle() async throws {
         let configuration = try integrationConfiguration()
-        let client = RealtimeWebSocketClient()
+        let client = RealtimeAPIWebSocketClient()
 
         let connected = expectation(description: "connected")
         let sessionReady = expectation(description: "session ready")
@@ -176,7 +176,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
 
     func testVLLMClientCanReconnectAcrossTwoCycles() async throws {
         let configuration = try integrationConfiguration()
-        let client = RealtimeWebSocketClient()
+        let client = RealtimeAPIWebSocketClient()
 
         try await runHandshakeCycle(client: client, configuration: configuration)
         try await runHandshakeCycle(client: client, configuration: configuration)
@@ -184,7 +184,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
 
     func testVLLMDisconnectAfterFinalCommitWithAudio() async throws {
         let configuration = try integrationConfiguration()
-        let client = RealtimeWebSocketClient()
+        let client = RealtimeAPIWebSocketClient()
 
         let connected = expectation(description: "connected")
         let sessionReady = expectation(description: "session ready")
@@ -235,7 +235,7 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
             "Expected a longer spoken synthetic audio clip for this test."
         )
         let spokenChunks = splitPCM16IntoChunks(spokenPCM16, chunkSizeBytes: 3_200)
-        let client = RealtimeWebSocketClient()
+        let client = RealtimeAPIWebSocketClient()
 
         let connected = expectation(description: "connected")
         let sessionReady = expectation(description: "session ready")
@@ -280,8 +280,8 @@ final class RealtimeWebSocketVLLMIntegrationTests: XCTestCase {
     }
 
     private func runHandshakeCycle(
-        client: RealtimeWebSocketClient,
-        configuration: RealtimeWebSocketClient.Configuration
+        client: RealtimeAPIWebSocketClient,
+        configuration: RealtimeSessionConfiguration
     ) async throws {
         let connected = expectation(description: "connected")
         let sessionReady = expectation(description: "session ready")

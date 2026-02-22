@@ -13,7 +13,7 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         var urlSession: URLSession?
         var webSocketTask: URLSessionWebSocketTask?
         var socketState: SocketState = .disconnected
-        var onEvent: (@Sendable (RealtimeWebSocketClient.Event) -> Void)?
+        var onEvent: (@Sendable (RealtimeEvent) -> Void)?
         var isUserInitiatedDisconnect = false
         var hasSentInitialConfiguration = false
         var pendingModelName = ""
@@ -51,11 +51,11 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
     let supportsPeriodicCommit = false
 
-    func setEventHandler(_ handler: @escaping @Sendable (RealtimeWebSocketClient.Event) -> Void) {
+    func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
         state.withLock { $0.onEvent = handler }
     }
 
-    func connect(configuration: RealtimeWebSocketClient.Configuration) throws {
+    func connect(configuration: RealtimeSessionConfiguration) throws {
         guard let scheme = configuration.endpoint.scheme?.lowercased(),
               scheme == "ws" || scheme == "wss"
         else {
@@ -517,8 +517,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         )
     }
 
-    private func emit(_ event: RealtimeWebSocketClient.Event) {
-        let handler: (@Sendable (RealtimeWebSocketClient.Event) -> Void)? = state.withLock { $0.onEvent }
+    private func emit(_ event: RealtimeEvent) {
+        let handler: (@Sendable (RealtimeEvent) -> Void)? = state.withLock { $0.onEvent }
         guard let handler else { return }
         handler(event)
     }

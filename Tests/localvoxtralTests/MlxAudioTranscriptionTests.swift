@@ -202,7 +202,7 @@ final class MlxAudioTranscriptionTests: XCTestCase {
     // MARK: - Configuration
 
     private func mlxConfiguration(delayMsOverride: Int? = nil) throws -> (
-        config: RealtimeWebSocketClient.Configuration,
+        config: RealtimeSessionConfiguration,
         audioPath: String,
         referenceTranscript: String?
     ) {
@@ -233,7 +233,7 @@ final class MlxAudioTranscriptionTests: XCTestCase {
 
         let delayMs: Int? = delayMsOverride ?? env[Self.delayEnv].flatMap { Int($0) }
 
-        let config = RealtimeWebSocketClient.Configuration(
+        let config = RealtimeSessionConfiguration(
             endpoint: endpoint,
             apiKey: "",
             model: model,
@@ -667,17 +667,17 @@ final class MlxAudioTranscriptionTests: XCTestCase {
 
 private final class EventCollector: @unchecked Sendable {
     private let lock = NSLock()
-    private var events: [(elapsed: TimeInterval, event: RealtimeWebSocketClient.Event)] = []
+    private var events: [(elapsed: TimeInterval, event: RealtimeEvent)] = []
     private let startTime = CFAbsoluteTimeGetCurrent()
 
-    func append(_ event: RealtimeWebSocketClient.Event) {
+    func append(_ event: RealtimeEvent) {
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
         lock.lock()
         events.append((elapsed, event))
         lock.unlock()
     }
 
-    func allEvents() -> [(elapsed: TimeInterval, event: RealtimeWebSocketClient.Event)] {
+    func allEvents() -> [(elapsed: TimeInterval, event: RealtimeEvent)] {
         lock.lock()
         defer { lock.unlock() }
         return events

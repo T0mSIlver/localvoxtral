@@ -4,8 +4,8 @@ import XCTest
 
 final class WebSocketClientParsingTests: XCTestCase {
 
-    private func makeClient() -> RealtimeWebSocketClient {
-        RealtimeWebSocketClient()
+    private func makeClient() -> RealtimeAPIWebSocketClient {
+        RealtimeAPIWebSocketClient()
     }
 
     // MARK: - findString

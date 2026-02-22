@@ -24,8 +24,8 @@ struct SettingsView: View {
             },
             set: { newValue in
                 switch settings.realtimeProvider {
-                case .openAICompatible:
-                    settings.openAIEndpointURL = newValue
+                case .realtimeAPI:
+                    settings.realtimeAPIEndpointURL = newValue
                 case .mlxAudio:
                     settings.mlxAudioEndpointURL = newValue
                 }
@@ -40,8 +40,8 @@ struct SettingsView: View {
             },
             set: { newValue in
                 switch settings.realtimeProvider {
-                case .openAICompatible:
-                    settings.openAIModelName = newValue
+                case .realtimeAPI:
+                    settings.realtimeAPIModelName = newValue
                 case .mlxAudio:
                     settings.mlxAudioModelName = newValue
                 }
@@ -80,7 +80,7 @@ struct SettingsView: View {
                                 .textFieldStyle(.roundedBorder)
                         }
 
-                        if settings.realtimeProvider == .openAICompatible {
+                        if settings.realtimeProvider == .realtimeAPI {
                             SettingsField(title: "API key") {
                                 SecureField("Required for remote providers", text: $settings.apiKey)
                                     .textFieldStyle(.roundedBorder)
@@ -89,7 +89,7 @@ struct SettingsView: View {
                     }
 
                     SettingsSection(title: "Transcription") {
-                        if settings.realtimeProvider == .openAICompatible {
+                        if settings.realtimeProvider == .realtimeAPI {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(alignment: .firstTextBaseline) {
                                     Text("Commit interval")
