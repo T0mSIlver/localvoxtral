@@ -30,13 +30,13 @@ open ./dist/localvoxtral.app
 ## Settings
 
 - Open **Settings** from the menu bar popover to set:
+  - Dictation keyboard shortcut  
   - Realtime endpoint
   - Model name
   - API key
   - Commit interval (`vLLM`/`voxmlx`)
   - Transcription delay (`mlx-audio`)
   - Auto-copy finalized segment
-  - Dictation keyboard shortcut (with native recorder input)
 
 ## Screenshots
 
