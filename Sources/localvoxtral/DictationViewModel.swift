@@ -503,6 +503,9 @@ final class DictationViewModel {
 
         isFinalizingStop = true
         statusText = "Finalizing..."
+        // Dictation audio is stopped, but keep the connected indicator while the
+        // realtime websocket remains open for trailing transcript chunks.
+        setRealtimeIndicatorConnected()
         scheduleStopFinalization()
     }
 
@@ -814,14 +817,15 @@ final class DictationViewModel {
             guard self.isFinalizingStop else { return }
 
             // For Realtime API (vLLM/voxmlx): send a final commit and disconnect after a
-            // short grace period — the server responds quickly.
+            // grace period timeout. Keep the websocket open so trailing transcript
+            // chunks can still arrive after dictation stops.
             // For mlx-audio: DON'T preemptively disconnect. The server needs time
             // for model inference on the accumulated audio (can take 10-20s with
             // large buffers at MAX_CHUNK=30). Keep the connection alive so the
             // finalTranscript arrives and gets auto-pasted. The 25s timeout below
             // acts as backstop.
             if self.activeClientSource != .mlxAudio {
-                self.activeRealtimeClient().disconnectAfterFinalCommitIfNeeded()
+                self.activeRealtimeClient().sendCommit(final: true)
             }
 
             let timeout = self.activeClientSource == .mlxAudio

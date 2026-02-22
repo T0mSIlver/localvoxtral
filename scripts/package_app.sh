@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 CONFIGURATION="${1:-release}"
-APP_VERSION="${2:-0.1.0}"
+APP_VERSION="${2:-0.3.0}"
 BUILD_NUMBER="${3:-1}"
 
 if [[ "$CONFIGURATION" != "release" && "$CONFIGURATION" != "debug" ]]; then
@@ -15,7 +15,7 @@ fi
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
   echo "Invalid app version: $APP_VERSION"
-  echo "Expected semantic version like 0.1.0"
+  echo "Expected semantic version like 0.3.0"
   exit 1
 fi
 

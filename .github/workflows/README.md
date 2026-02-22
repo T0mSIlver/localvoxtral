@@ -4,7 +4,7 @@
 
 This workflow publishes the macOS app zip to GitHub Releases.
 
-- Trigger (`push`): when a tag matching `v*.*.*` is pushed (for example `v0.1.0`)
+- Trigger (`push`): when a tag matching `v*.*.*` is pushed (for example `v0.3.0`)
 - Trigger (`workflow_dispatch`): manual run for an existing tag using the `tag` input
 
 Pipeline steps:
