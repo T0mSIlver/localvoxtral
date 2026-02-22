@@ -62,7 +62,7 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 
 ### voxmlx
 
-[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol.
+[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol and memory management optimizations.
 
 ```bash
 git clone https://github.com/T0mSIlver/voxmlx.git
