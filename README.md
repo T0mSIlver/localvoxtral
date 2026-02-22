@@ -12,11 +12,10 @@ It supports two realtime backend modes: OpenAI-Compatible Realtime API endpoints
 ## Features
 
 - User-configurable global shortcut to start/stop dictation from anywhere
-- Native menu bar app with instant open, no heavy UI
+- Native menu bar app with instant open and visual feedback with the icon
 - Live dictation that writes into your active text field as you speak
 - Pick your preferred microphone input device
 - Copy the latest transcribed segment
-- Stabilized mlx-audio transcription with word-boundary-aligned hypothesis merging
 
 ## Quick start
 
@@ -36,7 +35,8 @@ open ./dist/localvoxtral.app
   - API key
   - Commit interval (`vLLM`/`voxmlx`)
   - Transcription delay (`mlx-audio`)
-  - Auto-copy finalized segment
+  - Auto-paste into input field
+  - Auto-copy final segment
 
 ## Screenshots
 
@@ -83,7 +83,7 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 
 ## Roadmap
 
-- [x] Customize keyboard shortcut
+- [ ] Enhance the server connection UX
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
   - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
   -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~

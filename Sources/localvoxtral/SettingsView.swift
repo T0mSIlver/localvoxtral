@@ -67,131 +67,128 @@ struct SettingsView: View {
             Color(nsColor: .windowBackgroundColor)
                 .ignoresSafeArea()
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Settings")
-                            .font(.system(size: 22, weight: .semibold))
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Settings")
+                        .font(.system(size: 22, weight: .semibold))
+                }
+
+                SettingsSection(title: "Endpoint Settings") {
+                    SettingsField(title: "Provider") {
+                        Picker("", selection: $settings.realtimeProvider) {
+                            ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
+                                Text(provider.displayName).tag(provider)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
                     }
 
-                    SettingsSection(title: "Endpoint Settings") {
-                        SettingsField(title: "Provider") {
-                            Picker("", selection: $settings.realtimeProvider) {
-                                ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
-                                    Text(provider.displayName).tag(provider)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-                        }
+                    SettingsField(title: "Realtime endpoint") {
+                        TextField(settings.endpointPlaceholder, text: endpointBinding)
+                            .textFieldStyle(.roundedBorder)
+                    }
 
-                        SettingsField(title: "Realtime endpoint") {
-                            TextField(settings.endpointPlaceholder, text: endpointBinding)
+                    SettingsField(title: "Model") {
+                        TextField(settings.modelPlaceholder, text: modelBinding)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    if settings.realtimeProvider == .realtimeAPI {
+                        SettingsField(title: "API key") {
+                            SecureField("Required for remote providers", text: $settings.apiKey)
                                 .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsField(title: "Model") {
-                            TextField(settings.modelPlaceholder, text: modelBinding)
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        if settings.realtimeProvider == .realtimeAPI {
-                            SettingsField(title: "API key") {
-                                SecureField("Required for remote providers", text: $settings.apiKey)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                        }
-
-                        if settings.realtimeProvider == .realtimeAPI {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("Commit interval")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text(String(format: "%.2fs", settings.commitIntervalSeconds))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
-
-                                Text("How often finalized transcript chunks are requested from the realtime server.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        } else {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text("Transcription delay")
-                                        .font(.system(size: 12, weight: .medium))
-                                    Spacer()
-                                    Text(mlxTranscriptionDelayLabel)
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.4 ... 2.0, step: 0.1)
-
-                                Text("How long mlx-audio waits for right-context before emitting tokens.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
                         }
                     }
 
-                    SettingsSection(title: "Dictation") {
-                        ToggleSettingRow(
-                            title: "Auto-paste into input field",
-                            subtitle: "Insert streaming transcript text into the focused app.",
-                            isOn: $settings.autoPasteIntoInputFieldEnabled
-                        )
-
-                        ToggleSettingRow(
-                            title: "Auto-copy final segment",
-                            subtitle: "Copy each final segment to the clipboard automatically.",
-                            isOn: $settings.autoCopyEnabled
-                        )
-
-                        SettingsField(title: "Toggle dictation") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(alignment: .center, spacing: 8) {
-                                    ShortcutRecorderField(
-                                        shortcut: dictationShortcutBinding,
-                                        validationError: $shortcutValidationError,
-                                        fixedWidth: 132
-                                    )
-                                    .frame(height: 24, alignment: .leading)
-
-                                    Button("Reset to Default") {
-                                        shortcutValidationError = nil
-                                        viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
-                                    }
-                                    .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
-                                }
+                    if settings.realtimeProvider == .realtimeAPI {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Commit interval")
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                                Text(String(format: "%.2fs", settings.commitIntervalSeconds))
+                                    .foregroundStyle(.secondary)
                             }
-                        }
 
-                        if let shortcutValidationError {
-                            Text(shortcutValidationError)
-                                .font(.caption)
-                                .foregroundStyle(.red)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                            Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
 
-                        if settings.dictationShortcut == nil {
-                            Text("Global dictation shortcut is currently disabled.")
+                            Text("How often finalized transcript chunks are requested from the realtime server.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Transcription delay")
+                                    .font(.system(size: 12, weight: .medium))
+                                Spacer()
+                                Text(mlxTranscriptionDelayLabel)
+                                    .foregroundStyle(.secondary)
+                            }
 
+                            Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.4 ... 2.0, step: 0.1)
+
+                            Text("How long mlx-audio waits for right-context before emitting tokens.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
-                .frame(width: 332, alignment: .leading)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
+
+                SettingsSection(title: "Dictation") {
+                    ToggleSettingRow(
+                        title: "Auto-paste into input field",
+                        subtitle: "Insert streaming transcript text into the focused app.",
+                        isOn: $settings.autoPasteIntoInputFieldEnabled
+                    )
+
+                    ToggleSettingRow(
+                        title: "Auto-copy final segment",
+                        subtitle: "Copy each final segment to the clipboard automatically.",
+                        isOn: $settings.autoCopyEnabled
+                    )
+
+                    SettingsField(title: "Toggle dictation") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .center, spacing: 8) {
+                                ShortcutRecorderField(
+                                    shortcut: dictationShortcutBinding,
+                                    validationError: $shortcutValidationError,
+                                    fixedWidth: 132
+                                )
+                                .frame(height: 24, alignment: .leading)
+
+                                Button("Reset to Default") {
+                                    shortcutValidationError = nil
+                                    viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
+                                }
+                                .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
+                            }
+                        }
+                    }
+
+                    if let shortcutValidationError {
+                        Text(shortcutValidationError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if settings.dictationShortcut == nil {
+                        Text("Global dictation shortcut is currently disabled.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                }
             }
-            .scrollIndicators(.never)
+            .frame(width: 332, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
         }
     }
 }
