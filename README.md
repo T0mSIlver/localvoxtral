@@ -84,6 +84,7 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 ## Roadmap
 
 - [ ] Enhance the server connection UX
+- [ ] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess  app-managed local serving (start/stop/config) in localvoxtral.
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
   - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
   -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~
