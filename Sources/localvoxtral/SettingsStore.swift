@@ -42,8 +42,6 @@ enum DictationShortcutValidation {
         switch (normalized.keyCode, normalized.carbonModifierFlags) {
         case (UInt32(kVK_Space), UInt32(cmdKey)):
             return "Command-Space is reserved by Spotlight."
-        case (UInt32(kVK_Space), UInt32(cmdKey | optionKey)):
-            return "Option-Command-Space is reserved by Spotlight Finder search."
         case (UInt32(kVK_Tab), UInt32(cmdKey)):
             return "Command-Tab is reserved for app switching."
         case (UInt32(kVK_ANSI_Q), UInt32(cmdKey)):
@@ -114,7 +112,7 @@ final class SettingsStore {
 
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
-        carbonModifierFlags: UInt32(cmdKey | optionKey)
+        carbonModifierFlags: UInt32(optionKey)
     )
 
     var realtimeProvider: RealtimeProvider {

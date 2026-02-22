@@ -166,10 +166,15 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - dictationShortcut
 
-    func testDictationShortcut_defaultsToEnabledCmdOptionSpace() {
+    func testDictationShortcut_defaultsToEnabledOptionSpace() {
         let store = SettingsStore()
+        let expectedDefault = DictationShortcut(
+            keyCode: UInt32(kVK_Space),
+            carbonModifierFlags: UInt32(optionKey)
+        )
         XCTAssertTrue(store.dictationShortcutEnabled)
-        XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
+        XCTAssertEqual(SettingsStore.defaultDictationShortcut, expectedDefault)
+        XCTAssertEqual(store.dictationShortcut, expectedDefault)
     }
 
     func testDictationShortcut_customPersistsAcrossReload() {

@@ -10,10 +10,6 @@ final class ShortcutValidationTests: XCTestCase {
                 carbonModifierFlags: UInt32(cmdKey)
             ),
             DictationShortcut(
-                keyCode: UInt32(kVK_Space),
-                carbonModifierFlags: UInt32(cmdKey | optionKey)
-            ),
-            DictationShortcut(
                 keyCode: UInt32(kVK_Tab),
                 carbonModifierFlags: UInt32(cmdKey)
             ),
@@ -36,6 +32,15 @@ final class ShortcutValidationTests: XCTestCase {
         let shortcut = DictationShortcut(
             keyCode: UInt32(kVK_ANSI_D),
             carbonModifierFlags: UInt32(cmdKey | shiftKey)
+        )
+
+        XCTAssertNil(DictationShortcutValidation.validationErrorMessage(for: shortcut))
+    }
+
+    func testValidation_allowsOptionSpaceShortcut() {
+        let shortcut = DictationShortcut(
+            keyCode: UInt32(kVK_Space),
+            carbonModifierFlags: UInt32(optionKey)
         )
 
         XCTAssertNil(DictationShortcutValidation.validationErrorMessage(for: shortcut))

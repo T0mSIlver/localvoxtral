@@ -373,21 +373,30 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
         // The system default change is asynchronous; wait for it to take effect
         // before creating the AVAudioEngine.
-        waitForDefaultInputDevice(preferredObjectID)
+        guard waitForDefaultInputDevice(preferredObjectID) else {
+            let currentDefault = AudioDeviceManager.defaultInputDeviceObjectID()
+            let currentDefaultName = currentDefault.flatMap { AudioDeviceManager.deviceName(for: $0) } ?? "unknown"
+            debugLog(
+                "system default input did not settle expected=\(preferredObjectID) actual=\(currentDefault.map { String($0) } ?? "nil") name=\(currentDefaultName)"
+            )
+            throw MicrophoneCaptureError.failedToSetPreferredDevice(preferredDeviceID)
+        }
         debugLog("system default input device updated")
     }
 
     private func waitForDefaultInputDevice(
         _ expectedDeviceID: AudioObjectID,
         timeout: TimeInterval = 0.8
-    ) {
+    ) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID {
-                return
+                return true
             }
             Thread.sleep(forTimeInterval: 0.02)
         }
+
+        return AudioDeviceManager.defaultInputDeviceObjectID() == expectedDeviceID
     }
 
     private static let inputDevicePropertyListener: AudioObjectPropertyListenerProc = {
