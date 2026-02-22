@@ -28,8 +28,15 @@ fi
 APP_ICON_SOURCE="$ROOT_DIR/assets/icons/app/AppIcon.png"
 MENUBAR_ICON_SOURCE="$ROOT_DIR/assets/icons/menubar/MicIconTemplate.png"
 MENUBAR_ICON_2X_SOURCE="$ROOT_DIR/assets/icons/menubar/MicIconTemplate@2x.png"
+MENUBAR_ICON_CONNECTED_2X_SOURCE="$ROOT_DIR/assets/icons/menubar/MicIconTemplate@2x_connected.png"
+MENUBAR_ICON_FAILURE_2X_SOURCE="$ROOT_DIR/assets/icons/menubar/MicIconTemplate@2x_failure.png"
 
-for required_asset in "$APP_ICON_SOURCE" "$MENUBAR_ICON_SOURCE" "$MENUBAR_ICON_2X_SOURCE"; do
+for required_asset in \
+  "$APP_ICON_SOURCE" \
+  "$MENUBAR_ICON_SOURCE" \
+  "$MENUBAR_ICON_2X_SOURCE" \
+  "$MENUBAR_ICON_CONNECTED_2X_SOURCE" \
+  "$MENUBAR_ICON_FAILURE_2X_SOURCE"; do
   if [[ ! -f "$required_asset" ]]; then
     echo "Missing required icon asset: $required_asset"
     exit 1
@@ -111,6 +118,8 @@ iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cp "$MENUBAR_ICON_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate.png"
 cp "$MENUBAR_ICON_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x.png"
+cp "$MENUBAR_ICON_CONNECTED_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x_connected.png"
+cp "$MENUBAR_ICON_FAILURE_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x_failure.png"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

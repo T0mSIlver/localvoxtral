@@ -4,6 +4,12 @@ import Foundation
 import Observation
 import os
 
+enum RealtimeSessionIndicatorState {
+    case idle
+    case connected
+    case recentFailure
+}
+
 @MainActor
 @Observable
 final class DictationViewModel {
@@ -20,6 +26,8 @@ final class DictationViewModel {
 
     private(set) var isDictating = false
     private(set) var isFinalizingStop = false
+    private(set) var isConnectingRealtimeSession = false
+    private(set) var realtimeSessionIndicatorState: RealtimeSessionIndicatorState = .idle
     private(set) var transcriptText = ""
     private(set) var livePartialText = ""
     private(set) var statusText = "Ready"
@@ -41,9 +49,13 @@ final class DictationViewModel {
     private let audioChunkBuffer = AudioChunkBuffer()
     private let healthMonitor = AudioCaptureHealthMonitor()
     private let audioSendInterval: TimeInterval = 0.1
+    private let connectTimeoutSeconds: TimeInterval = 2.0
+    private let recentFailureIndicatorSeconds: TimeInterval = 5.0
     private var commitTask: Task<Void, Never>?
     private var audioSendTask: Task<Void, Never>?
     private var stopFinalizationTask: Task<Void, Never>?
+    private var connectTimeoutTask: Task<Void, Never>?
+    private var recentFailureResetTask: Task<Void, Never>?
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
     private var isAwaitingMicrophonePermission = false
@@ -136,6 +148,8 @@ final class DictationViewModel {
         commitTask?.cancel()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
+        connectTimeoutTask?.cancel()
+        recentFailureResetTask?.cancel()
         textInsertion.stopAllTasks()
         healthMonitor.cancelTasks()
         microphone.stop()
@@ -266,7 +280,7 @@ final class DictationViewModel {
         if connected {
             debugLog("network restored")
             // Only update status if we're idle — don't overwrite active dictation status.
-            if !isDictating, !isFinalizingStop,
+            if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession,
                statusText == "Network lost. Dictation stopped."
                 || statusText == "No network connection."
             {
@@ -275,7 +289,14 @@ final class DictationViewModel {
             }
         } else {
             debugLog("network lost")
-            if isDictating {
+            if isConnectingRealtimeSession {
+                abortConnectingSession()
+                statusText = "Network lost. Dictation stopped."
+                let message = "Network connection was lost while connecting."
+                lastError = message
+                logConnectionFailure(message)
+                markRecentConnectionFailureIndicator()
+            } else if isDictating {
                 // Network is gone — no point trying to finalize over a dead connection.
                 stopDictation(reason: "network lost", finalizeRemainingAudio: false)
                 statusText = "Network lost. Dictation stopped."
@@ -295,6 +316,8 @@ final class DictationViewModel {
     func toggleDictation() {
         if isDictating {
             stopDictation(reason: "manual toggle")
+        } else if isConnectingRealtimeSession {
+            statusText = "Connecting to realtime backend..."
         } else if isFinalizingStop {
             statusText = "Finalizing previous dictation..."
         } else {
@@ -392,6 +415,10 @@ final class DictationViewModel {
 
     func startDictation() {
         guard !isDictating else { return }
+        guard !isConnectingRealtimeSession else {
+            statusText = "Connecting to realtime backend..."
+            return
+        }
         guard !isFinalizingStop else {
             statusText = "Finalizing previous dictation..."
             return
@@ -583,12 +610,18 @@ final class DictationViewModel {
     private func beginDictationSession() {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
+        cancelConnectTimeout()
         isFinalizingStop = false
+        isConnectingRealtimeSession = false
+        setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
         guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
             statusText = "Invalid endpoint URL."
-            lastError = "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings."
+            let message = "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings."
+            lastError = message
+            logConnectionFailure("Invalid realtime endpoint URL.")
+            markRecentConnectionFailureIndicator()
             return
         }
 
@@ -604,30 +637,28 @@ final class DictationViewModel {
         let client = selectedRealtimeClient()
         let source = selectedClientSource()
         inactiveRealtimeClient(for: source).disconnect()
+        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+
+        audioChunkBuffer.clear()
+        livePartialText = ""
+        pendingRealtimeFinalizationText = ""
+        currentDictationEventText = ""
+        mlxCommittedEventText = ""
+        mlxCommittedSinceLastFinal = ""
+        mlxSegmentLatestHypothesis = ""
+        mlxSegmentPreviousHypothesis = ""
+        mlxSegmentCommittedPrefix = ""
+        textInsertion.clearPendingText()
+        textInsertion.resetDiagnostics()
+
+        isConnectingRealtimeSession = true
+        activeClientSource = source
+        statusText = "Connecting to realtime backend..."
+        debugLog(
+            "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
+        )
 
         do {
-            let chunkBuffer = audioChunkBuffer
-            chunkBuffer.clear()
-            let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
-            debugLog("beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")")
-            try microphone.start(preferredDeviceID: preferredInputID) { chunk in
-                chunkBuffer.append(chunk)
-            }
-
-            isDictating = true
-            livePartialText = ""
-            pendingRealtimeFinalizationText = ""
-            currentDictationEventText = ""
-            mlxCommittedEventText = ""
-            mlxCommittedSinceLastFinal = ""
-            mlxSegmentLatestHypothesis = ""
-            mlxSegmentPreviousHypothesis = ""
-            mlxSegmentCommittedPrefix = ""
-            statusText = "Listening..."
-            textInsertion.clearPendingText()
-            textInsertion.resetDiagnostics()
-
-            activeClientSource = source
             try client.connect(configuration: .init(
                 endpoint: endpoint,
                 apiKey: settings.trimmedAPIKey,
@@ -636,7 +667,28 @@ final class DictationViewModel {
                     ? settings.mlxAudioTranscriptionDelayMilliseconds
                     : nil
             ))
+            scheduleConnectTimeout()
+        } catch {
+            abortConnectingSession(disconnectSocket: false)
+            statusText = "Failed to connect."
+            lastError = error.localizedDescription
+            logConnectionFailure("Failed to start realtime connection: \(error.localizedDescription)")
+            markRecentConnectionFailureIndicator()
+            debugLog("beginDictationSession failed error=\(error.localizedDescription)")
+        }
+    }
 
+    private func startAudioCaptureAfterConnection() {
+        let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+        do {
+            let chunkBuffer = audioChunkBuffer
+            try microphone.start(preferredDeviceID: preferredInputID) { chunk in
+                chunkBuffer.append(chunk)
+            }
+
+            isConnectingRealtimeSession = false
+            isDictating = true
+            statusText = "Listening..."
             restartAudioSendTask()
             restartCommitTask()
             textInsertion.restartInsertionRetryTask { [weak self] in
@@ -646,12 +698,15 @@ final class DictationViewModel {
         } catch {
             statusText = "Failed to start dictation."
             lastError = error.localizedDescription
-            microphone.stop()
-            client.disconnect()
+            isConnectingRealtimeSession = false
             isDictating = false
             healthMonitor.stop()
+            microphone.stop()
+            activeRealtimeClient().disconnect()
             activeClientSource = nil
-            debugLog("beginDictationSession failed error=\(error.localizedDescription)")
+            setRealtimeIndicatorIdle()
+            Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")
+            debugLog("startAudioCaptureAfterConnection failed error=\(error.localizedDescription)")
         }
     }
 
@@ -788,6 +843,7 @@ final class DictationViewModel {
     private func finishStoppedSession(promotePendingSegment: Bool) {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
+        cancelConnectTimeout()
 
         let wasMlxAudio = activeClientSource == .mlxAudio
 
@@ -807,6 +863,8 @@ final class DictationViewModel {
         }
 
         isFinalizingStop = false
+        isConnectingRealtimeSession = false
+        setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingRealtimeFinalizationText = ""
         mlxCommittedSinceLastFinal = ""
@@ -834,6 +892,12 @@ final class DictationViewModel {
 
         switch event {
         case .connected:
+            cancelConnectTimeout()
+            setRealtimeIndicatorConnected()
+            if isConnectingRealtimeSession {
+                startAudioCaptureAfterConnection()
+                return
+            }
             if isDictating {
                 statusText = "Listening..."
             } else if isFinalizingStop {
@@ -843,11 +907,27 @@ final class DictationViewModel {
             }
 
         case .disconnected:
+            cancelConnectTimeout()
+            if isConnectingRealtimeSession {
+                abortConnectingSession(disconnectSocket: false)
+                statusText = "Failed to connect."
+                let failureMessage = (lastError?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+                    ? (lastError ?? "Unable to establish realtime connection.")
+                    : "Unable to establish realtime connection."
+                lastError = failureMessage
+                logConnectionFailure(failureMessage)
+                markRecentConnectionFailureIndicator()
+                return
+            }
+
             if isFinalizingStop {
                 finishStoppedSession(promotePendingSegment: true)
                 return
             }
-            guard isDictating else { return }
+            guard isDictating else {
+                setRealtimeIndicatorIdle()
+                return
+            }
             commitTask?.cancel()
             commitTask = nil
             audioSendTask?.cancel()
@@ -856,11 +936,19 @@ final class DictationViewModel {
             isAwaitingMicrophonePermission = false
             microphone.stop()
             isDictating = false
-            lastError = "Connection lost. Dictation stopped."
             finishStoppedSession(promotePendingSegment: true)
+            let message = "Connection lost. Dictation stopped."
+            statusText = message
+            lastError = message
+            logConnectionFailure(message)
+            markRecentConnectionFailureIndicator()
 
         case .status(let message):
             let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if isConnectingRealtimeSession {
+                statusText = "Connecting to realtime backend..."
+                return
+            }
             if !acceptsRealtimeEvents {
                 statusText = "Ready"
                 return
@@ -948,6 +1036,14 @@ final class DictationViewModel {
 
         case .error(let message):
             let normalized = message.lowercased()
+            if isConnectingRealtimeSession {
+                abortConnectingSession()
+                statusText = "Failed to connect."
+                lastError = message
+                logConnectionFailure(message)
+                markRecentConnectionFailureIndicator()
+                return
+            }
             if !acceptsRealtimeEvents {
                 if normalized.contains("websocket receive failed")
                     || normalized.contains("cancelled")
@@ -968,6 +1064,7 @@ final class DictationViewModel {
 
             statusText = "Realtime error."
             lastError = message
+            Log.dictation.error("Realtime error: \(message, privacy: .public)")
         }
     }
 
@@ -1256,6 +1353,70 @@ final class DictationViewModel {
         guard overlap > 0 else { return "" }
         let start = finalHypothesis.index(finalHypothesis.startIndex, offsetBy: overlap)
         return String(finalHypothesis[start...])
+    }
+
+    private func scheduleConnectTimeout() {
+        cancelConnectTimeout()
+        let timeout = connectTimeoutSeconds
+        connectTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            guard let self, self.isConnectingRealtimeSession else { return }
+
+            abortConnectingSession()
+            statusText = "Connection timed out."
+            let message = "Could not connect to realtime backend within \(Int(timeout)) seconds."
+            lastError = message
+            logConnectionFailure(message)
+            markRecentConnectionFailureIndicator()
+        }
+    }
+
+    private func cancelConnectTimeout() {
+        connectTimeoutTask?.cancel()
+        connectTimeoutTask = nil
+    }
+
+    private func abortConnectingSession(disconnectSocket: Bool = true) {
+        cancelConnectTimeout()
+        isConnectingRealtimeSession = false
+        isDictating = false
+        isAwaitingMicrophonePermission = false
+        microphone.stop()
+        if disconnectSocket {
+            activeRealtimeClient().disconnect()
+        }
+        activeClientSource = nil
+        healthMonitor.stop()
+    }
+
+    private func setRealtimeIndicatorIdle() {
+        recentFailureResetTask?.cancel()
+        recentFailureResetTask = nil
+        realtimeSessionIndicatorState = .idle
+    }
+
+    private func setRealtimeIndicatorConnected() {
+        recentFailureResetTask?.cancel()
+        recentFailureResetTask = nil
+        realtimeSessionIndicatorState = .connected
+    }
+
+    private func markRecentConnectionFailureIndicator() {
+        recentFailureResetTask?.cancel()
+        realtimeSessionIndicatorState = .recentFailure
+        let indicatorDuration = recentFailureIndicatorSeconds
+        recentFailureResetTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(indicatorDuration))
+            guard let self else { return }
+            guard self.realtimeSessionIndicatorState == .recentFailure else { return }
+            guard !self.isConnectingRealtimeSession, !self.isDictating, !self.isFinalizingStop else { return }
+            self.realtimeSessionIndicatorState = .idle
+            self.recentFailureResetTask = nil
+        }
+    }
+
+    private func logConnectionFailure(_ message: String) {
+        Log.dictation.error("Realtime connection failure: \(message, privacy: .public)")
     }
 
     private func selectedClientSource() -> ActiveClientSource {

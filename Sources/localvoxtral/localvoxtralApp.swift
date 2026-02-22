@@ -16,13 +16,68 @@ struct localvoxtralApp: App {
         MenuBarExtra {
             StatusPopoverView(viewModel: viewModel)
         } label: {
-            if let icon = MenuBarIconAsset.icon {
-                MenuBarIconView(icon: icon, isDictating: viewModel.isDictating)
+            let state = viewModel.realtimeSessionIndicatorState
+            if let idleIcon = MenuBarIconAsset.idleIcon {
+                let iconConfiguration: (
+                    icon: NSImage,
+                    renderingMode: Image.TemplateRenderingMode,
+                    id: String,
+                    label: String
+                ) = {
+                    switch state {
+                    case .idle:
+                        return (idleIcon, .template, "realtime-idle", "localvoxtral")
+                    case .connected:
+                        if let connectedIcon = MenuBarIconAsset.connectedIcon {
+                            return (
+                                connectedIcon,
+                                .original,
+                                "realtime-connected",
+                                "localvoxtral, realtime session active"
+                            )
+                        }
+                        return (
+                            idleIcon,
+                            .template,
+                            "realtime-connected",
+                            "localvoxtral, realtime session active"
+                        )
+                    case .recentFailure:
+                        if let failureIcon = MenuBarIconAsset.failureIcon {
+                            return (
+                                failureIcon,
+                                .original,
+                                "realtime-failed",
+                                "localvoxtral, realtime connection failed recently"
+                            )
+                        }
+                        return (
+                            idleIcon,
+                            .template,
+                            "realtime-failed",
+                            "localvoxtral, realtime connection failed recently"
+                        )
+                    }
+                }()
+
+                Image(nsImage: iconConfiguration.icon)
+                    .resizable()
+                    .renderingMode(iconConfiguration.renderingMode)
+                    .scaledToFit()
+                    .frame(width: 13, height: 16)
+                    .id(iconConfiguration.id)
+                    .accessibilityLabel(iconConfiguration.label)
             } else {
-                Label(
-                    "localvoxtral",
-                    systemImage: viewModel.isDictating ? "waveform.circle.fill" : "waveform.circle"
-                )
+                switch state {
+                case .idle:
+                    Label("localvoxtral", systemImage: "waveform.circle")
+                case .connected:
+                    Label("localvoxtral", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .recentFailure:
+                    Label("localvoxtral", systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                }
             }
         }
         .menuBarExtraStyle(.menu)
@@ -39,36 +94,37 @@ struct localvoxtralApp: App {
 
 @MainActor
 private enum MenuBarIconAsset {
-    static let icon: NSImage? = {
+    static let idleIcon: NSImage? = loadIcon(candidates: [
+        "MicIconTemplate@2x",
+        "MicIconTemplate",
+    ], asTemplate: true)
+
+    static let connectedIcon: NSImage? = loadIcon(candidates: [
+        "MicIconTemplate_connected",
+        "MicIconTemplate@2x_connected",
+    ], asTemplate: false)
+
+    static let failureIcon: NSImage? = loadIcon(candidates: [
+        "MicIconTemplate_failure",
+        "MicIconTemplate@2x_failure",
+    ], asTemplate: false)
+
+    private static func loadIcon(candidates: [String], asTemplate: Bool) -> NSImage? {
         let bundle = Bundle.main
-        guard let iconURL = bundle.url(forResource: "MicIconTemplate", withExtension: "png"),
-              let image = NSImage(contentsOf: iconURL)
-        else {
-            return nil
-        }
-        image.isTemplate = true
-        return image
-    }()
-}
-
-private struct MenuBarIconView: View {
-    let icon: NSImage
-    let isDictating: Bool
-
-    var body: some View {
-        Image(nsImage: icon)
-            .resizable()
-            .renderingMode(.template)
-            .scaledToFit()
-            .frame(width: 13, height: 16)
-            .overlay(alignment: .topTrailing) {
-                if isDictating {
-                    Circle()
-                        .fill(.red)
-                        .frame(width: 5, height: 5)
-                        .offset(x: 2, y: -2)
-                }
+        for candidate in candidates {
+            guard let iconURL = bundle.url(forResource: candidate, withExtension: "png"),
+                  let image = NSImage(contentsOf: iconURL)
+            else {
+                continue
             }
-            .accessibilityLabel("localvoxtral")
+            // Plain `@2x` filenames are already point-size normalized by AppKit.
+            // Custom-suffixed variants (for example `@2x_connected`) are not.
+            if candidate.contains("@2x"), !candidate.hasSuffix("@2x") {
+                image.size = NSSize(width: image.size.width / 2.0, height: image.size.height / 2.0)
+            }
+            image.isTemplate = asTemplate
+            return image
+        }
+        return nil
     }
 }
