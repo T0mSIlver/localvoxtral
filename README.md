@@ -1,6 +1,10 @@
 # localvoxtral
 
 <p align="center">
+  <img src="assets/demo.gif" alt="localvoxtral demo" width="760" />
+</p>
+
+<p align="center">
   <img src="assets/icons/app/AppIcon.png" alt="localvoxtral app icon" width="128" height="128" />
 </p>
 
