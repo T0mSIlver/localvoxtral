@@ -57,12 +57,23 @@ open ./dist/localvoxtral.app
 </p>
 
 <p>
-  <img src="assets/settings.png" alt="localvoxtral settings view" width="420" />
+  <img src="assets/settings.png" alt="localvoxtral settings view" width="320" />
+  <img src="assets/popover.png" alt="localvoxtral popover view" width="200" />
 </p>
 
 ## Tested setup
 
 In this tested setup, `vLLM` and `voxmlx` stream partial text fast enough for realtime dictation; latency and throughput will vary by hardware, model, and quantization.
+
+### voxmlx
+
+[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol and memory management optimizations.
+
+```bash
+# install uv once: https://docs.astral.sh/uv/getting-started/installation/
+uvx --from "git+https://github.com/T0mSIlver/voxmlx.git[server]" \
+  voxmlx-serve --model T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+```
 
 ### vLLM
 
@@ -71,17 +82,6 @@ In this tested setup, `vLLM` and `voxmlx` stream partial text fast enough for re
 ```bash
 VLLM_DISABLE_COMPILE_CACHE=1
 vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudagraph_mode": "PIECEWISE"}'
-```
-
-### voxmlx
-
-[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol and memory management optimizations.
-
-```bash
-git clone https://github.com/T0mSIlver/voxmlx.git
-cd voxmlx
-pip install -e ".[server]"
-voxmlx-serve --model T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
 ```
 
 ### mlx-audio (deprecated)
