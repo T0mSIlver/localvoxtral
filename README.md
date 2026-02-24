@@ -13,7 +13,7 @@ It keeps the loop simple: start dictation, speak, get text fast.
 Unlike Whisper-based tools that transcribe after you stop speaking, Voxtral Realtime streams text as audio arrives, so words appear while you're still talking.
 On Apple Silicon, `localvoxtral` + `voxmlx` provides a fully local path (audio + inference stay on-device), improving privacy and avoiding API costs.
 
-It connects to any OpenAI Realtime-compatible endpoint. Recommended backends are `voxmlx` (Apple Silicon, fully local) and `vLLM` (NVIDIA GPU). An `mlx-audio` backend is also supported but deprecated.
+It connects to any OpenAI Realtime-compatible endpoint. Recommended backends are `voxmlx` (Apple Silicon) and `vLLM` (NVIDIA GPU). An `mlx-audio` backend is also supported but deprecated.
 
 Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model, but it works with any OpenAI-compatible Realtime API backend.
 
@@ -28,7 +28,13 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 ## Quick start
 
-Build and run as an app bundle (recommended):
+### Recommended: install from GitHub Releases (DMG)
+
+Download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
+
+If macOS blocks first launch, go to **System Settings -> Privacy & Security** and click **Open Anyway** for `localvoxtral`.
+
+### Alternatively, build from source as an app bundle
 
 ```bash
 ./scripts/package_app.sh release
@@ -46,21 +52,6 @@ open ./dist/localvoxtral.app
   - Transcription delay (`mlx-audio`)
   - Auto-paste into input field
   - Auto-copy final segment
-
-## UI
-
-<p>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/icons/menubar/MicIconTemplate@2x_dark-preview.png" />
-    <img src="assets/icons/menubar/MicIconTemplate@2x.png" alt="localvoxtral menubar icon" width="28" height="28" />
-  </picture>
-  Menubar icon
-</p>
-
-<p>
-  <img src="assets/settings.png" alt="localvoxtral settings view" width="320" />
-  <img src="assets/popover.png" alt="localvoxtral popover view" width="200" />
-</p>
 
 ## Tested setup
 
@@ -105,3 +96,18 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
   -  **done** ~~[mlx-audio framework](https://github.com/Blaizzy/mlx-audio) - thanks [Shreyas Karnik](https://github.com/shreyaskarnik)~~
   - **done** ~~[MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)~~
   - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
+
+## UI
+
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/icons/menubar/MicIconTemplate@2x_dark-preview.png" />
+    <img src="assets/icons/menubar/MicIconTemplate@2x.png" alt="localvoxtral menubar icon" width="28" height="28" />
+  </picture>
+  Menubar icon
+</p>
+
+<p>
+  <img src="assets/settings.png" alt="localvoxtral settings view" width="320" />
+  <img src="assets/popover.png" alt="localvoxtral popover view" width="200" />
+</p>

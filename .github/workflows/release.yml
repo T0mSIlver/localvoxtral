@@ -68,9 +68,14 @@ jobs:
             "dist/localvoxtral.app" \
             "$ZIP_PATH"
 
+          DMG_STAGING_DIR="$(mktemp -d)"
+          trap 'rm -rf "$DMG_STAGING_DIR"' EXIT
+          cp -R "dist/localvoxtral.app" "$DMG_STAGING_DIR/localvoxtral.app"
+          ln -s /Applications "$DMG_STAGING_DIR/Applications"
+
           hdiutil create \
             -volname "localvoxtral" \
-            -srcfolder "dist/localvoxtral.app" \
+            -srcfolder "$DMG_STAGING_DIR" \
             -ov \
             -format UDZO \
             "$DMG_PATH"
