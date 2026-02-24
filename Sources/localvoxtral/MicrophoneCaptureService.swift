@@ -14,9 +14,7 @@ enum MicrophoneAuthorizationStatus {
 
 enum MicrophoneCaptureError: LocalizedError {
     case preferredDeviceUnavailable(String)
-    case failedToSetPreferredDevice(String)
     case invalidInputFormat
-    case converterCreationFailed
     case auHALComponentNotFound
     case auHALCreationFailed(OSStatus)
     case auHALConfigurationFailed(String, OSStatus)
@@ -25,12 +23,8 @@ enum MicrophoneCaptureError: LocalizedError {
         switch self {
         case .preferredDeviceUnavailable(let deviceID):
             return "Selected microphone (\(deviceID)) is no longer available."
-        case .failedToSetPreferredDevice(let deviceID):
-            return "Failed to activate selected microphone (\(deviceID))."
         case .invalidInputFormat:
             return "Microphone input format is invalid."
-        case .converterCreationFailed:
-            return "Failed to create audio converter for microphone input."
         case .auHALComponentNotFound:
             return "Audio HAL output component not found."
         case .auHALCreationFailed(let status):

@@ -143,8 +143,8 @@ final class DictationViewModel {
                 self.lastError = nil
             }
             if !self.isDictating,
-               self.statusText == "Waiting for Accessibility permission."
-                || self.statusText == "Paste blocked by Accessibility permission."
+               (self.statusText == "Waiting for Accessibility permission."
+                   || self.statusText == "Paste blocked by Accessibility permission.")
             {
                 self.statusText = "Ready"
             }
@@ -235,8 +235,8 @@ final class DictationViewModel {
         if connected {
             debugLog("network restored")
             if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession,
-               statusText == "Network lost. Dictation stopped."
-                || statusText == "No network connection."
+               (statusText == "Network lost. Dictation stopped."
+                   || statusText == "No network connection.")
             {
                 statusText = "Ready"
                 lastError = nil
@@ -506,8 +506,8 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
 
         if textInsertion.isAccessibilityTrusted, !wasTrusted, !isDictating,
-           statusText == "Waiting for Accessibility permission."
-            || statusText == "Paste blocked by Accessibility permission."
+           (statusText == "Waiting for Accessibility permission."
+               || statusText == "Paste blocked by Accessibility permission.")
         {
             statusText = "Ready"
         }
