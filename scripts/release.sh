@@ -60,7 +60,11 @@ ditto -c -k --sequesterRsrc --keepParent "dist/localvoxtral.app" "$ARCHIVE_PATH"
 
 echo "Creating disk image $DMG_PATH..."
 rm -f "$DMG_PATH"
-hdiutil create -volname "localvoxtral" -srcfolder "dist/localvoxtral.app" -ov -format UDZO "$DMG_PATH"
+DMG_STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/localvoxtral-dmg.XXXXXX")"
+trap 'rm -rf "$DMG_STAGING_DIR"' EXIT
+cp -R "dist/localvoxtral.app" "$DMG_STAGING_DIR/localvoxtral.app"
+ln -s /Applications "$DMG_STAGING_DIR/Applications"
+hdiutil create -volname "localvoxtral" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 
 echo "Pushing main..."
 git push origin main
