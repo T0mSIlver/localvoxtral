@@ -58,12 +58,22 @@ jobs:
       - name: Package app bundle
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
-      - name: Archive app bundle
+      - name: Create release artifacts
         run: |
           mkdir -p dist
+          ZIP_PATH="dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip"
+          DMG_PATH="dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg"
+
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/localvoxtral.app" \
-            "dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip"
+            "$ZIP_PATH"
+
+          hdiutil create \
+            -volname "localvoxtral" \
+            -srcfolder "dist/localvoxtral.app" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -71,4 +81,6 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: localvoxtral ${{ steps.meta.outputs.tag }}
           generate_release_notes: true
-          files: dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip
+          files: |
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg

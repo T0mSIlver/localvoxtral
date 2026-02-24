@@ -44,6 +44,7 @@ fi
 
 VERSION="${TAG#v}"
 ARCHIVE_PATH="dist/localvoxtral-${TAG}.zip"
+DMG_PATH="dist/localvoxtral-${TAG}.dmg"
 
 echo "Running build and tests..."
 swift build -c release
@@ -56,6 +57,10 @@ echo "Creating archive $ARCHIVE_PATH..."
 mkdir -p dist
 rm -f "$ARCHIVE_PATH"
 ditto -c -k --sequesterRsrc --keepParent "dist/localvoxtral.app" "$ARCHIVE_PATH"
+
+echo "Creating disk image $DMG_PATH..."
+rm -f "$DMG_PATH"
+hdiutil create -volname "localvoxtral" -srcfolder "dist/localvoxtral.app" -ov -format UDZO "$DMG_PATH"
 
 echo "Pushing main..."
 git push origin main
