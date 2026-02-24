@@ -159,7 +159,25 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
+# Do not ad-hoc sign release artifacts by default. The app bundle contains
+# SwiftPM resource bundles at the top level, which makes the bundle invalid
+# for standard app signing and can trigger Gatekeeper "damaged" errors when a
+# partial/invalid signature is present.
+#
+# Strip any linker/ad-hoc signatures from the executable and bundle so the
+# shipped artifact is deterministically unsigned instead of invalidly signed.
+codesign --remove-signature "$APP_DIR/Contents/MacOS/localvoxtral" >/dev/null 2>&1 || true
+codesign --remove-signature "$APP_DIR" >/dev/null 2>&1 || true
+
+# Guardrail: fail packaging if any signature remains but does not verify.
+if codesign -dv "$APP_DIR" >/dev/null 2>&1; then
+  if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
+    echo "Invalid code signature detected in packaged app bundle."
+    echo "Refusing to ship a partially signed artifact."
+    exit 1
+  fi
+fi
+
 touch "$APP_DIR"
 
 echo "Packaged app: $APP_DIR"
