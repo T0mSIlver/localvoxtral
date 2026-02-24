@@ -4,6 +4,20 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+patch_shortcutrecorder_bundle_lookup() {
+  local sr_common
+  sr_common="$(find "$ROOT_DIR/.build/checkouts/ShortcutRecorder/Sources/ShortcutRecorder" -maxdepth 1 -name 'SRCommon.m' -print -quit 2>/dev/null || true)"
+  if [[ -z "$sr_common" || ! -f "$sr_common" ]]; then
+    return
+  fi
+
+  if grep -q "localvoxtral packaged resources fallback" "$sr_common"; then
+    return
+  fi
+
+  perl -0pi -e 's/return SWIFTPM_MODULE_BUNDLE;/\/\/ localvoxtral packaged resources fallback\n    NSBundle *bundle = SWIFTPM_MODULE_BUNDLE;\n    if (bundle)\n        return bundle;\n\n    NSURL *resourceBundleURL = [[[NSBundle mainBundle] resourceURL]\n        URLByAppendingPathComponent:@"ShortcutRecorder_ShortcutRecorder.bundle"];\n    bundle = [NSBundle bundleWithURL:resourceBundleURL];\n    if (bundle)\n        return bundle;\n\n    return nil;/g' "$sr_common"
+}
+
 CONFIGURATION="${1:-release}"
 APP_VERSION="${2:-0.3.0}"
 BUILD_NUMBER="${3:-1}"
@@ -43,6 +57,11 @@ for required_asset in \
   fi
 done
 
+# Ensure dependency checkout exists, then patch ShortcutRecorder's SwiftPM
+# lookup so packaged resources in Contents/Resources can be found at runtime.
+swift package resolve >/dev/null
+patch_shortcutrecorder_bundle_lookup
+
 swift build -c "$CONFIGURATION" --product localvoxtral
 
 BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
@@ -58,14 +77,15 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/localvoxtral"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral"
 
-# SwiftPM resource bundles for dependencies (e.g. ShortcutRecorder) must live
-# at the app bundle root so generated SWIFTPM_MODULE_BUNDLE lookup can find them.
+# Copy SwiftPM resource bundles into Contents/Resources so the app remains a
+# signable macOS bundle (bundle root must not contain extra unsealed content).
 BUILD_PRODUCTS_DIR="$(cd "$(dirname "$BINARY_PATH")" && pwd)"
 while IFS= read -r bundle_path; do
   bundle_name="$(basename "$bundle_path")"
-  cp -R "$bundle_path" "$APP_DIR/$bundle_name"
+  bundle_destination="$APP_DIR/Contents/Resources/$bundle_name"
+  cp -R "$bundle_path" "$bundle_destination"
   bundle_base_name="${bundle_name%.bundle}"
-  bundle_info_plist="$APP_DIR/$bundle_name/Info.plist"
+  bundle_info_plist="$bundle_destination/Info.plist"
 
   # NSDataAsset lookups require a fully-formed bundle metadata record.
   # SwiftPM resource bundles may omit keys like CFBundlePackageType.
@@ -87,10 +107,10 @@ while IFS= read -r bundle_path; do
 
   # ShortcutRecorder expects data assets (e.g. sr-mojave-info) compiled into
   # Assets.car. SwiftPM bundle copies may contain raw .xcassets only.
-  if [[ -d "$APP_DIR/$bundle_name/Images.xcassets" ]]; then
+  if [[ -d "$bundle_destination/Images.xcassets" ]]; then
     tmp_partial_plist="$(mktemp)"
-    xcrun actool "$APP_DIR/$bundle_name/Images.xcassets" \
-      --compile "$APP_DIR/$bundle_name" \
+    xcrun actool "$bundle_destination/Images.xcassets" \
+      --compile "$bundle_destination" \
       --platform macosx \
       --minimum-deployment-target 15.0 \
       --target-device mac \
@@ -159,23 +179,21 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Do not ad-hoc sign release artifacts by default. The app bundle contains
-# SwiftPM resource bundles at the top level, which makes the bundle invalid
-# for standard app signing and can trigger Gatekeeper "damaged" errors when a
-# partial/invalid signature is present.
-#
-# Strip any linker/ad-hoc signatures from the executable and bundle so the
-# shipped artifact is deterministically unsigned instead of invalidly signed.
-codesign --remove-signature "$APP_DIR/Contents/MacOS/localvoxtral" >/dev/null 2>&1 || true
-codesign --remove-signature "$APP_DIR" >/dev/null 2>&1 || true
+# Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)
+# because codesign rejects bundles containing that detritus.
+chmod -R u+w "$APP_DIR"
+xattr -cr "$APP_DIR"
 
-# Guardrail: fail packaging if any signature remains but does not verify.
-if codesign -dv "$APP_DIR" >/dev/null 2>&1; then
-  if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
-    echo "Invalid code signature detected in packaged app bundle."
-    echo "Refusing to ship a partially signed artifact."
-    exit 1
-  fi
+# Ad-hoc sign the packaged app so Gatekeeper can evaluate a usable signature.
+# This does not replace Developer ID signing/notarization, but it avoids the
+# "no usable signature" path that breaks first-run open flows.
+if ! codesign --force --deep --sign - "$APP_DIR"; then
+  echo "Failed to code-sign packaged app bundle."
+  exit 1
+fi
+if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
+  echo "Invalid code signature detected in packaged app bundle."
+  exit 1
 fi
 
 touch "$APP_DIR"
