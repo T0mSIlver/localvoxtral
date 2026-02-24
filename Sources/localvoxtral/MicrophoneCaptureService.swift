@@ -210,6 +210,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         var activeDeviceID: AudioObjectID?
         var renderContext: Unmanaged<RenderContext>?
         var activeChunkHandler: ChunkHandler?
+        var pendingFormatChangeWork: DispatchWorkItem?
         var didInstallInputDeviceListeners = false
         var onConfigurationChange: (@Sendable () -> Void)?
         var onInputDevicesChanged: (@Sendable () -> Void)?
@@ -342,12 +343,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         let (auHAL, unmanagedCtx) = withState { ($0.auHAL, $0.renderContext) }
         guard let auHAL, let unmanagedCtx else { return false }
 
-        AudioOutputUnitStop(auHAL)
-        withState { $0.auHALRunning = false }
-
-        AudioUnitUninitialize(auHAL)
-
-        // Re-query device format from input scope element 1.
+        // Query the current device format to see if it actually changed.
         var asbd = AudioStreamBasicDescription()
         var asbdSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
         let formatStatus = AudioUnitGetProperty(
@@ -363,6 +359,19 @@ final class MicrophoneCaptureService: @unchecked Sendable {
            let newFormat = AVAudioFormat(streamDescription: &asbd)
         {
             let ctx = unmanagedCtx.takeUnretainedValue()
+            let currentDescriptor = Self.inputFormatDescriptor(for: ctx.deviceAVFormat)
+            let newDescriptor = Self.inputFormatDescriptor(for: newFormat)
+
+            guard currentDescriptor != newDescriptor else {
+                debugLog("refreshInputTapIfNeeded: format unchanged, skipping reinit")
+                return true
+            }
+
+            // Format actually changed — stop, reconfigure, and restart.
+            AudioOutputUnitStop(auHAL)
+            withState { $0.auHALRunning = false }
+            AudioUnitUninitialize(auHAL)
+
             ctx.updateDeviceFormat(newFormat)
 
             // Mirror on output scope element 1 so the callback receives
@@ -375,6 +384,11 @@ final class MicrophoneCaptureService: @unchecked Sendable {
                 &asbd,
                 UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
             )
+        } else {
+            // Can't read format — do a full reinit to recover.
+            AudioOutputUnitStop(auHAL)
+            withState { $0.auHALRunning = false }
+            AudioUnitUninitialize(auHAL)
         }
 
         guard AudioUnitInitialize(auHAL) == noErr else {
@@ -392,12 +406,22 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
-        stop()
-        hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
         debugLog("start preferredDeviceID=\(preferredDeviceID ?? "default")")
 
         // Resolve the target input device without changing the system default.
         let deviceID = try resolveInputDevice(preferredDeviceID)
+
+        // If the AUHAL is already running on the same device, skip
+        // teardown + rebuild. This avoids a visible mic-indicator flicker
+        // when the health monitor restarts capture on the same device
+        // (common during BT SCO codec renegotiation delays).
+        if isCapturing(), withState({ $0.activeDeviceID }) == deviceID {
+            debugLog("start: already capturing on device \(deviceID), skipping restart")
+            return
+        }
+
+        stop()
+        hasCapturedAudioInCurrentRunFlag.withLock { $0 = false }
 
         // Find the HALOutput audio component.
         var componentDesc = AudioComponentDescription(
@@ -556,17 +580,21 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     }
 
     func stop() {
-        let (auHAL, deviceID, unmanagedCtx) = withState { s in
+        let (auHAL, deviceID, unmanagedCtx, pendingWork) = withState { s in
             let hal = s.auHAL
             let dev = s.activeDeviceID
             let ctx = s.renderContext
+            let work = s.pendingFormatChangeWork
             s.auHAL = nil
             s.auHALRunning = false
             s.activeDeviceID = nil
             s.renderContext = nil
             s.activeChunkHandler = nil
-            return (hal, dev, ctx)
+            s.pendingFormatChangeWork = nil
+            return (hal, dev, ctx, work)
         }
+
+        pendingWork?.cancel()
 
         if let deviceID {
             removeDevicePropertyListener(deviceID: deviceID)
@@ -607,17 +635,41 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     // MARK: - Device Format Change Listener
 
+    /// Debounce interval for device format change notifications. BT devices
+    /// commonly fire rapid bursts of sample-rate / stream-configuration
+    /// changes during SCO codec renegotiation. Coalescing into a single
+    /// callback avoids a visible mic-indicator flicker from the stop/start
+    /// cycle in `refreshInputTapIfNeeded`.
+    private static let formatChangeDebounceSeconds: TimeInterval = 0.5
+
     private static let deviceFormatChangeListener: AudioObjectPropertyListenerProc = {
         _, _, _, clientData in
         guard let clientData else { return noErr }
         let service = Unmanaged<MicrophoneCaptureService>.fromOpaque(clientData).takeUnretainedValue()
-        DispatchQueue.main.async { [weak service] in
-            guard let service else { return }
-            service.debugLog("device format change observed")
-            let callback = service.withState { $0.onConfigurationChange }
+        service.debounceFormatChange()
+        return noErr
+    }
+
+    private func debounceFormatChange() {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.debugLog("device format change observed (debounced)")
+            let callback = self.withState { s in
+                s.pendingFormatChangeWork = nil
+                return s.onConfigurationChange
+            }
             callback?()
         }
-        return noErr
+
+        withState { s in
+            s.pendingFormatChangeWork?.cancel()
+            s.pendingFormatChangeWork = workItem
+        }
+
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.formatChangeDebounceSeconds,
+            execute: workItem
+        )
     }
 
     private func installDevicePropertyListener(deviceID: AudioObjectID) {
