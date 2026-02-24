@@ -10,15 +10,16 @@
 
 localvoxtral is a native macOS menu bar app for realtime dictation.
 It keeps the loop simple: start dictation, speak, get text fast.
+Unlike Whisper-based tools that transcribe after you stop speaking, Voxtral Realtime streams text as audio arrives, so words appear while you're still talking.
 On Apple Silicon, `localvoxtral` + `voxmlx` provides a fully local path (audio + inference stay on-device), improving privacy and avoiding API costs.
 
-It supports two realtime backend modes: OpenAI-Compatible Realtime API endpoints (`vLLM` and `voxmlx` share this path), and `mlx-audio` realtime transcription endpoints.
+It connects to any OpenAI Realtime-compatible endpoint. Recommended backends are `voxmlx` (Apple Silicon, fully local) and `vLLM` (NVIDIA GPU). An `mlx-audio` backend is also supported but deprecated.
 
-The app is geared towards the use of Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model, but it works with any OpenAI-compatible Realtime API backend.
+Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model, but it works with any OpenAI-compatible Realtime API backend.
 
 ## Features
 
-- User-configurable global shortcut to start/stop dictation from anywhere
+- Global shortcut to start/stop dictation from anywhere
 - Native menu bar app with instant open and visual feedback with the icon
 - Live dictation that writes into your active text field as you speak
 - Fully local dictation option with `voxmlx` (no third-party API traffic)
@@ -46,7 +47,7 @@ open ./dist/localvoxtral.app
   - Auto-paste into input field
   - Auto-copy final segment
 
-## Screenshots
+## UI
 
 <p>
   <picture>
