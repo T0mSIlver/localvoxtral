@@ -2,11 +2,11 @@ import Foundation
 import XCTest
 @testable import localvoxtral
 
-// MARK: - Stabilization Replay (mirrors DictationViewModel mlx logic without @MainActor)
+// MARK: - Stabilization Replay (uses extracted MlxHypothesisStabilizer)
 
-/// Replays the mlx hypothesis stabilization pipeline outside of DictationViewModel,
-/// using the same `TextMergingAlgorithms` functions. This lets us inspect every step
-/// without needing a full @MainActor orchestrator.
+/// Replays incremental mlx transcript events through the extracted
+/// `MlxHypothesisStabilizer` so diagnostics reflect production behavior.
+@MainActor
 private final class MlxStabilizationReplay {
     struct Step {
         let eventIndex: Int
@@ -14,34 +14,26 @@ private final class MlxStabilizationReplay {
         let isFinal: Bool
         let rawHypothesis: String
         let normalizedHypothesis: String
-        let committedPrefixBefore: String
-        let committedPrefixAfter: String
         let newlyCommittedDelta: String
         let committedEventText: String
         let livePartial: String
     }
 
-    private(set) var committedPrefix = ""
-    private(set) var previousHypothesis = ""
-    private(set) var latestHypothesis = ""
-    private(set) var committedEventText = ""
-    private(set) var committedSinceLastFinal = ""
+    private let stabilizer = MlxHypothesisStabilizer()
     private(set) var steps: [Step] = []
+
+    var committedEventText: String { stabilizer.committedEventText }
 
     func processPartial(_ rawText: String, eventIndex: Int, elapsed: TimeInterval) {
         let hypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
             rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         guard !hypothesis.isEmpty else { return }
-        let prefixBefore = committedPrefix
-        let delta = commitHypothesis(hypothesis, isFinal: false)
-        let livePartial: String
-        if hypothesis.hasPrefix(committedPrefix) {
-            let start = hypothesis.index(hypothesis.startIndex, offsetBy: committedPrefix.count)
-            livePartial = String(hypothesis[start...])
-        } else {
-            livePartial = hypothesis
-        }
+        let result = stabilizer.commitHypothesis(
+            hypothesis,
+            isFinal: false,
+            insertionMode: .none
+        )
 
         steps.append(Step(
             eventIndex: eventIndex,
@@ -49,11 +41,9 @@ private final class MlxStabilizationReplay {
             isFinal: false,
             rawHypothesis: rawText,
             normalizedHypothesis: hypothesis,
-            committedPrefixBefore: prefixBefore,
-            committedPrefixAfter: committedPrefix,
-            newlyCommittedDelta: delta,
-            committedEventText: committedEventText,
-            livePartial: livePartial
+            newlyCommittedDelta: result.appendedDelta,
+            committedEventText: stabilizer.committedEventText,
+            livePartial: result.unstableTail
         ))
     }
 
@@ -62,8 +52,12 @@ private final class MlxStabilizationReplay {
             rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         guard !hypothesis.isEmpty else { return }
-        let prefixBefore = committedPrefix
-        let delta = commitHypothesis(hypothesis, isFinal: true)
+        let result = stabilizer.commitHypothesis(
+            hypothesis,
+            isFinal: true,
+            insertionMode: .none
+        )
+        _ = stabilizer.consumeCommittedSinceLastFinal()
 
         steps.append(Step(
             eventIndex: eventIndex,
@@ -71,126 +65,19 @@ private final class MlxStabilizationReplay {
             isFinal: true,
             rawHypothesis: rawText,
             normalizedHypothesis: hypothesis,
-            committedPrefixBefore: prefixBefore,
-            committedPrefixAfter: committedPrefix,
-            newlyCommittedDelta: delta,
-            committedEventText: committedEventText,
-            livePartial: ""
+            newlyCommittedDelta: result.appendedDelta,
+            committedEventText: stabilizer.committedEventText,
+            livePartial: result.unstableTail
         ))
 
-        // Reset segment state (like handleMlxFinalTranscript)
-        committedSinceLastFinal = ""
-        latestHypothesis = ""
-        previousHypothesis = ""
-        committedPrefix = ""
-    }
-
-    // Mirrors DictationViewModel.commitMlxHypothesis
-    private func commitHypothesis(_ hypothesis: String, isFinal: Bool) -> String {
-        guard !hypothesis.isEmpty else { return "" }
-
-        // Final mismatch path
-        if isFinal,
-           !committedPrefix.isEmpty,
-           !hypothesis.hasPrefix(committedPrefix)
-        {
-            let safeDelta = resolvedFinalMismatchDelta(
-                previousHypothesis: latestHypothesis,
-                finalHypothesis: hypothesis
-            )
-            let appended = appendDeltaToEvent(safeDelta)
-            committedPrefix = hypothesis
-            latestHypothesis = hypothesis
-            previousHypothesis = hypothesis
-            return appended
-        }
-
-        let prevHyp = previousHypothesis
-        var commitTarget = committedPrefix
-
-        if isFinal {
-            if hypothesis.hasPrefix(committedPrefix) {
-                commitTarget = hypothesis
-            }
-        } else if !prevHyp.isEmpty {
-            let stableLength = TextMergingAlgorithms.longestCommonPrefixLength(
-                lhs: prevHyp,
-                rhs: hypothesis
-            )
-            let boundaryLength = TextMergingAlgorithms.stableWordBoundaryLength(
-                in: hypothesis,
-                upTo: stableLength
-            )
-            if boundaryLength > committedPrefix.count {
-                commitTarget = String(hypothesis.prefix(boundaryLength))
-            }
-        }
-
-        var appendedDelta = ""
-        if commitTarget.count > committedPrefix.count,
-           commitTarget.hasPrefix(committedPrefix)
-        {
-            let start = commitTarget.index(
-                commitTarget.startIndex,
-                offsetBy: committedPrefix.count
-            )
-            let newlyStableDelta = String(commitTarget[start...])
-            appendedDelta = appendDeltaToEvent(newlyStableDelta)
-            committedPrefix = commitTarget
-        }
-
-        latestHypothesis = hypothesis
-        previousHypothesis = hypothesis
-        return appendedDelta
-    }
-
-    // Mirrors DictationViewModel.appendCommittedMlxDeltaToEvent
-    private func appendDeltaToEvent(_ delta: String) -> String {
-        guard !delta.isEmpty else { return "" }
-        let merged = TextMergingAlgorithms.appendWithTailOverlap(
-            existing: committedEventText,
-            incoming: delta
-        )
-        committedEventText = merged.merged
-        guard !merged.appendedDelta.isEmpty else { return "" }
-        let finalBuf = TextMergingAlgorithms.appendWithTailOverlap(
-            existing: committedSinceLastFinal,
-            incoming: merged.appendedDelta
-        )
-        committedSinceLastFinal = finalBuf.merged
-        return merged.appendedDelta
-    }
-
-    // Mirrors DictationViewModel.resolvedMlxFinalMismatchDelta
-    private func resolvedFinalMismatchDelta(
-        previousHypothesis: String,
-        finalHypothesis: String
-    ) -> String {
-        let previous = previousHypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !previous.isEmpty else { return finalHypothesis }
-
-        if finalHypothesis.hasPrefix(previous) {
-            let start = finalHypothesis.index(finalHypothesis.startIndex, offsetBy: previous.count)
-            return String(finalHypothesis[start...])
-        }
-        if previous.hasPrefix(finalHypothesis) || previous.contains(finalHypothesis) {
-            return ""
-        }
-        if let range = finalHypothesis.range(of: previous) {
-            return String(finalHypothesis[range.upperBound...])
-        }
-        let overlap = TextMergingAlgorithms.longestSuffixPrefixOverlap(
-            lhs: previous,
-            rhs: finalHypothesis
-        )
-        guard overlap > 0 else { return "" }
-        let start = finalHypothesis.index(finalHypothesis.startIndex, offsetBy: overlap)
-        return String(finalHypothesis[start...])
+        // Segment boundaries mirror DictationViewModel final handling.
+        stabilizer.resetSegment()
     }
 }
 
 // MARK: - Test Class
 
+@MainActor
 final class MlxAudioTranscriptionTests: XCTestCase {
     private static let enableEnv = "MLX_AUDIO_REALTIME_TEST_ENABLE"
     private static let endpointEnv = "MLX_AUDIO_REALTIME_TEST_ENDPOINT"
@@ -519,7 +406,6 @@ final class MlxAudioTranscriptionTests: XCTestCase {
                 if !step.newlyCommittedDelta.isEmpty {
                     print("  +committed: \"\(step.newlyCommittedDelta)\"")
                 }
-                print("  prefix:     \"\(step.committedPrefixAfter)\"")
                 if !step.livePartial.isEmpty {
                     print("  partial:    \"\(step.livePartial)\"")
                 }

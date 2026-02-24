@@ -392,6 +392,15 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
     }
 
     private func isMicEnvironmentStartError(_ error: Error) -> Bool {
+        if error is MicrophoneCaptureError {
+            switch error as! MicrophoneCaptureError {
+            case .auHALCreationFailed, .auHALConfigurationFailed, .auHALComponentNotFound:
+                return true
+            default:
+                break
+            }
+        }
+
         let nsError = error as NSError
         guard nsError.domain == "com.apple.coreaudio.avfaudio" else {
             return false

@@ -23,21 +23,26 @@ final class TextInsertionService {
         let items: [NSPasteboardItem]
     }
 
-    private(set) var isAccessibilityTrusted = false
-    var lastAccessibilityError: String?
+    private let accessibilityTrust = AccessibilityTrustManager()
 
-    var onAccessibilityTrustChanged: (() -> Void)?
-    private var hasPromptedForAccessibilityPermission = false
-    private var hasShownAccessibilityError = false
+    var isAccessibilityTrusted: Bool { accessibilityTrust.isTrusted }
+    var lastAccessibilityError: String? {
+        get { accessibilityTrust.lastError }
+        set { accessibilityTrust.lastError = newValue }
+    }
+
+    var onAccessibilityTrustChanged: (() -> Void)? {
+        get { accessibilityTrust.onTrustChanged }
+        set { accessibilityTrust.onTrustChanged = newValue }
+    }
+
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
-    private var accessibilityTrustPollingTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
     private var modifierDeferredInsertionCount = 0
 
-    static let accessibilityErrorMessage =
-        "Enable Accessibility for localvoxtral in System Settings > Privacy & Security > Accessibility."
+    static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
 
     var hasPendingInsertionText: Bool {
         !pendingRealtimeInsertionText.isEmpty
@@ -183,29 +188,11 @@ final class TextInsertionService {
     }
 
     func refreshAccessibilityTrustState() {
-        let wasTrusted = isAccessibilityTrusted
-        let trusted = AXIsProcessTrusted()
-        if isAccessibilityTrusted != trusted {
-            isAccessibilityTrusted = trusted
-        }
-
-        guard trusted else { return }
-        accessibilityTrustPollingTask?.cancel()
-        accessibilityTrustPollingTask = nil
-        hasShownAccessibilityError = false
-        if lastAccessibilityError == Self.accessibilityErrorMessage {
-            lastAccessibilityError = nil
-        }
-        if !wasTrusted {
-            onAccessibilityTrustChanged?()
-        }
+        accessibilityTrust.refresh()
     }
 
     func requestAccessibilityPermission() {
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        startAccessibilityTrustPolling()
-        refreshAccessibilityTrustState()
+        accessibilityTrust.requestPermission()
     }
 
     func resetDiagnostics() {
@@ -226,8 +213,7 @@ final class TextInsertionService {
     func stopAllTasks() {
         insertionRetryTask?.cancel()
         insertionRetryTask = nil
-        accessibilityTrustPollingTask?.cancel()
-        accessibilityTrustPollingTask = nil
+        accessibilityTrust.stopTasks()
     }
 
     func clearPendingText() {
@@ -390,49 +376,15 @@ final class TextInsertionService {
     }
 
     private func promptForAccessibilityPermissionIfNeeded() {
-        guard !hasPromptedForAccessibilityPermission else { return }
-        hasPromptedForAccessibilityPermission = true
-
-        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
-        startAccessibilityTrustPolling()
-        refreshAccessibilityTrustState()
-    }
-
-    private func startAccessibilityTrustPolling() {
-        guard !isAccessibilityTrusted else { return }
-        guard accessibilityTrustPollingTask == nil else { return }
-
-        accessibilityTrustPollingTask = Task { [weak self] in
-            guard let self else { return }
-            let deadline = Date().addingTimeInterval(90)
-            defer {
-                self.accessibilityTrustPollingTask = nil
-            }
-
-            while !Task.isCancelled, Date() < deadline {
-                try? await Task.sleep(for: .milliseconds(400))
-                self.refreshAccessibilityTrustState()
-                if self.isAccessibilityTrusted {
-                    break
-                }
-            }
-        }
+        accessibilityTrust.promptIfNeeded()
     }
 
     private func setAccessibilityErrorIfNeeded() {
-        guard !hasShownAccessibilityError else { return }
-        hasShownAccessibilityError = true
-        lastAccessibilityError = Self.accessibilityErrorMessage
+        accessibilityTrust.setErrorIfNeeded()
     }
 
     private func clearAccessibilityErrorIfNeeded() {
-        refreshAccessibilityTrustState()
-        guard hasShownAccessibilityError else { return }
-        hasShownAccessibilityError = false
-        if lastAccessibilityError == Self.accessibilityErrorMessage {
-            lastAccessibilityError = nil
-        }
+        accessibilityTrust.clearErrorIfNeeded()
     }
 
     private func capturePasteboardSnapshot(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
