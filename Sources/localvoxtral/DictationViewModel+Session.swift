@@ -47,6 +47,7 @@ extension DictationViewModel {
         currentDictationEventText = ""
         mlxStabilizer.reset()
         overlayCommitTargetAppPID = nil
+        firstChunkPreprocessor.reset()
         overlayStateMachine.reset()
         overlayController.hide()
         realtimeFinalizationLastActivityAt = nil
@@ -358,6 +359,7 @@ extension DictationViewModel {
             lastError = nil
         }
         overlayCommitTargetAppPID = nil
+        firstChunkPreprocessor.reset()
         sessionOutputMode = nil
     }
 
@@ -395,6 +397,7 @@ extension DictationViewModel {
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
         overlayCommitTargetAppPID = nil
+        firstChunkPreprocessor.reset()
         sessionOutputMode = nil
         if disconnectSocket {
             activeRealtimeClient().disconnect()

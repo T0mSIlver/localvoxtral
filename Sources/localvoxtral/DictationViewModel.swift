@@ -87,6 +87,8 @@ final class DictationViewModel {
     var sessionOutputMode: DictationOutputMode?
     @ObservationIgnored
     var overlayCommitTargetAppPID: pid_t?
+    @ObservationIgnored
+    var firstChunkPreprocessor = FirstChunkPreprocessor()
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -458,6 +460,7 @@ final class DictationViewModel {
         pendingSegmentText = ""
         currentDictationEventText = ""
         sessionOutputMode = nil
+        firstChunkPreprocessor.reset()
         mlxStabilizer.reset()
         overlayStateMachine.reset()
         overlayController.hide()

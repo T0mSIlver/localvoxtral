@@ -108,19 +108,21 @@ extension DictationViewModel {
     }
 
     private func handlePartialTranscriptEvent(_ delta: String, source: ActiveClientSource) {
-        guard acceptsRealtimeEvents, !delta.isEmpty else { return }
+        guard acceptsRealtimeEvents else { return }
+        let processedDelta = preprocessIncomingTranscriptChunk(delta)
+        guard !processedDelta.isEmpty else { return }
         if source == .mlxAudio {
-            handleMlxPartialTranscript(delta)
+            handleMlxPartialTranscript(processedDelta)
             return
         }
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()
         }
 
-        pendingSegmentText.append(delta)
+        pendingSegmentText.append(processedDelta)
         livePartialText = pendingSegmentText
         if isLiveAutoPasteModeEnabled {
-            textInsertion.enqueueRealtimeInsertion(delta)
+            textInsertion.enqueueRealtimeInsertion(processedDelta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
@@ -131,15 +133,16 @@ extension DictationViewModel {
 
     private func handleFinalTranscriptEvent(_ text: String, source: ActiveClientSource) {
         guard acceptsRealtimeEvents else { return }
+        let processedText = preprocessIncomingTranscriptChunk(text)
         if source == .mlxAudio {
-            handleMlxFinalTranscript(text)
+            handleMlxFinalTranscript(processedText)
             return
         }
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()
         }
 
-        let finalizedSegment = resolvedFinalizedSegment(from: text)
+        let finalizedSegment = resolvedFinalizedSegment(from: processedText)
         let hadLiveDelta = !pendingSegmentText.trimmed.isEmpty
             || !livePartialText.trimmed.isEmpty
         guard !finalizedSegment.isEmpty else {
@@ -322,6 +325,10 @@ extension DictationViewModel {
         if isDictating { return "Listening..." }
         if isFinalizingStop { return "Finalizing..." }
         return "Ready"
+    }
+
+    private func preprocessIncomingTranscriptChunk(_ chunk: String) -> String {
+        firstChunkPreprocessor.preprocess(chunk)
     }
 
     // MARK: - Finalized Segment Resolution
