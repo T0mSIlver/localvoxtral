@@ -76,27 +76,6 @@ final class DictationViewModel {
     @ObservationIgnored
     var currentDictationEventText = ""
 
-    // Constants — internal so extension files can access.
-    @ObservationIgnored
-    let audioSendInterval: TimeInterval = 0.1
-    @ObservationIgnored
-    let connectTimeoutSeconds: TimeInterval = 2.0
-    @ObservationIgnored
-    let recentFailureIndicatorSeconds: TimeInterval = 5.0
-    @ObservationIgnored
-    let mlxTrailingSilenceDurationSeconds: TimeInterval = 1.6
-    @ObservationIgnored
-    let mlxTrailingSilenceChunkDurationSeconds: TimeInterval = 0.1
-    @ObservationIgnored
-    let stopFinalizationTimeoutSeconds: TimeInterval = 7.0
-    @ObservationIgnored
-    let mlxStopFinalizationTimeoutSeconds: TimeInterval = 25.0
-    @ObservationIgnored
-    let realtimeFinalizationInactivitySeconds: TimeInterval = 0.7
-    @ObservationIgnored
-    let realtimeFinalizationMinimumOpenSeconds: TimeInterval = 1.5
-    @ObservationIgnored
-    let finalizationPollIntervalSeconds: TimeInterval = 0.1
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
@@ -318,8 +297,8 @@ final class DictationViewModel {
             availableInputDevices = devices
         }
 
-        let savedSelection = settings.selectedInputDeviceUID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentSelection = selectedInputDeviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedSelection = settings.selectedInputDeviceUID.trimmed
+        let currentSelection = selectedInputDeviceID.trimmed
         let explicitSelection = !savedSelection.isEmpty ? savedSelection : currentSelection
 
         guard !devices.isEmpty else { return }
@@ -468,7 +447,7 @@ final class DictationViewModel {
     }
 
     func copyTranscript() {
-        let fullText = fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullText = fullTranscript.trimmed
         guard !fullText.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
@@ -479,7 +458,7 @@ final class DictationViewModel {
     }
 
     func copyLatestSegment(updateStatus: Bool = true) {
-        let segment = lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
@@ -522,7 +501,7 @@ final class DictationViewModel {
     }
 
     func pasteLatestSegment() {
-        let segment = lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
 
         textInsertion.refreshAccessibilityTrustState()
@@ -548,8 +527,8 @@ final class DictationViewModel {
     }
 
     var fullTranscript: String {
-        let finalPart = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let livePart = livePartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalPart = transcriptText.trimmed
+        let livePart = livePartialText.trimmed
 
         if finalPart.isEmpty { return livePart }
         if livePart.isEmpty { return finalPart }

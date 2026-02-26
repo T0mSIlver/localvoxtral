@@ -165,7 +165,7 @@ extension DictationViewModel {
     func restartAudioSendTask() {
         audioSendTask?.cancel()
 
-        let interval = audioSendInterval
+        let interval = TimingConstants.audioSendInterval
         let client = activeRealtimeClient()
         let chunkBuffer = audioChunkBuffer
         let debugLoggingEnabled = debugLoggingEnabled
@@ -216,15 +216,15 @@ extension DictationViewModel {
                     let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
                     let inactivity = now.timeIntervalSince(lastActivity)
 
-                    if elapsed >= self.stopFinalizationTimeoutSeconds {
-                        self.debugLog("stop finalization timeout (\(self.stopFinalizationTimeoutSeconds)s); forcing disconnect")
+                    if elapsed >= TimingConstants.stopFinalizationTimeout {
+                        self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
                         self.activeRealtimeClient().disconnect()
                         self.finishStoppedSession(promotePendingSegment: true)
                         return
                     }
 
-                    if elapsed >= self.realtimeFinalizationMinimumOpenSeconds,
-                       inactivity >= self.realtimeFinalizationInactivitySeconds
+                    if elapsed >= TimingConstants.finalizationMinimumOpen,
+                       inactivity >= TimingConstants.finalizationInactivityThreshold
                     {
                         self.debugLog(
                             "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
@@ -234,12 +234,12 @@ extension DictationViewModel {
                         return
                     }
 
-                    try? await Task.sleep(for: .seconds(self.finalizationPollIntervalSeconds))
+                    try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
                 }
                 return
             }
 
-            let timeout = self.mlxStopFinalizationTimeoutSeconds
+            let timeout = TimingConstants.mlxStopFinalizationTimeout
             try? await Task.sleep(for: .seconds(timeout))
             guard self.isFinalizingStop else { return }
             self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
@@ -250,14 +250,14 @@ extension DictationViewModel {
 
     func sendTrailingSilenceForMlxAudio() async {
         guard activeClientSource == .mlxAudio else { return }
-        let frameCount = max(1, Int(16_000 * mlxTrailingSilenceChunkDurationSeconds))
+        let frameCount = max(1, Int(TimingConstants.audioSampleRateHz * TimingConstants.mlxTrailingSilenceChunkDuration))
         let silenceChunk = Data(count: frameCount * MemoryLayout<Int16>.size)
-        let iterations = max(1, Int(ceil(mlxTrailingSilenceDurationSeconds / mlxTrailingSilenceChunkDurationSeconds)))
+        let iterations = max(1, Int(ceil(TimingConstants.mlxTrailingSilenceDuration / TimingConstants.mlxTrailingSilenceChunkDuration)))
         debugLog("send mlx trailing silence chunks=\(iterations)")
         for _ in 0 ..< iterations {
             guard isFinalizingStop, activeClientSource == .mlxAudio else { return }
             activeRealtimeClient().sendAudioChunk(silenceChunk)
-            try? await Task.sleep(for: .seconds(mlxTrailingSilenceChunkDurationSeconds))
+            try? await Task.sleep(for: .seconds(TimingConstants.mlxTrailingSilenceChunkDuration))
         }
     }
 
@@ -309,7 +309,7 @@ extension DictationViewModel {
 
     func scheduleConnectTimeout() {
         cancelConnectTimeout()
-        let timeout = connectTimeoutSeconds
+        let timeout = TimingConstants.connectTimeout
         connectTimeoutTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(timeout))
             guard let self, self.isConnectingRealtimeSession else { return }
@@ -360,7 +360,7 @@ extension DictationViewModel {
     func markRecentConnectionFailureIndicator() {
         recentFailureResetTask?.cancel()
         realtimeSessionIndicatorState = .recentFailure
-        let indicatorDuration = recentFailureIndicatorSeconds
+        let indicatorDuration = TimingConstants.recentFailureIndicatorDuration
         recentFailureResetTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(indicatorDuration))
             guard let self else { return }
@@ -374,7 +374,7 @@ extension DictationViewModel {
     // MARK: - Connection Failure
 
     func handleConnectFailure(status: String, message: String, technicalDetails: String? = nil) {
-        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = message.trimmed
         let resolvedMessage = trimmedMessage.isEmpty ? "Unable to establish realtime connection." : trimmedMessage
         let resolvedDetails = normalizedFailureDetails(technicalDetails)
 
@@ -426,41 +426,32 @@ extension DictationViewModel {
 
     // MARK: - Client Selection
 
+    func client(for source: ActiveClientSource) -> RealtimeClient {
+        switch source {
+        case .realtimeAPI: return realtimeAPIClient
+        case .mlxAudio: return mlxAudioRealtimeClient
+        }
+    }
+
     func selectedClientSource() -> ActiveClientSource {
         switch settings.realtimeProvider {
-        case .realtimeAPI:
-            return .realtimeAPI
-        case .mlxAudio:
-            return .mlxAudio
+        case .realtimeAPI: return .realtimeAPI
+        case .mlxAudio: return .mlxAudio
         }
     }
 
     func selectedRealtimeClient() -> RealtimeClient {
-        switch selectedClientSource() {
-        case .realtimeAPI:
-            return realtimeAPIClient
-        case .mlxAudio:
-            return mlxAudioRealtimeClient
-        }
+        client(for: selectedClientSource())
     }
 
     func activeRealtimeClient() -> RealtimeClient {
-        switch activeClientSource {
-        case .realtimeAPI:
-            return realtimeAPIClient
-        case .mlxAudio:
-            return mlxAudioRealtimeClient
-        case nil:
-            return selectedRealtimeClient()
-        }
+        client(for: activeClientSource ?? selectedClientSource())
     }
 
     func inactiveRealtimeClient(for source: ActiveClientSource) -> RealtimeClient {
         switch source {
-        case .realtimeAPI:
-            return mlxAudioRealtimeClient
-        case .mlxAudio:
-            return realtimeAPIClient
+        case .realtimeAPI: return mlxAudioRealtimeClient
+        case .mlxAudio: return realtimeAPIClient
         }
     }
 
@@ -489,7 +480,7 @@ extension DictationViewModel {
 
     private func normalizedFailureDetails(_ value: String?) -> String? {
         guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = value.trimmed
         return trimmed.isEmpty ? nil : trimmed
     }
 

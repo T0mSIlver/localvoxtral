@@ -2,19 +2,9 @@ import Foundation
 import Synchronization
 import os
 
-final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate, Sendable, RealtimeClient {
-    private enum SocketState {
-        case disconnected
-        case connecting
-        case connected
-    }
-
+final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unchecked Sendable, RealtimeClient {
     private struct State {
-        var urlSession: URLSession?
-        var webSocketTask: URLSessionWebSocketTask?
-        var socketState: SocketState = .disconnected
-        var onEvent: (@Sendable (RealtimeEvent) -> Void)?
-        var isUserInitiatedDisconnect = false
+        var base = BaseState()
         var hasSentInitialConfiguration = false
         var pendingModelName = ""
         var pendingTextMessages: [String] = []
@@ -47,51 +37,43 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
     private let sampleRate = 16_000
     private let streamingModeEnabled = true
     private let finalizationGracePeriodSeconds: TimeInterval = 2.0
-    private let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     let supportsPeriodicCommit = false
 
+    override var logger: Logger { Log.mlxRealtime }
+
+    override func withBaseState<R>(_ body: (inout BaseState) -> R) -> R {
+        state.withLock { body(&$0.base) }
+    }
+
     func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void) {
-        state.withLock { $0.onEvent = handler }
+        state.withLock { $0.base.onEvent = handler }
     }
 
     func connect(configuration: RealtimeSessionConfiguration) throws {
-        guard let scheme = configuration.endpoint.scheme?.lowercased(),
-              scheme == "ws" || scheme == "wss"
-        else {
-            throw NSError(
-                domain: "localvoxtral.realtime.mlx",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Realtime endpoint must use ws:// or wss://."]
-            )
-        }
+        try validateWebSocketScheme(
+            configuration.endpoint, errorDomain: "localvoxtral.realtime.mlx")
 
         var request = URLRequest(url: configuration.endpoint)
         request.timeoutInterval = 30
 
-        let trimmedAPIKey = configuration.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAPIKey = configuration.apiKey.trimmed
         if !trimmedAPIKey.isEmpty {
             request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         }
 
-        let modelName = configuration.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelName = configuration.model.trimmed
         debugLog("connect endpoint=\(configuration.endpoint.absoluteString) model=\(modelName)")
 
         state.withLock { s in
             closeSocketLocked(&s, cancelTask: true, clearQueuedMessages: true)
 
-            let sessionConfiguration = URLSessionConfiguration.default
-            sessionConfiguration.waitsForConnectivity = true
-            sessionConfiguration.timeoutIntervalForRequest = 30
-            sessionConfiguration.timeoutIntervalForResource = 7 * 24 * 60 * 60
+            let (session, task) = createWebSocketSession(request: request, delegate: self)
 
-            let session = URLSession(configuration: sessionConfiguration, delegate: self, delegateQueue: nil)
-            let task = session.webSocketTask(with: request)
-
-            s.urlSession = session
-            s.webSocketTask = task
-            s.socketState = .connecting
-            s.isUserInitiatedDisconnect = false
+            s.base.urlSession = session
+            s.base.webSocketTask = task
+            s.base.socketState = .connecting
+            s.base.isUserInitiatedDisconnect = false
             s.hasSentInitialConfiguration = false
             s.pendingModelName = modelName
             s.sawStreamingDeltaForCurrentChunk = false
@@ -104,8 +86,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
     func disconnect() {
         let shouldEmitDisconnected = state.withLock { s -> Bool in
-            guard s.socketState != .disconnected else { return false }
-            s.isUserInitiatedDisconnect = true
+            guard s.base.socketState != .disconnected else { return false }
+            s.base.isUserInitiatedDisconnect = true
             closeSocketLocked(&s, cancelTask: true, clearQueuedMessages: true)
             return true
         }
@@ -118,10 +100,10 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
     func disconnectAfterFinalCommitIfNeeded() {
         let action: DisconnectAction = state.withLock { s in
-            guard s.socketState != .disconnected else { return .none }
-            s.isUserInitiatedDisconnect = true
+            guard s.base.socketState != .disconnected else { return .none }
+            s.base.isUserInitiatedDisconnect = true
 
-            guard s.socketState == .connected, let task = s.webSocketTask else {
+            guard s.base.socketState == .connected, let task = s.base.webSocketTask else {
                 closeSocketLocked(&s, cancelTask: true, clearQueuedMessages: true)
                 return .closeNow
             }
@@ -130,7 +112,8 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 let shouldEmit = self.state.withLock { s -> Bool in
-                    guard s.socketState != .disconnected, s.webSocketTask === task else { return false }
+                    guard s.base.socketState != .disconnected, s.base.webSocketTask === task
+                    else { return false }
                     self.closeSocketLocked(&s, cancelTask: true, clearQueuedMessages: true)
                     return true
                 }
@@ -166,176 +149,17 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
 
     func sendCommit(final: Bool) {
         guard final else { return }
-        // mlx-audio handles chunking server-side and does not support explicit commit events.
         debugLog("explicit commit ignored for mlx-audio backend")
     }
 
-    private func enqueueTextMessage(_ text: String) {
-        let action: TextSendAction = state.withLock { s in
-            switch s.socketState {
-            case .connected:
-                guard s.hasSentInitialConfiguration, let task = s.webSocketTask else {
-                    s.pendingTextMessages.append(text)
-                    return .queued
-                }
-                return .send(task: task, text: text)
-            case .connecting:
-                s.pendingTextMessages.append(text)
-                return .queued
-            case .disconnected:
-                return .dropped
-            }
-        }
+    // MARK: - JSON Event Handling
 
-        guard case .send(let task, let payloadText) = action else { return }
-        sendText(payloadText, on: task)
-    }
-
-    private func enqueueBinaryMessage(_ data: Data) {
-        let action: BinarySendAction = state.withLock { s in
-            switch s.socketState {
-            case .connected:
-                guard s.hasSentInitialConfiguration, let task = s.webSocketTask else {
-                    s.pendingBinaryMessages.append(data)
-                    return .queued
-                }
-                return .send(task: task, data: data)
-            case .connecting:
-                s.pendingBinaryMessages.append(data)
-                return .queued
-            case .disconnected:
-                return .dropped
-            }
-        }
-
-        guard case .send(let task, let payloadData) = action else { return }
-        sendBinary(payloadData, on: task)
-    }
-
-    private func sendInitialConfigurationAndFlushQueue(on task: URLSessionWebSocketTask) {
-        let startup: (configurationText: String, queuedTexts: [String], queuedBinaries: [Data])? = state.withLock { s in
-            guard s.socketState == .connected, s.webSocketTask === task else { return nil }
-            guard !s.hasSentInitialConfiguration else { return nil }
-            s.hasSentInitialConfiguration = true
-
-            var configuration: [String: Any] = [
-                "model": s.pendingModelName.isEmpty
-                    ? "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
-                    : s.pendingModelName,
-                "sample_rate": sampleRate,
-                // Keep realtime streaming enabled; duplicate overlap is handled client-side.
-                "streaming": streamingModeEnabled,
-            ]
-            if let delayMs = s.pendingTranscriptionDelayMilliseconds {
-                configuration["transcription_delay_ms"] = delayMs
-            }
-
-            guard JSONSerialization.isValidJSONObject(configuration),
-                  let data = try? JSONSerialization.data(withJSONObject: configuration),
-                  let text = String(data: data, encoding: .utf8)
-            else {
-                return nil
-            }
-
-            let queuedTexts = s.pendingTextMessages
-            let queuedBinaries = s.pendingBinaryMessages
-            s.pendingTextMessages.removeAll(keepingCapacity: true)
-            s.pendingBinaryMessages.removeAll(keepingCapacity: true)
-            return (text, queuedTexts, queuedBinaries)
-        }
-
-        guard let startup else { return }
-
-        sendText(startup.configurationText, on: task)
-        for text in startup.queuedTexts {
-            sendText(text, on: task)
-        }
-        for data in startup.queuedBinaries {
-            sendBinary(data, on: task)
-        }
-    }
-
-    private func sendText(_ text: String, on task: URLSessionWebSocketTask) {
-        task.send(.string(text)) { [weak self] error in
-            guard let self, let error else { return }
-            self.handleTerminalSocketError(
-                for: task,
-                errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
-            )
-        }
-    }
-
-    private func sendBinary(_ data: Data, on task: URLSessionWebSocketTask) {
-        task.send(.data(data)) { [weak self] error in
-            guard let self, let error else { return }
-            self.handleTerminalSocketError(
-                for: task,
-                errorMessage: "WebSocket audio send failed: \(self.describeSocketError(error))"
-            )
-        }
-    }
-
-    private func listenForMessages(on task: URLSessionWebSocketTask) {
-        task.receive { [weak self] result in
-            guard let self else { return }
-
-            let shouldHandleResult: Bool = self.state.withLock { s in
-                s.socketState == .connected && s.webSocketTask === task
-            }
-            guard shouldHandleResult else { return }
-
-            switch result {
-            case .success(let message):
-                self.handle(message: message)
-                self.listenForMessages(on: task)
-            case .failure(let error):
-                self.handleTerminalSocketError(
-                    for: task,
-                    errorMessage: "WebSocket receive failed: \(self.describeSocketError(error))"
-                )
-            }
-        }
-    }
-
-    private func handle(message: URLSessionWebSocketTask.Message) {
-        switch message {
-        case .string(let text):
-            handle(text: text)
-        case .data(let data):
-            guard let text = String(data: data, encoding: .utf8) else {
-                emit(.status("Received binary frame of \(data.count) bytes."))
-                return
-            }
-            handle(text: text)
-        @unknown default:
-            emit(.status("Received an unknown WebSocket frame."))
-        }
-    }
-
-    private func handle(text: String) {
-        guard let data = text.data(using: .utf8) else { return }
-
-        do {
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                debugLog("received non-dictionary JSON frame")
-                emit(.status("Received non-JSON frame."))
-                return
-            }
-            handle(json: json)
-        } catch {
-            debugLog("JSON parse error: \(error.localizedDescription)")
-            emit(.status("Received non-JSON frame."))
-        }
-    }
-
-    private func handle(json: [String: Any]) {
+    override func handle(json: [String: Any]) {
         if let status = json["status"] as? String {
-            let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let normalizedStatus = status.trimmed.lowercased()
             if normalizedStatus == "ready" {
                 emit(.status("Session ready."))
-            } else if let message = json["message"] as? String,
-                      !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            {
+            } else if let message = json["message"] as? String, !message.trimmed.isEmpty {
                 emit(.status(message))
             }
         }
@@ -381,8 +205,19 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         }
     }
 
+    // MARK: - Post-Connect
+
+    override func didOpenConnection(on webSocketTask: URLSessionWebSocketTask) {
+        state.withLock { s in
+            s.base.isUserInitiatedDisconnect = false
+        }
+        sendInitialConfigurationAndFlushQueue(on: webSocketTask)
+    }
+
+    // MARK: - Completion Handling
+
     private func handleCompletion(text: String, isPartial: Bool) {
-        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedText = text.trimmed
         let sawStreamingDelta = state.withLock { s in
             let hadDelta = s.sawStreamingDeltaForCurrentChunk
             s.sawStreamingDeltaForCurrentChunk = false
@@ -393,7 +228,6 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         guard !normalizedText.isEmpty else { return }
 
         if isPartial {
-            // Avoid duplicate partial text when the server sends delta events and then a complete partial.
             if sawStreamingDelta { return }
             emit(.partialTranscript(normalizedText))
             return
@@ -402,20 +236,125 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
         emit(.finalTranscript(normalizedText))
     }
 
-    private func closeSocketLocked(_ s: inout State, cancelTask: Bool, clearQueuedMessages: Bool) {
+    // MARK: - Send Helpers
+
+    private func enqueueTextMessage(_ text: String) {
+        let action: TextSendAction = state.withLock { s in
+            switch s.base.socketState {
+            case .connected:
+                guard s.hasSentInitialConfiguration, let task = s.base.webSocketTask else {
+                    s.pendingTextMessages.append(text)
+                    return .queued
+                }
+                return .send(task: task, text: text)
+            case .connecting:
+                s.pendingTextMessages.append(text)
+                return .queued
+            case .disconnected:
+                return .dropped
+            }
+        }
+
+        guard case .send(let task, let payloadText) = action else { return }
+        sendText(payloadText, on: task)
+    }
+
+    private func enqueueBinaryMessage(_ data: Data) {
+        let action: BinarySendAction = state.withLock { s in
+            switch s.base.socketState {
+            case .connected:
+                guard s.hasSentInitialConfiguration, let task = s.base.webSocketTask else {
+                    s.pendingBinaryMessages.append(data)
+                    return .queued
+                }
+                return .send(task: task, data: data)
+            case .connecting:
+                s.pendingBinaryMessages.append(data)
+                return .queued
+            case .disconnected:
+                return .dropped
+            }
+        }
+
+        guard case .send(let task, let payloadData) = action else { return }
+        sendBinary(payloadData, on: task)
+    }
+
+    private func sendInitialConfigurationAndFlushQueue(on task: URLSessionWebSocketTask) {
+        let startup: (configurationText: String, queuedTexts: [String], queuedBinaries: [Data])? =
+            state.withLock { s in
+                guard s.base.socketState == .connected, s.base.webSocketTask === task else {
+                    return nil
+                }
+                guard !s.hasSentInitialConfiguration else { return nil }
+                s.hasSentInitialConfiguration = true
+
+                var configuration: [String: Any] = [
+                    "model": s.pendingModelName.isEmpty
+                        ? "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+                        : s.pendingModelName,
+                    "sample_rate": sampleRate,
+                    "streaming": streamingModeEnabled,
+                ]
+                if let delayMs = s.pendingTranscriptionDelayMilliseconds {
+                    configuration["transcription_delay_ms"] = delayMs
+                }
+
+                guard JSONSerialization.isValidJSONObject(configuration),
+                    let data = try? JSONSerialization.data(withJSONObject: configuration),
+                    let text = String(data: data, encoding: .utf8)
+                else {
+                    return nil
+                }
+
+                let queuedTexts = s.pendingTextMessages
+                let queuedBinaries = s.pendingBinaryMessages
+                s.pendingTextMessages.removeAll(keepingCapacity: true)
+                s.pendingBinaryMessages.removeAll(keepingCapacity: true)
+                return (text, queuedTexts, queuedBinaries)
+            }
+
+        guard let startup else { return }
+
+        sendText(startup.configurationText, on: task)
+        for text in startup.queuedTexts {
+            sendText(text, on: task)
+        }
+        for data in startup.queuedBinaries {
+            sendBinary(data, on: task)
+        }
+    }
+
+    private func sendText(_ text: String, on task: URLSessionWebSocketTask) {
+        task.send(.string(text)) { [weak self] error in
+            guard let self, let error else { return }
+            self.handleTerminalSocketError(
+                for: task,
+                errorMessage: "WebSocket send failed: \(self.describeSocketError(error))"
+            )
+        }
+    }
+
+    private func sendBinary(_ data: Data, on task: URLSessionWebSocketTask) {
+        task.send(.data(data)) { [weak self] error in
+            guard let self, let error else { return }
+            self.handleTerminalSocketError(
+                for: task,
+                errorMessage: "WebSocket audio send failed: \(self.describeSocketError(error))"
+            )
+        }
+    }
+
+    // MARK: - State Cleanup
+
+    private func closeSocketLocked(
+        _ s: inout State, cancelTask: Bool, clearQueuedMessages: Bool
+    ) {
         s.delayedDisconnectWorkItem?.cancel()
         s.delayedDisconnectWorkItem = nil
 
-        if cancelTask {
-            s.webSocketTask?.cancel(with: .normalClosure, reason: nil)
-        }
-        s.webSocketTask = nil
+        closeBaseStateLocked(&s.base, cancelTask: cancelTask)
 
-        s.urlSession?.invalidateAndCancel()
-        s.urlSession = nil
-
-        s.socketState = .disconnected
-        s.isUserInitiatedDisconnect = false
         s.hasSentInitialConfiguration = false
         s.pendingModelName = ""
         s.sawStreamingDeltaForCurrentChunk = false
@@ -426,118 +365,5 @@ final class MlxAudioRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelega
             s.pendingTextMessages.removeAll(keepingCapacity: false)
             s.pendingBinaryMessages.removeAll(keepingCapacity: false)
         }
-    }
-
-    private func handleTerminalSocketError(for task: URLSessionWebSocketTask, errorMessage: String?) {
-        let outcome: (error: String?, disconnected: Bool) = state.withLock { s in
-            guard s.socketState != .disconnected, s.webSocketTask === task else {
-                return (nil, false)
-            }
-            let shouldEmitError = !s.isUserInitiatedDisconnect
-            closeSocketLocked(&s, cancelTask: false, clearQueuedMessages: true)
-            return (shouldEmitError ? errorMessage : nil, true)
-        }
-
-        if let error = outcome.error {
-            emit(.error(error))
-        }
-        if outcome.disconnected {
-            emit(.disconnected)
-        }
-    }
-
-    func urlSession(
-        _: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didOpenWithProtocol _: String?
-    ) {
-        let isCurrentTask: Bool = state.withLock { s in
-            guard s.webSocketTask === webSocketTask else { return false }
-            s.socketState = .connected
-            s.isUserInitiatedDisconnect = false
-            return true
-        }
-        guard isCurrentTask else { return }
-
-        debugLog("didOpen")
-        emit(.connected)
-        sendInitialConfigurationAndFlushQueue(on: webSocketTask)
-        listenForMessages(on: webSocketTask)
-    }
-
-    func urlSession(
-        _: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-        reason: Data?
-    ) {
-        debugLog("didClose code=\(closeCode.rawValue)")
-        guard closeCode != .normalClosure, closeCode != .goingAway else {
-            handleTerminalSocketError(for: webSocketTask, errorMessage: nil)
-            return
-        }
-
-        let reasonText = reason.flatMap { data in
-            String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        if let reasonText, !reasonText.isEmpty {
-            handleTerminalSocketError(
-                for: webSocketTask,
-                errorMessage: "WebSocket closed (\(closeCode.rawValue)): \(reasonText)"
-            )
-            return
-        }
-
-        handleTerminalSocketError(
-            for: webSocketTask,
-            errorMessage: "WebSocket closed (\(closeCode.rawValue))."
-        )
-    }
-
-    func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let webSocketTask = task as? URLSessionWebSocketTask else { return }
-
-        guard let error else {
-            handleTerminalSocketError(for: webSocketTask, errorMessage: nil)
-            return
-        }
-
-        debugLog("task didCompleteWithError=\(error.localizedDescription)")
-        let nsError = error as NSError
-        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
-            handleTerminalSocketError(for: webSocketTask, errorMessage: nil)
-            return
-        }
-
-        handleTerminalSocketError(
-            for: webSocketTask,
-            errorMessage: "WebSocket failed: \(describeSocketError(error))"
-        )
-    }
-
-    private func describeSocketError(_ error: Error) -> String {
-        let nsError = error as NSError
-        var components = [error.localizedDescription, "[\(nsError.domain):\(nsError.code)]"]
-
-        if let failingURL = nsError.userInfo[NSURLErrorFailingURLErrorKey] as? URL {
-            components.append("url=\(failingURL.absoluteString)")
-        } else if let failingURLString = nsError.userInfo[NSURLErrorFailingURLStringErrorKey] as? String {
-            components.append("url=\(failingURLString)")
-        }
-
-        return components.joined(separator: " ")
-    }
-
-    private func emit(_ event: RealtimeEvent) {
-        let handler: (@Sendable (RealtimeEvent) -> Void)? = state.withLock { $0.onEvent }
-        guard let handler else { return }
-        handler(event)
-    }
-
-    private func debugLog(_ message: String) {
-        guard debugLoggingEnabled else { return }
-        Log.mlxRealtime.debug("\(message)")
     }
 }

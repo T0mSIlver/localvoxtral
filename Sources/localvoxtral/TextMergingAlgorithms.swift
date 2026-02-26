@@ -4,6 +4,14 @@ enum TextMergingAlgorithms {
     private static let replayCharacterThreshold = 32
     private static let replayWordThreshold = 8
 
+    // Pre-compiled regex patterns for normalizeTranscriptionFormatting.
+    private static let apostropheSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*'\\s*(\\p{L})")
+    private static let hyphenSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*-\\s*(\\p{L})")
+    private static let preSymbolSpaceRegex = try! NSRegularExpression(pattern: "\\s+([,.;:!?%\\)\\]])")
+    private static let postSymbolSpaceRegex = try! NSRegularExpression(pattern: "([\\(\\[])\\s+")
+    private static let multipleSpacesRegex = try! NSRegularExpression(pattern: "[ \\t]{2,}")
+    private static let wordTokenRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
+
     static func longestSuffixPrefixOverlap(lhs: String, rhs: String) -> Int {
         let maxOverlap = min(lhs.count, rhs.count)
         guard maxOverlap > 0 else { return 0 }
@@ -48,10 +56,10 @@ enum TextMergingAlgorithms {
     }
 
     static func appendToCurrentDictationEvent(segment: String, existingText: String) -> String {
-        let normalizedSegment = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSegment = segment.trimmed
         guard !normalizedSegment.isEmpty else { return existingText }
 
-        let normalizedExisting = existingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedExisting = existingText.trimmed
         guard !normalizedExisting.isEmpty else { return normalizedSegment }
 
         if normalizedSegment == normalizedExisting {
@@ -165,7 +173,7 @@ enum TextMergingAlgorithms {
                 }
                 if boundary > 0 {
                     let start = incoming.index(incoming.startIndex, offsetBy: boundary)
-                    let trimmedSuffix = String(incoming[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedSuffix = String(incoming[start...]).trimmed
                     if !trimmedSuffix.isEmpty {
                         return appendWithoutOverlap(existing: existing, incoming: trimmedSuffix)
                     }
@@ -178,7 +186,7 @@ enum TextMergingAlgorithms {
             if boundary == incoming.endIndex {
                 return (existing, "")
             }
-            let suffix = String(incoming[boundary...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let suffix = String(incoming[boundary...]).trimmed
             if !suffix.isEmpty {
                 return appendWithoutOverlap(existing: existing, incoming: suffix)
             }
@@ -194,40 +202,15 @@ enum TextMergingAlgorithms {
         guard !text.isEmpty else { return text }
 
         var output = text.replacingOccurrences(of: "\u{00A0}", with: " ")
-
-        output = replacingRegex(
-            pattern: "(\\p{L})\\s*'\\s*(\\p{L})",
-            template: "$1'$2",
-            in: output
-        )
-        output = replacingRegex(
-            pattern: "(\\p{L})\\s*-\\s*(\\p{L})",
-            template: "$1-$2",
-            in: output
-        )
-        output = replacingRegex(
-            pattern: "\\s+([,.;:!?%\\)\\]])",
-            template: "$1",
-            in: output
-        )
-        output = replacingRegex(
-            pattern: "([\\(\\[])\\s+",
-            template: "$1",
-            in: output
-        )
-        output = replacingRegex(
-            pattern: "[ \\t]{2,}",
-            template: " ",
-            in: output
-        )
-
+        output = applyRegex(apostropheSpacingRegex, template: "$1'$2", to: output)
+        output = applyRegex(hyphenSpacingRegex, template: "$1-$2", to: output)
+        output = applyRegex(preSymbolSpaceRegex, template: "$1", to: output)
+        output = applyRegex(postSymbolSpaceRegex, template: "$1", to: output)
+        output = applyRegex(multipleSpacesRegex, template: " ", to: output)
         return output
     }
 
-    private static func replacingRegex(pattern: String, template: String, in text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
-            return text
-        }
+    private static func applyRegex(_ regex: NSRegularExpression, template: String, to text: String) -> String {
         let range = NSRange(text.startIndex..., in: text)
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }
@@ -290,11 +273,8 @@ enum TextMergingAlgorithms {
     }
 
     private static func wordTokens(in text: String) -> [WordToken] {
-        guard let regex = try? NSRegularExpression(pattern: "[\\p{L}\\p{N}]+", options: []) else {
-            return []
-        }
-
         let nsRange = NSRange(text.startIndex..., in: text)
+        let regex = wordTokenRegex
         let matches = regex.matches(in: text, options: [], range: nsRange)
         var tokens: [WordToken] = []
         tokens.reserveCapacity(matches.count)
