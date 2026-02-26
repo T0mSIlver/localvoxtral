@@ -50,11 +50,7 @@ final class DictationViewModel {
     @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
     @ObservationIgnored
-    let overlayStateMachine = OverlayBufferStateMachine()
-    @ObservationIgnored
-    let overlayController = DictationOverlayController()
-    @ObservationIgnored
-    let overlayAnchorResolver = FocusedInputAnchorResolver()
+    let overlayBufferCoordinator = OverlayBufferSessionCoordinator()
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -85,8 +81,6 @@ final class DictationViewModel {
     var currentDictationEventText = ""
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
-    @ObservationIgnored
-    var overlayCommitTargetAppPID: pid_t?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
@@ -182,7 +176,7 @@ final class DictationViewModel {
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
         textInsertion.stopAllTasks()
-        overlayController.hide()
+        overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
         microphone.stop()
         networkMonitor.stop()
@@ -459,11 +453,12 @@ final class DictationViewModel {
         lastFinalSegment = ""
         pendingSegmentText = ""
         currentDictationEventText = ""
-        sessionOutputMode = nil
+        if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
+            sessionOutputMode = nil
+        }
         firstChunkPreprocessor.reset()
         mlxStabilizer.reset()
-        overlayStateMachine.reset()
-        overlayController.hide()
+        overlayBufferCoordinator.reset()
         lastError = nil
     }
 
@@ -561,18 +556,15 @@ final class DictationViewModel {
     }
 
     var isOverlayBufferModeEnabled: Bool {
-        effectiveOutputMode == .overlayBuffer
+        activeOutputMode == .overlayBuffer
     }
 
     var isLiveAutoPasteModeEnabled: Bool {
-        effectiveOutputMode == .liveAutoPaste
+        activeOutputMode == .liveAutoPaste
     }
 
-    private var effectiveOutputMode: DictationOutputMode {
-        if isDictating || isFinalizingStop || isConnectingRealtimeSession {
-            return sessionOutputMode ?? settings.dictationOutputMode
-        }
-        return settings.dictationOutputMode
+    private var activeOutputMode: DictationOutputMode {
+        sessionOutputMode ?? settings.dictationOutputMode
     }
 
     func debugLog(_ message: String) {

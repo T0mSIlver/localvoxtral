@@ -24,6 +24,7 @@ extension DictationViewModel {
                 message: message,
                 technicalDetails: "Settings value could not be normalized to a websocket endpoint URL."
             )
+            sessionOutputMode = nil
             return
         }
 
@@ -32,6 +33,7 @@ extension DictationViewModel {
         {
             statusText = "Selected microphone unavailable."
             lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
+            sessionOutputMode = nil
             return
         }
 
@@ -46,10 +48,8 @@ extension DictationViewModel {
         pendingSegmentText = ""
         currentDictationEventText = ""
         mlxStabilizer.reset()
-        overlayCommitTargetAppPID = nil
         firstChunkPreprocessor.reset()
-        overlayStateMachine.reset()
-        overlayController.hide()
+        overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
@@ -105,8 +105,7 @@ extension DictationViewModel {
             if isOverlayBufferModeEnabled {
                 startOverlayBufferSession()
             } else {
-                overlayStateMachine.reset()
-                overlayController.hide()
+                overlayBufferCoordinator.reset()
             }
             healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
         } catch {
@@ -306,22 +305,33 @@ extension DictationViewModel {
         cancelConnectTimeout()
 
         let wasMlxAudio = activeClientSource == .mlxAudio
-        let shouldCommitOverlay = isOverlayBufferModeEnabled
+        let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
+        let shouldCommitOverlay = sessionMode == .overlayBuffer
 
         if promotePendingSegment {
             let promoted = wasMlxAudio
                 ? promotePendingMlxTextToLatestSegment()
                 : promotePendingRealtimeTextToLatestSegment()
 
-            if isLiveAutoPasteModeEnabled, wasMlxAudio, let promoted, !promoted.isEmpty {
+            if sessionMode == .liveAutoPaste, wasMlxAudio, let promoted, !promoted.isEmpty {
                 if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
                     _ = textInsertion.pasteUsingCommandV(promoted)
                 }
             }
         }
 
+        var overlayCommitOutcome: OverlayBufferSessionCoordinator.CommitOutcome?
+        var didOverlayCommitFail = false
         if shouldCommitOverlay {
             refreshOverlayBufferSession()
+            overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
+                using: textInsertion,
+                autoCopyEnabled: settings.autoCopyEnabled
+            )
+            if case .failed(let failureMessage) = overlayCommitOutcome {
+                didOverlayCommitFail = true
+                lastError = failureMessage
+            }
         }
 
         isFinalizingStop = false
@@ -331,7 +341,7 @@ extension DictationViewModel {
         livePartialText = ""
         pendingSegmentText = ""
         mlxStabilizer.resetSegment()
-        if overlayStateMachine.phase == .commitFailed {
+        if case .failed = overlayCommitOutcome {
             statusText = "Insert failed."
         } else {
             statusText = "Ready"
@@ -341,24 +351,18 @@ extension DictationViewModel {
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
 
-        if isLiveAutoPasteModeEnabled, textInsertion.hasPendingInsertionText {
+        if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."
             textInsertion.clearPendingText()
         }
 
-        if shouldCommitOverlay {
-            commitOverlayBufferIfNeeded()
-        }
-
-        if !shouldCommitOverlay || overlayStateMachine.phase != .commitFailed {
-            overlayStateMachine.reset()
-            overlayController.hide()
+        if !shouldCommitOverlay || !didOverlayCommitFail {
+            overlayBufferCoordinator.reset()
         }
 
         if lastError?.localizedCaseInsensitiveContains("websocket receive failed") == true {
             lastError = nil
         }
-        overlayCommitTargetAppPID = nil
         firstChunkPreprocessor.reset()
         sessionOutputMode = nil
     }
@@ -396,8 +400,8 @@ extension DictationViewModel {
         isAwaitingMicrophonePermission = false
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
-        overlayCommitTargetAppPID = nil
         firstChunkPreprocessor.reset()
+        overlayBufferCoordinator.reset()
         sessionOutputMode = nil
         if disconnectSocket {
             activeRealtimeClient().disconnect()
@@ -584,98 +588,20 @@ extension DictationViewModel {
     // MARK: - Overlay Buffer
 
     private func startOverlayBufferSession() {
-        refreshOverlayCommitTargetAppPID()
-        let anchor = overlayAnchorResolver.resolveAnchor()
-        overlayStateMachine.startSession(anchor: anchor)
-        overlayStateMachine.updateBuffer(text: "", anchor: anchor)
-        overlayController.render(snapshot: overlayStateMachine.snapshot)
+        overlayBufferCoordinator.startSession()
     }
 
     func beginOverlayFinalization() {
         guard isOverlayBufferModeEnabled else { return }
-        refreshOverlayCommitTargetAppPID()
-        let anchor = overlayAnchorResolver.resolveAnchor()
-        if overlayStateMachine.phase == .idle {
-            overlayStateMachine.startSession(anchor: anchor)
-        }
-        overlayStateMachine.beginFinalizing(anchor: anchor)
-        overlayStateMachine.updateBuffer(text: currentOverlayBufferedText(), anchor: anchor)
-        overlayController.render(snapshot: overlayStateMachine.snapshot)
+        overlayBufferCoordinator.beginFinalizing(
+            bufferText: currentOverlayBufferedText()
+        )
     }
 
     func refreshOverlayBufferSession() {
         guard isOverlayBufferModeEnabled else { return }
-        guard overlayStateMachine.phase == .buffering || overlayStateMachine.phase == .finalizing else { return }
-        refreshOverlayCommitTargetAppPID()
-        let anchor = overlayAnchorResolver.resolveAnchor()
-        overlayStateMachine.updateBuffer(text: currentOverlayBufferedText(), anchor: anchor)
-        overlayController.render(snapshot: overlayStateMachine.snapshot)
-    }
-
-    private func commitOverlayBufferIfNeeded() {
-        guard isOverlayBufferModeEnabled else { return }
-
-        let commitText = OverlayBufferTextAssembler.commitText(from: overlayStateMachine.bufferText)
-        guard !commitText.isEmpty else {
-            overlayStateMachine.commitSucceeded()
-            overlayController.render(snapshot: overlayStateMachine.snapshot)
-            return
-        }
-
-        let inserted =
-            textInsertion.insertTextUsingAccessibilityOnly(
-                commitText,
-                preferredAppPID: overlayCommitTargetAppPID
-            )
-            || textInsertion.pasteUsingCommandV(
-                commitText,
-                preferredAppPID: overlayCommitTargetAppPID
-            )
-
-        if inserted {
-            if settings.autoCopyEnabled {
-                let pasteboard = NSPasteboard.general
-                pasteboard.clearContents()
-                pasteboard.setString(commitText, forType: .string)
-            }
-            overlayStateMachine.commitSucceeded()
-            overlayController.render(snapshot: overlayStateMachine.snapshot)
-            return
-        }
-
-        let failureMessage: String
-        if textInsertion.isAccessibilityTrusted {
-            failureMessage = "Unable to insert buffered text into the focused app."
-        } else {
-            failureMessage = TextInsertionService.accessibilityErrorMessage
-        }
-        lastError = failureMessage
-        statusText = "Insert failed."
-
-        if settings.autoCopyEnabled {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(commitText, forType: .string)
-        }
-
-        overlayStateMachine.commitFailed(
-            error: failureMessage,
-            anchor: overlayAnchorResolver.resolveAnchor()
+        overlayBufferCoordinator.refresh(
+            bufferText: currentOverlayBufferedText()
         )
-        overlayController.render(snapshot: overlayStateMachine.snapshot)
-    }
-
-    private func refreshOverlayCommitTargetAppPID() {
-        if let focusedPID = overlayAnchorResolver.resolveFocusedInputAppPID(),
-           focusedPID != getpid()
-        {
-            overlayCommitTargetAppPID = focusedPID
-            return
-        }
-        if let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
-           frontmostPID != getpid()
-        {
-            overlayCommitTargetAppPID = frontmostPID
-        }
     }
 }

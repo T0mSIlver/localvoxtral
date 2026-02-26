@@ -16,6 +16,58 @@ enum KeyboardFallbackBehavior {
     case deferIfModifierActive
 }
 
+enum PreferredTextInsertionTargetPolicy {
+    enum PasteActivationAction: Equatable {
+        case useCurrentFrontmost
+        case activate(pid_t)
+        case deny
+    }
+
+    static func accessibilityTargetPID(
+        systemFocusedPID: pid_t?,
+        preferredPID: pid_t?,
+        selfPID: pid_t
+    ) -> pid_t? {
+        if let preferredPID = normalizedPreferredPID(preferredPID, selfPID: selfPID) {
+            return preferredPID
+        }
+
+        guard let systemFocusedPID,
+              systemFocusedPID != selfPID
+        else {
+            return nil
+        }
+
+        return systemFocusedPID
+    }
+
+    static func pasteActivationAction(
+        frontmostPID: pid_t?,
+        preferredPID: pid_t?,
+        selfPID: pid_t
+    ) -> PasteActivationAction {
+        if let preferredPID = normalizedPreferredPID(preferredPID, selfPID: selfPID) {
+            if frontmostPID == preferredPID {
+                return .useCurrentFrontmost
+            }
+            return .activate(preferredPID)
+        }
+
+        guard let frontmostPID else { return .deny }
+        return frontmostPID == selfPID ? .deny : .useCurrentFrontmost
+    }
+
+    private static func normalizedPreferredPID(_ preferredPID: pid_t?, selfPID: pid_t) -> pid_t? {
+        guard let preferredPID,
+              preferredPID != 0,
+              preferredPID != selfPID
+        else {
+            return nil
+        }
+        return preferredPID
+    }
+}
+
 @MainActor
 @Observable
 final class TextInsertionService {
@@ -249,14 +301,25 @@ final class TextInsertionService {
     private func resolvedAccessibilityInsertionTarget(
         preferredAppPID: pid_t?
     ) -> AXUIElement? {
-        if let focusedElement = focusedElementFromSystemWide(), focusedElement.pid != getpid() {
-            return focusedElement.element
+        let selfPID = getpid()
+        let systemFocused = focusedElementFromSystemWide()
+        let targetPID = PreferredTextInsertionTargetPolicy.accessibilityTargetPID(
+            systemFocusedPID: systemFocused?.pid,
+            preferredPID: preferredAppPID,
+            selfPID: selfPID
+        )
+
+        guard let targetPID else {
+            return nil
         }
 
-        guard let preferredAppPID,
-              preferredAppPID != 0,
-              preferredAppPID != getpid(),
-              let preferredElement = focusedElement(inApplicationPID: preferredAppPID)
+        if let systemFocused,
+           systemFocused.pid == targetPID
+        {
+            return systemFocused.element
+        }
+
+        guard let preferredElement = focusedElement(inApplicationPID: targetPID)
         else {
             return nil
         }
@@ -312,23 +375,36 @@ final class TextInsertionService {
     private func ensurePasteTargetIsActive(preferredAppPID: pid_t?) -> Bool {
         let selfPID = getpid()
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard frontmostPID == selfPID else { return true }
-        guard let preferredAppPID,
-              preferredAppPID != selfPID,
-              let preferredApp = NSRunningApplication(processIdentifier: preferredAppPID)
-        else {
-            return false
-        }
+        let action = PreferredTextInsertionTargetPolicy.pasteActivationAction(
+            frontmostPID: frontmostPID,
+            preferredPID: preferredAppPID,
+            selfPID: selfPID
+        )
 
-        preferredApp.activate(options: [])
-        let deadline = Date().addingTimeInterval(0.08)
-        while Date() < deadline {
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == preferredAppPID {
-                return true
+        switch action {
+        case .useCurrentFrontmost:
+            return true
+
+        case .deny:
+            return false
+
+        case .activate(let targetPID):
+            guard let preferredApp = NSRunningApplication(processIdentifier: targetPID)
+            else {
+                return false
             }
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+
+            preferredApp.activate(options: [])
+            let deadline = Date().addingTimeInterval(0.08)
+            while Date() < deadline {
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID {
+                    return true
+                }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID
         }
-        return NSWorkspace.shared.frontmostApplication?.processIdentifier == preferredAppPID
     }
 
     private func replaceSelectedTextRange(in element: AXUIElement, with text: String) -> Bool {
@@ -360,9 +436,7 @@ final class TextInsertionService {
         }
 
         let selectedRangeValue = unsafeDowncast(selectedRangeObject, to: AXValue.self)
-        guard
-              AXValueGetType(selectedRangeValue) == .cfRange
-        else {
+        guard AXValueGetType(selectedRangeValue) == .cfRange else {
             return false
         }
 
