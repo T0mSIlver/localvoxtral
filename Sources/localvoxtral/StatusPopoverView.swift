@@ -7,7 +7,7 @@ struct StatusPopoverView: View {
     var viewModel: DictationViewModel
 
     private var hasLatestSegment: Bool {
-        !viewModel.lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !viewModel.lastFinalSegment.trimmed.isEmpty
     }
 
     private var dictationButtonTitle: String {

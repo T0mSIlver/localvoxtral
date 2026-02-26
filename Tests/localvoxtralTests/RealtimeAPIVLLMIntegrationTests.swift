@@ -219,7 +219,9 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         await fulfillment(of: [realtimeError], timeout: 0.5)
     }
 
-    func testVLLMProcessesSpokenSyntheticAudio() async throws {
+    /// End-to-end quality check that enforces minimum transcript accuracy
+    /// for synthetic spoken audio streamed over the realtime websocket client.
+    func testVLLMProcessesSpokenSyntheticAudio_meetsExpectedAccuracy() async throws {
         let configuration = try integrationConfiguration()
         let longPhrase = [
             "hello from localvoxtral realtime test.",
@@ -234,12 +236,14 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
             100_000,
             "Expected a longer spoken synthetic audio clip for this test."
         )
-        let spokenChunks = splitPCM16IntoChunks(spokenPCM16, chunkSizeBytes: 3_200)
+        let spokenChunks = IntegrationTestSupport.splitPCM16IntoChunks(spokenPCM16, chunkSizeBytes: 3_200)
         let client = RealtimeAPIWebSocketClient()
+        let finalTexts = NSLockingStringCollector()
 
         let connected = expectation(description: "connected")
         let sessionReady = expectation(description: "session ready")
         let finalTranscript = expectation(description: "final transcript")
+        finalTranscript.assertForOverFulfill = false
         let disconnected = expectation(description: "disconnected")
         let realtimeError = expectation(description: "realtime error")
         realtimeError.isInverted = true
@@ -261,6 +265,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
             case .finalTranscript(let text):
                 let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !normalized.isEmpty else { return }
+                finalTexts.append(normalized)
                 finalTranscript.fulfill()
             case .error:
                 realtimeError.fulfill()
@@ -273,10 +278,22 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
 
         try client.connect(configuration: configuration)
         await fulfillment(of: [connected, sessionReady, finalTranscript], timeout: 60.0)
+        try await Task.sleep(for: .seconds(2))
 
         client.disconnect()
         await fulfillment(of: [disconnected], timeout: 5.0)
         await fulfillment(of: [realtimeError], timeout: 0.2)
+
+        let combinedFinalTranscript = finalTexts.snapshot().joined(separator: " ")
+        let wordAccuracy = IntegrationTestSupport.wordAccuracy(
+            expected: longPhrase,
+            actual: combinedFinalTranscript
+        )
+        XCTAssertGreaterThanOrEqual(
+            wordAccuracy,
+            0.55,
+            "Expected synthetic-audio transcript accuracy >= 0.55. Transcript: \(combinedFinalTranscript)"
+        )
     }
 
     private func runHandshakeCycle(
@@ -457,63 +474,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
             throw XCTSkip("System TTS (say) failed with status \(process.terminationStatus).")
         }
 
-        return try extractPCMDataFromWAV(at: tempURL)
-    }
-
-    private func extractPCMDataFromWAV(at url: URL) throws -> Data {
-        let wavData = try Data(contentsOf: url)
-        guard wavData.count >= 44 else {
-            throw XCTSkip("Generated WAV audio is unexpectedly short.")
-        }
-
-        var index = 12
-        while index + 8 <= wavData.count {
-            let chunkIDData = wavData[index ..< index + 4]
-            let chunkID = String(data: chunkIDData, encoding: .ascii) ?? ""
-            let chunkSize = Int(readLEUInt32(in: wavData, at: index + 4))
-            let chunkStart = index + 8
-            let chunkEnd = chunkStart + chunkSize
-
-            guard chunkEnd <= wavData.count else {
-                break
-            }
-
-            if chunkID == "data" {
-                return wavData.subdata(in: chunkStart ..< chunkEnd)
-            }
-
-            index = chunkEnd
-            if index % 2 == 1 {
-                index += 1
-            }
-        }
-
-        throw XCTSkip("WAV audio does not contain a valid data chunk.")
-    }
-
-    private func readLEUInt32(in data: Data, at offset: Int) -> UInt32 {
-        let b0 = UInt32(data[offset])
-        let b1 = UInt32(data[offset + 1]) << 8
-        let b2 = UInt32(data[offset + 2]) << 16
-        let b3 = UInt32(data[offset + 3]) << 24
-        return b0 | b1 | b2 | b3
-    }
-
-    private func splitPCM16IntoChunks(_ pcm: Data, chunkSizeBytes: Int) -> [Data] {
-        guard chunkSizeBytes > 0 else { return [pcm] }
-        guard !pcm.isEmpty else { return [] }
-
-        var chunks: [Data] = []
-        chunks.reserveCapacity(max(1, pcm.count / chunkSizeBytes))
-
-        var offset = 0
-        while offset < pcm.count {
-            let end = min(offset + chunkSizeBytes, pcm.count)
-            chunks.append(pcm.subdata(in: offset ..< end))
-            offset = end
-        }
-
-        return chunks
+        return try IntegrationTestSupport.extractPCMDataFromWAV(at: tempURL)
     }
 }
 
@@ -531,5 +492,22 @@ private final class NSLockingCounter: @unchecked Sendable {
         lock.lock()
         storage += amount
         lock.unlock()
+    }
+}
+
+private final class NSLockingStringCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String] = []
+
+    func append(_ value: String) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    func snapshot() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
     }
 }

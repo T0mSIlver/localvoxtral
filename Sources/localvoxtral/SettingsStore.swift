@@ -108,7 +108,7 @@ final class SettingsStore {
         static let dictationShortcutCarbonModifierFlags = "settings.dictation_shortcut_carbon_modifiers"
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
@@ -171,55 +171,59 @@ final class SettingsStore {
         didSet { defaults.set(dictationShortcutCarbonModifierFlags, forKey: Keys.dictationShortcutCarbonModifierFlags) }
     }
 
-    init() {
-        let configuredProvider = defaults.string(forKey: Keys.realtimeProvider)
-            ?? ProcessInfo.processInfo.environment["REALTIME_PROVIDER"]
-            ?? RealtimeProvider.realtimeAPI.rawValue
+    init(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.defaults = defaults
 
-        let resolvedProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
-        realtimeProvider = resolvedProvider
+        let configuredProvider = Self.loadString(
+            defaults: defaults, key: Keys.realtimeProvider,
+            envKey: "REALTIME_PROVIDER", fallback: RealtimeProvider.realtimeAPI.rawValue,
+            environment: environment
+        )
+        realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
 
-        realtimeAPIEndpointURL = defaults.string(forKey: Keys.realtimeAPIEndpointURL)
-            ?? ProcessInfo.processInfo.environment["REALTIME_ENDPOINT"]
-            ?? RealtimeProvider.realtimeAPI.defaultEndpoint
+        realtimeAPIEndpointURL = Self.loadString(
+            defaults: defaults, key: Keys.realtimeAPIEndpointURL,
+            envKey: "REALTIME_ENDPOINT", fallback: RealtimeProvider.realtimeAPI.defaultEndpoint,
+            environment: environment
+        )
 
-        mlxAudioEndpointURL = defaults.string(forKey: Keys.mlxAudioEndpointURL)
-            ?? ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_ENDPOINT"]
-            ?? RealtimeProvider.mlxAudio.defaultEndpoint
+        mlxAudioEndpointURL = Self.loadString(
+            defaults: defaults, key: Keys.mlxAudioEndpointURL,
+            envKey: "MLX_AUDIO_REALTIME_ENDPOINT", fallback: RealtimeProvider.mlxAudio.defaultEndpoint,
+            environment: environment
+        )
 
-        apiKey = defaults.string(forKey: Keys.apiKey)
-            ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
-            ?? ""
+        apiKey = Self.loadString(
+            defaults: defaults, key: Keys.apiKey,
+            envKey: "OPENAI_API_KEY", fallback: "",
+            environment: environment
+        )
 
-        let configuredRealtimeAPIModel = defaults.string(forKey: Keys.realtimeAPIModelName)
-            ?? ProcessInfo.processInfo.environment["REALTIME_MODEL"]
-            ?? RealtimeProvider.realtimeAPI.defaultModelName
-        let normalizedRealtimeAPIModel = Self.normalizedModelName(from: configuredRealtimeAPIModel)
-        realtimeAPIModelName = normalizedRealtimeAPIModel.isEmpty
-            ? RealtimeProvider.realtimeAPI.defaultModelName
-            : normalizedRealtimeAPIModel
+        realtimeAPIModelName = Self.loadModelName(
+            defaults: defaults, key: Keys.realtimeAPIModelName,
+            envKey: "REALTIME_MODEL", provider: .realtimeAPI,
+            environment: environment
+        )
 
-        let configuredMlxAudioModel = defaults.string(forKey: Keys.mlxAudioModelName)
-            ?? ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_MODEL"]
-            ?? RealtimeProvider.mlxAudio.defaultModelName
-        let normalizedMlxAudioModel = Self.normalizedModelName(from: configuredMlxAudioModel)
-        mlxAudioModelName = normalizedMlxAudioModel.isEmpty
-            ? RealtimeProvider.mlxAudio.defaultModelName
-            : normalizedMlxAudioModel
+        mlxAudioModelName = Self.loadModelName(
+            defaults: defaults, key: Keys.mlxAudioModelName,
+            envKey: "MLX_AUDIO_REALTIME_MODEL", provider: .mlxAudio,
+            environment: environment
+        )
 
         let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
-        if storedInterval > 0 {
-            commitIntervalSeconds = min(max(storedInterval, 0.1), 1.0)
-        } else {
-            commitIntervalSeconds = 0.9
-        }
+        commitIntervalSeconds = storedInterval > 0
+            ? min(max(storedInterval, 0.1), 1.0)
+            : 0.9
 
         let delayDefault = 900
         if defaults.object(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds) != nil {
             mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(
-                defaults.integer(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds)
-            )
-        } else if let envDelay = ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"],
+                defaults.integer(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds))
+        } else if let envDelay = environment["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"],
                   let parsedDelay = Int(envDelay)
         {
             mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(parsedDelay)
@@ -227,29 +231,15 @@ final class SettingsStore {
             mlxAudioTranscriptionDelayMilliseconds = delayDefault
         }
 
-        if defaults.object(forKey: Keys.autoCopyEnabled) == nil {
-            autoCopyEnabled = false
-        } else {
-            autoCopyEnabled = defaults.bool(forKey: Keys.autoCopyEnabled)
-        }
-
-        if defaults.object(forKey: Keys.autoPasteIntoInputFieldEnabled) == nil {
-            autoPasteIntoInputFieldEnabled = true
-        } else {
-            autoPasteIntoInputFieldEnabled = defaults.bool(forKey: Keys.autoPasteIntoInputFieldEnabled)
-        }
-
+        autoCopyEnabled = Self.loadBool(defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
+        autoPasteIntoInputFieldEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.autoPasteIntoInputFieldEnabled, fallback: true)
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
-
-        if defaults.object(forKey: Keys.dictationShortcutEnabled) == nil {
-            dictationShortcutEnabled = true
-        } else {
-            dictationShortcutEnabled = defaults.bool(forKey: Keys.dictationShortcutEnabled)
-        }
+        dictationShortcutEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)
 
         let storedKeyCode = (defaults.object(forKey: Keys.dictationShortcutKeyCode) as? NSNumber)?.uint32Value
         let storedModifierFlags = (defaults.object(forKey: Keys.dictationShortcutCarbonModifierFlags) as? NSNumber)?.uint32Value
-        let fallbackShortcut = Self.defaultDictationShortcut
 
         let resolvedShortcut: DictationShortcut
         if let storedKeyCode, let storedModifierFlags {
@@ -257,21 +247,54 @@ final class SettingsStore {
                 keyCode: storedKeyCode,
                 carbonModifierFlags: storedModifierFlags
             ).normalized
-            if DictationShortcutValidation.persistenceErrorMessage(for: candidate) == nil {
-                resolvedShortcut = candidate
-            } else {
-                resolvedShortcut = fallbackShortcut
-            }
+            resolvedShortcut = DictationShortcutValidation.persistenceErrorMessage(for: candidate) == nil
+                ? candidate : Self.defaultDictationShortcut
         } else {
-            resolvedShortcut = fallbackShortcut
+            resolvedShortcut = Self.defaultDictationShortcut
         }
 
         dictationShortcutKeyCode = resolvedShortcut.keyCode
         dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
     }
 
+    // MARK: - Init Helpers
+
+    private static func loadString(
+        defaults: UserDefaults, key: String, envKey: String, fallback: String, environment: [String: String]
+    ) -> String {
+        defaults.string(forKey: key)
+            ?? environment[envKey]
+            ?? fallback
+    }
+
+    private static func loadBool(
+        defaults: UserDefaults, key: String, fallback: Bool
+    ) -> Bool {
+        defaults.object(forKey: key) != nil
+            ? defaults.bool(forKey: key)
+            : fallback
+    }
+
+    private static func loadModelName(
+        defaults: UserDefaults,
+        key: String,
+        envKey: String,
+        provider: RealtimeProvider,
+        environment: [String: String]
+    ) -> String {
+        let configured = loadString(
+            defaults: defaults,
+            key: key,
+            envKey: envKey,
+            fallback: provider.defaultModelName,
+            environment: environment
+        )
+        let normalized = normalizedModelName(from: configured)
+        return normalized.isEmpty ? provider.defaultModelName : normalized
+    }
+
     var trimmedAPIKey: String {
-        apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        apiKey.trimmed
     }
 
     var effectiveModelName: String {
@@ -356,7 +379,7 @@ final class SettingsStore {
     }
 
     func resolvedWebSocketURL(for provider: RealtimeProvider) -> URL? {
-        let trimmed = endpointURL(for: provider).trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = endpointURL(for: provider).trimmed
         guard !trimmed.isEmpty else { return nil }
 
         if trimmed.hasPrefix("ws://") || trimmed.hasPrefix("wss://") {
@@ -375,12 +398,12 @@ final class SettingsStore {
     }
 
     private static func normalizedModelName(from raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = raw.trimmed
         guard !trimmed.isEmpty else { return "" }
 
         let lines = trimmed
             .split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .map { String($0).trimmed }
             .filter { !$0.isEmpty }
 
         guard let candidate = lines.last else {

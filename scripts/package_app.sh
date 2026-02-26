@@ -15,7 +15,7 @@ patch_shortcutrecorder_bundle_lookup() {
     return
   fi
 
-  perl -0pi -e 's/return SWIFTPM_MODULE_BUNDLE;/\/\/ localvoxtral packaged resources fallback\n    NSBundle *bundle = SWIFTPM_MODULE_BUNDLE;\n    if (bundle)\n        return bundle;\n\n    NSURL *resourceBundleURL = [[[NSBundle mainBundle] resourceURL]\n        URLByAppendingPathComponent:@"ShortcutRecorder_ShortcutRecorder.bundle"];\n    bundle = [NSBundle bundleWithURL:resourceBundleURL];\n    if (bundle)\n        return bundle;\n\n    return nil;/g' "$sr_common"
+  perl -0pi -e 's/return SWIFTPM_MODULE_BUNDLE;/\/\/ localvoxtral packaged resources fallback\n    \/\/ Try the app bundle first — this avoids a TCC Desktop-access prompt when\n    \/\/ the .app resides anywhere under ~\/Desktop.\n    NSURL *resourceBundleURL = [[[NSBundle mainBundle] resourceURL]\n        URLByAppendingPathComponent:@"ShortcutRecorder_ShortcutRecorder.bundle"];\n    NSBundle *bundle = [NSBundle bundleWithURL:resourceBundleURL];\n    if (bundle)\n        return bundle;\n\n    \/\/ Fall back to the SPM-generated lookup (development builds).\n    bundle = SWIFTPM_MODULE_BUNDLE;\n    if (bundle)\n        return bundle;\n\n    return nil;/g' "$sr_common"
 }
 
 CONFIGURATION="${1:-release}"

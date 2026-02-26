@@ -68,32 +68,18 @@ enum AudioDeviceManager {
     }
 
     static func deviceUID(for deviceID: AudioObjectID) -> String? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var unmanagedCFString: Unmanaged<CFString>?
-        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-
-        let status = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &unmanagedCFString
-        )
-        guard status == noErr, let unmanagedCFString else { return nil }
-
-        let uid = unmanagedCFString.takeUnretainedValue() as String
-        return uid.isEmpty ? nil : uid
+        deviceStringProperty(selector: kAudioDevicePropertyDeviceUID, deviceID: deviceID)
     }
 
     static func deviceName(for deviceID: AudioObjectID) -> String? {
+        deviceStringProperty(selector: kAudioObjectPropertyName, deviceID: deviceID)
+    }
+
+    private static func deviceStringProperty(
+        selector: AudioObjectPropertySelector, deviceID: AudioObjectID
+    ) -> String? {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
@@ -102,17 +88,11 @@ enum AudioDeviceManager {
         var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
 
         let status = AudioObjectGetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            &dataSize,
-            &unmanagedCFString
-        )
+            deviceID, &address, 0, nil, &dataSize, &unmanagedCFString)
         guard status == noErr, let unmanagedCFString else { return nil }
 
-        let name = unmanagedCFString.takeUnretainedValue() as String
-        return name.isEmpty ? nil : name
+        let value = unmanagedCFString.takeUnretainedValue() as String
+        return value.isEmpty ? nil : value
     }
 
     static func audioDeviceID(forUID uid: String) -> AudioObjectID? {
