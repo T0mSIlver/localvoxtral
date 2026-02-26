@@ -345,6 +345,27 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
         }
     }
 
+    override func handleTerminalSocketError(
+        for task: URLSessionWebSocketTask, errorMessage: String?
+    ) {
+        let outcome: (error: String?, disconnected: Bool) = state.withLock { s in
+            guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
+                return (nil, false)
+            }
+
+            let shouldEmitError = !s.base.isUserInitiatedDisconnect
+            closeSocketLocked(&s, cancelTask: false, clearQueuedMessages: true)
+            return (shouldEmitError ? errorMessage : nil, true)
+        }
+
+        if let error = outcome.error {
+            emit(.error(error))
+        }
+        if outcome.disconnected {
+            emit(.disconnected)
+        }
+    }
+
     // MARK: - State Cleanup
 
     private func closeSocketLocked(
@@ -367,3 +388,48 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
         }
     }
 }
+
+#if DEBUG
+extension MlxAudioRealtimeWebSocketClient {
+    struct DebugStateSnapshot {
+        let isConnected: Bool
+        let pendingTextMessageCount: Int
+        let pendingBinaryMessageCount: Int
+        let hasSentInitialConfiguration: Bool
+        let hasDelayedDisconnectWorkItem: Bool
+    }
+
+    func debugPrimeConnectedStateForTesting(
+        task: URLSessionWebSocketTask, isUserInitiatedDisconnect: Bool = false
+    ) {
+        state.withLock { s in
+            closeSocketLocked(&s, cancelTask: false, clearQueuedMessages: true)
+            s.base.webSocketTask = task
+            s.base.socketState = .connected
+            s.base.isUserInitiatedDisconnect = isUserInitiatedDisconnect
+            s.pendingTextMessages = ["pending-message"]
+            s.pendingBinaryMessages = [Data([0x01, 0x02])]
+            s.hasSentInitialConfiguration = true
+            s.delayedDisconnectWorkItem = DispatchWorkItem {}
+        }
+    }
+
+    func debugHandleTerminalSocketErrorForTesting(
+        task: URLSessionWebSocketTask, errorMessage: String?
+    ) {
+        handleTerminalSocketError(for: task, errorMessage: errorMessage)
+    }
+
+    func debugStateSnapshot() -> DebugStateSnapshot {
+        state.withLock { s in
+            DebugStateSnapshot(
+                isConnected: s.base.socketState == .connected,
+                pendingTextMessageCount: s.pendingTextMessages.count,
+                pendingBinaryMessageCount: s.pendingBinaryMessages.count,
+                hasSentInitialConfiguration: s.hasSentInitialConfiguration,
+                hasDelayedDisconnectWorkItem: s.delayedDisconnectWorkItem != nil
+            )
+        }
+    }
+}
+#endif

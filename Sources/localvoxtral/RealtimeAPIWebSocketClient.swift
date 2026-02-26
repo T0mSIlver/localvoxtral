@@ -391,6 +391,27 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         s.sessionReadyTimer = nil
     }
 
+    override func handleTerminalSocketError(
+        for task: URLSessionWebSocketTask, errorMessage: String?
+    ) {
+        let outcome: (error: String?, disconnected: Bool) = state.withLock { s in
+            guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
+                return (nil, false)
+            }
+
+            let shouldEmitError = !s.base.isUserInitiatedDisconnect
+            closeSocketLocked(&s, cancelTask: false)
+            return (shouldEmitError ? errorMessage : nil, true)
+        }
+
+        if let error = outcome.error {
+            emit(.error(error))
+        }
+        if outcome.disconnected {
+            emit(.disconnected)
+        }
+    }
+
     // MARK: - State Cleanup
 
     private func closeSocketLocked(_ s: inout State, cancelTask: Bool) {
@@ -435,3 +456,51 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         return nil
     }
 }
+
+#if DEBUG
+extension RealtimeAPIWebSocketClient {
+    struct DebugStateSnapshot {
+        let isConnected: Bool
+        let hasPingTimer: Bool
+        let hasSessionReadyTimer: Bool
+        let pendingMessageCount: Int
+        let hasUncommittedAudio: Bool
+        let isGenerationInProgress: Bool
+    }
+
+    func debugPrimeConnectedStateForTesting(
+        task: URLSessionWebSocketTask, isUserInitiatedDisconnect: Bool = false
+    ) {
+        state.withLock { s in
+            closeSocketLocked(&s, cancelTask: false)
+            s.base.webSocketTask = task
+            s.base.socketState = .connected
+            s.base.isUserInitiatedDisconnect = isUserInitiatedDisconnect
+            s.pendingMessages = ["pending-message"]
+            s.hasUncommittedAudio = true
+            s.isGenerationInProgress = true
+            startPingTimerLocked(&s)
+            startSessionReadyTimerLocked(&s)
+        }
+    }
+
+    func debugHandleTerminalSocketErrorForTesting(
+        task: URLSessionWebSocketTask, errorMessage: String?
+    ) {
+        handleTerminalSocketError(for: task, errorMessage: errorMessage)
+    }
+
+    func debugStateSnapshot() -> DebugStateSnapshot {
+        state.withLock { s in
+            DebugStateSnapshot(
+                isConnected: s.base.socketState == .connected,
+                hasPingTimer: s.pingTimer != nil,
+                hasSessionReadyTimer: s.sessionReadyTimer != nil,
+                pendingMessageCount: s.pendingMessages.count,
+                hasUncommittedAudio: s.hasUncommittedAudio,
+                isGenerationInProgress: s.isGenerationInProgress
+            )
+        }
+    }
+}
+#endif
