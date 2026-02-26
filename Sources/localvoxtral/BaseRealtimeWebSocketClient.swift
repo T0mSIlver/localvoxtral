@@ -4,10 +4,12 @@ import os
 
 /// Shared base for WebSocket-based realtime clients.
 ///
-/// Subclasses must override:
+/// This class is abstract — do not instantiate directly. Subclasses must override:
+///  - `withBaseState(_:)` — provide locked access to the embedded `BaseState`
 ///  - `handle(json:)` — protocol-specific event dispatch
 ///  - `didOpenConnection(on:)` — post-connect setup (timers, config flush)
-///  - `logCategory` — os.Logger category for debug logs
+///  - `handleTerminalSocketError(for:errorMessage:)` — full state cleanup on socket failure
+///  - `logger` — os.Logger instance for debug output
 class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSessionTaskDelegate,
     @unchecked Sendable
 {
@@ -82,6 +84,11 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         return components.joined(separator: " ")
     }
 
+    /// Handles a terminal socket error by cleaning up state and emitting events.
+    ///
+    /// Subclasses **must** override this to clean up their own state (timers,
+    /// queued messages, etc.) in addition to base state. The default implementation
+    /// only cleans `BaseState` which is insufficient for subclasses with extra fields.
     func handleTerminalSocketError(
         for task: URLSessionWebSocketTask, errorMessage: String?
     ) {
@@ -102,8 +109,8 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
         }
     }
 
-    /// Subclasses call this to tear down the base socket fields.
-    /// Additional state cleanup should happen in the subclass's own close method.
+    /// Tears down the base socket fields. Subclasses call this from their own
+    /// `closeSocketLocked` after cleaning up subclass-specific state.
     func closeBaseStateLocked(_ s: inout BaseState, cancelTask: Bool) {
         if cancelTask {
             s.webSocketTask?.cancel(with: .normalClosure, reason: nil)

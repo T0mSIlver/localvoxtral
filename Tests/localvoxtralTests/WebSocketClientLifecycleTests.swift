@@ -167,5 +167,109 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             return
         }
     }
+
+    // MARK: - Stale Task Identity
+
+    func testRealtimeTerminalErrorWithStaleTaskIsNoOp() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session1, task1) = makeWebSocketTask()
+        let (session2, task2) = makeWebSocketTask()
+        defer {
+            task1.cancel(); session1.invalidateAndCancel()
+            task2.cancel(); session2.invalidateAndCancel()
+        }
+
+        // Prime with task1, then send error for task2 (stale/wrong identity)
+        client.debugPrimeConnectedStateForTesting(task: task1)
+        client.debugHandleTerminalSocketErrorForTesting(task: task2, errorMessage: "stale error")
+
+        let after = client.debugStateSnapshot()
+        XCTAssertTrue(after.isConnected, "State should be unchanged for stale task")
+        XCTAssertTrue(after.hasPingTimer)
+        XCTAssertTrue(after.hasSessionReadyTimer)
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 0, "No events should be emitted for stale task")
+    }
+
+    func testMlxTerminalErrorWithStaleTaskIsNoOp() {
+        let client = MlxAudioRealtimeWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session1, task1) = makeWebSocketTask()
+        let (session2, task2) = makeWebSocketTask()
+        defer {
+            task1.cancel(); session1.invalidateAndCancel()
+            task2.cancel(); session2.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task1)
+        client.debugHandleTerminalSocketErrorForTesting(task: task2, errorMessage: "stale error")
+
+        let after = client.debugStateSnapshot()
+        XCTAssertTrue(after.isConnected, "State should be unchanged for stale task")
+        XCTAssertTrue(after.hasSentInitialConfiguration)
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 0, "No events should be emitted for stale task")
+    }
+
+    // MARK: - Double Disconnect
+
+    func testRealtimeDoubleTerminalErrorIsNoOp() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "first error")
+        client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "second error")
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 2, "Only first error+disconnected pair should be emitted")
+        guard case .error(let message) = events[0] else {
+            XCTFail("Expected .error"); return
+        }
+        XCTAssertEqual(message, "first error")
+        guard case .disconnected = events[1] else {
+            XCTFail("Expected .disconnected"); return
+        }
+    }
+
+    func testMlxDoubleTerminalErrorIsNoOp() {
+        let client = MlxAudioRealtimeWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "first error")
+        client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "second error")
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 2, "Only first error+disconnected pair should be emitted")
+        guard case .error(let message) = events[0] else {
+            XCTFail("Expected .error"); return
+        }
+        XCTAssertEqual(message, "first error")
+        guard case .disconnected = events[1] else {
+            XCTFail("Expected .disconnected"); return
+        }
+    }
 }
 #endif

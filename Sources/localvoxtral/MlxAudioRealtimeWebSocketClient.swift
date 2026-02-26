@@ -34,7 +34,6 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
     }
 
     private let state = Mutex(State())
-    private let sampleRate = 16_000
     private let streamingModeEnabled = true
     private let finalizationGracePeriodSeconds: TimeInterval = 2.0
 
@@ -208,6 +207,10 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
     // MARK: - Post-Connect
 
     override func didOpenConnection(on webSocketTask: URLSessionWebSocketTask) {
+        // Defensive reset: connect() already clears this flag, but reset again here
+        // in case a stale delegate callback arrives after a rapid disconnect/reconnect.
+        // RealtimeAPIWebSocketClient omits this because it resets the flag in both
+        // connect() and closeSocketLocked(), covering all paths.
         state.withLock { s in
             s.base.isUserInitiatedDisconnect = false
         }
@@ -293,7 +296,7 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
                     "model": s.pendingModelName.isEmpty
                         ? "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
                         : s.pendingModelName,
-                    "sample_rate": sampleRate,
+                    "sample_rate": Int(TimingConstants.audioSampleRateHz),
                     "streaming": streamingModeEnabled,
                 ]
                 if let delayMs = s.pendingTranscriptionDelayMilliseconds {

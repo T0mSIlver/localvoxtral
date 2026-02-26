@@ -5,6 +5,8 @@ enum TextMergingAlgorithms {
     private static let replayWordThreshold = 8
 
     // Pre-compiled regex patterns for normalizeTranscriptionFormatting.
+    // These are static string literals so try! is safe — a crash here means a
+    // coding error in the pattern, which we want to catch immediately.
     private static let apostropheSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*'\\s*(\\p{L})")
     private static let hyphenSpacingRegex = try! NSRegularExpression(pattern: "(\\p{L})\\s*-\\s*(\\p{L})")
     private static let preSymbolSpaceRegex = try! NSRegularExpression(pattern: "\\s+([,.;:!?%\\)\\]])")
