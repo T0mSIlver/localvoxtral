@@ -37,13 +37,13 @@ class BaseRealtimeWebSocketClient: NSObject, URLSessionWebSocketDelegate, URLSes
 
     /// Protocol-specific JSON event handling.
     func handle(json: [String: Any]) {
-        // Subclasses override.
+        fatalError("Subclasses must override handle(json:)")
     }
 
     /// Called when the WebSocket connection opens. Subclasses use this for
     /// post-connect setup (ping timers, initial config flush, etc.).
     func didOpenConnection(on task: URLSessionWebSocketTask) {
-        // Subclasses override.
+        fatalError("Subclasses must override didOpenConnection(on:)")
     }
 
     /// The os.Logger instance to use for debug output.

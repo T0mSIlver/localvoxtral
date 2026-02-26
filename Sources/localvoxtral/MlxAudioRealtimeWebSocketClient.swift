@@ -207,13 +207,6 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
     // MARK: - Post-Connect
 
     override func didOpenConnection(on webSocketTask: URLSessionWebSocketTask) {
-        // Defensive reset: connect() already clears this flag, but reset again here
-        // in case a stale delegate callback arrives after a rapid disconnect/reconnect.
-        // RealtimeAPIWebSocketClient omits this because it resets the flag in both
-        // connect() and closeSocketLocked(), covering all paths.
-        state.withLock { s in
-            s.base.isUserInitiatedDisconnect = false
-        }
         sendInitialConfigurationAndFlushQueue(on: webSocketTask)
     }
 
