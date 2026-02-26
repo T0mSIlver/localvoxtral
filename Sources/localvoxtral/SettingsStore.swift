@@ -108,7 +108,7 @@ final class SettingsStore {
         static let dictationShortcutCarbonModifierFlags = "settings.dictation_shortcut_carbon_modifiers"
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
@@ -171,31 +171,48 @@ final class SettingsStore {
         didSet { defaults.set(dictationShortcutCarbonModifierFlags, forKey: Keys.dictationShortcutCarbonModifierFlags) }
     }
 
-    init() {
+    init(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.defaults = defaults
+
         let configuredProvider = Self.loadString(
             defaults: defaults, key: Keys.realtimeProvider,
-            envKey: "REALTIME_PROVIDER", fallback: RealtimeProvider.realtimeAPI.rawValue)
+            envKey: "REALTIME_PROVIDER", fallback: RealtimeProvider.realtimeAPI.rawValue,
+            environment: environment
+        )
         realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
 
         realtimeAPIEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.realtimeAPIEndpointURL,
-            envKey: "REALTIME_ENDPOINT", fallback: RealtimeProvider.realtimeAPI.defaultEndpoint)
+            envKey: "REALTIME_ENDPOINT", fallback: RealtimeProvider.realtimeAPI.defaultEndpoint,
+            environment: environment
+        )
 
         mlxAudioEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.mlxAudioEndpointURL,
-            envKey: "MLX_AUDIO_REALTIME_ENDPOINT", fallback: RealtimeProvider.mlxAudio.defaultEndpoint)
+            envKey: "MLX_AUDIO_REALTIME_ENDPOINT", fallback: RealtimeProvider.mlxAudio.defaultEndpoint,
+            environment: environment
+        )
 
         apiKey = Self.loadString(
             defaults: defaults, key: Keys.apiKey,
-            envKey: "OPENAI_API_KEY", fallback: "")
+            envKey: "OPENAI_API_KEY", fallback: "",
+            environment: environment
+        )
 
         realtimeAPIModelName = Self.loadModelName(
             defaults: defaults, key: Keys.realtimeAPIModelName,
-            envKey: "REALTIME_MODEL", provider: .realtimeAPI)
+            envKey: "REALTIME_MODEL", provider: .realtimeAPI,
+            environment: environment
+        )
 
         mlxAudioModelName = Self.loadModelName(
             defaults: defaults, key: Keys.mlxAudioModelName,
-            envKey: "MLX_AUDIO_REALTIME_MODEL", provider: .mlxAudio)
+            envKey: "MLX_AUDIO_REALTIME_MODEL", provider: .mlxAudio,
+            environment: environment
+        )
 
         let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
         commitIntervalSeconds = storedInterval > 0
@@ -206,7 +223,7 @@ final class SettingsStore {
         if defaults.object(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds) != nil {
             mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(
                 defaults.integer(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds))
-        } else if let envDelay = ProcessInfo.processInfo.environment["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"],
+        } else if let envDelay = environment["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"],
                   let parsedDelay = Int(envDelay)
         {
             mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(parsedDelay)
@@ -243,10 +260,10 @@ final class SettingsStore {
     // MARK: - Init Helpers
 
     private static func loadString(
-        defaults: UserDefaults, key: String, envKey: String, fallback: String
+        defaults: UserDefaults, key: String, envKey: String, fallback: String, environment: [String: String]
     ) -> String {
         defaults.string(forKey: key)
-            ?? ProcessInfo.processInfo.environment[envKey]
+            ?? environment[envKey]
             ?? fallback
     }
 
@@ -259,10 +276,19 @@ final class SettingsStore {
     }
 
     private static func loadModelName(
-        defaults: UserDefaults, key: String, envKey: String, provider: RealtimeProvider
+        defaults: UserDefaults,
+        key: String,
+        envKey: String,
+        provider: RealtimeProvider,
+        environment: [String: String]
     ) -> String {
         let configured = loadString(
-            defaults: defaults, key: key, envKey: envKey, fallback: provider.defaultModelName)
+            defaults: defaults,
+            key: key,
+            envKey: envKey,
+            fallback: provider.defaultModelName,
+            environment: environment
+        )
         let normalized = normalizedModelName(from: configured)
         return normalized.isEmpty ? provider.defaultModelName : normalized
     }

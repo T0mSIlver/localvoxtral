@@ -131,6 +131,26 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         XCTAssertEqual(result, "hello\nworld")
     }
 
+    // MARK: - normalizeTranscriptionFormatting
+
+    func testNormalizeFormatting_compactsTokenizerSpacingArtifacts() {
+        let input = "l'  homme  est  ici  -  maintenant"
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting(input)
+        XCTAssertEqual(normalized, "l'homme est ici-maintenant")
+    }
+
+    func testNormalizeFormatting_punctuationSpacing() {
+        let input = "hello , world ! ( test ) [ value ]"
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting(input)
+        XCTAssertEqual(normalized, "hello, world! (test) [value]")
+    }
+
+    func testNormalizeFormatting_preservesNewlines() {
+        let input = "hello\t\tworld\nfoo    bar"
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting(input)
+        XCTAssertEqual(normalized, "hello world\nfoo bar")
+    }
+
     // MARK: - longestCommonPrefixLength
 
     func testCommonPrefix_emptyStrings() {
