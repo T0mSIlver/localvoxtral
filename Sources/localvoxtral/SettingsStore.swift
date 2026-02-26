@@ -14,6 +14,22 @@ struct DictationShortcut: Equatable, Sendable {
     }
 }
 
+enum DictationOutputMode: String, CaseIterable, Identifiable {
+    case overlayBuffer = "overlay_buffer"
+    case liveAutoPaste = "live_auto_paste"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .overlayBuffer:
+            return "Overlay Buffer"
+        case .liveAutoPaste:
+            return "Live Auto-Paste"
+        }
+    }
+}
+
 enum DictationShortcutValidation {
     static let allowedModifierFlagsMask = UInt32(cmdKey | optionKey | shiftKey | controlKey)
 
@@ -100,8 +116,8 @@ final class SettingsStore {
         static let mlxAudioModelName = "settings.mlx_audio_model_name"
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
         static let mlxAudioTranscriptionDelayMilliseconds = "settings.mlx_audio_transcription_delay_ms"
+        static let dictationOutputMode = "settings.dictation_output_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
-        static let autoPasteIntoInputFieldEnabled = "settings.auto_paste_into_input_field_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
         static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
@@ -151,8 +167,8 @@ final class SettingsStore {
         didSet { defaults.set(autoCopyEnabled, forKey: Keys.autoCopyEnabled) }
     }
 
-    var autoPasteIntoInputFieldEnabled: Bool {
-        didSet { defaults.set(autoPasteIntoInputFieldEnabled, forKey: Keys.autoPasteIntoInputFieldEnabled) }
+    var dictationOutputMode: DictationOutputMode {
+        didSet { defaults.set(dictationOutputMode.rawValue, forKey: Keys.dictationOutputMode) }
     }
 
     var selectedInputDeviceUID: String {
@@ -232,8 +248,13 @@ final class SettingsStore {
         }
 
         autoCopyEnabled = Self.loadBool(defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
-        autoPasteIntoInputFieldEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.autoPasteIntoInputFieldEnabled, fallback: true)
+        if let storedOutputMode = defaults.string(forKey: Keys.dictationOutputMode),
+           let parsedMode = DictationOutputMode(rawValue: storedOutputMode)
+        {
+            dictationOutputMode = parsedMode
+        } else {
+            dictationOutputMode = .overlayBuffer
+        }
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
         dictationShortcutEnabled = Self.loadBool(
             defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)

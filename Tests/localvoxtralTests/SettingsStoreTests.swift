@@ -143,19 +143,25 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
-    // MARK: - autoPasteIntoInputFieldEnabled
+    // MARK: - dictationOutputMode
 
-    func testAutoPasteIntoInputField_defaultsToEnabled() {
+    func testDictationOutputMode_defaultsToOverlayBuffer() {
         let store = makeStore()
-        XCTAssertTrue(store.autoPasteIntoInputFieldEnabled)
+        XCTAssertEqual(store.dictationOutputMode, .overlayBuffer)
     }
 
-    func testAutoPasteIntoInputField_persistsAcrossReload() {
+    func testDictationOutputMode_persistsAcrossReload() {
         let store = makeStore()
-        store.autoPasteIntoInputFieldEnabled = false
+        store.dictationOutputMode = .liveAutoPaste
 
         let reloadedStore = makeStore()
-        XCTAssertFalse(reloadedStore.autoPasteIntoInputFieldEnabled)
+        XCTAssertEqual(reloadedStore.dictationOutputMode, .liveAutoPaste)
+    }
+
+    func testDictationOutputMode_legacyAutoPasteFlagDoesNotChangeDefaultMode() {
+        defaults.set(false, forKey: "settings.auto_paste_into_input_field_enabled")
+        let store = makeStore()
+        XCTAssertEqual(store.dictationOutputMode, .overlayBuffer)
     }
 
     // MARK: - dictationShortcut

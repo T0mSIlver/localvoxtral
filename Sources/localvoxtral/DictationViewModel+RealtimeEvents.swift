@@ -5,7 +5,14 @@ extension DictationViewModel {
     // MARK: - Realtime Event Routing
 
     func handle(event: RealtimeEvent, source: ActiveClientSource) {
-        guard source == activeClientSource else { return }
+        guard source == activeClientSource else {
+            // During stop-finalization, be permissive with disconnect routing.
+            // Some backends can close on a different callback path than expected.
+            if isFinalizingStop, case .disconnected = event {
+                handleDisconnectedEvent()
+            }
+            return
+        }
 
         switch event {
         case .connected:
@@ -112,13 +119,14 @@ extension DictationViewModel {
 
         pendingSegmentText.append(delta)
         livePartialText = pendingSegmentText
-        if settings.autoPasteIntoInputFieldEnabled {
+        if isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(delta)
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
         }
         statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
+        refreshOverlayBufferSession()
     }
 
     private func handleFinalTranscriptEvent(_ text: String, source: ActiveClientSource) {
@@ -137,6 +145,7 @@ extension DictationViewModel {
         guard !finalizedSegment.isEmpty else {
             livePartialText = ""
             pendingSegmentText = ""
+            refreshOverlayBufferSession()
             return
         }
 
@@ -150,16 +159,17 @@ extension DictationViewModel {
         pendingSegmentText = ""
         statusText = activeStatusText
 
-        if !hadLiveDelta, settings.autoPasteIntoInputFieldEnabled {
+        if !hadLiveDelta, isLiveAutoPasteModeEnabled {
             textInsertion.enqueueRealtimeInsertion(finalizedSegment)
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }
         }
 
-        if settings.autoCopyEnabled {
+        if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)
         }
+        refreshOverlayBufferSession()
     }
 
     private func handleErrorEvent(_ message: String) {
@@ -194,7 +204,7 @@ extension DictationViewModel {
         )
         guard !mergedHypothesis.isEmpty else { return }
         let insertionMode: MlxInsertionMode =
-            settings.autoPasteIntoInputFieldEnabled ? .realtime : .none
+            isLiveAutoPasteModeEnabled ? .realtime : .none
         let result = mlxStabilizer.commitHypothesis(
             mergedHypothesis,
             isFinal: false,
@@ -204,12 +214,13 @@ extension DictationViewModel {
         pendingSegmentText = result.unstableTail
         livePartialText = result.unstableTail
 
-        if settings.autoPasteIntoInputFieldEnabled,
+        if isLiveAutoPasteModeEnabled,
             let accessibilityError = textInsertion.lastAccessibilityError
         {
             lastError = accessibilityError
         }
         statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
+        refreshOverlayBufferSession()
     }
 
     func handleMlxFinalTranscript(_ text: String) {
@@ -224,7 +235,7 @@ extension DictationViewModel {
         }
 
         let insertionMode: MlxInsertionMode
-        if settings.autoPasteIntoInputFieldEnabled {
+        if isLiveAutoPasteModeEnabled {
             insertionMode = isFinalizingStop ? .finalized : .realtime
         } else {
             insertionMode = .none
@@ -248,9 +259,10 @@ extension DictationViewModel {
         mlxStabilizer.resetSegment()
         statusText = activeStatusText
 
-        if settings.autoCopyEnabled {
+        if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)
         }
+        refreshOverlayBufferSession()
     }
 
     // MARK: - Segment Promotion
@@ -269,7 +281,7 @@ extension DictationViewModel {
         pendingSegmentText = ""
         mlxStabilizer.resetSegment()
 
-        if settings.autoCopyEnabled {
+        if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)
         }
 
@@ -287,7 +299,7 @@ extension DictationViewModel {
         )
         lastFinalSegment = currentDictationEventText
 
-        if settings.autoCopyEnabled {
+        if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)
         }
 
@@ -346,5 +358,13 @@ extension DictationViewModel {
             return pendingText + " " + finalizedText
         }
         return pendingText + finalizedText
+    }
+
+    func currentOverlayBufferedText() -> String {
+        OverlayBufferTextAssembler.mergedBufferText(
+            committedText: currentDictationEventText,
+            pendingText: pendingSegmentText,
+            fallbackPendingText: livePartialText
+        )
     }
 }

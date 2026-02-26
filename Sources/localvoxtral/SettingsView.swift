@@ -139,15 +139,26 @@ struct SettingsView: View {
                 }
 
                 SettingsSection(title: "Dictation") {
-                    ToggleSettingRow(
-                        title: "Auto-paste into input field",
-                        subtitle: "Insert streaming transcript text into the focused app.",
-                        isOn: $settings.autoPasteIntoInputFieldEnabled
-                    )
+                    SettingsField(title: "Output mode") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.dictationOutputMode) {
+                                ForEach(DictationOutputMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            Text("Overlay Buffer keeps text in an on-screen buffer until stop. Live Auto-Paste streams text directly into the focused app.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
 
                     ToggleSettingRow(
                         title: "Auto-copy final segment",
-                        subtitle: "Copy each final segment to the clipboard automatically.",
+                        subtitle: "In Overlay Buffer mode, copies the full committed buffer.",
                         isOn: $settings.autoCopyEnabled
                     )
 

@@ -38,6 +38,9 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
     private let finalizationGracePeriodSeconds: TimeInterval = 2.0
 
     let supportsPeriodicCommit = false
+    var isConnected: Bool {
+        state.withLock { $0.base.socketState == .connected }
+    }
 
     override var logger: Logger { Log.mlxRealtime }
 

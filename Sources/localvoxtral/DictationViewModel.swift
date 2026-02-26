@@ -50,6 +50,12 @@ final class DictationViewModel {
     @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
     @ObservationIgnored
+    let overlayStateMachine = OverlayBufferStateMachine()
+    @ObservationIgnored
+    let overlayController = DictationOverlayController()
+    @ObservationIgnored
+    let overlayAnchorResolver = FocusedInputAnchorResolver()
+    @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
     // Mutable state — internal so extension files can access.
@@ -66,6 +72,8 @@ final class DictationViewModel {
     @ObservationIgnored
     var recentFailureResetTask: Task<Void, Never>?
     @ObservationIgnored
+    var finalizationWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
@@ -75,6 +83,10 @@ final class DictationViewModel {
     var pendingSegmentText = ""
     @ObservationIgnored
     var currentDictationEventText = ""
+    @ObservationIgnored
+    var sessionOutputMode: DictationOutputMode?
+    @ObservationIgnored
+    var overlayCommitTargetAppPID: pid_t?
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -145,13 +157,10 @@ final class DictationViewModel {
         }
 
         mlxStabilizer.onRealtimeInsertion = { [weak self] delta in
-            self?.textInsertion.enqueueRealtimeInsertion(delta)
+            self?.handleMlxRealtimeInsertionDelta(delta)
         }
         mlxStabilizer.onFinalizedInsertion = { [weak self] delta in
-            guard let self else { return }
-            if !self.textInsertion.insertTextUsingAccessibilityOnly(delta) {
-                _ = self.textInsertion.pasteUsingCommandV(delta)
-            }
+            self?.handleMlxFinalizedInsertionDelta(delta)
         }
         textInsertion.refreshAccessibilityTrustState()
         refreshMicrophoneInputs()
@@ -169,7 +178,9 @@ final class DictationViewModel {
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
         recentFailureResetTask?.cancel()
+        finalizationWatchdogTask?.cancel()
         textInsertion.stopAllTasks()
+        overlayController.hide()
         healthMonitor.cancelTasks()
         microphone.stop()
         networkMonitor.stop()
@@ -433,7 +444,11 @@ final class DictationViewModel {
         isFinalizingStop = true
         statusText = "Finalizing..."
         setRealtimeIndicatorConnected()
+        if isOverlayBufferModeEnabled {
+            beginOverlayFinalization()
+        }
         scheduleStopFinalization()
+        startStopFinalizationWatchdog()
     }
 
     func clearTranscript() {
@@ -442,7 +457,10 @@ final class DictationViewModel {
         lastFinalSegment = ""
         pendingSegmentText = ""
         currentDictationEventText = ""
+        sessionOutputMode = nil
         mlxStabilizer.reset()
+        overlayStateMachine.reset()
+        overlayController.hide()
         lastError = nil
     }
 
@@ -539,6 +557,21 @@ final class DictationViewModel {
         isDictating || isFinalizingStop
     }
 
+    var isOverlayBufferModeEnabled: Bool {
+        effectiveOutputMode == .overlayBuffer
+    }
+
+    var isLiveAutoPasteModeEnabled: Bool {
+        effectiveOutputMode == .liveAutoPaste
+    }
+
+    private var effectiveOutputMode: DictationOutputMode {
+        if isDictating || isFinalizingStop || isConnectingRealtimeSession {
+            return sessionOutputMode ?? settings.dictationOutputMode
+        }
+        return settings.dictationOutputMode
+    }
+
     func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
         Log.dictation.debug("\(message)")
@@ -552,6 +585,18 @@ final class DictationViewModel {
         case .shortcutUnavailable:
             statusText = HotKeyManager.registrationErrorStatus
             lastError = HotKeyManager.unavailableErrorMessage
+        }
+    }
+
+    private func handleMlxRealtimeInsertionDelta(_ delta: String) {
+        guard isLiveAutoPasteModeEnabled else { return }
+        textInsertion.enqueueRealtimeInsertion(delta)
+    }
+
+    private func handleMlxFinalizedInsertionDelta(_ delta: String) {
+        guard isLiveAutoPasteModeEnabled else { return }
+        if !textInsertion.insertTextUsingAccessibilityOnly(delta) {
+            _ = textInsertion.pasteUsingCommandV(delta)
         }
     }
 }

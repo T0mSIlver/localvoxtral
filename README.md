@@ -21,7 +21,7 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 - Global shortcut to start/stop dictation from anywhere
 - Native menu bar app with instant open and visual feedback with the icon
-- Live dictation that writes into your active text field as you speak
+- Output modes: overlay buffer (commit on stop) or live auto-paste into focused input
 - Fully local dictation option with `voxmlx` (no third-party API traffic)
 - Pick your preferred microphone input device
 - Copy the latest transcribed segment
@@ -50,7 +50,7 @@ open ./dist/localvoxtral.app
   - API key
   - Commit interval (`vLLM`/`voxmlx`)
   - Transcription delay (`mlx-audio`)
-  - Auto-paste into input field
+  - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Auto-copy final segment
 
 ## Tested setup

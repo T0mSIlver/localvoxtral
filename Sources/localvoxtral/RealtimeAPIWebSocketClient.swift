@@ -18,6 +18,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
     private let state = Mutex(State())
     let supportsPeriodicCommit = true
+    var isConnected: Bool {
+        state.withLock { $0.base.socketState == .connected }
+    }
 
     override var logger: Logger { Log.realtime }
 

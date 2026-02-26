@@ -30,6 +30,7 @@ enum RealtimeEvent: Sendable {
 
 protocol RealtimeClient: AnyObject {
     var supportsPeriodicCommit: Bool { get }
+    var isConnected: Bool { get }
 
     func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void)
     func connect(configuration: RealtimeSessionConfiguration) throws
