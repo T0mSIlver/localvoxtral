@@ -4,6 +4,7 @@ struct DictationOverlayView: View {
     let phase: OverlayBufferPhase
     let text: String
     let errorMessage: String?
+    private let cornerRadius: CGFloat = 12
 
     private var phaseTitle: String {
         switch phase {
@@ -35,6 +36,7 @@ struct DictationOverlayView: View {
                 }
                 Spacer(minLength: 0)
             }
+            .frame(height: 16)
 
             Text(displayText)
                 .font(.system(size: 13))
@@ -51,15 +53,13 @@ struct DictationOverlayView: View {
             }
         }
         .padding(10)
-        .frame(width: 420, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.regularMaterial)
-        )
+        .frame(minWidth: 400, idealWidth: 420, maxWidth: 540, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.25), lineWidth: 1)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
         )
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .shadow(color: Color.black.opacity(0.18), radius: 16, x: 0, y: 8)
     }
 }

@@ -76,14 +76,14 @@ private final class MockOverlayAnchorResolver: OverlayAnchorResolving {
     var focusedPID: pid_t?
     var anchor = OverlayAnchor(
         targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
-        source: .focusedInput
+        source: .focusedWindow
     )
 
     func resolveAnchor() -> OverlayAnchor {
         anchor
     }
 
-    func resolveFocusedInputAppPID() -> pid_t? {
+    func resolveFrontmostAppPID() -> pid_t? {
         focusedPID
     }
 }

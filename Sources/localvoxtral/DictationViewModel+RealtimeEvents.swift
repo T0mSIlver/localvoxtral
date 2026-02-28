@@ -368,7 +368,7 @@ extension DictationViewModel {
     }
 
     func currentOverlayBufferedText() -> String {
-        OverlayBufferTextAssembler.mergedBufferText(
+        OverlayBufferTextAssembler.displayText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
             fallbackPendingText: livePartialText

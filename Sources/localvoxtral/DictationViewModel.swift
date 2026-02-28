@@ -50,7 +50,9 @@ final class DictationViewModel {
     @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
     @ObservationIgnored
-    let overlayBufferCoordinator = OverlayBufferSessionCoordinator()
+    let overlayBufferCoordinator: OverlayBufferSessionCoordinator
+    @ObservationIgnored
+    var preResolvedOverlayAnchor: OverlayAnchor?
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -92,6 +94,12 @@ final class DictationViewModel {
 
     init(settings: SettingsStore) {
         self.settings = settings
+        let anchorResolver = OverlayAnchorResolver()
+        self.overlayBufferCoordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: DictationOverlayController(),
+            anchorResolver: anchorResolver
+        )
 
         realtimeAPIClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in

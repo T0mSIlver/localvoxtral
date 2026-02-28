@@ -5,8 +5,8 @@ import XCTest
 @MainActor
 final class OverlayBufferStateMachineTests: XCTestCase {
     func testStateMachine_happyPathTransitionsToIdleAfterCommitSuccess() {
-        let machine = OverlayBufferStateMachine()
-        let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .focusedInput)
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .focusedWindow)
 
         machine.startSession(anchor: anchor)
         XCTAssertEqual(machine.phase, .buffering)
@@ -24,7 +24,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
     }
 
     func testStateMachine_commitFailureEntersCommitFailedAndRetainsBuffer() {
-        let machine = OverlayBufferStateMachine()
+        var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 40, height: 20), source: .cursor)
 
         machine.startSession(anchor: anchor)
@@ -39,8 +39,8 @@ final class OverlayBufferStateMachineTests: XCTestCase {
     }
 
     func testStateMachine_resetReturnsToIdleFromAnyState() {
-        let machine = OverlayBufferStateMachine()
-        let anchor = OverlayAnchor(targetRect: CGRect(x: 5, y: 5, width: 80, height: 20), source: .focusedInput)
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(targetRect: CGRect(x: 5, y: 5, width: 80, height: 20), source: .focusedWindow)
 
         machine.startSession(anchor: anchor)
         machine.updateBuffer(text: "hello", anchor: nil)
@@ -54,7 +54,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
     }
 
     func testOverlayAssembler_partialAndFinalMergeWithoutDuplication() {
-        let merged = OverlayBufferTextAssembler.mergedBufferText(
+        let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello world",
             pendingText: "world again",
             fallbackPendingText: ""
@@ -64,7 +64,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
     }
 
     func testOverlayAssembler_fallbackPendingUsedWhenPrimaryPendingEmpty() {
-        let merged = OverlayBufferTextAssembler.mergedBufferText(
+        let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello",
             pendingText: "",
             fallbackPendingText: " there"
@@ -73,8 +73,8 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(merged, "hello there")
     }
 
-    func testOverlayAssembler_commitTextTrimsEdgesOnly() {
-        let commitText = OverlayBufferTextAssembler.commitText(from: "  hello world  ")
+    func testOverlayAssembler_insertionTextTrimsEdgesOnly() {
+        let commitText = OverlayBufferTextAssembler.insertionText(from: "  hello world  ")
         XCTAssertEqual(commitText, "hello world")
     }
 }

@@ -328,50 +328,17 @@ final class TextInsertionService {
     }
 
     private func focusedElementFromSystemWide() -> (element: AXUIElement, pid: pid_t)? {
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var focusedObject: AnyObject?
-        let focusStatus = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedObject
-        )
-
-        guard focusStatus == .success,
-              let focusedObject,
-              CFGetTypeID(focusedObject) == AXUIElementGetTypeID()
-        else {
-            return nil
-        }
-
-        let focusedElement = focusedObject as! AXUIElement
-        var focusedPID: pid_t = 0
-        AXUIElementGetPid(focusedElement, &focusedPID)
-        return (focusedElement, focusedPID)
+        SystemAccessibilityFocus.focusedElement()
     }
 
     private func focusedElement(inApplicationPID pid: pid_t) -> AXUIElement? {
-        let appElement = AXUIElementCreateApplication(pid)
-        var focusedObject: AnyObject?
-        let focusStatus = AXUIElementCopyAttributeValue(
-            appElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedObject
-        )
-
-        guard focusStatus == .success,
-              let focusedObject,
-              CFGetTypeID(focusedObject) == AXUIElementGetTypeID()
-        else {
-            return nil
-        }
-
-        let focusedElement = focusedObject as! AXUIElement
-        var focusedPID: pid_t = 0
-        AXUIElementGetPid(focusedElement, &focusedPID)
-        guard focusedPID == pid else { return nil }
-        return focusedElement
+        SystemAccessibilityFocus.focusedElement(inApplicationPID: pid)
     }
 
+    // TODO: This synchronous spin blocks @MainActor for up to 80ms while waiting
+    // for NSWorkspace to report the target app as frontmost. An async approach
+    // (e.g. Task.sleep ticks) would be less intrusive but requires making the
+    // entire paste path async. Acceptable for now given the small window.
     private func ensurePasteTargetIsActive(preferredAppPID: pid_t?) -> Bool {
         let selfPID = getpid()
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
@@ -533,6 +500,9 @@ final class TextInsertionService {
         accessibilityTrust.clearErrorIfNeeded()
     }
 
+    // NSPasteboardItem.copy() (inherited from NSObject) returns `self` rather than
+    // a deep copy — items become invalid once the pasteboard is cleared, so we must
+    // manually copy per-type data into fresh NSPasteboardItem instances.
     private func capturePasteboardSnapshot(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
         let copiedItems = pasteboard.pasteboardItems?
             .compactMap { item -> NSPasteboardItem? in

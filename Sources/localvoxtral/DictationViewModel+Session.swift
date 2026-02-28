@@ -5,6 +5,13 @@ import os
 extension DictationViewModel {
     // MARK: - Session Lifecycle
 
+    // sessionOutputMode lifecycle:
+    // - Set: beginDictationSession() — captures the user's setting at session start
+    //   so mid-session settings changes don't affect the active session.
+    // - Cleared: finishStoppedSession(), abortConnectingSession(), and early-return
+    //   error paths in beginDictationSession() where no session was established.
+    // All session exit paths MUST clear this to nil.
+
     func beginDictationSession() {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
@@ -42,6 +49,13 @@ extension DictationViewModel {
         let source = selectedClientSource()
         inactiveRealtimeClient(for: source).disconnect()
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+
+        // Capture the AX anchor now, while the user's text field still has focus.
+        // By the time the WebSocket connects and startOverlayBufferSession() runs,
+        // our app may have taken focus and the original AX element will be gone.
+        preResolvedOverlayAnchor = isOverlayBufferModeEnabled
+            ? overlayBufferCoordinator.resolveAnchorNow()
+            : nil
 
         audioChunkBuffer.clear()
         livePartialText = ""
@@ -588,7 +602,9 @@ extension DictationViewModel {
     // MARK: - Overlay Buffer
 
     private func startOverlayBufferSession() {
-        overlayBufferCoordinator.startSession()
+        let anchor = preResolvedOverlayAnchor
+        preResolvedOverlayAnchor = nil
+        overlayBufferCoordinator.startSession(preResolvedAnchor: anchor)
     }
 
     func beginOverlayFinalization() {

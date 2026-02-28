@@ -4,117 +4,116 @@ import CoreGraphics
 import Foundation
 
 @MainActor
-final class FocusedInputAnchorResolver {
+final class OverlayAnchorResolver {
     func resolveAnchor() -> OverlayAnchor {
-        if let focusedRect = focusedInputRect() {
-            return OverlayAnchor(targetRect: focusedRect, source: .focusedInput)
+        if let windowCenter = focusedWindowCenterRect() {
+            return OverlayAnchor(targetRect: windowCenter, source: .focusedWindow)
         }
 
         let cursorPoint = NSEvent.mouseLocation
+        Log.overlay.info(
+            "anchor: CURSOR FALLBACK at (\(cursorPoint.x, privacy: .public),\(cursorPoint.y, privacy: .public))"
+        )
         return OverlayAnchor(
             targetRect: CGRect(x: cursorPoint.x, y: cursorPoint.y, width: 1, height: 1),
             source: .cursor
         )
     }
 
-    func resolveFocusedInputAppPID() -> pid_t? {
-        guard let focusedElement = focusedElement() else { return nil }
-        var pid: pid_t = 0
-        AXUIElementGetPid(focusedElement, &pid)
-        return pid == 0 ? nil : pid
+    func resolveFrontmostAppPID() -> pid_t? {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
+              frontmostApp.processIdentifier != getpid()
+        else {
+            return nil
+        }
+        return frontmostApp.processIdentifier
     }
 
-    private func focusedInputRect() -> CGRect? {
-        guard let focusedElement = focusedElement() else { return nil }
-
-        if let frame = rectValue(for: "AXFrame" as CFString, in: focusedElement),
-           frame.width > 0, frame.height > 0
-        {
-            return frame
-        }
-
-        guard let position = pointValue(for: kAXPositionAttribute as CFString, in: focusedElement),
-              let size = sizeValue(for: kAXSizeAttribute as CFString, in: focusedElement),
-              size.width > 0,
-              size.height > 0
+    private func focusedWindowCenterRect() -> CGRect? {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
+              frontmostApp.processIdentifier != getpid()
         else {
             return nil
         }
 
-        return CGRect(origin: position, size: size)
-    }
-
-    private func focusedElement() -> AXUIElement? {
-        let systemWideElement = AXUIElementCreateSystemWide()
-
-        var focusedObject: AnyObject?
-        let focusStatus = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedObject
+        let pid = frontmostApp.processIdentifier
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowObject: AnyObject?
+        let status = AXUIElementCopyAttributeValue(
+            appElement,
+            kAXFocusedWindowAttribute as CFString,
+            &windowObject
         )
-
-        guard focusStatus == .success,
-              let focusedObject,
-              CFGetTypeID(focusedObject) == AXUIElementGetTypeID()
+        guard status == .success,
+              let windowObject,
+              CFGetTypeID(windowObject) == AXUIElementGetTypeID()
         else {
             return nil
         }
 
-        return unsafeDowncast(focusedObject, to: AXUIElement.self)
+        let windowElement = unsafeDowncast(windowObject, to: AXUIElement.self)
+        guard let frame = elementFrame(of: windowElement) else { return nil }
+        let converted = axToAppKit(frame)
+        guard converted.width > 0, converted.height > 0 else { return nil }
+        return CGRect(x: converted.midX, y: converted.midY, width: 1, height: 1)
     }
 
-    private func rectValue(for attribute: CFString, in element: AXUIElement) -> CGRect? {
-        var valueObject: AnyObject?
-        let status = AXUIElementCopyAttributeValue(element, attribute, &valueObject)
-        guard status == .success,
-              let valueObject,
-              CFGetTypeID(valueObject) == AXValueGetTypeID()
-        else {
-            return nil
-        }
-
-        let value = unsafeDowncast(valueObject, to: AXValue.self)
-        guard AXValueGetType(value) == .cgRect else { return nil }
-
-        var rect = CGRect.zero
-        guard AXValueGetValue(value, .cgRect, &rect) else { return nil }
-        return rect
-    }
-
-    private func pointValue(for attribute: CFString, in element: AXUIElement) -> CGPoint? {
-        var valueObject: AnyObject?
-        let status = AXUIElementCopyAttributeValue(element, attribute, &valueObject)
-        guard status == .success,
-              let valueObject,
-              CFGetTypeID(valueObject) == AXValueGetTypeID()
-        else {
-            return nil
-        }
-
-        let value = unsafeDowncast(valueObject, to: AXValue.self)
-        guard AXValueGetType(value) == .cgPoint else { return nil }
-
+    private func elementFrame(of element: AXUIElement) -> CGRect? {
+        var positionObject: AnyObject?
+        let posStatus = AXUIElementCopyAttributeValue(
+            element, kAXPositionAttribute as CFString, &positionObject
+        )
+        guard posStatus == .success,
+              let positionObject,
+              CFGetTypeID(positionObject) == AXValueGetTypeID()
+        else { return nil }
+        let posValue = unsafeDowncast(positionObject, to: AXValue.self)
+        guard AXValueGetType(posValue) == .cgPoint else { return nil }
         var point = CGPoint.zero
-        guard AXValueGetValue(value, .cgPoint, &point) else { return nil }
-        return point
+        guard AXValueGetValue(posValue, .cgPoint, &point) else { return nil }
+
+        var sizeObject: AnyObject?
+        let sizeStatus = AXUIElementCopyAttributeValue(
+            element, kAXSizeAttribute as CFString, &sizeObject
+        )
+        guard sizeStatus == .success,
+              let sizeObject,
+              CFGetTypeID(sizeObject) == AXValueGetTypeID()
+        else { return nil }
+        let szValue = unsafeDowncast(sizeObject, to: AXValue.self)
+        guard AXValueGetType(szValue) == .cgSize else { return nil }
+        var size = CGSize.zero
+        guard AXValueGetValue(szValue, .cgSize, &size),
+              size.width > 0, size.height > 0
+        else { return nil }
+
+        return CGRect(origin: point, size: size)
     }
 
-    private func sizeValue(for attribute: CFString, in element: AXUIElement) -> CGSize? {
-        var valueObject: AnyObject?
-        let status = AXUIElementCopyAttributeValue(element, attribute, &valueObject)
-        guard status == .success,
-              let valueObject,
-              CFGetTypeID(valueObject) == AXValueGetTypeID()
-        else {
-            return nil
+    /// Converts a rect from AX/Quartz global display coordinates (Y-down)
+    /// to AppKit screen coordinates (Y-up).
+    private func axToAppKit(_ axRect: CGRect) -> CGRect {
+        guard let maxY = primaryScreenMaxY() else {
+            return axRect
         }
+        return CGRect(
+            x: axRect.origin.x,
+            y: maxY - axRect.origin.y - axRect.height,
+            width: axRect.width,
+            height: axRect.height
+        )
+    }
 
-        let value = unsafeDowncast(valueObject, to: AXValue.self)
-        guard AXValueGetType(value) == .cgSize else { return nil }
-
-        var size = CGSize.zero
-        guard AXValueGetValue(value, .cgSize, &size) else { return nil }
-        return size
+    private func primaryScreenMaxY() -> CGFloat? {
+        let mainDisplayID = CGMainDisplayID()
+        if let mainScreen = NSScreen.screens.first(where: {
+            guard let number = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return false
+            }
+            return number.uint32Value == mainDisplayID
+        }) {
+            return mainScreen.frame.maxY
+        }
+        return NSScreen.screens.first?.frame.maxY
     }
 }

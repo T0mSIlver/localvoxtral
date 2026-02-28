@@ -1,9 +1,10 @@
 import CoreGraphics
 import Foundation
+import os
 
 struct OverlayAnchor: Equatable {
     enum Source: Equatable {
-        case focusedInput
+        case focusedWindow
         case cursor
     }
 
@@ -18,8 +19,17 @@ enum OverlayBufferPhase: Equatable {
     case commitFailed
 }
 
+/// Assembles text for the overlay buffer display and insertion.
+///
+/// There are two distinct text representations:
+/// - **Display text** (`displayText`): Merged view of committed + pending text shown
+///   in the overlay panel. Uses tail-overlap merging to avoid visual duplication.
+/// - **Insertion text** (`insertionText`): The trimmed buffer text used for final
+///   text insertion into the focused app. No merging — just the raw buffer content.
 struct OverlayBufferTextAssembler {
-    static func mergedBufferText(
+    /// Returns the merged text suitable for **overlay display only**.
+    /// Combines committed and pending text with tail-overlap deduplication.
+    static func displayText(
         committedText: String,
         pendingText: String,
         fallbackPendingText: String
@@ -41,13 +51,22 @@ struct OverlayBufferTextAssembler {
         ).merged
     }
 
-    static func commitText(from bufferText: String) -> String {
+    /// Returns the trimmed buffer text suitable for **text insertion** into the focused app.
+    static func insertionText(from bufferText: String) -> String {
         bufferText.trimmed
     }
 }
 
+// Valid state transitions:
+//   idle → buffering         (startSession)
+//   buffering → finalizing   (beginFinalizing)
+//   finalizing → idle        (commitSucceeded)
+//   finalizing → commitFailed (commitFailed)
+//   buffering/finalizing → idle (reset)
+//   commitFailed → idle      (reset)
+//   any → idle               (reset)
 @MainActor
-final class OverlayBufferStateMachine {
+struct OverlayBufferStateMachine {
     struct Snapshot: Equatable {
         let phase: OverlayBufferPhase
         let bufferText: String
@@ -70,14 +89,19 @@ final class OverlayBufferStateMachine {
         )
     }
 
-    func startSession(anchor: OverlayAnchor) {
+    mutating func startSession(anchor: OverlayAnchor) {
+        guard phase == .idle else {
+            let currentPhase = phase
+            Log.overlay.warning("startSession called but phase is \(String(describing: currentPhase)), not idle — ignoring")
+            return
+        }
         phase = .buffering
         bufferText = ""
         errorMessage = nil
         self.anchor = anchor
     }
 
-    func updateBuffer(text: String, anchor: OverlayAnchor?) {
+    mutating func updateBuffer(text: String, anchor: OverlayAnchor?) {
         guard phase == .buffering || phase == .finalizing else { return }
         bufferText = text
         if let anchor {
@@ -85,7 +109,7 @@ final class OverlayBufferStateMachine {
         }
     }
 
-    func beginFinalizing(anchor: OverlayAnchor?) {
+    mutating func beginFinalizing(anchor: OverlayAnchor?) {
         guard phase == .buffering || phase == .finalizing else { return }
         phase = .finalizing
         if let anchor {
@@ -93,11 +117,16 @@ final class OverlayBufferStateMachine {
         }
     }
 
-    func commitSucceeded() {
+    mutating func commitSucceeded() {
+        guard phase == .finalizing else {
+            let currentPhase = phase
+            Log.overlay.warning("commitSucceeded called but phase is \(String(describing: currentPhase)), not finalizing — ignoring")
+            return
+        }
         reset()
     }
 
-    func commitFailed(error: String, anchor: OverlayAnchor?) {
+    mutating func commitFailed(error: String, anchor: OverlayAnchor?) {
         guard phase != .idle else { return }
         phase = .commitFailed
         errorMessage = error
@@ -106,7 +135,7 @@ final class OverlayBufferStateMachine {
         }
     }
 
-    func reset() {
+    mutating func reset() {
         phase = .idle
         bufferText = ""
         errorMessage = nil

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 
 @MainActor
 protocol OverlayBufferRendering: AnyObject {
@@ -12,10 +13,10 @@ extension DictationOverlayController: OverlayBufferRendering {}
 @MainActor
 protocol OverlayAnchorResolving: AnyObject {
     func resolveAnchor() -> OverlayAnchor
-    func resolveFocusedInputAppPID() -> pid_t?
+    func resolveFrontmostAppPID() -> pid_t?
 }
 
-extension FocusedInputAnchorResolver: OverlayAnchorResolving {}
+extension OverlayAnchorResolver: OverlayAnchorResolving {}
 
 @MainActor
 protocol OverlayTextCommitting: AnyObject {
@@ -34,7 +35,7 @@ final class OverlayBufferSessionCoordinator {
         case failed(message: String)
     }
 
-    private let stateMachine: OverlayBufferStateMachine
+    private var stateMachine: OverlayBufferStateMachine
     private let renderer: OverlayBufferRendering
     private let anchorResolver: OverlayAnchorResolving
 
@@ -42,36 +43,38 @@ final class OverlayBufferSessionCoordinator {
     private var finalizationCommitTargetAppPID: pid_t?
 
     init(
-        stateMachine: OverlayBufferStateMachine = OverlayBufferStateMachine(),
-        renderer: OverlayBufferRendering = DictationOverlayController(),
-        anchorResolver: OverlayAnchorResolving = FocusedInputAnchorResolver()
+        stateMachine: OverlayBufferStateMachine,
+        renderer: OverlayBufferRendering,
+        anchorResolver: OverlayAnchorResolving
     ) {
         self.stateMachine = stateMachine
         self.renderer = renderer
         self.anchorResolver = anchorResolver
     }
 
-    func startSession() {
+    func resolveAnchorNow() -> OverlayAnchor {
+        anchorResolver.resolveAnchor()
+    }
+
+    func startSession(preResolvedAnchor: OverlayAnchor? = nil) {
         finalizationCommitTargetAppPID = nil
         refreshLiveCommitTargetAppPID()
 
-        let anchor = anchorResolver.resolveAnchor()
+        let anchor = preResolvedAnchor ?? anchorResolver.resolveAnchor()
         stateMachine.startSession(anchor: anchor)
         stateMachine.updateBuffer(text: "", anchor: anchor)
         renderCurrentSnapshot()
+        Log.overlay.info("overlay session started (preResolved=\(preResolvedAnchor != nil, privacy: .public))")
     }
 
     func beginFinalizing(bufferText: String) {
         lockCommitTargetForFinalizationIfNeeded()
         let anchor = anchorResolver.resolveAnchor()
 
-        if stateMachine.phase == .idle {
-            stateMachine.startSession(anchor: anchor)
-        }
-
         stateMachine.beginFinalizing(anchor: anchor)
         stateMachine.updateBuffer(text: bufferText, anchor: anchor)
         renderCurrentSnapshot()
+        Log.overlay.info("overlay begin finalizing")
     }
 
     func refresh(bufferText: String) {
@@ -81,17 +84,18 @@ final class OverlayBufferSessionCoordinator {
             refreshLiveCommitTargetAppPID()
         }
 
-        let anchor = anchorResolver.resolveAnchor()
-        stateMachine.updateBuffer(text: bufferText, anchor: anchor)
+        stateMachine.updateBuffer(text: bufferText, anchor: nil)
         renderCurrentSnapshot()
+        Log.overlay.debug("overlay buffer refreshed")
     }
 
     @discardableResult
     func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> CommitOutcome {
-        let commitText = OverlayBufferTextAssembler.commitText(from: stateMachine.bufferText)
+        let commitText = OverlayBufferTextAssembler.insertionText(from: stateMachine.bufferText)
         guard !commitText.isEmpty else {
             stateMachine.commitSucceeded()
             renderCurrentSnapshot()
+            Log.overlay.info("overlay commit skipped (empty buffer)")
             return .succeeded
         }
 
@@ -112,6 +116,7 @@ final class OverlayBufferSessionCoordinator {
             }
             stateMachine.commitSucceeded()
             renderCurrentSnapshot()
+            Log.overlay.info("overlay commit succeeded")
             return .succeeded
         }
 
@@ -131,6 +136,7 @@ final class OverlayBufferSessionCoordinator {
             anchor: anchorResolver.resolveAnchor()
         )
         renderCurrentSnapshot()
+        Log.overlay.info("overlay commit failed: \(failureMessage, privacy: .public)")
         return .failed(message: failureMessage)
     }
 
@@ -139,6 +145,7 @@ final class OverlayBufferSessionCoordinator {
         liveCommitTargetAppPID = nil
         finalizationCommitTargetAppPID = nil
         renderer.hide()
+        Log.overlay.info("overlay session reset")
     }
 
     private func renderCurrentSnapshot() {
@@ -152,7 +159,7 @@ final class OverlayBufferSessionCoordinator {
     }
 
     private func refreshLiveCommitTargetAppPID() {
-        if let focusedPID = anchorResolver.resolveFocusedInputAppPID(),
+        if let focusedPID = anchorResolver.resolveFrontmostAppPID(),
            focusedPID != getpid()
         {
             liveCommitTargetAppPID = focusedPID
