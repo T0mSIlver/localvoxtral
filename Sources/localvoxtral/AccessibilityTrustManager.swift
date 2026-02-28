@@ -76,6 +76,8 @@ final class AccessibilityTrustManager {
     }
 
     func promptIfNeeded() {
+        refresh()
+        guard !isTrusted else { return }
         guard !hasPromptedForPermission else { return }
         hasPromptedForPermission = true
 

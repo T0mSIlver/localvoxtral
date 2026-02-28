@@ -17,6 +17,9 @@ final class DictationViewModel {
         case mlxAudio
     }
 
+    private static let microphoneDeniedMessage =
+        "Grant microphone access in System Settings > Privacy & Security > Microphone."
+
     var isDictating = false
     var isFinalizingStop = false
     var isConnectingRealtimeSession = false
@@ -82,6 +85,10 @@ final class DictationViewModel {
     var realtimeFinalizationLastActivityAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
+    @ObservationIgnored
+    private var startupPermissionTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var hasRequestedStartupPermissions = false
     @ObservationIgnored
     var pendingSegmentText = ""
     @ObservationIgnored
@@ -192,6 +199,7 @@ final class DictationViewModel {
         if startRuntimeServices {
             refreshMicrophoneInputs()
             registerLifecycleObservers()
+            requestStartupPermissionsIfNeeded()
         }
     }
 
@@ -207,6 +215,7 @@ final class DictationViewModel {
         connectTimeoutTask?.cancel()
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
+        startupPermissionTask?.cancel()
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
@@ -249,6 +258,60 @@ final class DictationViewModel {
         }
 
         lifecycleObservers = [sleepObserver, terminateObserver]
+    }
+
+    private func requestStartupPermissionsIfNeeded() {
+        guard managesRuntimeServices else { return }
+        guard !hasRequestedStartupPermissions else { return }
+        hasRequestedStartupPermissions = true
+
+        startupPermissionTask?.cancel()
+        startupPermissionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.requestStartupMicrophonePermissionIfNeeded()
+            guard !Task.isCancelled else { return }
+            self.requestStartupAccessibilityPermissionIfNeeded()
+        }
+    }
+
+    private func requestStartupAccessibilityPermissionIfNeeded() {
+        refreshAccessibilityTrustState()
+        guard !textInsertion.isAccessibilityTrusted else { return }
+
+        debugLog("startup accessibility permission prompt requested")
+        textInsertion.requestAccessibilityPermissionIfNeeded()
+    }
+
+    private func requestStartupMicrophonePermissionIfNeeded() async {
+        guard !isAwaitingMicrophonePermission else { return }
+        guard microphone.authorizationStatus() == .notDetermined else { return }
+
+        isAwaitingMicrophonePermission = true
+        debugLog("startup microphone permission prompt requested")
+
+        let granted = await withCheckedContinuation { continuation in
+            microphone.requestAccess { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        isAwaitingMicrophonePermission = false
+        debugLog("startup microphone permission result granted=\(granted)")
+
+        guard granted else {
+            if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
+                statusText = "Microphone access denied."
+            }
+            lastError = Self.microphoneDeniedMessage
+            return
+        }
+
+        if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession,
+           statusText == "Awaiting microphone permission..."
+        {
+            statusText = "Ready"
+        }
     }
 
     // MARK: - Network
@@ -416,7 +479,6 @@ final class DictationViewModel {
             debugLog("selected input id=\(selectedInputDeviceID)")
         }
         lastError = nil
-        let deniedMessage = "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
         switch microphone.authorizationStatus() {
         case .authorized:
@@ -432,7 +494,7 @@ final class DictationViewModel {
                     self.debugLog("microphone permission result granted=\(granted)")
                     guard granted else {
                         self.statusText = "Microphone access denied."
-                        self.lastError = deniedMessage
+                        self.lastError = Self.microphoneDeniedMessage
                         return
                     }
                     self.beginDictationSession()
@@ -447,7 +509,7 @@ final class DictationViewModel {
             }
         case .denied, .restricted:
             statusText = "Microphone access denied."
-            lastError = deniedMessage
+            lastError = Self.microphoneDeniedMessage
             debugLog("microphone access denied or restricted")
         }
     }

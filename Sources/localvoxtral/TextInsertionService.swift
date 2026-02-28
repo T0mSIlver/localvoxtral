@@ -248,7 +248,11 @@ final class TextInsertionService {
     }
 
     func requestAccessibilityPermission() {
-        accessibilityTrust.requestPermission()
+        requestAccessibilityPermissionIfNeeded()
+    }
+
+    func requestAccessibilityPermissionIfNeeded() {
+        accessibilityTrust.promptIfNeeded()
     }
 
     func resetDiagnostics() {
