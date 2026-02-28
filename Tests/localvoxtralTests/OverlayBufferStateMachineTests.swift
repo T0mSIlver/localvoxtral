@@ -73,6 +73,16 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertEqual(merged, "hello there")
     }
 
+    func testOverlayAssembler_commitTextPreservesNewlines() {
+        let commitText = OverlayBufferTextAssembler.commitText(
+            committedText: "line one\nline two",
+            pendingText: "",
+            fallbackPendingText: "\nline three"
+        )
+
+        XCTAssertEqual(commitText, "line one\nline two\nline three")
+    }
+
     func testOverlayAssembler_insertionTextTrimsEdgesOnly() {
         let commitText = OverlayBufferTextAssembler.insertionText(from: "  hello world  ")
         XCTAssertEqual(commitText, "hello world")

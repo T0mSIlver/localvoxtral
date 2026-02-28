@@ -28,17 +28,29 @@ protocol OverlayTextCommitting: AnyObject {
 
 extension TextInsertionService: OverlayTextCommitting {}
 
-@MainActor
-final class OverlayBufferSessionCoordinator {
-    enum CommitOutcome: Equatable {
-        case succeeded
-        case failed(message: String)
-    }
+enum OverlayBufferCommitOutcome: Equatable {
+    case succeeded
+    case failed(message: String)
+}
 
+@MainActor
+protocol OverlayBufferSessionCoordinating: AnyObject {
+    func resolveAnchorNow() -> OverlayAnchor
+    func startSession(preResolvedAnchor: OverlayAnchor?)
+    func beginFinalizing(displayBufferText: String, commitBufferText: String)
+    func refresh(displayBufferText: String, commitBufferText: String)
+    @discardableResult
+    func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome
+    func reset()
+}
+
+@MainActor
+final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     private var stateMachine: OverlayBufferStateMachine
     private let renderer: OverlayBufferRendering
     private let anchorResolver: OverlayAnchorResolving
 
+    private var commitBufferText = ""
     private var liveCommitTargetAppPID: pid_t?
     private var finalizationCommitTargetAppPID: pid_t?
 
@@ -57,6 +69,7 @@ final class OverlayBufferSessionCoordinator {
     }
 
     func startSession(preResolvedAnchor: OverlayAnchor? = nil) {
+        commitBufferText = ""
         finalizationCommitTargetAppPID = nil
         refreshLiveCommitTargetAppPID()
 
@@ -66,31 +79,36 @@ final class OverlayBufferSessionCoordinator {
         Log.overlay.info("overlay session started (preResolved=\(preResolvedAnchor != nil, privacy: .public))")
     }
 
-    func beginFinalizing(bufferText: String) {
+    func beginFinalizing(displayBufferText: String, commitBufferText: String) {
         lockCommitTargetForFinalizationIfNeeded()
         let anchor = anchorResolver.resolveAnchor()
 
         stateMachine.beginFinalizing(anchor: anchor)
-        stateMachine.updateBuffer(text: bufferText, anchor: anchor)
+        stateMachine.updateBuffer(text: displayBufferText, anchor: anchor)
+        self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
         Log.overlay.info("overlay begin finalizing")
     }
 
-    func refresh(bufferText: String) {
+    func refresh(displayBufferText: String, commitBufferText: String) {
         guard stateMachine.phase == .buffering || stateMachine.phase == .finalizing else { return }
 
         if stateMachine.phase == .buffering {
             refreshLiveCommitTargetAppPID()
         }
 
-        stateMachine.updateBuffer(text: bufferText, anchor: nil)
+        stateMachine.updateBuffer(text: displayBufferText, anchor: nil)
+        self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
         Log.overlay.debug("overlay buffer refreshed")
     }
 
     @discardableResult
-    func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> CommitOutcome {
-        let commitText = OverlayBufferTextAssembler.insertionText(from: stateMachine.bufferText)
+    func commitIfNeeded(
+        using textCommitter: OverlayTextCommitting,
+        autoCopyEnabled: Bool
+    ) -> OverlayBufferCommitOutcome {
+        let commitText = OverlayBufferTextAssembler.insertionText(from: commitBufferText)
         guard !commitText.isEmpty else {
             stateMachine.commitSucceeded()
             renderCurrentSnapshot()
@@ -141,6 +159,7 @@ final class OverlayBufferSessionCoordinator {
 
     func reset() {
         stateMachine.reset()
+        commitBufferText = ""
         liveCommitTargetAppPID = nil
         finalizationCommitTargetAppPID = nil
         renderer.hide()
@@ -164,14 +183,16 @@ final class OverlayBufferSessionCoordinator {
             return
         }
 
-        if let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
-           frontmostPID != getpid()
-        {
-            liveCommitTargetAppPID = frontmostPID
-            return
+        // Preserve the last non-self PID when AX focus is temporarily unavailable.
+        // This avoids replacing a good target with transient frontmost values.
+        if liveCommitTargetAppPID == nil {
+            if let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+               frontmostPID != getpid()
+            {
+                liveCommitTargetAppPID = frontmostPID
+                return
+            }
         }
-
-        liveCommitTargetAppPID = nil
     }
 
     private func copyToPasteboard(_ text: String) {

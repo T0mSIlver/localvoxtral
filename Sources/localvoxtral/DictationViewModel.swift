@@ -36,7 +36,12 @@ final class DictationViewModel {
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
-    let microphone = MicrophoneCaptureService()
+    private var hasInitializedMicrophone = false
+    @ObservationIgnored
+    lazy var microphone: MicrophoneCaptureService = {
+        hasInitializedMicrophone = true
+        return MicrophoneCaptureService()
+    }()
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
     @ObservationIgnored
@@ -50,7 +55,7 @@ final class DictationViewModel {
     @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
     @ObservationIgnored
-    let overlayBufferCoordinator: OverlayBufferSessionCoordinator
+    let overlayBufferCoordinator: OverlayBufferSessionCoordinating
     @ObservationIgnored
     var preResolvedOverlayAnchor: OverlayAnchor?
     @ObservationIgnored
@@ -91,15 +96,26 @@ final class DictationViewModel {
 
     @ObservationIgnored
     private var lifecycleObservers: [NSObjectProtocol] = []
+    @ObservationIgnored
+    private let managesRuntimeServices: Bool
 
-    init(settings: SettingsStore) {
+    init(
+        settings: SettingsStore,
+        overlayBufferCoordinator: OverlayBufferSessionCoordinating? = nil,
+        startRuntimeServices: Bool = true
+    ) {
         self.settings = settings
-        let anchorResolver = OverlayAnchorResolver()
-        self.overlayBufferCoordinator = OverlayBufferSessionCoordinator(
-            stateMachine: OverlayBufferStateMachine(),
-            renderer: DictationOverlayController(),
-            anchorResolver: anchorResolver
-        )
+        self.managesRuntimeServices = startRuntimeServices
+        if let overlayBufferCoordinator {
+            self.overlayBufferCoordinator = overlayBufferCoordinator
+        } else {
+            let anchorResolver = OverlayAnchorResolver()
+            self.overlayBufferCoordinator = OverlayBufferSessionCoordinator(
+                stateMachine: OverlayBufferStateMachine(),
+                renderer: DictationOverlayController(),
+                anchorResolver: anchorResolver
+            )
+        }
 
         realtimeAPIClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in
@@ -113,22 +129,24 @@ final class DictationViewModel {
             }
         }
 
-        microphone.onConfigurationChange = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.healthMonitor.handleConfigurationChange()
+        if startRuntimeServices {
+            microphone.onConfigurationChange = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.healthMonitor.handleConfigurationChange()
+                }
             }
-        }
 
-        microphone.onInputDevicesChanged = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.healthMonitor.handleInputDevicesChanged()
+            microphone.onInputDevicesChanged = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.healthMonitor.handleInputDevicesChanged()
+                }
             }
-        }
 
-        microphone.onError = { [weak self] message in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.lastError = message
+            microphone.onError = { [weak self] message in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.lastError = message
+                }
             }
         }
 
@@ -150,14 +168,18 @@ final class DictationViewModel {
                 self?.handleNetworkChange(connected: connected)
             }
         }
-        networkMonitor.start()
+        if startRuntimeServices {
+            networkMonitor.start()
+        }
 
         hotKeyManager.onToggle = { [weak self] in self?.toggleDictation() }
-        switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
-        case .success:
-            break
-        case .failure(let reason):
-            applyHotKeyRegistrationFailure(reason)
+        if startRuntimeServices {
+            switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
+            case .success:
+                break
+            case .failure(let reason):
+                applyHotKeyRegistrationFailure(reason)
+            }
         }
 
         mlxStabilizer.onRealtimeInsertion = { [weak self] delta in
@@ -167,8 +189,10 @@ final class DictationViewModel {
             self?.handleMlxFinalizedInsertionDelta(delta)
         }
         textInsertion.refreshAccessibilityTrustState()
-        refreshMicrophoneInputs()
-        registerLifecycleObservers()
+        if startRuntimeServices {
+            refreshMicrophoneInputs()
+            registerLifecycleObservers()
+        }
     }
 
     @MainActor
@@ -186,11 +210,15 @@ final class DictationViewModel {
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
-        microphone.stop()
-        networkMonitor.stop()
-        realtimeAPIClient.disconnect()
-        mlxAudioRealtimeClient.disconnect()
-        hotKeyManager.unregister()
+        if managesRuntimeServices {
+            if hasInitializedMicrophone {
+                microphone.stop()
+            }
+            networkMonitor.stop()
+            realtimeAPIClient.disconnect()
+            mlxAudioRealtimeClient.disconnect()
+            hotKeyManager.unregister()
+        }
     }
 
     // MARK: - Lifecycle Observers

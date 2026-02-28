@@ -23,9 +23,12 @@ enum OverlayBufferPhase: Equatable {
 ///
 /// There are two distinct text representations:
 /// - **Display text** (`displayText`): Merged view of committed + pending text shown
-///   in the overlay panel. Uses tail-overlap merging to avoid visual duplication.
-/// - **Insertion text** (`insertionText`): The trimmed buffer text used for final
-///   text insertion into the focused app. No merging — just the raw buffer content.
+///   in the overlay panel. Uses tail-overlap merging and newline flattening to keep
+///   panel rendering stable.
+/// - **Commit text** (`commitText`): Merged view of committed + pending text used as
+///   the insertion source for final commit. Preserves newline structure.
+/// - **Insertion text** (`insertionText`): Final edge-trim pass applied right before
+///   text insertion into the focused app.
 enum OverlayBufferTextAssembler {
     /// Returns the merged text suitable for **overlay display only**.
     /// Combines committed and pending text with tail-overlap deduplication.
@@ -34,20 +37,52 @@ enum OverlayBufferTextAssembler {
         pendingText: String,
         fallbackPendingText: String
     ) -> String {
-        let normalizedCommitted = committedText.replacingOccurrences(of: "\n", with: " ")
-        let pendingCandidate = pendingText.trimmed.isEmpty ? fallbackPendingText : pendingText
-        let normalizedPending = pendingCandidate.replacingOccurrences(of: "\n", with: " ")
+        mergedText(
+            committedText: committedText,
+            pendingText: pendingText,
+            fallbackPendingText: fallbackPendingText,
+            normalizeNewlinesForDisplay: true
+        )
+    }
 
-        guard !normalizedPending.trimmed.isEmpty else {
-            return normalizedCommitted
+    /// Returns the merged text used as the source for final commit insertion.
+    static func commitText(
+        committedText: String,
+        pendingText: String,
+        fallbackPendingText: String
+    ) -> String {
+        mergedText(
+            committedText: committedText,
+            pendingText: pendingText,
+            fallbackPendingText: fallbackPendingText,
+            normalizeNewlinesForDisplay: false
+        )
+    }
+
+    private static func mergedText(
+        committedText: String,
+        pendingText: String,
+        fallbackPendingText: String,
+        normalizeNewlinesForDisplay: Bool
+    ) -> String {
+        let pendingCandidate = pendingText.trimmed.isEmpty ? fallbackPendingText : pendingText
+        let mergedCommitted = normalizeNewlinesForDisplay
+            ? committedText.replacingOccurrences(of: "\n", with: " ")
+            : committedText
+        let mergedPending = normalizeNewlinesForDisplay
+            ? pendingCandidate.replacingOccurrences(of: "\n", with: " ")
+            : pendingCandidate
+
+        guard !mergedPending.trimmed.isEmpty else {
+            return mergedCommitted
         }
-        guard !normalizedCommitted.trimmed.isEmpty else {
-            return normalizedPending
+        guard !mergedCommitted.trimmed.isEmpty else {
+            return mergedPending
         }
 
         return TextMergingAlgorithms.appendWithTailOverlap(
-            existing: normalizedCommitted,
-            incoming: normalizedPending
+            existing: mergedCommitted,
+            incoming: mergedPending
         ).merged
     }
 

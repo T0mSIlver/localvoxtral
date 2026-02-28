@@ -301,6 +301,8 @@ extension DictationViewModel {
             existingText: currentDictationEventText
         )
         lastFinalSegment = currentDictationEventText
+        livePartialText = ""
+        pendingSegmentText = ""
 
         if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
             copyLatestSegment(updateStatus: false)
@@ -367,8 +369,16 @@ extension DictationViewModel {
         return pendingText + finalizedText
     }
 
-    func currentOverlayBufferedText() -> String {
+    func currentOverlayDisplayText() -> String {
         OverlayBufferTextAssembler.displayText(
+            committedText: currentDictationEventText,
+            pendingText: pendingSegmentText,
+            fallbackPendingText: livePartialText
+        )
+    }
+
+    func currentOverlayCommitText() -> String {
+        OverlayBufferTextAssembler.commitText(
             committedText: currentDictationEventText,
             pendingText: pendingSegmentText,
             fallbackPendingText: livePartialText

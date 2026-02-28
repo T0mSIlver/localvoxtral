@@ -17,10 +17,16 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
-        coordinator.beginFinalizing(bufferText: "hello")
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
 
         anchorResolver.focusedPID = 222
-        coordinator.refresh(bufferText: "hello again")
+        coordinator.refresh(
+            displayBufferText: "hello again",
+            commitBufferText: "hello again"
+        )
 
         let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
 
@@ -42,7 +48,10 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
-        coordinator.beginFinalizing(bufferText: "copy me")
+        coordinator.beginFinalizing(
+            displayBufferText: "copy me",
+            commitBufferText: "copy me"
+        )
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -66,7 +75,10 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
-        coordinator.beginFinalizing(bufferText: "do not copy")
+        coordinator.beginFinalizing(
+            displayBufferText: "do not copy",
+            commitBufferText: "do not copy"
+        )
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -109,7 +121,10 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
-        coordinator.beginFinalizing(bufferText: "hello")
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
 
         let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
 
@@ -119,6 +134,59 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         )
         let latestSnapshot = renderer.snapshots.last ?? nil
         XCTAssertEqual(latestSnapshot?.phase, .commitFailed)
+    }
+
+    func testCommitUsesLastKnownLivePIDWhenFocusTemporarilyUnavailableAtStop() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = true
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.refresh(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+
+        anchorResolver.focusedPID = nil
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(committer.insertPreferredPIDs.first ?? nil, 111)
+    }
+
+    func testCommitUsesDedicatedCommitBufferTextInsteadOfDisplayBufferText() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = true
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "display hello world",
+            commitBufferText: "commit\nhello\nworld"
+        )
+
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(committer.insertedTexts.first ?? "", "commit\nhello\nworld")
     }
 }
 
@@ -159,15 +227,19 @@ private final class MockOverlayTextCommitter: OverlayTextCommitting {
     var insertResult = false
     var pasteResult = false
 
+    var insertedTexts: [String] = []
+    var pastedTexts: [String] = []
     var insertPreferredPIDs: [pid_t?] = []
     var pastePreferredPIDs: [pid_t?] = []
 
     func insertTextUsingAccessibilityOnly(_ text: String, preferredAppPID: pid_t?) -> Bool {
+        insertedTexts.append(text)
         insertPreferredPIDs.append(preferredAppPID)
         return insertResult
     }
 
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool {
+        pastedTexts.append(text)
         pastePreferredPIDs.append(preferredAppPID)
         return pasteResult
     }

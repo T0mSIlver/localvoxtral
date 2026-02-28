@@ -334,7 +334,7 @@ extension DictationViewModel {
             }
         }
 
-        var overlayCommitOutcome: OverlayBufferSessionCoordinator.CommitOutcome?
+        var overlayCommitOutcome: OverlayBufferCommitOutcome?
         var didOverlayCommitFail = false
         if shouldCommitOverlay {
             refreshOverlayBufferSession()
@@ -610,14 +610,16 @@ extension DictationViewModel {
     func beginOverlayFinalization() {
         guard isOverlayBufferModeEnabled else { return }
         overlayBufferCoordinator.beginFinalizing(
-            bufferText: currentOverlayBufferedText()
+            displayBufferText: currentOverlayDisplayText(),
+            commitBufferText: currentOverlayCommitText()
         )
     }
 
     func refreshOverlayBufferSession() {
         guard isOverlayBufferModeEnabled else { return }
         overlayBufferCoordinator.refresh(
-            bufferText: currentOverlayBufferedText()
+            displayBufferText: currentOverlayDisplayText(),
+            commitBufferText: currentOverlayCommitText()
         )
     }
 }
