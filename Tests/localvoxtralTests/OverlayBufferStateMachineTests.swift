@@ -6,7 +6,7 @@ import XCTest
 final class OverlayBufferStateMachineTests: XCTestCase {
     func testStateMachine_happyPathTransitionsToIdleAfterCommitSuccess() {
         var machine = OverlayBufferStateMachine()
-        let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .focusedWindow)
+        let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .windowCenter)
 
         machine.startSession(anchor: anchor)
         XCTAssertEqual(machine.phase, .buffering)
@@ -25,7 +25,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
 
     func testStateMachine_commitFailureEntersCommitFailedAndRetainsBuffer() {
         var machine = OverlayBufferStateMachine()
-        let anchor = OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 40, height: 20), source: .cursor)
+        let anchor = OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 40, height: 20), source: .mouseLocation)
 
         machine.startSession(anchor: anchor)
         machine.updateBuffer(text: "buffered text", anchor: nil)
@@ -40,7 +40,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
 
     func testStateMachine_resetReturnsToIdleFromAnyState() {
         var machine = OverlayBufferStateMachine()
-        let anchor = OverlayAnchor(targetRect: CGRect(x: 5, y: 5, width: 80, height: 20), source: .focusedWindow)
+        let anchor = OverlayAnchor(targetRect: CGRect(x: 5, y: 5, width: 80, height: 20), source: .windowCenter)
 
         machine.startSession(anchor: anchor)
         machine.updateBuffer(text: "hello", anchor: nil)

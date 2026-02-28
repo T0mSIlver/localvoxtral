@@ -29,6 +29,71 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(committer.insertPreferredPIDs.first ?? nil, 111)
     }
 
+    func testCommitWithAutoCopyCopiesTextToPasteboard() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = true
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.beginFinalizing(bufferText: "copy me")
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: true)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(pasteboard.string(forType: .string), "copy me")
+    }
+
+    func testCommitWithAutoCopyDisabledDoesNotCopyToPasteboard() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = true
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.beginFinalizing(bufferText: "do not copy")
+
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+        let changeCount = pasteboard.changeCount
+
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(pasteboard.changeCount, changeCount)
+    }
+
+    func testResetHidesRenderer() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+
+        coordinator.startSession()
+        coordinator.reset()
+
+        XCTAssertEqual(renderer.hideCallCount, 1)
+    }
+
     func testCommitFailureRendersCommitFailedSnapshot() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
@@ -76,7 +141,7 @@ private final class MockOverlayAnchorResolver: OverlayAnchorResolving {
     var focusedPID: pid_t?
     var anchor = OverlayAnchor(
         targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
-        source: .focusedWindow
+        source: .windowCenter
     )
 
     func resolveAnchor() -> OverlayAnchor {

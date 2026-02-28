@@ -39,9 +39,9 @@ final class DictationOverlayController {
     /// cleared on hide. Prevents the panel from flipping between above/below
     /// as the content height changes.
     private enum Placement {
-        /// Panel sits above the input field. `nearEdgeY` is the panel's bottom edge.
+        /// Panel sits above the anchor. `nearEdgeY` is the panel's bottom edge.
         case above(nearEdgeY: CGFloat)
-        /// Panel sits below the input field. `nearEdgeY` is the panel's top edge.
+        /// Panel sits below the anchor. `nearEdgeY` is the panel's top edge.
         case below(nearEdgeY: CGFloat)
     }
     private var lockedPlacement: Placement?
@@ -133,82 +133,81 @@ final class DictationOverlayController {
         panel.orderOut(nil)
     }
 
-    /// Position the overlay panel near the given anchor rect.
+    /// Position the overlay panel near the given anchor point.
     ///
     /// Anchor rects arrive in **AppKit screen coordinates** (origin at bottom-left
     /// of the primary display, Y increases upward) — the conversion from AX/Quartz
-    /// coordinates happens in `OverlayAnchorResolver.axToAppKit(_:)`.
+    /// coordinates happens in `OverlayAnchorResolver`.
     ///
-    /// The panel is placed above the input field when possible; if there isn't
+    /// The panel is placed above the anchor when possible; if there isn't
     /// enough room above, it flips to below. The placement decision (above vs
     /// below) and the X origin are locked on the first render of each session.
     /// Subsequent renders only change the panel height — the near edge stays
-    /// fixed so the panel grows away from the input field without bouncing.
+    /// fixed so the panel grows away from the anchor without bouncing.
     private func positionPanel(near anchor: OverlayAnchor, contentSize: CGSize) {
         let targetRect = anchor.targetRect
-        let targetMidPoint = CGPoint(x: targetRect.midX, y: targetRect.midY)
-
-        let screen = NSScreen.screens.first {
-            $0.frame.contains(targetMidPoint)
-        } ?? NSScreen.main
-
-        let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+        let visibleFrame = screenVisibleFrame(containing: targetRect)
         let margin: CGFloat = 10
 
-        // Lock horizontal origin on first render.
-        let originX: CGFloat
-        if let locked = lockedOriginX {
-            originX = locked
-        } else {
-            let rawX = targetRect.midX - contentSize.width / 2
-            let clampedX = min(max(rawX, visibleFrame.minX + margin), visibleFrame.maxX - contentSize.width - margin)
-            lockedOriginX = clampedX
-            originX = clampedX
-        }
-
-        // Lock vertical placement (above/below) on first render.
-        // On subsequent renders, keep the near edge fixed and grow away from the input.
-        let originY: CGFloat
-        if let placement = lockedPlacement {
-            switch placement {
-            case .above(let nearEdgeY):
-                // Bottom edge is anchored. Panel grows upward.
-                let candidate = nearEdgeY
-                // Only clamp if we'd exceed the screen top.
-                originY = max(candidate, visibleFrame.minY + margin)
-            case .below(let nearEdgeY):
-                // Top edge is anchored. Panel grows downward. Origin = topEdge - height.
-                let candidate = nearEdgeY - contentSize.height
-                // Only clamp if we'd go below the screen bottom.
-                originY = max(candidate, visibleFrame.minY + margin)
-            }
-        } else {
-            // First render — decide above or below.
-            let aboveOriginY = targetRect.maxY + margin
-            if aboveOriginY + contentSize.height <= visibleFrame.maxY {
-                // Fits above.
-                lockedPlacement = .above(nearEdgeY: aboveOriginY)
-                originY = aboveOriginY
-            } else {
-                // Try below.
-                let belowTopEdge = targetRect.minY - margin
-                let belowOriginY = belowTopEdge - contentSize.height
-                if belowOriginY >= visibleFrame.minY + margin {
-                    lockedPlacement = .below(nearEdgeY: belowTopEdge)
-                    originY = belowOriginY
-                } else {
-                    // Neither fits cleanly — place above and clamp to screen.
-                    let clamped = max(aboveOriginY, visibleFrame.minY + margin)
-                    lockedPlacement = .above(nearEdgeY: clamped)
-                    originY = clamped
-                }
-            }
-        }
+        let originX = resolveLockedOriginX(targetRect: targetRect, contentWidth: contentSize.width, visibleFrame: visibleFrame, margin: margin)
+        let originY = resolveLockedOriginY(targetRect: targetRect, contentHeight: contentSize.height, visibleFrame: visibleFrame, margin: margin)
 
         panel.setFrame(
             NSRect(origin: CGPoint(x: originX, y: originY), size: contentSize),
             display: true
         )
+    }
+
+    private func screenVisibleFrame(containing targetRect: CGRect) -> CGRect {
+        let midPoint = CGPoint(x: targetRect.midX, y: targetRect.midY)
+        let screen = NSScreen.screens.first { $0.frame.contains(midPoint) } ?? NSScreen.main
+        return screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1200, height: 800)
+    }
+
+    /// Returns the horizontal origin, locking on first call per session.
+    private func resolveLockedOriginX(targetRect: CGRect, contentWidth: CGFloat, visibleFrame: CGRect, margin: CGFloat) -> CGFloat {
+        if let locked = lockedOriginX { return locked }
+        let rawX = targetRect.midX - contentWidth / 2
+        let clamped = min(max(rawX, visibleFrame.minX + margin), visibleFrame.maxX - contentWidth - margin)
+        lockedOriginX = clamped
+        return clamped
+    }
+
+    /// Returns the vertical origin, locking the above/below decision on first call per session.
+    /// On subsequent calls, the near edge stays fixed and the panel grows away from the anchor.
+    private func resolveLockedOriginY(targetRect: CGRect, contentHeight: CGFloat, visibleFrame: CGRect, margin: CGFloat) -> CGFloat {
+        if let placement = lockedPlacement {
+            return originYForLocked(placement: placement, contentHeight: contentHeight, visibleFrame: visibleFrame, margin: margin)
+        }
+        return resolveInitialPlacement(targetRect: targetRect, contentHeight: contentHeight, visibleFrame: visibleFrame, margin: margin)
+    }
+
+    private func originYForLocked(placement: Placement, contentHeight: CGFloat, visibleFrame: CGRect, margin: CGFloat) -> CGFloat {
+        switch placement {
+        case .above(let nearEdgeY):
+            return max(nearEdgeY, visibleFrame.minY + margin)
+        case .below(let nearEdgeY):
+            return max(nearEdgeY - contentHeight, visibleFrame.minY + margin)
+        }
+    }
+
+    private func resolveInitialPlacement(targetRect: CGRect, contentHeight: CGFloat, visibleFrame: CGRect, margin: CGFloat) -> CGFloat {
+        let aboveOriginY = targetRect.maxY + margin
+        if aboveOriginY + contentHeight <= visibleFrame.maxY {
+            lockedPlacement = .above(nearEdgeY: aboveOriginY)
+            return aboveOriginY
+        }
+
+        let belowTopEdge = targetRect.minY - margin
+        let belowOriginY = belowTopEdge - contentHeight
+        if belowOriginY >= visibleFrame.minY + margin {
+            lockedPlacement = .below(nearEdgeY: belowTopEdge)
+            return belowOriginY
+        }
+
+        let clamped = max(aboveOriginY, visibleFrame.minY + margin)
+        lockedPlacement = .above(nearEdgeY: clamped)
+        return clamped
     }
 
     private func applyFrameViewMask() {

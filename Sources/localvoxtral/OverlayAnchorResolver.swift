@@ -3,20 +3,27 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
+/// Resolves the overlay panel's anchor position.
+///
+/// The panel is anchored to the **center of the frontmost app's focused window**
+/// (not the focused text field). This is a deliberate simplification: resolving the
+/// actual input element is fragile across apps and frameworks. Window-center
+/// placement keeps the overlay predictably visible regardless of input field
+/// position. Falls back to the mouse location when no window is available.
 @MainActor
 final class OverlayAnchorResolver {
     func resolveAnchor() -> OverlayAnchor {
-        if let windowCenter = focusedWindowCenterRect() {
-            return OverlayAnchor(targetRect: windowCenter, source: .focusedWindow)
+        if let center = frontmostWindowCenter() {
+            return OverlayAnchor(targetRect: center, source: .windowCenter)
         }
 
-        let cursorPoint = NSEvent.mouseLocation
+        let mousePoint = NSEvent.mouseLocation
         Log.overlay.info(
-            "anchor: CURSOR FALLBACK at (\(cursorPoint.x, privacy: .public),\(cursorPoint.y, privacy: .public))"
+            "anchor: mouse fallback at (\(mousePoint.x, privacy: .public),\(mousePoint.y, privacy: .public))"
         )
         return OverlayAnchor(
-            targetRect: CGRect(x: cursorPoint.x, y: cursorPoint.y, width: 1, height: 1),
-            source: .cursor
+            targetRect: CGRect(x: mousePoint.x, y: mousePoint.y, width: 1, height: 1),
+            source: .mouseLocation
         )
     }
 
@@ -29,7 +36,7 @@ final class OverlayAnchorResolver {
         return frontmostApp.processIdentifier
     }
 
-    private func focusedWindowCenterRect() -> CGRect? {
+    private func frontmostWindowCenter() -> CGRect? {
         guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
               frontmostApp.processIdentifier != getpid()
         else {

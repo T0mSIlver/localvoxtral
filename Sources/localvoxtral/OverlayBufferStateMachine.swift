@@ -4,8 +4,8 @@ import os
 
 struct OverlayAnchor: Equatable {
     enum Source: Equatable {
-        case focusedWindow
-        case cursor
+        case windowCenter
+        case mouseLocation
     }
 
     var targetRect: CGRect
@@ -26,7 +26,7 @@ enum OverlayBufferPhase: Equatable {
 ///   in the overlay panel. Uses tail-overlap merging to avoid visual duplication.
 /// - **Insertion text** (`insertionText`): The trimmed buffer text used for final
 ///   text insertion into the focused app. No merging — just the raw buffer content.
-struct OverlayBufferTextAssembler {
+enum OverlayBufferTextAssembler {
     /// Returns the merged text suitable for **overlay display only**.
     /// Combines committed and pending text with tail-overlap deduplication.
     static func displayText(

@@ -62,7 +62,6 @@ final class OverlayBufferSessionCoordinator {
 
         let anchor = preResolvedAnchor ?? anchorResolver.resolveAnchor()
         stateMachine.startSession(anchor: anchor)
-        stateMachine.updateBuffer(text: "", anchor: anchor)
         renderCurrentSnapshot()
         Log.overlay.info("overlay session started (preResolved=\(preResolvedAnchor != nil, privacy: .public))")
     }
@@ -159,9 +158,8 @@ final class OverlayBufferSessionCoordinator {
     }
 
     private func refreshLiveCommitTargetAppPID() {
-        if let focusedPID = anchorResolver.resolveFrontmostAppPID(),
-           focusedPID != getpid()
-        {
+        // anchorResolver.resolveFrontmostAppPID() already excludes our own PID.
+        if let focusedPID = anchorResolver.resolveFrontmostAppPID() {
             liveCommitTargetAppPID = focusedPID
             return
         }
