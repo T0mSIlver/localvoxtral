@@ -149,7 +149,7 @@ struct SettingsView: View {
                             .pickerStyle(.segmented)
                             .labelsHidden()
 
-                            Text("Overlay Buffer keeps text in an on-screen buffer until stop. Live Auto-Paste streams text directly into the focused app.")
+                            Text(settings.dictationOutputMode.description)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -158,7 +158,6 @@ struct SettingsView: View {
 
                     ToggleSettingRow(
                         title: "Auto-copy final segment",
-                        subtitle: "In Overlay Buffer mode, copies the full committed buffer.",
                         isOn: $settings.autoCopyEnabled
                     )
 
@@ -238,17 +237,19 @@ private struct SettingsField<Content: View>: View {
 
 private struct ToggleSettingRow: View {
     let title: String
-    let subtitle: String
+    let subtitle: String? = nil
     @Binding var isOn: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 10)
             Toggle("", isOn: $isOn)
