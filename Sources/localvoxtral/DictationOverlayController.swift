@@ -6,11 +6,34 @@ private final class TransparentHostingView<Content: View>: NSHostingView<Content
     override var isOpaque: Bool { false }
 }
 
+private final class OverlayContainerView: NSView {
+    private let cornerRadius: CGFloat
+
+    init(cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override var isOpaque: Bool { false }
+}
+
 @MainActor
 final class DictationOverlayController {
     private let panel: NSPanel
+    private let hostingView: TransparentHostingView<DictationOverlayView>
     private let minimumPanelSize = CGSize(width: 420, height: 120)
     private let maximumPanelSize = CGSize(width: 560, height: 420)
+    private let cornerRadius: CGFloat = 12
 
     /// Locked placement state for the current session. Set on first render,
     /// cleared on hide. Prevents the panel from flipping between above/below
@@ -27,7 +50,7 @@ final class DictationOverlayController {
     init() {
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 120),
-            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
         )
@@ -40,22 +63,33 @@ final class DictationOverlayController {
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
 
         let initialView = DictationOverlayView(
             phase: .idle,
             text: "",
             errorMessage: nil
         )
-        let hostingView = TransparentHostingView(rootView: initialView)
+        hostingView = TransparentHostingView(rootView: initialView)
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear
         hostingView.layer?.isOpaque = false
-        panel.contentView = hostingView
+        let containerView = OverlayContainerView(cornerRadius: cornerRadius)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: containerView.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor),
+        ])
+
+        panel.contentView = containerView
         panel.contentView?.superview?.wantsLayer = true
         panel.contentView?.superview?.layer?.backgroundColor = NSColor.clear.cgColor
         panel.contentView?.superview?.layer?.isOpaque = false
+        panel.contentView?.superview?.layer?.cornerRadius = cornerRadius
+        panel.contentView?.superview?.layer?.cornerCurve = .continuous
+        panel.contentView?.superview?.layer?.masksToBounds = true
         panel.orderOut(nil)
     }
 
@@ -66,25 +100,25 @@ final class DictationOverlayController {
             return
         }
 
-        if let hostingView = panel.contentView as? NSHostingView<DictationOverlayView> {
-            hostingView.rootView = DictationOverlayView(
-                phase: snapshot.phase,
-                text: snapshot.bufferText,
-                errorMessage: snapshot.errorMessage
-            )
-        }
+        hostingView.rootView = DictationOverlayView(
+            phase: snapshot.phase,
+            text: snapshot.bufferText,
+            errorMessage: snapshot.errorMessage
+        )
 
         panel.contentView?.layoutSubtreeIfNeeded()
-        let fitting = panel.contentView?.fittingSize ?? NSSize(
+        let fitting = hostingView.fittingSize
+        let boundedFitting = (fitting.width > 0 && fitting.height > 0) ? fitting : NSSize(
             width: minimumPanelSize.width,
             height: minimumPanelSize.height
         )
         let size = CGSize(
-            width: min(max(fitting.width, minimumPanelSize.width), maximumPanelSize.width),
-            height: min(max(fitting.height, minimumPanelSize.height), maximumPanelSize.height)
+            width: min(max(boundedFitting.width, minimumPanelSize.width), maximumPanelSize.width),
+            height: min(max(boundedFitting.height, minimumPanelSize.height), maximumPanelSize.height)
         )
 
         positionPanel(near: snapshot.anchor, contentSize: size)
+        applyFrameViewMask()
         panel.orderFrontRegardless()
         let anchorRect = snapshot.anchor.targetRect
         let panelFrame = self.panel.frame
@@ -175,5 +209,15 @@ final class DictationOverlayController {
             NSRect(origin: CGPoint(x: originX, y: originY), size: contentSize),
             display: true
         )
+    }
+
+    private func applyFrameViewMask() {
+        guard let frameView = panel.contentView?.superview else { return }
+        frameView.wantsLayer = true
+        frameView.layer?.backgroundColor = NSColor.clear.cgColor
+        frameView.layer?.isOpaque = false
+        frameView.layer?.cornerRadius = cornerRadius
+        frameView.layer?.cornerCurve = .continuous
+        frameView.layer?.masksToBounds = true
     }
 }
