@@ -97,7 +97,7 @@ struct DictationOverlayView: View {
 
     private var displayText: String {
         let trimmed = text.trimmed
-        return trimmed.isEmpty ? "Listening..." : text
+        return trimmed.isEmpty ? "" : text
     }
 
     var body: some View {
