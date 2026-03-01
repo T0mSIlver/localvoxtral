@@ -139,19 +139,46 @@ struct SettingsView: View {
                 }
 
                 SettingsSection(title: "Dictation") {
-                    ToggleSettingRow(
-                        title: "Auto-paste into input field",
-                        subtitle: "Insert streaming transcript text into the focused app.",
-                        isOn: $settings.autoPasteIntoInputFieldEnabled
-                    )
+                    SettingsField(title: "Output mode") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.dictationOutputMode) {
+                                ForEach(DictationOutputMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            Text(settings.dictationOutputMode.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    SettingsField(title: "Shortcut behavior") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.dictationShortcutMode) {
+                                ForEach(DictationShortcutMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            Text(settings.dictationShortcutMode.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
 
                     ToggleSettingRow(
                         title: "Auto-copy final segment",
-                        subtitle: "Copy each final segment to the clipboard automatically.",
                         isOn: $settings.autoCopyEnabled
                     )
 
-                    SettingsField(title: "Toggle dictation") {
+                    SettingsField(title: "Dictation shortcut") {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(alignment: .center, spacing: 8) {
                                 ShortcutRecorderField(
@@ -190,6 +217,7 @@ struct SettingsView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 14)
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -227,17 +255,19 @@ private struct SettingsField<Content: View>: View {
 
 private struct ToggleSettingRow: View {
     let title: String
-    let subtitle: String
+    let subtitle: String? = nil
     @Binding var isOn: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 10)
             Toggle("", isOn: $isOn)

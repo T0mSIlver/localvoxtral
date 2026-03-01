@@ -17,26 +17,113 @@ final class DictationViewModel {
         case mlxAudio
     }
 
+    // Tokenized status/error categories keep control flow stable if user-facing
+    // copy changes in the future.
+    enum StatusToken: Equatable {
+        case waitingForAccessibilityPermission
+        case pasteBlockedByAccessibilityPermission
+        case awaitingMicrophonePermission
+        case networkLostDictationStopped
+        case noNetworkConnection
+        case hotKeyHandlerRegistrationFailure
+        case hotKeyShortcutUnavailable
+        case other
+
+        @MainActor
+        static func from(_ statusText: String) -> StatusToken {
+            switch statusText {
+            case StatusStrings.waitingForAccessibilityPermission:
+                return .waitingForAccessibilityPermission
+            case StatusStrings.pasteBlockedByAccessibilityPermission:
+                return .pasteBlockedByAccessibilityPermission
+            case StatusStrings.awaitingMicrophonePermission:
+                return .awaitingMicrophonePermission
+            case StatusStrings.networkLostDictationStopped:
+                return .networkLostDictationStopped
+            case StatusStrings.noNetworkConnection:
+                return .noNetworkConnection
+            case HotKeyManager.handlerRegistrationErrorMessage:
+                return .hotKeyHandlerRegistrationFailure
+            case HotKeyManager.registrationErrorStatus:
+                return .hotKeyShortcutUnavailable
+            default:
+                return .other
+            }
+        }
+    }
+
+    enum ErrorToken: Equatable {
+        case accessibilityPermissionRequired
+        case hotKeyHandlerRegistrationFailure
+        case hotKeyShortcutUnavailable
+        case websocketReceiveFailed
+        case other
+
+        @MainActor
+        static func from(_ message: String) -> ErrorToken {
+            if message == TextInsertionService.accessibilityErrorMessage {
+                return .accessibilityPermissionRequired
+            }
+            if message == HotKeyManager.handlerRegistrationErrorMessage {
+                return .hotKeyHandlerRegistrationFailure
+            }
+            if message == HotKeyManager.unavailableErrorMessage {
+                return .hotKeyShortcutUnavailable
+            }
+            if message.localizedCaseInsensitiveContains("websocket receive failed") {
+                return .websocketReceiveFailed
+            }
+            return .other
+        }
+    }
+
+    private enum StatusStrings {
+        static let ready = "Ready"
+        static let connectingRealtimeBackend = "Connecting to realtime backend..."
+        static let finalizingPreviousDictation = "Finalizing previous dictation..."
+        static let awaitingMicrophonePermission = "Awaiting microphone permission..."
+        static let requestingMicrophonePermission = "Requesting microphone permission..."
+        static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
+        static let pasteBlockedByAccessibilityPermission = "Paste blocked by Accessibility permission."
+        static let networkLostDictationStopped = "Network lost. Dictation stopped."
+        static let noNetworkConnection = "No network connection."
+        static let microphoneAccessDenied = "Microphone access denied."
+        static let finalizing = "Finalizing..."
+    }
+
+    private static let microphoneDeniedMessage =
+        "Grant microphone access in System Settings > Privacy & Security > Microphone."
+
     var isDictating = false
     var isFinalizingStop = false
     var isConnectingRealtimeSession = false
     var realtimeSessionIndicatorState: RealtimeSessionIndicatorState = .idle
     var transcriptText = ""
     var livePartialText = ""
-    var statusText = "Ready"
+    var statusText = StatusStrings.ready
     var lastError: String?
     var lastFinalSegment = ""
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
 
     var isAccessibilityTrusted: Bool { textInsertion.isAccessibilityTrusted }
+    var currentStatusToken: StatusToken { StatusToken.from(statusText) }
+    var currentErrorToken: ErrorToken? {
+        guard let lastError else { return nil }
+        return ErrorToken.from(lastError)
+    }
 
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
-    let microphone = MicrophoneCaptureService()
+    private var hasInitializedMicrophone = false
+    @ObservationIgnored
+    lazy var microphone: MicrophoneCaptureService = {
+        hasInitializedMicrophone = true
+        return MicrophoneCaptureService()
+    }()
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
     @ObservationIgnored
@@ -49,6 +136,10 @@ final class DictationViewModel {
     let healthMonitor = AudioCaptureHealthMonitor()
     @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
+    @ObservationIgnored
+    let overlayBufferCoordinator: OverlayBufferSessionCoordinating
+    @ObservationIgnored
+    var preResolvedOverlayAnchor: OverlayAnchor?
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -66,45 +157,58 @@ final class DictationViewModel {
     @ObservationIgnored
     var recentFailureResetTask: Task<Void, Never>?
     @ObservationIgnored
+    var finalizationWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored
     var isShowingConnectionFailureAlert = false
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
     @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     @ObservationIgnored
+    private var startupPermissionTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var hasRequestedStartupPermissions = false
+    @ObservationIgnored
     var pendingSegmentText = ""
     @ObservationIgnored
     var currentDictationEventText = ""
+    @ObservationIgnored
+    var sessionOutputMode: DictationOutputMode?
+    @ObservationIgnored
+    var firstChunkPreprocessor = FirstChunkPreprocessor()
 
-    // Constants — internal so extension files can access.
-    @ObservationIgnored
-    let audioSendInterval: TimeInterval = 0.1
-    @ObservationIgnored
-    let connectTimeoutSeconds: TimeInterval = 2.0
-    @ObservationIgnored
-    let recentFailureIndicatorSeconds: TimeInterval = 5.0
-    @ObservationIgnored
-    let mlxTrailingSilenceDurationSeconds: TimeInterval = 1.6
-    @ObservationIgnored
-    let mlxTrailingSilenceChunkDurationSeconds: TimeInterval = 0.1
-    @ObservationIgnored
-    let stopFinalizationTimeoutSeconds: TimeInterval = 7.0
-    @ObservationIgnored
-    let mlxStopFinalizationTimeoutSeconds: TimeInterval = 25.0
-    @ObservationIgnored
-    let realtimeFinalizationInactivitySeconds: TimeInterval = 0.7
-    @ObservationIgnored
-    let realtimeFinalizationMinimumOpenSeconds: TimeInterval = 1.5
-    @ObservationIgnored
-    let finalizationPollIntervalSeconds: TimeInterval = 0.1
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
 
     @ObservationIgnored
     private var lifecycleObservers: [NSObjectProtocol] = []
+    @ObservationIgnored
+    private let managesRuntimeServices: Bool
+    // Tracks physical key state so repeat key-down events do not retrigger actions.
+    @ObservationIgnored
+    private var isPushToTalkShortcutHeld = false
+    // True only when a start attempt was initiated by push-to-talk and may still need
+    // to be cancelled if the user releases before dictation actually begins.
+    @ObservationIgnored
+    private var hasActivePushToTalkShortcutSession = false
 
-    init(settings: SettingsStore) {
+    init(
+        settings: SettingsStore,
+        overlayBufferCoordinator: OverlayBufferSessionCoordinating? = nil,
+        startRuntimeServices: Bool = true
+    ) {
         self.settings = settings
+        self.managesRuntimeServices = startRuntimeServices
+        if let overlayBufferCoordinator {
+            self.overlayBufferCoordinator = overlayBufferCoordinator
+        } else {
+            let anchorResolver = OverlayAnchorResolver()
+            self.overlayBufferCoordinator = OverlayBufferSessionCoordinator(
+                stateMachine: OverlayBufferStateMachine(),
+                renderer: DictationOverlayController(),
+                anchorResolver: anchorResolver
+            )
+        }
 
         realtimeAPIClient.setEventHandler { [weak self] event in
             Task { @MainActor [weak self] in
@@ -118,35 +222,37 @@ final class DictationViewModel {
             }
         }
 
-        microphone.onConfigurationChange = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.healthMonitor.handleConfigurationChange()
+        if startRuntimeServices {
+            microphone.onConfigurationChange = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.healthMonitor.handleConfigurationChange()
+                }
             }
-        }
 
-        microphone.onInputDevicesChanged = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.healthMonitor.handleInputDevicesChanged()
+            microphone.onInputDevicesChanged = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.healthMonitor.handleInputDevicesChanged()
+                }
             }
-        }
 
-        microphone.onError = { [weak self] message in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.lastError = message
+            microphone.onError = { [weak self] message in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.lastError = message
+                }
             }
         }
 
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
-            if self.lastError == TextInsertionService.accessibilityErrorMessage {
+            if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }
             if !self.isDictating,
-               (self.statusText == "Waiting for Accessibility permission."
-                   || self.statusText == "Paste blocked by Accessibility permission.")
+               (self.currentStatusToken == .waitingForAccessibilityPermission
+                   || self.currentStatusToken == .pasteBlockedByAccessibilityPermission)
             {
-                self.statusText = "Ready"
+                self.statusText = StatusStrings.ready
             }
         }
 
@@ -155,28 +261,33 @@ final class DictationViewModel {
                 self?.handleNetworkChange(connected: connected)
             }
         }
-        networkMonitor.start()
+        if startRuntimeServices {
+            networkMonitor.start()
+        }
 
-        hotKeyManager.onToggle = { [weak self] in self?.toggleDictation() }
-        switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
-        case .success:
-            break
-        case .failure(let reason):
-            applyHotKeyRegistrationFailure(reason)
+        hotKeyManager.onPress = { [weak self] in self?.handleDictationShortcutPress() }
+        hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
+        if startRuntimeServices {
+            switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
+            case .success:
+                break
+            case .failure(let reason):
+                applyHotKeyRegistrationFailure(reason)
+            }
         }
 
         mlxStabilizer.onRealtimeInsertion = { [weak self] delta in
-            self?.textInsertion.enqueueRealtimeInsertion(delta)
+            self?.handleMlxRealtimeInsertionDelta(delta)
         }
         mlxStabilizer.onFinalizedInsertion = { [weak self] delta in
-            guard let self else { return }
-            if !self.textInsertion.insertTextUsingAccessibilityOnly(delta) {
-                _ = self.textInsertion.pasteUsingCommandV(delta)
-            }
+            self?.handleMlxFinalizedInsertionDelta(delta)
         }
         textInsertion.refreshAccessibilityTrustState()
-        refreshMicrophoneInputs()
-        registerLifecycleObservers()
+        if startRuntimeServices {
+            refreshMicrophoneInputs()
+            registerLifecycleObservers()
+            requestStartupPermissionsIfNeeded()
+        }
     }
 
     @MainActor
@@ -190,13 +301,20 @@ final class DictationViewModel {
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
         recentFailureResetTask?.cancel()
+        finalizationWatchdogTask?.cancel()
+        startupPermissionTask?.cancel()
         textInsertion.stopAllTasks()
+        overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
-        microphone.stop()
-        networkMonitor.stop()
-        realtimeAPIClient.disconnect()
-        mlxAudioRealtimeClient.disconnect()
-        hotKeyManager.unregister()
+        if managesRuntimeServices {
+            if hasInitializedMicrophone {
+                microphone.stop()
+            }
+            networkMonitor.stop()
+            realtimeAPIClient.disconnect()
+            mlxAudioRealtimeClient.disconnect()
+            hotKeyManager.unregister()
+        }
     }
 
     // MARK: - Lifecycle Observers
@@ -229,16 +347,70 @@ final class DictationViewModel {
         lifecycleObservers = [sleepObserver, terminateObserver]
     }
 
+    private func requestStartupPermissionsIfNeeded() {
+        guard managesRuntimeServices else { return }
+        guard !hasRequestedStartupPermissions else { return }
+        hasRequestedStartupPermissions = true
+
+        startupPermissionTask?.cancel()
+        startupPermissionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.requestStartupMicrophonePermissionIfNeeded()
+            guard !Task.isCancelled else { return }
+            self.requestStartupAccessibilityPermissionIfNeeded()
+        }
+    }
+
+    private func requestStartupAccessibilityPermissionIfNeeded() {
+        refreshAccessibilityTrustState()
+        guard !textInsertion.isAccessibilityTrusted else { return }
+
+        debugLog("startup accessibility permission prompt requested")
+        textInsertion.requestAccessibilityPermissionIfNeeded()
+    }
+
+    private func requestStartupMicrophonePermissionIfNeeded() async {
+        guard !isAwaitingMicrophonePermission else { return }
+        guard microphone.authorizationStatus() == .notDetermined else { return }
+
+        isAwaitingMicrophonePermission = true
+        debugLog("startup microphone permission prompt requested")
+
+        let granted = await withCheckedContinuation { continuation in
+            microphone.requestAccess { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        isAwaitingMicrophonePermission = false
+        debugLog("startup microphone permission result granted=\(granted)")
+
+        guard granted else {
+            if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
+                statusText = StatusStrings.microphoneAccessDenied
+            }
+            lastError = Self.microphoneDeniedMessage
+            return
+        }
+
+        if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession,
+           currentStatusToken == .awaitingMicrophonePermission
+        {
+            statusText = StatusStrings.ready
+        }
+    }
+
     // MARK: - Network
 
     private func handleNetworkChange(connected: Bool) {
         if connected {
             debugLog("network restored")
             if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession,
-               (statusText == "Network lost. Dictation stopped."
-                   || statusText == "No network connection.")
+               (currentStatusToken == .networkLostDictationStopped
+                   || currentStatusToken == .noNetworkConnection)
             {
-                statusText = "Ready"
+                statusText = StatusStrings.ready
                 lastError = nil
             }
         } else {
@@ -247,34 +419,76 @@ final class DictationViewModel {
                 abortConnectingSession()
                 let message = "Network connection was lost while connecting."
                 handleConnectFailure(
-                    status: "Network lost. Dictation stopped.",
+                    status: StatusStrings.networkLostDictationStopped,
                     message: message,
                     technicalDetails: "Network path changed to unavailable while opening websocket."
                 )
             } else if isDictating {
                 stopDictation(reason: "network lost", finalizeRemainingAudio: false)
-                statusText = "Network lost. Dictation stopped."
+                statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
             } else if isFinalizingStop {
                 activeRealtimeClient().disconnect()
                 finishStoppedSession(promotePendingSegment: true)
-                statusText = "Network lost. Dictation stopped."
+                statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
             } else {
-                statusText = "No network connection."
+                statusText = StatusStrings.noNetworkConnection
             }
         }
     }
 
     // MARK: - Public API
 
+    private func handleDictationShortcutPress() {
+        switch settings.dictationShortcutMode {
+        case .toggle:
+            hasActivePushToTalkShortcutSession = false
+            toggleDictation()
+        case .pushToTalk:
+            guard !isPushToTalkShortcutHeld else { return }
+            isPushToTalkShortcutHeld = true
+            guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
+            hasActivePushToTalkShortcutSession = true
+            startDictation()
+            if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+                hasActivePushToTalkShortcutSession = false
+            }
+        }
+    }
+
+    private func handleDictationShortcutRelease() {
+        guard isPushToTalkShortcutHeld else { return }
+        isPushToTalkShortcutHeld = false
+
+        guard settings.dictationShortcutMode == .pushToTalk else {
+            hasActivePushToTalkShortcutSession = false
+            return
+        }
+        guard hasActivePushToTalkShortcutSession else { return }
+
+        if isConnectingRealtimeSession {
+            abortConnectingSession()
+            statusText = StatusStrings.ready
+        } else if isDictating {
+            stopDictation(reason: "push-to-talk release")
+        } else if isAwaitingMicrophonePermission {
+            // Keep the session marker until the permission callback resolves so we can
+            // suppress starting if the key was released before permission was granted.
+            statusText = StatusStrings.ready
+            return
+        }
+        hasActivePushToTalkShortcutSession = false
+    }
+
     func toggleDictation() {
+        hasActivePushToTalkShortcutSession = false
         if isDictating {
             stopDictation(reason: "manual toggle")
         } else if isConnectingRealtimeSession {
-            statusText = "Connecting to realtime backend..."
+            statusText = StatusStrings.connectingRealtimeBackend
         } else if isFinalizingStop {
-            statusText = "Finalizing previous dictation..."
+            statusText = StatusStrings.finalizingPreviousDictation
         } else {
             startDictation()
         }
@@ -289,14 +503,14 @@ final class DictationViewModel {
         switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
         case .success:
             if !isDictating, !isFinalizingStop,
-               (statusText == HotKeyManager.handlerRegistrationErrorMessage
-                || statusText == HotKeyManager.registrationErrorStatus)
+               (currentStatusToken == .hotKeyHandlerRegistrationFailure
+                || currentStatusToken == .hotKeyShortcutUnavailable)
             {
-                statusText = "Ready"
+                statusText = StatusStrings.ready
             }
 
-            if lastError == HotKeyManager.unavailableErrorMessage
-                || lastError == HotKeyManager.handlerRegistrationErrorMessage
+            if currentErrorToken == .hotKeyShortcutUnavailable
+                || currentErrorToken == .hotKeyHandlerRegistrationFailure
             {
                 lastError = nil
             }
@@ -318,8 +532,8 @@ final class DictationViewModel {
             availableInputDevices = devices
         }
 
-        let savedSelection = settings.selectedInputDeviceUID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentSelection = selectedInputDeviceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedSelection = settings.selectedInputDeviceUID.trimmed
+        let currentSelection = selectedInputDeviceID.trimmed
         let explicitSelection = !savedSelection.isEmpty ? savedSelection : currentSelection
 
         guard !devices.isEmpty else { return }
@@ -370,19 +584,19 @@ final class DictationViewModel {
     func startDictation() {
         guard !isDictating else { return }
         guard !isConnectingRealtimeSession else {
-            statusText = "Connecting to realtime backend..."
+            statusText = StatusStrings.connectingRealtimeBackend
             return
         }
         guard !isFinalizingStop else {
-            statusText = "Finalizing previous dictation..."
+            statusText = StatusStrings.finalizingPreviousDictation
             return
         }
         guard !isAwaitingMicrophonePermission else {
-            statusText = "Awaiting microphone permission..."
+            statusText = StatusStrings.awaitingMicrophonePermission
             return
         }
         guard networkMonitor.isConnected else {
-            statusText = "No network connection."
+            statusText = StatusStrings.noNetworkConnection
             lastError = "Connect to a network before starting dictation."
             return
         }
@@ -394,14 +608,13 @@ final class DictationViewModel {
             debugLog("selected input id=\(selectedInputDeviceID)")
         }
         lastError = nil
-        let deniedMessage = "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
         switch microphone.authorizationStatus() {
         case .authorized:
             beginDictationSession()
         case .notDetermined:
             isAwaitingMicrophonePermission = true
-            statusText = "Requesting microphone permission..."
+            statusText = StatusStrings.requestingMicrophonePermission
             debugLog("microphone permission prompt requested")
             microphone.requestAccess { [weak self] granted in
                 Task { @MainActor [weak self] in
@@ -409,8 +622,16 @@ final class DictationViewModel {
                     self.isAwaitingMicrophonePermission = false
                     self.debugLog("microphone permission result granted=\(granted)")
                     guard granted else {
-                        self.statusText = "Microphone access denied."
-                        self.lastError = deniedMessage
+                        self.statusText = StatusStrings.microphoneAccessDenied
+                        self.lastError = Self.microphoneDeniedMessage
+                        self.hasActivePushToTalkShortcutSession = false
+                        return
+                    }
+                    if self.hasActivePushToTalkShortcutSession,
+                        !self.isPushToTalkShortcutHeld
+                    {
+                        self.statusText = StatusStrings.ready
+                        self.hasActivePushToTalkShortcutSession = false
                         return
                     }
                     self.beginDictationSession()
@@ -420,12 +641,15 @@ final class DictationViewModel {
                 try? await Task.sleep(for: .seconds(120))
                 guard let self, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
-                self.statusText = "Ready"
+                self.statusText = StatusStrings.ready
+                if self.hasActivePushToTalkShortcutSession && !self.isPushToTalkShortcutHeld {
+                    self.hasActivePushToTalkShortcutSession = false
+                }
                 self.debugLog("microphone permission prompt timed out")
             }
         case .denied, .restricted:
-            statusText = "Microphone access denied."
-            lastError = deniedMessage
+            statusText = StatusStrings.microphoneAccessDenied
+            lastError = Self.microphoneDeniedMessage
             debugLog("microphone access denied or restricted")
         }
     }
@@ -433,6 +657,7 @@ final class DictationViewModel {
     func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
+        hasActivePushToTalkShortcutSession = false
 
         commitTask?.cancel()
         commitTask = nil
@@ -452,9 +677,13 @@ final class DictationViewModel {
         }
 
         isFinalizingStop = true
-        statusText = "Finalizing..."
+        statusText = StatusStrings.finalizing
         setRealtimeIndicatorConnected()
+        if isOverlayBufferModeEnabled {
+            beginOverlayFinalization()
+        }
         scheduleStopFinalization()
+        startStopFinalizationWatchdog()
     }
 
     func clearTranscript() {
@@ -463,12 +692,17 @@ final class DictationViewModel {
         lastFinalSegment = ""
         pendingSegmentText = ""
         currentDictationEventText = ""
+        if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
+            sessionOutputMode = nil
+        }
+        firstChunkPreprocessor.reset()
         mlxStabilizer.reset()
+        overlayBufferCoordinator.reset()
         lastError = nil
     }
 
     func copyTranscript() {
-        let fullText = fullTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fullText = fullTranscript.trimmed
         guard !fullText.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
@@ -479,7 +713,7 @@ final class DictationViewModel {
     }
 
     func copyLatestSegment(updateStatus: Bool = true) {
-        let segment = lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
 
         let pasteboard = NSPasteboard.general
@@ -495,9 +729,9 @@ final class DictationViewModel {
         textInsertion.requestAccessibilityPermission()
 
         if textInsertion.isAccessibilityTrusted {
-            statusText = "Ready"
+            statusText = StatusStrings.ready
         } else {
-            statusText = "Waiting for Accessibility permission."
+            statusText = StatusStrings.waitingForAccessibilityPermission
         }
     }
 
@@ -506,23 +740,23 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
 
         if textInsertion.isAccessibilityTrusted, !wasTrusted, !isDictating,
-           (statusText == "Waiting for Accessibility permission."
-               || statusText == "Paste blocked by Accessibility permission.")
+           (currentStatusToken == .waitingForAccessibilityPermission
+               || currentStatusToken == .pasteBlockedByAccessibilityPermission)
         {
-            statusText = "Ready"
+            statusText = StatusStrings.ready
         }
 
         if let axError = textInsertion.lastAccessibilityError {
-            if lastError == nil || lastError == TextInsertionService.accessibilityErrorMessage {
+            if lastError == nil || currentErrorToken == .accessibilityPermissionRequired {
                 lastError = axError
             }
-        } else if lastError == TextInsertionService.accessibilityErrorMessage {
+        } else if currentErrorToken == .accessibilityPermissionRequired {
             lastError = nil
         }
     }
 
     func pasteLatestSegment() {
-        let segment = lastFinalSegment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
 
         textInsertion.refreshAccessibilityTrustState()
@@ -541,15 +775,15 @@ final class DictationViewModel {
         }
 
         if !textInsertion.isAccessibilityTrusted {
-            statusText = "Paste blocked by Accessibility permission."
+            statusText = StatusStrings.pasteBlockedByAccessibilityPermission
         } else {
             statusText = "Unable to paste latest segment."
         }
     }
 
     var fullTranscript: String {
-        let finalPart = transcriptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let livePart = livePartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalPart = transcriptText.trimmed
+        let livePart = livePartialText.trimmed
 
         if finalPart.isEmpty { return livePart }
         if livePart.isEmpty { return finalPart }
@@ -558,6 +792,18 @@ final class DictationViewModel {
 
     var acceptsRealtimeEvents: Bool {
         isDictating || isFinalizingStop
+    }
+
+    var isOverlayBufferModeEnabled: Bool {
+        activeOutputMode == .overlayBuffer
+    }
+
+    var isLiveAutoPasteModeEnabled: Bool {
+        activeOutputMode == .liveAutoPaste
+    }
+
+    private var activeOutputMode: DictationOutputMode {
+        sessionOutputMode ?? settings.dictationOutputMode
     }
 
     func debugLog(_ message: String) {
@@ -573,6 +819,18 @@ final class DictationViewModel {
         case .shortcutUnavailable:
             statusText = HotKeyManager.registrationErrorStatus
             lastError = HotKeyManager.unavailableErrorMessage
+        }
+    }
+
+    private func handleMlxRealtimeInsertionDelta(_ delta: String) {
+        guard isLiveAutoPasteModeEnabled else { return }
+        textInsertion.enqueueRealtimeInsertion(delta)
+    }
+
+    private func handleMlxFinalizedInsertionDelta(_ delta: String) {
+        guard isLiveAutoPasteModeEnabled else { return }
+        if !textInsertion.insertTextUsingAccessibilityOnly(delta) {
+            _ = textInsertion.pasteUsingCommandV(delta)
         }
     }
 }

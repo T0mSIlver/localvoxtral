@@ -4,27 +4,42 @@ import XCTest
 
 final class ShortcutValidationTests: XCTestCase {
     func testValidation_rejectsReservedShortcuts() {
-        let reservedShortcuts = [
-            DictationShortcut(
-                keyCode: UInt32(kVK_Space),
-                carbonModifierFlags: UInt32(cmdKey)
+        let reservedShortcuts: [(shortcut: DictationShortcut, message: String)] = [
+            (
+                DictationShortcut(
+                    keyCode: UInt32(kVK_Space),
+                    carbonModifierFlags: UInt32(cmdKey)
+                ),
+                "Command-Space is reserved by Spotlight."
             ),
-            DictationShortcut(
-                keyCode: UInt32(kVK_Tab),
-                carbonModifierFlags: UInt32(cmdKey)
+            (
+                DictationShortcut(
+                    keyCode: UInt32(kVK_Tab),
+                    carbonModifierFlags: UInt32(cmdKey)
+                ),
+                "Command-Tab is reserved for app switching."
             ),
-            DictationShortcut(
-                keyCode: UInt32(kVK_ANSI_Q),
-                carbonModifierFlags: UInt32(cmdKey)
+            (
+                DictationShortcut(
+                    keyCode: UInt32(kVK_ANSI_Q),
+                    carbonModifierFlags: UInt32(cmdKey)
+                ),
+                "Command-Q is reserved for quitting apps."
             ),
-            DictationShortcut(
-                keyCode: UInt32(kVK_ANSI_W),
-                carbonModifierFlags: UInt32(cmdKey)
+            (
+                DictationShortcut(
+                    keyCode: UInt32(kVK_ANSI_W),
+                    carbonModifierFlags: UInt32(cmdKey)
+                ),
+                "Command-W is reserved for closing windows."
             ),
         ]
 
-        for shortcut in reservedShortcuts {
-            XCTAssertNotNil(DictationShortcutValidation.validationErrorMessage(for: shortcut))
+        for testCase in reservedShortcuts {
+            XCTAssertEqual(
+                DictationShortcutValidation.validationErrorMessage(for: testCase.shortcut),
+                testCase.message
+            )
         }
     }
 

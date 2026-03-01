@@ -31,7 +31,7 @@ final class WebSocketClientParsingTests: XCTestCase {
         XCTAssertNil(result)
     }
 
-    func testFindString_multipleKeysInSet() {
+    func testFindString_multipleKeysInPriorityList() {
         let client = makeClient()
         let dict: [String: Any] = ["transcript": "found it"]
         let result = client.findString(in: dict, matching: ["text", "transcript", "delta"])
@@ -75,5 +75,17 @@ final class WebSocketClientParsingTests: XCTestCase {
         let value: Any = "just a string"
         let result = client.findString(in: value, matching: ["text"])
         XCTAssertNil(result)
+    }
+
+    func testFindString_keyPriorityUsesInputOrderWhenMultipleKeysPresent() {
+        let client = makeClient()
+        let dict: [String: Any] = [
+            "delta": "prefer me for partials",
+            "text": "fallback text",
+            "transcript": "fallback transcript",
+        ]
+
+        let result = client.findString(in: dict, matching: ["delta", "text", "transcript"])
+        XCTAssertEqual(result, "prefer me for partials")
     }
 }

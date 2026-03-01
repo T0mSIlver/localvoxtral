@@ -11,4 +11,5 @@ enum Log {
     static let realtime = Logger(subsystem: subsystem, category: "Realtime")
     static let mlxRealtime = Logger(subsystem: subsystem, category: "MlxRealtime")
     static let insertion = Logger(subsystem: subsystem, category: "Insertion")
+    static let overlay = Logger(subsystem: subsystem, category: "Overlay")
 }

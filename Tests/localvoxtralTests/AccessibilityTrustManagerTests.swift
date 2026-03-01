@@ -19,6 +19,20 @@ final class AccessibilityTrustManagerTests: XCTestCase {
         XCTAssertEqual(promptCount, 1)
     }
 
+    func testPromptIfNeeded_whenAlreadyTrusted_doesNotPrompt() {
+        var promptCount = 0
+        let manager = AccessibilityTrustManager(
+            trustChecker: { true },
+            permissionPrompter: { promptCount += 1 },
+            pollingTimeoutSeconds: 0
+        )
+
+        manager.promptIfNeeded()
+
+        XCTAssertEqual(promptCount, 0)
+        XCTAssertTrue(manager.isTrusted)
+    }
+
     func testRequestPermission_promptsEveryCall() {
         var promptCount = 0
         let manager = AccessibilityTrustManager(

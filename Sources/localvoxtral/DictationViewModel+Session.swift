@@ -5,12 +5,22 @@ import os
 extension DictationViewModel {
     // MARK: - Session Lifecycle
 
+    // sessionOutputMode lifecycle:
+    // - Set: beginDictationSession() — captures the user's setting at session start
+    //   so mid-session settings changes don't affect the active session.
+    // - Cleared: finishStoppedSession(), abortConnectingSession(), and early-return
+    //   error paths in beginDictationSession() where no session was established.
+    // All session exit paths MUST clear this to nil.
+
     func beginDictationSession() {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
+        finalizationWatchdogTask?.cancel()
+        finalizationWatchdogTask = nil
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        sessionOutputMode = settings.dictationOutputMode
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -21,6 +31,7 @@ extension DictationViewModel {
                 message: message,
                 technicalDetails: "Settings value could not be normalized to a websocket endpoint URL."
             )
+            sessionOutputMode = nil
             return
         }
 
@@ -29,6 +40,7 @@ extension DictationViewModel {
         {
             statusText = "Selected microphone unavailable."
             lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
+            sessionOutputMode = nil
             return
         }
 
@@ -38,11 +50,20 @@ extension DictationViewModel {
         inactiveRealtimeClient(for: source).disconnect()
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
 
+        // Capture the AX anchor now, while the user's text field still has focus.
+        // By the time the WebSocket connects and startOverlayBufferSession() runs,
+        // our app may have taken focus and the original AX element will be gone.
+        preResolvedOverlayAnchor = isOverlayBufferModeEnabled
+            ? overlayBufferCoordinator.resolveAnchorNow()
+            : nil
+
         audioChunkBuffer.clear()
         livePartialText = ""
         pendingSegmentText = ""
         currentDictationEventText = ""
         mlxStabilizer.reset()
+        firstChunkPreprocessor.reset()
+        overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
@@ -88,12 +109,17 @@ extension DictationViewModel {
             statusText = "Listening..."
             restartAudioSendTask()
             restartCommitTask()
-            if settings.autoPasteIntoInputFieldEnabled {
+            if isLiveAutoPasteModeEnabled {
                 textInsertion.restartInsertionRetryTask { [weak self] in
                     self?.acceptsRealtimeEvents ?? false
                 }
             } else {
                 textInsertion.stopInsertionRetryTask()
+            }
+            if isOverlayBufferModeEnabled {
+                startOverlayBufferSession()
+            } else {
+                overlayBufferCoordinator.reset()
             }
             healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
         } catch {
@@ -165,7 +191,7 @@ extension DictationViewModel {
     func restartAudioSendTask() {
         audioSendTask?.cancel()
 
-        let interval = audioSendInterval
+        let interval = TimingConstants.audioSendInterval
         let client = activeRealtimeClient()
         let chunkBuffer = audioChunkBuffer
         let debugLoggingEnabled = debugLoggingEnabled
@@ -207,24 +233,35 @@ extension DictationViewModel {
             guard self.isFinalizingStop else { return }
 
             if self.activeClientSource != .mlxAudio {
+                if !self.activeRealtimeClient().isConnected {
+                    self.debugLog("socket already disconnected before final commit; finishing stop")
+                    self.finishStoppedSession(promotePendingSegment: true)
+                    return
+                }
                 let startedAt = Date()
                 self.realtimeFinalizationLastActivityAt = startedAt
                 self.activeRealtimeClient().sendCommit(final: true)
                 while self.isFinalizingStop {
+                    if !self.activeRealtimeClient().isConnected {
+                        self.debugLog("socket disconnected during finalization; finishing stop")
+                        self.finishStoppedSession(promotePendingSegment: true)
+                        return
+                    }
+
                     let now = Date()
                     let elapsed = now.timeIntervalSince(startedAt)
                     let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
                     let inactivity = now.timeIntervalSince(lastActivity)
 
-                    if elapsed >= self.stopFinalizationTimeoutSeconds {
-                        self.debugLog("stop finalization timeout (\(self.stopFinalizationTimeoutSeconds)s); forcing disconnect")
+                    if elapsed >= TimingConstants.stopFinalizationTimeout {
+                        self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
                         self.activeRealtimeClient().disconnect()
                         self.finishStoppedSession(promotePendingSegment: true)
                         return
                     }
 
-                    if elapsed >= self.realtimeFinalizationMinimumOpenSeconds,
-                       inactivity >= self.realtimeFinalizationInactivitySeconds
+                    if elapsed >= TimingConstants.finalizationMinimumOpen,
+                       inactivity >= TimingConstants.finalizationInactivityThreshold
                     {
                         self.debugLog(
                             "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
@@ -234,51 +271,80 @@ extension DictationViewModel {
                         return
                     }
 
-                    try? await Task.sleep(for: .seconds(self.finalizationPollIntervalSeconds))
+                    try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
                 }
                 return
             }
 
-            let timeout = self.mlxStopFinalizationTimeoutSeconds
-            try? await Task.sleep(for: .seconds(timeout))
-            guard self.isFinalizingStop else { return }
-            self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
-            self.activeRealtimeClient().disconnect()
-            self.finishStoppedSession(promotePendingSegment: true)
+            let timeout = TimingConstants.mlxStopFinalizationTimeout
+            let startedAt = Date()
+            while self.isFinalizingStop {
+                if !self.activeRealtimeClient().isConnected {
+                    self.debugLog("mlx socket disconnected during finalization; finishing stop")
+                    self.finishStoppedSession(promotePendingSegment: true)
+                    return
+                }
+
+                let elapsed = Date().timeIntervalSince(startedAt)
+                if elapsed >= timeout {
+                    self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
+                    self.activeRealtimeClient().disconnect()
+                    self.finishStoppedSession(promotePendingSegment: true)
+                    return
+                }
+
+                try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
+            }
         }
     }
 
     func sendTrailingSilenceForMlxAudio() async {
         guard activeClientSource == .mlxAudio else { return }
-        let frameCount = max(1, Int(16_000 * mlxTrailingSilenceChunkDurationSeconds))
+        let frameCount = max(1, Int(TimingConstants.audioSampleRateHz * TimingConstants.mlxTrailingSilenceChunkDuration))
         let silenceChunk = Data(count: frameCount * MemoryLayout<Int16>.size)
-        let iterations = max(1, Int(ceil(mlxTrailingSilenceDurationSeconds / mlxTrailingSilenceChunkDurationSeconds)))
+        let iterations = max(1, Int(ceil(TimingConstants.mlxTrailingSilenceDuration / TimingConstants.mlxTrailingSilenceChunkDuration)))
         debugLog("send mlx trailing silence chunks=\(iterations)")
         for _ in 0 ..< iterations {
             guard isFinalizingStop, activeClientSource == .mlxAudio else { return }
             activeRealtimeClient().sendAudioChunk(silenceChunk)
-            try? await Task.sleep(for: .seconds(mlxTrailingSilenceChunkDurationSeconds))
+            try? await Task.sleep(for: .seconds(TimingConstants.mlxTrailingSilenceChunkDuration))
         }
     }
 
     func finishStoppedSession(promotePendingSegment: Bool) {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
+        finalizationWatchdogTask?.cancel()
+        finalizationWatchdogTask = nil
         cancelConnectTimeout()
 
         let wasMlxAudio = activeClientSource == .mlxAudio
+        let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
+        let shouldCommitOverlay = sessionMode == .overlayBuffer
 
         if promotePendingSegment {
             let promoted = wasMlxAudio
                 ? promotePendingMlxTextToLatestSegment()
                 : promotePendingRealtimeTextToLatestSegment()
 
-            if wasMlxAudio, let promoted, !promoted.isEmpty {
-                if settings.autoPasteIntoInputFieldEnabled {
-                    if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
-                        _ = textInsertion.pasteUsingCommandV(promoted)
-                    }
+            if sessionMode == .liveAutoPaste, wasMlxAudio, let promoted, !promoted.isEmpty {
+                if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
+                    _ = textInsertion.pasteUsingCommandV(promoted)
                 }
+            }
+        }
+
+        var overlayCommitOutcome: OverlayBufferCommitOutcome?
+        var didOverlayCommitFail = false
+        if shouldCommitOverlay {
+            refreshOverlayBufferSession()
+            overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
+                using: textInsertion,
+                autoCopyEnabled: settings.autoCopyEnabled
+            )
+            if case .failed(let failureMessage) = overlayCommitOutcome {
+                didOverlayCommitFail = true
+                lastError = failureMessage
             }
         }
 
@@ -289,27 +355,37 @@ extension DictationViewModel {
         livePartialText = ""
         pendingSegmentText = ""
         mlxStabilizer.resetSegment()
-        statusText = "Ready"
+        if case .failed = overlayCommitOutcome {
+            statusText = "Insert failed."
+        } else {
+            statusText = "Ready"
+        }
         activeClientSource = nil
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
 
-        if textInsertion.hasPendingInsertionText {
+        if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."
             textInsertion.clearPendingText()
         }
 
-        if lastError?.localizedCaseInsensitiveContains("websocket receive failed") == true {
+        if !shouldCommitOverlay || !didOverlayCommitFail {
+            overlayBufferCoordinator.reset()
+        }
+
+        if currentErrorToken == .websocketReceiveFailed {
             lastError = nil
         }
+        firstChunkPreprocessor.reset()
+        sessionOutputMode = nil
     }
 
     // MARK: - Connect Timeout
 
     func scheduleConnectTimeout() {
         cancelConnectTimeout()
-        let timeout = connectTimeoutSeconds
+        let timeout = TimingConstants.connectTimeout
         connectTimeoutTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(timeout))
             guard let self, self.isConnectingRealtimeSession else { return }
@@ -331,11 +407,16 @@ extension DictationViewModel {
 
     func abortConnectingSession(disconnectSocket: Bool = true) {
         cancelConnectTimeout()
+        finalizationWatchdogTask?.cancel()
+        finalizationWatchdogTask = nil
         isConnectingRealtimeSession = false
         isDictating = false
         isAwaitingMicrophonePermission = false
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
+        firstChunkPreprocessor.reset()
+        overlayBufferCoordinator.reset()
+        sessionOutputMode = nil
         if disconnectSocket {
             activeRealtimeClient().disconnect()
         }
@@ -360,7 +441,7 @@ extension DictationViewModel {
     func markRecentConnectionFailureIndicator() {
         recentFailureResetTask?.cancel()
         realtimeSessionIndicatorState = .recentFailure
-        let indicatorDuration = recentFailureIndicatorSeconds
+        let indicatorDuration = TimingConstants.recentFailureIndicatorDuration
         recentFailureResetTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(indicatorDuration))
             guard let self else { return }
@@ -374,7 +455,7 @@ extension DictationViewModel {
     // MARK: - Connection Failure
 
     func handleConnectFailure(status: String, message: String, technicalDetails: String? = nil) {
-        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedMessage = message.trimmed
         let resolvedMessage = trimmedMessage.isEmpty ? "Unable to establish realtime connection." : trimmedMessage
         let resolvedDetails = normalizedFailureDetails(technicalDetails)
 
@@ -426,41 +507,32 @@ extension DictationViewModel {
 
     // MARK: - Client Selection
 
+    func client(for source: ActiveClientSource) -> RealtimeClient {
+        switch source {
+        case .realtimeAPI: return realtimeAPIClient
+        case .mlxAudio: return mlxAudioRealtimeClient
+        }
+    }
+
     func selectedClientSource() -> ActiveClientSource {
         switch settings.realtimeProvider {
-        case .realtimeAPI:
-            return .realtimeAPI
-        case .mlxAudio:
-            return .mlxAudio
+        case .realtimeAPI: return .realtimeAPI
+        case .mlxAudio: return .mlxAudio
         }
     }
 
     func selectedRealtimeClient() -> RealtimeClient {
-        switch selectedClientSource() {
-        case .realtimeAPI:
-            return realtimeAPIClient
-        case .mlxAudio:
-            return mlxAudioRealtimeClient
-        }
+        client(for: selectedClientSource())
     }
 
     func activeRealtimeClient() -> RealtimeClient {
-        switch activeClientSource {
-        case .realtimeAPI:
-            return realtimeAPIClient
-        case .mlxAudio:
-            return mlxAudioRealtimeClient
-        case nil:
-            return selectedRealtimeClient()
-        }
+        client(for: activeClientSource ?? selectedClientSource())
     }
 
     func inactiveRealtimeClient(for source: ActiveClientSource) -> RealtimeClient {
         switch source {
-        case .realtimeAPI:
-            return mlxAudioRealtimeClient
-        case .mlxAudio:
-            return realtimeAPIClient
+        case .realtimeAPI: return mlxAudioRealtimeClient
+        case .mlxAudio: return realtimeAPIClient
         }
     }
 
@@ -489,12 +561,65 @@ extension DictationViewModel {
 
     private func normalizedFailureDetails(_ value: String?) -> String? {
         guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = value.trimmed
         return trimmed.isEmpty ? nil : trimmed
     }
 
     private func connectTimeoutTechnicalDetails(timeoutSeconds: TimeInterval) -> String {
         let endpoint = sanitizedRealtimeEndpointForLogging()
         return "No connection response received in \(Int(timeoutSeconds)) seconds for endpoint \(endpoint)."
+    }
+
+    func startStopFinalizationWatchdog() {
+        finalizationWatchdogTask?.cancel()
+        let timeout: TimeInterval = (activeClientSource == .mlxAudio)
+            ? TimingConstants.mlxStopFinalizationTimeout + 2.0
+            : TimingConstants.stopFinalizationTimeout + 2.0
+
+        finalizationWatchdogTask = Task { [weak self] in
+            let startedAt = Date()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
+                guard let self else { return }
+                guard self.isFinalizingStop else { return }
+
+                if !self.activeRealtimeClient().isConnected {
+                    self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")
+                    self.finishStoppedSession(promotePendingSegment: true)
+                    return
+                }
+
+                if Date().timeIntervalSince(startedAt) >= timeout {
+                    self.debugLog("finalization watchdog fired after \(timeout)s; forcing stop cleanup")
+                    self.activeRealtimeClient().disconnect()
+                    self.finishStoppedSession(promotePendingSegment: true)
+                    return
+                }
+            }
+        }
+    }
+
+    // MARK: - Overlay Buffer
+
+    private func startOverlayBufferSession() {
+        let anchor = preResolvedOverlayAnchor
+        preResolvedOverlayAnchor = nil
+        overlayBufferCoordinator.startSession(preResolvedAnchor: anchor)
+    }
+
+    func beginOverlayFinalization() {
+        guard isOverlayBufferModeEnabled else { return }
+        overlayBufferCoordinator.beginFinalizing(
+            displayBufferText: currentOverlayDisplayText(),
+            commitBufferText: currentOverlayCommitText()
+        )
+    }
+
+    func refreshOverlayBufferSession() {
+        guard isOverlayBufferModeEnabled else { return }
+        overlayBufferCoordinator.refresh(
+            displayBufferText: currentOverlayDisplayText(),
+            commitBufferText: currentOverlayCommitText()
+        )
     }
 }

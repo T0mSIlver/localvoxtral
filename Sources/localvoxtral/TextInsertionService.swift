@@ -16,6 +16,58 @@ enum KeyboardFallbackBehavior {
     case deferIfModifierActive
 }
 
+enum PreferredTextInsertionTargetPolicy {
+    enum PasteActivationAction: Equatable {
+        case useCurrentFrontmost
+        case activate(pid_t)
+        case deny
+    }
+
+    static func accessibilityTargetPID(
+        systemFocusedPID: pid_t?,
+        preferredPID: pid_t?,
+        selfPID: pid_t
+    ) -> pid_t? {
+        if let preferredPID = normalizedPreferredPID(preferredPID, selfPID: selfPID) {
+            return preferredPID
+        }
+
+        guard let systemFocusedPID,
+              systemFocusedPID != selfPID
+        else {
+            return nil
+        }
+
+        return systemFocusedPID
+    }
+
+    static func pasteActivationAction(
+        frontmostPID: pid_t?,
+        preferredPID: pid_t?,
+        selfPID: pid_t
+    ) -> PasteActivationAction {
+        if let preferredPID = normalizedPreferredPID(preferredPID, selfPID: selfPID) {
+            if frontmostPID == preferredPID {
+                return .useCurrentFrontmost
+            }
+            return .activate(preferredPID)
+        }
+
+        guard let frontmostPID else { return .deny }
+        return frontmostPID == selfPID ? .deny : .useCurrentFrontmost
+    }
+
+    private static func normalizedPreferredPID(_ preferredPID: pid_t?, selfPID: pid_t) -> pid_t? {
+        guard let preferredPID,
+              preferredPID != 0,
+              preferredPID != selfPID
+        else {
+            return nil
+        }
+        return preferredPID
+    }
+}
+
 @MainActor
 @Observable
 final class TextInsertionService {
@@ -58,10 +110,10 @@ final class TextInsertionService {
     /// fallback). Returns `true` if the text was inserted successfully.
     /// Use this for delayed/finalized text blocks where keyboard events are
     /// unreliable because focus context may have shifted.
-    func insertTextUsingAccessibilityOnly(_ text: String) -> Bool {
+    func insertTextUsingAccessibilityOnly(_ text: String, preferredAppPID: pid_t? = nil) -> Bool {
         guard !text.isEmpty else { return true }
         refreshAccessibilityTrustState()
-        if insertTextUsingAccessibility(text) {
+        if insertTextUsingAccessibility(text, preferredAppPID: preferredAppPID) {
             clearAccessibilityErrorIfNeeded()
             axInsertionSuccessCount += 1
             return true
@@ -111,8 +163,12 @@ final class TextInsertionService {
         return .failed
     }
 
-    func pasteUsingCommandV(_ text: String) -> Bool {
+    func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t? = nil) -> Bool {
         guard !text.isEmpty else { return true }
+
+        if !ensurePasteTargetIsActive(preferredAppPID: preferredAppPID) {
+            return false
+        }
 
         guard let eventSource = CGEventSource(stateID: .combinedSessionState),
               let keyDown = CGEvent(keyboardEventSource: eventSource, virtualKey: 9, keyDown: true),
@@ -192,7 +248,11 @@ final class TextInsertionService {
     }
 
     func requestAccessibilityPermission() {
-        accessibilityTrust.requestPermission()
+        requestAccessibilityPermissionIfNeeded()
+    }
+
+    func requestAccessibilityPermissionIfNeeded() {
+        accessibilityTrust.promptIfNeeded()
     }
 
     func resetDiagnostics() {
@@ -222,31 +282,14 @@ final class TextInsertionService {
 
     // MARK: - Private
 
-    private func insertTextUsingAccessibility(_ text: String) -> Bool {
+    private func insertTextUsingAccessibility(
+        _ text: String,
+        preferredAppPID: pid_t? = nil
+    ) -> Bool {
         guard isAccessibilityTrusted else { return false }
-
-        let systemWideElement = AXUIElementCreateSystemWide()
-        var focusedObject: AnyObject?
-        let focusStatus = AXUIElementCopyAttributeValue(
-            systemWideElement,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedObject
-        )
-
-        guard focusStatus == .success,
-              let focusedObject
-        else {
-            return false
-        }
-
-        guard CFGetTypeID(focusedObject) == AXUIElementGetTypeID() else {
-            return false
-        }
-
-        let focusedElement = focusedObject as! AXUIElement
-        var focusedPID: pid_t = 0
-        AXUIElementGetPid(focusedElement, &focusedPID)
-        if focusedPID == getpid() {
+        guard let focusedElement = resolvedAccessibilityInsertionTarget(
+            preferredAppPID: preferredAppPID
+        ) else {
             return false
         }
 
@@ -257,6 +300,82 @@ final class TextInsertionService {
             return true
         }
         return replaceSelectedTextRange(in: focusedElement, with: text)
+    }
+
+    private func resolvedAccessibilityInsertionTarget(
+        preferredAppPID: pid_t?
+    ) -> AXUIElement? {
+        let selfPID = getpid()
+        let systemFocused = focusedElementFromSystemWide()
+        let targetPID = PreferredTextInsertionTargetPolicy.accessibilityTargetPID(
+            systemFocusedPID: systemFocused?.pid,
+            preferredPID: preferredAppPID,
+            selfPID: selfPID
+        )
+
+        guard let targetPID else {
+            return nil
+        }
+
+        if let systemFocused,
+           systemFocused.pid == targetPID
+        {
+            return systemFocused.element
+        }
+
+        guard let preferredElement = focusedElement(inApplicationPID: targetPID)
+        else {
+            return nil
+        }
+
+        return preferredElement
+    }
+
+    private func focusedElementFromSystemWide() -> (element: AXUIElement, pid: pid_t)? {
+        SystemAccessibilityFocus.focusedElement()
+    }
+
+    private func focusedElement(inApplicationPID pid: pid_t) -> AXUIElement? {
+        SystemAccessibilityFocus.focusedElement(inApplicationPID: pid)
+    }
+
+    // TODO: This synchronous spin blocks @MainActor for up to 80ms while waiting
+    // for NSWorkspace to report the target app as frontmost. An async approach
+    // (e.g. Task.sleep ticks) would be less intrusive but requires making the
+    // entire paste path async. Acceptable for now given the small window.
+    private func ensurePasteTargetIsActive(preferredAppPID: pid_t?) -> Bool {
+        let selfPID = getpid()
+        let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        let action = PreferredTextInsertionTargetPolicy.pasteActivationAction(
+            frontmostPID: frontmostPID,
+            preferredPID: preferredAppPID,
+            selfPID: selfPID
+        )
+
+        switch action {
+        case .useCurrentFrontmost:
+            return true
+
+        case .deny:
+            return false
+
+        case .activate(let targetPID):
+            guard let preferredApp = NSRunningApplication(processIdentifier: targetPID)
+            else {
+                return false
+            }
+
+            preferredApp.activate(options: [])
+            let deadline = Date().addingTimeInterval(0.08)
+            while Date() < deadline {
+                if NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID {
+                    return true
+                }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+
+            return NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPID
+        }
     }
 
     private func replaceSelectedTextRange(in element: AXUIElement, with text: String) -> Bool {
@@ -288,9 +407,7 @@ final class TextInsertionService {
         }
 
         let selectedRangeValue = unsafeDowncast(selectedRangeObject, to: AXValue.self)
-        guard
-              AXValueGetType(selectedRangeValue) == .cfRange
-        else {
+        guard AXValueGetType(selectedRangeValue) == .cfRange else {
             return false
         }
 
@@ -387,9 +504,34 @@ final class TextInsertionService {
         accessibilityTrust.clearErrorIfNeeded()
     }
 
+    // NSPasteboardItem.copy() (inherited from NSObject) returns `self` rather than
+    // a deep copy — items become invalid once the pasteboard is cleared, so we must
+    // manually copy per-type data into fresh NSPasteboardItem instances.
     private func capturePasteboardSnapshot(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
         let copiedItems = pasteboard.pasteboardItems?
-            .compactMap { $0.copy() as? NSPasteboardItem } ?? []
+            .compactMap { item -> NSPasteboardItem? in
+                let snapshotItem = NSPasteboardItem()
+                var hasAnyRepresentation = false
+
+                for type in item.types {
+                    if let data = item.data(forType: type) {
+                        snapshotItem.setData(data, forType: type)
+                        hasAnyRepresentation = true
+                        continue
+                    }
+                    if let string = item.string(forType: type) {
+                        snapshotItem.setString(string, forType: type)
+                        hasAnyRepresentation = true
+                        continue
+                    }
+                    if let propertyList = item.propertyList(forType: type) {
+                        snapshotItem.setPropertyList(propertyList, forType: type)
+                        hasAnyRepresentation = true
+                    }
+                }
+
+                return hasAnyRepresentation ? snapshotItem : nil
+            } ?? []
         return PasteboardSnapshot(
             items: copiedItems
         )

@@ -78,7 +78,7 @@ private final class MlxStabilizationReplay {
 // MARK: - Test Class
 
 @MainActor
-final class MlxAudioTranscriptionTests: XCTestCase {
+final class MlxAudioTranscriptionIntegrationTests: XCTestCase {
     private static let enableEnv = "MLX_AUDIO_REALTIME_TEST_ENABLE"
     private static let endpointEnv = "MLX_AUDIO_REALTIME_TEST_ENDPOINT"
     private static let modelEnv = "MLX_AUDIO_REALTIME_TEST_MODEL"
@@ -190,54 +190,7 @@ final class MlxAudioTranscriptionTests: XCTestCase {
             throw XCTSkip("afconvert failed with status \(process.terminationStatus).")
         }
 
-        return try extractPCMDataFromWAV(at: tempURL)
-    }
-
-    private func extractPCMDataFromWAV(at url: URL) throws -> Data {
-        let wavData = try Data(contentsOf: url)
-        guard wavData.count >= 44 else {
-            throw XCTSkip("Generated WAV audio is unexpectedly short.")
-        }
-
-        var index = 12
-        while index + 8 <= wavData.count {
-            let chunkIDData = wavData[index ..< index + 4]
-            let chunkID = String(data: chunkIDData, encoding: .ascii) ?? ""
-            let chunkSize = Int(readLEUInt32(in: wavData, at: index + 4))
-            let chunkStart = index + 8
-            let chunkEnd = chunkStart + chunkSize
-
-            guard chunkEnd <= wavData.count else { break }
-
-            if chunkID == "data" {
-                return wavData.subdata(in: chunkStart ..< chunkEnd)
-            }
-
-            index = chunkEnd
-            if index % 2 == 1 { index += 1 }
-        }
-
-        throw XCTSkip("WAV audio does not contain a valid data chunk.")
-    }
-
-    private func readLEUInt32(in data: Data, at offset: Int) -> UInt32 {
-        UInt32(data[offset])
-            | UInt32(data[offset + 1]) << 8
-            | UInt32(data[offset + 2]) << 16
-            | UInt32(data[offset + 3]) << 24
-    }
-
-    private func splitPCM16IntoChunks(_ pcm: Data, chunkSizeBytes: Int) -> [Data] {
-        guard chunkSizeBytes > 0, !pcm.isEmpty else { return pcm.isEmpty ? [] : [pcm] }
-        var chunks: [Data] = []
-        chunks.reserveCapacity(max(1, pcm.count / chunkSizeBytes))
-        var offset = 0
-        while offset < pcm.count {
-            let end = min(offset + chunkSizeBytes, pcm.count)
-            chunks.append(pcm.subdata(in: offset ..< end))
-            offset = end
-        }
-        return chunks
+        return try IntegrationTestSupport.extractPCMDataFromWAV(at: tempURL)
     }
 
     // MARK: - Diagnostic Runner
@@ -249,16 +202,23 @@ final class MlxAudioTranscriptionTests: XCTestCase {
         var finalWaitTimeoutSeconds: TimeInterval = 30.0
         var postFinalQuietSeconds: TimeInterval = 8.0
         var showStabilizationReplay: Bool = true
+        var minimumWordAccuracy: Double?
     }
 
     @discardableResult
     private func runDiagnostic(_ diag: DiagnosticConfig) async throws -> DiagnosticResult {
         let (config, audioPath, referenceTranscript) = try mlxConfiguration(delayMsOverride: diag.delayMs)
 
+        if diag.minimumWordAccuracy != nil,
+           (referenceTranscript?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        {
+            throw XCTSkip("Reference transcript is required for minimum-word-accuracy assertions.")
+        }
+
         let pcm16 = try convertToPCM16(inputPath: audioPath)
         let audioDurationSeconds = Double(pcm16.count) / (16_000.0 * 2.0)
         let chunkSizeBytes = 3_200
-        let chunks = splitPCM16IntoChunks(pcm16, chunkSizeBytes: chunkSizeBytes)
+        let chunks = IntegrationTestSupport.splitPCM16IntoChunks(pcm16, chunkSizeBytes: chunkSizeBytes)
 
         print("\n" + String(repeating: "=", count: 80))
         print("MLX-AUDIO DIAGNOSTIC: \(diag.label)")
@@ -279,19 +239,21 @@ final class MlxAudioTranscriptionTests: XCTestCase {
 
         let client = MlxAudioRealtimeWebSocketClient()
         let events = EventCollector()
-        let connected = expectation(description: "connected")
         let disconnected = expectation(description: "disconnected")
+        let connectionTracker = ConnectionTracker()
 
         // Track finals with a counter instead of a single expectation
         let finalTracker = FinalTracker()
 
-        client.setEventHandler { [events, finalTracker] event in
+        client.setEventHandler { [events, finalTracker, connectionTracker] event in
             events.append(event)
             switch event {
             case .connected:
-                connected.fulfill()
+                connectionTracker.markConnected()
             case .finalTranscript:
                 finalTracker.receivedFinal()
+            case .error(let message):
+                connectionTracker.recordError(message)
             case .disconnected:
                 disconnected.fulfill()
             default:
@@ -300,7 +262,7 @@ final class MlxAudioTranscriptionTests: XCTestCase {
         }
 
         try client.connect(configuration: config)
-        await fulfillment(of: [connected], timeout: 10.0)
+        try await waitForConnectionOrError(connectionTracker, timeoutSeconds: 10.0)
 
         // Stream audio at real-time pace
         print("\nStreaming audio...")
@@ -443,6 +405,12 @@ final class MlxAudioTranscriptionTests: XCTestCase {
                 printDiff(expected: normalizedRef, actual: normalizedStabilized)
             }
 
+            let stabilizedWordAccuracy = IntegrationTestSupport.wordAccuracy(
+                expected: normalizedRef,
+                actual: normalizedStabilized
+            )
+            print(String(format: "STABILIZED WORD ACCURACY: %.3f", stabilizedWordAccuracy))
+
             let normalizedConcat = TextMergingAlgorithms.normalizeTranscriptionFormatting(
                 concatenatedFinals.trimmingCharacters(in: .whitespacesAndNewlines)
             )
@@ -452,6 +420,14 @@ final class MlxAudioTranscriptionTests: XCTestCase {
             } else {
                 print("CONCAT FINALS DIFF:")
                 printDiff(expected: normalizedRef, actual: normalizedConcat)
+            }
+
+            if let minimumWordAccuracy = diag.minimumWordAccuracy {
+                XCTAssertGreaterThanOrEqual(
+                    stabilizedWordAccuracy,
+                    minimumWordAccuracy,
+                    "Expected stabilized transcript word accuracy >= \(minimumWordAccuracy)."
+                )
             }
         }
         print(String(repeating: "=", count: 80))
@@ -483,39 +459,41 @@ final class MlxAudioTranscriptionTests: XCTestCase {
 
     // MARK: - Tests
 
-    /// Baseline test: real-time streaming with default settings, generous wait for all finals.
-    func testMlxAudioReferenceTranscription() async throws {
+    /// Integration quality check with baseline delay settings.
+    /// Requires a reference transcript and enforces a minimum word-accuracy threshold.
+    func testMlxAudioReferenceDiagnostic_meetsReferenceAccuracy() async throws {
         try await runDiagnostic(DiagnosticConfig(
             label: "Baseline (real-time streaming, default delay)",
             trailingSilenceSeconds: 4.0,
             finalWaitTimeoutSeconds: 60.0,
-            postFinalQuietSeconds: 10.0
+            postFinalQuietSeconds: 10.0,
+            minimumWordAccuracy: 0.80
         ))
     }
 
-    /// Low latency: transcription_delay_ms=0. Tests how much accuracy degrades
-    /// when the model has no right-context lookahead.
-    func testMlxAudioLowLatency() async throws {
+    /// Integration quality check for transcription_delay_ms=0.
+    func testMlxAudioLowLatencyDiagnostic_meetsReferenceAccuracy() async throws {
         try await runDiagnostic(DiagnosticConfig(
             label: "Low latency (delay=0ms)",
             delayMs: 0,
             trailingSilenceSeconds: 4.0,
             finalWaitTimeoutSeconds: 60.0,
             postFinalQuietSeconds: 10.0,
-            showStabilizationReplay: false
+            showStabilizationReplay: false,
+            minimumWordAccuracy: 0.65
         ))
     }
 
-    /// High accuracy: transcription_delay_ms=1500. Tests whether more right-context
-    /// improves the final transcript quality.
-    func testMlxAudioHighAccuracy() async throws {
+    /// Integration quality check for transcription_delay_ms=1500.
+    func testMlxAudioHighAccuracyDiagnostic_meetsReferenceAccuracy() async throws {
         try await runDiagnostic(DiagnosticConfig(
             label: "High accuracy (delay=1500ms)",
             delayMs: 1500,
             trailingSilenceSeconds: 4.0,
             finalWaitTimeoutSeconds: 60.0,
             postFinalQuietSeconds: 10.0,
-            showStabilizationReplay: false
+            showStabilizationReplay: false,
+            minimumWordAccuracy: 0.80
         ))
     }
 
@@ -523,6 +501,52 @@ final class MlxAudioTranscriptionTests: XCTestCase {
 
     private func formatTime(_ seconds: TimeInterval) -> String {
         String(format: "%6.2fs", seconds)
+    }
+
+    private func waitForConnectionOrError(
+        _ tracker: ConnectionTracker,
+        timeoutSeconds: TimeInterval
+    ) async throws {
+        let start = CFAbsoluteTimeGetCurrent()
+        while CFAbsoluteTimeGetCurrent() - start < timeoutSeconds {
+            if tracker.isConnected {
+                return
+            }
+
+            if let message = tracker.firstErrorMessage {
+                let lower = message.lowercased()
+                if lower.contains("bad response")
+                    || lower.contains("404")
+                    || lower.contains("405")
+                    || lower.contains("upgrade")
+                {
+                    throw XCTSkip(
+                        "Endpoint does not appear to support mlx-audio websocket protocol: \(message)"
+                    )
+                }
+                XCTFail("mlx-audio connection failed before handshake: \(message)")
+                return
+            }
+
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        if let message = tracker.firstErrorMessage {
+            let lower = message.lowercased()
+            if lower.contains("bad response")
+                || lower.contains("404")
+                || lower.contains("405")
+                || lower.contains("upgrade")
+            {
+                throw XCTSkip(
+                    "Endpoint does not appear to support mlx-audio websocket protocol: \(message)"
+                )
+            }
+            XCTFail("Timed out waiting for mlx-audio connection. Last error: \(message)")
+            return
+        }
+
+        XCTFail("Timed out waiting for mlx-audio connection.")
     }
 
     private func printDiff(expected: String, actual: String) {
@@ -594,5 +618,37 @@ private final class FinalTracker: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _lastFinalTime
+    }
+}
+
+private final class ConnectionTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connected = false
+    private var firstError: String?
+
+    func markConnected() {
+        lock.lock()
+        connected = true
+        lock.unlock()
+    }
+
+    func recordError(_ message: String) {
+        lock.lock()
+        if firstError == nil {
+            firstError = message
+        }
+        lock.unlock()
+    }
+
+    var isConnected: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return connected
+    }
+
+    var firstErrorMessage: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return firstError
     }
 }

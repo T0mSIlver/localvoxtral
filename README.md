@@ -19,9 +19,9 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 ## Features
 
-- Global shortcut to start/stop dictation from anywhere
+- Global shortcut with selectable behavior: `Toggle` (press-to-start/stop) or `Push to Talk` (hold-to-dictate)
 - Native menu bar app with instant open and visual feedback with the icon
-- Live dictation that writes into your active text field as you speak
+- Output modes: overlay buffer (commit on stop) or live auto-paste into focused input
 - Fully local dictation option with `voxmlx` (no third-party API traffic)
 - Pick your preferred microphone input device
 - Copy the latest transcribed segment
@@ -45,12 +45,13 @@ open ./dist/localvoxtral.app
 
 - Open **Settings** from the menu bar popover to set:
   - Dictation keyboard shortcut  
+  - Shortcut behavior (`Toggle` / `Push to Talk`)
   - Realtime endpoint
   - Model name
   - API key
   - Commit interval (`vLLM`/`voxmlx`)
   - Transcription delay (`mlx-audio`)
-  - Auto-paste into input field
+  - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Auto-copy final segment
 
 ## Tested setup
@@ -89,6 +90,7 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 
 ## Roadmap
 
+- [ ] Add on-device LLM post-processing for dictation cleanup and technical wording improvements.
 - [ ] Enhance the server connection UX
 - [ ] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess app-managed local serving (start/stop/config) in localvoxtral.
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:

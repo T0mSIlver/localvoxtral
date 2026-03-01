@@ -132,7 +132,7 @@ final class MlxHypothesisStabilizer {
     /// that was NOT already inserted via the realtime insertion queue.
     func promotePendingText() -> PromotionResult {
         let hypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
-            segmentLatestHypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
+            segmentLatestHypothesis.trimmed
         )
 
         let alreadyInsertedPrefix = segmentCommittedPrefix
@@ -145,7 +145,7 @@ final class MlxHypothesisStabilizer {
             )
         }
 
-        let allCommitted = consumeCommittedSinceLastFinal().trimmingCharacters(in: .whitespacesAndNewlines)
+        let allCommitted = consumeCommittedSinceLastFinal().trimmed
 
         let newlyPromoted: String
         if hypothesis.count > alreadyInsertedPrefix.count,
@@ -156,7 +156,7 @@ final class MlxHypothesisStabilizer {
                 offsetBy: alreadyInsertedPrefix.count
             )
             newlyPromoted = String(hypothesis[start...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmed
         } else if alreadyInsertedPrefix.isEmpty {
             newlyPromoted = allCommitted
         } else {
@@ -205,7 +205,7 @@ final class MlxHypothesisStabilizer {
         previousHypothesis: String,
         finalHypothesis: String
     ) -> String {
-        let previous = previousHypothesis.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previous = previousHypothesis.trimmed
         guard !previous.isEmpty else { return finalHypothesis }
 
         if finalHypothesis.hasPrefix(previous) {
