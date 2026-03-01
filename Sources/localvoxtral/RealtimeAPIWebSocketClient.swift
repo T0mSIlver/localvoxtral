@@ -12,6 +12,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         var hasSentSessionUpdate = false
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
+        var hasPendingFinalCommitAck = false
         var pendingMessages: [String] = []
         var pendingModelName = ""
     }
@@ -64,6 +65,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             s.hasSentSessionUpdate = false
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = false
+            s.hasPendingFinalCommitAck = false
 
             task.resume()
         }
@@ -159,6 +161,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 let shouldSignalFinal = s.hasUncommittedAudio || s.isGenerationInProgress
                 s.hasUncommittedAudio = false
                 s.isGenerationInProgress = false
+                s.hasPendingFinalCommitAck = shouldSignalFinal
                 return shouldSignalFinal
             }
 
@@ -226,9 +229,17 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         case "transcription.done",
             "response.audio_transcript.done",
             "conversation.item.input_audio_transcription.completed":
-            state.withLock { $0.isGenerationInProgress = false }
+            let shouldEmitFinalCommitCompleted = state.withLock { s in
+                s.isGenerationInProgress = false
+                guard s.hasPendingFinalCommitAck else { return false }
+                s.hasPendingFinalCommitAck = false
+                return true
+            }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
                 emit(.finalTranscript(text))
+            }
+            if shouldEmitFinalCommitCompleted {
+                emit(.finalCommitCompleted)
             }
         case "error":
             state.withLock { $0.isGenerationInProgress = false }
@@ -426,6 +437,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         s.hasSentSessionUpdate = false
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
+        s.hasPendingFinalCommitAck = false
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.pendingModelName = ""
     }

@@ -110,8 +110,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     ) -> OverlayBufferCommitOutcome {
         let commitText = OverlayBufferTextAssembler.insertionText(from: commitBufferText)
         guard !commitText.isEmpty else {
-            stateMachine.commitSucceeded()
-            renderCurrentSnapshot()
             Log.overlay.info("overlay commit skipped (empty buffer)")
             return .succeeded
         }
@@ -131,8 +129,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             if autoCopyEnabled {
                 copyToPasteboard(commitText)
             }
-            stateMachine.commitSucceeded()
-            renderCurrentSnapshot()
             Log.overlay.info("overlay commit succeeded")
             return .succeeded
         }

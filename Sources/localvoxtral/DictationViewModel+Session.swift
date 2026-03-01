@@ -17,6 +17,7 @@ extension DictationViewModel {
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
+        cancelOverlayDismiss()
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
@@ -65,6 +66,7 @@ extension DictationViewModel {
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
+        lastOverlayRefreshWhileStopping = nil
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 
@@ -316,11 +318,13 @@ extension DictationViewModel {
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
+        cancelOverlayDismiss()
         cancelConnectTimeout()
 
         let wasMlxAudio = activeClientSource == .mlxAudio
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let shouldCommitOverlay = sessionMode == .overlayBuffer
+        let holdRemaining = overlayHoldRemaining()
 
         if promotePendingSegment {
             let promoted = wasMlxAudio
@@ -351,6 +355,7 @@ extension DictationViewModel {
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         realtimeFinalizationLastActivityAt = nil
+        lastOverlayRefreshWhileStopping = nil
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingSegmentText = ""
@@ -371,7 +376,11 @@ extension DictationViewModel {
         }
 
         if !shouldCommitOverlay || !didOverlayCommitFail {
-            overlayBufferCoordinator.reset()
+            if holdRemaining > 0 {
+                scheduleOverlayDismiss(after: holdRemaining)
+            } else {
+                overlayBufferCoordinator.reset()
+            }
         }
 
         if currentErrorToken == .websocketReceiveFailed {
@@ -409,11 +418,13 @@ extension DictationViewModel {
         cancelConnectTimeout()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
+        cancelOverlayDismiss()
         isConnectingRealtimeSession = false
         isDictating = false
         isAwaitingMicrophonePermission = false
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
+        lastOverlayRefreshWhileStopping = nil
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         sessionOutputMode = nil
@@ -609,6 +620,7 @@ extension DictationViewModel {
 
     func beginOverlayFinalization() {
         guard isOverlayBufferModeEnabled else { return }
+        lastOverlayRefreshWhileStopping = nil
         overlayBufferCoordinator.beginFinalizing(
             displayBufferText: currentOverlayDisplayText(),
             commitBufferText: currentOverlayCommitText()
@@ -621,5 +633,33 @@ extension DictationViewModel {
             displayBufferText: currentOverlayDisplayText(),
             commitBufferText: currentOverlayCommitText()
         )
+        if isFinalizingStop {
+            lastOverlayRefreshWhileStopping = Date()
+        }
+    }
+
+    func cancelOverlayDismiss() {
+        overlayDismissTask?.cancel()
+        overlayDismissTask = nil
+    }
+
+    private func overlayHoldRemaining() -> TimeInterval {
+        guard isOverlayBufferModeEnabled, let lastRefresh = lastOverlayRefreshWhileStopping else {
+            return 0
+        }
+        let elapsed = Date().timeIntervalSince(lastRefresh)
+        return max(0, TimingConstants.overlayFinalWordVisibilityMinimum - elapsed)
+    }
+
+    private func scheduleOverlayDismiss(after delay: TimeInterval) {
+        cancelOverlayDismiss()
+        debugLog("holding overlay \(String(format: "%.2f", delay))s before dismiss")
+        overlayDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.overlayDismissTask = nil
+            self.debugLog("overlay hold elapsed, dismissing")
+            self.overlayBufferCoordinator.reset()
+        }
     }
 }

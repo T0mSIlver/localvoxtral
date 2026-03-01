@@ -25,6 +25,7 @@ enum RealtimeEvent: Sendable {
     case status(String)
     case partialTranscript(String)
     case finalTranscript(String)
+    case finalCommitCompleted
     case error(String)
 }
 

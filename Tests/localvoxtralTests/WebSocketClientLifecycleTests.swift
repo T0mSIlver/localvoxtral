@@ -271,5 +271,76 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             XCTFail("Expected .disconnected"); return
         }
     }
+
+    // MARK: - Final Commit Completion
+
+    func testRealtimeDoneEmitsFinalCommitCompletedAfterFinalCommit() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.sendCommit(final: true)
+        client.handle(json: ["type": "transcription.done", "text": "final text"])
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 2)
+        guard case .finalTranscript(let text) = events[0] else {
+            XCTFail("Expected first event to be .finalTranscript")
+            return
+        }
+        XCTAssertEqual(text, "final text")
+        guard case .finalCommitCompleted = events[1] else {
+            XCTFail("Expected second event to be .finalCommitCompleted")
+            return
+        }
+    }
+
+    func testRealtimeDoneWithoutFinalCommitDoesNotEmitFinalCommitCompleted() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.handle(json: ["type": "transcription.done"])
+
+        XCTAssertTrue(collector.snapshot().isEmpty)
+    }
+
+    func testRealtimeFinalCommitCompletedEmitsOnlyOnceForRepeatedDone() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.sendCommit(final: true)
+        client.handle(json: ["type": "transcription.done"])
+        client.handle(json: ["type": "transcription.done"])
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 1)
+        guard case .finalCommitCompleted = events[0] else {
+            XCTFail("Expected only .finalCommitCompleted")
+            return
+        }
+    }
 }
 #endif

@@ -82,6 +82,99 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertNil(viewModel.sessionOutputMode)
     }
 
+    func testFinalCommitCompletedDisconnectsImmediatelyDuringFinalization() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isFinalizingStop = true
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
+
+        viewModel.handle(event: .finalCommitCompleted, source: .realtimeAPI)
+
+        let timeoutAt = Date().addingTimeInterval(1.0)
+        while viewModel.isFinalizingStop, Date() < timeoutAt {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(viewModel.isFinalizingStop)
+        XCTAssertNil(viewModel.activeClientSource)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
+        XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
+    }
+
+    func testFinalCommitCompletedDisconnectsImmediatelyAndDelaysOverlayDismiss() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isFinalizingStop = true
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
+        viewModel.lastOverlayRefreshWhileStopping = Date()
+
+        viewModel.handle(event: .finalCommitCompleted, source: .realtimeAPI)
+
+        // WebSocket should disconnect immediately — no delay.
+        let disconnectTimeout = Date().addingTimeInterval(1.0)
+        while viewModel.realtimeAPIClient.isConnected, Date() < disconnectTimeout {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
+
+        // Session finalization also completes immediately after disconnect.
+        let finalizationTimeout = Date().addingTimeInterval(1.0)
+        while viewModel.isFinalizingStop, Date() < finalizationTimeout {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(viewModel.isFinalizingStop)
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+
+        // Overlay reset should NOT have happened yet (hold timer is pending).
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
+
+        // Wait for the overlay hold to elapse.
+        let startedAt = Date()
+        let dismissTimeout = Date().addingTimeInterval(1.0)
+        while overlayCoordinator.resetCallCount == 0, Date() < dismissTimeout {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
+        XCTAssertGreaterThanOrEqual(
+            Date().timeIntervalSince(startedAt),
+            TimingConstants.overlayFinalWordVisibilityMinimum - 0.05
+        )
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
