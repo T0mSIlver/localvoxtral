@@ -90,6 +90,7 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 
 ## Roadmap
 
+- [ ] Add on-device LLM post-processing for dictation cleanup and technical wording improvements.
 - [ ] Enhance the server connection UX
 - [ ] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess app-managed local serving (start/stop/config) in localvoxtral.
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
