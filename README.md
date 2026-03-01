@@ -19,7 +19,7 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 ## Features
 
-- Global shortcut to start/stop dictation from anywhere
+- Global shortcut with selectable behavior: `Toggle` (press-to-start/stop) or `Push to Talk` (hold-to-dictate)
 - Native menu bar app with instant open and visual feedback with the icon
 - Output modes: overlay buffer (commit on stop) or live auto-paste into focused input
 - Fully local dictation option with `voxmlx` (no third-party API traffic)
@@ -45,6 +45,7 @@ open ./dist/localvoxtral.app
 
 - Open **Settings** from the menu bar popover to set:
   - Dictation keyboard shortcut  
+  - Shortcut behavior (`Toggle` / `Push to Talk`)
   - Realtime endpoint
   - Model name
   - API key

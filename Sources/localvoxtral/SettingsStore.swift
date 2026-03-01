@@ -40,6 +40,31 @@ enum DictationOutputMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum DictationShortcutMode: String, CaseIterable, Identifiable {
+    case toggle = "toggle"
+    case pushToTalk = "push_to_talk"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .toggle:
+            return "Toggle"
+        case .pushToTalk:
+            return "Push to Talk"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .toggle:
+            return "Press once to start dictation, press again to stop."
+        case .pushToTalk:
+            return "Hold the shortcut to dictate, release to stop."
+        }
+    }
+}
+
 enum DictationShortcutValidation {
     static let allowedModifierFlagsMask = UInt32(cmdKey | optionKey | shiftKey | controlKey)
 
@@ -128,6 +153,7 @@ final class SettingsStore {
         static let mlxAudioTranscriptionDelayMilliseconds =
             "settings.mlx_audio_transcription_delay_ms"
         static let dictationOutputMode = "settings.dictation_output_mode"
+        static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
         static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
@@ -185,6 +211,10 @@ final class SettingsStore {
 
     var dictationOutputMode: DictationOutputMode {
         didSet { defaults.set(dictationOutputMode.rawValue, forKey: Keys.dictationOutputMode) }
+    }
+
+    var dictationShortcutMode: DictationShortcutMode {
+        didSet { defaults.set(dictationShortcutMode.rawValue, forKey: Keys.dictationShortcutMode) }
     }
 
     var selectedInputDeviceUID: String {
@@ -277,6 +307,13 @@ final class SettingsStore {
             dictationOutputMode = parsedMode
         } else {
             dictationOutputMode = .overlayBuffer
+        }
+        if let storedShortcutMode = defaults.string(forKey: Keys.dictationShortcutMode),
+            let parsedShortcutMode = DictationShortcutMode(rawValue: storedShortcutMode)
+        {
+            dictationShortcutMode = parsedShortcutMode
+        } else {
+            dictationShortcutMode = .toggle
         }
         selectedInputDeviceUID = defaults.string(forKey: Keys.selectedInputDeviceUID) ?? ""
         dictationShortcutEnabled = Self.loadBool(

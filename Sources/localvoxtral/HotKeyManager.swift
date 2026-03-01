@@ -17,7 +17,8 @@ final class HotKeyManager {
     static let registrationErrorStatus = "Failed to register global hotkey."
     static let unavailableErrorMessage = "The selected keyboard shortcut is unavailable."
 
-    var onToggle: (() -> Void)?
+    var onPress: (() -> Void)?
+    var onRelease: (() -> Void)?
 
     private var hotKeyRef: EventHotKeyRef?
     private var hotKeyHandlerRef: EventHandlerRef?
@@ -38,10 +39,16 @@ final class HotKeyManager {
             return .success
         }
 
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            ),
+        ]
 
         let installStatus = InstallEventHandler(
             GetApplicationEventTarget(),
@@ -66,14 +73,15 @@ final class HotKeyManager {
                     return noErr
                 }
 
+                let eventKind = GetEventKind(eventRef)
                 DispatchQueue.main.async {
-                    HotKeyManager.hotKeyTarget?.onToggle?()
+                    HotKeyManager.hotKeyTarget?.handleHotKeyEvent(kind: eventKind)
                 }
 
                 return noErr
             },
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             nil,
             &hotKeyHandlerRef
         )
@@ -109,6 +117,17 @@ final class HotKeyManager {
         if let hotKeyHandlerRef {
             RemoveEventHandler(hotKeyHandlerRef)
             self.hotKeyHandlerRef = nil
+        }
+    }
+
+    private func handleHotKeyEvent(kind: UInt32) {
+        switch kind {
+        case UInt32(kEventHotKeyPressed):
+            onPress?()
+        case UInt32(kEventHotKeyReleased):
+            onRelease?()
+        default:
+            break
         }
     }
 }

@@ -156,12 +156,29 @@ struct SettingsView: View {
                         }
                     }
 
+                    SettingsField(title: "Shortcut behavior") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.dictationShortcutMode) {
+                                ForEach(DictationShortcutMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            Text(settings.dictationShortcutMode.description)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
                     ToggleSettingRow(
                         title: "Auto-copy final segment",
                         isOn: $settings.autoCopyEnabled
                     )
 
-                    SettingsField(title: "Toggle dictation") {
+                    SettingsField(title: "Dictation shortcut") {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(alignment: .center, spacing: 8) {
                                 ShortcutRecorderField(

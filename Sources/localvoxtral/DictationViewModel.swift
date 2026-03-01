@@ -105,6 +105,13 @@ final class DictationViewModel {
     private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored
     private let managesRuntimeServices: Bool
+    // Tracks physical key state so repeat key-down events do not retrigger actions.
+    @ObservationIgnored
+    private var isPushToTalkShortcutHeld = false
+    // True only when a start attempt was initiated by push-to-talk and may still need
+    // to be cancelled if the user releases before dictation actually begins.
+    @ObservationIgnored
+    private var hasActivePushToTalkShortcutSession = false
 
     init(
         settings: SettingsStore,
@@ -179,7 +186,8 @@ final class DictationViewModel {
             networkMonitor.start()
         }
 
-        hotKeyManager.onToggle = { [weak self] in self?.toggleDictation() }
+        hotKeyManager.onPress = { [weak self] in self?.handleDictationShortcutPress() }
+        hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
         if startRuntimeServices {
             switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
             case .success:
@@ -353,7 +361,49 @@ final class DictationViewModel {
 
     // MARK: - Public API
 
+    private func handleDictationShortcutPress() {
+        switch settings.dictationShortcutMode {
+        case .toggle:
+            hasActivePushToTalkShortcutSession = false
+            toggleDictation()
+        case .pushToTalk:
+            guard !isPushToTalkShortcutHeld else { return }
+            isPushToTalkShortcutHeld = true
+            guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
+            hasActivePushToTalkShortcutSession = true
+            startDictation()
+            if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+                hasActivePushToTalkShortcutSession = false
+            }
+        }
+    }
+
+    private func handleDictationShortcutRelease() {
+        guard isPushToTalkShortcutHeld else { return }
+        isPushToTalkShortcutHeld = false
+
+        guard settings.dictationShortcutMode == .pushToTalk else {
+            hasActivePushToTalkShortcutSession = false
+            return
+        }
+        guard hasActivePushToTalkShortcutSession else { return }
+
+        if isConnectingRealtimeSession {
+            abortConnectingSession()
+            statusText = "Ready"
+        } else if isDictating {
+            stopDictation(reason: "push-to-talk release")
+        } else if isAwaitingMicrophonePermission {
+            // Keep the session marker until the permission callback resolves so we can
+            // suppress starting if the key was released before permission was granted.
+            statusText = "Ready"
+            return
+        }
+        hasActivePushToTalkShortcutSession = false
+    }
+
     func toggleDictation() {
+        hasActivePushToTalkShortcutSession = false
         if isDictating {
             stopDictation(reason: "manual toggle")
         } else if isConnectingRealtimeSession {
@@ -495,6 +545,14 @@ final class DictationViewModel {
                     guard granted else {
                         self.statusText = "Microphone access denied."
                         self.lastError = Self.microphoneDeniedMessage
+                        self.hasActivePushToTalkShortcutSession = false
+                        return
+                    }
+                    if self.hasActivePushToTalkShortcutSession,
+                        !self.isPushToTalkShortcutHeld
+                    {
+                        self.statusText = "Ready"
+                        self.hasActivePushToTalkShortcutSession = false
                         return
                     }
                     self.beginDictationSession()
@@ -505,6 +563,9 @@ final class DictationViewModel {
                 guard let self, self.isAwaitingMicrophonePermission else { return }
                 self.isAwaitingMicrophonePermission = false
                 self.statusText = "Ready"
+                if self.hasActivePushToTalkShortcutSession && !self.isPushToTalkShortcutHeld {
+                    self.hasActivePushToTalkShortcutSession = false
+                }
                 self.debugLog("microphone permission prompt timed out")
             }
         case .denied, .restricted:
@@ -517,6 +578,7 @@ final class DictationViewModel {
     func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {
         guard isDictating else { return }
         debugLog("stopDictation reason=\(reason)")
+        hasActivePushToTalkShortcutSession = false
 
         commitTask?.cancel()
         commitTask = nil

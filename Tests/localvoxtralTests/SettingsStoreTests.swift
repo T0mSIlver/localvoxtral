@@ -164,6 +164,29 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.dictationOutputMode, .overlayBuffer)
     }
 
+    // MARK: - dictationShortcutMode
+
+    func testDictationShortcutMode_defaultsToToggle() {
+        let store = makeStore()
+        XCTAssertEqual(store.dictationShortcutMode, .toggle)
+    }
+
+    func testDictationShortcutMode_persistsAcrossReload() {
+        let store = makeStore()
+        store.dictationShortcutMode = .pushToTalk
+
+        let reloadedStore = makeStore()
+        XCTAssertEqual(reloadedStore.dictationShortcutMode, .pushToTalk)
+    }
+
+    func testDictationShortcutMode_invalidStoredValueFallsBackToToggle() {
+        defaults.set("invalid_mode", forKey: "settings.dictation_shortcut_mode")
+
+        let store = makeStore()
+
+        XCTAssertEqual(store.dictationShortcutMode, .toggle)
+    }
+
     // MARK: - dictationShortcut
 
     func testDictationShortcut_defaultsToEnabledOptionSpace() {
