@@ -100,18 +100,39 @@ final class OverlayAnchorResolver {
     /// Converts a rect from AX/Quartz global display coordinates (Y-down)
     /// to AppKit screen coordinates (Y-up).
     private func axToAppKit(_ axRect: CGRect) -> CGRect {
-        guard let maxY = primaryScreenMaxY() else {
+        guard let mainDisplayMaxY = mainDisplayReferenceMaxY() else {
             return axRect
         }
-        return CGRect(
+
+        let convertedUsingMainDisplay = convertAXRectToAppKit(
+            axRect,
+            referenceMaxY: mainDisplayMaxY
+        )
+        if intersectsAnyVisibleScreen(convertedUsingMainDisplay) {
+            return convertedUsingMainDisplay
+        }
+
+        // Fallback for uncommon coordinate-space differences in multi-display
+        // arrangements: if main-display conversion lands off-screen, retry with
+        // the global desktop top edge.
+        let desktopMaxY = NSScreen.screens.map(\.frame.maxY).max() ?? mainDisplayMaxY
+        return convertAXRectToAppKit(axRect, referenceMaxY: desktopMaxY)
+    }
+
+    private func convertAXRectToAppKit(_ axRect: CGRect, referenceMaxY: CGFloat) -> CGRect {
+        CGRect(
             x: axRect.origin.x,
-            y: maxY - axRect.origin.y - axRect.height,
+            y: referenceMaxY - axRect.origin.y - axRect.height,
             width: axRect.width,
             height: axRect.height
         )
     }
 
-    private func primaryScreenMaxY() -> CGFloat? {
+    private func intersectsAnyVisibleScreen(_ rect: CGRect) -> Bool {
+        NSScreen.screens.contains { $0.visibleFrame.intersects(rect) }
+    }
+
+    private func mainDisplayReferenceMaxY() -> CGFloat? {
         let mainDisplayID = CGMainDisplayID()
         if let mainScreen = NSScreen.screens.first(where: {
             guard let number = $0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {

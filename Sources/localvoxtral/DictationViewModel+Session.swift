@@ -374,7 +374,7 @@ extension DictationViewModel {
             overlayBufferCoordinator.reset()
         }
 
-        if lastError?.localizedCaseInsensitiveContains("websocket receive failed") == true {
+        if currentErrorToken == .websocketReceiveFailed {
             lastError = nil
         }
         firstChunkPreprocessor.reset()

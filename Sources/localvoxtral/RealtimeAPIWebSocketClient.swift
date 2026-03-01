@@ -433,8 +433,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     // MARK: - JSON Helpers
 
     /// Recursively searches a JSON structure for the first non-empty string
-    /// value matching one of the given keys. Internal visibility for test access.
-    func findString(in value: Any, matching keys: Set<String>) -> String? {
+    /// value matching one of the given keys in priority order. Internal visibility
+    /// for test access.
+    func findString(in value: Any, matching keys: [String]) -> String? {
         if let dict = value as? [String: Any] {
             for key in keys {
                 if let stringValue = dict[key] as? String, !stringValue.isEmpty {
