@@ -2,18 +2,11 @@ import AppKit
 import ApplicationServices
 import Foundation
 import Observation
-import os
 
 enum TextInsertResult {
     case insertedByAccessibility
     case insertedByKeyboardFallback
-    case deferredByActiveModifiers
     case failed
-}
-
-enum KeyboardFallbackBehavior {
-    case always
-    case deferIfModifierActive
 }
 
 enum PreferredTextInsertionTargetPolicy {
@@ -90,9 +83,6 @@ final class TextInsertionService {
 
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
-    private var axInsertionSuccessCount = 0
-    private var keyboardFallbackSuccessCount = 0
-    private var modifierDeferredInsertionCount = 0
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
 
@@ -115,43 +105,22 @@ final class TextInsertionService {
         refreshAccessibilityTrustState()
         if insertTextUsingAccessibility(text, preferredAppPID: preferredAppPID) {
             clearAccessibilityErrorIfNeeded()
-            axInsertionSuccessCount += 1
             return true
         }
         return false
     }
 
-    func insertText(
-        _ text: String,
-        keyboardFallbackBehavior: KeyboardFallbackBehavior = .always
-    ) -> TextInsertResult {
+    func insertText(_ text: String) -> TextInsertResult {
         guard !text.isEmpty else { return .insertedByAccessibility }
         refreshAccessibilityTrustState()
 
-        if keyboardFallbackBehavior == .deferIfModifierActive,
-           shouldSuppressKeyboardFallbackForActiveModifiers()
-        {
-            modifierDeferredInsertionCount += 1
-            return .deferredByActiveModifiers
-        }
-
-        if keyboardFallbackBehavior == .deferIfModifierActive,
-           postUnicodeTextEvents(text)
-        {
-            clearAccessibilityErrorIfNeeded()
-            keyboardFallbackSuccessCount += 1
-            return .insertedByKeyboardFallback
-        }
-
         if insertTextUsingAccessibility(text) {
             clearAccessibilityErrorIfNeeded()
-            axInsertionSuccessCount += 1
             return .insertedByAccessibility
         }
 
         if postUnicodeTextEvents(text) {
             clearAccessibilityErrorIfNeeded()
-            keyboardFallbackSuccessCount += 1
             return .insertedByKeyboardFallback
         }
 
@@ -208,16 +177,11 @@ final class TextInsertionService {
     func flushPendingRealtimeInsertion() {
         guard !pendingRealtimeInsertionText.isEmpty else { return }
 
-        let result = insertText(
-            pendingRealtimeInsertionText,
-            keyboardFallbackBehavior: .deferIfModifierActive
-        )
+        let result = insertText(pendingRealtimeInsertionText)
 
         switch result {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
-        case .deferredByActiveModifiers:
-            break
         case .failed:
             break
         }
@@ -253,21 +217,6 @@ final class TextInsertionService {
 
     func requestAccessibilityPermissionIfNeeded() {
         accessibilityTrust.promptIfNeeded()
-    }
-
-    func resetDiagnostics() {
-        axInsertionSuccessCount = 0
-        keyboardFallbackSuccessCount = 0
-        modifierDeferredInsertionCount = 0
-    }
-
-    func logDiagnostics() {
-        let totalInsertions = axInsertionSuccessCount + keyboardFallbackSuccessCount + modifierDeferredInsertionCount
-        guard totalInsertions > 0 else { return }
-
-        Log.insertion.info(
-            "insertion-paths ax=\(self.axInsertionSuccessCount) keyboard_fallback=\(self.keyboardFallbackSuccessCount) deferred_modifiers=\(self.modifierDeferredInsertionCount)"
-        )
     }
 
     func stopAllTasks() {
@@ -476,20 +425,6 @@ final class TextInsertionService {
         }
 
         return didPostAnyEvent
-    }
-
-    private func shouldSuppressKeyboardFallbackForActiveModifiers() -> Bool {
-        let modifierKeyCodes: [CGKeyCode] = [
-            54, // right command
-            55, // left command
-            58, // left option
-            61, // right option
-            59, // left control
-            62, // right control
-            63, // function
-        ]
-
-        return modifierKeyCodes.contains { CGEventSource.keyState(.combinedSessionState, key: $0) }
     }
 
     private func promptForAccessibilityPermissionIfNeeded() {
