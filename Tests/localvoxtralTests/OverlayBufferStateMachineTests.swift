@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class OverlayBufferStateMachineTests: XCTestCase {
-    func testStateMachine_happyPathTransitionsToIdleAfterCommitSuccess() {
+    func testStateMachine_happyPathTransitionsToIdleAfterReset() {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .windowCenter)
 
@@ -17,7 +17,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         machine.beginFinalizing(anchor: nil)
         XCTAssertEqual(machine.phase, .finalizing)
 
-        machine.commitSucceeded()
+        machine.reset()
         XCTAssertEqual(machine.phase, .idle)
         XCTAssertNil(machine.snapshot)
         XCTAssertEqual(machine.bufferText, "")

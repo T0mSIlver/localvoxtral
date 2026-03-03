@@ -335,8 +335,8 @@ final class MlxAudioTranscriptionIntegrationTests: XCTestCase {
                 finalCount += 1
                 allFinalTexts.append(text)
                 print("[\(formatTime(te.elapsed))] #\(i) FINAL[\(finalCount)]: \(text)")
-            case .finalCommitCompleted:
-                print("[\(formatTime(te.elapsed))] #\(i) FINAL COMMIT COMPLETED")
+            case .transcriptionFinalized:
+                print("[\(formatTime(te.elapsed))] #\(i) TRANSCRIPTION FINALIZED")
             case .error(let msg):
                 print("[\(formatTime(te.elapsed))] #\(i) ERROR: \(msg)")
             }

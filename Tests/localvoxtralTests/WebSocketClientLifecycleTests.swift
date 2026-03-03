@@ -116,7 +116,6 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertEqual(before.pendingTextMessageCount, 1)
         XCTAssertEqual(before.pendingBinaryMessageCount, 1)
         XCTAssertTrue(before.hasSentInitialConfiguration)
-        XCTAssertTrue(before.hasDelayedDisconnectWorkItem)
 
         client.debugHandleTerminalSocketErrorForTesting(task: task, errorMessage: "socket failed")
 
@@ -125,7 +124,6 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertEqual(after.pendingTextMessageCount, 0)
         XCTAssertEqual(after.pendingBinaryMessageCount, 0)
         XCTAssertFalse(after.hasSentInitialConfiguration)
-        XCTAssertFalse(after.hasDelayedDisconnectWorkItem)
 
         let events = collector.snapshot()
         XCTAssertEqual(events.count, 2)
@@ -158,8 +156,6 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertFalse(after.isConnected)
         XCTAssertEqual(after.pendingTextMessageCount, 0)
         XCTAssertEqual(after.pendingBinaryMessageCount, 0)
-        XCTAssertFalse(after.hasDelayedDisconnectWorkItem)
-
         let events = collector.snapshot()
         XCTAssertEqual(events.count, 1)
         guard case .disconnected = events[0] else {
@@ -272,9 +268,9 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         }
     }
 
-    // MARK: - Final Commit Completion
+    // MARK: - Transcription Finalization
 
-    func testRealtimeDoneEmitsFinalCommitCompletedAfterFinalCommit() {
+    func testRealtimeDoneEmitsTranscriptionFinalizedAfterFinalCommit() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0) }
@@ -296,13 +292,13 @@ final class WebSocketClientLifecycleTests: XCTestCase {
             return
         }
         XCTAssertEqual(text, "final text")
-        guard case .finalCommitCompleted = events[1] else {
-            XCTFail("Expected second event to be .finalCommitCompleted")
+        guard case .transcriptionFinalized = events[1] else {
+            XCTFail("Expected second event to be .transcriptionFinalized")
             return
         }
     }
 
-    func testRealtimeDoneWithoutFinalCommitDoesNotEmitFinalCommitCompleted() {
+    func testRealtimeDoneWithoutFinalCommitDoesNotEmitTranscriptionFinalized() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0) }
@@ -319,7 +315,7 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         XCTAssertTrue(collector.snapshot().isEmpty)
     }
 
-    func testRealtimeFinalCommitCompletedEmitsOnlyOnceForRepeatedDone() {
+    func testRealtimeTranscriptionFinalizedEmitsOnlyOnceForRepeatedDone() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0) }
@@ -337,8 +333,8 @@ final class WebSocketClientLifecycleTests: XCTestCase {
 
         let events = collector.snapshot()
         XCTAssertEqual(events.count, 1)
-        guard case .finalCommitCompleted = events[0] else {
-            XCTFail("Expected only .finalCommitCompleted")
+        guard case .transcriptionFinalized = events[0] else {
+            XCTFail("Expected only .transcriptionFinalized")
             return
         }
     }

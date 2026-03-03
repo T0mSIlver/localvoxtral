@@ -12,7 +12,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         var hasSentSessionUpdate = false
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
-        var hasPendingFinalCommitAck = false
+        /// Armed by `sendCommit(final: true)`. Cleared when the next
+        /// transcription-done event arrives, which triggers `.transcriptionFinalized`.
+        var isAwaitingFinalTranscription = false
         var pendingMessages: [String] = []
         var pendingModelName = ""
     }
@@ -65,7 +67,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             s.hasSentSessionUpdate = false
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = false
-            s.hasPendingFinalCommitAck = false
+            s.isAwaitingFinalTranscription = false
 
             task.resume()
         }
@@ -83,62 +85,6 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         if wasConnected {
             debugLog("disconnect")
             emit(.disconnected)
-        }
-    }
-
-    func disconnectAfterFinalCommitIfNeeded() {
-        enum DisconnectAction {
-            case none
-            case closeNow
-            case sendFinalCommit(URLSessionWebSocketTask)
-        }
-
-        let action: DisconnectAction = state.withLock { s in
-            guard s.base.socketState != .disconnected else { return .none }
-            s.base.isUserInitiatedDisconnect = true
-
-            guard s.base.socketState == .connected,
-                  let webSocketTask = s.base.webSocketTask,
-                  (s.hasUncommittedAudio || s.isGenerationInProgress)
-            else {
-                closeSocketLocked(&s, cancelTask: true)
-                return .closeNow
-            }
-
-            s.hasUncommittedAudio = false
-            s.isGenerationInProgress = false
-            return .sendFinalCommit(webSocketTask)
-        }
-
-        switch action {
-        case .none:
-            return
-        case .closeNow:
-            debugLog("disconnect")
-            emit(.disconnected)
-        case .sendFinalCommit(let task):
-            debugLog("send final commit before disconnect")
-            let payload = #"{"type":"input_audio_buffer.commit","final":true}"#
-            task.send(.string(payload)) { [weak self] error in
-                guard let self else { return }
-                if let error {
-                    self.emit(.status(
-                        "Final commit send failed: \(self.describeSocketError(error))"))
-                }
-
-                let shouldEmitDisconnected: Bool = self.state.withLock { s in
-                    guard s.base.socketState != .disconnected, s.base.webSocketTask === task else {
-                        return false
-                    }
-                    self.closeSocketLocked(&s, cancelTask: true)
-                    return true
-                }
-
-                if shouldEmitDisconnected {
-                    self.debugLog("disconnect")
-                    self.emit(.disconnected)
-                }
-            }
         }
     }
 
@@ -161,7 +107,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 let shouldSignalFinal = s.hasUncommittedAudio || s.isGenerationInProgress
                 s.hasUncommittedAudio = false
                 s.isGenerationInProgress = false
-                s.hasPendingFinalCommitAck = shouldSignalFinal
+                s.isAwaitingFinalTranscription = shouldSignalFinal
                 return shouldSignalFinal
             }
 
@@ -229,17 +175,17 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         case "transcription.done",
             "response.audio_transcript.done",
             "conversation.item.input_audio_transcription.completed":
-            let shouldEmitFinalCommitCompleted = state.withLock { s in
+            let shouldEmitTranscriptionFinalized = state.withLock { s in
                 s.isGenerationInProgress = false
-                guard s.hasPendingFinalCommitAck else { return false }
-                s.hasPendingFinalCommitAck = false
+                guard s.isAwaitingFinalTranscription else { return false }
+                s.isAwaitingFinalTranscription = false
                 return true
             }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
                 emit(.finalTranscript(text))
             }
-            if shouldEmitFinalCommitCompleted {
-                emit(.finalCommitCompleted)
+            if shouldEmitTranscriptionFinalized {
+                emit(.transcriptionFinalized)
             }
         case "error":
             state.withLock { $0.isGenerationInProgress = false }
@@ -437,7 +383,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         s.hasSentSessionUpdate = false
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
-        s.hasPendingFinalCommitAck = false
+        s.isAwaitingFinalTranscription = false
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.pendingModelName = ""
     }

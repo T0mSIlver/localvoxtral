@@ -163,10 +163,6 @@ final class DictationViewModel {
     @ObservationIgnored
     var realtimeFinalizationLastActivityAt: Date?
     @ObservationIgnored
-    var lastOverlayRefreshWhileStopping: Date?
-    @ObservationIgnored
-    var overlayDismissTask: Task<Void, Never>?
-    @ObservationIgnored
     var isAwaitingMicrophonePermission = false
     @ObservationIgnored
     private var startupPermissionTask: Task<Void, Never>?
@@ -306,7 +302,6 @@ final class DictationViewModel {
         connectTimeoutTask?.cancel()
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
-        overlayDismissTask?.cancel()
         startupPermissionTask?.cancel()
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()

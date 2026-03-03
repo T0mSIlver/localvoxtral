@@ -25,8 +25,10 @@ extension DictationViewModel {
             handlePartialTranscriptEvent(delta, source: source)
         case .finalTranscript(let text):
             handleFinalTranscriptEvent(text, source: source)
-        case .finalCommitCompleted:
-            handleFinalCommitCompletedEvent(source: source)
+        case .transcriptionFinalized where source == .realtimeAPI:
+            handleTranscriptionFinalizedEvent()
+        case .transcriptionFinalized:
+            break
         case .error(let message):
             handleErrorEvent(message)
         }
@@ -45,7 +47,6 @@ extension DictationViewModel {
     }
 
     private func handleDisconnectedEvent() {
-        cancelOverlayDismiss()
         cancelConnectTimeout()
         if isConnectingRealtimeSession {
             abortConnectingSession(disconnectSocket: false)
@@ -178,10 +179,9 @@ extension DictationViewModel {
         refreshOverlayBufferSession()
     }
 
-    private func handleFinalCommitCompletedEvent(source: ActiveClientSource) {
-        guard source == .realtimeAPI else { return }
+    private func handleTranscriptionFinalizedEvent() {
         guard isFinalizingStop else { return }
-        debugLog("final commit ack, disconnecting")
+        debugLog("transcription finalized, disconnecting")
         activeRealtimeClient().disconnect()
     }
 
