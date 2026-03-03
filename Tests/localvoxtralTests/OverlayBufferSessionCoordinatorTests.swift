@@ -13,7 +13,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: anchorResolver
         )
         let committer = MockOverlayTextCommitter()
-        committer.insertResult = true
+        committer.insertResult = .insertedByAccessibility
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
@@ -44,7 +44,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: anchorResolver
         )
         let committer = MockOverlayTextCommitter()
-        committer.insertResult = true
+        committer.insertResult = .insertedByAccessibility
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
@@ -71,7 +71,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: anchorResolver
         )
         let committer = MockOverlayTextCommitter()
-        committer.insertResult = true
+        committer.insertResult = .insertedByAccessibility
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
@@ -115,7 +115,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: anchorResolver
         )
         let committer = MockOverlayTextCommitter()
-        committer.insertResult = false
+        committer.insertResult = .failed
         committer.pasteResult = false
         committer.isAccessibilityTrusted = true
 
@@ -145,7 +145,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: anchorResolver
         )
         let committer = MockOverlayTextCommitter()
-        committer.insertResult = true
+        committer.insertResult = .insertedByAccessibility
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
@@ -174,7 +174,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: anchorResolver
         )
         let committer = MockOverlayTextCommitter()
-        committer.insertResult = true
+        committer.insertResult = .insertedByAccessibility
 
         anchorResolver.focusedPID = 111
         coordinator.startSession()
@@ -187,6 +187,58 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(outcome, .succeeded)
         XCTAssertEqual(committer.insertedTexts.first ?? "", "commit\nhello\nworld")
+    }
+
+    func testCommitSucceedsWhenKeyboardPrimaryPathSucceeds() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = .insertedByKeyboardFallback
+        committer.pasteResult = false
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(committer.insertedTexts.count, 1)
+        XCTAssertTrue(committer.pastedTexts.isEmpty)
+    }
+
+    func testCommitFallsBackToCommandVWhenPrimaryInsertionFails() {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = .failed
+        committer.pasteResult = true
+
+        anchorResolver.focusedPID = 111
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(committer.insertedTexts.count, 1)
+        XCTAssertEqual(committer.pastedTexts.count, 1)
     }
 }
 
@@ -224,7 +276,7 @@ private final class MockOverlayAnchorResolver: OverlayAnchorResolving {
 @MainActor
 private final class MockOverlayTextCommitter: OverlayTextCommitting {
     var isAccessibilityTrusted = true
-    var insertResult = false
+    var insertResult: TextInsertResult = .failed
     var pasteResult = false
 
     var insertedTexts: [String] = []
@@ -232,7 +284,7 @@ private final class MockOverlayTextCommitter: OverlayTextCommitting {
     var insertPreferredPIDs: [pid_t?] = []
     var pastePreferredPIDs: [pid_t?] = []
 
-    func insertTextUsingAccessibilityOnly(_ text: String, preferredAppPID: pid_t?) -> Bool {
+    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult {
         insertedTexts.append(text)
         insertPreferredPIDs.append(preferredAppPID)
         return insertResult

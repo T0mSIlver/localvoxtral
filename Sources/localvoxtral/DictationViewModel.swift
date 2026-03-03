@@ -762,9 +762,7 @@ final class DictationViewModel {
         textInsertion.refreshAccessibilityTrustState()
 
         let directInsertResult = textInsertion.insertText(segment)
-        if directInsertResult == .insertedByAccessibility
-            || directInsertResult == .insertedByKeyboardFallback
-        {
+        if directInsertResult.isSuccess {
             statusText = "Pasted latest segment."
             return
         }

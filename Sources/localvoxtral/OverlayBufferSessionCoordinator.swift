@@ -22,7 +22,7 @@ extension OverlayAnchorResolver: OverlayAnchorResolving {}
 protocol OverlayTextCommitting: AnyObject {
     var isAccessibilityTrusted: Bool { get }
 
-    func insertTextUsingAccessibilityOnly(_ text: String, preferredAppPID: pid_t?) -> Bool
+    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool
 }
 
@@ -128,11 +128,14 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         }
 
         let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
+        // Keep overlay commit aligned with live auto-paste behavior: try keyboard
+        // Unicode insertion first for web field compatibility, then AX, then Cmd+V.
+        let primaryResult = textCommitter.insertTextPrioritizingKeyboard(
+            commitText,
+            preferredAppPID: preferredPID
+        )
         let inserted =
-            textCommitter.insertTextUsingAccessibilityOnly(
-                commitText,
-                preferredAppPID: preferredPID
-            )
+            primaryResult.isSuccess
             || textCommitter.pasteUsingCommandV(
                 commitText,
                 preferredAppPID: preferredPID
