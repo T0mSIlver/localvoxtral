@@ -83,6 +83,9 @@ final class TextInsertionService {
 
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
+    private var axInsertionSuccessCount = 0
+    private var keyboardFallbackSuccessCount = 0
+    private var activeModifierFallbackCount = 0
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
 
@@ -105,6 +108,7 @@ final class TextInsertionService {
         refreshAccessibilityTrustState()
         if insertTextUsingAccessibility(text, preferredAppPID: preferredAppPID) {
             clearAccessibilityErrorIfNeeded()
+            axInsertionSuccessCount += 1
             return true
         }
         return false
@@ -116,11 +120,17 @@ final class TextInsertionService {
 
         if insertTextUsingAccessibility(text) {
             clearAccessibilityErrorIfNeeded()
+            axInsertionSuccessCount += 1
             return .insertedByAccessibility
+        }
+
+        if hasActiveFallbackModifiers() {
+            activeModifierFallbackCount += 1
         }
 
         if postUnicodeTextEvents(text) {
             clearAccessibilityErrorIfNeeded()
+            keyboardFallbackSuccessCount += 1
             return .insertedByKeyboardFallback
         }
 
@@ -217,6 +227,22 @@ final class TextInsertionService {
 
     func requestAccessibilityPermissionIfNeeded() {
         accessibilityTrust.promptIfNeeded()
+    }
+
+    func resetDiagnostics() {
+        axInsertionSuccessCount = 0
+        keyboardFallbackSuccessCount = 0
+        activeModifierFallbackCount = 0
+    }
+
+    func logDiagnostics() {
+        let totalInsertions =
+            axInsertionSuccessCount + keyboardFallbackSuccessCount + activeModifierFallbackCount
+        guard totalInsertions > 0 else { return }
+
+        Log.insertion.info(
+            "insertion-paths ax=\(self.axInsertionSuccessCount) keyboard_fallback=\(self.keyboardFallbackSuccessCount) active_modifiers=\(self.activeModifierFallbackCount)"
+        )
     }
 
     func stopAllTasks() {
@@ -425,6 +451,20 @@ final class TextInsertionService {
         }
 
         return didPostAnyEvent
+    }
+
+    private func hasActiveFallbackModifiers() -> Bool {
+        let modifierKeyCodes: [CGKeyCode] = [
+            54, // right command
+            55, // left command
+            58, // left option
+            61, // right option
+            59, // left control
+            62, // right control
+            63, // function
+        ]
+
+        return modifierKeyCodes.contains { CGEventSource.keyState(.combinedSessionState, key: $0) }
     }
 
     private func promptForAccessibilityPermissionIfNeeded() {

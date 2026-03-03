@@ -66,6 +66,7 @@ extension DictationViewModel {
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
         textInsertion.clearPendingText()
+        textInsertion.resetDiagnostics()
 
         isConnectingRealtimeSession = true
         activeClientSource = source
@@ -362,6 +363,7 @@ extension DictationViewModel {
         activeClientSource = nil
 
         textInsertion.stopInsertionRetryTask()
+        textInsertion.logDiagnostics()
 
         if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."
