@@ -240,6 +240,28 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(committer.insertedTexts.count, 1)
         XCTAssertEqual(committer.pastedTexts.count, 1)
     }
+
+    func testDismissAfterHoldWaitsFromBeginFinalizingWhenNoFinalRefreshArrives() async {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+
+        coordinator.dismissAfterHold(minimumVisibility: 0.05)
+        XCTAssertEqual(renderer.hideCallCount, 0)
+
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(renderer.hideCallCount, 1)
+    }
 }
 
 @MainActor

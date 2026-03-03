@@ -117,57 +117,12 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
         XCTAssertEqual(overlayCoordinator.dismissAfterHoldCallCount, 1)
-        XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
-        XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
-    }
-
-    func testTranscriptionFinalizedDisconnectsImmediatelyAndDelegatesOverlayDismiss() async {
-        let settings = makeSettings(outputMode: .overlayBuffer)
-        let overlayCoordinator = MockOverlayCoordinator()
-        let viewModel = DictationViewModel(
-            settings: settings,
-            overlayBufferCoordinator: overlayCoordinator,
-            startRuntimeServices: false
-        )
-        retainForTestProcessLifetime(viewModel)
-
-        let session = URLSession(configuration: .ephemeral)
-        let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:65535/test")!)
-        defer {
-            task.cancel()
-            session.invalidateAndCancel()
-        }
-
-        viewModel.activeClientSource = .realtimeAPI
-        viewModel.isFinalizingStop = true
-        viewModel.sessionOutputMode = .overlayBuffer
-        viewModel.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
-
-        viewModel.handle(event: .transcriptionFinalized, source: .realtimeAPI)
-
-        // WebSocket should disconnect immediately — no delay.
-        let disconnectTimeout = Date().addingTimeInterval(1.0)
-        while viewModel.realtimeAPIClient.isConnected, Date() < disconnectTimeout {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
-
-        // Session finalization also completes immediately after disconnect.
-        let finalizationTimeout = Date().addingTimeInterval(1.0)
-        while viewModel.isFinalizingStop, Date() < finalizationTimeout {
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        XCTAssertFalse(viewModel.isFinalizingStop)
-        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
-
-        // Overlay hold timer is delegated to the coordinator.
-        XCTAssertEqual(overlayCoordinator.dismissAfterHoldCallCount, 1)
         XCTAssertEqual(
             overlayCoordinator.lastDismissAfterHoldMinimumVisibility,
             TimingConstants.overlayFinalWordVisibilityMinimum
         )
-        // reset() is not called directly — the coordinator's dismissAfterHold owns that.
         XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
+        XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
     }
 
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {

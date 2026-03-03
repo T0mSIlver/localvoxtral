@@ -211,14 +211,22 @@ final class DictationViewModel {
         }
 
         realtimeAPIClient.setEventHandler { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.handle(event: event, source: .realtimeAPI)
+            // Preserve callback order for back-to-back events (e.g. final transcript
+            // followed by transcription finalized) by routing through main-queue FIFO.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.handle(event: event, source: .realtimeAPI)
+                }
             }
         }
 
         mlxAudioRealtimeClient.setEventHandler { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.handle(event: event, source: .mlxAudio)
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.handle(event: event, source: .mlxAudio)
+                }
             }
         }
 

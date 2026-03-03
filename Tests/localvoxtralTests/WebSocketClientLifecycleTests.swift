@@ -341,7 +341,7 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         }
     }
 
-    func testFinalCommitRequestedDuringInFlightGenerationWaitsForSecondDoneToFinalize() {
+    func testFinalCommitRequestedDuringInFlightGenerationFinalizesOnNextDone() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0) }
@@ -358,25 +358,50 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         client.sendCommit(final: true)
         client.handle(json: ["type": "transcription.done", "text": "in-flight complete"])
 
-        let afterFirstDone = collector.snapshot()
-        XCTAssertEqual(afterFirstDone.count, 1)
-        guard case .finalTranscript(let text) = afterFirstDone[0] else {
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 2)
+        guard case .finalTranscript(let text) = events[0] else {
             XCTFail("Expected first event to be .finalTranscript")
             return
         }
         XCTAssertEqual(text, "in-flight complete")
-
-        client.handle(json: ["type": "transcription.done"])
-
-        let finalEvents = collector.snapshot()
-        XCTAssertEqual(finalEvents.count, 2)
-        guard case .transcriptionFinalized = finalEvents[1] else {
-            XCTFail("Expected second event to be .transcriptionFinalized")
+        guard case .transcriptionFinalized = events[1] else {
+            XCTFail("Expected second event to be .transcriptionFinalized on first done")
             return
         }
     }
 
-    func testFinalCommitWithNoPendingAudioOrGenerationFinalizesImmediately() {
+    func testFinalCommitRequestedDuringInFlightGenerationWithoutUncommittedAudioFinalizesOnNextDone() {
+        let client = RealtimeAPIWebSocketClient()
+        let collector = EventCollector()
+        client.setEventHandler { collector.append($0) }
+
+        let (session, task) = makeWebSocketTask()
+        defer {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+
+        client.debugPrimeConnectedStateForTesting(task: task)
+        client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: true)
+
+        client.sendCommit(final: true)
+        client.handle(json: ["type": "transcription.done", "text": "in-flight complete"])
+
+        let events = collector.snapshot()
+        XCTAssertEqual(events.count, 2)
+        guard case .finalTranscript(let text) = events[0] else {
+            XCTFail("Expected first event to be .finalTranscript")
+            return
+        }
+        XCTAssertEqual(text, "in-flight complete")
+        guard case .transcriptionFinalized = events[1] else {
+            XCTFail("Expected second event to be .transcriptionFinalized on first done")
+            return
+        }
+    }
+
+    func testFinalCommitWithNoPendingAudioOrGenerationWaitsForDoneToFinalize() {
         let client = RealtimeAPIWebSocketClient()
         let collector = EventCollector()
         client.setEventHandler { collector.append($0) }
@@ -391,11 +416,14 @@ final class WebSocketClientLifecycleTests: XCTestCase {
         client.debugSetGenerationTrackingState(hasUncommittedAudio: false, isGenerationInProgress: false)
 
         client.sendCommit(final: true)
+        XCTAssertTrue(collector.snapshot().isEmpty)
+
+        client.handle(json: ["type": "transcription.done"])
 
         let events = collector.snapshot()
         XCTAssertEqual(events.count, 1)
         guard case .transcriptionFinalized = events[0] else {
-            XCTFail("Expected immediate .transcriptionFinalized")
+            XCTFail("Expected .transcriptionFinalized after done")
             return
         }
     }

@@ -4,13 +4,10 @@ import os
 
 final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked Sendable, RealtimeClient {
     /// Tracks stop-finalization commit coordination so we only emit
-    /// `.transcriptionFinalized` once the correct generation(s) have completed.
+    /// `.transcriptionFinalized` once the final commit response completes.
     private enum FinalCommitCompletionGate {
         /// No stop-finalization completion tracking is active.
         case idle
-        /// A non-final generation was already in flight when finalization started.
-        /// Wait for its `transcription.done`, then send the final commit.
-        case awaitingInFlightGenerationBeforeFinalCommit
         /// Final commit has been sent and we are waiting for its
         /// `transcription.done` to emit `.transcriptionFinalized`.
         case awaitingFinalCommitTranscriptionDone
@@ -114,7 +111,6 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         enum CommitAction {
             case none
             case sendCommitFrame(final: Bool)
-            case emitTranscriptionFinalized
         }
 
         let action: CommitAction = state.withLock { s in
@@ -124,24 +120,14 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 switch s.finalCommitCompletionGate {
                 case .idle:
                     break
-                case .awaitingInFlightGenerationBeforeFinalCommit,
-                    .awaitingFinalCommitTranscriptionDone:
+                case .awaitingFinalCommitTranscriptionDone:
                     return .none
                 }
 
-                if s.isGenerationInProgress {
-                    s.finalCommitCompletionGate = .awaitingInFlightGenerationBeforeFinalCommit
-                    return .none
-                }
-
-                if s.hasUncommittedAudio {
-                    s.hasUncommittedAudio = false
-                    s.isGenerationInProgress = true
-                    s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
-                    return .sendCommitFrame(final: true)
-                }
-
-                return .emitTranscriptionFinalized
+                s.hasUncommittedAudio = false
+                s.isGenerationInProgress = true
+                s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
+                return .sendCommitFrame(final: true)
             }
 
             guard s.finalCommitCompletionGate == .idle else { return .none }
@@ -154,9 +140,6 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
 
         switch action {
         case .none:
-            return
-        case .emitTranscriptionFinalized:
-            emit(.transcriptionFinalized)
             return
         case .sendCommitFrame(let shouldMarkFinal):
             var payload: [String: Any] = ["type": "input_audio_buffer.commit"]
@@ -218,7 +201,6 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             "conversation.item.input_audio_transcription.completed":
             enum DoneAction {
                 case none
-                case sendFinalCommitFrame
                 case emitTranscriptionFinalized
             }
 
@@ -228,15 +210,6 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
                 switch s.finalCommitCompletionGate {
                 case .idle:
                     return .none
-                case .awaitingInFlightGenerationBeforeFinalCommit:
-                    if s.hasUncommittedAudio {
-                        s.hasUncommittedAudio = false
-                        s.isGenerationInProgress = true
-                        s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
-                        return .sendFinalCommitFrame
-                    }
-                    s.finalCommitCompletionGate = .idle
-                    return .emitTranscriptionFinalized
                 case .awaitingFinalCommitTranscriptionDone:
                     s.finalCommitCompletionGate = .idle
                     return .emitTranscriptionFinalized
@@ -248,9 +221,6 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             switch doneAction {
             case .none:
                 break
-            case .sendFinalCommitFrame:
-                debugLog("send deferred final commit after in-flight generation done")
-                send(event: ["type": "input_audio_buffer.commit", "final": true])
             case .emitTranscriptionFinalized:
                 emit(.transcriptionFinalized)
             }

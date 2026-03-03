@@ -87,9 +87,9 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {
         lockCommitTargetForFinalizationIfNeeded()
-        // Nil so dismissAfterHold uses zero hold time if no refresh() arrives
-        // during finalization — the existing text was already visible before.
-        lastFinalizationContentUpdate = nil
+        // Start the hold timer from the latest finalization-phase content update.
+        // beginFinalizing() itself updates visible overlay content.
+        lastFinalizationContentUpdate = Date()
         let anchor = anchorResolver.resolveAnchor()
 
         stateMachine.beginFinalizing(anchor: anchor)
