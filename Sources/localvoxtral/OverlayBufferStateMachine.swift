@@ -95,10 +95,7 @@ enum OverlayBufferTextAssembler {
 // Valid state transitions:
 //   idle → buffering         (startSession)
 //   buffering → finalizing   (beginFinalizing)
-//   finalizing → idle        (commitSucceeded)
 //   finalizing → commitFailed (commitFailed)
-//   buffering/finalizing → idle (reset)
-//   commitFailed → idle      (reset)
 //   any → idle               (reset)
 @MainActor
 struct OverlayBufferStateMachine {
@@ -150,15 +147,6 @@ struct OverlayBufferStateMachine {
         if let anchor {
             self.anchor = anchor
         }
-    }
-
-    mutating func commitSucceeded() {
-        guard phase == .finalizing else {
-            let currentPhase = phase
-            Log.overlay.warning("commitSucceeded called but phase is \(String(describing: currentPhase)), not finalizing — ignoring")
-            return
-        }
-        reset()
     }
 
     mutating func commitFailed(error: String, anchor: OverlayAnchor?) {

@@ -12,7 +12,6 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
         var sawStreamingDeltaForCurrentChunk = false
         var activeStreamingHypothesis = ""
         var pendingTranscriptionDelayMilliseconds: Int?
-        var delayedDisconnectWorkItem: DispatchWorkItem?
     }
 
     private enum TextSendAction: Sendable {
@@ -27,15 +26,8 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
         case dropped
     }
 
-    private enum DisconnectAction {
-        case none
-        case closeNow
-        case schedule(DispatchWorkItem)
-    }
-
     private let state = Mutex(State())
     private let streamingModeEnabled = true
-    private let finalizationGracePeriodSeconds: TimeInterval = 2.0
 
     let supportsPeriodicCommit = false
     var isConnected: Bool {
@@ -97,50 +89,6 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
         if shouldEmitDisconnected {
             debugLog("disconnect")
             emit(.disconnected)
-        }
-    }
-
-    func disconnectAfterFinalCommitIfNeeded() {
-        let action: DisconnectAction = state.withLock { s in
-            guard s.base.socketState != .disconnected else { return .none }
-            s.base.isUserInitiatedDisconnect = true
-
-            guard s.base.socketState == .connected, let task = s.base.webSocketTask else {
-                closeSocketLocked(&s, cancelTask: true, clearQueuedMessages: true)
-                return .closeNow
-            }
-
-            s.delayedDisconnectWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                let shouldEmit = self.state.withLock { s -> Bool in
-                    guard s.base.socketState != .disconnected, s.base.webSocketTask === task
-                    else { return false }
-                    self.closeSocketLocked(&s, cancelTask: true, clearQueuedMessages: true)
-                    return true
-                }
-                if shouldEmit {
-                    self.debugLog("disconnect after grace period")
-                    self.emit(.disconnected)
-                }
-            }
-
-            s.delayedDisconnectWorkItem = workItem
-            return .schedule(workItem)
-        }
-
-        switch action {
-        case .none:
-            return
-        case .closeNow:
-            debugLog("disconnect")
-            emit(.disconnected)
-        case .schedule(let workItem):
-            debugLog("waiting for mlx finalization before disconnect")
-            DispatchQueue.global(qos: .utility).asyncAfter(
-                deadline: .now() + finalizationGracePeriodSeconds,
-                execute: workItem
-            )
         }
     }
 
@@ -370,9 +318,6 @@ final class MlxAudioRealtimeWebSocketClient: BaseRealtimeWebSocketClient, @unche
     private func closeSocketLocked(
         _ s: inout State, cancelTask: Bool, clearQueuedMessages: Bool
     ) {
-        s.delayedDisconnectWorkItem?.cancel()
-        s.delayedDisconnectWorkItem = nil
-
         closeBaseStateLocked(&s.base, cancelTask: cancelTask)
 
         s.hasSentInitialConfiguration = false
@@ -395,7 +340,6 @@ extension MlxAudioRealtimeWebSocketClient {
         let pendingTextMessageCount: Int
         let pendingBinaryMessageCount: Int
         let hasSentInitialConfiguration: Bool
-        let hasDelayedDisconnectWorkItem: Bool
     }
 
     func debugPrimeConnectedStateForTesting(
@@ -409,7 +353,6 @@ extension MlxAudioRealtimeWebSocketClient {
             s.pendingTextMessages = ["pending-message"]
             s.pendingBinaryMessages = [Data([0x01, 0x02])]
             s.hasSentInitialConfiguration = true
-            s.delayedDisconnectWorkItem = DispatchWorkItem {}
         }
     }
 
@@ -425,8 +368,7 @@ extension MlxAudioRealtimeWebSocketClient {
                 isConnected: s.base.socketState == .connected,
                 pendingTextMessageCount: s.pendingTextMessages.count,
                 pendingBinaryMessageCount: s.pendingBinaryMessages.count,
-                hasSentInitialConfiguration: s.hasSentInitialConfiguration,
-                hasDelayedDisconnectWorkItem: s.delayedDisconnectWorkItem != nil
+                hasSentInitialConfiguration: s.hasSentInitialConfiguration
             )
         }
     }

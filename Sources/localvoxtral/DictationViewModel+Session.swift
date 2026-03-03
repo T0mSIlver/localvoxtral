@@ -371,7 +371,9 @@ extension DictationViewModel {
         }
 
         if !shouldCommitOverlay || !didOverlayCommitFail {
-            overlayBufferCoordinator.reset()
+            overlayBufferCoordinator.dismissAfterHold(
+                minimumVisibility: TimingConstants.overlayFinalWordVisibilityMinimum
+            )
         }
 
         if currentErrorToken == .websocketReceiveFailed {

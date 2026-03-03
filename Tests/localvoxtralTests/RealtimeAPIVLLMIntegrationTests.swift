@@ -182,7 +182,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         try await runHandshakeCycle(client: client, configuration: configuration)
     }
 
-    func testVLLMDisconnectAfterFinalCommitWithAudio() async throws {
+    func testVLLMDisconnectWithPendingAudio() async throws {
         let configuration = try integrationConfiguration()
         let client = RealtimeAPIWebSocketClient()
 
@@ -213,7 +213,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
         await fulfillment(of: [connected, sessionReady], timeout: 20.0)
 
         client.sendAudioChunk(makeSineWavePCM16Chunk())
-        client.disconnectAfterFinalCommitIfNeeded()
+        client.disconnect()
 
         await fulfillment(of: [disconnected], timeout: 5.0)
         await fulfillment(of: [realtimeError], timeout: 0.5)
