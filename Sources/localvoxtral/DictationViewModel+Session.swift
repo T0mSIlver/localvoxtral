@@ -624,5 +624,4 @@ extension DictationViewModel {
             commitBufferText: currentOverlayCommitText()
         )
     }
-
 }
