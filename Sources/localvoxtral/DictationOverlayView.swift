@@ -81,6 +81,7 @@ struct DictationOverlayView: View {
     let text: String
     let errorMessage: String?
     private let cornerRadius: CGFloat = 12
+    private let bodyFontSize: CGFloat = 13
 
     private var phaseTitle: String {
         switch phase {
@@ -100,6 +101,11 @@ struct DictationOverlayView: View {
         return trimmed.isEmpty ? "" : text
     }
 
+    private var minimumBodyTextHeight: CGFloat {
+        let font = NSFont.systemFont(ofSize: bodyFontSize)
+        return ceil(font.ascender - font.descender + font.leading)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 6) {
@@ -115,10 +121,14 @@ struct DictationOverlayView: View {
             .frame(height: 16)
 
             Text(displayText)
-                .font(.system(size: 13))
+                .font(.system(size: bodyFontSize))
                 .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: minimumBodyTextHeight,
+                    alignment: .topLeading
+                )
 
             if let errorMessage, !errorMessage.trimmed.isEmpty {
                 Text(errorMessage)
