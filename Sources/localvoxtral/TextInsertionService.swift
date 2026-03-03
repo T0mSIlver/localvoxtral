@@ -187,7 +187,7 @@ final class TextInsertionService {
     func flushPendingRealtimeInsertion() {
         guard !pendingRealtimeInsertionText.isEmpty else { return }
 
-        let result = insertText(pendingRealtimeInsertionText)
+        let result = insertRealtimeText(pendingRealtimeInsertionText)
 
         switch result {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
@@ -256,6 +256,34 @@ final class TextInsertionService {
     }
 
     // MARK: - Private
+
+    private func insertRealtimeText(_ text: String) -> TextInsertResult {
+        guard !text.isEmpty else { return .insertedByAccessibility }
+        refreshAccessibilityTrustState()
+
+        if hasActiveFallbackModifiers() {
+            activeModifierFallbackCount += 1
+        }
+
+        if postUnicodeTextEvents(text) {
+            clearAccessibilityErrorIfNeeded()
+            keyboardFallbackSuccessCount += 1
+            return .insertedByKeyboardFallback
+        }
+
+        if insertTextUsingAccessibility(text) {
+            clearAccessibilityErrorIfNeeded()
+            axInsertionSuccessCount += 1
+            return .insertedByAccessibility
+        }
+
+        if !isAccessibilityTrusted {
+            promptForAccessibilityPermissionIfNeeded()
+            setAccessibilityErrorIfNeeded()
+        }
+
+        return .failed
+    }
 
     private func insertTextUsingAccessibility(
         _ text: String,
