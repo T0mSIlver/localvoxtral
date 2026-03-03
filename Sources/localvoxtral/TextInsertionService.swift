@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import Foundation
 import Observation
+import os
 
 enum TextInsertResult {
     case insertedByAccessibility
@@ -95,6 +96,14 @@ final class TextInsertionService {
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
     private var activeModifierFallbackCount = 0
+#if DEBUG
+    @ObservationIgnored
+    private var debugUnicodePoster: ((String) -> Bool)?
+    @ObservationIgnored
+    private var debugModifierStateReader: (() -> Bool)?
+    @ObservationIgnored
+    private var debugAccessibilityInserter: ((String, pid_t?) -> Bool)?
+#endif
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
 
@@ -293,7 +302,8 @@ final class TextInsertionService {
         preferredAppPID: pid_t?,
         requirePreferredTargetActivation: Bool
     ) -> Bool {
-        if hasActiveFallbackModifiers() {
+        let modifiersActive = hasActiveFallbackModifiers()
+        if modifiersActive {
             activeModifierFallbackCount += 1
         }
 
@@ -303,7 +313,16 @@ final class TextInsertionService {
             return false
         }
 
-        guard postUnicodeTextEvents(text) else { return false }
+        guard postUnicodeTextEvents(text) else {
+            if modifiersActive {
+                Log.insertion.debug("keyboard unicode insertion failed with active modifiers")
+            }
+            return false
+        }
+
+        if modifiersActive {
+            Log.insertion.debug("keyboard unicode insertion succeeded with active modifiers")
+        }
         clearAccessibilityErrorIfNeeded()
         keyboardFallbackSuccessCount += 1
         return true
@@ -321,6 +340,11 @@ final class TextInsertionService {
         _ text: String,
         preferredAppPID: pid_t? = nil
     ) -> Bool {
+#if DEBUG
+        if let debugAccessibilityInserter {
+            return debugAccessibilityInserter(text, preferredAppPID)
+        }
+#endif
         guard isAccessibilityTrusted else { return false }
         guard let focusedElement = resolvedAccessibilityInsertionTarget(
             preferredAppPID: preferredAppPID
@@ -481,6 +505,11 @@ final class TextInsertionService {
     }
 
     private func postUnicodeTextEvents(_ text: String) -> Bool {
+#if DEBUG
+        if let debugUnicodePoster {
+            return debugUnicodePoster(text)
+        }
+#endif
         guard !text.isEmpty,
               let source = CGEventSource(stateID: .combinedSessionState)
         else {
@@ -514,6 +543,11 @@ final class TextInsertionService {
     }
 
     private func hasActiveFallbackModifiers() -> Bool {
+#if DEBUG
+        if let debugModifierStateReader {
+            return debugModifierStateReader()
+        }
+#endif
         let modifierKeyCodes: [CGKeyCode] = [
             54, // right command
             55, // left command
@@ -584,3 +618,33 @@ final class TextInsertionService {
         }
     }
 }
+
+#if DEBUG
+extension TextInsertionService {
+    struct DebugInsertionSnapshot {
+        let pendingRealtimeInsertionText: String
+        let axInsertionSuccessCount: Int
+        let keyboardFallbackSuccessCount: Int
+        let activeModifierFallbackCount: Int
+    }
+
+    func debugConfigureInsertionHooks(
+        unicodePoster: ((String) -> Bool)? = nil,
+        modifierStateReader: (() -> Bool)? = nil,
+        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil
+    ) {
+        debugUnicodePoster = unicodePoster
+        debugModifierStateReader = modifierStateReader
+        debugAccessibilityInserter = accessibilityInserter
+    }
+
+    func debugInsertionSnapshot() -> DebugInsertionSnapshot {
+        DebugInsertionSnapshot(
+            pendingRealtimeInsertionText: pendingRealtimeInsertionText,
+            axInsertionSuccessCount: axInsertionSuccessCount,
+            keyboardFallbackSuccessCount: keyboardFallbackSuccessCount,
+            activeModifierFallbackCount: activeModifierFallbackCount
+        )
+    }
+}
+#endif

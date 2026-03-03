@@ -3,6 +3,19 @@ import Synchronization
 import os
 
 final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked Sendable, RealtimeClient {
+    /// Tracks stop-finalization commit coordination so we only emit
+    /// `.transcriptionFinalized` once the correct generation(s) have completed.
+    private enum FinalCommitCompletionGate {
+        /// No stop-finalization completion tracking is active.
+        case idle
+        /// A non-final generation was already in flight when finalization started.
+        /// Wait for its `transcription.done`, then send the final commit.
+        case awaitingInFlightGenerationBeforeFinalCommit
+        /// Final commit has been sent and we are waiting for its
+        /// `transcription.done` to emit `.transcriptionFinalized`.
+        case awaitingFinalCommitTranscriptionDone
+    }
+
     private struct State {
         var base = BaseState()
         var pingTimer: DispatchSourceTimer?
@@ -12,9 +25,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         var hasSentSessionUpdate = false
         var hasUncommittedAudio = false
         var isGenerationInProgress = false
-        /// Armed by `sendCommit(final: true)`. Cleared when the next
-        /// transcription-done event arrives, which triggers `.transcriptionFinalized`.
-        var isAwaitingFinalTranscription = false
+        var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [String] = []
         var pendingModelName = ""
     }
@@ -67,7 +78,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
             s.hasSentSessionUpdate = false
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = false
-            s.isAwaitingFinalTranscription = false
+            s.finalCommitCompletionGate = .idle
 
             task.resume()
         }
@@ -100,31 +111,61 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     }
 
     func sendCommit(final: Bool) {
-        let shouldCommit: Bool = state.withLock { s in
-            guard s.base.socketState != .disconnected else { return false }
+        enum CommitAction {
+            case none
+            case sendCommitFrame(final: Bool)
+            case emitTranscriptionFinalized
+        }
+
+        let action: CommitAction = state.withLock { s in
+            guard s.base.socketState != .disconnected else { return .none }
 
             if final {
-                let shouldSignalFinal = s.hasUncommittedAudio || s.isGenerationInProgress
-                s.hasUncommittedAudio = false
-                s.isGenerationInProgress = false
-                s.isAwaitingFinalTranscription = shouldSignalFinal
-                return shouldSignalFinal
+                switch s.finalCommitCompletionGate {
+                case .idle:
+                    break
+                case .awaitingInFlightGenerationBeforeFinalCommit,
+                    .awaitingFinalCommitTranscriptionDone:
+                    return .none
+                }
+
+                if s.isGenerationInProgress {
+                    s.finalCommitCompletionGate = .awaitingInFlightGenerationBeforeFinalCommit
+                    return .none
+                }
+
+                if s.hasUncommittedAudio {
+                    s.hasUncommittedAudio = false
+                    s.isGenerationInProgress = true
+                    s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
+                    return .sendCommitFrame(final: true)
+                }
+
+                return .emitTranscriptionFinalized
             }
 
-            guard s.hasUncommittedAudio else { return false }
-            guard !s.isGenerationInProgress else { return false }
+            guard s.finalCommitCompletionGate == .idle else { return .none }
+            guard s.hasUncommittedAudio else { return .none }
+            guard !s.isGenerationInProgress else { return .none }
             s.hasUncommittedAudio = false
             s.isGenerationInProgress = true
-            return true
+            return .sendCommitFrame(final: false)
         }
-        guard shouldCommit else { return }
 
-        var payload: [String: Any] = ["type": "input_audio_buffer.commit"]
-        if final {
-            payload["final"] = true
+        switch action {
+        case .none:
+            return
+        case .emitTranscriptionFinalized:
+            emit(.transcriptionFinalized)
+            return
+        case .sendCommitFrame(let shouldMarkFinal):
+            var payload: [String: Any] = ["type": "input_audio_buffer.commit"]
+            if shouldMarkFinal {
+                payload["final"] = true
+            }
+            debugLog("send commit final=\(shouldMarkFinal)")
+            send(event: payload)
         }
-        debugLog("send commit final=\(final)")
-        send(event: payload)
     }
 
     // MARK: - JSON Event Handling
@@ -175,16 +216,42 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         case "transcription.done",
             "response.audio_transcript.done",
             "conversation.item.input_audio_transcription.completed":
-            let shouldEmitTranscriptionFinalized = state.withLock { s in
+            enum DoneAction {
+                case none
+                case sendFinalCommitFrame
+                case emitTranscriptionFinalized
+            }
+
+            let doneAction: DoneAction = state.withLock { s in
                 s.isGenerationInProgress = false
-                guard s.isAwaitingFinalTranscription else { return false }
-                s.isAwaitingFinalTranscription = false
-                return true
+
+                switch s.finalCommitCompletionGate {
+                case .idle:
+                    return .none
+                case .awaitingInFlightGenerationBeforeFinalCommit:
+                    if s.hasUncommittedAudio {
+                        s.hasUncommittedAudio = false
+                        s.isGenerationInProgress = true
+                        s.finalCommitCompletionGate = .awaitingFinalCommitTranscriptionDone
+                        return .sendFinalCommitFrame
+                    }
+                    s.finalCommitCompletionGate = .idle
+                    return .emitTranscriptionFinalized
+                case .awaitingFinalCommitTranscriptionDone:
+                    s.finalCommitCompletionGate = .idle
+                    return .emitTranscriptionFinalized
+                }
             }
             if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
                 emit(.finalTranscript(text))
             }
-            if shouldEmitTranscriptionFinalized {
+            switch doneAction {
+            case .none:
+                break
+            case .sendFinalCommitFrame:
+                debugLog("send deferred final commit after in-flight generation done")
+                send(event: ["type": "input_audio_buffer.commit", "final": true])
+            case .emitTranscriptionFinalized:
                 emit(.transcriptionFinalized)
             }
         case "error":
@@ -383,7 +450,7 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         s.hasSentSessionUpdate = false
         s.hasUncommittedAudio = false
         s.isGenerationInProgress = false
-        s.isAwaitingFinalTranscription = false
+        s.finalCommitCompletionGate = .idle
         s.pendingMessages.removeAll(keepingCapacity: false)
         s.pendingModelName = ""
     }
@@ -452,6 +519,17 @@ extension RealtimeAPIWebSocketClient {
         task: URLSessionWebSocketTask, errorMessage: String?
     ) {
         handleTerminalSocketError(for: task, errorMessage: errorMessage)
+    }
+
+    func debugSetGenerationTrackingState(
+        hasUncommittedAudio: Bool,
+        isGenerationInProgress: Bool
+    ) {
+        state.withLock { s in
+            s.hasUncommittedAudio = hasUncommittedAudio
+            s.isGenerationInProgress = isGenerationInProgress
+            s.finalCommitCompletionGate = .idle
+        }
     }
 
     func debugStateSnapshot() -> DebugStateSnapshot {
