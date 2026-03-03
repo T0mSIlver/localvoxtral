@@ -22,7 +22,7 @@ extension OverlayAnchorResolver: OverlayAnchorResolving {}
 protocol OverlayTextCommitting: AnyObject {
     var isAccessibilityTrusted: Bool { get }
 
-    func insertTextUsingAccessibilityOnly(_ text: String, preferredAppPID: pid_t?) -> Bool
+    func insertTextPrioritizingKeyboard(_ text: String, preferredAppPID: pid_t?) -> TextInsertResult
     func pasteUsingCommandV(_ text: String, preferredAppPID: pid_t?) -> Bool
 }
 
@@ -41,6 +41,7 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     func refresh(displayBufferText: String, commitBufferText: String)
     @discardableResult
     func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome
+    func dismissAfterHold(minimumVisibility: TimeInterval)
     func reset()
 }
 
@@ -53,6 +54,8 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     private var commitBufferText = ""
     private var liveCommitTargetAppPID: pid_t?
     private var finalizationCommitTargetAppPID: pid_t?
+    private var lastFinalizationContentUpdate: Date?
+    private var dismissTask: Task<Void, Never>?
 
     init(
         stateMachine: OverlayBufferStateMachine,
@@ -69,7 +72,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     }
 
     func startSession(preResolvedAnchor: OverlayAnchor? = nil) {
+        dismissTask?.cancel()
+        dismissTask = nil
         commitBufferText = ""
+        lastFinalizationContentUpdate = nil
         finalizationCommitTargetAppPID = nil
         refreshLiveCommitTargetAppPID()
 
@@ -81,6 +87,9 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {
         lockCommitTargetForFinalizationIfNeeded()
+        // Start the hold timer from the latest finalization-phase content update.
+        // beginFinalizing() itself updates visible overlay content.
+        lastFinalizationContentUpdate = Date()
         let anchor = anchorResolver.resolveAnchor()
 
         stateMachine.beginFinalizing(anchor: anchor)
@@ -97,6 +106,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             refreshLiveCommitTargetAppPID()
         }
 
+        if stateMachine.phase == .finalizing {
+            lastFinalizationContentUpdate = Date()
+        }
+
         stateMachine.updateBuffer(text: displayBufferText, anchor: nil)
         self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
@@ -110,18 +123,19 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     ) -> OverlayBufferCommitOutcome {
         let commitText = OverlayBufferTextAssembler.insertionText(from: commitBufferText)
         guard !commitText.isEmpty else {
-            stateMachine.commitSucceeded()
-            renderCurrentSnapshot()
             Log.overlay.info("overlay commit skipped (empty buffer)")
             return .succeeded
         }
 
         let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
+        // Keep overlay commit aligned with live auto-paste behavior: try keyboard
+        // Unicode insertion first for web field compatibility, then AX, then Cmd+V.
+        let primaryResult = textCommitter.insertTextPrioritizingKeyboard(
+            commitText,
+            preferredAppPID: preferredPID
+        )
         let inserted =
-            textCommitter.insertTextUsingAccessibilityOnly(
-                commitText,
-                preferredAppPID: preferredPID
-            )
+            primaryResult.isSuccess
             || textCommitter.pasteUsingCommandV(
                 commitText,
                 preferredAppPID: preferredPID
@@ -131,8 +145,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             if autoCopyEnabled {
                 copyToPasteboard(commitText)
             }
-            stateMachine.commitSucceeded()
-            renderCurrentSnapshot()
             Log.overlay.info("overlay commit succeeded")
             return .succeeded
         }
@@ -157,7 +169,37 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         return .failed(message: failureMessage)
     }
 
+    func dismissAfterHold(minimumVisibility: TimeInterval) {
+        dismissTask?.cancel()
+        dismissTask = nil
+
+        let holdRemaining: TimeInterval
+        if let lastUpdate = lastFinalizationContentUpdate {
+            let elapsed = Date().timeIntervalSince(lastUpdate)
+            holdRemaining = max(0, minimumVisibility - elapsed)
+        } else {
+            holdRemaining = 0
+        }
+
+        guard holdRemaining > 0 else {
+            reset()
+            return
+        }
+
+        Log.overlay.info("holding overlay \(String(format: "%.2f", holdRemaining))s before dismiss")
+        dismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(holdRemaining))
+            guard let self, !Task.isCancelled else { return }
+            self.dismissTask = nil
+            Log.overlay.info("overlay hold elapsed, dismissing")
+            self.reset()
+        }
+    }
+
     func reset() {
+        dismissTask?.cancel()
+        dismissTask = nil
+        lastFinalizationContentUpdate = nil
         stateMachine.reset()
         commitBufferText = ""
         liveCommitTargetAppPID = nil

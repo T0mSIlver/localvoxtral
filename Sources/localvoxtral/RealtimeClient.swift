@@ -25,6 +25,7 @@ enum RealtimeEvent: Sendable {
     case status(String)
     case partialTranscript(String)
     case finalTranscript(String)
+    case transcriptionFinalized
     case error(String)
 }
 
@@ -35,7 +36,6 @@ protocol RealtimeClient: AnyObject {
     func setEventHandler(_ handler: @escaping @Sendable (RealtimeEvent) -> Void)
     func connect(configuration: RealtimeSessionConfiguration) throws
     func disconnect()
-    func disconnectAfterFinalCommitIfNeeded()
     func sendAudioChunk(_ pcm16Data: Data)
     func sendCommit(final: Bool)
 }
