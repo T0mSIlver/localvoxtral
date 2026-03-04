@@ -123,7 +123,7 @@ final class DictationOverlayController {
         )
         let size = CGSize(
             width: minimumPanelSize.width,
-            height: min(max(contentHeight, minimumPanelSize.height), maximumPanelSize.height)
+            height: min(max(contentHeight, 0), maximumPanelSize.height)
         )
 
         positionPanel(near: snapshot.anchor, contentSize: size)
