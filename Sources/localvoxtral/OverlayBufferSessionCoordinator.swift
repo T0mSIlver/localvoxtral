@@ -54,7 +54,8 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     private var commitBufferText = ""
     private var liveCommitTargetAppPID: pid_t?
     private var finalizationCommitTargetAppPID: pid_t?
-    private var lastOverlayTextUpdateAt: Date?
+    // Tracks only visible display-text changes; phase/anchor changes do not reset hold timing.
+    private var lastOverlayDisplayTextChangeAt: Date?
     private var dismissTask: Task<Void, Never>?
 
     init(
@@ -75,7 +76,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         dismissTask?.cancel()
         dismissTask = nil
         commitBufferText = ""
-        lastOverlayTextUpdateAt = nil
+        lastOverlayDisplayTextChangeAt = nil
         finalizationCommitTargetAppPID = nil
         refreshLiveCommitTargetAppPID()
 
@@ -87,14 +88,14 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {
         lockCommitTargetForFinalizationIfNeeded()
-        let previousDisplayText = stateMachine.bufferText
+        let previousOverlayDisplayText = stateMachine.bufferText
         let anchor = anchorResolver.resolveAnchor()
 
         stateMachine.beginFinalizing(anchor: anchor)
         stateMachine.updateBuffer(text: displayBufferText, anchor: anchor)
-        recordOverlayTextUpdateIfNeeded(
-            previousDisplayText: previousDisplayText,
-            newDisplayText: stateMachine.bufferText
+        recordOverlayDisplayTextChangeIfNeeded(
+            previousOverlayDisplayText: previousOverlayDisplayText,
+            newOverlayDisplayText: stateMachine.bufferText
         )
         self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
@@ -103,16 +104,16 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func refresh(displayBufferText: String, commitBufferText: String) {
         guard stateMachine.phase == .buffering || stateMachine.phase == .finalizing else { return }
-        let previousDisplayText = stateMachine.bufferText
+        let previousOverlayDisplayText = stateMachine.bufferText
 
         if stateMachine.phase == .buffering {
             refreshLiveCommitTargetAppPID()
         }
 
         stateMachine.updateBuffer(text: displayBufferText, anchor: nil)
-        recordOverlayTextUpdateIfNeeded(
-            previousDisplayText: previousDisplayText,
-            newDisplayText: stateMachine.bufferText
+        recordOverlayDisplayTextChangeIfNeeded(
+            previousOverlayDisplayText: previousOverlayDisplayText,
+            newOverlayDisplayText: stateMachine.bufferText
         )
         self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
@@ -177,7 +178,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         dismissTask = nil
 
         let holdRemaining: TimeInterval
-        if let lastUpdate = lastOverlayTextUpdateAt {
+        if let lastUpdate = lastOverlayDisplayTextChangeAt {
             let elapsed = Date().timeIntervalSince(lastUpdate)
             holdRemaining = max(0, minimumVisibility - elapsed)
         } else {
@@ -202,7 +203,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     func reset() {
         dismissTask?.cancel()
         dismissTask = nil
-        lastOverlayTextUpdateAt = nil
+        lastOverlayDisplayTextChangeAt = nil
         stateMachine.reset()
         commitBufferText = ""
         liveCommitTargetAppPID = nil
@@ -215,12 +216,12 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         renderer.render(snapshot: stateMachine.snapshot)
     }
 
-    private func recordOverlayTextUpdateIfNeeded(
-        previousDisplayText: String,
-        newDisplayText: String
+    private func recordOverlayDisplayTextChangeIfNeeded(
+        previousOverlayDisplayText: String,
+        newOverlayDisplayText: String
     ) {
-        guard previousDisplayText != newDisplayText else { return }
-        lastOverlayTextUpdateAt = Date()
+        guard previousOverlayDisplayText != newOverlayDisplayText else { return }
+        lastOverlayDisplayTextChangeAt = Date()
     }
 
     private func lockCommitTargetForFinalizationIfNeeded() {
