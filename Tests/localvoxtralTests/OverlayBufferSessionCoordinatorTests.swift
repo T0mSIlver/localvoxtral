@@ -262,6 +262,82 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(120))
         XCTAssertEqual(renderer.hideCallCount, 1)
     }
+
+    func testDismissAfterHoldIsImmediateWhenTextWasAlreadyStaleBeforeFinalizing() async {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+
+        coordinator.startSession()
+        coordinator.refresh(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+        try? await Task.sleep(for: .milliseconds(80))
+
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+        coordinator.dismissAfterHold(minimumVisibility: 0.05)
+
+        XCTAssertEqual(renderer.hideCallCount, 1)
+    }
+
+    func testDismissAfterHoldUnchangedFinalizingRefreshDoesNotExtendHold() async {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+        try? await Task.sleep(for: .milliseconds(80))
+
+        coordinator.refresh(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+        coordinator.dismissAfterHold(minimumVisibility: 0.05)
+
+        XCTAssertEqual(renderer.hideCallCount, 1)
+    }
+
+    func testDismissAfterHoldChangedFinalizingRefreshExtendsHold() async {
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver
+        )
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+        coordinator.refresh(
+            displayBufferText: "hello world",
+            commitBufferText: "hello world"
+        )
+
+        coordinator.dismissAfterHold(minimumVisibility: 0.05)
+        XCTAssertEqual(renderer.hideCallCount, 0)
+
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(renderer.hideCallCount, 1)
+    }
 }
 
 @MainActor

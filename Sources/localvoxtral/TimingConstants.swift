@@ -41,7 +41,7 @@ enum TimingConstants {
     static let finalizationPollInterval: TimeInterval = 0.1
 
     /// Minimum time to keep the overlay visible after the most recent
-    /// finalization-time refresh before committing/hiding.
+    /// visible overlay text update before committing/hiding.
     static let overlayFinalWordVisibilityMinimum: TimeInterval = 0.5
 
     // MARK: - Stop Finalization (mlx-audio path)
