@@ -54,7 +54,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     private var commitBufferText = ""
     private var liveCommitTargetAppPID: pid_t?
     private var finalizationCommitTargetAppPID: pid_t?
-    private var lastFinalizationContentUpdate: Date?
+    private var lastOverlayTextUpdateAt: Date?
     private var dismissTask: Task<Void, Never>?
 
     init(
@@ -75,7 +75,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         dismissTask?.cancel()
         dismissTask = nil
         commitBufferText = ""
-        lastFinalizationContentUpdate = nil
+        lastOverlayTextUpdateAt = nil
         finalizationCommitTargetAppPID = nil
         refreshLiveCommitTargetAppPID()
 
@@ -87,13 +87,15 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {
         lockCommitTargetForFinalizationIfNeeded()
-        // Start the hold timer from the latest finalization-phase content update.
-        // beginFinalizing() itself updates visible overlay content.
-        lastFinalizationContentUpdate = Date()
+        let previousDisplayText = stateMachine.bufferText
         let anchor = anchorResolver.resolveAnchor()
 
         stateMachine.beginFinalizing(anchor: anchor)
         stateMachine.updateBuffer(text: displayBufferText, anchor: anchor)
+        recordOverlayTextUpdateIfNeeded(
+            previousDisplayText: previousDisplayText,
+            newDisplayText: stateMachine.bufferText
+        )
         self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
         Log.overlay.info("overlay begin finalizing")
@@ -101,16 +103,17 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func refresh(displayBufferText: String, commitBufferText: String) {
         guard stateMachine.phase == .buffering || stateMachine.phase == .finalizing else { return }
+        let previousDisplayText = stateMachine.bufferText
 
         if stateMachine.phase == .buffering {
             refreshLiveCommitTargetAppPID()
         }
 
-        if stateMachine.phase == .finalizing {
-            lastFinalizationContentUpdate = Date()
-        }
-
         stateMachine.updateBuffer(text: displayBufferText, anchor: nil)
+        recordOverlayTextUpdateIfNeeded(
+            previousDisplayText: previousDisplayText,
+            newDisplayText: stateMachine.bufferText
+        )
         self.commitBufferText = commitBufferText
         renderCurrentSnapshot()
         Log.overlay.debug("overlay buffer refreshed")
@@ -174,7 +177,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         dismissTask = nil
 
         let holdRemaining: TimeInterval
-        if let lastUpdate = lastFinalizationContentUpdate {
+        if let lastUpdate = lastOverlayTextUpdateAt {
             let elapsed = Date().timeIntervalSince(lastUpdate)
             holdRemaining = max(0, minimumVisibility - elapsed)
         } else {
@@ -199,7 +202,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     func reset() {
         dismissTask?.cancel()
         dismissTask = nil
-        lastFinalizationContentUpdate = nil
+        lastOverlayTextUpdateAt = nil
         stateMachine.reset()
         commitBufferText = ""
         liveCommitTargetAppPID = nil
@@ -210,6 +213,14 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     private func renderCurrentSnapshot() {
         renderer.render(snapshot: stateMachine.snapshot)
+    }
+
+    private func recordOverlayTextUpdateIfNeeded(
+        previousDisplayText: String,
+        newDisplayText: String
+    ) {
+        guard previousDisplayText != newDisplayText else { return }
+        lastOverlayTextUpdateAt = Date()
     }
 
     private func lockCommitTargetForFinalizationIfNeeded() {
