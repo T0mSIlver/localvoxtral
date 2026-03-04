@@ -39,7 +39,9 @@ final class DictationOverlayController {
     /// cleared on hide. Prevents the panel from flipping between above/below
     /// as the content height changes.
     private enum Placement {
-        /// Panel sits above the anchor. `nearEdgeY` is the panel's bottom edge.
+        /// Panel sits above the anchor. `nearEdgeY` is the panel's top edge.
+        /// The panel grows downward (toward the anchor) so the first line
+        /// of text stays at a fixed position.
         case above(nearEdgeY: CGFloat)
         /// Panel sits below the anchor. `nearEdgeY` is the panel's top edge.
         case below(nearEdgeY: CGFloat)
@@ -70,6 +72,14 @@ final class DictationOverlayController {
             errorMessage: nil
         )
         hostingView = TransparentHostingView(rootView: initialView)
+        // Without this, NSHostingView probes the SwiftUI content at ∞×∞ and
+        // creates a max-height constraint based on the unwrapped (single-line)
+        // text height. That internal constraint caps the rendered content shorter
+        // than the panel, clipping the bottom line. Setting sizingOptions to []
+        // disables all internal sizing constraints so the hosting view simply
+        // fills the frame given by Auto Layout edge constraints.
+        // See: https://developer.apple.com/documentation/swiftui/nshostingview/sizingoptions
+        hostingView.sizingOptions = []
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = .clear
         hostingView.layer?.isOpaque = false
@@ -106,15 +116,14 @@ final class DictationOverlayController {
             errorMessage: snapshot.errorMessage
         )
 
-        panel.contentView?.layoutSubtreeIfNeeded()
-        let fitting = hostingView.fittingSize
-        let boundedFitting = (fitting.width > 0 && fitting.height > 0) ? fitting : NSSize(
-            width: minimumPanelSize.width,
-            height: minimumPanelSize.height
+        let contentHeight = Self.measureContentHeight(
+            text: snapshot.bufferText,
+            errorMessage: snapshot.errorMessage,
+            panelWidth: minimumPanelSize.width
         )
         let size = CGSize(
-            width: min(max(boundedFitting.width, minimumPanelSize.width), maximumPanelSize.width),
-            height: min(max(boundedFitting.height, minimumPanelSize.height), maximumPanelSize.height)
+            width: minimumPanelSize.width,
+            height: min(max(contentHeight, minimumPanelSize.height), maximumPanelSize.height)
         )
 
         positionPanel(near: snapshot.anchor, contentSize: size)
@@ -184,17 +193,17 @@ final class DictationOverlayController {
 
     private func originYForLocked(placement: Placement, contentHeight: CGFloat, visibleFrame: CGRect, margin: CGFloat) -> CGFloat {
         switch placement {
-        case .above(let nearEdgeY):
-            return max(nearEdgeY, visibleFrame.minY + margin)
-        case .below(let nearEdgeY):
+        case .above(let nearEdgeY), .below(let nearEdgeY):
+            // Both cases lock the top edge; the panel grows downward.
             return max(nearEdgeY - contentHeight, visibleFrame.minY + margin)
         }
     }
 
     private func resolveInitialPlacement(targetRect: CGRect, contentHeight: CGFloat, visibleFrame: CGRect, margin: CGFloat) -> CGFloat {
         let aboveOriginY = targetRect.maxY + margin
-        if aboveOriginY + contentHeight <= visibleFrame.maxY {
-            lockedPlacement = .above(nearEdgeY: aboveOriginY)
+        let aboveTopEdge = aboveOriginY + contentHeight
+        if aboveTopEdge <= visibleFrame.maxY {
+            lockedPlacement = .above(nearEdgeY: aboveTopEdge)
             return aboveOriginY
         }
 
@@ -205,9 +214,63 @@ final class DictationOverlayController {
             return belowOriginY
         }
 
-        let clamped = max(aboveOriginY, visibleFrame.minY + margin)
-        lockedPlacement = .above(nearEdgeY: clamped)
-        return clamped
+        let clampedTopEdge = min(visibleFrame.maxY, aboveTopEdge)
+        lockedPlacement = .above(nearEdgeY: clampedTopEdge)
+        return max(clampedTopEdge - contentHeight, visibleFrame.minY + margin)
+    }
+
+    // MARK: - Content height measurement
+
+    /// Computes the panel height by measuring text with `NSString.boundingRect`,
+    /// matching the fonts and layout constants from `DictationOverlayView`.
+    ///
+    /// This avoids `fittingSize` / `sizeThatFits` which both try to minimise the
+    /// overall size and can widen the view to avoid a line wrap, returning a height
+    /// that is one line too short.
+    private static func measureContentHeight(
+        text: String,
+        errorMessage: String?,
+        panelWidth: CGFloat
+    ) -> CGFloat {
+        // Must match DictationOverlayView layout constants exactly.
+        let horizontalPadding: CGFloat = 20   // .padding(10) left + right
+        let verticalPadding: CGFloat = 20     // .padding(10) top + bottom
+        let vStackSpacing: CGFloat = 8        // VStack spacing
+        let headerHeight: CGFloat = 16        // .frame(height: 16) on header
+        let bodyFontSize: CGFloat = 13
+        let errorFontSize: CGFloat = 11
+
+        let textWidth = panelWidth - horizontalPadding
+        let bodyFont = NSFont.systemFont(ofSize: bodyFontSize)
+        let singleLineHeight = ceil(bodyFont.ascender - bodyFont.descender + bodyFont.leading)
+
+        let displayText = text.trimmed.isEmpty ? "" : text
+        let bodyHeight: CGFloat
+        if displayText.isEmpty {
+            bodyHeight = singleLineHeight
+        } else {
+            let rect = (displayText as NSString).boundingRect(
+                with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: bodyFont]
+            )
+            bodyHeight = max(ceil(rect.height), singleLineHeight)
+        }
+
+        // header + spacing + body + padding
+        var total = verticalPadding + headerHeight + vStackSpacing + bodyHeight
+
+        if let errorMessage, !errorMessage.trimmed.isEmpty {
+            let errorFont = NSFont.systemFont(ofSize: errorFontSize)
+            let errorRect = (errorMessage as NSString).boundingRect(
+                with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: errorFont]
+            )
+            total += vStackSpacing + ceil(errorRect.height)
+        }
+
+        return total
     }
 
     private func applyFrameViewMask() {
