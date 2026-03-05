@@ -16,7 +16,7 @@ enum TimingConstants {
     // MARK: - Connection
 
     /// How long to wait for a WebSocket to reach `.connected` before timing out.
-    static let connectTimeout: TimeInterval = 2.0
+    static let connectTimeout: TimeInterval = 1.0
 
     /// Duration the "recent failure" indicator stays visible after a connection error.
     static let recentFailureIndicatorDuration: TimeInterval = 5.0
