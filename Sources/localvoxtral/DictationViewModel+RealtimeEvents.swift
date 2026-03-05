@@ -38,11 +38,18 @@ extension DictationViewModel {
 
     private func handleConnectedEvent() {
         cancelConnectTimeout()
-        setRealtimeIndicatorConnected()
         if isConnectingRealtimeSession {
+            if shouldCancelPushToTalkStartAfterConnect() {
+                abortConnectingSession()
+                setRealtimeIndicatorIdle()
+                statusText = "Ready"
+                return
+            }
+            setRealtimeIndicatorConnected()
             startAudioCaptureAfterConnection()
             return
         }
+        setRealtimeIndicatorConnected()
         statusText = activeStatusText
     }
 
