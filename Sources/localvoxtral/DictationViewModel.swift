@@ -476,8 +476,10 @@ final class DictationViewModel {
         guard hasActivePushToTalkShortcutSession else { return }
 
         if isConnectingRealtimeSession {
-            abortConnectingSession()
-            statusText = StatusStrings.ready
+            // Keep the connection attempt alive so timeout/errors surface to the user
+            // instead of silently resetting to Ready on key release.
+            statusText = StatusStrings.connectingRealtimeBackend
+            return
         } else if isDictating {
             stopDictation(reason: "push-to-talk release")
         } else if isAwaitingMicrophonePermission {
@@ -486,6 +488,16 @@ final class DictationViewModel {
             statusText = StatusStrings.ready
             return
         }
+        clearPushToTalkShortcutSessionAttempt()
+    }
+
+    func shouldCancelPushToTalkStartAfterConnect() -> Bool {
+        settings.dictationShortcutMode == .pushToTalk
+            && hasActivePushToTalkShortcutSession
+            && !isPushToTalkShortcutHeld
+    }
+
+    func clearPushToTalkShortcutSessionAttempt() {
         hasActivePushToTalkShortcutSession = false
     }
 
@@ -840,3 +852,23 @@ final class DictationViewModel {
         }
     }
 }
+
+#if DEBUG
+extension DictationViewModel {
+    func debugHandleDictationShortcutPressForTesting() {
+        handleDictationShortcutPress()
+    }
+
+    func debugHandleDictationShortcutReleaseForTesting() {
+        handleDictationShortcutRelease()
+    }
+
+    func debugSetPushToTalkShortcutStateForTesting(
+        isHeld: Bool,
+        hasActiveSession: Bool
+    ) {
+        isPushToTalkShortcutHeld = isHeld
+        hasActivePushToTalkShortcutSession = hasActiveSession
+    }
+}
+#endif

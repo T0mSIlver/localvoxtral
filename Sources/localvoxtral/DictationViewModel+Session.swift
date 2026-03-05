@@ -411,6 +411,7 @@ extension DictationViewModel {
         cancelConnectTimeout()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil
+        clearPushToTalkShortcutSessionAttempt()
         isConnectingRealtimeSession = false
         isDictating = false
         isAwaitingMicrophonePermission = false

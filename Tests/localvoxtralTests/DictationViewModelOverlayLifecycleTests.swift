@@ -125,6 +125,71 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertFalse(viewModel.realtimeAPIClient.isConnected)
     }
 
+    func testPushToTalkReleaseWhileConnectingStillSurfacesTimeoutFailure() async {
+        let settings = makeSettings(outputMode: .liveAutoPaste)
+        settings.dictationShortcutMode = .pushToTalk
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        // Prevent NSAlert from blocking test execution when the timeout path presents.
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.statusText = "Connecting to realtime backend..."
+        viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
+        viewModel.scheduleConnectTimeout()
+
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession)
+        XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
+
+        let timeoutAt = Date().addingTimeInterval(TimingConstants.connectTimeout + 1.0)
+        while viewModel.isConnectingRealtimeSession, Date() < timeoutAt {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertEqual(viewModel.statusText, "Connection timed out.")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+        XCTAssertNotNil(viewModel.lastError)
+        XCTAssertTrue(
+            viewModel.lastError?.contains(
+                "No connection response received in \(Int(TimingConstants.connectTimeout)) seconds"
+            ) == true
+        )
+    }
+
+    func testPushToTalkReleaseBeforeConnectSkipsDictationStartOnConnectedEvent() {
+        let settings = makeSettings(outputMode: .liveAutoPaste)
+        settings.dictationShortcutMode = .pushToTalk
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.statusText = "Connecting to realtime backend..."
+        viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
+
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.handle(event: .connected, source: .realtimeAPI)
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertNil(viewModel.activeClientSource)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
