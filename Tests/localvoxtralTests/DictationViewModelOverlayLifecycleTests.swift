@@ -242,6 +242,56 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertFalse(viewModel.isFinalizingStop)
     }
 
+    func testFinishStoppedSessionIgnoresDuplicateCallsWhilePolishingIsInFlight() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        let polishingService = BlockingMockLLMPolishingService()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.llmPolishingService = polishingService
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello world"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        let firstCallDeadline = ContinuousClock.now + .seconds(1)
+        while await polishingService.callCount() < 1, ContinuousClock.now < firstCallDeadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let initialCallCount = await polishingService.callCount()
+        XCTAssertEqual(initialCallCount, 1)
+        XCTAssertTrue(viewModel.isCompletingStoppedSession)
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        let duplicateCallCount = await polishingService.callCount()
+        XCTAssertEqual(duplicateCallCount, 1)
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
+
+        await polishingService.resumePendingRequest()
+
+        let finishDeadline = ContinuousClock.now + .seconds(1)
+        while viewModel.isCompletingStoppedSession, ContinuousClock.now < finishDeadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let finalCallCount = await polishingService.callCount()
+        XCTAssertFalse(viewModel.isCompletingStoppedSession)
+        XCTAssertEqual(finalCallCount, 1)
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -257,6 +307,35 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
     private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
         Self.retainedViewModels.append(viewModel)
+    }
+}
+
+private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
+    private var requests = 0
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func polish(
+        text: String,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        requests += 1
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+        return LLMPolishingResult(
+            rawText: text,
+            polishedText: "Hello world.",
+            durationSeconds: 0.01
+        )
+    }
+
+    func callCount() -> Int {
+        requests
+    }
+
+    func resumePendingRequest() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 

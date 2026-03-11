@@ -1,6 +1,15 @@
 import Foundation
 import os
 
+// Test seams need to substitute a suspending polishing service so stop cleanup
+// can be proven idempotent while post-processing is still in flight.
+protocol LLMPolishingServicing: Sendable {
+    func polish(
+        text: String,
+        configuration: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult
+}
+
 struct LLMPolishingConfiguration: Sendable {
     let endpointURL: URL
     let apiKey: String
@@ -33,7 +42,7 @@ enum LLMPolishingError: Error, LocalizedError, Sendable {
     }
 }
 
-struct LLMPolishingService: Sendable {
+struct LLMPolishingService: LLMPolishingServicing {
     private static let systemPrompt =
         "Clean up grammar, punctuation, capitalization. Preserve intent. Return only corrected text."
 

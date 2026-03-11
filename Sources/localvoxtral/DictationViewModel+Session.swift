@@ -342,6 +342,12 @@ extension DictationViewModel {
     }
 
     func finishStoppedSession(promotePendingSegment: Bool) {
+        guard !isCompletingStoppedSession else {
+            debugLog("finishStoppedSession ignored; cleanup already in progress")
+            return
+        }
+        isCompletingStoppedSession = true
+
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
@@ -513,6 +519,7 @@ extension DictationViewModel {
     ) {
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
@@ -625,6 +632,7 @@ extension DictationViewModel {
         isConnectingRealtimeSession = false
         isDictating = false
         isAwaitingMicrophonePermission = false
+        isCompletingStoppedSession = false
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
         microphone.stop()

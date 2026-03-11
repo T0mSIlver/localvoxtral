@@ -136,7 +136,7 @@ final class DictationViewModel {
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
     @ObservationIgnored
-    let llmPolishingService = LLMPolishingService()
+    var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
     @ObservationIgnored
@@ -181,6 +181,10 @@ final class DictationViewModel {
     var sessionOutputMode: DictationOutputMode?
     @ObservationIgnored
     var polishAndCommitTask: Task<Void, Never>?
+    @ObservationIgnored
+    // Several finalization callbacks can converge here; keep stop cleanup
+    // idempotent until commit/post-processing fully finishes.
+    var isCompletingStoppedSession = false
     @ObservationIgnored
     var sessionStartedAt: Date?
     @ObservationIgnored
