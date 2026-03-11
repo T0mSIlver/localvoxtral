@@ -160,6 +160,10 @@ final class SettingsStore {
         static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
         static let dictationShortcutCarbonModifierFlags =
             "settings.dictation_shortcut_carbon_modifiers"
+        static let llmPolishingEnabled = "settings.llm_polishing_enabled"
+        static let llmPolishingEndpointURL = "settings.llm_polishing_endpoint_url"
+        static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
+        static let llmPolishingModel = "settings.llm_polishing_model"
     }
 
     private let defaults: UserDefaults
@@ -235,6 +239,22 @@ final class SettingsStore {
                 dictationShortcutCarbonModifierFlags,
                 forKey: Keys.dictationShortcutCarbonModifierFlags)
         }
+    }
+
+    var llmPolishingEnabled: Bool {
+        didSet { defaults.set(llmPolishingEnabled, forKey: Keys.llmPolishingEnabled) }
+    }
+
+    var llmPolishingEndpointURL: String {
+        didSet { defaults.set(llmPolishingEndpointURL, forKey: Keys.llmPolishingEndpointURL) }
+    }
+
+    var llmPolishingAPIKey: String {
+        didSet { defaults.set(llmPolishingAPIKey, forKey: Keys.llmPolishingAPIKey) }
+    }
+
+    var llmPolishingModel: String {
+        didSet { defaults.set(llmPolishingModel, forKey: Keys.llmPolishingModel) }
     }
 
     init(
@@ -340,6 +360,25 @@ final class SettingsStore {
 
         dictationShortcutKeyCode = resolvedShortcut.keyCode
         dictationShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
+
+        llmPolishingEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.llmPolishingEnabled, fallback: false)
+        llmPolishingEndpointURL = Self.loadString(
+            defaults: defaults, key: Keys.llmPolishingEndpointURL,
+            envKey: "LLM_POLISHING_ENDPOINT",
+            fallback: "https://api.openai.com/v1/chat/completions",
+            environment: environment
+        )
+        llmPolishingAPIKey = Self.loadString(
+            defaults: defaults, key: Keys.llmPolishingAPIKey,
+            envKey: "LLM_POLISHING_API_KEY", fallback: "",
+            environment: environment
+        )
+        llmPolishingModel = Self.loadString(
+            defaults: defaults, key: Keys.llmPolishingModel,
+            envKey: "LLM_POLISHING_MODEL", fallback: "gpt-4o-mini",
+            environment: environment
+        )
     }
 
     // MARK: - Init Helpers
@@ -509,5 +548,24 @@ final class SettingsStore {
 
     private static func clampedTranscriptionDelay(_ value: Int) -> Int {
         min(max(value, 400), 2_000)
+    }
+
+    var llmPolishingConfiguration: LLMPolishingConfiguration? {
+        guard llmPolishingEnabled else { return nil }
+        let trimmedEndpoint = llmPolishingEndpointURL.trimmed
+        guard !trimmedEndpoint.isEmpty, let url = URL(string: trimmedEndpoint) else { return nil }
+        guard
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+            let scheme = components.scheme?.lowercased(),
+            (scheme == "http" || scheme == "https"),
+            components.host != nil
+        else {
+            return nil
+        }
+        return LLMPolishingConfiguration(
+            endpointURL: url,
+            apiKey: llmPolishingAPIKey.trimmed,
+            model: llmPolishingModel.trimmed.isEmpty ? "gpt-4o-mini" : llmPolishingModel.trimmed
+        )
     }
 }

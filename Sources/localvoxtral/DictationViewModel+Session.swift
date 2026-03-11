@@ -5,14 +5,40 @@ import os
 extension DictationViewModel {
     // MARK: - Session Lifecycle
 
-    // sessionOutputMode lifecycle:
-    // - Set: beginDictationSession() — captures the user's setting at session start
-    //   so mid-session settings changes don't affect the active session.
+    // Session metadata lifecycle:
+    // - Set: beginDictationSession() — captures values that should stay stable for
+    //   the active session even if Settings are edited before commit finishes.
     // - Cleared: finishStoppedSession(), abortConnectingSession(), and early-return
     //   error paths in beginDictationSession() where no session was established.
-    // All session exit paths MUST clear this to nil.
+    // All session exit paths MUST clear these fields to nil.
+
+    @discardableResult
+    func cancelPolishingForNewSessionIfNeeded() -> Bool {
+        guard polishAndCommitTask != nil else { return false }
+        debugLog("cancel in-flight polishing to start a new dictation session")
+        polishAndCommitTask?.cancel()
+        polishAndCommitTask = nil
+
+        completeStoppedSessionCleanup(
+            sessionMode: sessionOutputMode ?? settings.dictationOutputMode,
+            overlayCommitOutcome: nil,
+            shouldCommitOverlay: false
+        )
+        // Do not carry old overlay state into a freshly requested session.
+        overlayBufferCoordinator.reset()
+        return true
+    }
+
+    private func clearLatchedSessionMetadata() {
+        sessionOutputMode = nil
+        sessionStartedAt = nil
+        sessionProvider = nil
+        sessionModelName = nil
+    }
 
     func beginDictationSession() {
+        polishAndCommitTask?.cancel()
+        polishAndCommitTask = nil
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
@@ -20,7 +46,9 @@ extension DictationViewModel {
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        clearLatchedSessionMetadata()
         sessionOutputMode = settings.dictationOutputMode
+        sessionStartedAt = Date()
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -31,7 +59,7 @@ extension DictationViewModel {
                 message: message,
                 technicalDetails: "Settings value could not be normalized to a websocket endpoint URL."
             )
-            sessionOutputMode = nil
+            clearLatchedSessionMetadata()
             return
         }
 
@@ -40,7 +68,7 @@ extension DictationViewModel {
         {
             statusText = "Selected microphone unavailable."
             lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
-            sessionOutputMode = nil
+            clearLatchedSessionMetadata()
             return
         }
 
@@ -49,6 +77,8 @@ extension DictationViewModel {
         let source = selectedClientSource()
         inactiveRealtimeClient(for: source).disconnect()
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+        sessionProvider = provider
+        sessionModelName = model
 
         // Capture the AX anchor now, while the user's text field still has focus.
         // By the time the WebSocket connects and startOverlayBufferSession() runs,
@@ -334,23 +364,158 @@ extension DictationViewModel {
             }
         }
 
-        var overlayCommitOutcome: OverlayBufferCommitOutcome?
-        var didOverlayCommitFail = false
         if shouldCommitOverlay {
             refreshOverlayBufferSession()
-            overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
+
+            let polishingConfig = settings.llmPolishingConfiguration
+            let capturedSessionStartedAt = sessionStartedAt ?? Date()
+            let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
+            let capturedModel = sessionModelName ?? settings.effectiveModelName
+            let capturedOutputMode = sessionMode.rawValue
+            let capturedTargetBundleID = resolveTargetAppBundleID()
+            if polishingConfig != nil {
+                let rawText = currentDictationEventText
+
+                statusText = StatusStrings.polishing
+                debugLog("LLM polishing started for \(rawText.count) chars")
+
+                polishAndCommitTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+
+                    var polishedText: String? = nil
+                    var polishingDuration: Double? = nil
+                    var sessionStatus: DictationSessionStatus = .completed
+
+                    if let config = polishingConfig, !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        do {
+                            let result = try await self.llmPolishingService.polish(
+                                text: rawText,
+                                configuration: config
+                            )
+                            polishedText = result.polishedText
+                            polishingDuration = result.durationSeconds
+
+                            guard !Task.isCancelled else { return }
+
+                            self.currentDictationEventText = result.polishedText
+                            self.refreshOverlayBufferSession()
+                            Log.polishing.info(
+                                "LLM polishing succeeded in \(String(format: "%.2f", result.durationSeconds))s"
+                            )
+                        } catch {
+                            guard !Task.isCancelled else { return }
+                            sessionStatus = .llmFailed
+                            Log.polishing.error(
+                                "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
+                            )
+                        }
+                    }
+
+                    guard !Task.isCancelled else { return }
+
+                    let overlayCommitOutcome = self.overlayBufferCoordinator.commitIfNeeded(
+                        using: self.textInsertion,
+                        autoCopyEnabled: self.settings.autoCopyEnabled
+                    )
+                    let commitSucceeded: Bool
+                    if case .failed(let failureMessage) = overlayCommitOutcome {
+                        commitSucceeded = false
+                        self.lastError = failureMessage
+                    } else {
+                        commitSucceeded = true
+                    }
+
+                    self.completeStoppedSessionCleanup(
+                        sessionMode: sessionMode,
+                        overlayCommitOutcome: overlayCommitOutcome,
+                        shouldCommitOverlay: true
+                    )
+
+                    self.saveSessionRecord(
+                        startedAt: capturedSessionStartedAt,
+                        rawText: rawText,
+                        polishedText: polishedText,
+                        polishingDuration: polishingDuration,
+                        provider: capturedProvider,
+                        model: capturedModel,
+                        outputMode: capturedOutputMode,
+                        targetAppBundleID: capturedTargetBundleID,
+                        status: sessionStatus,
+                        commitSucceeded: commitSucceeded
+                    )
+                }
+                return
+            }
+
+            // Non-polishing overlay commit path
+            let overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
                 using: textInsertion,
                 autoCopyEnabled: settings.autoCopyEnabled
             )
+            let commitSucceeded: Bool
             if case .failed(let failureMessage) = overlayCommitOutcome {
-                didOverlayCommitFail = true
+                commitSucceeded = false
                 lastError = failureMessage
+            } else {
+                commitSucceeded = true
             }
+
+            completeStoppedSessionCleanup(
+                sessionMode: sessionMode,
+                overlayCommitOutcome: overlayCommitOutcome,
+                shouldCommitOverlay: true
+            )
+
+            saveSessionRecord(
+                startedAt: capturedSessionStartedAt,
+                rawText: currentDictationEventText,
+                polishedText: nil,
+                polishingDuration: nil,
+                provider: capturedProvider,
+                model: capturedModel,
+                outputMode: capturedOutputMode,
+                targetAppBundleID: capturedTargetBundleID,
+                status: .sttCompleted,
+                commitSucceeded: commitSucceeded
+            )
+            return
         }
 
+        // Non-overlay path (live auto-paste)
+        let capturedSessionStartedAt = sessionStartedAt ?? Date()
+        let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
+        let capturedModel = sessionModelName ?? settings.effectiveModelName
+        let capturedOutputMode = sessionMode.rawValue
+        completeStoppedSessionCleanup(
+            sessionMode: sessionMode,
+            overlayCommitOutcome: nil,
+            shouldCommitOverlay: false
+        )
+
+        saveSessionRecord(
+            startedAt: capturedSessionStartedAt,
+            rawText: currentDictationEventText,
+            polishedText: nil,
+            polishingDuration: nil,
+            provider: capturedProvider,
+            model: capturedModel,
+            outputMode: capturedOutputMode,
+            targetAppBundleID: nil,
+            status: .sttCompleted,
+            commitSucceeded: true
+        )
+    }
+
+    private func completeStoppedSessionCleanup(
+        sessionMode: DictationOutputMode,
+        overlayCommitOutcome: OverlayBufferCommitOutcome?,
+        shouldCommitOverlay: Bool
+    ) {
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         realtimeFinalizationLastActivityAt = nil
+        polishAndCommitTask = nil
+        clearLatchedSessionMetadata()
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingSegmentText = ""
@@ -370,6 +535,13 @@ extension DictationViewModel {
             textInsertion.clearPendingText()
         }
 
+        let didOverlayCommitFail: Bool
+        if case .failed = overlayCommitOutcome {
+            didOverlayCommitFail = true
+        } else {
+            didOverlayCommitFail = false
+        }
+
         if !shouldCommitOverlay || !didOverlayCommitFail {
             overlayBufferCoordinator.dismissAfterHold(
                 minimumVisibility: TimingConstants.overlayFinalWordVisibilityMinimum
@@ -380,7 +552,45 @@ extension DictationViewModel {
             lastError = nil
         }
         firstChunkPreprocessor.reset()
-        sessionOutputMode = nil
+    }
+
+    func resolveTargetAppBundleID() -> String? {
+        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+    }
+
+    private func saveSessionRecord(
+        startedAt: Date,
+        rawText: String,
+        polishedText: String?,
+        polishingDuration: Double?,
+        provider: String,
+        model: String,
+        outputMode: String,
+        targetAppBundleID: String?,
+        status: DictationSessionStatus,
+        commitSucceeded: Bool
+    ) {
+        let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRawText.isEmpty else {
+            // Intentionally skip empty sessions: they produce no useful transcript payload.
+            Log.persistence.debug("Skipping persistence for empty dictation session")
+            return
+        }
+        let record = DictationSessionRecord(
+            startedAt: startedAt,
+            finishedAt: Date(),
+            rawText: rawText,
+            polishedText: polishedText,
+            polishingDurationSeconds: polishingDuration,
+            provider: provider,
+            model: model,
+            outputMode: outputMode,
+            targetAppBundleID: targetAppBundleID,
+            status: status,
+            commitSucceeded: commitSucceeded
+        )
+        sessionStore?.save(record)
     }
 
     // MARK: - Connect Timeout
@@ -415,11 +625,12 @@ extension DictationViewModel {
         isConnectingRealtimeSession = false
         isDictating = false
         isAwaitingMicrophonePermission = false
+        polishAndCommitTask = nil
+        clearLatchedSessionMetadata()
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
-        sessionOutputMode = nil
         if disconnectSocket {
             activeRealtimeClient().disconnect()
         }

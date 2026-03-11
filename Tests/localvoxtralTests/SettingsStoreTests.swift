@@ -253,4 +253,38 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
     }
 
+    // MARK: - llmPolishingConfiguration
+
+    func testLLMPolishingConfiguration_disabledReturnsNil() {
+        let store = makeStore()
+        store.llmPolishingEnabled = false
+        store.llmPolishingEndpointURL = "https://api.openai.com/v1/chat/completions"
+
+        XCTAssertNil(store.llmPolishingConfiguration)
+    }
+
+    func testLLMPolishingConfiguration_invalidEndpointReturnsNil() {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.llmPolishingEndpointURL = "not a url"
+
+        XCTAssertNil(store.llmPolishingConfiguration)
+    }
+
+    func testLLMPolishingConfiguration_validEndpointBuildsConfiguration() {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.llmPolishingEndpointURL = "https://api.openai.com/v1/chat/completions"
+        store.llmPolishingAPIKey = "  sk-test  "
+        store.llmPolishingModel = "  gpt-4o-mini  "
+
+        let configuration = store.llmPolishingConfiguration
+        XCTAssertEqual(
+            configuration?.endpointURL.absoluteString,
+            "https://api.openai.com/v1/chat/completions"
+        )
+        XCTAssertEqual(configuration?.apiKey, "sk-test")
+        XCTAssertEqual(configuration?.model, "gpt-4o-mini")
+    }
+
 }

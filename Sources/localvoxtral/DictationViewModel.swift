@@ -77,10 +77,11 @@ final class DictationViewModel {
         }
     }
 
-    private enum StatusStrings {
+    enum StatusStrings {
         static let ready = "Ready"
         static let connectingRealtimeBackend = "Connecting to realtime backend..."
         static let finalizingPreviousDictation = "Finalizing previous dictation..."
+        static let polishing = "Polishing..."
         static let awaitingMicrophonePermission = "Awaiting microphone permission..."
         static let requestingMicrophonePermission = "Requesting microphone permission..."
         static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
@@ -135,6 +136,10 @@ final class DictationViewModel {
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
     @ObservationIgnored
+    let llmPolishingService = LLMPolishingService()
+    @ObservationIgnored
+    var sessionStore: DictationSessionStore?
+    @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
     @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
@@ -174,6 +179,14 @@ final class DictationViewModel {
     var currentDictationEventText = ""
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
+    @ObservationIgnored
+    var polishAndCommitTask: Task<Void, Never>?
+    @ObservationIgnored
+    var sessionStartedAt: Date?
+    @ObservationIgnored
+    var sessionProvider: SettingsStore.RealtimeProvider?
+    @ObservationIgnored
+    var sessionModelName: String?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
@@ -292,6 +305,7 @@ final class DictationViewModel {
         }
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
+            sessionStore = DictationSessionStore()
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
@@ -311,6 +325,7 @@ final class DictationViewModel {
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
         startupPermissionTask?.cancel()
+        polishAndCommitTask?.cancel()
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
@@ -607,9 +622,11 @@ final class DictationViewModel {
             statusText = StatusStrings.connectingRealtimeBackend
             return
         }
-        guard !isFinalizingStop else {
-            statusText = StatusStrings.finalizingPreviousDictation
-            return
+        if isFinalizingStop {
+            guard cancelPolishingForNewSessionIfNeeded() else {
+                statusText = StatusStrings.finalizingPreviousDictation
+                return
+            }
         }
         guard !isAwaitingMicrophonePermission else {
             statusText = StatusStrings.awaitingMicrophonePermission
@@ -679,6 +696,8 @@ final class DictationViewModel {
         debugLog("stopDictation reason=\(reason)")
         hasActivePushToTalkShortcutSession = false
 
+        polishAndCommitTask?.cancel()
+        polishAndCommitTask = nil
         commitTask?.cancel()
         commitTask = nil
         audioSendTask?.cancel()

@@ -43,6 +43,7 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome
     func dismissAfterHold(minimumVisibility: TimeInterval)
     func reset()
+    var commitTargetAppPID: pid_t? { get }
 }
 
 @MainActor
@@ -210,6 +211,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         finalizationCommitTargetAppPID = nil
         renderer.hide()
         Log.overlay.info("overlay session reset")
+    }
+
+    var commitTargetAppPID: pid_t? {
+        finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
     }
 
     private func renderCurrentSnapshot() {

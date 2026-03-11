@@ -138,6 +138,38 @@ struct SettingsView: View {
                     }
                 }
 
+                SettingsSection(title: "LLM Polishing") {
+                    ToggleSettingRow(
+                        title: "Enable LLM polishing",
+                        isOn: $settings.llmPolishingEnabled
+                    )
+
+                    if settings.llmPolishingEnabled {
+                        SettingsField(title: "Endpoint") {
+                            TextField(
+                                "https://api.openai.com/v1/chat/completions",
+                                text: $settings.llmPolishingEndpointURL
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+
+                        SettingsField(title: "API key") {
+                            SecureField("Required for remote providers", text: $settings.llmPolishingAPIKey)
+                                .textFieldStyle(.roundedBorder)
+                        }
+
+                        SettingsField(title: "Model") {
+                            TextField("gpt-4o-mini", text: $settings.llmPolishingModel)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    }
+
+                    Text("When enabled, raw dictation text is polished by an LLM before insertion. Only works in Overlay Buffer mode.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 SettingsSection(title: "Dictation") {
                     SettingsField(title: "Output mode") {
                         VStack(alignment: .leading, spacing: 6) {

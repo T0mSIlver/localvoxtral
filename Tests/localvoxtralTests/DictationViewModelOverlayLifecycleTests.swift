@@ -190,6 +190,58 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
     }
 
+    func testCancelPolishingForNewSessionIfNeededResetsFinalizationState() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.statusText = "Polishing..."
+        let polishTask = Task<Void, Never> {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        viewModel.polishAndCommitTask = polishTask
+
+        let cancelled = viewModel.cancelPolishingForNewSessionIfNeeded()
+
+        XCTAssertTrue(cancelled)
+        XCTAssertTrue(polishTask.isCancelled)
+        XCTAssertNil(viewModel.polishAndCommitTask)
+        XCTAssertFalse(viewModel.isFinalizingStop)
+        XCTAssertNil(viewModel.sessionOutputMode)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
+    }
+
+    func testFinishStoppedSessionClearsStalePolishingTaskReference() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello"
+        viewModel.polishAndCommitTask = Task<Void, Never> {}
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertNil(viewModel.polishAndCommitTask)
+        XCTAssertFalse(viewModel.isFinalizingStop)
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -224,6 +276,7 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var dismissAfterHoldCallCount = 0
     var lastDismissAfterHoldMinimumVisibility: TimeInterval?
     var resetCallCount = 0
+    var commitTargetAppPID: pid_t? = nil
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
