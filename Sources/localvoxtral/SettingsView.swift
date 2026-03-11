@@ -111,12 +111,14 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            Slider(value: $settings.commitIntervalSeconds, in: 0.1 ... 1.0, step: 0.1)
+                            Slider(value: $settings.commitIntervalSeconds, in: 0.1...1.0, step: 0.1)
 
-                            Text("How often finalized transcript chunks are requested from the realtime server.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            Text(
+                                "How often finalized transcript chunks are requested from the realtime server."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
@@ -128,12 +130,16 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            Slider(value: mlxTranscriptionDelaySecondsBinding, in: 0.4 ... 2.0, step: 0.1)
+                            Slider(
+                                value: mlxTranscriptionDelaySecondsBinding, in: 0.4...2.0, step: 0.1
+                            )
 
-                            Text("How long mlx-audio waits for right-context before emitting tokens.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+                            Text(
+                                "How long mlx-audio waits for right-context before emitting tokens."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
@@ -154,8 +160,10 @@ struct SettingsView: View {
                         }
 
                         SettingsField(title: "API key") {
-                            SecureField("Required for remote providers", text: $settings.llmPolishingAPIKey)
-                                .textFieldStyle(.roundedBorder)
+                            SecureField(
+                                "Required for remote providers", text: $settings.llmPolishingAPIKey
+                            )
+                            .textFieldStyle(.roundedBorder)
                         }
 
                         SettingsField(title: "Model") {
@@ -164,10 +172,12 @@ struct SettingsView: View {
                         }
                     }
 
-                    Text("When enabled, raw dictation text is polished by an LLM before insertion. Only works in Overlay Buffer mode.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        "A LLM polishes raw dictation text before insertion. Only works in Overlay Buffer mode."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 SettingsSection(title: "Dictation") {
@@ -222,9 +232,12 @@ struct SettingsView: View {
 
                                 Button("Reset to Default") {
                                     shortcutValidationError = nil
-                                    viewModel.updateDictationShortcut(SettingsStore.defaultDictationShortcut)
+                                    viewModel.updateDictationShortcut(
+                                        SettingsStore.defaultDictationShortcut)
                                 }
-                                .disabled(settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
+                                .disabled(
+                                    settings.dictationShortcut
+                                        == SettingsStore.defaultDictationShortcut)
                             }
                         }
                     }
