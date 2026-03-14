@@ -22,7 +22,10 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 - Global shortcut with selectable behavior: `Toggle` (press-to-start/stop) or `Push to Talk` (hold-to-dictate)
 - Native menu bar app with instant open and visual feedback with the icon
 - Output modes: overlay buffer (commit on stop) or live auto-paste into focused input
+- Personal replacement dictionary (exact match or exact match + LLM-aware-replacement)
+- Editable LLM system and user prompt templates
 - Fully local dictation option with `voxmlx` (no third-party API traffic)
+- Fully local LLM polishing option with `mlx-lm` (no third-party API traffic)
 - Pick your preferred microphone input device
 - Copy the latest transcribed segment
 
@@ -46,19 +49,21 @@ open ./dist/localvoxtral.app
 - Open **Settings** from the menu bar popover to set:
   - Dictation keyboard shortcut  
   - Shortcut behavior (`Toggle` / `Push to Talk`)
-  - Realtime endpoint
-  - Model name
-  - API key
+  - Realtime endpoint (URL, model name, API key)
   - Commit interval (`vLLM`/`voxmlx`)
-  - Transcription delay (`mlx-audio`)
-  - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Auto-copy final segment
+  - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
+  - Replacement dictionary (overlay buffer output mode only)
+  - LLM polishing endpoint (URL, model name, API key - overlay buffer output mode only)
+  - Open the shared config folder for `replacement_dictionary.toml`, `llm_system_prompt.toml`, and `llm_user_prompt.toml`
+
+The shared config directory lives at `~/Library/Application Support/localvoxtral/config`.
 
 ## Tested setup
 
 In this tested setup, `vLLM` and `voxmlx` stream partial text fast enough for realtime dictation; latency and throughput will vary by hardware, model, and quantization.
 
-### voxmlx
+### voxmlx (recommended)
 
 [voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol and memory management optimizations.
 
@@ -88,9 +93,22 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 ```
 
+## Tested setup (LLM polishing)
+
+### mlx-lm (recommended)
+
+`mlx_lm.server` on M1 Pro, running [Qwen3.5-0.8B in 8 bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) for local LLM polishing.
+
+```bash
+# Use prompt caching to avoid reprocessing the entire conversation for each request
+uvx --from mlx-lm mlx_lm.server \
+  --model mlx-community/Qwen3.5-0.8B-8bit \
+  --prompt-cache-size 4 \
+  --prompt-cache-bytes 2GB
+```
+
 ## Roadmap
 
-- [ ] Add on-device LLM post-processing for dictation cleanup and technical wording improvements.
 - [ ] Enhance the server connection UX
 - [ ] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess app-managed local serving (start/stop/config) in localvoxtral.
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
