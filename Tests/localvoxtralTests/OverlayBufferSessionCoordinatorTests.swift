@@ -259,7 +259,10 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.dismissAfterHold(minimumVisibility: 0.05)
         XCTAssertEqual(renderer.hideCallCount, 0)
 
-        try? await Task.sleep(for: .milliseconds(120))
+        let didHide = await waitUntil(timeout: .milliseconds(300)) {
+            renderer.hideCallCount == 1
+        }
+        XCTAssertTrue(didHide)
         XCTAssertEqual(renderer.hideCallCount, 1)
     }
 
@@ -335,8 +338,27 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.dismissAfterHold(minimumVisibility: 0.05)
         XCTAssertEqual(renderer.hideCallCount, 0)
 
-        try? await Task.sleep(for: .milliseconds(120))
+        let didHide = await waitUntil(timeout: .milliseconds(300)) {
+            renderer.hideCallCount == 1
+        }
+        XCTAssertTrue(didHide)
         XCTAssertEqual(renderer.hideCallCount, 1)
+    }
+
+    private func waitUntil(
+        timeout: Duration,
+        pollInterval: Duration = .milliseconds(10),
+        condition: @escaping @MainActor () -> Bool
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+
+        while !condition() {
+            guard clock.now < deadline else { return false }
+            try? await Task.sleep(for: pollInterval)
+        }
+
+        return true
     }
 }
 

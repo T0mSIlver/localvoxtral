@@ -339,7 +339,7 @@ private struct TextProcessingSettingsPane: View {
                     }
 
                     SettingsFieldRow(title: "Model") {
-                        TextField("gpt-4o-mini", text: $settings.llmPolishingModel)
+                        TextField("mlx-community/Qwen3.5-0.8B-8bit", text: $settings.llmPolishingModel)
                             .textFieldStyle(.roundedBorder)
                     }
                 }

@@ -58,6 +58,28 @@ jobs:
       - name: Package app bundle
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
+      - name: Smoke test packaged app launch
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import time
+
+          app_binary = "dist/localvoxtral.app/Contents/MacOS/localvoxtral"
+          process = subprocess.Popen([app_binary])
+          time.sleep(2)
+
+          exit_code = process.poll()
+          if exit_code is not None:
+            raise SystemExit(f"packaged app exited during smoke test: {exit_code}")
+
+          process.terminate()
+          try:
+            process.wait(timeout=5)
+          except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+          PY
+
       - name: Create release artifacts
         run: |
           mkdir -p dist

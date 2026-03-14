@@ -135,7 +135,7 @@ final class SettingsStore {
         var defaultModelName: String {
             switch self {
             case .realtimeAPI:
-                return "voxtral-mini-latest"
+                return "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit"
             case .mlxAudio:
                 return "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
             }
@@ -383,7 +383,7 @@ final class SettingsStore {
         )
         llmPolishingModel = Self.loadString(
             defaults: defaults, key: Keys.llmPolishingModel,
-            envKey: "LLM_POLISHING_MODEL", fallback: "gpt-4o-mini",
+            envKey: "LLM_POLISHING_MODEL", fallback: "mlx-community/Qwen3.5-0.8B-8bit",
             environment: environment
         )
         replacementDictionaryEnabled = Self.loadBool(
@@ -574,7 +574,9 @@ final class SettingsStore {
         return LLMPolishingConfiguration(
             endpointURL: url,
             apiKey: llmPolishingAPIKey.trimmed,
-            model: llmPolishingModel.trimmed.isEmpty ? "gpt-4o-mini" : llmPolishingModel.trimmed
+            model: llmPolishingModel.trimmed.isEmpty
+                ? "mlx-community/Qwen3.5-0.8B-8bit"
+                : llmPolishingModel.trimmed
         )
     }
 }
