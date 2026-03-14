@@ -280,6 +280,20 @@ private struct TextProcessingSettingsPane: View {
         settings.dictationOutputMode == .overlayBuffer
     }
 
+    private var llmPolishingEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settings.llmPolishingEnabled },
+            set: { newValue in
+                let wasEnabled = settings.llmPolishingEnabled
+                settings.llmPolishingEnabled = newValue
+
+                if newValue, !wasEnabled {
+                    viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+                }
+            }
+        )
+    }
+
     var body: some View {
         SettingsPage {
             if !isAvailableInCurrentMode {
@@ -304,7 +318,7 @@ private struct TextProcessingSettingsPane: View {
                     title: "LLM polishing",
                     subtitle:
                         "Send dictation text to an OpenAI-compatible chat completions server.",
-                    isOn: $settings.llmPolishingEnabled
+                    isOn: llmPolishingEnabledBinding
                 )
 
                 if settings.llmPolishingEnabled {

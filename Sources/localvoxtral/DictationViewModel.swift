@@ -384,10 +384,19 @@ final class DictationViewModel {
         startupPermissionTask?.cancel()
         startupPermissionTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            self.prepareLLMPolishingPromptAccessIfNeeded()
+            guard !Task.isCancelled else { return }
             await self.requestStartupMicrophonePermissionIfNeeded()
             guard !Task.isCancelled else { return }
             self.requestStartupAccessibilityPermissionIfNeeded()
         }
+    }
+
+    func prepareLLMPolishingPromptAccessIfNeeded() {
+        guard settings.llmPolishingEnabled else { return }
+
+        debugLog("preloading LLM polishing prompt/config files")
+        _ = appConfigStore.loadLLMPromptTemplates()
     }
 
     private func requestStartupAccessibilityPermissionIfNeeded() {

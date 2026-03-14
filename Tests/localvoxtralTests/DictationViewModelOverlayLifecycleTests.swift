@@ -567,6 +567,41 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.currentDictationEventText, "postgres")
     }
 
+    func testPrepareLLMPolishingPromptAccessSkipsPromptTemplatesWhenDisabled() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let configStore = MockAppConfigStore()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = configStore
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+
+        XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 0)
+    }
+
+    func testPrepareLLMPolishingPromptAccessLoadsPromptTemplatesWhenEnabled() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        let overlayCoordinator = MockOverlayCoordinator()
+        let configStore = MockAppConfigStore()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = configStore
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+
+        XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 1)
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -667,6 +702,7 @@ private final class MockAppConfigStore: AppConfigServing {
     private let replacementDictionary: ReplacementDictionary
     private let promptTemplates: LLMPromptTemplates
     private(set) var loadReplacementDictionaryCallCount = 0
+    private(set) var loadLLMPromptTemplatesCallCount = 0
 
     init(
         replacementDictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
@@ -689,7 +725,8 @@ private final class MockAppConfigStore: AppConfigServing {
     }
 
     func loadLLMPromptTemplates() -> LLMPromptTemplates {
-        promptTemplates
+        loadLLMPromptTemplatesCallCount += 1
+        return promptTemplates
     }
 }
 
