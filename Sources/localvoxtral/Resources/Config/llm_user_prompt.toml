@@ -1,0 +1,16 @@
+content = """
+Polish the dictated text below.
+
+Apply the replacement dictionary when any listed alias appears. Use the canonical `replace_with` value in the final answer when applicable.
+
+Replacement dictionary:
+{{replacement_dictionary}}
+
+Original transcript:
+{{original_text}}
+
+Working text:
+{{input_text}}
+
+Return only the final corrected text.
+"""

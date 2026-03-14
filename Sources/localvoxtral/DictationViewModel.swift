@@ -138,6 +138,8 @@ final class DictationViewModel {
     @ObservationIgnored
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
+    var appConfigStore: any AppConfigServing = AppConfigStore()
+    @ObservationIgnored
     var sessionStore: DictationSessionStore?
     @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
@@ -796,6 +798,11 @@ final class DictationViewModel {
         } else if currentErrorToken == .accessibilityPermissionRequired {
             lastError = nil
         }
+    }
+
+    func openConfigFolder() {
+        let url = appConfigStore.configDirectoryURL()
+        NSWorkspace.shared.open(url)
     }
 
     func pasteLatestSegment() {

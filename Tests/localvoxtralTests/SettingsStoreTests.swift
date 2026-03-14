@@ -287,4 +287,20 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.model, "gpt-4o-mini")
     }
 
+    // MARK: - replacementDictionaryEnabled
+
+    func testReplacementDictionaryEnabled_defaultsToFalse() {
+        let store = makeStore()
+
+        XCTAssertFalse(store.replacementDictionaryEnabled)
+    }
+
+    func testReplacementDictionaryEnabled_persistsAcrossReload() {
+        let store = makeStore()
+        store.replacementDictionaryEnabled = true
+
+        let reloadedStore = makeStore()
+        XCTAssertTrue(reloadedStore.replacementDictionaryEnabled)
+    }
+
 }

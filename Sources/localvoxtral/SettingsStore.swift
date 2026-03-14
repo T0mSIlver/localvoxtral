@@ -164,6 +164,7 @@ final class SettingsStore {
         static let llmPolishingEndpointURL = "settings.llm_polishing_endpoint_url"
         static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
         static let llmPolishingModel = "settings.llm_polishing_model"
+        static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
     }
 
     private let defaults: UserDefaults
@@ -255,6 +256,12 @@ final class SettingsStore {
 
     var llmPolishingModel: String {
         didSet { defaults.set(llmPolishingModel, forKey: Keys.llmPolishingModel) }
+    }
+
+    var replacementDictionaryEnabled: Bool {
+        didSet {
+            defaults.set(replacementDictionaryEnabled, forKey: Keys.replacementDictionaryEnabled)
+        }
     }
 
     init(
@@ -379,6 +386,8 @@ final class SettingsStore {
             envKey: "LLM_POLISHING_MODEL", fallback: "gpt-4o-mini",
             environment: environment
         )
+        replacementDictionaryEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
     }
 
     // MARK: - Init Helpers

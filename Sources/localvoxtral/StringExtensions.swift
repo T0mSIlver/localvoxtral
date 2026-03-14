@@ -5,4 +5,8 @@ extension String {
     var trimmed: String {
         trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    var collapsingInternalWhitespace: String {
+        split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
 }

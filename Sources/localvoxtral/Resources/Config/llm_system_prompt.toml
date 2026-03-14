@@ -1,0 +1,3 @@
+content = """
+Clean up grammar, punctuation, and capitalization. Preserve intent. Apply the replacement dictionary from the user prompt when it is relevant. Return only the final corrected text.
+"""

@@ -292,6 +292,155 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 
+    func testFinishStoppedSessionAppliesReplacementDictionaryWithoutLLM() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.replacementDictionaryEnabled = true
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"]),
+            ])
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "postgres for local voxtral"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(viewModel.currentDictationEventText, "PostgreSQL for localvoxtral")
+        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "PostgreSQL for localvoxtral")
+        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.commitText, "PostgreSQL for localvoxtral")
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+    }
+
+    func testFinishStoppedSessionSendsReplacementDictionaryInLLMRequest() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.replacementDictionaryEnabled = true
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        let polishingService = CapturingMockLLMPolishingService(resultText: "Polished text")
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
+            ]),
+            promptTemplates: LLMPromptTemplates(
+                systemContent: "system instructions",
+                userContent: "Input={{input_text}}\nOriginal={{original_text}}\nRules:\n{{replacement_dictionary}}"
+            )
+        )
+        viewModel.llmPolishingService = polishingService
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "postgres rocks"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        let deadline = ContinuousClock.now + .seconds(1)
+        while await polishingService.requestCount() < 1, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        let request = await polishingService.lastRequest()
+        XCTAssertEqual(request?.inputText, "PostgreSQL rocks")
+        XCTAssertEqual(request?.systemPrompt, "system instructions")
+        XCTAssertEqual(
+            request?.userPrompt,
+            """
+            Input=PostgreSQL rocks
+            Original=postgres rocks
+            Rules:
+            - PostgreSQL: postgres
+            """
+        )
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+    }
+
+    func testFinishStoppedSessionLLMFailureKeepsLocalReplacement() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.replacementDictionaryEnabled = true
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        let polishingService = FailingMockLLMPolishingService()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
+            ])
+        )
+        viewModel.llmPolishingService = polishingService
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "postgres"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        let deadline = ContinuousClock.now + .seconds(1)
+        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(viewModel.currentDictationEventText, "PostgreSQL")
+        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "PostgreSQL")
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+    }
+
+    func testFinishStoppedSessionDoesNotLoadReplacementDictionaryInLiveMode() {
+        let settings = makeSettings(outputMode: .liveAutoPaste)
+        settings.replacementDictionaryEnabled = true
+        let overlayCoordinator = MockOverlayCoordinator()
+        let configStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
+            ])
+        )
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = configStore
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "postgres"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
+        XCTAssertEqual(viewModel.currentDictationEventText, "postgres")
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -315,7 +464,7 @@ private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
     private var continuation: CheckedContinuation<Void, Never>?
 
     func polish(
-        text: String,
+        request: LLMPolishingRequest,
         configuration _: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
         requests += 1
@@ -323,7 +472,7 @@ private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
             self.continuation = continuation
         }
         return LLMPolishingResult(
-            rawText: text,
+            rawText: request.inputText,
             polishedText: "Hello world.",
             durationSeconds: 0.01
         )
@@ -336,6 +485,76 @@ private actor BlockingMockLLMPolishingService: LLMPolishingServicing {
     func resumePendingRequest() {
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private actor CapturingMockLLMPolishingService: LLMPolishingServicing {
+    private let resultText: String
+    private var requests: [LLMPolishingRequest] = []
+
+    init(resultText: String) {
+        self.resultText = resultText
+    }
+
+    func polish(
+        request: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        requests.append(request)
+        return LLMPolishingResult(
+            rawText: request.inputText,
+            polishedText: resultText,
+            durationSeconds: 0.01
+        )
+    }
+
+    func requestCount() -> Int {
+        requests.count
+    }
+
+    func lastRequest() -> LLMPolishingRequest? {
+        requests.last
+    }
+}
+
+private actor FailingMockLLMPolishingService: LLMPolishingServicing {
+    func polish(
+        request _: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        throw MockPolishingError()
+    }
+}
+
+private struct MockPolishingError: Error {}
+
+private final class MockAppConfigStore: AppConfigServing {
+    private let replacementDictionary: ReplacementDictionary
+    private let promptTemplates: LLMPromptTemplates
+    private(set) var loadReplacementDictionaryCallCount = 0
+
+    init(
+        replacementDictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
+        promptTemplates: LLMPromptTemplates = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "{{input_text}}"
+        )
+    ) {
+        self.replacementDictionary = replacementDictionary
+        self.promptTemplates = promptTemplates
+    }
+
+    func configDirectoryURL() -> URL {
+        FileManager.default.temporaryDirectory
+    }
+
+    func loadReplacementDictionary() -> ReplacementDictionary {
+        loadReplacementDictionaryCallCount += 1
+        return replacementDictionary
+    }
+
+    func loadLLMPromptTemplates() -> LLMPromptTemplates {
+        promptTemplates
     }
 }
 

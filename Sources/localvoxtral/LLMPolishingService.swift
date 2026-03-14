@@ -5,9 +5,15 @@ import os
 // can be proven idempotent while post-processing is still in flight.
 protocol LLMPolishingServicing: Sendable {
     func polish(
-        text: String,
+        request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult
+}
+
+struct LLMPolishingRequest: Sendable {
+    let inputText: String
+    let systemPrompt: String
+    let userPrompt: String
 }
 
 struct LLMPolishingConfiguration: Sendable {
@@ -43,44 +49,41 @@ enum LLMPolishingError: Error, LocalizedError, Sendable {
 }
 
 struct LLMPolishingService: LLMPolishingServicing {
-    private static let systemPrompt =
-        "Clean up grammar, punctuation, capitalization. Preserve intent. Return only corrected text."
-
     private static let timeoutInterval: TimeInterval = 15
 
     func polish(
-        text: String,
+        request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = request.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw LLMPolishingError.emptyInput
         }
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
-        var request = URLRequest(url: configuration.endpointURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var urlRequest = URLRequest(url: configuration.endpointURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !configuration.apiKey.isEmpty {
-            request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+            urlRequest.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.timeoutInterval = Self.timeoutInterval
+        urlRequest.timeoutInterval = Self.timeoutInterval
 
         let body: [String: Any] = [
             "model": configuration.model,
             "messages": [
-                ["role": "system", "content": Self.systemPrompt],
-                ["role": "user", "content": trimmed],
+                ["role": "system", "content": request.systemPrompt],
+                ["role": "user", "content": request.userPrompt],
             ],
             "temperature": 0.3,
         ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await URLSession.shared.data(for: urlRequest)
         } catch {
             throw LLMPolishingError.networkError(error.localizedDescription)
         }

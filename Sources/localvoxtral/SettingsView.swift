@@ -144,7 +144,12 @@ struct SettingsView: View {
                     }
                 }
 
-                SettingsSection(title: "LLM Polishing") {
+                SettingsSection(title: "Text Processing") {
+                    ToggleSettingRow(
+                        title: "Enable replacement dictionary",
+                        isOn: $settings.replacementDictionaryEnabled
+                    )
+
                     ToggleSettingRow(
                         title: "Enable LLM polishing",
                         isOn: $settings.llmPolishingEnabled
@@ -172,8 +177,14 @@ struct SettingsView: View {
                         }
                     }
 
+                    SettingsField(title: "Config files") {
+                        Button("Open Config Folder") {
+                            viewModel.openConfigFolder()
+                        }
+                    }
+
                     Text(
-                        "A LLM polishes raw dictation text before insertion. Only works in Overlay Buffer mode."
+                        "Overlay Buffer finalization can apply exact replacements locally before optional LLM polishing. Edit replacement_dictionary.toml, llm_system_prompt.toml, and llm_user_prompt.toml in the shared config folder. Changes apply to the next finalized dictation."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)

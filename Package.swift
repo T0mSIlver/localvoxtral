@@ -18,6 +18,9 @@ let package = Package(
             name: "localvoxtral",
             dependencies: [
                 .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
+            ],
+            resources: [
+                .process("Resources"),
             ]
         ),
         .testTarget(

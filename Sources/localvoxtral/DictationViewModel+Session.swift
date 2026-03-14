@@ -371,34 +371,60 @@ extension DictationViewModel {
         }
 
         if shouldCommitOverlay {
+            let polishingConfig = settings.llmPolishingConfiguration
+            let shouldLoadReplacementDictionary =
+                settings.replacementDictionaryEnabled || polishingConfig != nil
+            let replacementDictionary = shouldLoadReplacementDictionary
+                ? appConfigStore.loadReplacementDictionary()
+                : ReplacementDictionary(entries: [])
+            let replacementDictionaryPrompt = replacementDictionary.renderedForPrompt()
+            let originalText = currentDictationEventText
+            let workingText =
+                settings.replacementDictionaryEnabled
+                ? replacementDictionary.apply(to: originalText)
+                : originalText
+
+            if currentDictationEventText != workingText {
+                currentDictationEventText = workingText
+            }
             refreshOverlayBufferSession()
 
-            let polishingConfig = settings.llmPolishingConfiguration
             let capturedSessionStartedAt = sessionStartedAt ?? Date()
             let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
             let capturedModel = sessionModelName ?? settings.effectiveModelName
             let capturedOutputMode = sessionMode.rawValue
             let capturedTargetBundleID = resolveTargetAppBundleID()
             if polishingConfig != nil {
-                let rawText = currentDictationEventText
+                let promptTemplates = appConfigStore.loadLLMPromptTemplates()
+                let polishingRequest = LLMPolishingRequest(
+                    inputText: workingText,
+                    systemPrompt: promptTemplates.systemContent,
+                    userPrompt: promptTemplates.renderedUserPrompt(
+                        inputText: workingText,
+                        originalText: originalText,
+                        replacementDictionary: replacementDictionaryPrompt
+                    )
+                )
 
                 statusText = StatusStrings.polishing
-                debugLog("LLM polishing started for \(rawText.count) chars")
+                debugLog("LLM polishing started for \(workingText.count) chars")
 
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
 
-                    var polishedText: String? = nil
+                    var processedTextForPersistence: String? =
+                        workingText != originalText ? workingText : nil
                     var polishingDuration: Double? = nil
                     var sessionStatus: DictationSessionStatus = .completed
 
-                    if let config = polishingConfig, !rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if let config = polishingConfig, !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         do {
                             let result = try await self.llmPolishingService.polish(
-                                text: rawText,
+                                request: polishingRequest,
                                 configuration: config
                             )
-                            polishedText = result.polishedText
+                            processedTextForPersistence =
+                                result.polishedText != originalText ? result.polishedText : nil
                             polishingDuration = result.durationSeconds
 
                             guard !Task.isCancelled else { return }
@@ -439,8 +465,8 @@ extension DictationViewModel {
 
                     self.saveSessionRecord(
                         startedAt: capturedSessionStartedAt,
-                        rawText: rawText,
-                        polishedText: polishedText,
+                        rawText: originalText,
+                        polishedText: processedTextForPersistence,
                         polishingDuration: polishingDuration,
                         provider: capturedProvider,
                         model: capturedModel,
@@ -474,8 +500,8 @@ extension DictationViewModel {
 
             saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
-                rawText: currentDictationEventText,
-                polishedText: nil,
+                rawText: originalText,
+                polishedText: workingText != originalText ? workingText : nil,
                 polishingDuration: nil,
                 provider: capturedProvider,
                 model: capturedModel,

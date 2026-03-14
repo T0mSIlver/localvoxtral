@@ -1,0 +1,7 @@
+# Map any alias in `matches` to the canonical `replace_with` spelling.
+# Add as many `[[replacement]]` blocks as you want.
+#
+# Example:
+# [[replacement]]
+# replace_with = "PostgreSQL"
+# matches = ["postgres", "post gres sql", "postgress"]
