@@ -383,6 +383,13 @@ extension DictationViewModel {
                 settings.replacementDictionaryEnabled
                 ? replacementDictionary.apply(to: originalText)
                 : originalText
+            let llmConfigurationFailure: (message: String, technicalDetails: String?)? =
+                settings.llmPolishingEnabled && polishingConfig == nil
+                ? (
+                    "Set a valid LLM polishing endpoint URL in Settings.",
+                    "Settings value could not be normalized to an HTTP endpoint URL."
+                )
+                : nil
 
             if currentDictationEventText != workingText {
                 currentDictationEventText = workingText
@@ -416,6 +423,7 @@ extension DictationViewModel {
                         workingText != originalText ? workingText : nil
                     var polishingDuration: Double? = nil
                     var sessionStatus: DictationSessionStatus = .completed
+                    var llmConnectionFailure: (message: String, technicalDetails: String?)?
 
                     if let config = polishingConfig, !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         do {
@@ -437,6 +445,12 @@ extension DictationViewModel {
                         } catch {
                             guard !Task.isCancelled else { return }
                             sessionStatus = .llmFailed
+                            if case .networkError(let details) = error as? LLMPolishingError {
+                                llmConnectionFailure = (
+                                    "Unable to connect to the configured LLM polishing endpoint.",
+                                    self.llmPolishingConnectionTechnicalDetails(details)
+                                )
+                            }
                             Log.polishing.error(
                                 "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
                             )
@@ -475,6 +489,13 @@ extension DictationViewModel {
                         status: sessionStatus,
                         commitSucceeded: commitSucceeded
                     )
+
+                    if let llmConnectionFailure {
+                        self.handleLLMPolishingConnectionFailure(
+                            message: llmConnectionFailure.message,
+                            technicalDetails: llmConnectionFailure.technicalDetails
+                        )
+                    }
                 }
                 return
             }
@@ -507,9 +528,16 @@ extension DictationViewModel {
                 model: capturedModel,
                 outputMode: capturedOutputMode,
                 targetAppBundleID: capturedTargetBundleID,
-                status: .sttCompleted,
+                status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
                 commitSucceeded: commitSucceeded
             )
+
+            if let llmConfigurationFailure {
+                handleLLMPolishingConnectionFailure(
+                    message: llmConfigurationFailure.message,
+                    technicalDetails: llmConfigurationFailure.technicalDetails
+                )
+            }
             return
         }
 
@@ -714,7 +742,28 @@ extension DictationViewModel {
         presentConnectionFailureAlert(message: resolvedMessage)
     }
 
-    func presentConnectionFailureAlert(message: String) {
+    func handleLLMPolishingConnectionFailure(message: String, technicalDetails: String? = nil) {
+        let trimmedMessage = message.trimmed
+        let resolvedMessage =
+            trimmedMessage.isEmpty
+            ? "Unable to establish LLM polishing connection."
+            : trimmedMessage
+        let resolvedDetails = normalizedFailureDetails(technicalDetails)
+
+        statusText = "LLM polishing failed."
+        lastError = resolvedDetails ?? resolvedMessage
+        logLLMPolishingConnectionFailure(
+            message: resolvedMessage,
+            technicalDetails: resolvedDetails
+        )
+        markRecentConnectionFailureIndicator()
+        presentConnectionFailureAlert(
+            title: "LLM Polishing Connection Failed",
+            message: resolvedMessage
+        )
+    }
+
+    func presentConnectionFailureAlert(title: String = "Realtime Connection Failed", message: String) {
         guard !message.isEmpty else { return }
         guard !isShowingConnectionFailureAlert else { return }
 
@@ -724,7 +773,7 @@ extension DictationViewModel {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Realtime Connection Failed"
+        alert.messageText = title
         alert.informativeText = message
         if let appIcon = NSApplication.shared.applicationIconImage.copy() as? NSImage {
             appIcon.size = NSSize(width: 20, height: 20)
@@ -749,6 +798,19 @@ extension DictationViewModel {
         } else {
             Log.dictation.error(
                 "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public)"
+            )
+        }
+    }
+
+    func logLLMPolishingConnectionFailure(message: String, technicalDetails: String?) {
+        let endpoint = sanitizedLLMPolishingEndpointForLogging()
+        if let technicalDetails {
+            Log.polishing.error(
+                "LLM polishing connection failure [endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(technicalDetails, privacy: .public)"
+            )
+        } else {
+            Log.polishing.error(
+                "LLM polishing connection failure [endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public)"
             )
         }
     }
@@ -807,6 +869,23 @@ extension DictationViewModel {
         return components.string ?? endpoint.absoluteString
     }
 
+    private func sanitizedLLMPolishingEndpointForLogging() -> String {
+        let endpointText = settings.llmPolishingEndpointURL.trimmed
+        guard !endpointText.isEmpty,
+              let endpoint = URL(string: endpointText)
+        else {
+            return "<invalid endpoint>"
+        }
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            return endpoint.absoluteString
+        }
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? endpoint.absoluteString
+    }
+
     private func normalizedFailureDetails(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmed
@@ -816,6 +895,15 @@ extension DictationViewModel {
     private func connectTimeoutTechnicalDetails(timeoutSeconds: TimeInterval) -> String {
         let endpoint = sanitizedRealtimeEndpointForLogging()
         return "No connection response received in \(Int(timeoutSeconds)) seconds for endpoint \(endpoint)."
+    }
+
+    private func llmPolishingConnectionTechnicalDetails(_ details: String) -> String {
+        let endpoint = sanitizedLLMPolishingEndpointForLogging()
+        let normalizedDetails = details.trimmed
+        if normalizedDetails.isEmpty {
+            return "Unable to connect to endpoint \(endpoint)."
+        }
+        return "\(normalizedDetails) [endpoint: \(endpoint)]"
     }
 
     func startStopFinalizationWatchdog() {

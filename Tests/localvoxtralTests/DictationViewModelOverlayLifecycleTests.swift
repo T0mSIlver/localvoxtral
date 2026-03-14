@@ -414,6 +414,78 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Ready")
     }
 
+    func testFinishStoppedSessionLLMNetworkFailureSurfacesConnectionError() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.replacementDictionaryEnabled = true
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        let polishingService = NetworkFailingMockLLMPolishingService()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
+            ])
+        )
+        viewModel.llmPolishingService = polishingService
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "postgres"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        let deadline = ContinuousClock.now + .seconds(1)
+        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(viewModel.currentDictationEventText, "PostgreSQL")
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+        XCTAssertTrue(viewModel.lastError?.contains("Connection refused") == true)
+        XCTAssertTrue(
+            viewModel.lastError?.contains("https://example.com/v1/chat/completions") == true
+        )
+    }
+
+    func testFinishStoppedSessionInvalidLLMEndpointSurfacesConnectionError() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "not a url"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        XCTAssertEqual(viewModel.statusText, "LLM polishing failed.")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+        XCTAssertEqual(
+            viewModel.lastError,
+            "Settings value could not be normalized to an HTTP endpoint URL."
+        )
+    }
+
     func testFinishStoppedSessionDoesNotLoadReplacementDictionaryInLiveMode() {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.replacementDictionaryEnabled = true
@@ -523,6 +595,15 @@ private actor FailingMockLLMPolishingService: LLMPolishingServicing {
         configuration _: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
         throw MockPolishingError()
+    }
+}
+
+private actor NetworkFailingMockLLMPolishingService: LLMPolishingServicing {
+    func polish(
+        request _: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        throw LLMPolishingError.networkError("Connection refused")
     }
 }
 
