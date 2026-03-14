@@ -126,7 +126,7 @@ final class SettingsStore {
         var defaultEndpoint: String {
             switch self {
             case .realtimeAPI:
-                return "ws://127.0.0.1:8000/v1/realtime"
+                return "ws://127.0.0.1:8080/v1/realtime"
             case .mlxAudio:
                 return "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"
             }
@@ -373,7 +373,7 @@ final class SettingsStore {
         llmPolishingEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.llmPolishingEndpointURL,
             envKey: "LLM_POLISHING_ENDPOINT",
-            fallback: "https://api.openai.com/v1/chat/completions",
+            fallback: "http://127.0.0.1:8000/v1/chat/completions",
             environment: environment
         )
         llmPolishingAPIKey = Self.loadString(

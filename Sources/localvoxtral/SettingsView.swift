@@ -303,14 +303,14 @@ private struct TextProcessingSettingsPane: View {
                 ToggleSettingRow(
                     title: "Enable LLM polishing",
                     subtitle:
-                        "Send finalized Overlay Buffer text to an OpenAI-compatible chat completions server.",
+                        "Send dictation text to an OpenAI-compatible chat completions server.",
                     isOn: $settings.llmPolishingEnabled
                 )
 
                 if settings.llmPolishingEnabled {
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(
-                            "https://api.openai.com/v1/chat/completions",
+                            "http://127.0.0.1:8000/v1/chat/completions",
                             text: $settings.llmPolishingEndpointURL
                         )
                         .textFieldStyle(.roundedBorder)
@@ -340,9 +340,17 @@ private struct TextProcessingSettingsPane: View {
                     }
                 }
 
-                SettingsHelpText(
-                    "Edit replacement_dictionary.toml, llm_system_prompt.toml, and llm_user_prompt.toml in the config folder. Changes apply to the next finalized dictation."
-                )
+                VStack(alignment: .leading, spacing: 8) {
+                    SettingsHelpText(
+                        "Edit these files in the config folder. Changes apply to the next finalized dictation."
+                    )
+
+                    SettingsHelpList(items: [
+                        "replacement_dictionary.toml: exact-match replacements used during finalization and shared with LLM polishing when enabled.",
+                        "llm_system_prompt.toml: system prompt used for LLM polishing.",
+                        "llm_user_prompt.toml: user prompt template used for LLM polishing.",
+                    ])
+                }
             }
             .disabled(!isAvailableInCurrentMode)
             .opacity(isAvailableInCurrentMode ? 1.0 : 0.5)
@@ -477,6 +485,28 @@ private struct SettingsHelpText: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct SettingsHelpList: View {
+    let items: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(items, id: \.self) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "circle.fill")
+                        .font(.system(size: 4))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
+
+                    Text(item)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 }
 
