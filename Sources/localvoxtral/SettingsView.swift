@@ -137,7 +137,8 @@ private final class TitleTrackingView: NSView {
         guard let window, window !== observedWindow else { return }
 
         observedWindow = window
-        titleObservation = window.observe(\.title, options: [.new]) { [weak self, weak window] _, _ in
+        titleObservation = window.observe(\.title, options: [.new]) {
+            [weak self, weak window] _, _ in
             Task { @MainActor [weak self, weak window] in
                 guard let self, let window, window.title != self.desiredTitle else { return }
                 window.title = self.desiredTitle
@@ -350,7 +351,7 @@ private struct TextProcessingSettingsPane: View {
                 ToggleSettingRow(
                     title: "Enable replacement dictionary",
                     subtitle:
-                        "Apply exact match replacements during finalization. If LLM polishing is enabled, the dictionary is provided to the LLM for more consistent replacement.",
+                        "Apply exact-match replacements during finalization. If LLM polishing is enabled, those replacements still happen first, and the same dictionary is also provided to the LLM for more consistent cleanup.",
                     isOn: $settings.replacementDictionaryEnabled
                 )
 
@@ -388,21 +389,30 @@ private struct TextProcessingSettingsPane: View {
             .opacity(isAvailableInCurrentMode ? 1.0 : 0.5)
 
             SettingsGroup(title: "Shared Configuration") {
-                SettingsFieldRow(title: "Config files") {
-                    Button("Open Config Folder") {
-                        viewModel.openConfigFolder()
+                SettingsFieldRow(title: "Config folder") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Open Config Folder") {
+                            viewModel.openConfigFolder()
+                        }
+
+                        SettingsHelpText("Changes apply to the next finalized dictation.")
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    SettingsHelpText(
-                        "Edit these files in the config folder. Changes apply to the next finalized dictation."
-                    )
-
-                    SettingsHelpList(items: [
-                        "replacement_dictionary.toml: exact-match replacements used during finalization and shared with LLM polishing when enabled.",
-                        "llm_system_prompt.toml: system prompt used for LLM polishing.",
-                        "llm_user_prompt.toml: user prompt template used for LLM polishing.",
+                SettingsFieldRow(title: "Included files") {
+                    SettingsFileNotes(notes: [
+                        SettingsFileNote(
+                            name: "replacement_dictionary.toml",
+                            description: "Exact-match replacements used during finalization and shared with LLM polishing when enabled."
+                        ),
+                        SettingsFileNote(
+                            name: "llm_system_prompt.toml",
+                            description: "System prompt used for LLM polishing."
+                        ),
+                        SettingsFileNote(
+                            name: "llm_user_prompt.toml",
+                            description: "User prompt template used for LLM polishing."
+                        ),
                     ])
                 }
             }
@@ -542,25 +552,30 @@ private struct SettingsHelpText: View {
     }
 }
 
-private struct SettingsHelpList: View {
-    let items: [String]
+private struct SettingsFileNote: Identifiable {
+    let id = UUID()
+    let name: String
+    let description: String
+}
+
+private struct SettingsFileNotes: View {
+    let notes: [SettingsFileNote]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(items, id: \.self) { item in
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 4))
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 6)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(notes) { note in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(note.name)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
 
-                    Text(item)
+                    Text(note.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
