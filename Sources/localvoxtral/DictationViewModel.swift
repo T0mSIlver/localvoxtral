@@ -77,10 +77,11 @@ final class DictationViewModel {
         }
     }
 
-    private enum StatusStrings {
+    enum StatusStrings {
         static let ready = "Ready"
         static let connectingRealtimeBackend = "Connecting to realtime backend..."
         static let finalizingPreviousDictation = "Finalizing previous dictation..."
+        static let polishing = "Polishing..."
         static let awaitingMicrophonePermission = "Awaiting microphone permission..."
         static let requestingMicrophonePermission = "Requesting microphone permission..."
         static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
@@ -135,6 +136,12 @@ final class DictationViewModel {
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
     @ObservationIgnored
+    var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
+    @ObservationIgnored
+    var appConfigStore: any AppConfigServing = AppConfigStore()
+    @ObservationIgnored
+    var sessionStore: DictationSessionStore?
+    @ObservationIgnored
     let mlxStabilizer = MlxHypothesisStabilizer()
     @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
@@ -174,6 +181,18 @@ final class DictationViewModel {
     var currentDictationEventText = ""
     @ObservationIgnored
     var sessionOutputMode: DictationOutputMode?
+    @ObservationIgnored
+    var polishAndCommitTask: Task<Void, Never>?
+    @ObservationIgnored
+    // Several finalization callbacks can converge here; keep stop cleanup
+    // idempotent until commit/post-processing fully finishes.
+    var isCompletingStoppedSession = false
+    @ObservationIgnored
+    var sessionStartedAt: Date?
+    @ObservationIgnored
+    var sessionProvider: SettingsStore.RealtimeProvider?
+    @ObservationIgnored
+    var sessionModelName: String?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
@@ -292,6 +311,7 @@ final class DictationViewModel {
         }
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
+            sessionStore = DictationSessionStore()
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
@@ -311,6 +331,7 @@ final class DictationViewModel {
         recentFailureResetTask?.cancel()
         finalizationWatchdogTask?.cancel()
         startupPermissionTask?.cancel()
+        polishAndCommitTask?.cancel()
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
@@ -363,10 +384,19 @@ final class DictationViewModel {
         startupPermissionTask?.cancel()
         startupPermissionTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            self.prepareLLMPolishingPromptAccessIfNeeded()
+            guard !Task.isCancelled else { return }
             await self.requestStartupMicrophonePermissionIfNeeded()
             guard !Task.isCancelled else { return }
             self.requestStartupAccessibilityPermissionIfNeeded()
         }
+    }
+
+    func prepareLLMPolishingPromptAccessIfNeeded() {
+        guard settings.llmPolishingEnabled else { return }
+
+        debugLog("preloading LLM polishing prompt/config files")
+        _ = appConfigStore.loadLLMPromptTemplates()
     }
 
     private func requestStartupAccessibilityPermissionIfNeeded() {
@@ -607,9 +637,11 @@ final class DictationViewModel {
             statusText = StatusStrings.connectingRealtimeBackend
             return
         }
-        guard !isFinalizingStop else {
-            statusText = StatusStrings.finalizingPreviousDictation
-            return
+        if isFinalizingStop {
+            guard cancelPolishingForNewSessionIfNeeded() else {
+                statusText = StatusStrings.finalizingPreviousDictation
+                return
+            }
         }
         guard !isAwaitingMicrophonePermission else {
             statusText = StatusStrings.awaitingMicrophonePermission
@@ -679,6 +711,8 @@ final class DictationViewModel {
         debugLog("stopDictation reason=\(reason)")
         hasActivePushToTalkShortcutSession = false
 
+        polishAndCommitTask?.cancel()
+        polishAndCommitTask = nil
         commitTask?.cancel()
         commitTask = nil
         audioSendTask?.cancel()
@@ -773,6 +807,11 @@ final class DictationViewModel {
         } else if currentErrorToken == .accessibilityPermissionRequired {
             lastError = nil
         }
+    }
+
+    func openConfigFolder() {
+        let url = appConfigStore.configDirectoryURL()
+        NSWorkspace.shared.open(url)
     }
 
     func pasteLatestSegment() {

@@ -5,14 +5,40 @@ import os
 extension DictationViewModel {
     // MARK: - Session Lifecycle
 
-    // sessionOutputMode lifecycle:
-    // - Set: beginDictationSession() — captures the user's setting at session start
-    //   so mid-session settings changes don't affect the active session.
+    // Session metadata lifecycle:
+    // - Set: beginDictationSession() — captures values that should stay stable for
+    //   the active session even if Settings are edited before commit finishes.
     // - Cleared: finishStoppedSession(), abortConnectingSession(), and early-return
     //   error paths in beginDictationSession() where no session was established.
-    // All session exit paths MUST clear this to nil.
+    // All session exit paths MUST clear these fields to nil.
+
+    @discardableResult
+    func cancelPolishingForNewSessionIfNeeded() -> Bool {
+        guard polishAndCommitTask != nil else { return false }
+        debugLog("cancel in-flight polishing to start a new dictation session")
+        polishAndCommitTask?.cancel()
+        polishAndCommitTask = nil
+
+        completeStoppedSessionCleanup(
+            sessionMode: sessionOutputMode ?? settings.dictationOutputMode,
+            overlayCommitOutcome: nil,
+            shouldCommitOverlay: false
+        )
+        // Do not carry old overlay state into a freshly requested session.
+        overlayBufferCoordinator.reset()
+        return true
+    }
+
+    private func clearLatchedSessionMetadata() {
+        sessionOutputMode = nil
+        sessionStartedAt = nil
+        sessionProvider = nil
+        sessionModelName = nil
+    }
 
     func beginDictationSession() {
+        polishAndCommitTask?.cancel()
+        polishAndCommitTask = nil
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
@@ -20,7 +46,9 @@ extension DictationViewModel {
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        clearLatchedSessionMetadata()
         sessionOutputMode = settings.dictationOutputMode
+        sessionStartedAt = Date()
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -31,7 +59,7 @@ extension DictationViewModel {
                 message: message,
                 technicalDetails: "Settings value could not be normalized to a websocket endpoint URL."
             )
-            sessionOutputMode = nil
+            clearLatchedSessionMetadata()
             return
         }
 
@@ -40,7 +68,7 @@ extension DictationViewModel {
         {
             statusText = "Selected microphone unavailable."
             lastError = "Selected microphone is unavailable. Reconnect it or choose another input."
-            sessionOutputMode = nil
+            clearLatchedSessionMetadata()
             return
         }
 
@@ -49,6 +77,8 @@ extension DictationViewModel {
         let source = selectedClientSource()
         inactiveRealtimeClient(for: source).disconnect()
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
+        sessionProvider = provider
+        sessionModelName = model
 
         // Capture the AX anchor now, while the user's text field still has focus.
         // By the time the WebSocket connects and startOverlayBufferSession() runs,
@@ -312,6 +342,12 @@ extension DictationViewModel {
     }
 
     func finishStoppedSession(promotePendingSegment: Bool) {
+        guard !isCompletingStoppedSession else {
+            debugLog("finishStoppedSession ignored; cleanup already in progress")
+            return
+        }
+        isCompletingStoppedSession = true
+
         stopFinalizationTask?.cancel()
         stopFinalizationTask = nil
         finalizationWatchdogTask?.cancel()
@@ -334,23 +370,212 @@ extension DictationViewModel {
             }
         }
 
-        var overlayCommitOutcome: OverlayBufferCommitOutcome?
-        var didOverlayCommitFail = false
         if shouldCommitOverlay {
+            let polishingConfig = settings.llmPolishingConfiguration
+            let shouldLoadReplacementDictionary =
+                settings.replacementDictionaryEnabled || polishingConfig != nil
+            let replacementDictionary = shouldLoadReplacementDictionary
+                ? appConfigStore.loadReplacementDictionary()
+                : ReplacementDictionary(entries: [])
+            let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
+            let originalText = currentDictationEventText
+            let workingText =
+                settings.replacementDictionaryEnabled
+                ? replacementDictionary.apply(to: originalText)
+                : originalText
+            let llmConfigurationFailure: (message: String, technicalDetails: String?)? =
+                settings.llmPolishingEnabled && polishingConfig == nil
+                ? (
+                    "Set a valid LLM polishing endpoint URL in Settings.",
+                    "Settings value could not be normalized to an HTTP endpoint URL."
+                )
+                : nil
+
+            if currentDictationEventText != workingText {
+                currentDictationEventText = workingText
+            }
             refreshOverlayBufferSession()
-            overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
+
+            let capturedSessionStartedAt = sessionStartedAt ?? Date()
+            let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
+            let capturedModel = sessionModelName ?? settings.effectiveModelName
+            let capturedOutputMode = sessionMode.rawValue
+            let capturedTargetBundleID = resolveTargetAppBundleID()
+            if polishingConfig != nil {
+                let promptTemplates = appConfigStore.loadLLMPromptTemplates()
+                let polishingRequest = LLMPolishingRequest(
+                    inputText: workingText,
+                    systemPrompt: promptTemplates.systemContent,
+                    userPrompts: promptTemplates.renderedUserPrompts(
+                        inputText: workingText,
+                        replacementDictionary: replacementDictionaryPrompt
+                    )
+                )
+
+                statusText = StatusStrings.polishing
+                debugLog("LLM polishing started for \(workingText.count) chars")
+
+                polishAndCommitTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+
+                    var processedTextForPersistence: String? =
+                        workingText != originalText ? workingText : nil
+                    var polishingDuration: Double? = nil
+                    var sessionStatus: DictationSessionStatus = .completed
+                    var llmConnectionFailure: (message: String, technicalDetails: String?)?
+
+                    if let config = polishingConfig, !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        do {
+                            let result = try await self.llmPolishingService.polish(
+                                request: polishingRequest,
+                                configuration: config
+                            )
+                            processedTextForPersistence =
+                                result.polishedText != originalText ? result.polishedText : nil
+                            polishingDuration = result.durationSeconds
+
+                            guard !Task.isCancelled else { return }
+
+                            self.currentDictationEventText = result.polishedText
+                            self.refreshOverlayBufferSession()
+                            Log.polishing.info(
+                                "LLM polishing succeeded in \(String(format: "%.2f", result.durationSeconds))s"
+                            )
+                        } catch {
+                            guard !Task.isCancelled else { return }
+                            sessionStatus = .llmFailed
+                            if case .networkError(let details) = error as? LLMPolishingError {
+                                llmConnectionFailure = (
+                                    "Unable to connect to the configured LLM polishing endpoint.",
+                                    self.llmPolishingConnectionTechnicalDetails(details)
+                                )
+                            }
+                            Log.polishing.error(
+                                "LLM polishing failed: \(error.localizedDescription, privacy: .public)"
+                            )
+                        }
+                    }
+
+                    guard !Task.isCancelled else { return }
+
+                    let overlayCommitOutcome = self.overlayBufferCoordinator.commitIfNeeded(
+                        using: self.textInsertion,
+                        autoCopyEnabled: self.settings.autoCopyEnabled
+                    )
+                    let commitSucceeded: Bool
+                    if case .failed(let failureMessage) = overlayCommitOutcome {
+                        commitSucceeded = false
+                        self.lastError = failureMessage
+                    } else {
+                        commitSucceeded = true
+                    }
+
+                    self.completeStoppedSessionCleanup(
+                        sessionMode: sessionMode,
+                        overlayCommitOutcome: overlayCommitOutcome,
+                        shouldCommitOverlay: true
+                    )
+
+                    self.saveSessionRecord(
+                        startedAt: capturedSessionStartedAt,
+                        rawText: originalText,
+                        polishedText: processedTextForPersistence,
+                        polishingDuration: polishingDuration,
+                        provider: capturedProvider,
+                        model: capturedModel,
+                        outputMode: capturedOutputMode,
+                        targetAppBundleID: capturedTargetBundleID,
+                        status: sessionStatus,
+                        commitSucceeded: commitSucceeded
+                    )
+
+                    if let llmConnectionFailure {
+                        self.handleLLMPolishingConnectionFailure(
+                            message: llmConnectionFailure.message,
+                            technicalDetails: llmConnectionFailure.technicalDetails
+                        )
+                    }
+                }
+                return
+            }
+
+            // Non-polishing overlay commit path
+            let overlayCommitOutcome = overlayBufferCoordinator.commitIfNeeded(
                 using: textInsertion,
                 autoCopyEnabled: settings.autoCopyEnabled
             )
+            let commitSucceeded: Bool
             if case .failed(let failureMessage) = overlayCommitOutcome {
-                didOverlayCommitFail = true
+                commitSucceeded = false
                 lastError = failureMessage
+            } else {
+                commitSucceeded = true
             }
+
+            completeStoppedSessionCleanup(
+                sessionMode: sessionMode,
+                overlayCommitOutcome: overlayCommitOutcome,
+                shouldCommitOverlay: true
+            )
+
+            saveSessionRecord(
+                startedAt: capturedSessionStartedAt,
+                rawText: originalText,
+                polishedText: workingText != originalText ? workingText : nil,
+                polishingDuration: nil,
+                provider: capturedProvider,
+                model: capturedModel,
+                outputMode: capturedOutputMode,
+                targetAppBundleID: capturedTargetBundleID,
+                status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
+                commitSucceeded: commitSucceeded
+            )
+
+            if let llmConfigurationFailure {
+                handleLLMPolishingConnectionFailure(
+                    message: llmConfigurationFailure.message,
+                    technicalDetails: llmConfigurationFailure.technicalDetails
+                )
+            }
+            return
         }
 
+        // Non-overlay path (live auto-paste)
+        let capturedSessionStartedAt = sessionStartedAt ?? Date()
+        let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
+        let capturedModel = sessionModelName ?? settings.effectiveModelName
+        let capturedOutputMode = sessionMode.rawValue
+        completeStoppedSessionCleanup(
+            sessionMode: sessionMode,
+            overlayCommitOutcome: nil,
+            shouldCommitOverlay: false
+        )
+
+        saveSessionRecord(
+            startedAt: capturedSessionStartedAt,
+            rawText: currentDictationEventText,
+            polishedText: nil,
+            polishingDuration: nil,
+            provider: capturedProvider,
+            model: capturedModel,
+            outputMode: capturedOutputMode,
+            targetAppBundleID: nil,
+            status: .sttCompleted,
+            commitSucceeded: true
+        )
+    }
+
+    private func completeStoppedSessionCleanup(
+        sessionMode: DictationOutputMode,
+        overlayCommitOutcome: OverlayBufferCommitOutcome?,
+        shouldCommitOverlay: Bool
+    ) {
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
+        polishAndCommitTask = nil
+        clearLatchedSessionMetadata()
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingSegmentText = ""
@@ -370,6 +595,13 @@ extension DictationViewModel {
             textInsertion.clearPendingText()
         }
 
+        let didOverlayCommitFail: Bool
+        if case .failed = overlayCommitOutcome {
+            didOverlayCommitFail = true
+        } else {
+            didOverlayCommitFail = false
+        }
+
         if !shouldCommitOverlay || !didOverlayCommitFail {
             overlayBufferCoordinator.dismissAfterHold(
                 minimumVisibility: TimingConstants.overlayFinalWordVisibilityMinimum
@@ -380,7 +612,45 @@ extension DictationViewModel {
             lastError = nil
         }
         firstChunkPreprocessor.reset()
-        sessionOutputMode = nil
+    }
+
+    func resolveTargetAppBundleID() -> String? {
+        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+    }
+
+    private func saveSessionRecord(
+        startedAt: Date,
+        rawText: String,
+        polishedText: String?,
+        polishingDuration: Double?,
+        provider: String,
+        model: String,
+        outputMode: String,
+        targetAppBundleID: String?,
+        status: DictationSessionStatus,
+        commitSucceeded: Bool
+    ) {
+        let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedRawText.isEmpty else {
+            // Intentionally skip empty sessions: they produce no useful transcript payload.
+            Log.persistence.debug("Skipping persistence for empty dictation session")
+            return
+        }
+        let record = DictationSessionRecord(
+            startedAt: startedAt,
+            finishedAt: Date(),
+            rawText: rawText,
+            polishedText: polishedText,
+            polishingDurationSeconds: polishingDuration,
+            provider: provider,
+            model: model,
+            outputMode: outputMode,
+            targetAppBundleID: targetAppBundleID,
+            status: status,
+            commitSucceeded: commitSucceeded
+        )
+        sessionStore?.save(record)
     }
 
     // MARK: - Connect Timeout
@@ -415,11 +685,13 @@ extension DictationViewModel {
         isConnectingRealtimeSession = false
         isDictating = false
         isAwaitingMicrophonePermission = false
+        isCompletingStoppedSession = false
+        polishAndCommitTask = nil
+        clearLatchedSessionMetadata()
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
-        sessionOutputMode = nil
         if disconnectSocket {
             activeRealtimeClient().disconnect()
         }
@@ -469,7 +741,28 @@ extension DictationViewModel {
         presentConnectionFailureAlert(message: resolvedMessage)
     }
 
-    func presentConnectionFailureAlert(message: String) {
+    func handleLLMPolishingConnectionFailure(message: String, technicalDetails: String? = nil) {
+        let trimmedMessage = message.trimmed
+        let resolvedMessage =
+            trimmedMessage.isEmpty
+            ? "Unable to establish LLM polishing connection."
+            : trimmedMessage
+        let resolvedDetails = normalizedFailureDetails(technicalDetails)
+
+        statusText = "LLM polishing failed."
+        lastError = resolvedDetails ?? resolvedMessage
+        logLLMPolishingConnectionFailure(
+            message: resolvedMessage,
+            technicalDetails: resolvedDetails
+        )
+        markRecentConnectionFailureIndicator()
+        presentConnectionFailureAlert(
+            title: "LLM Polishing Connection Failed",
+            message: resolvedMessage
+        )
+    }
+
+    func presentConnectionFailureAlert(title: String = "Realtime Connection Failed", message: String) {
         guard !message.isEmpty else { return }
         guard !isShowingConnectionFailureAlert else { return }
 
@@ -479,7 +772,7 @@ extension DictationViewModel {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Realtime Connection Failed"
+        alert.messageText = title
         alert.informativeText = message
         if let appIcon = NSApplication.shared.applicationIconImage.copy() as? NSImage {
             appIcon.size = NSSize(width: 20, height: 20)
@@ -504,6 +797,19 @@ extension DictationViewModel {
         } else {
             Log.dictation.error(
                 "Realtime connection failure [provider: \(provider, privacy: .public), endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public)"
+            )
+        }
+    }
+
+    func logLLMPolishingConnectionFailure(message: String, technicalDetails: String?) {
+        let endpoint = sanitizedLLMPolishingEndpointForLogging()
+        if let technicalDetails {
+            Log.polishing.error(
+                "LLM polishing connection failure [endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public) details: \(technicalDetails, privacy: .public)"
+            )
+        } else {
+            Log.polishing.error(
+                "LLM polishing connection failure [endpoint: \(endpoint, privacy: .public)] \(message, privacy: .public)"
             )
         }
     }
@@ -548,18 +854,33 @@ extension DictationViewModel {
         _ = NSWorkspace.shared.open(consoleURL)
     }
 
-    private func sanitizedRealtimeEndpointForLogging() -> String {
-        guard let endpoint = settings.resolvedWebSocketURL(for: settings.realtimeProvider) else {
-            return "<invalid endpoint>"
-        }
-        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
-            return endpoint.absoluteString
+    /// Strips credentials, query, and fragment from a URL for safe logging.
+    private func sanitizedURLForLogging(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
         }
         components.user = nil
         components.password = nil
         components.query = nil
         components.fragment = nil
-        return components.string ?? endpoint.absoluteString
+        return components.string ?? url.absoluteString
+    }
+
+    private func sanitizedRealtimeEndpointForLogging() -> String {
+        guard let endpoint = settings.resolvedWebSocketURL(for: settings.realtimeProvider) else {
+            return "<invalid endpoint>"
+        }
+        return sanitizedURLForLogging(endpoint)
+    }
+
+    private func sanitizedLLMPolishingEndpointForLogging() -> String {
+        let endpointText = settings.llmPolishingEndpointURL.trimmed
+        guard !endpointText.isEmpty,
+              let endpoint = URL(string: endpointText)
+        else {
+            return "<invalid endpoint>"
+        }
+        return sanitizedURLForLogging(endpoint)
     }
 
     private func normalizedFailureDetails(_ value: String?) -> String? {
@@ -571,6 +892,15 @@ extension DictationViewModel {
     private func connectTimeoutTechnicalDetails(timeoutSeconds: TimeInterval) -> String {
         let endpoint = sanitizedRealtimeEndpointForLogging()
         return "No connection response received in \(Int(timeoutSeconds)) seconds for endpoint \(endpoint)."
+    }
+
+    private func llmPolishingConnectionTechnicalDetails(_ details: String) -> String {
+        let endpoint = sanitizedLLMPolishingEndpointForLogging()
+        let normalizedDetails = details.trimmed
+        if normalizedDetails.isEmpty {
+            return "Unable to connect to endpoint \(endpoint)."
+        }
+        return "\(normalizedDetails) [endpoint: \(endpoint)]"
     }
 
     func startStopFinalizationWatchdog() {
