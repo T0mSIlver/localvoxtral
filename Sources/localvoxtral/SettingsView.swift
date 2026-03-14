@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -93,7 +94,60 @@ struct SettingsView: View {
                 Label("Text Processing", systemImage: "text.badge.checkmark")
             }
         }
+        .overlay {
+            FixedSettingsWindowTitle(title: "localvoxtral Settings")
+                .frame(width: 0, height: 0)
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct FixedSettingsWindowTitle: NSViewRepresentable {
+    let title: String
+
+    func makeNSView(context: Context) -> TitleTrackingView {
+        let view = TitleTrackingView()
+        view.update(title: title)
+        return view
+    }
+
+    func updateNSView(_ nsView: TitleTrackingView, context: Context) {
+        nsView.update(title: title)
+    }
+}
+
+private final class TitleTrackingView: NSView {
+    private var desiredTitle = ""
+    private var observedWindow: NSWindow?
+    private var titleObservation: NSKeyValueObservation?
+
+    func update(title: String) {
+        desiredTitle = title
+        attachObservationIfNeeded()
+        applyTitle()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachObservationIfNeeded()
+        applyTitle()
+    }
+
+    private func attachObservationIfNeeded() {
+        guard let window, window !== observedWindow else { return }
+
+        observedWindow = window
+        titleObservation = window.observe(\.title, options: [.new]) { [weak self, weak window] _, _ in
+            Task { @MainActor [weak self, weak window] in
+                guard let self, let window, window.title != self.desiredTitle else { return }
+                window.title = self.desiredTitle
+            }
+        }
+    }
+
+    private func applyTitle() {
+        guard let window, window.title != desiredTitle else { return }
+        window.title = desiredTitle
     }
 }
 
