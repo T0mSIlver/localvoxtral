@@ -63,269 +63,478 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-                .ignoresSafeArea()
+        TabView {
+            ConnectionSettingsPane(
+                settings: settings,
+                endpointBinding: endpointBinding,
+                modelBinding: modelBinding,
+                mlxTranscriptionDelaySecondsBinding: mlxTranscriptionDelaySecondsBinding,
+                mlxTranscriptionDelayLabel: mlxTranscriptionDelayLabel
+            )
+            .tabItem {
+                Label("Realtime Endpoint", systemImage: "network")
+            }
 
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Settings")
-                        .font(.system(size: 22, weight: .semibold))
+            DictationSettingsPane(
+                settings: settings,
+                viewModel: viewModel,
+                dictationShortcutBinding: dictationShortcutBinding,
+                shortcutValidationError: $shortcutValidationError
+            )
+            .tabItem {
+                Label("Dictation", systemImage: "mic")
+            }
+
+            TextProcessingSettingsPane(
+                settings: settings,
+                viewModel: viewModel
+            )
+            .tabItem {
+                Label("Text Processing", systemImage: "text.badge.checkmark")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private enum SettingsLayout {
+    static let pageSpacing: CGFloat = 16
+    static let pagePadding: CGFloat = 18
+    static let sectionSpacing: CGFloat = 10
+    static let cardSpacing: CGFloat = 14
+    static let cardPadding: CGFloat = 16
+    static let rowSpacing: CGFloat = 14
+    static let labelWidth: CGFloat = 128
+    static let cornerRadius: CGFloat = 18
+}
+
+private struct ConnectionSettingsPane: View {
+    @Bindable var settings: SettingsStore
+    let endpointBinding: Binding<String>
+    let modelBinding: Binding<String>
+    let mlxTranscriptionDelaySecondsBinding: Binding<Double>
+    let mlxTranscriptionDelayLabel: String
+
+    var body: some View {
+        SettingsPage {
+            SettingsGroup(title: "Backend") {
+                SettingsFieldRow(title: "Provider") {
+                    Picker("", selection: $settings.realtimeProvider) {
+                        ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
-                SettingsSection(title: "Endpoint Settings") {
-                    SettingsField(title: "Provider") {
-                        Picker("", selection: $settings.realtimeProvider) {
-                            ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
-                                Text(provider.displayName).tag(provider)
+                SettingsFieldRow(title: "Realtime endpoint") {
+                    TextField(settings.endpointPlaceholder, text: endpointBinding)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                SettingsFieldRow(title: "Model") {
+                    TextField(settings.modelPlaceholder, text: modelBinding)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                if settings.realtimeProvider == .realtimeAPI {
+                    SettingsFieldRow(title: "API key") {
+                        SecureField("Required for remote providers", text: $settings.apiKey)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+
+            SettingsGroup(title: "Streaming") {
+                if settings.realtimeProvider == .realtimeAPI {
+                    SettingsFieldRow(title: "Commit interval") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Slider(
+                                    value: $settings.commitIntervalSeconds,
+                                    in: 0.1...1.0,
+                                    step: 0.1
+                                )
+                                Text(String(format: "%.2fs", settings.commitIntervalSeconds))
+                                    .font(.callout.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 48, alignment: .trailing)
+                            }
+
+                            SettingsHelpText(
+                                "How often finalized transcript chunks are requested from the realtime server."
+                            )
+                        }
+                    }
+                } else {
+                    SettingsFieldRow(title: "Transcription delay") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Slider(
+                                    value: mlxTranscriptionDelaySecondsBinding,
+                                    in: 0.4...2.0,
+                                    step: 0.1
+                                )
+                                Text(mlxTranscriptionDelayLabel)
+                                    .font(.callout.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 48, alignment: .trailing)
+                            }
+
+                            SettingsHelpText(
+                                "How long mlx-audio waits for right-context before emitting tokens."
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct DictationSettingsPane: View {
+    @Bindable var settings: SettingsStore
+    let viewModel: DictationViewModel
+    let dictationShortcutBinding: Binding<DictationShortcut?>
+    @Binding var shortcutValidationError: String?
+
+    var body: some View {
+        SettingsPage {
+            SettingsGroup(title: "Behavior") {
+                SettingsFieldRow(title: "Output mode") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: $settings.dictationOutputMode) {
+                            ForEach(DictationOutputMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
                             }
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                    }
 
-                    SettingsField(title: "Realtime endpoint") {
-                        TextField(settings.endpointPlaceholder, text: endpointBinding)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    SettingsField(title: "Model") {
-                        TextField(settings.modelPlaceholder, text: modelBinding)
-                            .textFieldStyle(.roundedBorder)
-                    }
-
-                    if settings.realtimeProvider == .realtimeAPI {
-                        SettingsField(title: "API key") {
-                            SecureField("Required for remote providers", text: $settings.apiKey)
-                                .textFieldStyle(.roundedBorder)
-                        }
-                    }
-
-                    if settings.realtimeProvider == .realtimeAPI {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Commit interval")
-                                    .font(.system(size: 12, weight: .medium))
-                                Spacer()
-                                Text(String(format: "%.2fs", settings.commitIntervalSeconds))
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Slider(value: $settings.commitIntervalSeconds, in: 0.1...1.0, step: 0.1)
-
-                            Text(
-                                "How often finalized transcript chunks are requested from the realtime server."
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text("Transcription delay")
-                                    .font(.system(size: 12, weight: .medium))
-                                Spacer()
-                                Text(mlxTranscriptionDelayLabel)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Slider(
-                                value: mlxTranscriptionDelaySecondsBinding, in: 0.4...2.0, step: 0.1
-                            )
-
-                            Text(
-                                "How long mlx-audio waits for right-context before emitting tokens."
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        }
+                        SettingsHelpText(settings.dictationOutputMode.description)
                     }
                 }
 
-                SettingsSection(title: "Text Processing") {
-                    ToggleSettingRow(
-                        title: "Enable replacement dictionary",
-                        isOn: $settings.replacementDictionaryEnabled
-                    )
-
-                    ToggleSettingRow(
-                        title: "Enable LLM polishing",
-                        isOn: $settings.llmPolishingEnabled
-                    )
-
-                    if settings.llmPolishingEnabled {
-                        SettingsField(title: "Endpoint") {
-                            TextField(
-                                "https://api.openai.com/v1/chat/completions",
-                                text: $settings.llmPolishingEndpointURL
-                            )
-                            .textFieldStyle(.roundedBorder)
+                SettingsFieldRow(title: "Shortcut behavior") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: $settings.dictationShortcutMode) {
+                            ForEach(DictationShortcutMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
                         }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
 
-                        SettingsField(title: "API key") {
-                            SecureField(
-                                "Required for remote providers", text: $settings.llmPolishingAPIKey
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsField(title: "Model") {
-                            TextField("gpt-4o-mini", text: $settings.llmPolishingModel)
-                                .textFieldStyle(.roundedBorder)
-                        }
+                        SettingsHelpText(settings.dictationShortcutMode.description)
                     }
-
-                    SettingsField(title: "Config files") {
-                        Button("Open Config Folder") {
-                            viewModel.openConfigFolder()
-                        }
-                    }
-
-                    Text(
-                        "Overlay Buffer finalization can apply exact replacements locally before optional LLM polishing. Edit replacement_dictionary.toml, llm_system_prompt.toml, and llm_user_prompt.toml in the shared config folder. Changes apply to the next finalized dictation."
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 }
 
-                SettingsSection(title: "Dictation") {
-                    SettingsField(title: "Output mode") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Picker("", selection: $settings.dictationOutputMode) {
-                                ForEach(DictationOutputMode.allCases) { mode in
-                                    Text(mode.displayName).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
+                ToggleSettingRow(
+                    title: "Auto-copy final segment",
+                    subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
+                    isOn: $settings.autoCopyEnabled
+                )
+            }
 
-                            Text(settings.dictationOutputMode.description)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
+            SettingsGroup(title: "Shortcut") {
+                SettingsFieldRow(title: "Dictation shortcut") {
+                    HStack(alignment: .center, spacing: 8) {
+                        ShortcutRecorderField(
+                            shortcut: dictationShortcutBinding,
+                            validationError: $shortcutValidationError,
+                            fixedWidth: 132
+                        )
+                        .frame(height: 24, alignment: .leading)
+
+                        Button("Reset to Default") {
+                            shortcutValidationError = nil
+                            viewModel.updateDictationShortcut(
+                                SettingsStore.defaultDictationShortcut)
                         }
+                        .disabled(
+                            settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
                     }
+                }
 
-                    SettingsField(title: "Shortcut behavior") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Picker("", selection: $settings.dictationShortcutMode) {
-                                ForEach(DictationShortcutMode.allCases) { mode in
-                                    Text(mode.displayName).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
+                if let shortcutValidationError {
+                    SettingsMessageRow(shortcutValidationError, color: .red)
+                }
 
-                            Text(settings.dictationShortcutMode.description)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    ToggleSettingRow(
-                        title: "Auto-copy final segment",
-                        isOn: $settings.autoCopyEnabled
+                if settings.dictationShortcut == nil {
+                    SettingsMessageRow(
+                        "Global dictation shortcut is currently disabled.",
+                        color: .secondary
                     )
-
-                    SettingsField(title: "Dictation shortcut") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .center, spacing: 8) {
-                                ShortcutRecorderField(
-                                    shortcut: dictationShortcutBinding,
-                                    validationError: $shortcutValidationError,
-                                    fixedWidth: 132
-                                )
-                                .frame(height: 24, alignment: .leading)
-
-                                Button("Reset to Default") {
-                                    shortcutValidationError = nil
-                                    viewModel.updateDictationShortcut(
-                                        SettingsStore.defaultDictationShortcut)
-                                }
-                                .disabled(
-                                    settings.dictationShortcut
-                                        == SettingsStore.defaultDictationShortcut)
-                            }
-                        }
-                    }
-
-                    if let shortcutValidationError {
-                        Text(shortcutValidationError)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if settings.dictationShortcut == nil {
-                        Text("Global dictation shortcut is currently disabled.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
                 }
             }
-            .frame(width: 332, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 14)
         }
-        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
-private struct SettingsSection<Content: View>: View {
+private struct TextProcessingSettingsPane: View {
+    @Bindable var settings: SettingsStore
+    let viewModel: DictationViewModel
+
+    private var isAvailableInCurrentMode: Bool {
+        settings.dictationOutputMode == .overlayBuffer
+    }
+
+    var body: some View {
+        SettingsPage {
+            if !isAvailableInCurrentMode {
+                SettingsAvailabilityCard(
+                    title: "Unavailable in Live Auto-Paste output mode",
+                    message:
+                        "Text Processing can't run in Live Auto-Paste output mode. Switch Dictation > Output mode to Overlay Buffer to enable text processing features.",
+                    systemImage: "exclamationmark.triangle.fill",
+                    tint: .orange
+                )
+            }
+
+            SettingsGroup(title: "Features") {
+                ToggleSettingRow(
+                    title: "Enable replacement dictionary",
+                    subtitle:
+                        "Apply exact match replacements during finalization. If LLM polishing is enabled, the dictionary is provided to the LLM for more consistent replacement.",
+                    isOn: $settings.replacementDictionaryEnabled
+                )
+
+                ToggleSettingRow(
+                    title: "Enable LLM polishing",
+                    subtitle:
+                        "Send finalized Overlay Buffer text to an OpenAI-compatible chat completions server.",
+                    isOn: $settings.llmPolishingEnabled
+                )
+
+                if settings.llmPolishingEnabled {
+                    SettingsFieldRow(title: "Endpoint") {
+                        TextField(
+                            "https://api.openai.com/v1/chat/completions",
+                            text: $settings.llmPolishingEndpointURL
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "API key") {
+                        SecureField(
+                            "Required for remote providers",
+                            text: $settings.llmPolishingAPIKey
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "Model") {
+                        TextField("gpt-4o-mini", text: $settings.llmPolishingModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+            .disabled(!isAvailableInCurrentMode)
+            .opacity(isAvailableInCurrentMode ? 1.0 : 0.5)
+
+            SettingsGroup(title: "Shared Configuration") {
+                SettingsFieldRow(title: "Config files") {
+                    Button("Open Config Folder") {
+                        viewModel.openConfigFolder()
+                    }
+                }
+
+                SettingsHelpText(
+                    "Edit replacement_dictionary.toml, llm_system_prompt.toml, and llm_user_prompt.toml in the config folder. Changes apply to the next finalized dictation."
+                )
+            }
+            .disabled(!isAvailableInCurrentMode)
+            .opacity(isAvailableInCurrentMode ? 1.0 : 0.5)
+        }
+    }
+}
+
+private struct SettingsPage<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: SettingsLayout.pageSpacing) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(SettingsLayout.pagePadding)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct SettingsGroup<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .tracking(0.6)
+        VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
 
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: SettingsLayout.cardSpacing) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(SettingsLayout.cardPadding)
+            .background {
+                RoundedRectangle(
+                    cornerRadius: SettingsLayout.cornerRadius,
+                    style: .continuous
+                )
+                .fill(Color(nsColor: .quaternarySystemFill))
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: SettingsLayout.cornerRadius,
+                        style: .continuous
+                    )
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsAvailabilityCard: View {
+    let title: String
+    let message: String
+    let systemImage: String
+    let tint: Color
+
+    private let cornerRadius: CGFloat = 16
+    private let horizontalPadding: CGFloat = 14
+    private let verticalPadding: CGFloat = 12
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
+        .background {
+            RoundedRectangle(
+                cornerRadius: cornerRadius,
+                style: .continuous
+            )
+            .fill(tint.opacity(0.10))
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: cornerRadius,
+                    style: .continuous
+                )
+                .stroke(tint.opacity(0.18), lineWidth: 1)
+            }
+        }
+    }
+}
+
+private struct SettingsFieldRow<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: SettingsLayout.labelWidth, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
                 content
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-private struct SettingsField<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
+private struct SettingsHelpText: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-            content
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct SettingsInlineMessage: View {
+    let message: String
+    let color: Color
+
+    init(_ message: String, color: Color) {
+        self.message = message
+        self.color = color
+    }
+
+    var body: some View {
+        Text(message)
+            .font(.caption)
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct SettingsMessageRow: View {
+    let message: String
+    let color: Color
+
+    init(_ message: String, color: Color) {
+        self.message = message
+        self.color = color
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
+            Color.clear
+                .frame(width: SettingsLayout.labelWidth, height: 1)
+            SettingsInlineMessage(message, color: color)
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct ToggleSettingRow: View {
     let title: String
-    let subtitle: String? = nil
+    let subtitle: String?
     @Binding var isOn: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
+                    .font(.system(size: 13, weight: .medium))
+
                 if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    SettingsHelpText(subtitle)
                 }
             }
-            Spacer(minLength: 10)
+
+            Spacer(minLength: 12)
+
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .toggleStyle(.switch)
