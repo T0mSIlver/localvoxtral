@@ -99,9 +99,11 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 ### mlx-lm (recommended)
 
 `mlx_lm.server` on M1 Pro, running [Qwen3.5-0.8B in 8 bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) for local LLM polishing.
+Qwen3.5-0.8B is a lightweight default that adds little overhead while remaining smart enough for reliable polishing.
 
 ```bash
-# Use prompt caching to avoid reprocessing the entire conversation for every request
+# install uv once: https://docs.astral.sh/uv/getting-started/installation/
+# use prompt caching to avoid reprocessing the full conversation on every request
 uvx --from mlx-lm mlx_lm.server \
   --model mlx-community/Qwen3.5-0.8B-8bit \
   --prompt-cache-size 4 \
