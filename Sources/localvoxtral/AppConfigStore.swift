@@ -129,14 +129,65 @@ struct LLMPromptTemplates: Equatable, Sendable {
     private static let requiredUserPlaceholders = ["{{input_text}}"]
     private static let optionalUserPlaceholders = ["{{replacement_dictionary}}"]
     private static let userPromptPlaceholderPattern = #"\{\{[a-zA-Z0-9_]+\}\}"#
+    private static let splitPlaceholders = ["{{replacement_dictionary}}", "{{input_text}}"]
 
     func renderedUserPrompt(
         inputText: String,
         replacementDictionary: String
     ) -> String {
-        userContent
+        renderTemplate(
+            userContent,
+            inputText: inputText,
+            replacementDictionary: replacementDictionary
+        )
+    }
+
+    func renderedUserPrompts(
+        inputText: String,
+        replacementDictionary: String
+    ) -> [String] {
+        guard let splitIndex = splitBoundaryIndex() else {
+            return [renderedUserPrompt(
+                inputText: inputText,
+                replacementDictionary: replacementDictionary
+            )]
+        }
+
+        let prefix = String(userContent[..<splitIndex])
+        guard !prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return [renderedUserPrompt(
+                inputText: inputText,
+                replacementDictionary: replacementDictionary
+            )]
+        }
+
+        let suffix = String(userContent[splitIndex...])
+        return [
+            prefix,
+            renderTemplate(
+                suffix,
+                inputText: inputText,
+                replacementDictionary: replacementDictionary
+            ),
+        ]
+    }
+
+    private func renderTemplate(
+        _ template: String,
+        inputText: String,
+        replacementDictionary: String
+    ) -> String {
+        template
             .replacingOccurrences(of: "{{input_text}}", with: inputText)
             .replacingOccurrences(of: "{{replacement_dictionary}}", with: replacementDictionary)
+    }
+
+    private func splitBoundaryIndex() -> String.Index? {
+        Self.splitPlaceholders
+            .compactMap { placeholder in
+                userContent.range(of: placeholder).map { $0.lowerBound }
+            }
+            .min()
     }
 
     func validateUserTemplate(fileName: String) throws {

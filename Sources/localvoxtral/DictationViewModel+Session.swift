@@ -406,7 +406,7 @@ extension DictationViewModel {
                 let polishingRequest = LLMPolishingRequest(
                     inputText: workingText,
                     systemPrompt: promptTemplates.systemContent,
-                    userPrompt: promptTemplates.renderedUserPrompt(
+                    userPrompts: promptTemplates.renderedUserPrompts(
                         inputText: workingText,
                         replacementDictionary: replacementDictionaryPrompt
                     )

@@ -365,13 +365,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(request?.inputText, "PostgreSQL rocks")
         XCTAssertEqual(request?.systemPrompt, "system instructions")
         XCTAssertEqual(
-            request?.userPrompt,
-            """
-            Replacement dictionary:
-            - PostgreSQL: postgres
-            Working text:
-            PostgreSQL rocks
-            """
+            request?.userPrompts,
+            [
+                "Replacement dictionary:\n- PostgreSQL: postgres\nWorking text:\nPostgreSQL rocks"
+            ]
         )
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
@@ -420,13 +417,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 1)
         XCTAssertEqual(request?.inputText, "postgres rocks")
         XCTAssertEqual(
-            request?.userPrompt,
-            """
-            Replacement dictionary:
-            - PostgreSQL: postgres
-            Working text:
-            postgres rocks
-            """
+            request?.userPrompts,
+            [
+                "Replacement dictionary:\n- PostgreSQL: postgres\nWorking text:\npostgres rocks"
+            ]
         )
     }
 

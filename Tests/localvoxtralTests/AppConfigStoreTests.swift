@@ -265,6 +265,51 @@ final class AppConfigStoreTests: XCTestCase {
         )
     }
 
+    func testRenderedUserPromptsSplitsAtFirstPlaceholder() {
+        let templates = LLMPromptTemplates(
+            systemContent: "ignored",
+            userContent: """
+            Static guidance.
+
+            {{replacement_dictionary}}
+            Working text:
+            {{input_text}}
+            """
+        )
+
+        let rendered = templates.renderedUserPrompts(
+            inputText: "PostgreSQL rocks",
+            replacementDictionary: "Replacement dictionary:\n- PostgreSQL: postgres"
+        )
+
+        XCTAssertEqual(
+            rendered,
+            [
+                "Static guidance.\n\n",
+                """
+                Replacement dictionary:
+                - PostgreSQL: postgres
+                Working text:
+                PostgreSQL rocks
+                """,
+            ]
+        )
+    }
+
+    func testRenderedUserPromptsUsesSingleMessageWhenTemplateStartsWithPlaceholder() {
+        let templates = LLMPromptTemplates(
+            systemContent: "ignored",
+            userContent: "{{input_text}}"
+        )
+
+        let rendered = templates.renderedUserPrompts(
+            inputText: "PostgreSQL rocks",
+            replacementDictionary: ""
+        )
+
+        XCTAssertEqual(rendered, ["PostgreSQL rocks"])
+    }
+
     func testUserPromptValidationAllowsReplacementDictionaryPlaceholderToBeMissing() throws {
         let templates = LLMPromptTemplates(
             systemContent: "ignored",

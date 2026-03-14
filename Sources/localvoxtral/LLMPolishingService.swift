@@ -13,7 +13,7 @@ protocol LLMPolishingServicing: Sendable {
 struct LLMPolishingRequest: Sendable {
     let inputText: String
     let systemPrompt: String
-    let userPrompt: String
+    let userPrompts: [String]
 }
 
 struct LLMPolishingConfiguration: Sendable {
@@ -70,12 +70,11 @@ struct LLMPolishingService: LLMPolishingServicing {
         }
         urlRequest.timeoutInterval = Self.timeoutInterval
 
+        let messages = [["role": "system", "content": request.systemPrompt]]
+            + request.userPrompts.map { ["role": "user", "content": $0] }
         let body: [String: Any] = [
             "model": configuration.model,
-            "messages": [
-                ["role": "system", "content": request.systemPrompt],
-                ["role": "user", "content": request.userPrompt],
-            ],
+            "messages": messages,
             "temperature": 0.3,
         ]
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
