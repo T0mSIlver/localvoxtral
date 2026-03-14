@@ -45,6 +45,10 @@ struct ReplacementDictionary: Equatable, Sendable {
 
         guard !candidates.isEmpty else { return text }
 
+        // Sort by: earliest position, then longest match, then widest span,
+        // then lexicographic replacement as a stable tiebreaker. The greedy
+        // left-to-right scan below skips any candidate that overlaps an
+        // already-applied replacement.
         candidates.sort { lhs, rhs in
             if lhs.range.lowerBound != rhs.range.lowerBound {
                 return lhs.range.lowerBound < rhs.range.lowerBound
@@ -99,7 +103,7 @@ struct ReplacementDictionary: Equatable, Sendable {
                         regex: regex,
                         replaceWith: entry.replaceWith,
                         priority: ReplacementPriority(
-                            sortLength: -normalized.count,
+                            matchLength: normalized.count,
                             originalOrder: nextPriority
                         )
                     )
@@ -142,6 +146,9 @@ struct LLMPromptTemplates: Equatable, Sendable {
         )
     }
 
+    /// Splits the rendered user prompt into a stable prefix and a dynamic suffix
+    /// at the first placeholder boundary. Serving the static prefix as a separate
+    /// message enables LLM prompt-cache reuse across requests with different input.
     func renderedUserPrompts(
         inputText: String,
         replacementDictionary: String
@@ -182,6 +189,8 @@ struct LLMPromptTemplates: Equatable, Sendable {
             .replacingOccurrences(of: "{{replacement_dictionary}}", with: replacementDictionary)
     }
 
+    /// Index of the first placeholder in `userContent`. Content before this
+    /// point is static and sent as a separate message for cache reuse.
     private func splitBoundaryIndex() -> String.Index? {
         Self.splitPlaceholders
             .compactMap { placeholder in
@@ -223,12 +232,14 @@ struct LLMPromptTemplates: Equatable, Sendable {
 }
 
 private struct ReplacementPriority: Comparable {
-    let sortLength: Int
+    /// Character length of the match pattern (longer = higher priority).
+    let matchLength: Int
+    /// File-order tiebreaker (earlier entries = higher priority).
     let originalOrder: Int
 
     static func < (lhs: ReplacementPriority, rhs: ReplacementPriority) -> Bool {
-        if lhs.sortLength != rhs.sortLength {
-            return lhs.sortLength < rhs.sortLength
+        if lhs.matchLength != rhs.matchLength {
+            return lhs.matchLength > rhs.matchLength  // Longer matches first
         }
         return lhs.originalOrder < rhs.originalOrder
     }

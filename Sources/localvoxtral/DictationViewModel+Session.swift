@@ -854,18 +854,23 @@ extension DictationViewModel {
         _ = NSWorkspace.shared.open(consoleURL)
     }
 
-    private func sanitizedRealtimeEndpointForLogging() -> String {
-        guard let endpoint = settings.resolvedWebSocketURL(for: settings.realtimeProvider) else {
-            return "<invalid endpoint>"
-        }
-        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
-            return endpoint.absoluteString
+    /// Strips credentials, query, and fragment from a URL for safe logging.
+    private func sanitizedURLForLogging(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
         }
         components.user = nil
         components.password = nil
         components.query = nil
         components.fragment = nil
-        return components.string ?? endpoint.absoluteString
+        return components.string ?? url.absoluteString
+    }
+
+    private func sanitizedRealtimeEndpointForLogging() -> String {
+        guard let endpoint = settings.resolvedWebSocketURL(for: settings.realtimeProvider) else {
+            return "<invalid endpoint>"
+        }
+        return sanitizedURLForLogging(endpoint)
     }
 
     private func sanitizedLLMPolishingEndpointForLogging() -> String {
@@ -875,14 +880,7 @@ extension DictationViewModel {
         else {
             return "<invalid endpoint>"
         }
-        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
-            return endpoint.absoluteString
-        }
-        components.user = nil
-        components.password = nil
-        components.query = nil
-        components.fragment = nil
-        return components.string ?? endpoint.absoluteString
+        return sanitizedURLForLogging(endpoint)
     }
 
     private func normalizedFailureDetails(_ value: String?) -> String? {

@@ -310,7 +310,7 @@ private struct TextProcessingSettingsPane: View {
                 ToggleSettingRow(
                     title: "Exact match replacements",
                     subtitle:
-                        "Apply exact match replacements using the replacement dictionary during finalization .",
+                        "Apply exact match replacements using the replacement dictionary during finalization.",
                     isOn: $settings.replacementDictionaryEnabled
                 )
 
