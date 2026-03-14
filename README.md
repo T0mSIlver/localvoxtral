@@ -99,16 +99,19 @@ MLX_AUDIO_REALTIME_MAX_CHUNK_SECONDS=30 python -m mlx_audio.server --workers 1
 ### mlx-lm (recommended)
 
 `mlx_lm.server` on M1 Pro, running [Qwen3.5-0.8B in 8 bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) for local LLM polishing.
+Use [this fork](https://github.com/T0mSIlver/mlx-lm) which adds prompt caching optimizations.
 Qwen3.5-0.8B is a lightweight default that adds little overhead while remaining smart enough for reliable polishing.
 
 ```bash
 # install uv once: https://docs.astral.sh/uv/getting-started/installation/
 # use prompt caching to avoid reprocessing the full conversation on every request
-uvx --from mlx-lm mlx_lm.server \
+uvx --from "git+https://github.com/T0mSIlver/mlx-lm.git" mlx_lm.server \
   --model mlx-community/Qwen3.5-0.8B-8bit \
-  --prompt-cache-size 4 \
-  --prompt-cache-bytes 2GB
+  --prompt-cache-size 1 \
+  --prompt-cache-bytes 1GB
 ```
+
+With the default polishing prompts, prompt processing is roughly 286 ms (~50%) faster on average on M1 Pro with my fork's enhanced prompt caching. On more powerful Apple Silicon, the absolute ms savings will likely be lower because prompt processing is faster.
 
 ## Roadmap
 
