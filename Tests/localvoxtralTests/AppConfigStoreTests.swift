@@ -80,6 +80,44 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertEqual(templates.userContent, fallbackTemplates.userContent)
     }
 
+    func testUserPromptMissingInputTextFallsBackToBundledDefault() throws {
+        let fallbackStore = AppConfigStore(configDirectoryOverride: makeTemporaryConfigDirectory())
+        let fallbackTemplates = fallbackStore.loadLLMPromptTemplates()
+
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            """
+            content = "Rules only: {{replacement_dictionary}}"
+            """,
+            named: "llm_user_prompt.toml",
+            in: directory
+        )
+
+        let store = AppConfigStore(configDirectoryOverride: directory)
+        let templates = store.loadLLMPromptTemplates()
+
+        XCTAssertEqual(templates.userContent, fallbackTemplates.userContent)
+    }
+
+    func testUserPromptWithUnsupportedPlaceholderFallsBackToBundledDefault() throws {
+        let fallbackStore = AppConfigStore(configDirectoryOverride: makeTemporaryConfigDirectory())
+        let fallbackTemplates = fallbackStore.loadLLMPromptTemplates()
+
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            """
+            content = "{{input_text}}\n{{original_text}}"
+            """,
+            named: "llm_user_prompt.toml",
+            in: directory
+        )
+
+        let store = AppConfigStore(configDirectoryOverride: directory)
+        let templates = store.loadLLMPromptTemplates()
+
+        XCTAssertEqual(templates.userContent, fallbackTemplates.userContent)
+    }
+
     func testCustomPromptTemplatesOverrideBundledDefaults() throws {
         let directory = makeTemporaryConfigDirectory()
         try write(
@@ -205,27 +243,35 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertEqual(dictionary.apply(to: "foo bar"), "Alpha")
     }
 
-    func testRenderedUserPromptReplacesKnownPlaceholdersAndLeavesUnknownOnes() {
+    func testRenderedUserPromptReplacesSupportedPlaceholders() {
         let templates = LLMPromptTemplates(
             systemContent: "ignored",
-            userContent: "Input: {{input_text}}\nOriginal: {{original_text}}\nRules: {{replacement_dictionary}}\nUnknown: {{unknown}}"
+            userContent: "{{replacement_dictionary}}\n{{input_text}}"
         )
 
         let rendered = templates.renderedUserPrompt(
-            inputText: "working",
-            originalText: "raw",
-            replacementDictionary: "- PostgreSQL: postgres"
+            inputText: "Original transcript:\nraw",
+            replacementDictionary: "Replacement dictionary:\n- PostgreSQL: postgres"
         )
 
         XCTAssertEqual(
             rendered,
             """
-            Input: working
-            Original: raw
-            Rules: - PostgreSQL: postgres
-            Unknown: {{unknown}}
+            Replacement dictionary:
+            - PostgreSQL: postgres
+            Original transcript:
+            raw
             """
         )
+    }
+
+    func testUserPromptValidationAllowsReplacementDictionaryPlaceholderToBeMissing() throws {
+        let templates = LLMPromptTemplates(
+            systemContent: "ignored",
+            userContent: "Transcript:\n{{input_text}}"
+        )
+
+        XCTAssertNoThrow(try templates.validateUserTemplate(fileName: "llm_user_prompt.toml"))
     }
 
     private func makeStore(replacementDictionary: String) throws -> AppConfigStore {

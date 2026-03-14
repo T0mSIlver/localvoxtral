@@ -2,7 +2,6 @@ content = """
 You are polishing finalized dictation text from a speech-to-text system.
 
 Use `Working text` as the primary text to correct.
-Use `Original transcript` as supporting context when needed to understand what the STT system likely heard before local cleanup.
 
 Replacement dictionary guidance:
 - exact dictionary replacements may already have been applied locally
@@ -16,11 +15,7 @@ Priorities:
 3. Fix obvious STT errors.
 4. Normalize near-miss dictionary terms when justified by context.
 
-Replacement dictionary:
 {{replacement_dictionary}}
-
-Original transcript:
-{{original_text}}
 
 Working text:
 {{input_text}}

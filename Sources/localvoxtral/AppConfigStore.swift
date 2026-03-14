@@ -73,15 +73,15 @@ struct ReplacementDictionary: Equatable, Sendable {
         return output
     }
 
-    func renderedForPrompt() -> String {
-        guard !entries.isEmpty else {
-            return "No replacement rules configured."
-        }
+    func renderedPromptSection() -> String {
+        guard !entries.isEmpty else { return "" }
 
-        return entries.map { entry in
+        let rules = entries.map { entry in
             let aliases = entry.matches.joined(separator: ", ")
             return "- \(entry.replaceWith): \(aliases)"
         }.joined(separator: "\n")
+
+        return "Replacement dictionary:\n\(rules)"
     }
 
     private func prioritizedRules() -> [ReplacementRule] {
@@ -126,15 +126,48 @@ struct LLMPromptTemplates: Equatable, Sendable {
     let systemContent: String
     let userContent: String
 
+    private static let requiredUserPlaceholders = ["{{input_text}}"]
+    private static let optionalUserPlaceholders = ["{{replacement_dictionary}}"]
+    private static let userPromptPlaceholderPattern = #"\{\{[a-zA-Z0-9_]+\}\}"#
+
     func renderedUserPrompt(
         inputText: String,
-        originalText: String,
         replacementDictionary: String
     ) -> String {
         userContent
             .replacingOccurrences(of: "{{input_text}}", with: inputText)
-            .replacingOccurrences(of: "{{original_text}}", with: originalText)
             .replacingOccurrences(of: "{{replacement_dictionary}}", with: replacementDictionary)
+    }
+
+    func validateUserTemplate(fileName: String) throws {
+        let missingRequiredPlaceholders = Self.requiredUserPlaceholders.filter {
+            !userContent.contains($0)
+        }
+        guard missingRequiredPlaceholders.isEmpty else {
+            throw AppConfigError.invalidFile(
+                fileName: fileName,
+                reason:
+                    "Missing required prompt variable(s): \(missingRequiredPlaceholders.joined(separator: ", ")). `{{replacement_dictionary}}` is optional."
+            )
+        }
+
+        let allowedPlaceholders = Set(Self.requiredUserPlaceholders + Self.optionalUserPlaceholders)
+        let placeholderRegex = try NSRegularExpression(pattern: Self.userPromptPlaceholderPattern)
+        let matches = placeholderRegex.matches(
+            in: userContent,
+            range: NSRange(userContent.startIndex..., in: userContent)
+        )
+        let foundPlaceholders = Set(matches.compactMap { match in
+            Range(match.range, in: userContent).map { String(userContent[$0]) }
+        })
+        let unsupportedPlaceholders = foundPlaceholders.subtracting(allowedPlaceholders).sorted()
+        guard unsupportedPlaceholders.isEmpty else {
+            throw AppConfigError.invalidFile(
+                fileName: fileName,
+                reason:
+                    "Unsupported prompt variable(s): \(unsupportedPlaceholders.joined(separator: ", ")). Supported variables are `{{input_text}}` and optional `{{replacement_dictionary}}`."
+            )
+        }
     }
 }
 
@@ -244,10 +277,24 @@ struct AppConfigStore: AppConfigServing {
             file: .llmSystemPrompt,
             fallback: defaultTemplates.systemContent
         )
-        let userPrompt = loadPromptContent(
+        let candidateUserPrompt = loadPromptContent(
             file: .llmUserPrompt,
             fallback: defaultTemplates.userContent
         )
+        let userPrompt: String
+        do {
+            let candidateTemplates = LLMPromptTemplates(
+                systemContent: systemPrompt,
+                userContent: candidateUserPrompt
+            )
+            try candidateTemplates.validateUserTemplate(fileName: ConfigFile.llmUserPrompt.fileName)
+            userPrompt = candidateUserPrompt
+        } catch {
+            Log.config.error(
+                "Prompt config fallback to bundled default for \(ConfigFile.llmUserPrompt.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            userPrompt = defaultTemplates.userContent
+        }
         return LLMPromptTemplates(systemContent: systemPrompt, userContent: userPrompt)
     }
 
@@ -281,8 +328,22 @@ struct AppConfigStore: AppConfigServing {
     private func loadBundledPromptTemplates() -> LLMPromptTemplates {
         let systemContent = bundledPromptContent(for: .llmSystemPrompt)
             ?? "Clean up grammar, punctuation, and capitalization. Preserve intent. Return only the final corrected text."
-        let userContent = bundledPromptContent(for: .llmUserPrompt)
+        let candidateUserContent = bundledPromptContent(for: .llmUserPrompt)
             ?? "{{input_text}}"
+        let userContent: String
+        do {
+            let templates = LLMPromptTemplates(
+                systemContent: systemContent,
+                userContent: candidateUserContent
+            )
+            try templates.validateUserTemplate(fileName: ConfigFile.llmUserPrompt.fileName)
+            userContent = candidateUserContent
+        } catch {
+            Log.config.fault(
+                "Invalid bundled user prompt template \(ConfigFile.llmUserPrompt.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            userContent = "{{input_text}}"
+        }
         return LLMPromptTemplates(systemContent: systemContent, userContent: userContent)
     }
 

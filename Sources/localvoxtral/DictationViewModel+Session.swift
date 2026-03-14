@@ -377,7 +377,7 @@ extension DictationViewModel {
             let replacementDictionary = shouldLoadReplacementDictionary
                 ? appConfigStore.loadReplacementDictionary()
                 : ReplacementDictionary(entries: [])
-            let replacementDictionaryPrompt = replacementDictionary.renderedForPrompt()
+            let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
             let originalText = currentDictationEventText
             let workingText =
                 settings.replacementDictionaryEnabled
@@ -408,7 +408,6 @@ extension DictationViewModel {
                     systemPrompt: promptTemplates.systemContent,
                     userPrompt: promptTemplates.renderedUserPrompt(
                         inputText: workingText,
-                        originalText: originalText,
                         replacementDictionary: replacementDictionaryPrompt
                     )
                 )

@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -94,61 +93,7 @@ struct SettingsView: View {
                 Label("Text Processing", systemImage: "text.badge.checkmark")
             }
         }
-        .overlay {
-            FixedSettingsWindowTitle(title: "localvoxtral Settings")
-                .frame(width: 0, height: 0)
-        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct FixedSettingsWindowTitle: NSViewRepresentable {
-    let title: String
-
-    func makeNSView(context: Context) -> TitleTrackingView {
-        let view = TitleTrackingView()
-        view.update(title: title)
-        return view
-    }
-
-    func updateNSView(_ nsView: TitleTrackingView, context: Context) {
-        nsView.update(title: title)
-    }
-}
-
-private final class TitleTrackingView: NSView {
-    private var desiredTitle = ""
-    private var observedWindow: NSWindow?
-    private var titleObservation: NSKeyValueObservation?
-
-    func update(title: String) {
-        desiredTitle = title
-        attachObservationIfNeeded()
-        applyTitle()
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        attachObservationIfNeeded()
-        applyTitle()
-    }
-
-    private func attachObservationIfNeeded() {
-        guard let window, window !== observedWindow else { return }
-
-        observedWindow = window
-        titleObservation = window.observe(\.title, options: [.new]) {
-            [weak self, weak window] _, _ in
-            Task { @MainActor [weak self, weak window] in
-                guard let self, let window, window.title != self.desiredTitle else { return }
-                window.title = self.desiredTitle
-            }
-        }
-    }
-
-    private func applyTitle() {
-        guard let window, window.title != desiredTitle else { return }
-        window.title = desiredTitle
     }
 }
 
@@ -349,14 +294,14 @@ private struct TextProcessingSettingsPane: View {
 
             SettingsGroup(title: "Features") {
                 ToggleSettingRow(
-                    title: "Enable replacement dictionary",
+                    title: "Exact match replacements",
                     subtitle:
-                        "Apply exact-match replacements during finalization. If LLM polishing is enabled, those replacements still happen first, and the same dictionary is also provided to the LLM for more consistent cleanup.",
+                        "Apply exact match replacements during finalization using the replacement dictionary.",
                     isOn: $settings.replacementDictionaryEnabled
                 )
 
                 ToggleSettingRow(
-                    title: "Enable LLM polishing",
+                    title: "LLM polishing",
                     subtitle:
                         "Send dictation text to an OpenAI-compatible chat completions server.",
                     isOn: $settings.llmPolishingEnabled
@@ -403,7 +348,8 @@ private struct TextProcessingSettingsPane: View {
                     SettingsFileNotes(notes: [
                         SettingsFileNote(
                             name: "replacement_dictionary.toml",
-                            description: "Exact-match replacements used during finalization and shared with LLM polishing when enabled."
+                            description:
+                                "Replacements used during finalization."
                         ),
                         SettingsFileNote(
                             name: "llm_system_prompt.toml",
@@ -411,7 +357,8 @@ private struct TextProcessingSettingsPane: View {
                         ),
                         SettingsFileNote(
                             name: "llm_user_prompt.toml",
-                            description: "User prompt template used for LLM polishing."
+                            description:
+                                "User prompt template used for LLM polishing. Remove the {{replacement_dictionary}} placeholder if you do not want to send the dictionary to the LLM."
                         ),
                     ])
                 }
