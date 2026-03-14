@@ -133,7 +133,8 @@ With the default polishing prompts, prompt processing is roughly 286 ms (~50%) f
   Menubar icon
 </p>
 
-<p>
-  <img src="assets/settings.png" alt="localvoxtral settings view" width="320" />
-  <img src="assets/popover.png" alt="localvoxtral popover view" width="200" />
-</p>
+| Realtime Endpoint | Dictation |
+| --- | --- |
+| ![localvoxtral realtime endpoint settings](assets/settings-realtime-endpoint.png) | ![localvoxtral dictation settings](assets/settings-dictation.png) |
+| Text Processing | Popover |
+| ![localvoxtral text processing settings](assets/settings-text-processing.png) | ![localvoxtral popover view](assets/popover.png) |
