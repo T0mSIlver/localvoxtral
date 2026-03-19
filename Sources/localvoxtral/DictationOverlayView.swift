@@ -91,6 +91,8 @@ struct DictationOverlayView: View {
             return "Finalizing"
         case .commitFailed:
             return "Insert failed"
+        case .cancelled:
+            return "Cancelled"
         case .idle:
             return "Ready"
         }
@@ -101,9 +103,29 @@ struct DictationOverlayView: View {
         return trimmed.isEmpty ? "" : text
     }
 
+    /// Maximum height the text area can grow to before scrolling kicks in.
+    /// ~4 lines of body text at 13pt = roughly 70pt.
+    private var maxScrollableHeight: CGFloat {
+        minimumBodyTextHeight * 4 + 8 // 4 lines + some line spacing
+    }
+
     private var minimumBodyTextHeight: CGFloat {
         let font = NSFont.systemFont(ofSize: bodyFontSize)
         return ceil(font.ascender - font.descender + font.leading)
+    }
+
+    /// Estimated height of the current text content.
+    private var textHeight: CGFloat {
+        let font = NSFont.systemFont(ofSize: bodyFontSize)
+        let displayStr = displayText
+        guard !displayStr.isEmpty else { return minimumBodyTextHeight }
+        let textWidth: CGFloat = 400
+        let rect = (displayStr as NSString).boundingRect(
+            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font]
+        )
+        return max(ceil(rect.height), minimumBodyTextHeight)
     }
 
     var body: some View {
@@ -120,15 +142,41 @@ struct DictationOverlayView: View {
             }
             .frame(height: 16)
 
-            Text(displayText)
-                .font(.system(size: bodyFontSize))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 0) {
+                        Text(displayText)
+                            .font(.system(size: bodyFontSize))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(
+                                maxWidth: .infinity,
+                                minHeight: minimumBodyTextHeight,
+                                alignment: .topLeading
+                            )
+
+                        // Invisible anchor for scroll-to-bottom
+                        Color.clear
+                            .frame(height: 1)
+                            .id("bottom")
+                    }
+                    .padding(.bottom, 12)
+                }
+                .scrollDisabled(textHeight <= maxScrollableHeight)
                 .frame(
                     maxWidth: .infinity,
                     minHeight: minimumBodyTextHeight,
-                    alignment: .topLeading
+                    idealHeight: min(textHeight, maxScrollableHeight),
+                    maxHeight: maxScrollableHeight
                 )
+                .onChange(of: text) { _, _ in
+                    if textHeight > maxScrollableHeight {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    }
+                }
+            }
 
             if let errorMessage, !errorMessage.trimmed.isEmpty {
                 Text(errorMessage)
