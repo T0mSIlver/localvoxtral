@@ -27,9 +27,23 @@ private final class OverlayContainerView: NSView {
     override var isOpaque: Bool { false }
 }
 
+/// A panel that swallows mouse events on its body so they don't steal
+/// keyboard focus or become the key/main window. This prevents
+/// interference with Accessibility-based text insertion.
+private final class NonActivatingPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+
+    override func mouseDown(with event: NSEvent) {
+        // Swallow all mouse clicks on the overlay body.
+        // Forwarding to super can steal focus from the target app
+        // and disrupt AX text insertion.
+    }
+}
+
 @MainActor
 final class DictationOverlayController {
-    private let panel: NSPanel
+    private let panel: NonActivatingPanel
     private let hostingView: TransparentHostingView<DictationOverlayView>
     private let panelWidth: CGFloat = 420
     private let maximumPanelHeight: CGFloat = 420
@@ -48,7 +62,7 @@ final class DictationOverlayController {
     private var lockedOriginX: CGFloat?
 
     init() {
-        panel = NSPanel(
+        panel = NonActivatingPanel(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 120),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -61,7 +75,9 @@ final class DictationOverlayController {
         panel.hasShadow = false
         panel.level = .statusBar
         panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = true
+        // NonActivatingPanel handles mouse events via mouseDown override
+        // while canBecomeKey/canBecomeMain return false, preventing focus theft.
+        panel.ignoresMouseEvents = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
         let initialView = DictationOverlayView(
@@ -244,6 +260,10 @@ final class DictationOverlayController {
         let singleLineHeight = ceil(bodyFont.ascender - bodyFont.descender + bodyFont.leading)
 
         let displayText = text.trimmed.isEmpty ? "" : text
+        // Must match DictationOverlayView.maxScrollableHeight exactly:
+        // 4 lines of body text + 8pt spacing
+        let maxScrollableBodyHeight = singleLineHeight * 4 + 8
+
         let bodyHeight: CGFloat
         if displayText.isEmpty {
             bodyHeight = singleLineHeight
@@ -253,7 +273,8 @@ final class DictationOverlayController {
                 options: [.usesLineFragmentOrigin, .usesFontLeading],
                 attributes: [.font: bodyFont]
             )
-            bodyHeight = max(ceil(rect.height), singleLineHeight)
+            let measuredHeight = max(ceil(rect.height), singleLineHeight)
+            bodyHeight = min(measuredHeight, maxScrollableBodyHeight)
         }
 
         // header + spacing + body + padding

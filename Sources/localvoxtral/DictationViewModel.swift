@@ -188,6 +188,10 @@ final class DictationViewModel {
     // idempotent until commit/post-processing fully finishes.
     var isCompletingStoppedSession = false
     @ObservationIgnored
+    var wasCancelled = false
+    @ObservationIgnored
+    let escapeCancelHandler = EscapeCancelHandler()
+    @ObservationIgnored
     var sessionStartedAt: Date?
     @ObservationIgnored
     var sessionProvider: SettingsStore.RealtimeProvider?
@@ -303,6 +307,8 @@ final class DictationViewModel {
             }
         }
 
+        escapeCancelHandler.onCancel = { [weak self] in self?.cancelDictation() }
+
         mlxStabilizer.onRealtimeInsertion = { [weak self] delta in
             self?.handleMlxRealtimeInsertionDelta(delta)
         }
@@ -335,6 +341,7 @@ final class DictationViewModel {
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()
+        escapeCancelHandler.stop()
         if managesRuntimeServices {
             if hasInitializedMicrophone {
                 microphone.stop()
@@ -544,6 +551,20 @@ final class DictationViewModel {
         }
     }
 
+    func cancelDictation() {
+        guard isDictating || isFinalizingStop || isConnectingRealtimeSession else { return }
+        wasCancelled = true
+        if isDictating {
+            stopDictation(reason: "cancelled", finalizeRemainingAudio: false)
+        } else if isConnectingRealtimeSession {
+            abortConnectingSession()
+            statusText = StatusStrings.ready
+        } else if isFinalizingStop {
+            activeRealtimeClient().disconnect()
+            finishStoppedSession(promotePendingSegment: false)
+        }
+    }
+
     func updateDictationShortcut(_ shortcut: DictationShortcut?) {
         let previousShortcut = settings.dictationShortcut
         let previousWasEnabled = settings.dictationShortcutEnabled
@@ -723,6 +744,8 @@ final class DictationViewModel {
         microphone.stop()
         flushBufferedAudio()
         isDictating = false
+        EscapeCancelHandler.isDictatingRef = false
+        escapeCancelHandler.stop()
 
         guard finalizeRemainingAudio else {
             activeRealtimeClient().disconnect()
