@@ -202,10 +202,14 @@ PLIST
 chmod -R u+w "$APP_DIR"
 xattr -cr "$APP_DIR"
 
-# Ad-hoc sign the packaged app so Gatekeeper can evaluate a usable signature.
-# This does not replace Developer ID signing/notarization, but it avoids the
-# "no usable signature" path that breaks first-run open flows.
-if ! codesign --force --deep --sign - "$APP_DIR"; then
+# Sign with persistent identity so Accessibility permission survives rebuilds.
+# Falls back to ad-hoc signing if the localvoxtral-dev cert is not installed.
+SIGN_IDENTITY="localvoxtral-dev"
+if ! security find-identity -p codesigning -v 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+  echo "Warning: Certificate '$SIGN_IDENTITY' not found — using ad-hoc signing (AX permission will reset)"
+  SIGN_IDENTITY="-"
+fi
+if ! codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"; then
   echo "Failed to code-sign packaged app bundle."
   exit 1
 fi
