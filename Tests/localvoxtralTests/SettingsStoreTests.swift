@@ -143,6 +143,17 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
+    func testRealtimeProviderDefaultEndpointsMatchToolDefaults() {
+        XCTAssertEqual(
+            SettingsStore.RealtimeProvider.realtimeAPI.defaultEndpoint,
+            "ws://127.0.0.1:8000/v1/realtime"
+        )
+        XCTAssertEqual(
+            SettingsStore.RealtimeProvider.mlxAudio.defaultEndpoint,
+            "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"
+        )
+    }
+
     // MARK: - dictationOutputMode
 
     func testDictationOutputMode_defaultsToOverlayBuffer() {
@@ -285,6 +296,12 @@ final class SettingsStoreTests: XCTestCase {
         )
         XCTAssertEqual(configuration?.apiKey, "sk-test")
         XCTAssertEqual(configuration?.model, "gpt-4o-mini")
+    }
+
+    func testLLMPolishingEndpointDefaultsToMLXLMPort() {
+        let store = makeStore()
+
+        XCTAssertEqual(store.llmPolishingEndpointURL, "http://127.0.0.1:8080/v1/chat/completions")
     }
 
     // MARK: - replacementDictionaryEnabled
