@@ -324,7 +324,7 @@ private struct TextProcessingSettingsPane: View {
                 if settings.llmPolishingEnabled {
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(
-                            "http://127.0.0.1:8000/v1/chat/completions",
+                            "http://127.0.0.1:8080/v1/chat/completions",
                             text: $settings.llmPolishingEndpointURL
                         )
                         .textFieldStyle(.roundedBorder)
