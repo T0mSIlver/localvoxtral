@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build-test:
+    # Same-repo branches run on the self-hosted Mac (persistent workspace, warm
+    # incremental builds). Fork PRs run on GitHub-hosted macOS so untrusted code
+    # never executes on the build machine.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Swift
+        if: runner.environment == 'github-hosted'
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.2"
+
+      - name: Cache SwiftPM build
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-
+
+      - name: Build
+        run: swift build
+
+      - name: Test (unit suite)
+        # The two integration suites need a live inference backend and are
+        # exercised manually; see CLAUDE.md.
+        run: |
+          swift test \
+            --skip RealtimeAPIVLLMIntegrationTests \
+            --skip MlxAudioTranscriptionIntegrationTests
+
+      - name: Package app bundle
+        run: ./scripts/package_app.sh release
+
+      - name: Smoke test packaged app launch
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import time
+
+          app_binary = "dist/localvoxtral.app/Contents/MacOS/localvoxtral"
+          process = subprocess.Popen([app_binary])
+          time.sleep(2)
+
+          exit_code = process.poll()
+          if exit_code is not None:
+            raise SystemExit(f"packaged app exited during smoke test: {exit_code}")
+
+          process.terminate()
+          try:
+            process.wait(timeout=5)
+          except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+          PY
