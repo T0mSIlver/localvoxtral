@@ -619,6 +619,106 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
     }
 
+    // The Escape CGEventTap is armed in a single shared code path
+    // (startAudioCaptureAfterConnection) used by BOTH output modes and BOTH
+    // shortcut modes (push-to-talk and toggle all funnel through
+    // beginDictationSession -> connect -> startAudioCaptureAfterConnection).
+    // What can regress is therefore the DISARM: every session-teardown path
+    // must clear isDictatingRef and call escapeCancelHandler.stop(), otherwise
+    // Escape is either swallowed system-wide (stuck armed) or — if the tap
+    // failed to create — never re-attempted. These cover each teardown path in
+    // both output modes.
+
+    func testStopDictationClearsEscapeCancelArmingInOverlayBufferMode() {
+        assertStopDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
+    }
+
+    func testStopDictationClearsEscapeCancelArmingInLiveAutoPasteMode() {
+        assertStopDictationClearsEscapeCancelArming(outputMode: .liveAutoPaste)
+    }
+
+    private func assertStopDictationClearsEscapeCancelArming(outputMode: DictationOutputMode) {
+        let settings = makeSettings(outputMode: outputMode)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.isDictating = true
+        viewModel.sessionOutputMode = outputMode
+        // Simulate the tap being armed during active dictation.
+        EscapeCancelHandler.isDictatingRef = true
+        let stopCountBefore = EscapeCancelHandler.stopCallCount
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertFalse(EscapeCancelHandler.isDictatingRef,
+                       "isDictatingRef must clear on stop in \(outputMode) mode")
+        XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore,
+                             "escapeCancelHandler.stop() must run on session teardown in \(outputMode) mode")
+    }
+
+    func testCancelDictationClearsEscapeCancelArmingInOverlayBufferMode() {
+        assertCancelDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
+    }
+
+    func testCancelDictationClearsEscapeCancelArmingInLiveAutoPasteMode() {
+        assertCancelDictationClearsEscapeCancelArming(outputMode: .liveAutoPaste)
+    }
+
+    private func assertCancelDictationClearsEscapeCancelArming(outputMode: DictationOutputMode) {
+        let settings = makeSettings(outputMode: outputMode)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.isDictating = true
+        viewModel.sessionOutputMode = outputMode
+        EscapeCancelHandler.isDictatingRef = true
+        let stopCountBefore = EscapeCancelHandler.stopCallCount
+
+        viewModel.cancelDictation()
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertFalse(EscapeCancelHandler.isDictatingRef,
+                       "isDictatingRef must clear on cancel in \(outputMode) mode")
+        XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore,
+                             "escapeCancelHandler.stop() must run on cancel in \(outputMode) mode")
+    }
+
+    func testAbortConnectingSessionClearsEscapeCancelArming() {
+        // Escape is also armed-ready during the connecting phase: if the user
+        // cancels (or Escape fires) while connecting, the connecting-session
+        // teardown must still disarm so no stale armed state survives.
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isConnectingRealtimeSession = true
+        EscapeCancelHandler.isDictatingRef = true
+        let stopCountBefore = EscapeCancelHandler.stopCallCount
+
+        viewModel.abortConnectingSession()
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
+        XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore)
+    }
+
     func testCancelledOverlaySessionSkipsSegmentPromotionAndCommit() {
         // A cancelled overlay session must not promote the pending segment into
         // the buffer, must not commit/insert anything, and must reset the overlay

@@ -15,9 +15,13 @@ enum Log {
     static let polishing = Logger(subsystem: subsystem, category: "Polishing")
     static let persistence = Logger(subsystem: subsystem, category: "Persistence")
     static let config = Logger(subsystem: subsystem, category: "Config")
+<<<<<<< HEAD
     /// Opt-in raw realtime delta instrumentation for issue #13. Emits at notice
     /// level so it is visible by default under `log stream` / Console. Gated by
     /// `SettingsStore.debugLogRealtimeDeltas`; see that property's docs for the
     /// privacy trade-off.
     static let deltas = Logger(subsystem: subsystem, category: "Deltas")
+=======
+    static let escape = Logger(subsystem: subsystem, category: "Escape")
+>>>>>>> 7ca2f4c (fix: make Escape-cancel CGEventTap robust + diagnosable)
 }
