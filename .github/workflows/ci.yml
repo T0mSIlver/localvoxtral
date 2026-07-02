@@ -45,6 +45,16 @@ jobs:
             --skip RealtimeAPIVLLMIntegrationTests \
             --skip MlxAudioTranscriptionIntegrationTests
 
+      - name: Integration tests (live voxmlx)
+        # The self-hosted runner has voxmlx serving locally (launchd service
+        # com.localvoxtral.voxmlx). On GitHub-hosted runners there is no
+        # backend and the suite self-skips, so this step is self-hosted only.
+        if: runner.environment == 'self-hosted'
+        env:
+          VLLM_REALTIME_TEST_ENABLE: "1"
+          VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+        run: swift test --filter RealtimeAPIVLLMIntegrationTests
+
       - name: Package app bundle
         run: ./scripts/package_app.sh release
 

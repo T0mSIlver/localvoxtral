@@ -1,0 +1,108 @@
+# localvoxtral — agent guide
+
+Native macOS menu bar app for realtime dictation (Swift 6.2 strict concurrency,
+SwiftPM, macOS 15+). Streams mic audio to an OpenAI Realtime-compatible backend
+(voxmlx / vLLM), merges partial transcripts, and inserts text into the focused
+app — either live ("Live Auto-Paste") or via an overlay committed on stop
+("Overlay Buffer", supports replacement dictionary + LLM polishing).
+
+## Build & test — read this first on a non-Mac dev box
+
+This repo only compiles on macOS. From a Linux box, the inner loop is the Mac
+build host over SSH (no commit needed — it rsyncs the working tree):
+
+```bash
+./scripts/remote-build.sh                 # build + unit tests
+./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
+./scripts/remote-build.sh integration     # realtime pipeline vs live voxmlx
+./scripts/remote-build.sh package         # build the .app bundle
+```
+
+On a Mac, just `swift build` / `swift test`.
+
+When several agents work in parallel, each must set its own remote dir:
+`LV_BUILD_DIR=work/localvoxtral-<task> ./scripts/remote-build.sh ...`
+
+## Proof culture — non-negotiable
+
+This is a real app with daily users. Nothing ships on "it compiles".
+
+- Every PR fills in the Proof section of the PR template with real command
+  output. "CI is green" alone is not proof for a behavior change — name the
+  test that demonstrates the new/fixed behavior.
+- Bug fixes MUST add a regression test. Show it failing before the fix and
+  passing after (two runs, both in the PR body).
+- Never weaken a test to get green: no raising/lowering accuracy thresholds,
+  no deleting assertions, no adding `XCTSkip`, no widening timing tolerances.
+  If a test blocks you, it is telling you something — investigate or stop and
+  report.
+- No wall-clock in tests (`Date()` / real `Task.sleep` polling) — inject
+  clocks. `OverlayBufferSessionCoordinator` (`now:` / `sleepFor:` seams) is
+  the reference pattern.
+- UI-affecting changes: until the automated UI tier exists, state in the PR
+  exactly what was verified by hand and how.
+
+## Test tiers
+
+| Tier | What | When | Cost |
+|---|---|---|---|
+| 0 | Unit suite (200+ tests) + packaging + launch smoke | every PR/push, CI | ~1 min |
+| 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
+| 2 | Real-app UI drill (virtual audio device + synthetic hotkey + AX readback) | planned — nightly/pre-release | — |
+
+Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
+expects voxmlx at `ws://127.0.0.1:8000/v1/realtime` — on the build host it runs
+as the launchd service `com.localvoxtral.voxmlx` (logs:
+`~/Library/Logs/voxmlx.log`). Fork PRs run on GitHub-hosted runners with no
+backend, where the suite self-skips. The mic-capture tests
+(`LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE`) stay off in CI until tier 2.
+`MlxAudioTranscriptionIntegrationTests` targets the deprecated mlx-audio
+backend and stays manual.
+
+## CI / shipping
+
+- `ci.yml` runs tiers 0–1 on every PR and push to main. Same-repo branches run
+  on the self-hosted Mac runner (fast, warm cache); fork PRs run on
+  GitHub-hosted macOS. Never move fork-PR jobs to the self-hosted runner — it
+  is a personal machine.
+- Watch a PR's checks with `gh pr checks <n> --watch`.
+- Releases: push a `v*.*.*` tag (or `./scripts/release.sh vX.Y.Z` from main),
+  which triggers `release.yml` → GitHub Release with .zip + .dmg.
+- `scripts/package_app.sh` intentionally patches SwiftPM-generated sources in
+  `.build/` (resource-bundle lookup for packaged .apps); the patches are
+  idempotent.
+
+## Architecture map
+
+Everything routes through `DictationViewModel` (`@MainActor`, split across
+three files totaling ~2.3k lines — the main refactor target):
+
+- `DictationViewModel.swift` — state, wiring, hotkey press/release dispatch
+- `DictationViewModel+Session.swift` — session lifecycle, stop-finalization
+  state machine, LLM polishing + commit path
+- `DictationViewModel+RealtimeEvents.swift` — transcript event routing/merge
+
+Key subsystems:
+
+- Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),
+  `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes)
+- Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
+  (vLLM/voxmlx) and `MlxAudioRealtimeWebSocketClient` over
+  `BaseRealtimeWebSocketClient`
+- Text merge: `TextMergingAlgorithms` (pure functions — overlap merge,
+  word-boundary stabilization, punctuation spacing), `MlxHypothesisStabilizer`
+- Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V)
+- Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
+  timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
+- Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
+  `~/Library/Application Support/localvoxtral/config`)
+- Hotkey: `HotKeyManager` (Carbon, single global hotkey)
+- LLM polish: `LLMPolishingService` (chat/completions)
+
+## Conventions
+
+- Concurrency: `@MainActor` for stateful UI/controller types; low-level types
+  use `Mutex` + `@unchecked Sendable` (no custom actors). Keep new code
+  warning-free under Swift 6.2 strict concurrency.
+- Tests are XCTest. Prefer the existing DI seams (protocols + `#if DEBUG`
+  hooks like `debugConfigureInsertionHooks`) over adding singletons.
