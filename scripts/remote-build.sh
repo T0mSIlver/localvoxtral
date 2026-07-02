@@ -47,7 +47,7 @@ fi
 CMD="${1:-test}"
 if [[ $# -gt 0 ]]; then shift; fi
 
-UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip MlxAudioTranscriptionIntegrationTests)
+UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests)
 
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;

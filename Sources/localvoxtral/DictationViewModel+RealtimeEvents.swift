@@ -4,16 +4,7 @@ import os
 extension DictationViewModel {
     // MARK: - Realtime Event Routing
 
-    func handle(event: RealtimeEvent, source: ActiveClientSource) {
-        guard source == activeClientSource else {
-            // During stop-finalization, be permissive with disconnect routing.
-            // Some backends can close on a different callback path than expected.
-            if isFinalizingStop, case .disconnected = event {
-                handleDisconnectedEvent()
-            }
-            return
-        }
-
+    func handle(event: RealtimeEvent) {
         switch event {
         case .connected:
             handleConnectedEvent()
@@ -22,13 +13,11 @@ extension DictationViewModel {
         case .status(let message):
             handleStatusEvent(message)
         case .partialTranscript(let delta):
-            handlePartialTranscriptEvent(delta, source: source)
+            handlePartialTranscriptEvent(delta)
         case .finalTranscript(let text):
-            handleFinalTranscriptEvent(text, source: source)
-        case .transcriptionFinalized where source == .realtimeAPI:
-            handleTranscriptionFinalizedEvent()
+            handleFinalTranscriptEvent(text)
         case .transcriptionFinalized:
-            break
+            handleTranscriptionFinalizedEvent()
         case .error(let message):
             handleErrorEvent(message)
         }
@@ -118,14 +107,10 @@ extension DictationViewModel {
         }
     }
 
-    private func handlePartialTranscriptEvent(_ delta: String, source: ActiveClientSource) {
+    private func handlePartialTranscriptEvent(_ delta: String) {
         guard acceptsRealtimeEvents else { return }
         let processedDelta = preprocessIncomingTranscriptChunk(delta)
         guard !processedDelta.isEmpty else { return }
-        if source == .mlxAudio {
-            handleMlxPartialTranscript(processedDelta)
-            return
-        }
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()
         }
@@ -142,13 +127,9 @@ extension DictationViewModel {
         refreshOverlayBufferSession()
     }
 
-    private func handleFinalTranscriptEvent(_ text: String, source: ActiveClientSource) {
+    private func handleFinalTranscriptEvent(_ text: String) {
         guard acceptsRealtimeEvents else { return }
         let processedText = preprocessIncomingTranscriptChunk(text)
-        if source == .mlxAudio {
-            handleMlxFinalTranscript(processedText)
-            return
-        }
         if isFinalizingStop {
             realtimeFinalizationLastActivityAt = Date()
         }
@@ -189,7 +170,7 @@ extension DictationViewModel {
     private func handleTranscriptionFinalizedEvent() {
         guard isFinalizingStop else { return }
         debugLog("transcription finalized, disconnecting")
-        activeRealtimeClient().disconnect()
+        realtimeAPIClient.disconnect()
     }
 
     private func handleErrorEvent(_ message: String) {
@@ -216,97 +197,7 @@ extension DictationViewModel {
         Log.dictation.error("Realtime error: \(message, privacy: .public)")
     }
 
-    // MARK: - mlx-audio Transcript Handling
-
-    func handleMlxPartialTranscript(_ delta: String) {
-        let mergedHypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
-            delta.trimmed
-        )
-        guard !mergedHypothesis.isEmpty else { return }
-        let insertionMode: MlxInsertionMode =
-            isLiveAutoPasteModeEnabled ? .realtime : .none
-        let result = mlxStabilizer.commitHypothesis(
-            mergedHypothesis,
-            isFinal: false,
-            insertionMode: insertionMode
-        )
-        currentDictationEventText = mlxStabilizer.committedEventText
-        pendingSegmentText = result.unstableTail
-        livePartialText = result.unstableTail
-
-        if isLiveAutoPasteModeEnabled,
-            let accessibilityError = textInsertion.lastAccessibilityError
-        {
-            lastError = accessibilityError
-        }
-        statusText = isFinalizingStop ? "Finalizing..." : "Transcribing..."
-        refreshOverlayBufferSession()
-    }
-
-    func handleMlxFinalTranscript(_ text: String) {
-        let hypothesis = TextMergingAlgorithms.normalizeTranscriptionFormatting(
-            text.trimmed
-        )
-        guard !hypothesis.isEmpty else {
-            livePartialText = ""
-            pendingSegmentText = ""
-            mlxStabilizer.resetSegment()
-            return
-        }
-
-        let insertionMode: MlxInsertionMode
-        if isLiveAutoPasteModeEnabled {
-            insertionMode = isFinalizingStop ? .finalized : .realtime
-        } else {
-            insertionMode = .none
-        }
-
-        _ = mlxStabilizer.commitHypothesis(
-            hypothesis,
-            isFinal: true,
-            insertionMode: insertionMode
-        )
-        currentDictationEventText = mlxStabilizer.committedEventText
-
-        let finalizedDelta = mlxStabilizer.consumeCommittedSinceLastFinal().trimmed
-        if !finalizedDelta.isEmpty {
-            appendToTranscript(finalizedDelta)
-        }
-
-        lastFinalSegment = currentDictationEventText
-        livePartialText = ""
-        pendingSegmentText = ""
-        mlxStabilizer.resetSegment()
-        statusText = activeStatusText
-
-        if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
-            copyLatestSegment(updateStatus: false)
-        }
-        refreshOverlayBufferSession()
-    }
-
     // MARK: - Segment Promotion
-
-    @discardableResult
-    func promotePendingMlxTextToLatestSegment() -> String? {
-        let promotion = mlxStabilizer.promotePendingText()
-        currentDictationEventText = mlxStabilizer.committedEventText
-
-        if !promotion.allCommitted.isEmpty {
-            appendToTranscript(promotion.allCommitted)
-        }
-
-        lastFinalSegment = currentDictationEventText
-        livePartialText = ""
-        pendingSegmentText = ""
-        mlxStabilizer.resetSegment()
-
-        if isLiveAutoPasteModeEnabled, settings.autoCopyEnabled {
-            copyLatestSegment(updateStatus: false)
-        }
-
-        return promotion.newlyPromotedTail
-    }
 
     @discardableResult
     func promotePendingRealtimeTextToLatestSegment() -> String? {

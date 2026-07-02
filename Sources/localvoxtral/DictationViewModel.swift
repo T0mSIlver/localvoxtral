@@ -12,11 +12,6 @@ enum RealtimeSessionIndicatorState {
 @MainActor
 @Observable
 final class DictationViewModel {
-    enum ActiveClientSource {
-        case realtimeAPI
-        case mlxAudio
-    }
-
     // Tokenized status/error categories keep control flow stable if user-facing
     // copy changes in the future.
     enum StatusToken: Equatable {
@@ -130,8 +125,6 @@ final class DictationViewModel {
     @ObservationIgnored
     let realtimeAPIClient = RealtimeAPIWebSocketClient()
     @ObservationIgnored
-    let mlxAudioRealtimeClient = MlxAudioRealtimeWebSocketClient()
-    @ObservationIgnored
     let audioChunkBuffer = AudioChunkBuffer()
     @ObservationIgnored
     let healthMonitor = AudioCaptureHealthMonitor()
@@ -142,8 +135,6 @@ final class DictationViewModel {
     @ObservationIgnored
     var sessionStore: DictationSessionStore?
     @ObservationIgnored
-    let mlxStabilizer = MlxHypothesisStabilizer()
-    @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
     @ObservationIgnored
     var preResolvedOverlayAnchor: OverlayAnchor?
@@ -151,8 +142,6 @@ final class DictationViewModel {
     private let hotKeyManager = HotKeyManager()
 
     // Mutable state — internal so extension files can access.
-    @ObservationIgnored
-    var activeClientSource: ActiveClientSource?
     @ObservationIgnored
     var commitTask: Task<Void, Never>?
     @ObservationIgnored
@@ -235,16 +224,7 @@ final class DictationViewModel {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 MainActor.assumeIsolated {
-                    self.handle(event: event, source: .realtimeAPI)
-                }
-            }
-        }
-
-        mlxAudioRealtimeClient.setEventHandler { [weak self] event in
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                MainActor.assumeIsolated {
-                    self.handle(event: event, source: .mlxAudio)
+                    self.handle(event: event)
                 }
             }
         }
@@ -303,12 +283,6 @@ final class DictationViewModel {
             }
         }
 
-        mlxStabilizer.onRealtimeInsertion = { [weak self] delta in
-            self?.handleMlxRealtimeInsertionDelta(delta)
-        }
-        mlxStabilizer.onFinalizedInsertion = { [weak self] delta in
-            self?.handleMlxFinalizedInsertionDelta(delta)
-        }
         textInsertion.refreshAccessibilityTrustState()
         if startRuntimeServices {
             sessionStore = DictationSessionStore()
@@ -341,7 +315,6 @@ final class DictationViewModel {
             }
             networkMonitor.stop()
             realtimeAPIClient.disconnect()
-            mlxAudioRealtimeClient.disconnect()
             hotKeyManager.unregister()
         }
     }
@@ -466,7 +439,7 @@ final class DictationViewModel {
                 statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
             } else if isFinalizingStop {
-                activeRealtimeClient().disconnect()
+                realtimeAPIClient.disconnect()
                 finishStoppedSession(promotePendingSegment: true)
                 statusText = StatusStrings.networkLostDictationStopped
                 lastError = "Network connection was lost during dictation."
@@ -725,7 +698,7 @@ final class DictationViewModel {
         isDictating = false
 
         guard finalizeRemainingAudio else {
-            activeRealtimeClient().disconnect()
+            realtimeAPIClient.disconnect()
             finishStoppedSession(promotePendingSegment: true)
             return
         }
@@ -750,7 +723,6 @@ final class DictationViewModel {
             sessionOutputMode = nil
         }
         firstChunkPreprocessor.reset()
-        mlxStabilizer.reset()
         overlayBufferCoordinator.reset()
         lastError = nil
     }
@@ -876,18 +848,6 @@ final class DictationViewModel {
         case .shortcutUnavailable:
             statusText = HotKeyManager.registrationErrorStatus
             lastError = HotKeyManager.unavailableErrorMessage
-        }
-    }
-
-    private func handleMlxRealtimeInsertionDelta(_ delta: String) {
-        guard isLiveAutoPasteModeEnabled else { return }
-        textInsertion.enqueueRealtimeInsertion(delta)
-    }
-
-    private func handleMlxFinalizedInsertionDelta(_ delta: String) {
-        guard isLiveAutoPasteModeEnabled else { return }
-        if !textInsertion.insertTextUsingAccessibilityOnly(delta) {
-            _ = textInsertion.pasteUsingCommandV(delta)
         }
     }
 }

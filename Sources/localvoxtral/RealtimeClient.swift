@@ -4,18 +4,11 @@ struct RealtimeSessionConfiguration: Sendable {
     let endpoint: URL
     let apiKey: String
     let model: String
-    let transcriptionDelayMilliseconds: Int?
 
-    init(
-        endpoint: URL,
-        apiKey: String,
-        model: String,
-        transcriptionDelayMilliseconds: Int? = nil
-    ) {
+    init(endpoint: URL, apiKey: String, model: String) {
         self.endpoint = endpoint
         self.apiKey = apiKey
         self.model = model
-        self.transcriptionDelayMilliseconds = transcriptionDelayMilliseconds
     }
 }
 

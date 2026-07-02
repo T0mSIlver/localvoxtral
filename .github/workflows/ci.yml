@@ -38,12 +38,11 @@ jobs:
         run: swift build
 
       - name: Test (unit suite)
-        # The two integration suites need a live inference backend and are
-        # exercised manually; see CLAUDE.md.
+        # The integration suite needs a live inference backend and is exercised
+        # manually; see CLAUDE.md.
         run: |
           swift test \
-            --skip RealtimeAPIVLLMIntegrationTests \
-            --skip MlxAudioTranscriptionIntegrationTests
+            --skip RealtimeAPIVLLMIntegrationTests
 
       - name: Integration tests (live voxmlx)
         # The self-hosted runner has voxmlx serving locally (launchd service
