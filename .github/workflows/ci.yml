@@ -55,6 +55,16 @@ jobs:
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
         run: swift test --filter RealtimeAPIVLLMIntegrationTests
 
+      - name: Debug signing context
+        run: |
+          echo "== user/session =="; whoami; id -u
+          echo "== keychains =="; security list-keychains
+          echo "== keychain info =="; security show-keychain-info ~/Library/Keychains/login.keychain-db 2>&1 || true
+          echo "== identities =="; security find-identity -v -p codesigning
+          echo "== sign test =="
+          cp /bin/ls /tmp/ci-sign-test
+          if codesign --force --sign localvoxtral-dev /tmp/ci-sign-test 2>&1; then echo "CI SIGN OK"; else echo "CI SIGN FAIL"; fi
+
       - name: Package app bundle
         # The self-hosted runner's keychain holds the stable localvoxtral-dev
         # signing cert, keeping TCC grants valid across builds; anywhere the
