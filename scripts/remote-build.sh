@@ -18,13 +18,31 @@ set -euo pipefail
 #   ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
 #   ./scripts/remote-build.sh exec swift test --list-tests
 #
-# Environment overrides:
-#   LV_BUILD_HOST  ssh destination            (default: <build-host>)
-#   LV_BUILD_DIR   remote work dir, ~-relative (default: work/localvoxtral-remote)
+# The build host is machine-local configuration, never committed. Resolution
+# order:
+#   1. LV_BUILD_HOST env var (ssh destination, e.g. user@host or an ssh alias)
+#   2. git config localvoxtral.buildhost   (set once per clone, lives in .git/config)
+# Optional: LV_BUILD_DIR — remote work dir, ~-relative (default: work/localvoxtral-remote)
 
-HOST="${LV_BUILD_HOST:-<build-host>}"
-DIR="${LV_BUILD_DIR:-work/localvoxtral-remote}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
+DIR="${LV_BUILD_DIR:-work/localvoxtral-remote}"
+
+if [[ -z "$HOST" ]]; then
+  cat >&2 <<'MSG'
+No build host configured. Point this script at a Mac with the Swift toolchain
+and SSH key auth, either persistently for this clone:
+
+  git config localvoxtral.buildhost <ssh-destination>
+
+or per invocation:
+
+  LV_BUILD_HOST=<ssh-destination> ./scripts/remote-build.sh ...
+
+<ssh-destination> can be user@host or a Host alias from ~/.ssh/config.
+MSG
+  exit 1
+fi
 
 CMD="${1:-test}"
 if [[ $# -gt 0 ]]; then shift; fi

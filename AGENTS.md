@@ -9,7 +9,9 @@ app — either live ("Live Auto-Paste") or via an overlay committed on stop
 ## Build & test — read this first on a non-Mac dev box
 
 This repo only compiles on macOS. From a Linux box, the inner loop is the Mac
-build host over SSH (no commit needed — it rsyncs the working tree):
+build host over SSH (no commit needed — it rsyncs the working tree). The host
+is machine-local config, set once per clone (never committed):
+`git config localvoxtral.buildhost <ssh-destination>`.
 
 ```bash
 ./scripts/remote-build.sh                 # build + unit tests
