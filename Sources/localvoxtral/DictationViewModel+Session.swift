@@ -57,12 +57,7 @@ extension DictationViewModel {
 
         let provider = settings.realtimeProvider
         guard let endpoint = settings.resolvedWebSocketURL(for: provider) else {
-            let message = "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings."
-            handleConnectFailure(
-                status: "Invalid endpoint URL.",
-                message: message,
-                technicalDetails: "Settings value could not be normalized to a websocket endpoint URL."
-            )
+            handleConnectFailure(reason: .invalidEndpoint)
             clearLatchedSessionMetadata()
             return
         }
@@ -83,6 +78,27 @@ extension DictationViewModel {
         sessionProvider = provider
         sessionModelName = model
 
+        // Fail fast on Live Auto-Paste without Accessibility trust: transcribed
+        // text would have nowhere to go. Refresh trust once (the user may have
+        // just granted it), then warn + prompt before opening the socket. We do
+        // NOT abort — the keyboard-event fallback can still type into some apps,
+        // and the prompt's polling clears the warning once Accessibility lands.
+        // The warning is surfaced both as the status line and the red error in
+        // the popover, so it can't be missed before the user speaks.
+        let accessibilityBlockedAtStart: Bool
+        if isLiveAutoPasteModeEnabled, !textInsertion.isAccessibilityTrusted {
+            textInsertion.refreshAccessibilityTrustState()
+            accessibilityBlockedAtStart = !textInsertion.isAccessibilityTrusted
+        } else {
+            accessibilityBlockedAtStart = false
+        }
+        if accessibilityBlockedAtStart {
+            statusText = StatusStrings.pasteBlockedByAccessibilityPermission
+            lastError = Self.liveAutoPasteAccessibilityWarningMessage
+            textInsertion.requestAccessibilityPermissionIfNeeded()
+            debugLog("live auto-paste started without accessibility trust; surfacing warning")
+        }
+
         // Capture the AX anchor now, while the user's text field still has focus.
         // By the time the WebSocket connects and startOverlayBufferSession() runs,
         // our app may have taken focus and the original AX element will be gone.
@@ -101,7 +117,11 @@ extension DictationViewModel {
         textInsertion.resetDiagnostics()
 
         isConnectingRealtimeSession = true
-        statusText = "Connecting to realtime backend..."
+        // Keep the Accessibility warning as the status line when it applies, so
+        // the warning isn't clobbered by the generic "Connecting..." text.
+        if !accessibilityBlockedAtStart {
+            statusText = "Connecting to realtime backend..."
+        }
         debugLog(
             "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
         )
@@ -115,11 +135,7 @@ extension DictationViewModel {
             scheduleConnectTimeout()
         } catch {
             abortConnectingSession(disconnectSocket: false)
-            handleConnectFailure(
-                status: "Failed to connect.",
-                message: "Unable to start the realtime connection.",
-                technicalDetails: error.localizedDescription
-            )
+            handleConnectFailure(reason: .connectThrew(rawError: error.localizedDescription))
             debugLog("beginDictationSession failed error=\(error.localizedDescription)")
         }
     }
@@ -663,12 +679,7 @@ extension DictationViewModel {
             guard let self, self.isConnectingRealtimeSession else { return }
 
             abortConnectingSession()
-            let message = "Could not connect to realtime backend within \(Int(timeout)) seconds."
-            handleConnectFailure(
-                status: "Connection timed out.",
-                message: message,
-                technicalDetails: connectTimeoutTechnicalDetails(timeoutSeconds: timeout)
-            )
+            handleConnectFailure(reason: .timedOut(timeoutSeconds: timeout))
         }
     }
 
@@ -734,16 +745,84 @@ extension DictationViewModel {
 
     // MARK: - Connection Failure
 
-    func handleConnectFailure(status: String, message: String, technicalDetails: String? = nil) {
-        let trimmedMessage = message.trimmed
-        let resolvedMessage = trimmedMessage.isEmpty ? "Unable to establish realtime connection." : trimmedMessage
-        let resolvedDetails = normalizedFailureDetails(technicalDetails)
+    /// Call-site context for a realtime backend connection failure. Each case
+    /// carries just enough information for `handleConnectFailure(reason:)` to
+    /// classify the failure and build a clear, endpoint-naming message via
+    /// `RealtimeConnectionFailureClassifier`.
+    enum RealtimeConnectFailureReason: Sendable {
+        /// The configured endpoint could not be resolved to a ws/wss URL.
+        case invalidEndpoint
+        /// `RealtimeClient.connect(_:)` threw synchronously.
+        case connectThrew(rawError: String)
+        /// The connect timeout fired before the socket opened.
+        case timedOut(timeoutSeconds: TimeInterval)
+        /// The socket emitted an `.error`/`.disconnected` event while connecting.
+        case socketError(message: String?)
+        /// The system network path was lost while opening the socket.
+        case networkLost
+    }
 
-        statusText = status
-        lastError = resolvedDetails ?? resolvedMessage
-        logConnectionFailure(message: resolvedMessage, technicalDetails: resolvedDetails)
+    func handleConnectFailure(reason: RealtimeConnectFailureReason) {
+        let endpointDescription = sanitizedRealtimeEndpointForMessage()
+
+        let kind: RealtimeConnectionFailureKind
+        var timeoutSeconds: TimeInterval? = nil
+        var rawError: String? = nil
+
+        switch reason {
+        case .invalidEndpoint:
+            kind = .invalidEndpoint
+
+        case .connectThrew(let errorText):
+            kind = classifyConnectError(errorText)
+            rawError = errorText.trimmed.isEmpty ? nil : errorText
+
+        case .timedOut(let seconds):
+            kind = .timedOut
+            timeoutSeconds = seconds
+            rawError = connectTimeoutTechnicalDetails(timeoutSeconds: seconds)
+
+        case .socketError(let message):
+            kind = RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message)
+            if let message, !message.trimmed.isEmpty {
+                rawError = message
+            }
+        case .networkLost:
+            kind = .networkLost
+        }
+
+        let description = RealtimeConnectionFailureClassifier.describe(
+            kind: kind,
+            endpointDescription: endpointDescription,
+            timeoutSeconds: timeoutSeconds,
+            rawError: rawError
+        )
+
+        statusText = description.status
+        // Surface the actionable, endpoint-naming message as the primary error so
+        // it is visible in the popover; keep the raw system error for logs/alert.
+        lastError = description.message
+        logConnectionFailure(
+            message: description.message,
+            technicalDetails: description.technicalDetails
+        )
         markRecentConnectionFailureIndicator()
-        presentConnectionFailureAlert(message: resolvedMessage)
+        presentConnectionFailureAlert(
+            message: description.message,
+            technicalDetails: description.technicalDetails
+        )
+    }
+
+    private func classifyConnectError(_ rawError: String) -> RealtimeConnectionFailureKind {
+        let lowercased = rawError.lowercased()
+        if lowercased.contains("must use")
+            || lowercased.contains("ws://")
+            || lowercased.contains("wss://")
+            || lowercased.contains("endpoint must")
+        {
+            return .invalidEndpoint
+        }
+        return RealtimeConnectionFailureClassifier.classify(socketErrorMessage: rawError)
     }
 
     func handleLLMPolishingConnectionFailure(message: String, technicalDetails: String? = nil) {
@@ -767,7 +846,11 @@ extension DictationViewModel {
         )
     }
 
-    func presentConnectionFailureAlert(title: String = "Realtime Connection Failed", message: String) {
+    func presentConnectionFailureAlert(
+        title: String = "Realtime Connection Failed",
+        message: String,
+        technicalDetails: String? = nil
+    ) {
         guard !message.isEmpty else { return }
         guard !isShowingConnectionFailureAlert else { return }
 
@@ -778,7 +861,15 @@ extension DictationViewModel {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
-        alert.informativeText = message
+        // Show the actionable message first; append the raw system error on a new
+        // line when present so a wrong port or NSError code is visible at a glance.
+        if let technicalDetails, !technicalDetails.trimmed.isEmpty,
+           technicalDetails.trimmed != message.trimmed
+        {
+            alert.informativeText = "\(message)\n\n\(technicalDetails)"
+        } else {
+            alert.informativeText = message
+        }
         if let appIcon = NSApplication.shared.applicationIconImage.copy() as? NSImage {
             appIcon.size = NSSize(width: 20, height: 20)
             alert.icon = appIcon
@@ -845,6 +936,13 @@ extension DictationViewModel {
             return "<invalid endpoint>"
         }
         return sanitizedURLForLogging(endpoint)
+    }
+
+    /// Sanitized resolved endpoint (scheme + host + port + path) for inclusion in
+    /// user-facing failure messages. Reuses the logging sanitizer so the message
+    /// and the log line always agree on what was attempted.
+    private func sanitizedRealtimeEndpointForMessage() -> String {
+        sanitizedRealtimeEndpointForLogging()
     }
 
     private func sanitizedLLMPolishingEndpointForLogging() -> String {

@@ -53,12 +53,7 @@ extension DictationViewModel {
         cancelConnectTimeout()
         if isConnectingRealtimeSession {
             abortConnectingSession(disconnectSocket: false)
-            handleConnectFailure(
-                status: "Failed to connect.",
-                message: "Unable to establish realtime connection.",
-                technicalDetails: lastError?.trimmed.isEmpty == false
-                    ? lastError : nil
-            )
+            handleConnectFailure(reason: .socketError(message: lastError))
             return
         }
 
@@ -206,11 +201,7 @@ extension DictationViewModel {
     private func handleErrorEvent(_ message: String) {
         if isConnectingRealtimeSession {
             abortConnectingSession()
-            handleConnectFailure(
-                status: "Failed to connect.",
-                message: "Unable to establish realtime connection.",
-                technicalDetails: message
-            )
+            handleConnectFailure(reason: .socketError(message: message))
             return
         }
         if !acceptsRealtimeEvents {

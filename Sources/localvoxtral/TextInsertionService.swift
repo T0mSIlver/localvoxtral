@@ -1111,5 +1111,11 @@ extension TextInsertionService {
             await task.value
         }
     }
+
+    /// Forces the Accessibility trust verdict for tests. Pass `nil` to restore
+    /// the real `AXIsProcessTrusted()` checker.
+    func debugSetAccessibilityTrusted(_ trusted: Bool?) {
+        accessibilityTrust.debugSetTrustOverride(trusted)
+    }
 }
 #endif

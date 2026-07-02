@@ -68,6 +68,14 @@ struct StatusPopoverView: View {
 
             Divider()
 
+            // Prominent, single-source-of-truth "why can't I dictate right now"
+            // banner. Surfaces the Live Auto-Paste + Accessibility gap before the
+            // user speaks into the void; the affordance to fix it is right below.
+            if let warning = viewModel.liveAutoPasteAccessibilityWarning {
+                Text(warning)
+                    .foregroundStyle(.orange)
+            }
+
             Text("Status: \(viewModel.statusText)")
                 .foregroundStyle(.secondary)
 
