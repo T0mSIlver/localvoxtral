@@ -6,11 +6,12 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|package|exec] [extra args...]
-#     build    swift build
-#     test     swift build + unit tests (default; skips live-backend suites)
-#     package  ./scripts/package_app.sh release
-#     exec     run the extra args verbatim in the remote work dir
+#   ./scripts/remote-build.sh [build|test|integration|package|exec] [extra args...]
+#     build        swift build
+#     test         swift build + unit tests (default; skips live-backend suites)
+#     integration  realtime pipeline tests against the live voxmlx service
+#     package      ./scripts/package_app.sh release
+#     exec         run the extra args verbatim in the remote work dir
 #
 # Examples:
 #   ./scripts/remote-build.sh
@@ -33,6 +34,11 @@ UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip MlxAudioTranscrip
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
   test)    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@") ;;
+  integration)
+    REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
+      VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+      swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
+    ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
   exec)
     if [[ $# -eq 0 ]]; then
@@ -42,7 +48,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|package|exec] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|package|exec] [extra args...]" >&2
     exit 1
     ;;
 esac
