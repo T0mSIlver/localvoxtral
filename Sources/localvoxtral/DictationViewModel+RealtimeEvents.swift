@@ -78,6 +78,8 @@ extension DictationViewModel {
         isAwaitingMicrophonePermission = false
         microphone.stop()
         isDictating = false
+        EscapeCancelHandler.isDictatingRef = false
+        escapeCancelHandler.stop()
         finishStoppedSession(promotePendingSegment: true)
         let message = "Connection lost. Dictation stopped."
         statusText = message

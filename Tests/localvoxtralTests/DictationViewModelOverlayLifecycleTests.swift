@@ -592,6 +592,33 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(configStore.loadLLMPromptTemplatesCallCount, 1)
     }
 
+    func testUnexpectedDisconnectDuringDictationResetsEscapeCancelFlag() {
+        // Regression: an unexpected realtime disconnect while actively dictating
+        // tears down the session (sets isDictating = false). It must also clear the
+        // EscapeCancelHandler "is dictating" flag; otherwise the CGEventTap stays
+        // armed and swallows Escape system-wide until the next session ends.
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isDictating = true
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.currentDictationEventText = "hello"
+        // Simulate the EscapeCancelHandler being armed during active dictation.
+        EscapeCancelHandler.isDictatingRef = true
+
+        viewModel.handle(event: .disconnected, source: .realtimeAPI)
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
