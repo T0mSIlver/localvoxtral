@@ -48,9 +48,15 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
 
 @MainActor
 final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
+    typealias DateProvider = () -> Date
+    typealias SleepClosure = (Duration) async -> Void
+
     private var stateMachine: OverlayBufferStateMachine
     private let renderer: OverlayBufferRendering
     private let anchorResolver: OverlayAnchorResolving
+    // Injected time source so hold-before-dismiss timing is testable without wall-clock sleeps.
+    private let now: DateProvider
+    private let sleepFor: SleepClosure
 
     private var commitBufferText = ""
     private var liveCommitTargetAppPID: pid_t?
@@ -62,11 +68,17 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     init(
         stateMachine: OverlayBufferStateMachine,
         renderer: OverlayBufferRendering,
-        anchorResolver: OverlayAnchorResolving
+        anchorResolver: OverlayAnchorResolving,
+        now: @escaping DateProvider = Date.init,
+        sleepFor: @escaping SleepClosure = { duration in
+            try? await Task.sleep(for: duration)
+        }
     ) {
         self.stateMachine = stateMachine
         self.renderer = renderer
         self.anchorResolver = anchorResolver
+        self.now = now
+        self.sleepFor = sleepFor
     }
 
     func resolveAnchorNow() -> OverlayAnchor {
@@ -180,7 +192,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
         let holdRemaining: TimeInterval
         if let lastUpdate = lastOverlayDisplayTextChangeAt {
-            let elapsed = Date().timeIntervalSince(lastUpdate)
+            let elapsed = now().timeIntervalSince(lastUpdate)
             holdRemaining = max(0, minimumVisibility - elapsed)
         } else {
             holdRemaining = 0
@@ -193,8 +205,9 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
         Log.overlay.info("holding overlay \(String(format: "%.2f", holdRemaining))s before dismiss")
         dismissTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(holdRemaining))
-            guard let self, !Task.isCancelled else { return }
+            guard let self else { return }
+            await self.sleepFor(.seconds(holdRemaining))
+            guard !Task.isCancelled else { return }
             self.dismissTask = nil
             Log.overlay.info("overlay hold elapsed, dismissing")
             self.reset()
@@ -226,7 +239,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         newOverlayDisplayText: String
     ) {
         guard previousOverlayDisplayText != newOverlayDisplayText else { return }
-        lastOverlayDisplayTextChangeAt = Date()
+        lastOverlayDisplayTextChangeAt = now()
     }
 
     private func lockCommitTargetForFinalizationIfNeeded() {
@@ -260,3 +273,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         pasteboard.setString(text, forType: .string)
     }
 }
+
+#if DEBUG
+extension OverlayBufferSessionCoordinator {
+    /// Exposes the pending hold task so tests can await dismissal deterministically
+    /// instead of polling wall-clock time.
+    var debugDismissTask: Task<Void, Never>? { dismissTask }
+}
+#endif

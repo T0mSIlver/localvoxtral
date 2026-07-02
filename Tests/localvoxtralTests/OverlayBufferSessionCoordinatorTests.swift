@@ -244,10 +244,14 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
     func testDismissAfterHoldWaitsFromBeginFinalizingWhenNoFinalRefreshArrives() async {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
+        let currentDate = Date(timeIntervalSince1970: 1_000)
+        var requestedSleeps: [Duration] = []
         let coordinator = OverlayBufferSessionCoordinator(
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
-            anchorResolver: anchorResolver
+            anchorResolver: anchorResolver,
+            now: { currentDate },
+            sleepFor: { requestedSleeps.append($0) }
         )
 
         coordinator.startSession()
@@ -259,20 +263,27 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.dismissAfterHold(minimumVisibility: 0.05)
         XCTAssertEqual(renderer.hideCallCount, 0)
 
-        let didHide = await waitUntil(timeout: .milliseconds(300)) {
-            renderer.hideCallCount == 1
+        guard let dismissTask = coordinator.debugDismissTask else {
+            XCTFail("expected a pending dismiss hold task")
+            return
         }
-        XCTAssertTrue(didHide)
+        await dismissTask.value
+
+        XCTAssertEqual(requestedSleeps, [.seconds(0.05)])
         XCTAssertEqual(renderer.hideCallCount, 1)
     }
 
-    func testDismissAfterHoldIsImmediateWhenTextWasAlreadyStaleBeforeFinalizing() async {
+    func testDismissAfterHoldIsImmediateWhenTextWasAlreadyStaleBeforeFinalizing() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
+        var currentDate = Date(timeIntervalSince1970: 1_000)
+        var requestedSleeps: [Duration] = []
         let coordinator = OverlayBufferSessionCoordinator(
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
-            anchorResolver: anchorResolver
+            anchorResolver: anchorResolver,
+            now: { currentDate },
+            sleepFor: { requestedSleeps.append($0) }
         )
 
         coordinator.startSession()
@@ -280,7 +291,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             displayBufferText: "hello",
             commitBufferText: "hello"
         )
-        try? await Task.sleep(for: .milliseconds(80))
+        currentDate.addTimeInterval(0.08)
 
         coordinator.beginFinalizing(
             displayBufferText: "hello",
@@ -289,15 +300,21 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.dismissAfterHold(minimumVisibility: 0.05)
 
         XCTAssertEqual(renderer.hideCallCount, 1)
+        XCTAssertTrue(requestedSleeps.isEmpty)
+        XCTAssertNil(coordinator.debugDismissTask)
     }
 
-    func testDismissAfterHoldUnchangedFinalizingRefreshDoesNotExtendHold() async {
+    func testDismissAfterHoldUnchangedFinalizingRefreshDoesNotExtendHold() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
+        var currentDate = Date(timeIntervalSince1970: 1_000)
+        var requestedSleeps: [Duration] = []
         let coordinator = OverlayBufferSessionCoordinator(
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
-            anchorResolver: anchorResolver
+            anchorResolver: anchorResolver,
+            now: { currentDate },
+            sleepFor: { requestedSleeps.append($0) }
         )
 
         coordinator.startSession()
@@ -305,7 +322,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             displayBufferText: "hello",
             commitBufferText: "hello"
         )
-        try? await Task.sleep(for: .milliseconds(80))
+        currentDate.addTimeInterval(0.08)
 
         coordinator.refresh(
             displayBufferText: "hello",
@@ -314,15 +331,21 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.dismissAfterHold(minimumVisibility: 0.05)
 
         XCTAssertEqual(renderer.hideCallCount, 1)
+        XCTAssertTrue(requestedSleeps.isEmpty)
+        XCTAssertNil(coordinator.debugDismissTask)
     }
 
     func testDismissAfterHoldChangedFinalizingRefreshExtendsHold() async {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
+        var currentDate = Date(timeIntervalSince1970: 1_000)
+        var requestedSleeps: [Duration] = []
         let coordinator = OverlayBufferSessionCoordinator(
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
-            anchorResolver: anchorResolver
+            anchorResolver: anchorResolver,
+            now: { currentDate },
+            sleepFor: { requestedSleeps.append($0) }
         )
 
         coordinator.startSession()
@@ -330,6 +353,9 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             displayBufferText: "hello",
             commitBufferText: "hello"
         )
+        // Even when the hold from beginFinalizing has already elapsed, a
+        // finalizing refresh that changes the visible text restarts the hold.
+        currentDate.addTimeInterval(0.08)
         coordinator.refresh(
             displayBufferText: "hello world",
             commitBufferText: "hello world"
@@ -338,27 +364,14 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.dismissAfterHold(minimumVisibility: 0.05)
         XCTAssertEqual(renderer.hideCallCount, 0)
 
-        let didHide = await waitUntil(timeout: .milliseconds(300)) {
-            renderer.hideCallCount == 1
+        guard let dismissTask = coordinator.debugDismissTask else {
+            XCTFail("expected a pending dismiss hold task")
+            return
         }
-        XCTAssertTrue(didHide)
+        await dismissTask.value
+
+        XCTAssertEqual(requestedSleeps, [.seconds(0.05)])
         XCTAssertEqual(renderer.hideCallCount, 1)
-    }
-
-    private func waitUntil(
-        timeout: Duration,
-        pollInterval: Duration = .milliseconds(10),
-        condition: @escaping @MainActor () -> Bool
-    ) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
-
-        while !condition() {
-            guard clock.now < deadline else { return false }
-            try? await Task.sleep(for: pollInterval)
-        }
-
-        return true
     }
 }
 
