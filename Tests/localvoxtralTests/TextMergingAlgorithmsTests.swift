@@ -336,4 +336,86 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         XCTAssertEqual(result.merged, existing)
         XCTAssertEqual(result.appendedDelta, "")
     }
+
+    // MARK: - Italian punctuation characterization (issue #13)
+    //
+    // These cases exercise the exact transformations that would be required to
+    // turn a well-formed stream into the reported malformed output
+    // ("sparis.ce", "al, fondo"). They assert the merge helpers produce the
+    // *correct* result, proving the malformed output does not originate in
+    // TextMergingAlgorithms when deltas are delivered in left-to-right order.
+
+    func testTailOverlap_periodGluesToWordEnd_italian() {
+        // "sparisce" + "." must produce "sparisce." — never "sparis.ce".
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "sparisce", incoming: ".")
+        XCTAssertEqual(result.merged, "sparisce.")
+        XCTAssertEqual(result.appendedDelta, ".")
+    }
+
+    func testTailOverlap_commaGluesToWordEnd_italian() {
+        // "al fondo" + "," must produce "al fondo," — the comma never jumps
+        // before "fondo".
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "al fondo", incoming: ",")
+        XCTAssertEqual(result.merged, "al fondo,")
+        XCTAssertEqual(result.appendedDelta, ",")
+    }
+
+    func testTailOverlap_wordThenSpaceWord_gluesWithSpace_italian() {
+        // "al" + "fondo," must produce "al fondo,".
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "al", incoming: "fondo,")
+        XCTAssertEqual(result.merged, "al fondo,")
+        XCTAssertEqual(result.appendedDelta, " fondo,")
+    }
+
+    func testTailOverlap_apostropheGluesToWord_italian() {
+        // "l" + "'acqua" must produce "l'acqua" (no leading space before ').
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "l", incoming: "'acqua")
+        XCTAssertEqual(result.merged, "l'acqua")
+        XCTAssertEqual(result.appendedDelta, "'acqua")
+    }
+
+    func testTailOverlap_apostropheGluesAfterArticle_italian() {
+        // "un" + "'altra" must produce "un'altra".
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "un", incoming: "'altra")
+        XCTAssertEqual(result.merged, "un'altra")
+        XCTAssertEqual(result.appendedDelta, "'altra")
+    }
+
+    func testTailOverlap_replayedGrowingWord_keepsOnlySuffix_italian() {
+        // Overlap merge when the incoming segment replays the prefix and grows:
+        // "spari" + "sparisce." → "sparisce." (the boundary stays at the end).
+        let result = TextMergingAlgorithms.appendWithTailOverlap(existing: "spari", incoming: "sparisce.")
+        XCTAssertEqual(result.merged, "sparisce.")
+        XCTAssertEqual(result.appendedDelta, "sce.")
+    }
+
+    func testNormalizeFormatting_compactsSpaceBeforePeriod_italian() {
+        // Tokenizer spacing artifact "sparisce ." must collapse to "sparisce.".
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting("sparisce .")
+        XCTAssertEqual(normalized, "sparisce.")
+    }
+
+    func testNormalizeFormatting_compactsSpaceBeforeComma_italian() {
+        // "al , fondo" → "al, fondo" (no relocation of the comma into the word).
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting("al , fondo")
+        XCTAssertEqual(normalized, "al, fondo")
+    }
+
+    func testNormalizeFormatting_apostropheElision_italian() {
+        // "l' acqua" → "l'acqua" (elision glues without splitting).
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting("l' acqua")
+        XCTAssertEqual(normalized, "l'acqua")
+    }
+
+    func testNormalizeFormatting_preservesWordInternalPeriod_italian() {
+        // A legitimately mid-word period (abbreviation/url) must be preserved
+        // as-is — the normalizer never *inserts* punctuation into a word.
+        let normalized = TextMergingAlgorithms.normalizeTranscriptionFormatting("sparisce.al fondo")
+        XCTAssertEqual(normalized, "sparisce.al fondo")
+    }
+
+    func testAvoidLeadingSpace_apostrophe() {
+        // Apostrophe glues (no leading space) so elisions like "l'acqua" form.
+        XCTAssertTrue(TextMergingAlgorithms.shouldAvoidLeadingSpace(before: "'"))
+    }
 }
