@@ -45,5 +45,11 @@ if pgrep -x localvoxtral >/dev/null 2>&1; then
   echo "      two menu bar icons / hotkey conflicts."
 fi
 
-echo "Launching build of '$TARGET' (CI run $RUN_ID): $APP"
+SIGNER="$(codesign -dv "$APP" 2>&1 | grep -m1 '^Authority=' || echo 'Authority=ad-hoc')"
+echo "Launching build of '$TARGET' (CI run $RUN_ID, ${SIGNER}): $APP"
+if [[ "$SIGNER" == "Authority=ad-hoc" ]]; then
+  echo "NOTE: ad-hoc signed build — if text insertion fails, remove and re-add"
+  echo "      localvoxtral in System Settings > Privacy & Security > Accessibility"
+  echo "      (TCC grants don't survive ad-hoc signature changes)."
+fi
 open "$APP"
