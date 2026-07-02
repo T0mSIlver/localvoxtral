@@ -58,6 +58,18 @@ jobs:
       - name: Package app bundle
         run: ./scripts/package_app.sh release
 
+      - name: Zip app for artifact upload
+        # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip
+        # first so the downloaded app keeps a valid signature.
+        run: ditto -c -k --sequesterRsrc --keepParent dist/localvoxtral.app dist/localvoxtral-app.zip
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-app
+          path: dist/localvoxtral-app.zip
+          retention-days: 7
+
       - name: Smoke test packaged app launch
         run: |
           python3 - <<'PY'
