@@ -17,7 +17,6 @@ enum OverlayBufferPhase: Equatable {
     case buffering
     case finalizing
     case commitFailed
-    case cancelled
 }
 
 /// Assembles text for the overlay buffer display and insertion.

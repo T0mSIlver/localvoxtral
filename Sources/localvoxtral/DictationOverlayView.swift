@@ -91,8 +91,6 @@ struct DictationOverlayView: View {
             return "Finalizing"
         case .commitFailed:
             return "Insert failed"
-        case .cancelled:
-            return "Cancelled"
         case .idle:
             return "Ready"
         }
