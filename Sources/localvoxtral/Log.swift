@@ -15,4 +15,6 @@ enum Log {
     static let polishing = Logger(subsystem: subsystem, category: "Polishing")
     static let persistence = Logger(subsystem: subsystem, category: "Persistence")
     static let config = Logger(subsystem: subsystem, category: "Config")
+    static let ducking = Logger(subsystem: subsystem, category: "Ducking")
+    static let voiceAssistant = Logger(subsystem: subsystem, category: "voice-assistant")
 }

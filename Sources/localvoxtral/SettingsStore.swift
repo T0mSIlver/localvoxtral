@@ -165,6 +165,22 @@ final class SettingsStore {
         static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
         static let llmPolishingModel = "settings.llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
+        static let audioDuckingEnabled = "settings.audio_ducking_enabled"
+        static let audioDuckingLevel = "settings.audio_ducking_level"
+        static let audioDuckingUseDDC = "settings.audio_ducking_use_ddc"
+        static let audioDuckingFadeInDuration = "settings.audio_ducking_fade_in_duration"
+        static let modifierOnlyHotKeyEnabled = "settings.modifier_only_hotkey_enabled"
+        static let modifierOnlyHotKeyModifier = "settings.modifier_only_hotkey_modifier"
+        static let modifierOnlyHoldDelay = "settings.modifier_only_hold_delay"
+        static let overlayLastX = "settings.overlay_last_x"
+        static let overlayLastY = "settings.overlay_last_y"
+        static let overlayPositionSaved = "settings.overlay_position_saved"
+        static let overlayBufferShortcutKeyCode = "settings.overlay_buffer_shortcut_key_code"
+        static let overlayBufferShortcutModifiers = "settings.overlay_buffer_shortcut_carbon_modifiers"
+        static let overlayBufferShortcutEnabled = "settings.overlay_buffer_shortcut_enabled"
+        static let livePasteShortcutKeyCode = "settings.live_paste_shortcut_key_code"
+        static let livePasteShortcutModifiers = "settings.live_paste_shortcut_carbon_modifiers"
+        static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
     }
 
     private let defaults: UserDefaults
@@ -261,6 +277,90 @@ final class SettingsStore {
     var replacementDictionaryEnabled: Bool {
         didSet {
             defaults.set(replacementDictionaryEnabled, forKey: Keys.replacementDictionaryEnabled)
+        }
+    }
+
+    var audioDuckingEnabled: Bool {
+        didSet { defaults.set(audioDuckingEnabled, forKey: Keys.audioDuckingEnabled) }
+    }
+
+    /// The fraction of current volume to duck to (0.0 = mute, 1.0 = no change).
+    /// For example, 0.2 means duck to 20% of the current volume.
+    var audioDuckingLevel: Double {
+        didSet {
+            defaults.set(
+                min(max(audioDuckingLevel, 0.0), 1.0),
+                forKey: Keys.audioDuckingLevel)
+        }
+    }
+
+    /// When true, duck HDMI/DisplayPort monitor volume via BetterDisplay DDC
+    /// instead of falling back to pausing music apps.
+    var audioDuckingUseDDC: Bool {
+        didSet { defaults.set(audioDuckingUseDDC, forKey: Keys.audioDuckingUseDDC) }
+    }
+
+    /// Duration in seconds for the volume fade-in after dictation stops (0.3–5.0).
+    var audioDuckingFadeInDuration: Double {
+        didSet { defaults.set(audioDuckingFadeInDuration, forKey: Keys.audioDuckingFadeInDuration) }
+    }
+
+    var modifierOnlyHotKeyEnabled: Bool {
+        didSet { defaults.set(modifierOnlyHotKeyEnabled, forKey: Keys.modifierOnlyHotKeyEnabled) }
+    }
+
+    var modifierOnlyHotKeyModifier: ModifierOnlyHotKeyManager.ModifierKey {
+        didSet {
+            defaults.set(modifierOnlyHotKeyModifier.rawValue, forKey: Keys.modifierOnlyHotKeyModifier)
+        }
+    }
+
+    /// Seconds to hold modifier before it triggers live auto-paste (0.15–0.8).
+    var modifierOnlyHoldDelay: Double {
+        didSet { defaults.set(modifierOnlyHoldDelay, forKey: Keys.modifierOnlyHoldDelay) }
+    }
+
+    var overlayLastX: Double {
+        didSet { defaults.set(overlayLastX, forKey: Keys.overlayLastX) }
+    }
+
+    var overlayLastY: Double {
+        didSet { defaults.set(overlayLastY, forKey: Keys.overlayLastY) }
+    }
+
+    var overlayPositionSaved: Bool {
+        didSet { defaults.set(overlayPositionSaved, forKey: Keys.overlayPositionSaved) }
+    }
+
+    var overlayBufferShortcutEnabled: Bool {
+        didSet { defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled) }
+    }
+
+    private var overlayBufferShortcutKeyCode: UInt32 {
+        didSet { defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode) }
+    }
+
+    private var overlayBufferShortcutCarbonModifierFlags: UInt32 {
+        didSet {
+            defaults.set(
+                overlayBufferShortcutCarbonModifierFlags,
+                forKey: Keys.overlayBufferShortcutModifiers)
+        }
+    }
+
+    var livePasteShortcutEnabled: Bool {
+        didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
+    }
+
+    private var livePasteShortcutKeyCode: UInt32 {
+        didSet { defaults.set(livePasteShortcutKeyCode, forKey: Keys.livePasteShortcutKeyCode) }
+    }
+
+    private var livePasteShortcutCarbonModifierFlags: UInt32 {
+        didSet {
+            defaults.set(
+                livePasteShortcutCarbonModifierFlags,
+                forKey: Keys.livePasteShortcutModifiers)
         }
     }
 
@@ -388,6 +488,101 @@ final class SettingsStore {
         )
         replacementDictionaryEnabled = Self.loadBool(
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
+        audioDuckingEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.audioDuckingEnabled, fallback: false)
+        let storedDuckingLevel = defaults.object(forKey: Keys.audioDuckingLevel) != nil
+            ? defaults.double(forKey: Keys.audioDuckingLevel)
+            : 0.2
+        audioDuckingLevel = min(max(storedDuckingLevel, 0.0), 1.0)
+        audioDuckingUseDDC = Self.loadBool(
+            defaults: defaults, key: Keys.audioDuckingUseDDC, fallback: true)
+        let storedFadeIn = defaults.object(forKey: Keys.audioDuckingFadeInDuration) != nil
+            ? defaults.double(forKey: Keys.audioDuckingFadeInDuration)
+            : 1.5
+        audioDuckingFadeInDuration = min(max(storedFadeIn, 0.3), 5.0)
+        modifierOnlyHotKeyEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.modifierOnlyHotKeyEnabled, fallback: false)
+        if let storedModifier = defaults.string(forKey: Keys.modifierOnlyHotKeyModifier),
+           let parsed = ModifierOnlyHotKeyManager.ModifierKey(rawValue: storedModifier)
+        {
+            modifierOnlyHotKeyModifier = parsed
+        } else {
+            modifierOnlyHotKeyModifier = .fn
+        }
+        let storedHoldDelay = defaults.object(forKey: Keys.modifierOnlyHoldDelay) != nil
+            ? defaults.double(forKey: Keys.modifierOnlyHoldDelay)
+            : 0.35
+        modifierOnlyHoldDelay = min(max(storedHoldDelay, 0.15), 0.8)
+        overlayLastX = defaults.double(forKey: Keys.overlayLastX)
+        overlayLastY = defaults.double(forKey: Keys.overlayLastY)
+        overlayPositionSaved = Self.loadBool(
+            defaults: defaults, key: Keys.overlayPositionSaved, fallback: false)
+
+        // --- Dual shortcut keys ---
+
+        // Check if overlay buffer shortcut keys already exist
+        let hasExistingOverlayKeys = defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) != nil
+        var needsOverlayMigrationPersist = false
+
+        if hasExistingOverlayKeys {
+            // Load existing overlay buffer shortcut
+            let obKeyCode = (defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) as? NSNumber)?
+                .uint32Value ?? 0
+            let obModifiers = (defaults.object(forKey: Keys.overlayBufferShortcutModifiers) as? NSNumber)?
+                .uint32Value ?? 0
+            let obCandidate = DictationShortcut(keyCode: obKeyCode, carbonModifierFlags: obModifiers).normalized
+            if DictationShortcutValidation.persistenceErrorMessage(for: obCandidate) == nil {
+                overlayBufferShortcutKeyCode = obCandidate.keyCode
+                overlayBufferShortcutCarbonModifierFlags = obCandidate.carbonModifierFlags
+            } else {
+                overlayBufferShortcutKeyCode = 0
+                overlayBufferShortcutCarbonModifierFlags = 0
+            }
+            overlayBufferShortcutEnabled = Self.loadBool(
+                defaults: defaults, key: Keys.overlayBufferShortcutEnabled, fallback: true)
+        } else if storedKeyCode != nil, storedModifierFlags != nil {
+            // Migration: copy legacy shortcut → overlay buffer shortcut
+            overlayBufferShortcutKeyCode = resolvedShortcut.keyCode
+            overlayBufferShortcutCarbonModifierFlags = resolvedShortcut.carbonModifierFlags
+            overlayBufferShortcutEnabled = Self.loadBool(
+                defaults: defaults, key: Keys.dictationShortcutEnabled, fallback: true)
+            needsOverlayMigrationPersist = true
+        } else {
+            // Fresh install — use default shortcut for overlay
+            overlayBufferShortcutKeyCode = Self.defaultDictationShortcut.keyCode
+            overlayBufferShortcutCarbonModifierFlags = Self.defaultDictationShortcut.carbonModifierFlags
+            overlayBufferShortcutEnabled = true
+        }
+
+        // Live paste shortcut — defaults to disabled/nil
+        let hasExistingLivePasteKeys = defaults.object(forKey: Keys.livePasteShortcutKeyCode) != nil
+        if hasExistingLivePasteKeys {
+            let lpKeyCode = (defaults.object(forKey: Keys.livePasteShortcutKeyCode) as? NSNumber)?
+                .uint32Value ?? 0
+            let lpModifiers = (defaults.object(forKey: Keys.livePasteShortcutModifiers) as? NSNumber)?
+                .uint32Value ?? 0
+            let lpCandidate = DictationShortcut(keyCode: lpKeyCode, carbonModifierFlags: lpModifiers).normalized
+            if DictationShortcutValidation.persistenceErrorMessage(for: lpCandidate) == nil {
+                livePasteShortcutKeyCode = lpCandidate.keyCode
+                livePasteShortcutCarbonModifierFlags = lpCandidate.carbonModifierFlags
+            } else {
+                livePasteShortcutKeyCode = 0
+                livePasteShortcutCarbonModifierFlags = 0
+            }
+            livePasteShortcutEnabled = Self.loadBool(
+                defaults: defaults, key: Keys.livePasteShortcutEnabled, fallback: false)
+        } else {
+            livePasteShortcutKeyCode = 0
+            livePasteShortcutCarbonModifierFlags = 0
+            livePasteShortcutEnabled = false
+        }
+
+        // Persist migrated overlay values after all stored properties are initialized
+        if needsOverlayMigrationPersist {
+            defaults.set(overlayBufferShortcutKeyCode, forKey: Keys.overlayBufferShortcutKeyCode)
+            defaults.set(overlayBufferShortcutCarbonModifierFlags, forKey: Keys.overlayBufferShortcutModifiers)
+            defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled)
+        }
     }
 
     // MARK: - Init Helpers
@@ -483,6 +678,71 @@ final class SettingsStore {
 
     func resetDictationShortcutToDefault() {
         setDictationShortcut(Self.defaultDictationShortcut)
+    }
+
+    // MARK: - Dual Shortcuts (per output mode)
+
+    var overlayBufferShortcut: DictationShortcut? {
+        guard overlayBufferShortcutEnabled else { return nil }
+
+        let candidate = DictationShortcut(
+            keyCode: overlayBufferShortcutKeyCode,
+            carbonModifierFlags: overlayBufferShortcutCarbonModifierFlags
+        ).normalized
+
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+
+        return candidate
+    }
+
+    var livePasteShortcut: DictationShortcut? {
+        guard livePasteShortcutEnabled else { return nil }
+
+        let candidate = DictationShortcut(
+            keyCode: livePasteShortcutKeyCode,
+            carbonModifierFlags: livePasteShortcutCarbonModifierFlags
+        ).normalized
+
+        if DictationShortcutValidation.persistenceErrorMessage(for: candidate) != nil {
+            return nil
+        }
+
+        return candidate
+    }
+
+    func setOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            overlayBufferShortcutEnabled = false
+            return
+        }
+
+        let normalizedShortcut = shortcut.normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
+            overlayBufferShortcutKeyCode = normalizedShortcut.keyCode
+            overlayBufferShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        } else {
+            overlayBufferShortcutKeyCode = Self.defaultDictationShortcut.keyCode
+            overlayBufferShortcutCarbonModifierFlags = Self.defaultDictationShortcut.carbonModifierFlags
+        }
+        overlayBufferShortcutEnabled = true
+    }
+
+    func setLivePasteShortcut(_ shortcut: DictationShortcut?) {
+        guard let shortcut else {
+            livePasteShortcutEnabled = false
+            return
+        }
+
+        let normalizedShortcut = shortcut.normalized
+        if DictationShortcutValidation.persistenceErrorMessage(for: normalizedShortcut) == nil {
+            livePasteShortcutKeyCode = normalizedShortcut.keyCode
+            livePasteShortcutCarbonModifierFlags = normalizedShortcut.carbonModifierFlags
+        } else {
+            return
+        }
+        livePasteShortcutEnabled = true
     }
 
     func modelName(for provider: RealtimeProvider) -> String {
