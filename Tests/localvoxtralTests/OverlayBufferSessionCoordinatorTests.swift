@@ -38,10 +38,12 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
     func testCommitWithAutoCopyCopiesTextToPasteboard() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
+        var copiedTexts: [String] = []
         let coordinator = OverlayBufferSessionCoordinator(
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
-            anchorResolver: anchorResolver
+            anchorResolver: anchorResolver,
+            copyToPasteboard: { copiedTexts.append($0) }
         )
         let committer = MockOverlayTextCommitter()
         committer.insertResult = .insertedByAccessibility
@@ -53,22 +55,21 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "copy me"
         )
 
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-
         let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: true)
 
         XCTAssertEqual(outcome, .succeeded)
-        XCTAssertEqual(pasteboard.string(forType: .string), "copy me")
+        XCTAssertEqual(copiedTexts, ["copy me"])
     }
 
     func testCommitWithAutoCopyDisabledDoesNotCopyToPasteboard() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
+        var copiedTexts: [String] = []
         let coordinator = OverlayBufferSessionCoordinator(
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
-            anchorResolver: anchorResolver
+            anchorResolver: anchorResolver,
+            copyToPasteboard: { copiedTexts.append($0) }
         )
         let committer = MockOverlayTextCommitter()
         committer.insertResult = .insertedByAccessibility
@@ -80,15 +81,10 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             commitBufferText: "do not copy"
         )
 
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString("original", forType: .string)
-        let changeCount = pasteboard.changeCount
-
         let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
 
         XCTAssertEqual(outcome, .succeeded)
-        XCTAssertEqual(pasteboard.changeCount, changeCount)
+        XCTAssertTrue(copiedTexts.isEmpty)
     }
 
     func testResetHidesRenderer() {
