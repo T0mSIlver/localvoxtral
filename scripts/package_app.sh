@@ -37,6 +37,15 @@ CONFIGURATION="${1:-release}"
 APP_VERSION="${2:-0.3.0}"
 BUILD_NUMBER="${3:-1}"
 
+# Sign with a stable identity when available so TCC grants (Accessibility)
+# survive rebuilds; ad-hoc signatures change every build and invalidate them.
+CODESIGN_IDENTITY="${LOCALVOXTRAL_CODESIGN_IDENTITY:--}"
+if [[ "$CODESIGN_IDENTITY" != "-" ]] \
+  && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$CODESIGN_IDENTITY"; then
+  echo "Signing identity '$CODESIGN_IDENTITY' not found in keychain; falling back to ad-hoc signing." >&2
+  CODESIGN_IDENTITY="-"
+fi
+
 if [[ "$CONFIGURATION" != "release" && "$CONFIGURATION" != "debug" ]]; then
   echo "Usage: ./scripts/package_app.sh [release|debug] [app-version] [build-number]"
   exit 1
@@ -202,10 +211,10 @@ PLIST
 chmod -R u+w "$APP_DIR"
 xattr -cr "$APP_DIR"
 
-# Ad-hoc sign the packaged app so Gatekeeper can evaluate a usable signature.
+# Sign the packaged app so Gatekeeper can evaluate a usable signature.
 # This does not replace Developer ID signing/notarization, but it avoids the
 # "no usable signature" path that breaks first-run open flows.
-if ! codesign --force --deep --sign - "$APP_DIR"; then
+if ! codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIR"; then
   echo "Failed to code-sign packaged app bundle."
   exit 1
 fi

@@ -56,6 +56,11 @@ jobs:
         run: swift test --filter RealtimeAPIVLLMIntegrationTests
 
       - name: Package app bundle
+        # The self-hosted runner's keychain holds the stable localvoxtral-dev
+        # signing cert, keeping TCC grants valid across builds; anywhere the
+        # identity is absent (hosted runners), packaging falls back to ad-hoc.
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
         run: ./scripts/package_app.sh release
 
       - name: Zip app for artifact upload
