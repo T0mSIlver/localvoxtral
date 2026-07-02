@@ -10,3 +10,7 @@ DerivedData/
 /.codex
 
 /docs
+
+# Agent runtime dirs (opencode/Claude workers) — never commit
+.agent-runs/
+.opencode/
