@@ -50,6 +50,7 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
 final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     typealias DateProvider = () -> Date
     typealias SleepClosure = (Duration) async -> Void
+    typealias PasteboardWriter = (String) -> Void
 
     private var stateMachine: OverlayBufferStateMachine
     private let renderer: OverlayBufferRendering
@@ -57,6 +58,9 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     // Injected time source so hold-before-dismiss timing is testable without wall-clock sleeps.
     private let now: DateProvider
     private let sleepFor: SleepClosure
+    // Injected so tests don't require a pasteboard server (headless CI users
+    // have none) and don't clobber the host session's clipboard.
+    private let copyToPasteboard: PasteboardWriter
 
     private var commitBufferText = ""
     private var liveCommitTargetAppPID: pid_t?
@@ -72,6 +76,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         now: @escaping DateProvider = Date.init,
         sleepFor: @escaping SleepClosure = { duration in
             try? await Task.sleep(for: duration)
+        },
+        copyToPasteboard: @escaping PasteboardWriter = { text in
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
         }
     ) {
         self.stateMachine = stateMachine
@@ -79,6 +88,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         self.anchorResolver = anchorResolver
         self.now = now
         self.sleepFor = sleepFor
+        self.copyToPasteboard = copyToPasteboard
     }
 
     func resolveAnchorNow() -> OverlayAnchor {
@@ -267,11 +277,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         }
     }
 
-    private func copyToPasteboard(_ text: String) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-    }
 }
 
 #if DEBUG
