@@ -64,6 +64,8 @@ jobs:
           echo "== sign test =="
           cp /bin/ls /tmp/ci-sign-test
           if codesign --force --sign localvoxtral-dev /tmp/ci-sign-test 2>&1; then echo "CI SIGN OK"; else echo "CI SIGN FAIL"; fi
+          echo "== runner plist =="
+          cat ~/Library/LaunchAgents/actions.runner.*.plist
 
       - name: Package app bundle
         # The self-hosted runner's keychain holds the stable localvoxtral-dev
