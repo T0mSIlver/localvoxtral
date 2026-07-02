@@ -619,6 +619,86 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
     }
 
+    func testCancelledOverlaySessionSkipsSegmentPromotionAndCommit() {
+        // A cancelled overlay session must not promote the pending segment into
+        // the buffer, must not commit/insert anything, and must reset the overlay
+        // immediately. Compare with testStopWithoutFinalizationStillCommitsOverlayUsingLatchedSessionMode
+        // (same setup minus wasCancelled), which commits.
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello"
+        viewModel.pendingSegmentText = " world"
+        viewModel.wasCancelled = true
+
+        viewModel.finishStoppedSession(promotePendingSegment: true)
+
+        // Segment promotion skipped: display text never refreshed/merged.
+        XCTAssertEqual(overlayCoordinator.refreshCalls.count, 0)
+        XCTAssertEqual(viewModel.currentDictationEventText, "hello")
+        // No insertion / commit, overlay torn down immediately.
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+        XCTAssertNil(viewModel.sessionOutputMode)
+    }
+
+    func testCancelDictationDuringActiveDictationStopsWithoutOverlayCommit() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+        viewModel.currentDictationEventText = "hello"
+        viewModel.pendingSegmentText = " world"
+
+        viewModel.cancelDictation()
+
+        // Cancellation routes through stopDictation(finalizeRemainingAudio: false),
+        // which finalizes immediately with wasCancelled = true.
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertFalse(viewModel.isFinalizingStop)
+        XCTAssertEqual(overlayCoordinator.refreshCalls.count, 0)
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 1)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+    }
+
+    func testCancelDictationIsNoOpWhenNoSessionActive() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.currentDictationEventText = "hello"
+
+        viewModel.cancelDictation()
+
+        // Guard rejects: nothing changed, no overlay churn.
+        XCTAssertFalse(viewModel.wasCancelled)
+        XCTAssertEqual(overlayCoordinator.resetCallCount, 0)
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 0)
+        XCTAssertEqual(viewModel.currentDictationEventText, "hello")
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelOverlayLifecycleTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
