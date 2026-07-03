@@ -64,52 +64,65 @@ enum RealtimeConnectionFailureClassifier {
 
         switch kind {
         case .invalidEndpoint:
+            let message = "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings."
             return RealtimeConnectionFailureDescription(
                 status: "Invalid endpoint URL.",
-                message: "Set a valid `ws://` or `wss://` endpoint for the selected backend in Settings.",
-                technicalDetails: rawError
-                    ?? "Settings value could not be normalized to a websocket endpoint URL."
+                message: message,
+                technicalDetails: Self.technicalDetails(
+                    rawError,
+                    fallback: "Settings value could not be normalized to a websocket endpoint URL.",
+                    message: message
+                )
             )
 
         case .connectionRefused:
+            let message = "Connection refused at \(endpoint). Make sure the backend is running and the port is correct."
             return RealtimeConnectionFailureDescription(
                 status: "Connection refused.",
-                message: "Connection refused at \(endpoint). Make sure the backend is running and the port is correct.",
-                technicalDetails: rawError
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
             )
 
         case .hostUnreachable:
+            let message = "Could not reach the backend host at \(endpoint). The host could not be found or the network can't reach it."
             return RealtimeConnectionFailureDescription(
                 status: "Host unreachable.",
-                message: "Could not reach the backend host at \(endpoint). The host could not be found or the network can't reach it.",
-                technicalDetails: rawError
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
             )
 
         case .timedOut:
-            let seconds = max(1, Int(timeoutSeconds ?? 0.rounded()))
+            let seconds = max(1, Int((timeoutSeconds ?? 0).rounded()))
+            let unit = seconds == 1 ? "second" : "seconds"
             // The leading phrase is intentionally stable: existing regression
-            // tests assert on "No connection response received in <n> seconds".
+            // tests assert on "No connection response received in <n> second(s)".
+            let message = "No connection response received in \(seconds) \(unit) at \(endpoint). The backend may be slow to start or unreachable."
             return RealtimeConnectionFailureDescription(
                 status: "Connection timed out.",
-                message: "No connection response received in \(seconds) seconds at \(endpoint). The backend may be slow to start or unreachable.",
-                technicalDetails: rawError
+                message: message,
+                technicalDetails: nil
             )
 
         case .networkLost:
             // Matches DictationViewModel.StatusStrings.networkLostDictationStopped
             // (kept verbatim so StatusToken mapping continues to recognize it).
+            let message = "Network connection was lost while connecting to \(endpoint). Reconnect to a network and try again."
             return RealtimeConnectionFailureDescription(
                 status: "Network lost. Dictation stopped.",
-                message: "Network connection was lost while connecting to \(endpoint). Reconnect to a network and try again.",
-                technicalDetails: rawError
-                    ?? "Network path changed to unavailable while opening websocket."
+                message: message,
+                technicalDetails: Self.technicalDetails(
+                    rawError,
+                    fallback: "Network path changed to unavailable while opening websocket.",
+                    message: message
+                )
             )
 
         case .unknown:
+            let message = "Could not connect to the realtime backend at \(endpoint). Check the endpoint in Settings and try again."
             return RealtimeConnectionFailureDescription(
                 status: "Connection failed.",
-                message: "Could not connect to the realtime backend at \(endpoint). Check the endpoint in Settings and try again.",
-                technicalDetails: rawError
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
             )
         }
     }
@@ -163,5 +176,55 @@ enum RealtimeConnectionFailureClassifier {
             // or case-insensitively for natural-language phrases.
             message.contains(candidate) || lowercased.contains(candidate.lowercased())
         }
+    }
+
+    private static func technicalDetails(
+        _ rawError: String?,
+        fallback: String? = nil,
+        message: String
+    ) -> String? {
+        if let rawError {
+            let trimmed = rawError.trimmed
+            guard !trimmed.isEmpty else { return nil }
+            guard isDistinctTechnicalDetail(trimmed, from: message) else {
+                return nil
+            }
+            return trimmed
+        }
+        return fallback
+    }
+
+    private static func isDistinctTechnicalDetail(_ details: String, from message: String) -> Bool {
+        let normalizedDetails = normalizedForDetailComparison(details)
+        let normalizedMessage = normalizedForDetailComparison(message)
+        guard !normalizedDetails.isEmpty else { return false }
+        if normalizedDetails == normalizedMessage {
+            return false
+        }
+        if normalizedMessage.contains(normalizedDetails) {
+            return false
+        }
+        return true
+    }
+
+    private static func normalizedForDetailComparison(_ value: String) -> String {
+        let lowercased = value.lowercased()
+        var words: [String] = []
+        var current = ""
+
+        for scalar in lowercased.unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                words.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if !current.isEmpty {
+            words.append(current)
+        }
+
+        return words.joined(separator: " ")
     }
 }

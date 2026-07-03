@@ -781,7 +781,6 @@ extension DictationViewModel {
         case .timedOut(let seconds):
             kind = .timedOut
             timeoutSeconds = seconds
-            rawError = connectTimeoutTechnicalDetails(timeoutSeconds: seconds)
 
         case .socketError(let message):
             kind = RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message)
@@ -963,11 +962,6 @@ extension DictationViewModel {
         guard let value else { return nil }
         let trimmed = value.trimmed
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func connectTimeoutTechnicalDetails(timeoutSeconds: TimeInterval) -> String {
-        let endpoint = sanitizedRealtimeEndpointForLogging()
-        return "No connection response received in \(Int(timeoutSeconds)) seconds for endpoint \(endpoint)."
     }
 
     private func llmPolishingConnectionTechnicalDetails(_ details: String) -> String {

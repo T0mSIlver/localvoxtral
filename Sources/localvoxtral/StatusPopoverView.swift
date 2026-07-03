@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct StatusPopoverView: View {
+    private static let contentWidth: CGFloat = 280
+
     @Environment(\.openSettings) private var openSettings
 
     var viewModel: DictationViewModel
@@ -18,6 +20,49 @@ struct StatusPopoverView: View {
             return "Connecting..."
         }
         return viewModel.isDictating ? "Stop Dictation" : "Start Dictation"
+    }
+
+    private var connectionFailureSummary: (title: String, endpoint: String)? {
+        let endpoint = sanitizedRealtimeEndpointDescription
+        let title: String
+        switch viewModel.statusText {
+        case "Invalid endpoint URL.":
+            title = "Invalid endpoint URL"
+        case "Connection refused.":
+            title = "Connection refused"
+        case "Host unreachable.":
+            title = "Host unreachable"
+        case "Connection timed out.":
+            title = "Connection timed out"
+        case "Network lost. Dictation stopped.":
+            title = "Network lost"
+        case "Connection failed.":
+            title = "Connection failed"
+        default:
+            return nil
+        }
+
+        if viewModel.statusText != "Invalid endpoint URL.",
+           viewModel.lastError?.contains(endpoint) != true
+        {
+            return nil
+        }
+
+        return (title, endpoint)
+    }
+
+    private var sanitizedRealtimeEndpointDescription: String {
+        guard let endpoint = viewModel.settings.resolvedWebSocketURL(for: viewModel.settings.realtimeProvider) else {
+            return "<invalid endpoint>"
+        }
+        guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+            return endpoint.absoluteString
+        }
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? endpoint.absoluteString
     }
 
     var body: some View {
@@ -74,14 +119,24 @@ struct StatusPopoverView: View {
             if let warning = viewModel.liveAutoPasteAccessibilityWarning {
                 Text(warning)
                     .foregroundStyle(.orange)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: Self.contentWidth, alignment: .leading)
             }
 
             Text("Status: \(viewModel.statusText)")
                 .foregroundStyle(.secondary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: Self.contentWidth, alignment: .leading)
 
-            if let lastError = viewModel.lastError {
-                Text(lastError)
-                    .foregroundStyle(.red)
+            if let connectionFailureSummary {
+                statusDetailView(
+                    title: connectionFailureSummary.title,
+                    detail: connectionFailureSummary.endpoint
+                )
+            } else if let lastError = viewModel.lastError {
+                statusDetailView(title: "Error", detail: lastError)
             }
 
             Divider()
@@ -97,6 +152,26 @@ struct StatusPopoverView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             viewModel.refreshAccessibilityTrustState()
         }
+        .frame(width: Self.contentWidth, alignment: .leading)
+    }
+
+    private func statusDetailView(title: String, detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Circle()
+                .fill(.red)
+                .frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(width: Self.contentWidth, alignment: .leading)
     }
 
     private func openAccessibilitySettings() {

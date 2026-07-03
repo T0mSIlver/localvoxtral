@@ -108,8 +108,29 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         )
         XCTAssertEqual(description.status, "Connection timed out.")
         // Stable phrase asserted by existing timeout regression test:
-        XCTAssertTrue(description.message.contains("No connection response received in 1 seconds"))
+        XCTAssertTrue(description.message.contains("No connection response received in 1 second"))
+        XCTAssertFalse(description.message.contains("1 seconds"))
         XCTAssertTrue(description.message.contains(endpoint))
+    }
+
+    func testDescribeTimedOutPluralizesMultipleSeconds() {
+        let description = RealtimeConnectionFailureClassifier.describe(
+            kind: .timedOut,
+            endpointDescription: endpoint,
+            timeoutSeconds: 3.0,
+            rawError: nil
+        )
+        XCTAssertTrue(description.message.contains("No connection response received in 3 seconds"))
+    }
+
+    func testDescribeTimedOutOmitsDuplicateTechnicalDetails() {
+        let description = RealtimeConnectionFailureClassifier.describe(
+            kind: .timedOut,
+            endpointDescription: endpoint,
+            timeoutSeconds: 1.0,
+            rawError: "No connection response received in 1 seconds for endpoint \(endpoint)."
+        )
+        XCTAssertNil(description.technicalDetails)
     }
 
     func testDescribeInvalidEndpointDoesNotRequireEndpoint() {
@@ -152,6 +173,36 @@ final class RealtimeConnectionFailureTests: XCTestCase {
             rawError: nil
         )
         XCTAssertTrue(description.message.contains(RealtimeConnectionFailureClassifier.unknownEndpointDescription))
+    }
+
+    func testDescribeOmitsTechnicalDetailsThatDuplicateMessageForAllKinds() {
+        let cases: [(RealtimeConnectionFailureKind, TimeInterval?)] = [
+            (.invalidEndpoint, nil),
+            (.connectionRefused, nil),
+            (.hostUnreachable, nil),
+            (.timedOut, 2.0),
+            (.networkLost, nil),
+            (.unknown, nil),
+        ]
+
+        for (kind, timeoutSeconds) in cases {
+            let baseline = RealtimeConnectionFailureClassifier.describe(
+                kind: kind,
+                endpointDescription: endpoint,
+                timeoutSeconds: timeoutSeconds,
+                rawError: nil
+            )
+            let withDuplicateDetails = RealtimeConnectionFailureClassifier.describe(
+                kind: kind,
+                endpointDescription: endpoint,
+                timeoutSeconds: timeoutSeconds,
+                rawError: baseline.message
+            )
+            XCTAssertNil(
+                withDuplicateDetails.technicalDetails,
+                "\(kind) should omit details that repeat the user-facing message"
+            )
+        }
     }
 
     // MARK: - Divergence guard
