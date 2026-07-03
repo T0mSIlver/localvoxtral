@@ -211,6 +211,8 @@ final class DictationViewModel {
     @ObservationIgnored
     var sessionModelName: String?
     @ObservationIgnored
+    var sessionReplacementDictionary: ReplacementDictionary?
+    @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
 
     // Per-session sequence counter for the opt-in raw-delta log
@@ -228,6 +230,8 @@ final class DictationViewModel {
     /// the exact pre-processing payload the Logger would emit.
     @ObservationIgnored
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
+    @ObservationIgnored
+    var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"

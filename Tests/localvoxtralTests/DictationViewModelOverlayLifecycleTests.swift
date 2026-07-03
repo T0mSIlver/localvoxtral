@@ -318,6 +318,77 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Ready")
     }
 
+    func testOverlayStreamingReplacementUpdatesDisplayAtWordBoundary() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.replacementDictionaryEnabled = true
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "PostgreSQL", matches: ["postgres"]),
+            ])
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+
+        viewModel.handle(event: .partialTranscript("post"))
+        viewModel.handle(event: .partialTranscript("gres "))
+
+        XCTAssertEqual(overlayCoordinator.refreshCalls.map(\.displayText), [
+            "post",
+            "PostgreSQL ",
+        ])
+        XCTAssertEqual(overlayCoordinator.refreshCalls.map(\.commitText), [
+            "post",
+            "PostgreSQL ",
+        ])
+        XCTAssertEqual(viewModel.pendingSegmentText, "postgres ")
+        XCTAssertEqual(viewModel.currentDictationEventText, "")
+    }
+
+    func testOverlayFinalizeDoesNotDoubleApplyStreamingReplacementAndSavesRawRecord() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.replacementDictionaryEnabled = true
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore(
+            replacementDictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "bar", matches: ["foo"]),
+                ReplacementEntry(replaceWith: "baz", matches: ["bar"]),
+            ])
+        )
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+        viewModel.handle(event: .partialTranscript("foo "))
+        viewModel.handle(event: .finalTranscript("foo "))
+        viewModel.isDictating = false
+        viewModel.isFinalizingStop = true
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.displayText, "bar")
+        XCTAssertEqual(overlayCoordinator.refreshCalls.last?.commitText, "bar")
+        XCTAssertEqual(viewModel.currentDictationEventText, "bar")
+        XCTAssertEqual(viewModel.transcriptText, "foo")
+        XCTAssertEqual(savedRecord?.rawText, "foo")
+        XCTAssertEqual(savedRecord?.polishedText, "bar")
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+    }
+
     func testFinishStoppedSessionSendsReplacementDictionaryInLLMRequest() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.replacementDictionaryEnabled = true

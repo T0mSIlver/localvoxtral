@@ -348,9 +348,21 @@ final class TextInsertionService {
         preferredAppPID: pid_t?
     ) {
         didLogLiveReplacementStandDown = false
+        let entryCount = dictionary?.entries.count ?? 0
         liveReplacementCorrector = dictionary.map { LiveReplacementCorrector(dictionary: $0) }
+        let ruleCount = liveReplacementCorrector?.ruleCount ?? 0
         if liveReplacementCorrector?.hasRules == false {
             liveReplacementCorrector = nil
+        }
+
+        guard liveReplacementCorrector != nil else {
+            if entryCount > 0 {
+                Log.corrector.notice(
+                    "corrector stand-down reason=no valid rules entries=\(entryCount, privacy: .public)"
+                )
+            }
+            liveSessionSpan = nil
+            return
         }
 
         if let caretLocation = readCurrentCaretLocation(preferredAppPID: preferredAppPID) {
@@ -359,11 +371,14 @@ final class TextInsertionService {
                 insertedUTF16Length: 0,
                 preferredAppPID: preferredAppPID
             )
+            Log.corrector.notice(
+                "corrector armed entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=on"
+            )
         } else {
             liveSessionSpan = nil
-            if liveReplacementCorrector != nil {
-                standDownLiveReplacementCorrections(reason: "caret unavailable")
-            }
+            Log.corrector.notice(
+                "corrector armed entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=off reason=caret unavailable"
+            )
         }
     }
 
@@ -435,6 +450,9 @@ final class TextInsertionService {
         _ correction: LiveReplacementCorrection
     ) -> LiveReplacementCorrectionResult {
         guard liveReplacementCorrector != nil else { return .stopped }
+        guard liveSessionSpan != nil else {
+            return postUnguardedLiveReplacementCorrection(correction)
+        }
         guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else {
             standDownLiveReplacementCorrections(reason: "caret unavailable")
             return .stopped
@@ -450,6 +468,16 @@ final class TextInsertionService {
         case .matched:
             return postBackspaceAndFinishLiveReplacementCorrection(correction)
         }
+    }
+
+    private func postUnguardedLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection
+    ) -> LiveReplacementCorrectionResult {
+        guard postBackspaceEvents(count: correction.backspaceCount) else {
+            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+            return .stopped
+        }
+        return postReplacementAndRecordLiveReplacementCorrection(correction)
     }
 
     private func postBackspaceAndFinishLiveReplacementCorrection(
@@ -489,6 +517,9 @@ final class TextInsertionService {
         liveReplacementCorrector?.apply(correction)
         liveSessionSpan?.insertedUTF16Length +=
             (correction.replacementText as NSString).length - (correction.erasedText as NSString).length
+        Log.corrector.notice(
+            "corrector correction posted erased_chars=\(correction.erasedText.count, privacy: .public) replacement_chars=\(correction.replacementText.count, privacy: .public)"
+        )
         return .applied
     }
 
@@ -585,6 +616,9 @@ final class TextInsertionService {
                 return false
             }
         }
+        Log.corrector.notice(
+            "corrector settle timeout expected_utf16=\(expectedLocation, privacy: .public)"
+        )
         return false
     }
 
@@ -613,8 +647,8 @@ final class TextInsertionService {
         liveReplacementCorrector?.standDown()
         if !didLogLiveReplacementStandDown {
             didLogLiveReplacementStandDown = true
-            Log.replacements.notice(
-                "live replacement corrector disabled for session: \(reason, privacy: .public)"
+            Log.corrector.notice(
+                "corrector stand-down reason=\(reason, privacy: .public)"
             )
         }
     }

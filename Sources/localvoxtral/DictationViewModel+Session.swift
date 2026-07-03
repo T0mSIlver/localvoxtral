@@ -34,6 +34,7 @@ extension DictationViewModel {
         sessionStartedAt = nil
         sessionProvider = nil
         sessionModelName = nil
+        sessionReplacementDictionary = nil
     }
 
     func beginDictationSession() {
@@ -49,6 +50,9 @@ extension DictationViewModel {
         clearLatchedSessionMetadata()
         sessionOutputMode = settings.dictationOutputMode
         sessionStartedAt = Date()
+        sessionReplacementDictionary = settings.replacementDictionaryEnabled
+            ? appConfigStore.loadReplacementDictionary()
+            : nil
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -333,9 +337,16 @@ extension DictationViewModel {
             let polishingConfig = settings.llmPolishingConfiguration
             let shouldLoadReplacementDictionary =
                 settings.replacementDictionaryEnabled || polishingConfig != nil
-            let replacementDictionary = shouldLoadReplacementDictionary
-                ? appConfigStore.loadReplacementDictionary()
-                : ReplacementDictionary(entries: [])
+            let replacementDictionary: ReplacementDictionary
+            if settings.replacementDictionaryEnabled,
+               let sessionReplacementDictionary
+            {
+                replacementDictionary = sessionReplacementDictionary
+            } else {
+                replacementDictionary = shouldLoadReplacementDictionary
+                    ? appConfigStore.loadReplacementDictionary()
+                    : ReplacementDictionary(entries: [])
+            }
             let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
             let originalText = currentDictationEventText
             let workingText =
@@ -536,7 +547,7 @@ extension DictationViewModel {
         }
 
         overlayBufferCoordinator.captureLiveCommitTargetAppPID()
-        let dictionary = appConfigStore.loadReplacementDictionary()
+        let dictionary = replacementDictionaryForCurrentSession()
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
             preferredAppPID: overlayBufferCoordinator.commitTargetAppPID
@@ -628,7 +639,18 @@ extension DictationViewModel {
             status: status,
             commitSucceeded: commitSucceeded
         )
+        debugSavedSessionRecordSink?(record)
         sessionStore?.save(record)
+    }
+
+    func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {
+        guard settings.replacementDictionaryEnabled else { return nil }
+        if let sessionReplacementDictionary {
+            return sessionReplacementDictionary
+        }
+        let dictionary = appConfigStore.loadReplacementDictionary()
+        sessionReplacementDictionary = dictionary
+        return dictionary
     }
 
     // MARK: - Connect Timeout

@@ -192,6 +192,25 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
     }
 
+    func testCorrectorStillAppliesWhenInitialCaretIsUnavailable() {
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            caretLocationReader: { _ in nil }
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        XCTAssertEqual(harness.events.value, [
+            .type("voxtral "),
+            .backspace(8),
+            .type("localvoxtral "),
+        ])
+        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
+    }
+
     func testDeltasArrivingDuringInFlightCorrectionAreBufferedUntilAfterCorrection() async {
         let field = TestField("")
         var staleReadsRemaining = 3

@@ -375,18 +375,36 @@ extension DictationViewModel {
     }
 
     func currentOverlayDisplayText() -> String {
-        OverlayBufferTextAssembler.displayText(
-            committedText: currentDictationEventText,
-            pendingText: pendingSegmentText,
-            fallbackPendingText: livePartialText
+        overlayStreamingCorrectedText(
+            OverlayBufferTextAssembler.displayText(
+                committedText: currentDictationEventText,
+                pendingText: pendingSegmentText,
+                fallbackPendingText: livePartialText
+            )
         )
     }
 
     func currentOverlayCommitText() -> String {
-        OverlayBufferTextAssembler.commitText(
-            committedText: currentDictationEventText,
-            pendingText: pendingSegmentText,
-            fallbackPendingText: livePartialText
+        overlayStreamingCorrectedText(
+            OverlayBufferTextAssembler.commitText(
+                committedText: currentDictationEventText,
+                pendingText: pendingSegmentText,
+                fallbackPendingText: livePartialText
+            )
+        )
+    }
+
+    private func overlayStreamingCorrectedText(_ text: String) -> String {
+        guard isOverlayBufferModeEnabled,
+              !isCompletingStoppedSession,
+              let dictionary = replacementDictionaryForCurrentSession()
+        else {
+            return text
+        }
+
+        return LiveReplacementCorrector.completedBoundaryCorrectedText(
+            text,
+            dictionary: dictionary
         )
     }
 }

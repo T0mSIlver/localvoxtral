@@ -26,6 +26,30 @@ struct LiveReplacementCorrector {
         !rules.isEmpty
     }
 
+    var ruleCount: Int {
+        rules.count
+    }
+
+    static func completedBoundaryCorrectedText(
+        _ text: String,
+        dictionary: ReplacementDictionary,
+        includeFinalUnboundedWord: Bool = false
+    ) -> String {
+        var corrector = LiveReplacementCorrector(dictionary: dictionary)
+        guard corrector.hasRules else { return text }
+
+        corrector.recordInsertedText(text)
+        while let correction = corrector.nextCompletedBoundaryCorrection() {
+            corrector.apply(correction)
+        }
+        if includeFinalUnboundedWord,
+           let correction = corrector.finalUnboundedCorrection()
+        {
+            corrector.apply(correction)
+        }
+        return corrector.typedText
+    }
+
     mutating func recordInsertedText(_ text: String) {
         guard !text.isEmpty, !isStandingDown else { return }
         typedText.append(text)
