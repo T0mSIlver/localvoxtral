@@ -241,6 +241,9 @@ private struct TextProcessingSettingsPane: View {
                         "Apply dictionary replacements while streaming in Live Auto-Paste and before commit in Overlay Buffer.",
                     isOn: $settings.replacementDictionaryEnabled
                 )
+                .help(
+                    "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
+                )
             }
 
             SettingsGroup(title: "LLM Polishing") {
