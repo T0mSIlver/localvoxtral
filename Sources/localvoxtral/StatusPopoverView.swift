@@ -158,13 +158,14 @@ struct StatusPopoverView: View {
         .frame(width: Self.contentWidth, alignment: .leading)
     }
 
+    // Same typography as the Status line so failure details read as part of
+    // the popover, not a styled callout.
     private func statusDetailView(_ detail: String) -> some View {
         Text(detail)
-            .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(nil)
             .fixedSize(horizontal: false, vertical: true)
-        .frame(width: Self.contentWidth, alignment: .leading)
+            .frame(width: Self.contentWidth, alignment: .leading)
     }
 
     private func openAccessibilitySettings() {
