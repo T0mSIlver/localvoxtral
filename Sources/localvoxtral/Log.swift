@@ -20,4 +20,5 @@ enum Log {
     /// `SettingsStore.debugLogRealtimeDeltas`; see that property's docs for the
     /// privacy trade-off.
     static let deltas = Logger(subsystem: subsystem, category: "Deltas")
+    static let escape = Logger(subsystem: subsystem, category: "Escape")
 }

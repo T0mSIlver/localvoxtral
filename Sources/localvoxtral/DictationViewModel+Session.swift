@@ -130,6 +130,7 @@ extension DictationViewModel {
 
             isConnectingRealtimeSession = false
             isDictating = true
+            escapeCancelHandler.start()
             statusText = "Listening..."
             restartAudioSendTask()
             restartCommitTask()
@@ -151,6 +152,7 @@ extension DictationViewModel {
             lastError = error.localizedDescription
             isConnectingRealtimeSession = false
             isDictating = false
+            escapeCancelHandler.stop()
             healthMonitor.stop()
             microphone.stop()
             realtimeAPIClient.disconnect()
@@ -311,11 +313,22 @@ extension DictationViewModel {
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let shouldCommitOverlay = sessionMode == .overlayBuffer
 
-        if promotePendingSegment {
+        if promotePendingSegment, !wasCancelled {
             _ = promotePendingRealtimeTextToLatestSegment()
         }
 
-        if shouldCommitOverlay {
+        // Cancelled overlay — dismiss immediately, no commit
+        if shouldCommitOverlay, wasCancelled {
+            overlayBufferCoordinator.reset()
+            completeStoppedSessionCleanup(
+                sessionMode: sessionMode,
+                overlayCommitOutcome: nil,
+                shouldCommitOverlay: true
+            )
+            return
+        }
+
+        if shouldCommitOverlay, !wasCancelled {
             let polishingConfig = settings.llmPolishingConfiguration
             let shouldLoadReplacementDictionary =
                 settings.replacementDictionaryEnabled || polishingConfig != nil
@@ -515,6 +528,7 @@ extension DictationViewModel {
         overlayCommitOutcome: OverlayBufferCommitOutcome?,
         shouldCommitOverlay: Bool
     ) {
+        wasCancelled = false
         isFinalizingStop = false
         isConnectingRealtimeSession = false
         isCompletingStoppedSession = false
@@ -627,6 +641,11 @@ extension DictationViewModel {
         clearPushToTalkShortcutSessionAttempt()
         isConnectingRealtimeSession = false
         isDictating = false
+        // An aborted connect never reaches stopped-session cleanup, so the
+        // cancellation flag must be cleared here or it leaks into the next
+        // session and silently skips its overlay commit.
+        wasCancelled = false
+        escapeCancelHandler.stop()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
