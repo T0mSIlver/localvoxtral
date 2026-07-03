@@ -1,6 +1,33 @@
 import AppKit
 import SwiftUI
 
+struct StatusPopoverConnectionFailurePresenter {
+    static func detail(statusText: String, lastError: String?, endpoint: String) -> String? {
+        guard isConnectionFailureStatus(statusText) else { return nil }
+        if statusText != "Invalid endpoint URL.",
+           lastError?.contains(endpoint) != true
+        {
+            return nil
+        }
+        return "Endpoint: \(endpoint)"
+    }
+
+    private static func isConnectionFailureStatus(_ statusText: String) -> Bool {
+        switch statusText {
+        case "Invalid endpoint URL.",
+             "Connection refused.",
+             "Host unreachable.",
+             "Connection timed out.",
+             "Endpoint path rejected.",
+             "Network lost. Dictation stopped.",
+             "Connection failed.":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct StatusPopoverView: View {
     private static let contentWidth: CGFloat = 280
 
@@ -22,33 +49,12 @@ struct StatusPopoverView: View {
         return viewModel.isDictating ? "Stop Dictation" : "Start Dictation"
     }
 
-    private var connectionFailureSummary: (title: String, endpoint: String)? {
-        let endpoint = sanitizedRealtimeEndpointDescription
-        let title: String
-        switch viewModel.statusText {
-        case "Invalid endpoint URL.":
-            title = "Invalid endpoint URL"
-        case "Connection refused.":
-            title = "Connection refused"
-        case "Host unreachable.":
-            title = "Host unreachable"
-        case "Connection timed out.":
-            title = "Connection timed out"
-        case "Network lost. Dictation stopped.":
-            title = "Network lost"
-        case "Connection failed.":
-            title = "Connection failed"
-        default:
-            return nil
-        }
-
-        if viewModel.statusText != "Invalid endpoint URL.",
-           viewModel.lastError?.contains(endpoint) != true
-        {
-            return nil
-        }
-
-        return (title, endpoint)
+    private var connectionFailureDetail: String? {
+        StatusPopoverConnectionFailurePresenter.detail(
+            statusText: viewModel.statusText,
+            lastError: viewModel.lastError,
+            endpoint: sanitizedRealtimeEndpointDescription
+        )
     }
 
     private var sanitizedRealtimeEndpointDescription: String {
@@ -130,13 +136,10 @@ struct StatusPopoverView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(width: Self.contentWidth, alignment: .leading)
 
-            if let connectionFailureSummary {
-                statusDetailView(
-                    title: connectionFailureSummary.title,
-                    detail: connectionFailureSummary.endpoint
-                )
+            if let connectionFailureDetail {
+                statusDetailView(connectionFailureDetail)
             } else if let lastError = viewModel.lastError {
-                statusDetailView(title: "Error", detail: lastError)
+                statusDetailView("Error: \(lastError)")
             }
 
             Divider()
@@ -155,22 +158,12 @@ struct StatusPopoverView: View {
         .frame(width: Self.contentWidth, alignment: .leading)
     }
 
-    private func statusDetailView(title: String, detail: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Circle()
-                .fill(.red)
-                .frame(width: 6, height: 6)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption)
-                    .foregroundStyle(.primary)
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(nil)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
+    private func statusDetailView(_ detail: String) -> some View {
+        Text(detail)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(nil)
+            .fixedSize(horizontal: false, vertical: true)
         .frame(width: Self.contentWidth, alignment: .leading)
     }
 

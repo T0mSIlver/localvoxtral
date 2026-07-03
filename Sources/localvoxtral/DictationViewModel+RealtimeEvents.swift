@@ -205,6 +205,10 @@ extension DictationViewModel {
             handleConnectFailure(reason: .socketError(message: message))
             return
         }
+        if isResolvingConnectTimeout {
+            handleConnectFailure(reason: .socketError(message: message))
+            return
+        }
         if !acceptsRealtimeEvents {
             statusText = "Ready"
             return

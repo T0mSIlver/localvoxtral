@@ -191,6 +191,8 @@ final class DictationViewModel {
     @ObservationIgnored
     var connectTimeoutTask: Task<Void, Never>?
     @ObservationIgnored
+    var isResolvingConnectTimeout = false
+    @ObservationIgnored
     var recentFailureResetTask: Task<Void, Never>?
     @ObservationIgnored
     var finalizationWatchdogTask: Task<Void, Never>?

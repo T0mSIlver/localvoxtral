@@ -61,6 +61,43 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertTrue(viewModel.lastError?.contains(endpoint) == true)
     }
 
+    func testRefusedSocketErrorDuringTimeoutResolutionWinsOverTimeout() async {
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.statusText = "Connecting to realtime backend..."
+        retainForTestProcessLifetime(viewModel)
+
+        await viewModel.resolveConnectTimeout(timeoutSeconds: TimingConstants.connectTimeout) { _ in
+            viewModel.handle(
+                event: .error(
+                    "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1004] url=ws://127.0.0.1:8001/v1/realtimeaa"
+                )
+            )
+        }
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertEqual(viewModel.statusText, "Connection refused.")
+        XCTAssertTrue(viewModel.lastError?.contains("Connection refused") == true)
+        XCTAssertFalse(viewModel.lastError?.contains("No connection response received") == true)
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    func testEndpointRejectedSocketErrorSurfacesPathStatus() {
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.handleConnectFailure(
+            reason: .socketError(
+                message: "WebSocket failed: bad server response [NSURLErrorDomain:-1011] url=ws://127.0.0.1:8000/v1/realtimeaa"
+            )
+        )
+
+        XCTAssertEqual(viewModel.statusText, "Endpoint path rejected.")
+        XCTAssertTrue(viewModel.lastError?.contains("Check the path") == true)
+    }
+
     func testInvalidEndpointReasonSurfacesSettingsGuidance() {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         viewModel.isShowingConnectionFailureAlert = true
@@ -81,6 +118,19 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertEqual(viewModel.statusText, "Network lost. Dictation stopped.")
         XCTAssertNotNil(viewModel.lastError)
+    }
+
+    func testConnectionFailurePopoverDetailDoesNotRepeatStatusText() {
+        let status = "Connection refused."
+        let endpoint = "ws://127.0.0.1:8001/v1/realtimeaa"
+        let detail = StatusPopoverConnectionFailurePresenter.detail(
+            statusText: status,
+            lastError: "Connection refused at \(endpoint). Make sure the backend is running and the port is correct.",
+            endpoint: endpoint
+        )
+
+        XCTAssertEqual(detail, "Endpoint: \(endpoint)")
+        XCTAssertFalse(detail?.contains(status) == true)
     }
 
     // MARK: - Accessibility gate at dictation start

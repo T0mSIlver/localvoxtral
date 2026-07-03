@@ -679,14 +679,14 @@ extension DictationViewModel {
             try? await Task.sleep(for: .seconds(timeout))
             guard let self, self.isConnectingRealtimeSession else { return }
 
-            abortConnectingSession()
-            handleConnectFailure(reason: .timedOut(timeoutSeconds: timeout))
+            await self.resolveConnectTimeout(timeoutSeconds: timeout)
         }
     }
 
     func cancelConnectTimeout() {
         connectTimeoutTask?.cancel()
         connectTimeoutTask = nil
+        isResolvingConnectTimeout = false
     }
 
     func abortConnectingSession(disconnectSocket: Bool = true) {
@@ -761,6 +761,38 @@ extension DictationViewModel {
         case socketError(message: String?)
         /// The system network path was lost while opening the socket.
         case networkLost
+    }
+
+    func resolveConnectTimeout(
+        timeoutSeconds: TimeInterval,
+        sleepFor: (TimeInterval) async -> Void = DictationViewModel.sleepForConnectTimeoutSocketErrorGrace
+    ) async {
+        guard isConnectingRealtimeSession else { return }
+
+        if let lastSocketErrorMessage, !lastSocketErrorMessage.trimmed.isEmpty {
+            abortConnectingSession()
+            handleConnectFailure(reason: .socketError(message: lastSocketErrorMessage))
+            return
+        }
+
+        isResolvingConnectTimeout = true
+        await sleepFor(TimingConstants.connectTimeoutSocketErrorGrace)
+        isResolvingConnectTimeout = false
+
+        guard !Task.isCancelled, isConnectingRealtimeSession else { return }
+
+        if let lastSocketErrorMessage, !lastSocketErrorMessage.trimmed.isEmpty {
+            abortConnectingSession()
+            handleConnectFailure(reason: .socketError(message: lastSocketErrorMessage))
+            return
+        }
+
+        abortConnectingSession()
+        handleConnectFailure(reason: .timedOut(timeoutSeconds: timeoutSeconds))
+    }
+
+    private static func sleepForConnectTimeoutSocketErrorGrace(_ duration: TimeInterval) async {
+        try? await Task.sleep(for: .seconds(duration))
     }
 
     func handleConnectFailure(reason: RealtimeConnectFailureReason) {

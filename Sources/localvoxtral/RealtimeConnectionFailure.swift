@@ -18,6 +18,9 @@ enum RealtimeConnectionFailureKind: Sendable, Equatable {
     case hostUnreachable
     /// The connection attempt did not complete within the connect timeout.
     case timedOut
+    /// The host/port accepted a connection but rejected the websocket upgrade,
+    /// usually because the configured path is not a realtime websocket route.
+    case endpointRejected
     /// The system reported the network path was lost while opening the socket.
     case networkLost
     /// Any other failure (unexpected socket close, TLS error, etc.).
@@ -103,6 +106,14 @@ enum RealtimeConnectionFailureClassifier {
                 technicalDetails: nil
             )
 
+        case .endpointRejected:
+            let message = "Endpoint path rejected by server at \(endpoint). Check the path."
+            return RealtimeConnectionFailureDescription(
+                status: "Endpoint path rejected.",
+                message: message,
+                technicalDetails: Self.technicalDetails(rawError, message: message)
+            )
+
         case .networkLost:
             // Matches DictationViewModel.StatusStrings.networkLostDictationStopped
             // (kept verbatim so StatusToken mapping continues to recognize it).
@@ -142,6 +153,16 @@ enum RealtimeConnectionFailureClassifier {
             ":-1001", "NSURLErrorTimedOut", "timed out", "timed out)"
         ], in: message) {
             return .timedOut
+        }
+
+        if matches(any: [
+            ":-1011", "NSURLErrorBadServerResponse", "bad server response",
+            "not a websocket", "not a web socket", "websocket upgrade",
+            "web socket upgrade", "expected http 101", "http 400",
+            "http 404", "http 426", "status code 400", "status code 404",
+            "status code 426"
+        ], in: message) {
+            return .endpointRejected
         }
 
         if matches(any: [

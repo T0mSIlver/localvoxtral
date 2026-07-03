@@ -49,6 +49,13 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         )
     }
 
+    func testClassifiesEndpointRejectedByBadServerResponse() {
+        let message = "WebSocket failed: The operation couldn't be completed. [NSURLErrorDomain:-1011] url=ws://127.0.0.1:8000/v1/realtimeaa"
+        XCTAssertEqual(
+            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: message), .endpointRejected
+        )
+    }
+
     func testClassifiesLocalizedPhrasesWhenErrorCodeAbsent() {
         XCTAssertEqual(
             RealtimeConnectionFailureClassifier.classify(socketErrorMessage: "connection refused"), .connectionRefused
@@ -61,6 +68,9 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         )
         XCTAssertEqual(
             RealtimeConnectionFailureClassifier.classify(socketErrorMessage: "The request timed out."), .timedOut
+        )
+        XCTAssertEqual(
+            RealtimeConnectionFailureClassifier.classify(socketErrorMessage: "WebSocket upgrade failed with HTTP 404."), .endpointRejected
         )
         XCTAssertEqual(
             RealtimeConnectionFailureClassifier.classify(socketErrorMessage: "Internet connection appears to be offline."), .networkLost
@@ -123,6 +133,19 @@ final class RealtimeConnectionFailureTests: XCTestCase {
         XCTAssertTrue(description.message.contains("No connection response received in 3 seconds"))
     }
 
+    func testDescribeEndpointRejectedNamesPathGuidance() {
+        let description = RealtimeConnectionFailureClassifier.describe(
+            kind: .endpointRejected,
+            endpointDescription: endpoint,
+            rawError: "bad server response [NSURLErrorDomain:-1011]"
+        )
+
+        XCTAssertEqual(description.status, "Endpoint path rejected.")
+        XCTAssertTrue(description.message.contains(endpoint))
+        XCTAssertTrue(description.message.localizedCaseInsensitiveContains("check the path"))
+        XCTAssertEqual(description.technicalDetails, "bad server response [NSURLErrorDomain:-1011]")
+    }
+
     func testDescribeTimedOutOmitsDuplicateTechnicalDetails() {
         let description = RealtimeConnectionFailureClassifier.describe(
             kind: .timedOut,
@@ -181,6 +204,7 @@ final class RealtimeConnectionFailureTests: XCTestCase {
             (.connectionRefused, nil),
             (.hostUnreachable, nil),
             (.timedOut, 2.0),
+            (.endpointRejected, nil),
             (.networkLost, nil),
             (.unknown, nil),
         ]
