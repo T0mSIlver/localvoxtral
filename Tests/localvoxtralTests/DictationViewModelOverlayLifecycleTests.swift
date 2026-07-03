@@ -606,14 +606,13 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.activeClientSource = .realtimeAPI
         viewModel.isDictating = true
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.currentDictationEventText = "hello"
         // Simulate the EscapeCancelHandler being armed during active dictation.
         EscapeCancelHandler.isDictatingRef = true
 
-        viewModel.handle(event: .disconnected, source: .realtimeAPI)
+        viewModel.handle(event: .disconnected)
 
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
@@ -707,7 +706,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.activeClientSource = .realtimeAPI
         viewModel.isConnectingRealtimeSession = true
         EscapeCancelHandler.isDictatingRef = true
         let stopCountBefore = EscapeCancelHandler.stopCallCount
@@ -733,7 +731,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.activeClientSource = .realtimeAPI
         viewModel.isConnectingRealtimeSession = true
         viewModel.cancelDictation()
         XCTAssertFalse(viewModel.wasCancelled)

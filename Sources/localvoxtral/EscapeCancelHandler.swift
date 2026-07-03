@@ -2,6 +2,7 @@ import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
+import IOKit.hid
 import os
 
 /// Intercepts Escape key presses during active dictation and consumes them
@@ -61,6 +62,14 @@ final class EscapeCancelHandler {
     @inline(__always) private static func record(_: EscapeCancelStartOutcome) {}
     #endif
 
+    private static func describeHIDAccess(_ access: IOHIDAccessType) -> String {
+        switch access {
+        case kIOHIDAccessTypeGranted: return "granted"
+        case kIOHIDAccessTypeDenied: return "denied"
+        default: return "unknown(\(access.rawValue))"
+        }
+    }
+
     func start() {
         #if DEBUG
         Self.startCallCount += 1
@@ -72,7 +81,14 @@ final class EscapeCancelHandler {
         // (1) Accessibility trust is mandatory for an *active* (consuming)
         // event tap. Checking it here (no prompt) yields a clear, actionable
         // log line instead of a silent nil from tapCreate.
+        // Root-cause diagnostics: keyboard event taps involve two separate TCC
+        // services on modern macOS. Log both up front so a failing tap is
+        // attributable from a single `log stream` capture.
         let trusted = AXIsProcessTrusted()
+        let inputMonitoring = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+        Log.escape.notice(
+            "permission state: AXIsProcessTrusted=\(trusted, privacy: .public) inputMonitoring=\(Self.describeHIDAccess(inputMonitoring), privacy: .public)"
+        )
         guard trusted else {
             Self.record(.notTrusted)
             Log.escape.error(
@@ -123,7 +139,7 @@ final class EscapeCancelHandler {
         Self.activeTap = tap
         runLoopSource = source
         Self.record(.created)
-        Log.escape.info(
+        Log.escape.notice(
             "Escape CGEventTap created and enabled on the main run loop (trusted=\(trusted, privacy: .public))."
         )
     }
