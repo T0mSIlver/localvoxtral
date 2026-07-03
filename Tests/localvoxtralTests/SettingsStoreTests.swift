@@ -273,6 +273,58 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.dictationShortcut, SettingsStore.defaultDictationShortcut)
     }
 
+    // MARK: - dual shortcut migration
+
+    func testLegacyDictationShortcutMigratesToOverlayBufferShortcut() {
+        let legacyShortcut = DictationShortcut(
+            keyCode: UInt32(kVK_ANSI_D),
+            carbonModifierFlags: UInt32(cmdKey | shiftKey)
+        )
+        defaults.set(true, forKey: "settings.dictation_shortcut_enabled")
+        defaults.set(legacyShortcut.keyCode, forKey: "settings.dictation_shortcut_key_code")
+        defaults.set(
+            legacyShortcut.carbonModifierFlags,
+            forKey: "settings.dictation_shortcut_carbon_modifiers"
+        )
+
+        let store = makeStore()
+
+        XCTAssertEqual(store.overlayBufferShortcut, legacyShortcut)
+        XCTAssertNil(store.livePasteShortcut)
+        XCTAssertEqual(
+            (defaults.object(forKey: "settings.overlay_buffer_shortcut_key_code") as? NSNumber)?
+                .uint32Value,
+            legacyShortcut.keyCode
+        )
+        XCTAssertEqual(
+            (
+                defaults.object(forKey: "settings.overlay_buffer_shortcut_carbon_modifiers")
+                    as? NSNumber
+            )?.uint32Value,
+            legacyShortcut.carbonModifierFlags
+        )
+        XCTAssertTrue(defaults.bool(forKey: "settings.overlay_buffer_shortcut_enabled"))
+    }
+
+    func testDisabledLegacyDictationShortcutMigratesToDisabledOverlayShortcut() {
+        let legacyShortcut = DictationShortcut(
+            keyCode: UInt32(kVK_ANSI_F),
+            carbonModifierFlags: UInt32(controlKey | optionKey)
+        )
+        defaults.set(false, forKey: "settings.dictation_shortcut_enabled")
+        defaults.set(legacyShortcut.keyCode, forKey: "settings.dictation_shortcut_key_code")
+        defaults.set(
+            legacyShortcut.carbonModifierFlags,
+            forKey: "settings.dictation_shortcut_carbon_modifiers"
+        )
+
+        let store = makeStore()
+
+        XCTAssertNil(store.overlayBufferShortcut)
+        XCTAssertFalse(defaults.bool(forKey: "settings.overlay_buffer_shortcut_enabled"))
+        XCTAssertNil(store.livePasteShortcut)
+    }
+
     // MARK: - llmPolishingConfiguration
 
     func testLLMPolishingConfiguration_disabledReturnsNil() {

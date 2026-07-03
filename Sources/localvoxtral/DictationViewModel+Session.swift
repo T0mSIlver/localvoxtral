@@ -6,8 +6,8 @@ extension DictationViewModel {
     // MARK: - Session Lifecycle
 
     // Session metadata lifecycle:
-    // - Set: beginDictationSession() — captures values that should stay stable for
-    //   the active session even if Settings are edited before commit finishes.
+    // - Set: beginDictationSession(outputMode:) — captures values that should
+    //   stay stable for the active session even if Settings are edited before commit finishes.
     // - Cleared: finishStoppedSession(), abortConnectingSession(), and early-return
     //   error paths in beginDictationSession() where no session was established.
     // All session exit paths MUST clear these fields to nil.
@@ -29,7 +29,7 @@ extension DictationViewModel {
         return true
     }
 
-    private func clearLatchedSessionMetadata() {
+    func clearLatchedSessionMetadata() {
         sessionOutputMode = nil
         sessionStartedAt = nil
         sessionProvider = nil
@@ -37,7 +37,7 @@ extension DictationViewModel {
         sessionReplacementDictionary = nil
     }
 
-    func beginDictationSession() {
+    func beginDictationSession(outputMode: DictationOutputMode? = nil) {
         lastSocketErrorMessage = nil
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
@@ -48,8 +48,9 @@ extension DictationViewModel {
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        let requestedOutputMode = outputMode ?? settings.dictationOutputMode
         clearLatchedSessionMetadata()
-        sessionOutputMode = settings.dictationOutputMode
+        sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
         sessionReplacementDictionary = settings.replacementDictionaryEnabled
             ? appConfigStore.loadReplacementDictionary()

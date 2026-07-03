@@ -88,7 +88,10 @@ final class DictationViewModel {
             if message == HotKeyManager.handlerRegistrationErrorMessage {
                 return .hotKeyHandlerRegistrationFailure
             }
-            if message == HotKeyManager.unavailableErrorMessage {
+            if message == HotKeyManager.unavailableErrorMessage
+                || message == HotKeyManager.livePasteUnavailableErrorMessage
+                || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
+            {
                 return .hotKeyShortcutUnavailable
             }
             if message.localizedCaseInsensitiveContains("websocket receive failed") {
@@ -265,6 +268,9 @@ final class DictationViewModel {
     // to be cancelled if the user releases before dictation actually begins.
     @ObservationIgnored
     private var hasActivePushToTalkShortcutSession = false
+    // True when a modifier-only hold gesture started dictation (push-to-talk semantics).
+    @ObservationIgnored
+    private var isModifierOnlyHoldActive = false
 
     init(
         settings: SettingsStore,
@@ -344,15 +350,13 @@ final class DictationViewModel {
             networkMonitor.start()
         }
 
+        hotKeyManager.onPressWithMode = { [weak self] mode in self?.handleDictationShortcutPress(mode: mode) }
         hotKeyManager.onPress = { [weak self] in self?.handleDictationShortcutPress() }
         hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
+        hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
+        hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
         if startRuntimeServices {
-            switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
-            case .success:
-                break
-            case .failure(let reason):
-                applyHotKeyRegistrationFailure(reason)
-            }
+            registerCurrentHotKeys()
         }
 
         escapeCancelHandler.onCancel = { [weak self] in self?.cancelDictation() }
@@ -521,17 +525,25 @@ final class DictationViewModel {
 
     // MARK: - Public API
 
-    private func handleDictationShortcutPress() {
+    private func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
         switch settings.dictationShortcutMode {
         case .toggle:
             hasActivePushToTalkShortcutSession = false
-            toggleDictation()
+            if isDictating {
+                stopDictation(reason: "manual toggle")
+            } else if isConnectingRealtimeSession {
+                statusText = StatusStrings.connectingRealtimeBackend
+            } else if isFinalizingStop {
+                statusText = StatusStrings.finalizingPreviousDictation
+            } else {
+                startDictation(outputMode: mode)
+            }
         case .pushToTalk:
             guard !isPushToTalkShortcutHeld else { return }
             isPushToTalkShortcutHeld = true
             guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
             hasActivePushToTalkShortcutSession = true
-            startDictation()
+            startDictation(outputMode: mode)
             if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
                 hasActivePushToTalkShortcutSession = false
             }
@@ -539,6 +551,23 @@ final class DictationViewModel {
     }
 
     private func handleDictationShortcutRelease() {
+        // Modifier-only hold release
+        if isModifierOnlyHoldActive {
+            isModifierOnlyHoldActive = false
+            isPushToTalkShortcutHeld = false
+            if isDictating {
+                stopDictation(reason: "modifier hold release")
+            } else if isConnectingRealtimeSession {
+                statusText = StatusStrings.connectingRealtimeBackend
+                return
+            } else if isAwaitingMicrophonePermission {
+                statusText = StatusStrings.ready
+                return
+            }
+            clearPushToTalkShortcutSessionAttempt()
+            return
+        }
+
         guard isPushToTalkShortcutHeld else { return }
         isPushToTalkShortcutHeld = false
 
@@ -564,9 +593,29 @@ final class DictationViewModel {
         clearPushToTalkShortcutSessionAttempt()
     }
 
+    /// Modifier-only hold gesture started — use push-to-talk semantics with live auto-paste.
+    private func handleModifierOnlyHoldStart() {
+        guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
+        isModifierOnlyHoldActive = true
+        isPushToTalkShortcutHeld = true
+        hasActivePushToTalkShortcutSession = true
+        startDictation(outputMode: .liveAutoPaste)
+        if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+            hasActivePushToTalkShortcutSession = false
+            isModifierOnlyHoldActive = false
+            isPushToTalkShortcutHeld = false
+        }
+    }
+
+    /// Modifier-only TAP is a toggle by contract regardless of the configured
+    /// shortcut behavior: taps have no release event, so routing them through
+    /// push-to-talk semantics latches dictation on with no way to stop it.
+    private func handleModifierOnlyTap(mode: DictationOutputMode) {
+        toggleDictation(outputMode: mode)
+    }
+
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
-        settings.dictationShortcutMode == .pushToTalk
-            && hasActivePushToTalkShortcutSession
+        hasActivePushToTalkShortcutSession
             && !isPushToTalkShortcutHeld
     }
 
@@ -574,7 +623,7 @@ final class DictationViewModel {
         hasActivePushToTalkShortcutSession = false
     }
 
-    func toggleDictation() {
+    func toggleDictation(outputMode: DictationOutputMode? = nil) {
         hasActivePushToTalkShortcutSession = false
         if isDictating {
             stopDictation(reason: "manual toggle")
@@ -583,7 +632,7 @@ final class DictationViewModel {
         } else if isFinalizingStop {
             statusText = StatusStrings.finalizingPreviousDictation
         } else {
-            startDictation()
+            startDictation(outputMode: outputMode)
         }
     }
 
@@ -601,13 +650,55 @@ final class DictationViewModel {
         }
     }
 
+    /// Re-register the hotkey based on current settings.
+    /// Called when modifier-only mode or modifier key selection changes.
+    func applyHotKeySettingsChange() {
+        switch registerCurrentHotKeys() {
+        case .success:
+            if !isDictating, !isFinalizingStop,
+               (currentStatusToken == .hotKeyHandlerRegistrationFailure
+                || currentStatusToken == .hotKeyShortcutUnavailable)
+            {
+                statusText = StatusStrings.ready
+            }
+            if currentErrorToken == .hotKeyShortcutUnavailable
+                || currentErrorToken == .hotKeyHandlerRegistrationFailure
+            {
+                lastError = nil
+            }
+        case .failure(let reason):
+            applyHotKeyRegistrationFailure(reason)
+        }
+    }
+
+    /// Register hotkeys based on current settings.
+    /// Uses modifier-only, dual shortcuts, or legacy single shortcut depending on config.
+    @discardableResult
+    private func registerCurrentHotKeys() -> HotKeyManager.RegistrationResult {
+        if settings.modifierOnlyHotKeyEnabled {
+            return hotKeyManager.registerModifierOnly(
+                settings.modifierOnlyHotKeyModifier,
+                holdThreshold: settings.modifierOnlyHoldDelay
+            )
+        }
+
+        // Use dual shortcut registration
+        let overlayShortcut = settings.overlayBufferShortcut
+        let livePasteShortcut = settings.livePasteShortcut
+
+        return hotKeyManager.registerDual(
+            overlay: overlayShortcut,
+            livePaste: livePasteShortcut
+        )
+    }
+
     func updateDictationShortcut(_ shortcut: DictationShortcut?) {
         let previousShortcut = settings.dictationShortcut
         let previousWasEnabled = settings.dictationShortcutEnabled
 
         settings.setDictationShortcut(shortcut)
 
-        switch hotKeyManager.register(shortcut: settings.dictationShortcut) {
+        switch registerCurrentHotKeys() {
         case .success:
             if !isDictating, !isFinalizingStop,
                (currentStatusToken == .hotKeyHandlerRegistrationFailure
@@ -628,8 +719,62 @@ final class DictationViewModel {
             } else {
                 settings.setDictationShortcut(nil)
             }
-            _ = hotKeyManager.register(shortcut: settings.dictationShortcut)
+            _ = registerCurrentHotKeys()
             applyHotKeyRegistrationFailure(reason)
+        }
+    }
+
+    func updateOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
+        let previousShortcut = settings.overlayBufferShortcut
+        let previousWasEnabled = settings.overlayBufferShortcutEnabled
+
+        settings.setOverlayBufferShortcut(shortcut)
+
+        switch registerCurrentHotKeys() {
+        case .success:
+            clearHotKeyErrors()
+        case .failure(let reason):
+            if previousWasEnabled {
+                settings.setOverlayBufferShortcut(previousShortcut ?? SettingsStore.defaultDictationShortcut)
+            } else {
+                settings.setOverlayBufferShortcut(nil)
+            }
+            _ = registerCurrentHotKeys()
+            applyHotKeyRegistrationFailure(reason)
+        }
+    }
+
+    func updateLivePasteShortcut(_ shortcut: DictationShortcut?) {
+        let previousShortcut = settings.livePasteShortcut
+        let previousWasEnabled = settings.livePasteShortcutEnabled
+
+        settings.setLivePasteShortcut(shortcut)
+
+        switch registerCurrentHotKeys() {
+        case .success:
+            clearHotKeyErrors()
+        case .failure(let reason):
+            if previousWasEnabled, let previousShortcut {
+                settings.setLivePasteShortcut(previousShortcut)
+            } else {
+                settings.setLivePasteShortcut(nil)
+            }
+            _ = registerCurrentHotKeys()
+            applyHotKeyRegistrationFailure(reason)
+        }
+    }
+
+    private func clearHotKeyErrors() {
+        if !isDictating, !isFinalizingStop,
+           (currentStatusToken == .hotKeyHandlerRegistrationFailure
+            || currentStatusToken == .hotKeyShortcutUnavailable)
+        {
+            statusText = StatusStrings.ready
+        }
+        if currentErrorToken == .hotKeyShortcutUnavailable
+            || currentErrorToken == .hotKeyHandlerRegistrationFailure
+        {
+            lastError = nil
         }
     }
 
@@ -688,7 +833,7 @@ final class DictationViewModel {
         startDictation()
     }
 
-    func startDictation() {
+    func startDictation(outputMode: DictationOutputMode? = nil) {
         guard !isDictating else { return }
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
@@ -720,7 +865,7 @@ final class DictationViewModel {
 
         switch microphone.authorizationStatus() {
         case .authorized:
-            beginDictationSession()
+            beginDictationSession(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
@@ -743,7 +888,7 @@ final class DictationViewModel {
                         self.hasActivePushToTalkShortcutSession = false
                         return
                     }
-                    self.beginDictationSession()
+                    self.beginDictationSession(outputMode: outputMode)
                 }
             }
             Task { [weak self] in
@@ -805,7 +950,7 @@ final class DictationViewModel {
         pendingSegmentText = ""
         currentDictationEventText = ""
         if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
-            sessionOutputMode = nil
+            clearLatchedSessionMetadata()
         }
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
@@ -944,18 +1089,36 @@ final class DictationViewModel {
         case .shortcutUnavailable:
             statusText = HotKeyManager.registrationErrorStatus
             lastError = HotKeyManager.unavailableErrorMessage
+        case .livePasteShortcutUnavailable:
+            statusText = HotKeyManager.registrationErrorStatus
+            lastError = HotKeyManager.livePasteUnavailableErrorMessage
+        case .modifierOnlyHotKeyUnavailable:
+            statusText = HotKeyManager.registrationErrorStatus
+            lastError = HotKeyManager.modifierOnlyUnavailableErrorMessage
         }
     }
 }
 
 #if DEBUG
 extension DictationViewModel {
-    func debugHandleDictationShortcutPressForTesting() {
-        handleDictationShortcutPress()
+    func debugHandleDictationShortcutPressForTesting(mode: DictationOutputMode? = nil) {
+        handleDictationShortcutPress(mode: mode)
     }
 
     func debugHandleDictationShortcutReleaseForTesting() {
         handleDictationShortcutRelease()
+    }
+
+    func debugHandleModifierOnlyTapForTesting(mode: DictationOutputMode) {
+        handleModifierOnlyTap(mode: mode)
+    }
+
+    func debugHandleModifierOnlyHoldStartForTesting() {
+        handleModifierOnlyHoldStart()
+    }
+
+    var debugIsPushToTalkShortcutHeldForTesting: Bool {
+        isPushToTalkShortcutHeld
     }
 
     func debugSetPushToTalkShortcutStateForTesting(
@@ -973,6 +1136,14 @@ extension DictationViewModel {
     /// not entered when disabled". Pass `nil` to clear.
     func debugConfigureDeltaLogSink(_ sink: ((DebugRealtimeDeltaLogRecord) -> Void)?) {
         debugDeltaLogSink = sink
+    }
+
+    func debugSetModifierOnlyHoldStateForTesting(isActive: Bool) {
+        isModifierOnlyHoldActive = isActive
+    }
+
+    var debugCurrentHotKeyRegistrationKindForTesting: HotKeyManager.DebugRegistrationKind {
+        hotKeyManager.debugCurrentRegistrationKind
     }
 }
 #endif

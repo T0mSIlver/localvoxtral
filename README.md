@@ -20,7 +20,7 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 ## Features
 
-- Global shortcut with selectable behavior: `Toggle` (press-to-start/stop) or `Push to Talk` (hold-to-dictate)
+- Global shortcuts: a single modifier key (tap for Overlay Buffer, hold for Live Auto-Paste) or per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
 - Native menu bar app with instant open and visual feedback with the icon
 - Output modes: overlay buffer (commit on stop) or live auto-paste into focused input
 - Personal replacement dictionary (exact match or exact match + LLM-aware-replacement)
@@ -45,11 +45,29 @@ If macOS blocks first launch, go to **System Settings -> Privacy & Security** an
 open ./dist/localvoxtral.app
 ```
 
+## Shortcuts
+
+Two ways to trigger dictation, configured in **Settings -> Dictation**:
+
+**Single modifier key** — Fn/Globe, Right Command, or Right Option. One key, two gestures:
+
+| Gesture | Behavior |
+|---|---|
+| Tap | Toggle Overlay Buffer dictation on/off |
+| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk — dictates while held, stops on release |
+
+The gesture selects the output mode, so both workflows are always one key away. Pressing any other key while the modifier is down cancels the gesture, so regular keyboard combos are unaffected. Requires Accessibility permission.
+
+**Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
+
+The **Output mode** setting applies to dictation started from the menu bar. Keyboard gestures and per-mode shortcuts select their mode directly.
+
+**Escape** cancels an in-progress dictation.
+
 ## Settings
 
 - Open **Settings** from the menu bar popover to set:
-  - Dictation keyboard shortcut  
-  - Shortcut behavior (`Toggle` / `Push to Talk`)
+  - Dictation trigger: single modifier key (tap/hold) or per-mode keyboard shortcuts (`Toggle` / `Push to Talk`)
   - Realtime endpoint (URL, model name, API key)
   - Commit interval (`vLLM`/`voxmlx`)
   - Auto-copy final segment

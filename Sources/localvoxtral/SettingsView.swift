@@ -38,6 +38,24 @@ struct SettingsView: View {
         )
     }
 
+    private var overlayBufferShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.overlayBufferShortcut },
+            set: { newValue in
+                viewModel.updateOverlayBufferShortcut(newValue)
+            }
+        )
+    }
+
+    private var livePasteShortcutBinding: Binding<DictationShortcut?> {
+        Binding(
+            get: { settings.livePasteShortcut },
+            set: { newValue in
+                viewModel.updateLivePasteShortcut(newValue)
+            }
+        )
+    }
+
     var body: some View {
         TabView {
             ConnectionSettingsPane(
@@ -53,6 +71,8 @@ struct SettingsView: View {
                 settings: settings,
                 viewModel: viewModel,
                 dictationShortcutBinding: dictationShortcutBinding,
+                overlayBufferShortcutBinding: overlayBufferShortcutBinding,
+                livePasteShortcutBinding: livePasteShortcutBinding,
                 shortcutValidationError: $shortcutValidationError
             )
             .tabItem {
@@ -135,11 +155,155 @@ private struct DictationSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
     let dictationShortcutBinding: Binding<DictationShortcut?>
+    let overlayBufferShortcutBinding: Binding<DictationShortcut?>
+    let livePasteShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
+    @State private var overlayValidationError: String?
+    @State private var livePasteValidationError: String?
 
     var body: some View {
         SettingsPage {
-            SettingsGroup(title: "Behavior") {
+            SettingsGroup(title: "Start dictation with") {
+                SettingsFieldRow(title: "Trigger") {
+                    Picker("", selection: Binding(
+                        get: { settings.modifierOnlyHotKeyEnabled },
+                        set: { newValue in
+                            settings.modifierOnlyHotKeyEnabled = newValue
+                            viewModel.applyHotKeySettingsChange()
+                        }
+                    )) {
+                        Text("Single modifier key").tag(true)
+                        Text("Keyboard shortcuts").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+
+                if settings.modifierOnlyHotKeyEnabled {
+                    SettingsFieldRow(title: "Modifier key") {
+                        Picker("", selection: Binding(
+                            get: { settings.modifierOnlyHotKeyModifier },
+                            set: { newValue in
+                                settings.modifierOnlyHotKeyModifier = newValue
+                                viewModel.applyHotKeySettingsChange()
+                            }
+                        )) {
+                            ForEach(ModifierOnlyHotKeyManager.ModifierKey.allCases) { key in
+                                Text(key.displayName).tag(key)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                    }
+
+                    SettingsFieldRow(title: "Tap") {
+                        Text("Overlay Buffer — toggle dictation on and off.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    SettingsFieldRow(title: "Hold") {
+                        Text("Live Auto-Paste — talk while held, stops on release.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    SettingsFieldRow(title: "Hold delay") {
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: Binding(
+                                    get: { settings.modifierOnlyHoldDelay },
+                                    set: { newValue in
+                                        settings.modifierOnlyHoldDelay = newValue
+                                        viewModel.applyHotKeySettingsChange()
+                                    }
+                                ),
+                                in: 0.1...0.8,
+                                step: 0.05
+                            )
+                            Text("\(Int(settings.modifierOnlyHoldDelay * 1000))ms")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, alignment: .trailing)
+                        }
+                    }
+                } else {
+                    SettingsFieldRow(title: "Overlay Buffer") {
+                        HStack(alignment: .center, spacing: 8) {
+                            ShortcutRecorderField(
+                                shortcut: overlayBufferShortcutBinding,
+                                validationError: $overlayValidationError,
+                                fixedWidth: 132
+                            )
+                            .frame(height: 24, alignment: .leading)
+
+                            Button("Reset") {
+                                overlayValidationError = nil
+                                viewModel.updateOverlayBufferShortcut(
+                                    SettingsStore.defaultDictationShortcut)
+                            }
+                            .disabled(
+                                settings.overlayBufferShortcut == SettingsStore.defaultDictationShortcut)
+                        }
+                    }
+
+                    if let overlayValidationError {
+                        SettingsMessageRow(overlayValidationError, color: .red)
+                    }
+
+                    if settings.overlayBufferShortcut == nil {
+                        SettingsMessageRow(
+                            "Overlay Buffer shortcut is currently disabled.",
+                            color: .secondary
+                        )
+                    }
+
+                    SettingsFieldRow(title: "Live Auto-Paste") {
+                        HStack(alignment: .center, spacing: 8) {
+                            ShortcutRecorderField(
+                                shortcut: livePasteShortcutBinding,
+                                validationError: $livePasteValidationError,
+                                fixedWidth: 132
+                            )
+                            .frame(height: 24, alignment: .leading)
+
+                            if settings.livePasteShortcut != nil {
+                                Button("Clear") {
+                                    livePasteValidationError = nil
+                                    viewModel.updateLivePasteShortcut(nil)
+                                }
+                            }
+                        }
+                    }
+
+                    if let livePasteValidationError {
+                        SettingsMessageRow(livePasteValidationError, color: .red)
+                    }
+
+                    if settings.livePasteShortcut == nil {
+                        SettingsMessageRow(
+                            "Live Auto-Paste shortcut is not set. Record one above to enable.",
+                            color: .secondary
+                        )
+                    }
+
+                    SettingsFieldRow(title: "Shortcut behavior") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.dictationShortcutMode) {
+                                ForEach(DictationShortcutMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            SettingsHelpText(settings.dictationShortcutMode.description)
+                        }
+                    }
+                }
+            }
+
+            SettingsGroup(title: "Menu bar") {
                 SettingsFieldRow(title: "Output mode") {
                     VStack(alignment: .leading, spacing: 6) {
                         Picker("", selection: $settings.dictationOutputMode) {
@@ -151,60 +315,19 @@ private struct DictationSettingsPane: View {
                         .labelsHidden()
 
                         SettingsHelpText(settings.dictationOutputMode.description)
+                        SettingsHelpText(
+                            "Used when starting dictation from the menu bar. Keyboard triggers above select their mode directly."
+                        )
                     }
                 }
+            }
 
-                SettingsFieldRow(title: "Shortcut behavior") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $settings.dictationShortcutMode) {
-                            ForEach(DictationShortcutMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-
-                        SettingsHelpText(settings.dictationShortcutMode.description)
-                    }
-                }
-
+            SettingsGroup(title: "General") {
                 ToggleSettingRow(
                     title: "Auto-copy final segment",
                     subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
                     isOn: $settings.autoCopyEnabled
                 )
-            }
-
-            SettingsGroup(title: "Shortcut") {
-                SettingsFieldRow(title: "Dictation shortcut") {
-                    HStack(alignment: .center, spacing: 8) {
-                        ShortcutRecorderField(
-                            shortcut: dictationShortcutBinding,
-                            validationError: $shortcutValidationError,
-                            fixedWidth: 132
-                        )
-                        .frame(height: 24, alignment: .leading)
-
-                        Button("Reset to Default") {
-                            shortcutValidationError = nil
-                            viewModel.updateDictationShortcut(
-                                SettingsStore.defaultDictationShortcut)
-                        }
-                        .disabled(
-                            settings.dictationShortcut == SettingsStore.defaultDictationShortcut)
-                    }
-                }
-
-                if let shortcutValidationError {
-                    SettingsMessageRow(shortcutValidationError, color: .red)
-                }
-
-                if settings.dictationShortcut == nil {
-                    SettingsMessageRow(
-                        "Global dictation shortcut is currently disabled.",
-                        color: .secondary
-                    )
-                }
             }
         }
     }
