@@ -1,12 +1,11 @@
+import AppKit
 import Carbon.HIToolbox
-import CoreGraphics
-import Synchronization
 import XCTest
 @testable import localvoxtral
 
-// NOTE: CGEventTap creation requires a real macOS event session and TCC permissions.
+// NOTE: NSEvent delivery requires a real macOS event session and TCC permissions.
 // These tests cover the deterministic seams of ModifierOnlyHotKeyManager
-// without requiring an actual event tap:
+// without requiring actual monitor delivery:
 //  - ModifierKey enum surface (rawValues, displayNames, CaseIterable)
 //  - Configuration/modifier switching
 //  - Stop clears instance gesture state
@@ -15,7 +14,6 @@ import XCTest
 
 @MainActor
 final class ModifierOnlyHotKeyManagerTests: XCTestCase {
-
     // MARK: - ModifierKey Enum
 
     func testModifierKeyRawValues() {
@@ -79,19 +77,15 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
 
     func testModifierKeySwitchingCallsStopBeforeStart() {
         // Calling start() twice with different modifier keys should work without crash.
-        // In a headless test env, CGEventTap creation can fail because TCC permissions
-        // are missing; start() still records a deterministic outcome and remains safe.
         let manager = ModifierOnlyHotKeyManager()
+        ModifierOnlyHotKeyManager.resetDebugState()
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
+        defer { ModifierOnlyHotKeyManager.resetDebugState() }
 
         // Each successive start() calls stop() first — no crash expected.
         for modifier in ModifierOnlyHotKeyManager.ModifierKey.allCases {
             manager.start(modifier: modifier)
-            XCTAssertTrue(
-                [.creationFailedNil, .noRunLoopSource, .created].contains(
-                    ModifierOnlyHotKeyManager.lastStartOutcome
-                ),
-                "unexpected start outcome: \(ModifierOnlyHotKeyManager.lastStartOutcome)"
-            )
+            XCTAssertEqual(ModifierOnlyHotKeyManager.lastStartOutcome, .created)
         }
 
         // Clean up
@@ -100,6 +94,9 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
 
     func testRapidStartStopCyclesProduceNoResidualState() {
         let manager = ModifierOnlyHotKeyManager()
+        ModifierOnlyHotKeyManager.resetDebugState()
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
+        defer { ModifierOnlyHotKeyManager.resetDebugState() }
         var tapCount = 0
         var holdStartCount = 0
         manager.onTap = { tapCount += 1 }
@@ -119,11 +116,14 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
     func testStopAfterStartWithDifferentModifiersLeavesNoResidualState() {
         let manager1 = ModifierOnlyHotKeyManager()
         let manager2 = ModifierOnlyHotKeyManager()
+        ModifierOnlyHotKeyManager.resetDebugState()
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
+        defer { ModifierOnlyHotKeyManager.resetDebugState() }
 
         manager1.start(modifier: .fn)
         manager2.start(modifier: .rightCommand)
 
-        // Stopping both should be safe even if one or both starts created a real tap.
+        // Stopping both should be safe and clear their independent state.
         manager1.stop()
         manager2.stop()
     }
@@ -182,18 +182,22 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         manager.onHoldRelease = { holdReleaseCount += 1 }
         manager.debugStartGestureForTesting(modifier: .fn)
 
-        manager.debugHandleFlagsChangedForTesting(keyCode: 0, flags: .maskSecondaryFn)
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: .function
+        )
         XCTAssertEqual(scheduler.scheduledDelays, [0.35])
 
-        manager.debugHandleFlagsChangedForTesting(keyCode: 0, flags: CGEventFlags())
-        await Task.yield()
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: []
+        )
 
         XCTAssertEqual(tapCount, 1)
         XCTAssertEqual(holdStartCount, 0)
         XCTAssertEqual(holdReleaseCount, 0)
 
         scheduler.fireAll()
-        await Task.yield()
         XCTAssertEqual(holdStartCount, 0, "stale hold timer must not fire after tap release")
     }
 
@@ -209,20 +213,18 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         manager.debugStartGestureForTesting(modifier: .rightCommand)
 
         manager.debugHandleFlagsChangedForTesting(
-            keyCode: Int64(kVK_RightCommand),
-            flags: .maskCommand
+            keyCode: UInt16(kVK_RightCommand),
+            flags: .command
         )
         scheduler.fireAll()
-        await Task.yield()
 
         XCTAssertEqual(holdStartCount, 1)
         XCTAssertEqual(tapCount, 0)
 
         manager.debugHandleFlagsChangedForTesting(
-            keyCode: Int64(kVK_RightCommand),
-            flags: CGEventFlags()
+            keyCode: UInt16(kVK_RightCommand),
+            flags: []
         )
-        await Task.yield()
 
         XCTAssertEqual(holdReleaseCount, 1)
         XCTAssertEqual(tapCount, 0)
@@ -240,18 +242,16 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         manager.debugStartGestureForTesting(modifier: .rightOption)
 
         manager.debugHandleFlagsChangedForTesting(
-            keyCode: Int64(kVK_RightOption),
-            flags: .maskAlternate
+            keyCode: UInt16(kVK_RightOption),
+            flags: .option
         )
         manager.debugHandleKeyDownForTesting()
         scheduler.fireAll()
-        await Task.yield()
 
         manager.debugHandleFlagsChangedForTesting(
-            keyCode: Int64(kVK_RightOption),
-            flags: CGEventFlags()
+            keyCode: UInt16(kVK_RightOption),
+            flags: []
         )
-        await Task.yield()
 
         XCTAssertEqual(tapCount, 0)
         XCTAssertEqual(holdStartCount, 0)
@@ -266,19 +266,129 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         manager.onHoldStart = { holdStartCount += 1 }
         manager.debugStartGestureForTesting(modifier: .fn)
 
-        manager.debugHandleFlagsChangedForTesting(keyCode: 0, flags: .maskSecondaryFn)
-        manager.debugHandleFlagsChangedForTesting(keyCode: 0, flags: CGEventFlags())
-        manager.debugHandleFlagsChangedForTesting(keyCode: 0, flags: .maskSecondaryFn)
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: .function
+        )
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: []
+        )
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: .function
+        )
 
         XCTAssertEqual(scheduler.scheduledDelays.count, 2)
 
         scheduler.fire(at: 0)
-        await Task.yield()
         XCTAssertEqual(holdStartCount, 0, "first scheduled hold should be stale")
 
         scheduler.fire(at: 0)
-        await Task.yield()
         XCTAssertEqual(holdStartCount, 1)
+    }
+
+    func testDoubleTapFiresTwoTapsAndNoHold() {
+        let scheduler = HoldSchedulerProbe()
+        let manager = ModifierOnlyHotKeyManager(holdScheduler: scheduler.scheduler)
+        var tapCount = 0
+        var holdStartCount = 0
+        manager.onTap = { tapCount += 1 }
+        manager.onHoldStart = { holdStartCount += 1 }
+        manager.debugStartGestureForTesting(modifier: .fn)
+
+        for _ in 0..<2 {
+            manager.debugHandleFlagsChangedForTesting(
+                keyCode: UInt16(kVK_Function),
+                flags: .function
+            )
+            manager.debugHandleFlagsChangedForTesting(
+                keyCode: UInt16(kVK_Function),
+                flags: []
+            )
+        }
+
+        XCTAssertEqual(tapCount, 2)
+        scheduler.fireAll()
+        XCTAssertEqual(holdStartCount, 0)
+    }
+
+    func testReleaseAtThresholdAfterTimerFiresUsesHoldReleaseNotTap() {
+        let scheduler = HoldSchedulerProbe()
+        let manager = ModifierOnlyHotKeyManager(holdScheduler: scheduler.scheduler)
+        var tapCount = 0
+        var holdStartCount = 0
+        var holdReleaseCount = 0
+        manager.onTap = { tapCount += 1 }
+        manager.onHoldStart = { holdStartCount += 1 }
+        manager.onHoldRelease = { holdReleaseCount += 1 }
+        manager.debugStartGestureForTesting(modifier: .fn)
+
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: .function
+        )
+        scheduler.fireAll()
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: []
+        )
+
+        XCTAssertEqual(tapCount, 0)
+        XCTAssertEqual(holdStartCount, 1)
+        XCTAssertEqual(holdReleaseCount, 1)
+    }
+
+    func testFlagsTimelineInterruptionCancelsPendingHoldWithoutKeyDownDelivery() {
+        let scheduler = HoldSchedulerProbe()
+        let manager = ModifierOnlyHotKeyManager(holdScheduler: scheduler.scheduler)
+        var tapCount = 0
+        var holdStartCount = 0
+        manager.onTap = { tapCount += 1 }
+        manager.onHoldStart = { holdStartCount += 1 }
+        manager.debugStartGestureForTesting(modifier: .rightCommand)
+
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_RightCommand),
+            flags: .command
+        )
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Shift),
+            flags: [.command, .shift]
+        )
+        scheduler.fireAll()
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_RightCommand),
+            flags: []
+        )
+
+        XCTAssertEqual(tapCount, 0)
+        XCTAssertEqual(holdStartCount, 0)
+    }
+
+    func testKeyInterruptionDuringHoldReleasesImmediatelyAndDoesNotLatch() {
+        let scheduler = HoldSchedulerProbe()
+        let manager = ModifierOnlyHotKeyManager(holdScheduler: scheduler.scheduler)
+        var holdStartCount = 0
+        var holdReleaseCount = 0
+        manager.onHoldStart = { holdStartCount += 1 }
+        manager.onHoldRelease = { holdReleaseCount += 1 }
+        manager.debugStartGestureForTesting(modifier: .rightOption)
+
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_RightOption),
+            flags: .option
+        )
+        scheduler.fireAll()
+        manager.debugHandleKeyDownForTesting()
+        manager.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_RightOption),
+            flags: []
+        )
+
+        XCTAssertEqual(holdStartCount, 1)
+        XCTAssertEqual(holdReleaseCount, 1)
+        XCTAssertFalse(manager.debugGestureSnapshotForTesting().isInHoldState)
     }
 
     func testSeparateManagerInstancesDoNotClobberEachOther() async {
@@ -294,60 +404,56 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         manager1.debugStartGestureForTesting(modifier: .fn)
         manager2.debugStartGestureForTesting(modifier: .rightCommand)
 
-        manager1.debugHandleFlagsChangedForTesting(keyCode: 0, flags: .maskSecondaryFn)
-        manager1.debugHandleFlagsChangedForTesting(keyCode: 0, flags: CGEventFlags())
-        await Task.yield()
+        manager1.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: .function
+        )
+        manager1.debugHandleFlagsChangedForTesting(
+            keyCode: UInt16(kVK_Function),
+            flags: []
+        )
 
         XCTAssertEqual(manager1TapCount, 1)
         XCTAssertEqual(manager2TapCount, 0)
 
         manager2.debugHandleFlagsChangedForTesting(
-            keyCode: Int64(kVK_RightCommand),
-            flags: .maskCommand
+            keyCode: UInt16(kVK_RightCommand),
+            flags: .command
         )
         manager2.debugHandleFlagsChangedForTesting(
-            keyCode: Int64(kVK_RightCommand),
-            flags: CGEventFlags()
+            keyCode: UInt16(kVK_RightCommand),
+            flags: []
         )
-        await Task.yield()
 
         XCTAssertEqual(manager1TapCount, 1)
         XCTAssertEqual(manager2TapCount, 1)
     }
 }
 
-private final class HoldSchedulerProbe: @unchecked Sendable {
-    private struct State {
-        var delays: [Double] = []
-        var callbacks: [@Sendable () -> Void] = []
-    }
-
-    private let state = Mutex(State())
+@MainActor
+private final class HoldSchedulerProbe {
+    private var delays: [Double] = []
+    private var callbacks: [@MainActor @Sendable () -> Void] = []
 
     var scheduler: ModifierOnlyHotKeyManager.HoldScheduler {
         { [weak self] delay, fire in
-            self?.state.withLock {
-                $0.delays.append(delay)
-                $0.callbacks.append(fire)
-            }
+            self?.delays.append(delay)
+            self?.callbacks.append(fire)
         }
     }
 
     var scheduledDelays: [Double] {
-        state.withLock { $0.delays }
+        delays
     }
 
     func fire(at index: Int) {
-        let callback = state.withLock { $0.callbacks.remove(at: index) }
+        let callback = callbacks.remove(at: index)
         callback()
     }
 
     func fireAll() {
-        let callbacks = state.withLock { state -> [@Sendable () -> Void] in
-            let callbacks = state.callbacks
-            state.callbacks.removeAll()
-            return callbacks
-        }
+        let callbacks = callbacks
+        self.callbacks.removeAll()
         callbacks.forEach { $0() }
     }
 }

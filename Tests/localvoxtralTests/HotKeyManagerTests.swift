@@ -47,7 +47,7 @@ final class HotKeyManagerTests: XCTestCase {
         XCTAssertEqual(manager.debugCurrentRegistrationKind, .single)
         let unregisterCountAfterInitialRegistration = HotKeyManager.debugUnregisterCallCount
 
-        ModifierOnlyHotKeyManager.forcedStartOutcome = .creationFailedNil
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .monitorInstallationFailed
 
         let modifierResult = manager.registerModifierOnly(.fn)
 

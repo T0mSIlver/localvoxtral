@@ -30,7 +30,7 @@ final class HotKeyManager {
     static let livePasteUnavailableErrorMessage =
         "The selected Live Auto-Paste shortcut is unavailable."
     static let modifierOnlyUnavailableErrorMessage =
-        "Unable to start the single-modifier hotkey. Grant Input Monitoring and Accessibility permissions, then try again."
+        "Unable to install the single-modifier hotkey monitors. Grant Accessibility permission, then try again."
 
     /// Legacy single-shortcut callback. Used by `register(shortcut:)`.
     var onPress: (() -> Void)?
@@ -91,7 +91,7 @@ final class HotKeyManager {
         let startOutcome = candidateManager.start(modifier: modifier)
         guard startOutcome == .created else {
             candidateManager.stop()
-            Log.modifierHotKey.error(
+            Log.modifierKeys.error(
                 "Modifier-only hotkey registration failed with outcome \(startOutcome.rawValue, privacy: .public); preserving previous hotkey registration."
             )
             return .failure(.modifierOnlyHotKeyUnavailable)
@@ -215,7 +215,7 @@ final class HotKeyManager {
                     unregister()
                     return .failure(.shortcutUnavailable)
                 }
-                Log.modifierHotKey.error(
+                Log.modifierKeys.error(
                     "Live Auto-Paste hotkey registration failed after Overlay Buffer hotkey registered; preserving overlay hotkey and surfacing failure."
                 )
                 return .failure(.livePasteShortcutUnavailable)

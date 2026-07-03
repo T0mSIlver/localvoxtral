@@ -1,14 +1,13 @@
+import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
-import CoreGraphics
 import Foundation
 import IOKit.hid
-import Synchronization
 
 /// Captures modifier-only key presses (Fn/Globe, Right Command, Right Option)
-/// with a listen-only CGEventTap. A quick tap starts/stops overlay-buffer
-/// dictation; holding past the configured threshold starts live auto-paste
-/// push-to-talk dictation until the modifier is released.
+/// with NSEvent monitors. A quick tap starts/stops overlay-buffer dictation;
+/// holding past the configured threshold starts live auto-paste push-to-talk
+/// dictation until the modifier is released.
 @MainActor
 final class ModifierOnlyHotKeyManager {
     enum ModifierKey: String, CaseIterable, Identifiable, Codable {
@@ -28,7 +27,7 @@ final class ModifierOnlyHotKeyManager {
     }
 
     typealias HoldScheduler =
-        @Sendable (_ delay: Double, _ fire: @escaping @Sendable () -> Void) -> Void
+        @MainActor (_ delay: Double, _ fire: @escaping @MainActor @Sendable () -> Void) -> Void
 
     /// Fired when the modifier key is tapped (pressed and released before hold threshold).
     var onTap: (() -> Void)?
@@ -40,10 +39,15 @@ final class ModifierOnlyHotKeyManager {
     /// Seconds the modifier must be held before it counts as a hold gesture.
     var holdThresholdSeconds: Double = 0.35
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var globalFlagsMonitor: Any?
+    private var localFlagsMonitor: Any?
+    private var globalKeyDownMonitor: Any?
+    private var localKeyDownMonitor: Any?
+
     private let holdScheduler: HoldScheduler
-    private let state = Mutex(ModifierGestureState())
+    private var state = ModifierGestureState()
+    private var loggedFlagsDelivery = false
+    private var loggedKeyDownDelivery = false
 
     init(holdScheduler: @escaping HoldScheduler = ModifierOnlyHotKeyManager.defaultHoldScheduler) {
         self.holdScheduler = holdScheduler
@@ -69,52 +73,81 @@ final class ModifierOnlyHotKeyManager {
 
         let trusted = AXIsProcessTrusted()
         let inputMonitoring = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
-        Log.modifierHotKey.notice(
+        Log.modifierKeys.notice(
             "permission state: AXIsProcessTrusted=\(trusted, privacy: .public) inputMonitoring=\(Self.describeHIDAccess(inputMonitoring), privacy: .public)"
         )
 
-        let eventMask: CGEventMask =
-            (1 << CGEventType.flagsChanged.rawValue) |
-            (1 << CGEventType.keyDown.rawValue)
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: eventMask,
-            callback: modifierEventCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else {
+        guard trusted else {
             resetGestureState()
-            Self.record(.creationFailedNil)
-            Log.modifierHotKey.error(
-                "Modifier-only CGEvent.tapCreate returned nil (trusted=\(trusted, privacy: .public), inputMonitoring=\(Self.describeHIDAccess(inputMonitoring), privacy: .public)). Modifier-only hotkey disabled; Carbon modifier+key shortcuts are unaffected."
+            Self.record(.monitorInstallationFailed)
+            Log.modifierKeys.error(
+                "Accessibility trust is required for modifier-only global NSEvent monitors; modifier-only hotkey disabled. Carbon modifier+key shortcuts are unaffected."
             )
-            return .creationFailedNil
+            return .monitorInstallationFailed
         }
 
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+        globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            let keyCode = event.keyCode
+            let rawFlags = event.modifierFlags.rawValue
+            Task { @MainActor [weak self] in
+                self?.handleFlagsChanged(
+                    keyCode: keyCode,
+                    flags: NSEvent.ModifierFlags(rawValue: rawFlags),
+                    source: .global
+                )
+            }
+        }
+
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+            [weak self] event in
+            let keyCode = event.keyCode
+            let rawFlags = event.modifierFlags.rawValue
+            Task { @MainActor [weak self] in
+                self?.handleFlagsChanged(
+                    keyCode: keyCode,
+                    flags: NSEvent.ModifierFlags(rawValue: rawFlags),
+                    source: .local
+                )
+            }
+            return event
+        }
+
+        guard globalFlagsMonitor != nil, localFlagsMonitor != nil else {
+            removeEventMonitors()
             resetGestureState()
-            Self.record(.noRunLoopSource)
-            Log.modifierHotKey.error(
-                "CFMachPortCreateRunLoopSource returned nil; modifier-only hotkey disabled. Carbon modifier+key shortcuts are unaffected."
+            Self.record(.monitorInstallationFailed)
+            Log.modifierKeys.error(
+                "Unable to install required modifier-only flagsChanged NSEvent monitors; modifier-only hotkey disabled. Carbon modifier+key shortcuts are unaffected."
             )
-            CGEvent.tapEnable(tap: tap, enable: false)
-            return .noRunLoopSource
+            return .monitorInstallationFailed
         }
 
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-
-        eventTap = tap
-        runLoopSource = source
-        state.withLock {
-            $0.activeTapAddress = UInt(bitPattern: Unmanaged.passUnretained(tap).toOpaque())
+        globalKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) {
+            [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleKeyDown(source: .global)
+            }
         }
-        Self.record(.created)
-        Log.modifierHotKey.notice(
-            "Modifier-only CGEventTap created and enabled on the main run loop for \(modifier.rawValue, privacy: .public)."
+
+        localKeyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            Task { @MainActor [weak self] in
+                self?.handleKeyDown(source: .local)
+            }
+            return event
+        }
+
+        Log.modifierKeys.notice(
+            "Installed modifier-only NSEvent monitors for \(modifier.rawValue, privacy: .public): flagsChanged global=\(self.globalFlagsMonitor != nil, privacy: .public) local=\(self.localFlagsMonitor != nil, privacy: .public), keyDown global=\(self.globalKeyDownMonitor != nil, privacy: .public) local=\(self.localKeyDownMonitor != nil, privacy: .public)."
         )
+        if globalKeyDownMonitor == nil || localKeyDownMonitor == nil {
+            Log.modifierKeys.notice(
+                "Modifier-only keyDown monitor installation incomplete; modifier-used-as-real-modifier cancellation will degrade to flagsChanged-only inference."
+            )
+        }
+
+        Self.record(.created)
         return .created
     }
 
@@ -123,45 +156,23 @@ final class ModifierOnlyHotKeyManager {
         Self.stopCallCount += 1
         #endif
 
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
-        eventTap = nil
-        runLoopSource = nil
+        removeEventMonitors()
         resetGestureState()
     }
 
     deinit {
-        // MainActor deinit — teardown is driven by HotKeyManager via stop().
+        // MainActor deinit - teardown is driven by HotKeyManager via stop().
     }
 
-    nonisolated func handleEvent(_ type: CGEventType, _ event: CGEvent) {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            reenableTapAfterSystemDisable(type: type)
-            return
-        }
-
-        switch type {
-        case .keyDown:
-            handleKeyDown()
-        case .flagsChanged:
-            handleFlagsChanged(
-                keyCode: event.getIntegerValueField(.keyboardEventKeycode),
-                flags: event.flags
-            )
-        default:
-            break
-        }
-    }
-
-    private nonisolated static func defaultHoldScheduler(
+    private static func defaultHoldScheduler(
         delay: Double,
-        fire: @escaping @Sendable () -> Void
+        fire: @escaping @MainActor @Sendable () -> Void
     ) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: fire)
+        let nanoseconds = UInt64(max(delay, 0) * 1_000_000_000)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            fire()
+        }
     }
 
     private static func describeHIDAccess(_ access: IOHIDAccessType) -> String {
@@ -173,107 +184,141 @@ final class ModifierOnlyHotKeyManager {
     }
 
     private func configureGestureState(modifier: ModifierKey) {
-        state.withLock {
-            $0.targetModifier = modifier
-            $0.holdThresholdSeconds = holdThresholdSeconds
-            $0.activeTapAddress = nil
-            $0.resetGesture()
-        }
+        state.targetModifier = modifier
+        state.holdThresholdSeconds = holdThresholdSeconds
+        state.resetGesture()
+        loggedFlagsDelivery = false
+        loggedKeyDownDelivery = false
     }
 
     private func resetGestureState() {
-        state.withLock { $0.resetAll() }
+        state.resetAll()
+        loggedFlagsDelivery = false
+        loggedKeyDownDelivery = false
     }
 
-    private nonisolated func reenableTapAfterSystemDisable(type: CGEventType) {
-        let tapAddress = state.withLock { $0.activeTapAddress }
-        if let tapAddress,
-           let tapPointer = UnsafeMutableRawPointer(bitPattern: tapAddress)
-        {
-            let tap = Unmanaged<CFMachPort>.fromOpaque(tapPointer).takeUnretainedValue()
-            CGEvent.tapEnable(tap: tap, enable: true)
-            Log.modifierHotKey.notice(
-                "Modifier-only CGEventTap disabled by system (type=\(type.rawValue)); re-enabled."
+    private func removeEventMonitors() {
+        let monitors = [
+            globalFlagsMonitor,
+            localFlagsMonitor,
+            globalKeyDownMonitor,
+            localKeyDownMonitor,
+        ]
+        for monitor in monitors.compactMap({ $0 }) {
+            NSEvent.removeMonitor(monitor)
+        }
+        globalFlagsMonitor = nil
+        localFlagsMonitor = nil
+        globalKeyDownMonitor = nil
+        localKeyDownMonitor = nil
+    }
+
+    private func handleKeyDown(source: ModifierEventSource) {
+        if !loggedKeyDownDelivery {
+            loggedKeyDownDelivery = true
+            Log.modifierKeys.notice(
+                "Modifier-only keyDown NSEvent monitor delivered first event from \(source.rawValue, privacy: .public)."
             )
+        }
+
+        guard state.targetModifier != nil, state.isModifierDown else { return }
+        state.wasInterruptedByKey = true
+        state.generation &+= 1
+
+        if state.isInHoldState {
+            state.isInHoldState = false
+            fire(.holdRelease)
+        }
+    }
+
+    private func handleFlagsChanged(
+        keyCode: UInt16,
+        flags: NSEvent.ModifierFlags,
+        source: ModifierEventSource
+    ) {
+        if !loggedFlagsDelivery {
+            loggedFlagsDelivery = true
+            Log.modifierKeys.notice(
+                "Modifier-only flagsChanged NSEvent monitor delivered first event from \(source.rawValue, privacy: .public)."
+            )
+        }
+
+        guard let target = state.targetModifier else { return }
+
+        let targetFlagPresent = Self.targetFlagPresent(target, flags: flags)
+        let isTargetKeyEvent = Self.isTargetModifierKeyEvent(target, keyCode: keyCode)
+        let effect: GestureEffect
+
+        if state.isModifierDown {
+            if isTargetKeyEvent || !targetFlagPresent {
+                effect = handleTargetModifierReleaseIfNeeded(targetFlagPresent: targetFlagPresent)
+            } else {
+                effect = handleModifierInterruptedByFlagsTimeline()
+            }
+        } else if targetFlagPresent && isTargetKeyEvent {
+            effect = handleTargetModifierPress()
         } else {
-            Log.modifierHotKey.error(
-                "Modifier-only CGEventTap disabled by system (type=\(type.rawValue)) but no active tap is available to re-enable."
-            )
-        }
-    }
-
-    private nonisolated func handleKeyDown() {
-        state.withLock { state in
-            guard state.targetModifier != nil, state.isModifierDown else { return }
-            state.wasInterruptedByKey = true
-            state.generation &+= 1
-        }
-    }
-
-    private nonisolated func handleFlagsChanged(keyCode: Int64, flags: CGEventFlags) {
-        let effect = state.withLock { state -> GestureEffect in
-            guard let target = state.targetModifier else { return .none }
-
-            let isTargetDown = Self.isTargetModifierDown(
-                target,
-                keyCode: keyCode,
-                flags: flags
-            )
-
-            if isTargetDown && !state.isModifierDown {
-                state.isModifierDown = true
-                state.wasInterruptedByKey = false
-                state.isInHoldState = false
-                state.generation &+= 1
-                return .scheduleHold(
-                    generation: state.generation,
-                    delay: state.holdThresholdSeconds
-                )
-            }
-
-            if !isTargetDown && state.isModifierDown {
-                state.isModifierDown = false
-                state.generation &+= 1
-
-                if state.wasInterruptedByKey {
-                    state.wasInterruptedByKey = false
-                    state.isInHoldState = false
-                    return .none
-                }
-
-                if state.isInHoldState {
-                    state.isInHoldState = false
-                    return .fire(.holdRelease)
-                }
-
-                return .fire(.tap)
-            }
-
-            return .none
+            effect = .none
         }
 
         perform(effect)
     }
 
-    private nonisolated func handleHoldThresholdElapsed(generation: UInt64) {
-        let shouldFire = state.withLock { state -> Bool in
-            guard state.targetModifier != nil,
-                  state.generation == generation,
-                  state.isModifierDown,
-                  !state.wasInterruptedByKey,
-                  !state.isInHoldState
-            else {
-                return false
-            }
-            state.isInHoldState = true
-            return true
+    private func handleTargetModifierPress() -> GestureEffect {
+        state.isModifierDown = true
+        state.wasInterruptedByKey = false
+        state.isInHoldState = false
+        state.generation &+= 1
+        return .scheduleHold(generation: state.generation, delay: state.holdThresholdSeconds)
+    }
+
+    private func handleTargetModifierReleaseIfNeeded(targetFlagPresent: Bool) -> GestureEffect {
+        guard !targetFlagPresent, state.isModifierDown else { return .none }
+
+        state.isModifierDown = false
+        state.generation &+= 1
+
+        if state.wasInterruptedByKey {
+            state.wasInterruptedByKey = false
+            state.isInHoldState = false
+            return .none
         }
 
-        guard shouldFire else { return }
+        if state.isInHoldState {
+            state.isInHoldState = false
+            return .fire(.holdRelease)
+        }
+
+        return .fire(.tap)
+    }
+
+    private func handleModifierInterruptedByFlagsTimeline() -> GestureEffect {
+        state.wasInterruptedByKey = true
+        state.generation &+= 1
+
+        if state.isInHoldState {
+            state.isInHoldState = false
+            return .fire(.holdRelease)
+        }
+
+        return .none
+    }
+
+    private func handleHoldThresholdElapsed(generation: UInt64) {
+        guard state.targetModifier != nil,
+              state.generation == generation,
+              state.isModifierDown,
+              !state.wasInterruptedByKey,
+              !state.isInHoldState
+        else {
+            return
+        }
+
+        state.isInHoldState = true
         fire(.holdStart)
     }
 
-    private nonisolated func perform(_ effect: GestureEffect) {
+    private func perform(_ effect: GestureEffect) {
         switch effect {
         case .none:
             break
@@ -286,32 +331,42 @@ final class ModifierOnlyHotKeyManager {
         }
     }
 
-    private nonisolated func fire(_ callback: GestureCallback) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            switch callback {
-            case .tap:
-                self.onTap?()
-            case .holdStart:
-                self.onHoldStart?()
-            case .holdRelease:
-                self.onHoldRelease?()
-            }
+    private func fire(_ callback: GestureCallback) {
+        switch callback {
+        case .tap:
+            onTap?()
+        case .holdStart:
+            onHoldStart?()
+        case .holdRelease:
+            onHoldRelease?()
         }
     }
 
-    private nonisolated static func isTargetModifierDown(
+    private static func targetFlagPresent(
         _ target: ModifierKey,
-        keyCode: Int64,
-        flags: CGEventFlags
+        flags: NSEvent.ModifierFlags
     ) -> Bool {
         switch target {
         case .fn:
-            return flags.contains(.maskSecondaryFn)
+            return flags.contains(.function)
         case .rightCommand:
-            return keyCode == Int64(kVK_RightCommand) && flags.contains(.maskCommand)
+            return flags.contains(.command)
         case .rightOption:
-            return keyCode == Int64(kVK_RightOption) && flags.contains(.maskAlternate)
+            return flags.contains(.option)
+        }
+    }
+
+    private static func isTargetModifierKeyEvent(
+        _ target: ModifierKey,
+        keyCode: UInt16
+    ) -> Bool {
+        switch target {
+        case .fn:
+            return keyCode == UInt16(kVK_Function) || keyCode == 0
+        case .rightCommand:
+            return keyCode == UInt16(kVK_RightCommand)
+        case .rightOption:
+            return keyCode == UInt16(kVK_RightOption)
         }
     }
 
@@ -334,23 +389,24 @@ final class ModifierOnlyHotKeyManager {
     }
 
     func debugHandleKeyDownForTesting() {
-        handleKeyDown()
+        handleKeyDown(source: .synthetic)
     }
 
-    func debugHandleFlagsChangedForTesting(keyCode: Int64, flags: CGEventFlags) {
-        handleFlagsChanged(keyCode: keyCode, flags: flags)
+    func debugHandleFlagsChangedForTesting(
+        keyCode: UInt16,
+        flags: NSEvent.ModifierFlags
+    ) {
+        handleFlagsChanged(keyCode: keyCode, flags: flags, source: .synthetic)
     }
 
     func debugGestureSnapshotForTesting() -> ModifierOnlyHotKeyDebugSnapshot {
-        state.withLock {
-            ModifierOnlyHotKeyDebugSnapshot(
-                targetModifier: $0.targetModifier,
-                isModifierDown: $0.isModifierDown,
-                wasInterruptedByKey: $0.wasInterruptedByKey,
-                isInHoldState: $0.isInHoldState,
-                generation: $0.generation
-            )
-        }
+        ModifierOnlyHotKeyDebugSnapshot(
+            targetModifier: state.targetModifier,
+            isModifierDown: state.isModifierDown,
+            wasInterruptedByKey: state.wasInterruptedByKey,
+            isInHoldState: state.isInHoldState,
+            generation: state.generation
+        )
     }
 
     @inline(__always) private static func record(_ outcome: ModifierOnlyHotKeyStartOutcome) {
@@ -364,7 +420,6 @@ final class ModifierOnlyHotKeyManager {
 private struct ModifierGestureState {
     var targetModifier: ModifierOnlyHotKeyManager.ModifierKey?
     var holdThresholdSeconds = 0.35
-    var activeTapAddress: UInt?
     var isModifierDown = false
     var wasInterruptedByKey = false
     var isInHoldState = false
@@ -380,9 +435,14 @@ private struct ModifierGestureState {
     mutating func resetAll() {
         targetModifier = nil
         holdThresholdSeconds = 0.35
-        activeTapAddress = nil
         resetGesture()
     }
+}
+
+private enum ModifierEventSource: String {
+    case global
+    case local
+    case synthetic
 }
 
 private enum GestureEffect {
@@ -399,8 +459,7 @@ private enum GestureCallback {
 
 enum ModifierOnlyHotKeyStartOutcome: String, Equatable {
     case none
-    case creationFailedNil
-    case noRunLoopSource
+    case monitorInstallationFailed
     case created
 }
 
@@ -413,20 +472,3 @@ struct ModifierOnlyHotKeyDebugSnapshot: Equatable {
     var generation: UInt64
 }
 #endif
-
-private func modifierEventCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    guard let userInfo else {
-        return Unmanaged.passRetained(event)
-    }
-
-    let manager = Unmanaged<ModifierOnlyHotKeyManager>
-        .fromOpaque(userInfo)
-        .takeUnretainedValue()
-    manager.handleEvent(type, event)
-    return Unmanaged.passRetained(event)
-}
