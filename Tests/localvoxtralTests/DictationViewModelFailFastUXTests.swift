@@ -258,6 +258,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
         let settings = SettingsStore(defaults: defaults, environment: [:])
+        // These tests exercise connection-failure UX against a user-configured
+        // external endpoint (a closed port). Pin external mode so that the
+        // configured realtimeAPIEndpointURL is honored rather than overridden
+        // by the managed-local default.
+        settings.backendMode = .externalURL
         settings.dictationOutputMode = outputMode
         return settings
     }
