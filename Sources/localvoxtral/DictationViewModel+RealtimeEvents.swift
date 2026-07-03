@@ -5,6 +5,13 @@ extension DictationViewModel {
     // MARK: - Realtime Event Routing
 
     func handle(event: RealtimeEvent) {
+        // Instrument the raw, pre-processing delta stream first. This is the
+        // single choke point where every realtime event arrives on the main
+        // actor; logging here captures exactly what the backend delivered
+        // before FirstChunkPreprocessor / merge / insertion touch it. No-op
+        // unless the hidden `debug.log_realtime_deltas` toggle is set.
+        logRawRealtimeEventIfEnabled(event)
+
         switch event {
         case .connected:
             handleConnectedEvent()
@@ -261,6 +268,73 @@ extension DictationViewModel {
 
     private func preprocessIncomingTranscriptChunk(_ chunk: String) -> String {
         firstChunkPreprocessor.preprocess(chunk)
+    }
+
+    // MARK: - Raw Delta Logging (issue #13 instrumentation)
+
+    /// Emit the raw payload of every received realtime event to `Log.deltas`
+    /// (notice level) BEFORE any processing, when the hidden
+    /// `SettingsStore.debugLogRealtimeDeltas` toggle is on. Each event within
+    /// a session carries a monotonic `sequence` that resets when a new session
+    /// connects, so the arrival order of deltas is unambiguous in the log.
+    ///
+    /// Partial/final transcript payloads are logged via `.debugDescription` so
+    /// the exact characters — including any leading/trailing/inner whitespace
+    /// and the punctuation placement under investigation — are visible, and
+    /// marked `.public` (see `debugLogRealtimeDeltas` docs for the privacy
+    /// rationale). No-op when the toggle is off.
+    private func logRawRealtimeEventIfEnabled(_ event: RealtimeEvent) {
+        guard settings.debugLogRealtimeDeltas else { return }
+
+        // A new realtime session starts the per-session sequence over.
+        if case .connected = event {
+            realtimeDeltaLogSequence = 0
+        }
+
+        let sequence = realtimeDeltaLogSequence
+        realtimeDeltaLogSequence &+= 1
+
+        switch event {
+        case .connected:
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] session boundary: connected")
+            emitDeltaLogRecord(.sessionConnected, sequence: sequence, payload: nil)
+        case .disconnected:
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] session boundary: disconnected")
+            emitDeltaLogRecord(.sessionDisconnected, sequence: sequence, payload: nil)
+        case .partialTranscript(let delta):
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] partial delta: \(delta.debugDescription, privacy: .public)")
+            emitDeltaLogRecord(.partialDelta, sequence: sequence, payload: delta)
+        case .finalTranscript(let text):
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] final transcript: \(text.debugDescription, privacy: .public)")
+            emitDeltaLogRecord(.finalTranscript, sequence: sequence, payload: text)
+        case .status(let message):
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] status: \(message, privacy: .public)")
+            emitDeltaLogRecord(.status, sequence: sequence, payload: message)
+        case .error(let message):
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] error: \(message, privacy: .public)")
+            emitDeltaLogRecord(.error, sequence: sequence, payload: message)
+        case .transcriptionFinalized:
+            Log.deltas.notice(
+                "[delta-log seq=\(sequence)] transcription finalized")
+            emitDeltaLogRecord(.transcriptionFinalized, sequence: sequence, payload: nil)
+        }
+    }
+
+    /// Mirror the delta-log emission to the `#if DEBUG` test sink. Defined on
+    /// the main type (the sink is invoked inline from production code, like
+    /// `TextInsertionService`'s `debugUnicodePoster`), so no compile-time DEBUG
+    /// guard is needed here: the sink is nil in release builds.
+    private func emitDeltaLogRecord(
+        _ kind: DebugRealtimeDeltaLogRecord.Kind, sequence: Int, payload: String?
+    ) {
+        debugDeltaLogSink?(
+            DebugRealtimeDeltaLogRecord(kind: kind, sequence: sequence, payload: payload))
     }
 
     // MARK: - Finalized Segment Resolution

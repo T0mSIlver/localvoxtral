@@ -9,6 +9,30 @@ enum RealtimeSessionIndicatorState {
     case recentFailure
 }
 
+/// A single raw realtime-delta log emission, captured before any
+/// merge/preprocess/insertion processing. Mirrors what `Log.deltas` records
+/// when `SettingsStore.debugLogRealtimeDeltas` is on; surfaced through the
+/// `#if DEBUG` `debugDeltaLogSink` seam for instrumentation tests.
+///
+/// `payload` is the exact, unprocessed string the backend delivered (quoted in
+/// the actual log via `.debugDescription` so whitespace is visible); it is nil
+/// for events that carry no string payload (session boundaries, finalized).
+struct DebugRealtimeDeltaLogRecord: Equatable, Sendable {
+    enum Kind: String, Sendable {
+        case sessionConnected = "session.connected"
+        case sessionDisconnected = "session.disconnected"
+        case partialDelta = "partial"
+        case finalTranscript = "final"
+        case status = "status"
+        case error = "error"
+        case transcriptionFinalized = "finalized"
+    }
+
+    let kind: Kind
+    let sequence: Int
+    let payload: String?
+}
+
 @MainActor
 @Observable
 final class DictationViewModel {
@@ -184,6 +208,22 @@ final class DictationViewModel {
     var sessionModelName: String?
     @ObservationIgnored
     var firstChunkPreprocessor = FirstChunkPreprocessor()
+
+    // Per-session sequence counter for the opt-in raw-delta log
+    // (`SettingsStore.debugLogRealtimeDeltas`). Reset to 0 when a new realtime
+    // session connects. Only mutated inside the gated logging path, so a value
+    // of 0 while events are flowing proves the toggle is off. Internal so the
+    // realtime-events extension can read/advance it.
+    @ObservationIgnored
+    var realtimeDeltaLogSequence = 0
+
+    /// `#if DEBUG` test seam mirroring the raw-delta log emissions. Only
+    /// invoked when `SettingsStore.debugLogRealtimeDeltas` is on (i.e. inside
+    /// the same gated path that calls `Log.deltas`), so "sink not called when
+    /// disabled" proves the logging call path was not entered. The record is
+    /// the exact pre-processing payload the Logger would emit.
+    @ObservationIgnored
+    var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -868,6 +908,15 @@ extension DictationViewModel {
     ) {
         isPushToTalkShortcutHeld = isHeld
         hasActivePushToTalkShortcutSession = hasActiveSession
+    }
+
+    /// Install a sink that receives every raw-delta log emission captured by
+    /// `logRawRealtimeEventIfEnabled`. Only fires when
+    /// `SettingsStore.debugLogRealtimeDeltas` is on (same gated path as
+    /// `Log.deltas`), so it doubles as an observation point for "logging path
+    /// not entered when disabled". Pass `nil` to clear.
+    func debugConfigureDeltaLogSink(_ sink: ((DebugRealtimeDeltaLogRecord) -> Void)?) {
+        debugDeltaLogSink = sink
     }
 }
 #endif
