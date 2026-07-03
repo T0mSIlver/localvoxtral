@@ -139,6 +139,13 @@ final class SettingsStore {
         static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
         static let llmPolishingModel = "settings.llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
+        /// Hidden debug toggle (no UI). When true, every received realtime
+        /// event's raw payload is logged to the `Deltas` category before any
+        /// merge/preprocess/insertion processing — instrumentation for
+        /// diagnosing issue #13 (mid-word punctuation in Live Auto-Paste).
+        /// Note the `debug.` prefix (not `settings.`): this is not a
+        /// user-facing preference and must never surface in the settings UI.
+        static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
     }
 
     private let defaults: UserDefaults
@@ -220,6 +227,22 @@ final class SettingsStore {
         didSet {
             defaults.set(replacementDictionaryEnabled, forKey: Keys.replacementDictionaryEnabled)
         }
+    }
+
+    /// Hidden debug flag for issue #13 instrumentation. Default false. When
+    /// enabled, `DictationViewModel` logs the exact payload of every received
+    /// realtime event (partial deltas quoted so whitespace is visible, final
+    /// transcripts, and session boundaries) to `Log.deltas` (notice level)
+    /// BEFORE any merge/preprocess/insertion processing.
+    ///
+    /// Privacy: this logs dictated content in cleartext. That is the explicit
+    /// purpose of an opt-in debug flag, so payloads are marked `.public` to
+    /// make whitespace and punctuation visible in `log stream` / Console. Only
+    /// enable it for a capture you intend to share; leave it off otherwise.
+    /// There is no UI for this setting — it is toggled via `defaults`:
+    ///   `defaults write com.localvoxtral.app debug.log_realtime_deltas -bool true`
+    var debugLogRealtimeDeltas: Bool {
+        didSet { defaults.set(debugLogRealtimeDeltas, forKey: Keys.debugLogRealtimeDeltas) }
     }
 
     init(
@@ -324,6 +347,8 @@ final class SettingsStore {
         )
         replacementDictionaryEnabled = Self.loadBool(
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
+        debugLogRealtimeDeltas = Self.loadBool(
+            defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
     }
 
     // MARK: - Init Helpers

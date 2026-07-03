@@ -329,4 +329,31 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(reloadedStore.replacementDictionaryEnabled)
     }
 
+    // MARK: - debugLogRealtimeDeltas (issue #13 instrumentation)
+
+    func testDebugLogRealtimeDeltas_defaultsToFalse() {
+        // The hidden instrumentation toggle must be off by default so no
+        // dictated content is ever logged unless explicitly opted in.
+        let store = makeStore()
+
+        XCTAssertFalse(store.debugLogRealtimeDeltas)
+    }
+
+    func testDebugLogRealtimeDeltas_persistsAcrossReloadUnderDocumentedKey() {
+        // The reporter enables capture via `defaults write com.localvoxtral.app
+        // debug.log_realtime_deltas -bool true`. Verify the round-trips under
+        // exactly that key and survives a store reload.
+        defaults.set(true, forKey: "debug.log_realtime_deltas")
+
+        let store = makeStore()
+        XCTAssertTrue(store.debugLogRealtimeDeltas)
+
+        // And a set through the property must persist under the same key.
+        store.debugLogRealtimeDeltas = false
+        XCTAssertEqual(defaults.bool(forKey: "debug.log_realtime_deltas"), false)
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.debugLogRealtimeDeltas)
+    }
+
 }
