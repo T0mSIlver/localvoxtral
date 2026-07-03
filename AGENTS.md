@@ -96,8 +96,10 @@ Key subsystems:
 - Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V)
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
-- Backends: catalog pinned to fork wheel releases; installer shells out to the
-  embedded `uv`; install root lives under Application Support.
+- Backends: `BackendManager` lazily bootstraps app-managed local serving on
+  first dictation start; catalog pinned to fork wheel releases; installer
+  shells out to the embedded `uv`; supervisors spawn/health-check/stop the
+  managed processes; install root lives under Application Support.
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)

@@ -68,6 +68,7 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
 
 - Open **Settings** from the menu bar popover to set:
   - Dictation trigger: single modifier key (tap/hold) or per-mode keyboard shortcuts (`Toggle` / `Push to Talk`)
+  - Backend mode (`Managed local` / `External URL`)
   - Realtime endpoint (URL, model name, API key)
   - Auto-copy final segment
   - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
@@ -79,9 +80,13 @@ The shared config directory lives at `~/Library/Application Support/localvoxtral
 
 ## Tested setup
 
+### Managed local (default)
+
+In Managed local mode, localvoxtral installs the pinned `voxmlx` and `mlx-lm` backend wheels automatically into `~/Library/Application Support/localvoxtral/backends` and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts in managed mode.
+
 In this tested setup, `vLLM` and `voxmlx` stream partial text fast enough for realtime dictation; latency and throughput will vary by hardware, model, and quantization.
 
-### voxmlx (recommended)
+### External URL: voxmlx
 
 [voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol and memory management optimizations.
 
@@ -91,7 +96,7 @@ uvx --from "git+https://github.com/T0mSIlver/voxmlx.git[server]" \
   voxmlx-serve --model T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
 ```
 
-### vLLM
+### External URL: vLLM
 
 [vllm](https://github.com/vllm-project/vllm) OpenAI Realtime-compatible server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602).
 
@@ -102,7 +107,11 @@ vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudag
 
 ## Tested setup (LLM polishing)
 
-### mlx-lm (recommended)
+### Managed local (default)
+
+When LLM polishing is enabled in Managed local mode, localvoxtral starts the pinned `mlx-lm` backend lazily and points polishing at its local chat completions endpoint.
+
+### External URL: mlx-lm
 
 `mlx_lm.server` on M1 Pro, running [Qwen3.5-0.8B in 8 bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) for local LLM polishing.
 Use [this fork](https://github.com/T0mSIlver/mlx-lm) which adds prompt caching optimizations.
@@ -122,7 +131,7 @@ With the default polishing prompts, prompt processing is roughly 286 ms (~50%) f
 ## Roadmap
 
 - [ ] Enhance the server connection UX
-- [ ] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess app-managed local serving (start/stop/config) in localvoxtral.
+- [x] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess app-managed local serving (start/stop/config) in localvoxtral.
 - [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
   - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
   - **done** ~~[MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)~~
