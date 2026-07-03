@@ -88,7 +88,10 @@ final class DictationViewModel {
             if message == HotKeyManager.handlerRegistrationErrorMessage {
                 return .hotKeyHandlerRegistrationFailure
             }
-            if message == HotKeyManager.unavailableErrorMessage {
+            if message == HotKeyManager.unavailableErrorMessage
+                || message == HotKeyManager.livePasteUnavailableErrorMessage
+                || message == HotKeyManager.modifierOnlyUnavailableErrorMessage
+            {
                 return .hotKeyShortcutUnavailable
             }
             if message.localizedCaseInsensitiveContains("websocket receive failed") {
@@ -560,6 +563,10 @@ final class DictationViewModel {
                 stopDictation(reason: "modifier hold release")
             } else if isConnectingRealtimeSession {
                 statusText = StatusStrings.connectingRealtimeBackend
+                return
+            } else if isAwaitingMicrophonePermission {
+                statusText = StatusStrings.ready
+                return
             }
             clearPushToTalkShortcutSessionAttempt()
             return
@@ -605,8 +612,7 @@ final class DictationViewModel {
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
-        settings.dictationShortcutMode == .pushToTalk
-            && hasActivePushToTalkShortcutSession
+        hasActivePushToTalkShortcutSession
             && !isPushToTalkShortcutHeld
     }
 
@@ -677,15 +683,10 @@ final class DictationViewModel {
         let overlayShortcut = settings.overlayBufferShortcut
         let livePasteShortcut = settings.livePasteShortcut
 
-        if overlayShortcut != nil || livePasteShortcut != nil {
-            return hotKeyManager.registerDual(
-                overlay: overlayShortcut,
-                livePaste: livePasteShortcut
-            )
-        }
-
-        // Fallback: legacy single shortcut (if neither dual shortcut is configured)
-        return hotKeyManager.register(shortcut: settings.dictationShortcut)
+        return hotKeyManager.registerDual(
+            overlay: overlayShortcut,
+            livePaste: livePasteShortcut
+        )
     }
 
     func updateDictationShortcut(_ shortcut: DictationShortcut?) {
@@ -1085,6 +1086,12 @@ final class DictationViewModel {
         case .shortcutUnavailable:
             statusText = HotKeyManager.registrationErrorStatus
             lastError = HotKeyManager.unavailableErrorMessage
+        case .livePasteShortcutUnavailable:
+            statusText = HotKeyManager.registrationErrorStatus
+            lastError = HotKeyManager.livePasteUnavailableErrorMessage
+        case .modifierOnlyHotKeyUnavailable:
+            statusText = HotKeyManager.registrationErrorStatus
+            lastError = HotKeyManager.modifierOnlyUnavailableErrorMessage
         }
     }
 }
@@ -1114,6 +1121,14 @@ extension DictationViewModel {
     /// not entered when disabled". Pass `nil` to clear.
     func debugConfigureDeltaLogSink(_ sink: ((DebugRealtimeDeltaLogRecord) -> Void)?) {
         debugDeltaLogSink = sink
+    }
+
+    func debugSetModifierOnlyHoldStateForTesting(isActive: Bool) {
+        isModifierOnlyHoldActive = isActive
+    }
+
+    var debugCurrentHotKeyRegistrationKindForTesting: HotKeyManager.DebugRegistrationKind {
+        hotKeyManager.debugCurrentRegistrationKind
     }
 }
 #endif

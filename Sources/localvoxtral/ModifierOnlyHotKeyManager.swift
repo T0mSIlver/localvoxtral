@@ -49,9 +49,19 @@ final class ModifierOnlyHotKeyManager {
         self.holdScheduler = holdScheduler
     }
 
-    func start(modifier: ModifierKey) {
+    @discardableResult
+    func start(modifier: ModifierKey) -> ModifierOnlyHotKeyStartOutcome {
         #if DEBUG
         Self.startCallCount += 1
+        if let forcedStartOutcome = Self.forcedStartOutcome {
+            stop()
+            configureGestureState(modifier: modifier)
+            if forcedStartOutcome != .created {
+                resetGestureState()
+            }
+            Self.record(forcedStartOutcome)
+            return forcedStartOutcome
+        }
         #endif
 
         stop()
@@ -80,7 +90,7 @@ final class ModifierOnlyHotKeyManager {
             Log.modifierHotKey.error(
                 "Modifier-only CGEvent.tapCreate returned nil (trusted=\(trusted, privacy: .public), inputMonitoring=\(Self.describeHIDAccess(inputMonitoring), privacy: .public)). Modifier-only hotkey disabled; Carbon modifier+key shortcuts are unaffected."
             )
-            return
+            return .creationFailedNil
         }
 
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
@@ -90,7 +100,7 @@ final class ModifierOnlyHotKeyManager {
                 "CFMachPortCreateRunLoopSource returned nil; modifier-only hotkey disabled. Carbon modifier+key shortcuts are unaffected."
             )
             CGEvent.tapEnable(tap: tap, enable: false)
-            return
+            return .noRunLoopSource
         }
 
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
@@ -105,6 +115,7 @@ final class ModifierOnlyHotKeyManager {
         Log.modifierHotKey.notice(
             "Modifier-only CGEventTap created and enabled on the main run loop for \(modifier.rawValue, privacy: .public)."
         )
+        return .created
     }
 
     func stop() {
@@ -308,11 +319,13 @@ final class ModifierOnlyHotKeyManager {
     static var lastStartOutcome: ModifierOnlyHotKeyStartOutcome = .none
     static var startCallCount = 0
     static var stopCallCount = 0
+    static var forcedStartOutcome: ModifierOnlyHotKeyStartOutcome?
 
     static func resetDebugState() {
         lastStartOutcome = .none
         startCallCount = 0
         stopCallCount = 0
+        forcedStartOutcome = nil
     }
 
     func debugStartGestureForTesting(modifier: ModifierKey) {

@@ -48,8 +48,9 @@ extension DictationViewModel {
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        let requestedOutputMode = sessionOutputMode ?? settings.dictationOutputMode
         clearLatchedSessionMetadata()
-        sessionOutputMode = settings.dictationOutputMode
+        sessionOutputMode = requestedOutputMode
         sessionStartedAt = Date()
         sessionReplacementDictionary = settings.replacementDictionaryEnabled
             ? appConfigStore.loadReplacementDictionary()

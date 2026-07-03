@@ -6,6 +6,8 @@ final class HotKeyManager {
     enum RegistrationFailure {
         case handlerInstallFailed
         case shortcutUnavailable
+        case livePasteShortcutUnavailable
+        case modifierOnlyHotKeyUnavailable
     }
 
     enum RegistrationResult {
@@ -13,9 +15,22 @@ final class HotKeyManager {
         case failure(RegistrationFailure)
     }
 
+    #if DEBUG
+    enum DebugRegistrationKind: Equatable {
+        case none
+        case single
+        case dual(overlay: Bool, livePaste: Bool)
+        case modifierOnly
+    }
+    #endif
+
     static let handlerRegistrationErrorMessage = "Failed to register global hotkey handler."
     static let registrationErrorStatus = "Failed to register global hotkey."
     static let unavailableErrorMessage = "The selected keyboard shortcut is unavailable."
+    static let livePasteUnavailableErrorMessage =
+        "The selected Live Auto-Paste shortcut is unavailable."
+    static let modifierOnlyUnavailableErrorMessage =
+        "Unable to start the single-modifier hotkey. Grant Input Monitoring and Accessibility permissions, then try again."
 
     /// Legacy single-shortcut callback. Used by `register(shortcut:)`.
     var onPress: (() -> Void)?
@@ -32,7 +47,7 @@ final class HotKeyManager {
     private var hotKeyHandlerRef: EventHandlerRef?
     private static let hotKeySignature = OSType(0x53565854) // SVXT
     private nonisolated(unsafe) static weak var hotKeyTarget: HotKeyManager?
-    private let modifierOnlyManager = ModifierOnlyHotKeyManager()
+    private var modifierOnlyManager = ModifierOnlyHotKeyManager()
     private var isUsingModifierOnly = false
 
     /// Maps hotkey IDs to output modes for dual-shortcut dispatch.
@@ -40,6 +55,13 @@ final class HotKeyManager {
 
     private static let overlayHotKeyID: UInt32 = 1
     private static let livePasteHotKeyID: UInt32 = 2
+
+    #if DEBUG
+    private(set) var debugCurrentRegistrationKind: DebugRegistrationKind = .none
+    private(set) static var debugForcedHandlerInstallResult: Bool?
+    private(set) static var debugForcedRegisterStatusesByID: [UInt32: OSStatus] = [:]
+    private(set) static var debugUnregisterCallCount = 0
+    #endif
 
     init() {
         Self.hotKeyTarget = self
@@ -53,10 +75,9 @@ final class HotKeyManager {
         _ modifier: ModifierOnlyHotKeyManager.ModifierKey,
         holdThreshold: Double = 0.35
     ) -> RegistrationResult {
-        unregister()
-        isUsingModifierOnly = true
-        modifierOnlyManager.holdThresholdSeconds = holdThreshold
-        modifierOnlyManager.onTap = { [weak self] in
+        let candidateManager = ModifierOnlyHotKeyManager()
+        candidateManager.holdThresholdSeconds = holdThreshold
+        candidateManager.onTap = { [weak self] in
             guard let self else { return }
             if self.onPressWithMode != nil {
                 self.onPressWithMode?(.overlayBuffer)
@@ -64,9 +85,24 @@ final class HotKeyManager {
                 self.onPress?()
             }
         }
-        modifierOnlyManager.onHoldStart = { [weak self] in self?.onHoldStart?() }
-        modifierOnlyManager.onHoldRelease = { [weak self] in self?.onRelease?() }
-        modifierOnlyManager.start(modifier: modifier)
+        candidateManager.onHoldStart = { [weak self] in self?.onHoldStart?() }
+        candidateManager.onHoldRelease = { [weak self] in self?.onRelease?() }
+
+        let startOutcome = candidateManager.start(modifier: modifier)
+        guard startOutcome == .created else {
+            candidateManager.stop()
+            Log.modifierHotKey.error(
+                "Modifier-only hotkey registration failed with outcome \(startOutcome.rawValue, privacy: .public); preserving previous hotkey registration."
+            )
+            return .failure(.modifierOnlyHotKeyUnavailable)
+        }
+
+        unregister()
+        modifierOnlyManager = candidateManager
+        isUsingModifierOnly = true
+        #if DEBUG
+        debugCurrentRegistrationKind = .modifierOnly
+        #endif
         return .success
     }
 
@@ -77,6 +113,9 @@ final class HotKeyManager {
         unregister()
 
         guard let shortcut else {
+            #if DEBUG
+            debugCurrentRegistrationKind = .none
+            #endif
             return .success
         }
 
@@ -88,7 +127,7 @@ final class HotKeyManager {
 
         var ref: EventHotKeyRef?
         let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: Self.overlayHotKeyID)
-        let registerStatus = RegisterEventHotKey(
+        let registerStatus = registerEventHotKey(
             shortcut.keyCode,
             shortcut.carbonModifierFlags,
             hotKeyID,
@@ -105,6 +144,9 @@ final class HotKeyManager {
         if let ref {
             hotKeyRefs[Self.overlayHotKeyID] = ref
         }
+        #if DEBUG
+        debugCurrentRegistrationKind = .single
+        #endif
 
         return .success
     }
@@ -120,6 +162,9 @@ final class HotKeyManager {
         unregister()
 
         guard overlay != nil || livePaste != nil else {
+            #if DEBUG
+            debugCurrentRegistrationKind = .none
+            #endif
             return .success
         }
 
@@ -129,10 +174,13 @@ final class HotKeyManager {
 
         hotKeyIDToMode.removeAll()
 
+        var overlayRegistered = false
+        var livePasteRegistered = false
+
         if let overlay {
             var ref: EventHotKeyRef?
             let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: Self.overlayHotKeyID)
-            let status = RegisterEventHotKey(
+            let status = registerEventHotKey(
                 overlay.keyCode,
                 overlay.carbonModifierFlags,
                 hotKeyID,
@@ -144,6 +192,7 @@ final class HotKeyManager {
                 unregister()
                 return .failure(.shortcutUnavailable)
             }
+            overlayRegistered = true
             if let ref {
                 hotKeyRefs[Self.overlayHotKeyID] = ref
                 hotKeyIDToMode[Self.overlayHotKeyID] = .overlayBuffer
@@ -153,7 +202,7 @@ final class HotKeyManager {
         if let livePaste {
             var ref: EventHotKeyRef?
             let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: Self.livePasteHotKeyID)
-            let status = RegisterEventHotKey(
+            let status = registerEventHotKey(
                 livePaste.keyCode,
                 livePaste.carbonModifierFlags,
                 hotKeyID,
@@ -162,26 +211,35 @@ final class HotKeyManager {
                 &ref
             )
             if status != noErr {
-                // Only fail if overlay also wasn't registered.
-                // If overlay succeeded, keep it and just skip live paste.
-                if hotKeyRefs.isEmpty {
+                if !overlayRegistered {
                     unregister()
                     return .failure(.shortcutUnavailable)
                 }
-                // Overlay is registered — live paste failed. Still report as success
-                // so the app remains functional with the overlay shortcut.
-                return .success
+                Log.modifierHotKey.error(
+                    "Live Auto-Paste hotkey registration failed after Overlay Buffer hotkey registered; preserving overlay hotkey and surfacing failure."
+                )
+                return .failure(.livePasteShortcutUnavailable)
             }
+            livePasteRegistered = true
             if let ref {
                 hotKeyRefs[Self.livePasteHotKeyID] = ref
                 hotKeyIDToMode[Self.livePasteHotKeyID] = .liveAutoPaste
             }
         }
 
+        #if DEBUG
+        debugCurrentRegistrationKind = .dual(
+            overlay: overlayRegistered,
+            livePaste: livePasteRegistered
+        )
+        #endif
         return .success
     }
 
     func unregister() {
+        #if DEBUG
+        Self.debugUnregisterCallCount += 1
+        #endif
         if isUsingModifierOnly {
             modifierOnlyManager.stop()
             isUsingModifierOnly = false
@@ -204,6 +262,12 @@ final class HotKeyManager {
     /// Installs the Carbon event handler if not already installed. Returns true on success.
     private func installHandlerIfNeeded() -> Bool {
         guard hotKeyHandlerRef == nil else { return true }
+
+        #if DEBUG
+        if let forcedHandlerInstallResult = Self.debugForcedHandlerInstallResult {
+            return forcedHandlerInstallResult
+        }
+        #endif
 
         var eventTypes = [
             EventTypeSpec(
@@ -255,6 +319,31 @@ final class HotKeyManager {
         return installStatus == noErr
     }
 
+    private func registerEventHotKey(
+        _ keyCode: UInt32,
+        _ modifierFlags: UInt32,
+        _ hotKeyID: EventHotKeyID,
+        _ target: EventTargetRef?,
+        _ options: UInt32,
+        _ outRef: UnsafeMutablePointer<EventHotKeyRef?>
+    ) -> OSStatus {
+        #if DEBUG
+        if let forcedStatus = Self.debugForcedRegisterStatusesByID.removeValue(forKey: hotKeyID.id) {
+            outRef.pointee = nil
+            return forcedStatus
+        }
+        #endif
+
+        return RegisterEventHotKey(
+            keyCode,
+            modifierFlags,
+            hotKeyID,
+            target,
+            options,
+            outRef
+        )
+    }
+
     private func handleHotKeyEvent(kind: UInt32, hotKeyID: UInt32) {
         switch kind {
         case UInt32(kEventHotKeyPressed):
@@ -271,3 +360,34 @@ final class HotKeyManager {
         }
     }
 }
+
+#if DEBUG
+extension HotKeyManager {
+    static func debugResetOverridesForTesting() {
+        debugForcedHandlerInstallResult = nil
+        debugForcedRegisterStatusesByID = [:]
+        debugUnregisterCallCount = 0
+    }
+
+    static func debugForceHandlerInstallResultForTesting(_ result: Bool?) {
+        debugForcedHandlerInstallResult = result
+    }
+
+    static func debugForceRegisterStatusForTesting(
+        hotKeyID: DebugRegistrationKindHotKeyID,
+        status: OSStatus
+    ) {
+        switch hotKeyID {
+        case .overlay:
+            debugForcedRegisterStatusesByID[overlayHotKeyID] = status
+        case .livePaste:
+            debugForcedRegisterStatusesByID[livePasteHotKeyID] = status
+        }
+    }
+}
+
+enum DebugRegistrationKindHotKeyID {
+    case overlay
+    case livePaste
+}
+#endif

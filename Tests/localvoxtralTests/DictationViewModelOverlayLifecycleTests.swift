@@ -1,3 +1,4 @@
+import Carbon.HIToolbox
 import Foundation
 import XCTest
 @testable import localvoxtral
@@ -28,6 +29,28 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         XCTAssertFalse(viewModel.isOverlayBufferModeEnabled)
         XCTAssertTrue(viewModel.isLiveAutoPasteModeEnabled)
+    }
+
+    func testShortcutSelectedOutputModeSurvivesBeginDictationSession() {
+        let settings = makeSettings(outputMode: .liveAutoPaste)
+        settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+
+        viewModel.beginDictationSession()
+
+        XCTAssertEqual(viewModel.sessionOutputMode, .overlayBuffer)
+        XCTAssertTrue(viewModel.isOverlayBufferModeEnabled)
+        XCTAssertFalse(viewModel.isLiveAutoPasteModeEnabled)
+
+        viewModel.abortConnectingSession()
     }
 
     func testStopWithoutFinalizationStillCommitsOverlayUsingLatchedSessionMode() {
@@ -184,6 +207,58 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
+    }
+
+    func testModifierOnlyHoldReleaseBeforeConnectSkipsDictationStartOnConnectedEvent() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.modifierOnlyHotKeyEnabled = true
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.statusText = "Connecting to realtime backend..."
+        viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
+        viewModel.debugSetModifierOnlyHoldStateForTesting(isActive: true)
+
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        viewModel.handle(event: .connected)
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
+    }
+
+    func testNoHotKeysRegisteredWhenOverlayAndLiveShortcutsAreDisabled() {
+        HotKeyManager.debugResetOverridesForTesting()
+        HotKeyManager.debugForceHandlerInstallResultForTesting(true)
+        HotKeyManager.debugForceRegisterStatusForTesting(hotKeyID: .overlay, status: noErr)
+        defer {
+            HotKeyManager.debugResetOverridesForTesting()
+        }
+
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.setDictationShortcut(SettingsStore.defaultDictationShortcut)
+        settings.setOverlayBufferShortcut(nil)
+        settings.setLivePasteShortcut(nil)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applyHotKeySettingsChange()
+
+        XCTAssertEqual(viewModel.debugCurrentHotKeyRegistrationKindForTesting, .none)
+        XCTAssertNil(viewModel.lastError)
     }
 
     func testCancelPolishingForNewSessionIfNeededResetsFinalizationState() {
