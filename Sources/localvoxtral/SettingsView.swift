@@ -110,21 +110,60 @@ private struct ConnectionSettingsPane: View {
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Backend") {
-                SettingsFieldRow(title: "Realtime endpoint") {
-                    TextField(settings.endpointPlaceholder, text: endpointBinding)
-                        .textFieldStyle(.roundedBorder)
+                SettingsFieldRow(title: "Mode") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: $settings.backendMode) {
+                            ForEach(BackendMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        SettingsHelpText(settings.backendMode.description)
+                    }
                 }
 
-                SettingsFieldRow(title: "Model") {
-                    TextField(settings.modelPlaceholder, text: modelBinding)
-                        .textFieldStyle(.roundedBorder)
-                }
+                switch settings.backendMode {
+                case .externalURL:
+                    SettingsFieldRow(title: "Realtime endpoint") {
+                        TextField(settings.endpointPlaceholder, text: endpointBinding)
+                            .textFieldStyle(.roundedBorder)
+                    }
 
-                SettingsFieldRow(title: "API key") {
-                    SecureField("Required for remote providers", text: $settings.apiKey)
-                        .textFieldStyle(.roundedBorder)
+                    SettingsFieldRow(title: "Model") {
+                        TextField(settings.modelPlaceholder, text: modelBinding)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "API key") {
+                        SecureField("Required for remote providers", text: $settings.apiKey)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                case .managedLocal:
+                    ManagedBackendSettingsPlaceholder()
                 }
             }
+        }
+    }
+}
+
+// TODO: the wiring PR replaces this static info with live install/run status
+// for the managed voxmlx + mlx-lm backends.
+private struct ManagedBackendSettingsPlaceholder: View {
+    var body: some View {
+        SettingsFieldRow(title: "Dictation") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("voxmlx — \(ManagedBackendEndpoints.realtimeURLString)")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+
+                SettingsHelpText("Backends are installed and started automatically.")
+            }
+        }
+
+        SettingsFieldRow(title: "Polishing") {
+            Text("mlx-lm — \(ManagedBackendEndpoints.polishingURLString)")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
         }
     }
 }

@@ -649,6 +649,12 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "not a url"
+        // This test exercises external-mode endpoint validation (an invalid
+        // URL surfaces a config error before polishing runs). Pin external
+        // mode so the configured endpoint is validated; managed mode ignores
+        // the user-typed endpoint and is covered at the SettingsStore level
+        // (testLLMPolishingConfiguration_managedLocal_*).
+        settings.backendMode = .externalURL
 
         let overlayCoordinator = MockOverlayCoordinator()
         let viewModel = DictationViewModel(
