@@ -526,14 +526,6 @@ final class DictationViewModel {
     // MARK: - Public API
 
     private func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
-        // If a mode is specified by the shortcut, pre-set it so startDictation
-        // uses it — but never while a session is active: the stop half of a
-        // toggle finalizes using sessionOutputMode, and overwriting it here
-        // would finalize the running session down the wrong mode's path.
-        if let mode, !isDictating, !isConnectingRealtimeSession, !isFinalizingStop {
-            sessionOutputMode = mode
-        }
-
         switch settings.dictationShortcutMode {
         case .toggle:
             hasActivePushToTalkShortcutSession = false
@@ -544,14 +536,14 @@ final class DictationViewModel {
             } else if isFinalizingStop {
                 statusText = StatusStrings.finalizingPreviousDictation
             } else {
-                startDictation()
+                startDictation(outputMode: mode)
             }
         case .pushToTalk:
             guard !isPushToTalkShortcutHeld else { return }
             isPushToTalkShortcutHeld = true
             guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
             hasActivePushToTalkShortcutSession = true
-            startDictation()
+            startDictation(outputMode: mode)
             if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
                 hasActivePushToTalkShortcutSession = false
             }
@@ -603,15 +595,11 @@ final class DictationViewModel {
 
     /// Modifier-only hold gesture started — use push-to-talk semantics with live auto-paste.
     private func handleModifierOnlyHoldStart() {
-        // Nothing may be mutated while a session is already active: a stray
-        // hold during an overlay session would otherwise rewrite
-        // sessionOutputMode and finalize that session down the live path.
         guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
-        sessionOutputMode = .liveAutoPaste
         isModifierOnlyHoldActive = true
         isPushToTalkShortcutHeld = true
         hasActivePushToTalkShortcutSession = true
-        startDictation()
+        startDictation(outputMode: .liveAutoPaste)
         if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
             hasActivePushToTalkShortcutSession = false
             isModifierOnlyHoldActive = false
@@ -623,10 +611,7 @@ final class DictationViewModel {
     /// shortcut behavior: taps have no release event, so routing them through
     /// push-to-talk semantics latches dictation on with no way to stop it.
     private func handleModifierOnlyTap(mode: DictationOutputMode) {
-        if !isDictating, !isConnectingRealtimeSession, !isFinalizingStop {
-            sessionOutputMode = mode
-        }
-        toggleDictation()
+        toggleDictation(outputMode: mode)
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
@@ -638,7 +623,7 @@ final class DictationViewModel {
         hasActivePushToTalkShortcutSession = false
     }
 
-    func toggleDictation() {
+    func toggleDictation(outputMode: DictationOutputMode? = nil) {
         hasActivePushToTalkShortcutSession = false
         if isDictating {
             stopDictation(reason: "manual toggle")
@@ -647,7 +632,7 @@ final class DictationViewModel {
         } else if isFinalizingStop {
             statusText = StatusStrings.finalizingPreviousDictation
         } else {
-            startDictation()
+            startDictation(outputMode: outputMode)
         }
     }
 
@@ -848,7 +833,7 @@ final class DictationViewModel {
         startDictation()
     }
 
-    func startDictation() {
+    func startDictation(outputMode: DictationOutputMode? = nil) {
         guard !isDictating else { return }
         guard !isConnectingRealtimeSession else {
             statusText = StatusStrings.connectingRealtimeBackend
@@ -880,7 +865,7 @@ final class DictationViewModel {
 
         switch microphone.authorizationStatus() {
         case .authorized:
-            beginDictationSession()
+            beginDictationSession(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
@@ -903,7 +888,7 @@ final class DictationViewModel {
                         self.hasActivePushToTalkShortcutSession = false
                         return
                     }
-                    self.beginDictationSession()
+                    self.beginDictationSession(outputMode: outputMode)
                 }
             }
             Task { [weak self] in
@@ -965,7 +950,7 @@ final class DictationViewModel {
         pendingSegmentText = ""
         currentDictationEventText = ""
         if !isDictating, !isFinalizingStop, !isConnectingRealtimeSession {
-            sessionOutputMode = nil
+            clearLatchedSessionMetadata()
         }
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()

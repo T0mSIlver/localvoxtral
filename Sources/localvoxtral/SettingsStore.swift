@@ -15,7 +15,7 @@ struct DictationShortcut: Equatable, Sendable {
     }
 }
 
-enum DictationOutputMode: String, CaseIterable, Identifiable {
+enum DictationOutputMode: String, CaseIterable, Identifiable, Sendable {
     case overlayBuffer = "overlay_buffer"
     case liveAutoPaste = "live_auto_paste"
 

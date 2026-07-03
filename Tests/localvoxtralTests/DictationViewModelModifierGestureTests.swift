@@ -72,6 +72,33 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         )
     }
 
+    func testFailedModifierHoldStartDoesNotLatchLiveModeForNextSettingsBasedSession() {
+        let settings = makeSettings(outputMode: .liveAutoPaste)
+        let viewModel = makeViewModel(settings: settings)
+
+        viewModel.isAwaitingMicrophonePermission = true
+
+        viewModel.debugHandleModifierOnlyHoldStartForTesting()
+
+        XCTAssertNil(
+            viewModel.sessionOutputMode,
+            "a gesture whose startDictation request is declined must not latch a shortcut mode"
+        )
+
+        settings.dictationOutputMode = .overlayBuffer
+        viewModel.isAwaitingMicrophonePermission = false
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+
+        viewModel.beginDictationSession()
+
+        XCTAssertEqual(
+            viewModel.sessionOutputMode, .overlayBuffer,
+            "the next settings-based session must use the current setting, not a stale failed gesture mode"
+        )
+
+        viewModel.abortConnectingSession()
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelModifierGestureTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
