@@ -190,5 +190,6 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     ) -> OverlayBufferCommitOutcome { commitOutcome }
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
     func reset() {}
+    func captureLiveCommitTargetAppPID() {}
 }
 #endif

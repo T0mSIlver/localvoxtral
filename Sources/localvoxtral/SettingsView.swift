@@ -214,7 +214,7 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
-    private var isAvailableInCurrentMode: Bool {
+    private var isLLMPolishingAvailableInCurrentMode: Bool {
         settings.dictationOutputMode == .overlayBuffer
     }
 
@@ -234,56 +234,66 @@ private struct TextProcessingSettingsPane: View {
 
     var body: some View {
         SettingsPage {
-            if !isAvailableInCurrentMode {
-                SettingsAvailabilityCard(
-                    title: "Unavailable in Live Auto-Paste output mode",
-                    message:
-                        "Text Processing can't run in Live Auto-Paste output mode. Switch Dictation > Output mode to Overlay Buffer to enable text processing features.",
-                    systemImage: "exclamationmark.triangle.fill",
-                    tint: .orange
-                )
-            }
-
-            SettingsGroup(title: "Features") {
+            SettingsGroup(title: "Replacements") {
                 ToggleSettingRow(
                     title: "Exact match replacements",
                     subtitle:
-                        "Apply exact match replacements using the replacement dictionary during finalization.",
+                        "Apply dictionary replacements while streaming in Live Auto-Paste and before commit in Overlay Buffer.",
                     isOn: $settings.replacementDictionaryEnabled
                 )
-
-                ToggleSettingRow(
-                    title: "LLM polishing",
-                    subtitle:
-                        "Send dictation text to an OpenAI-compatible chat completions server.",
-                    isOn: llmPolishingEnabledBinding
+                .help(
+                    "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
                 )
+            }
 
-                if settings.llmPolishingEnabled {
-                    SettingsFieldRow(title: "Endpoint") {
-                        TextField(
-                            "http://127.0.0.1:8080/v1/chat/completions",
-                            text: $settings.llmPolishingEndpointURL
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
+            SettingsGroup(title: "LLM Polishing") {
+                if !isLLMPolishingAvailableInCurrentMode {
+                    SettingsAvailabilityCard(
+                        title: "Unavailable in Live Auto-Paste output mode",
+                        message:
+                            "LLM polishing runs before Overlay Buffer commits. Switch Dictation > Output mode to Overlay Buffer to enable it.",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tint: .orange
+                    )
+                }
 
-                    SettingsFieldRow(title: "API key") {
-                        SecureField(
-                            "Required for remote providers",
-                            text: $settings.llmPolishingAPIKey
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
+                Group {
+                    ToggleSettingRow(
+                        title: "LLM polishing",
+                        subtitle:
+                            "Send dictation text to an OpenAI-compatible chat completions server.",
+                        isOn: llmPolishingEnabledBinding
+                    )
 
-                    SettingsFieldRow(title: "Model") {
-                        TextField("mlx-community/Qwen3.5-0.8B-8bit", text: $settings.llmPolishingModel)
+                    if settings.llmPolishingEnabled {
+                        SettingsFieldRow(title: "Endpoint") {
+                            TextField(
+                                "http://127.0.0.1:8080/v1/chat/completions",
+                                text: $settings.llmPolishingEndpointURL
+                            )
                             .textFieldStyle(.roundedBorder)
+                        }
+
+                        SettingsFieldRow(title: "API key") {
+                            SecureField(
+                                "Required for remote providers",
+                                text: $settings.llmPolishingAPIKey
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+
+                        SettingsFieldRow(title: "Model") {
+                            TextField(
+                                "mlx-community/Qwen3.5-0.8B-8bit",
+                                text: $settings.llmPolishingModel
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
                     }
                 }
+                .disabled(!isLLMPolishingAvailableInCurrentMode)
+                .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)
             }
-            .disabled(!isAvailableInCurrentMode)
-            .opacity(isAvailableInCurrentMode ? 1.0 : 0.5)
 
             SettingsGroup(title: "Shared Configuration") {
                 SettingsFieldRow(title: "Config folder") {
@@ -292,7 +302,9 @@ private struct TextProcessingSettingsPane: View {
                             viewModel.openConfigFolder()
                         }
 
-                        SettingsHelpText("Changes apply to the next finalized dictation.")
+                        SettingsHelpText(
+                            "Dictionary changes apply to live corrections and overlay finalization."
+                        )
                     }
                 }
 
@@ -301,7 +313,7 @@ private struct TextProcessingSettingsPane: View {
                         SettingsFileNote(
                             name: "replacement_dictionary.toml",
                             description:
-                                "Replacements used during finalization."
+                                "Replacements used in both output modes."
                         ),
                         SettingsFileNote(
                             name: "llm_system_prompt.toml",
@@ -315,8 +327,6 @@ private struct TextProcessingSettingsPane: View {
                     ])
                 }
             }
-            .disabled(!isAvailableInCurrentMode)
-            .opacity(isAvailableInCurrentMode ? 1.0 : 0.5)
         }
     }
 }

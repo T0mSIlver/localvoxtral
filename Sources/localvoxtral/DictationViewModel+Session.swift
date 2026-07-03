@@ -34,6 +34,7 @@ extension DictationViewModel {
         sessionStartedAt = nil
         sessionProvider = nil
         sessionModelName = nil
+        sessionReplacementDictionary = nil
     }
 
     func beginDictationSession() {
@@ -49,6 +50,9 @@ extension DictationViewModel {
         clearLatchedSessionMetadata()
         sessionOutputMode = settings.dictationOutputMode
         sessionStartedAt = Date()
+        sessionReplacementDictionary = settings.replacementDictionaryEnabled
+            ? appConfigStore.loadReplacementDictionary()
+            : nil
         setRealtimeIndicatorIdle()
 
         let provider = settings.realtimeProvider
@@ -145,6 +149,7 @@ extension DictationViewModel {
                 startOverlayBufferSession()
             } else {
                 overlayBufferCoordinator.reset()
+                configureLiveAutoPasteReplacementCorrectorForSession()
             }
             healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
         } catch {
@@ -332,9 +337,16 @@ extension DictationViewModel {
             let polishingConfig = settings.llmPolishingConfiguration
             let shouldLoadReplacementDictionary =
                 settings.replacementDictionaryEnabled || polishingConfig != nil
-            let replacementDictionary = shouldLoadReplacementDictionary
-                ? appConfigStore.loadReplacementDictionary()
-                : ReplacementDictionary(entries: [])
+            let replacementDictionary: ReplacementDictionary
+            if settings.replacementDictionaryEnabled,
+               let sessionReplacementDictionary
+            {
+                replacementDictionary = sessionReplacementDictionary
+            } else {
+                replacementDictionary = shouldLoadReplacementDictionary
+                    ? appConfigStore.loadReplacementDictionary()
+                    : ReplacementDictionary(entries: [])
+            }
             let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
             let originalText = currentDictationEventText
             let workingText =
@@ -503,6 +515,7 @@ extension DictationViewModel {
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
+        textInsertion.flushFinalLiveReplacementCorrections()
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
             overlayCommitOutcome: nil,
@@ -520,6 +533,24 @@ extension DictationViewModel {
             targetAppBundleID: nil,
             status: .sttCompleted,
             commitSucceeded: true
+        )
+    }
+
+    func configureLiveAutoPasteReplacementCorrectorForSession() {
+        guard isLiveAutoPasteModeEnabled else {
+            textInsertion.endLiveReplacementSession()
+            return
+        }
+        guard settings.replacementDictionaryEnabled else {
+            textInsertion.endLiveReplacementSession()
+            return
+        }
+
+        overlayBufferCoordinator.captureLiveCommitTargetAppPID()
+        let dictionary = replacementDictionaryForCurrentSession()
+        textInsertion.beginLiveReplacementSession(
+            dictionary: dictionary,
+            preferredAppPID: overlayBufferCoordinator.commitTargetAppPID
         )
     }
 
@@ -546,6 +577,7 @@ extension DictationViewModel {
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
+        textInsertion.endLiveReplacementSession()
 
         if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."
@@ -607,7 +639,18 @@ extension DictationViewModel {
             status: status,
             commitSucceeded: commitSucceeded
         )
+        debugSavedSessionRecordSink?(record)
         sessionStore?.save(record)
+    }
+
+    func replacementDictionaryForCurrentSession() -> ReplacementDictionary? {
+        guard settings.replacementDictionaryEnabled else { return nil }
+        if let sessionReplacementDictionary {
+            return sessionReplacementDictionary
+        }
+        let dictionary = appConfigStore.loadReplacementDictionary()
+        sessionReplacementDictionary = dictionary
+        return dictionary
     }
 
     // MARK: - Connect Timeout
@@ -653,6 +696,7 @@ extension DictationViewModel {
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
+        textInsertion.endLiveReplacementSession()
         overlayBufferCoordinator.reset()
         if disconnectSocket {
             realtimeAPIClient.disconnect()

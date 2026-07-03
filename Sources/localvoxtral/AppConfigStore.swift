@@ -14,6 +14,33 @@ struct ReplacementEntry: Equatable, Sendable {
 struct ReplacementDictionary: Equatable, Sendable {
     let entries: [ReplacementEntry]
 
+    func liveReplacementRules() -> [LiveReplacementRule] {
+        var rules: [LiveReplacementRule] = []
+        rules.reserveCapacity(entries.reduce(0) { $0 + $1.matches.count })
+
+        var originalOrder = 0
+        for entry in entries {
+            for match in entry.matches {
+                let normalized = match.collapsingInternalWhitespace.trimmed
+                defer { originalOrder += 1 }
+                guard !normalized.isEmpty else { continue }
+                guard let regex = Self.makeRegex(for: normalized) else { continue }
+                rules.append(
+                    LiveReplacementRule(
+                        regex: regex,
+                        replaceWith: entry.replaceWith,
+                        matchLength: normalized.count,
+                        wordCount: normalized.split(whereSeparator: \.isWhitespace).count,
+                        originalOrder: originalOrder
+                    )
+                )
+            }
+        }
+
+        rules.sort()
+        return rules
+    }
+
     func apply(to text: String) -> String {
         guard !entries.isEmpty, !text.isEmpty else { return text }
 
@@ -123,6 +150,29 @@ struct ReplacementDictionary: Equatable, Sendable {
 
         let pattern = "(?<![\\p{L}\\p{N}])" + parts.joined(separator: "\\s+") + "(?![\\p{L}\\p{N}])"
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+}
+
+struct LiveReplacementRule: Comparable {
+    let regex: NSRegularExpression
+    let replaceWith: String
+    let matchLength: Int
+    let wordCount: Int
+    let originalOrder: Int
+
+    static func == (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
+        lhs.matchLength == rhs.matchLength
+            && lhs.wordCount == rhs.wordCount
+            && lhs.originalOrder == rhs.originalOrder
+            && lhs.replaceWith == rhs.replaceWith
+            && lhs.regex.pattern == rhs.regex.pattern
+    }
+
+    static func < (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
+        if lhs.matchLength != rhs.matchLength {
+            return lhs.matchLength > rhs.matchLength
+        }
+        return lhs.originalOrder < rhs.originalOrder
     }
 }
 

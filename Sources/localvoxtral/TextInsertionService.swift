@@ -4,7 +4,7 @@ import Foundation
 import Observation
 import os
 
-enum TextInsertResult {
+enum TextInsertResult: Equatable {
     case insertedByAccessibility
     case insertedByKeyboardFallback
     case failed
@@ -96,13 +96,56 @@ final class TextInsertionService {
     private var axInsertionSuccessCount = 0
     private var keyboardFallbackSuccessCount = 0
     private var activeModifierFallbackCount = 0
+
+    // Optional guard for Live Auto-Paste streaming replacements. When the
+    // target exposes a caret location, track where our typed session text
+    // should end; if the caret diverges, corrections stand down for the rest
+    // of the session.
+    @ObservationIgnored
+    private var liveSessionSpan: LiveSessionSpan?
+    @ObservationIgnored
+    private var liveReplacementCorrector: LiveReplacementCorrector?
+    @ObservationIgnored
+    private var didLogLiveReplacementStandDown = false
+    @ObservationIgnored
+    private var isLiveReplacementCorrectionInFlight = false
+    @ObservationIgnored
+    private var liveReplacementCorrectionTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var pendingFinalLiveReplacementFlush = false
+    private let liveReplacementCaretSettleInterval: Duration = .milliseconds(10)
+    private let liveReplacementCaretSettleAttemptCount = 15
+
+    private struct LiveSessionSpan: Sendable {
+        var startCaretLocation: Int
+        var insertedUTF16Length: Int
+        let preferredAppPID: pid_t?
+    }
+
+    private enum LiveReplacementCorrectionPhase: Equatable, Sendable {
+        case insertedTextPosted
+        case backspacePosted
+    }
+
+    private enum LiveReplacementCorrectionResult {
+        case applied
+        case waiting
+        case stopped
+    }
+
 #if DEBUG
     @ObservationIgnored
     private var debugUnicodePoster: ((String) -> Bool)?
     @ObservationIgnored
+    private var debugBackspacePoster: ((Int) -> Bool)?
+    @ObservationIgnored
     private var debugModifierStateReader: (() -> Bool)?
     @ObservationIgnored
     private var debugAccessibilityInserter: ((String, pid_t?) -> Bool)?
+    @ObservationIgnored
+    private var debugCaretLocationReader: ((pid_t?) -> Int?)?
+    @ObservationIgnored
+    private var debugLiveReplacementSettleSleep: (() async -> Void)?
 #endif
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
@@ -216,13 +259,22 @@ final class TextInsertionService {
 
     func flushPendingRealtimeInsertion() {
         guard !pendingRealtimeInsertionText.isEmpty else { return }
+        guard !isLiveReplacementCorrectionInFlight else { return }
 
-        let result = insertTextPrioritizingKeyboard(pendingRealtimeInsertionText)
+        let insertedText = pendingRealtimeInsertionText
+        let result = insertTextPrioritizingKeyboard(insertedText)
 
         switch result {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+            recordSuccessfulLiveInsertion(
+                text: insertedText,
+                result: result
+            )
         case .failed:
+            standDownLiveReplacementCorrections(
+                reason: "realtime insertion failed"
+            )
             break
         }
     }
@@ -278,6 +330,10 @@ final class TextInsertionService {
     func stopAllTasks() {
         insertionRetryTask?.cancel()
         insertionRetryTask = nil
+        liveReplacementCorrectionTask?.cancel()
+        liveReplacementCorrectionTask = nil
+        isLiveReplacementCorrectionInFlight = false
+        pendingFinalLiveReplacementFlush = false
         accessibilityTrust.stopTasks()
     }
 
@@ -285,7 +341,317 @@ final class TextInsertionService {
         pendingRealtimeInsertionText = ""
     }
 
+    // MARK: - Live Auto-Paste Replacement Tracking
+
+    func beginLiveReplacementSession(
+        dictionary: ReplacementDictionary?,
+        preferredAppPID: pid_t?
+    ) {
+        didLogLiveReplacementStandDown = false
+        let entryCount = dictionary?.entries.count ?? 0
+        liveReplacementCorrector = dictionary.map { LiveReplacementCorrector(dictionary: $0) }
+        let ruleCount = liveReplacementCorrector?.ruleCount ?? 0
+        if liveReplacementCorrector?.hasRules == false {
+            liveReplacementCorrector = nil
+        }
+
+        guard liveReplacementCorrector != nil else {
+            if entryCount > 0 {
+                Log.corrector.notice(
+                    "corrector stand-down reason=no valid rules entries=\(entryCount, privacy: .public)"
+                )
+            }
+            liveSessionSpan = nil
+            return
+        }
+
+        if let caretLocation = readCurrentCaretLocation(preferredAppPID: preferredAppPID) {
+            liveSessionSpan = LiveSessionSpan(
+                startCaretLocation: caretLocation,
+                insertedUTF16Length: 0,
+                preferredAppPID: preferredAppPID
+            )
+            Log.corrector.notice(
+                "corrector armed entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=on"
+            )
+        } else {
+            liveSessionSpan = nil
+            Log.corrector.notice(
+                "corrector armed entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=off reason=caret unavailable"
+            )
+        }
+    }
+
+    /// Accumulates the UTF-16 length of text successfully inserted during the
+    /// session. Kept as a narrow test hook for the caret guard bookkeeping.
+    func recordSuccessfulLiveInsertion(utf16Length: Int) {
+        guard utf16Length > 0 else { return }
+        liveSessionSpan?.insertedUTF16Length += utf16Length
+    }
+
+    func endLiveReplacementSession() {
+        liveReplacementCorrectionTask?.cancel()
+        liveReplacementCorrectionTask = nil
+        isLiveReplacementCorrectionInFlight = false
+        pendingFinalLiveReplacementFlush = false
+        liveSessionSpan = nil
+        liveReplacementCorrector = nil
+        didLogLiveReplacementStandDown = false
+    }
+
+    func flushFinalLiveReplacementCorrections() {
+        if isLiveReplacementCorrectionInFlight {
+            pendingFinalLiveReplacementFlush = true
+            return
+        }
+        processLiveReplacementCorrections(includeFinalUnboundedWord: true)
+    }
+
     // MARK: - Private
+
+    private func recordSuccessfulLiveInsertion(
+        text: String,
+        result: TextInsertResult
+    ) {
+        recordSuccessfulLiveInsertion(utf16Length: (text as NSString).length)
+
+        guard liveReplacementCorrector != nil else { return }
+        guard result == .insertedByKeyboardFallback else {
+            standDownLiveReplacementCorrections(
+                reason: "realtime insertion did not use the keyboard path"
+            )
+            return
+        }
+
+        liveReplacementCorrector?.recordInsertedText(text)
+        processLiveReplacementCorrections(includeFinalUnboundedWord: false)
+    }
+
+    private func processLiveReplacementCorrections(includeFinalUnboundedWord: Bool) {
+        guard !isLiveReplacementCorrectionInFlight else { return }
+
+        while let correction = liveReplacementCorrector?.nextCompletedBoundaryCorrection() {
+            switch applyOrDeferLiveReplacementCorrection(correction) {
+            case .applied:
+                continue
+            case .waiting, .stopped:
+                return
+            }
+        }
+
+        if includeFinalUnboundedWord,
+           let correction = liveReplacementCorrector?.finalUnboundedCorrection()
+        {
+            _ = applyOrDeferLiveReplacementCorrection(correction)
+        }
+    }
+
+    private func applyOrDeferLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection
+    ) -> LiveReplacementCorrectionResult {
+        guard liveReplacementCorrector != nil else { return .stopped }
+        guard liveSessionSpan != nil else {
+            return postUnguardedLiveReplacementCorrection(correction)
+        }
+        guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else {
+            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            return .stopped
+        }
+
+        switch currentCaretSettlement(expectedLocation: expectedInsertedCaret) {
+        case .unavailable:
+            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            return .stopped
+        case .mismatched:
+            beginDeferredLiveReplacementCorrection(correction, phase: .insertedTextPosted)
+            return .waiting
+        case .matched:
+            return postBackspaceAndFinishLiveReplacementCorrection(correction)
+        }
+    }
+
+    private func postUnguardedLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection
+    ) -> LiveReplacementCorrectionResult {
+        guard postBackspaceEvents(count: correction.backspaceCount) else {
+            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+            return .stopped
+        }
+        return postReplacementAndRecordLiveReplacementCorrection(correction)
+    }
+
+    private func postBackspaceAndFinishLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection
+    ) -> LiveReplacementCorrectionResult {
+        guard postBackspaceEvents(count: correction.backspaceCount) else {
+            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+            return .stopped
+        }
+
+        guard let expectedErasedCaret = expectedErasedCaretLocation(for: correction) else {
+            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            return .stopped
+        }
+
+        switch currentCaretSettlement(expectedLocation: expectedErasedCaret) {
+        case .unavailable:
+            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            return .stopped
+        case .mismatched:
+            beginDeferredLiveReplacementCorrection(correction, phase: .backspacePosted)
+            return .waiting
+        case .matched:
+            return postReplacementAndRecordLiveReplacementCorrection(correction)
+        }
+    }
+
+    private func postReplacementAndRecordLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection
+    ) -> LiveReplacementCorrectionResult {
+        guard postUnicodeTextEvents(correction.replacementText) else {
+            _ = postUnicodeTextEvents(correction.erasedText)
+            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+            return .stopped
+        }
+
+        liveReplacementCorrector?.apply(correction)
+        liveSessionSpan?.insertedUTF16Length +=
+            (correction.replacementText as NSString).length - (correction.erasedText as NSString).length
+        Log.corrector.notice(
+            "corrector correction posted erased_chars=\(correction.erasedText.count, privacy: .public) replacement_chars=\(correction.replacementText.count, privacy: .public)"
+        )
+        return .applied
+    }
+
+    private enum CaretSettlement {
+        case matched
+        case mismatched
+        case unavailable
+    }
+
+    private func currentCaretSettlement(expectedLocation: Int) -> CaretSettlement {
+        guard let span = liveSessionSpan else { return .unavailable }
+        guard let caretLocation = readCurrentCaretLocation(preferredAppPID: span.preferredAppPID) else {
+            return .unavailable
+        }
+        return caretLocation == expectedLocation ? .matched : .mismatched
+    }
+
+    private func expectedLiveReplacementCaretLocation() -> Int? {
+        guard let span = liveSessionSpan else { return nil }
+        return span.startCaretLocation + span.insertedUTF16Length
+    }
+
+    private func expectedErasedCaretLocation(for correction: LiveReplacementCorrection) -> Int? {
+        guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else { return nil }
+        return expectedInsertedCaret - (correction.erasedText as NSString).length
+    }
+
+    private func beginDeferredLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection,
+        phase: LiveReplacementCorrectionPhase
+    ) {
+        guard !isLiveReplacementCorrectionInFlight else { return }
+        isLiveReplacementCorrectionInFlight = true
+        liveReplacementCorrectionTask = Task { @MainActor [weak self] in
+            await self?.completeDeferredLiveReplacementCorrection(correction, startingAt: phase)
+        }
+    }
+
+    private func completeDeferredLiveReplacementCorrection(
+        _ correction: LiveReplacementCorrection,
+        startingAt phase: LiveReplacementCorrectionPhase
+    ) async {
+        guard liveReplacementCorrector != nil else {
+            finishDeferredLiveReplacementCorrection()
+            return
+        }
+
+        var currentPhase = phase
+        if currentPhase == .insertedTextPosted {
+            guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else {
+                standDownLiveReplacementCorrections(reason: "caret unavailable")
+                finishDeferredLiveReplacementCorrection()
+                return
+            }
+            guard await waitForLiveReplacementCaret(expectedLocation: expectedInsertedCaret) else {
+                standDownLiveReplacementCorrections(reason: "tracked caret diverged")
+                finishDeferredLiveReplacementCorrection()
+                return
+            }
+            guard postBackspaceEvents(count: correction.backspaceCount) else {
+                standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+                finishDeferredLiveReplacementCorrection()
+                return
+            }
+            currentPhase = .backspacePosted
+        }
+
+        if currentPhase == .backspacePosted {
+            guard let expectedErasedCaret = expectedErasedCaretLocation(for: correction) else {
+                standDownLiveReplacementCorrections(reason: "caret unavailable")
+                finishDeferredLiveReplacementCorrection()
+                return
+            }
+            guard await waitForLiveReplacementCaret(expectedLocation: expectedErasedCaret) else {
+                standDownLiveReplacementCorrections(reason: "tracked caret diverged")
+                finishDeferredLiveReplacementCorrection()
+                return
+            }
+        }
+
+        _ = postReplacementAndRecordLiveReplacementCorrection(correction)
+        finishDeferredLiveReplacementCorrection()
+    }
+
+    private func waitForLiveReplacementCaret(expectedLocation: Int) async -> Bool {
+        for _ in 0 ..< liveReplacementCaretSettleAttemptCount {
+            await sleepForLiveReplacementCaretSettleInterval()
+            switch currentCaretSettlement(expectedLocation: expectedLocation) {
+            case .matched:
+                return true
+            case .mismatched:
+                continue
+            case .unavailable:
+                return false
+            }
+        }
+        Log.corrector.notice(
+            "corrector settle timeout expected_utf16=\(expectedLocation, privacy: .public)"
+        )
+        return false
+    }
+
+    private func sleepForLiveReplacementCaretSettleInterval() async {
+#if DEBUG
+        if let debugLiveReplacementSettleSleep {
+            await debugLiveReplacementSettleSleep()
+            return
+        }
+#endif
+        try? await Task.sleep(for: liveReplacementCaretSettleInterval)
+    }
+
+    private func finishDeferredLiveReplacementCorrection() {
+        liveReplacementCorrectionTask = nil
+        isLiveReplacementCorrectionInFlight = false
+        let shouldFlushFinalCorrection = pendingFinalLiveReplacementFlush
+        pendingFinalLiveReplacementFlush = false
+
+        processLiveReplacementCorrections(includeFinalUnboundedWord: shouldFlushFinalCorrection)
+        flushPendingRealtimeInsertion()
+    }
+
+    private func standDownLiveReplacementCorrections(reason: String) {
+        guard liveReplacementCorrector != nil else { return }
+        liveReplacementCorrector?.standDown()
+        if !didLogLiveReplacementStandDown {
+            didLogLiveReplacementStandDown = true
+            Log.corrector.notice(
+                "corrector stand-down reason=\(reason, privacy: .public)"
+            )
+        }
+    }
 
     private func tryAccessibilityInsertion(
         _ text: String,
@@ -504,6 +870,79 @@ final class TextInsertionService {
         return true
     }
 
+    // MARK: - Caret Guard
+
+    /// Reads the caret location (UTF-16 offset) of the focused text element,
+    /// used as an optional divergence guard for Live Auto-Paste corrections.
+    private func readCurrentCaretLocation(preferredAppPID: pid_t?) -> Int? {
+#if DEBUG
+        if let debugCaretLocationReader {
+            return debugCaretLocationReader(preferredAppPID)
+        }
+#endif
+        guard isAccessibilityTrusted,
+              let element = resolvedAccessibilityInsertionTarget(preferredAppPID: preferredAppPID)
+        else {
+            return nil
+        }
+        return readSelectedTextRangeLocation(in: element)
+    }
+
+    // MARK: - Low-level AX Helpers
+
+    private func readSelectedTextRangeLocation(in element: AXUIElement) -> Int? {
+        var rangeObject: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(
+            element, kAXSelectedTextRangeAttribute as CFString, &rangeObject
+        )
+        guard status == .success,
+              let rangeObject,
+              CFGetTypeID(rangeObject) == AXValueGetTypeID()
+        else {
+            return nil
+        }
+        let rangeValue = unsafeDowncast(rangeObject, to: AXValue.self)
+        guard AXValueGetType(rangeValue) == .cfRange else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rangeValue, .cfRange, &range) else { return nil }
+        return range.location
+    }
+
+    private func postBackspaceEvents(count: Int) -> Bool {
+#if DEBUG
+        if let debugBackspacePoster {
+            return debugBackspacePoster(count)
+        }
+#endif
+        guard count > 0 else { return true }
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            return false
+        }
+
+        for _ in 0 ..< count {
+            guard let keyDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 51,
+                keyDown: true
+            ),
+                  let keyUp = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 51,
+                    keyDown: false
+                  )
+            else {
+                return false
+            }
+
+            keyDown.flags = []
+            keyUp.flags = []
+            keyDown.post(tap: .cgAnnotatedSessionEventTap)
+            keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        }
+
+        return true
+    }
+
     private func postUnicodeTextEvents(_ text: String) -> Bool {
 #if DEBUG
         if let debugUnicodePoster {
@@ -630,12 +1069,18 @@ extension TextInsertionService {
 
     func debugConfigureInsertionHooks(
         unicodePoster: ((String) -> Bool)? = nil,
+        backspacePoster: ((Int) -> Bool)? = nil,
         modifierStateReader: (() -> Bool)? = nil,
-        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil
+        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
+        caretLocationReader: ((pid_t?) -> Int?)? = nil,
+        liveReplacementSettleSleep: (() async -> Void)? = nil
     ) {
         debugUnicodePoster = unicodePoster
+        debugBackspacePoster = backspacePoster
         debugModifierStateReader = modifierStateReader
         debugAccessibilityInserter = accessibilityInserter
+        debugCaretLocationReader = caretLocationReader
+        debugLiveReplacementSettleSleep = liveReplacementSettleSleep
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {
@@ -645,6 +1090,26 @@ extension TextInsertionService {
             keyboardFallbackSuccessCount: keyboardFallbackSuccessCount,
             activeModifierFallbackCount: activeModifierFallbackCount
         )
+    }
+
+    /// Test-only accessor for the live session span bookkeeping.
+    func debugLiveSessionSpanSnapshot() -> (startCaret: Int, insertedLength: Int)? {
+        guard let span = liveSessionSpan else { return nil }
+        return (span.startCaretLocation, span.insertedUTF16Length)
+    }
+
+    var debugLiveReplacementCorrectorIsActive: Bool {
+        liveReplacementCorrector?.isStandingDown == false
+    }
+
+    var debugLiveReplacementCorrectionIsInFlight: Bool {
+        isLiveReplacementCorrectionInFlight
+    }
+
+    func debugWaitForLiveReplacementCorrectionTasks() async {
+        while let task = liveReplacementCorrectionTask {
+            await task.value
+        }
     }
 }
 #endif

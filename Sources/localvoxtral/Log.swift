@@ -15,6 +15,8 @@ enum Log {
     static let polishing = Logger(subsystem: subsystem, category: "Polishing")
     static let persistence = Logger(subsystem: subsystem, category: "Persistence")
     static let config = Logger(subsystem: subsystem, category: "Config")
+    static let replacements = Logger(subsystem: subsystem, category: "Replacements")
+    static let corrector = Logger(subsystem: subsystem, category: "Corrector")
     /// Opt-in raw realtime delta instrumentation for issue #13. Emits at notice
     /// level so it is visible by default under `log stream` / Console. Gated by
     /// `SettingsStore.debugLogRealtimeDeltas`; see that property's docs for the

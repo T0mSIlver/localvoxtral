@@ -259,6 +259,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var commitOutcome: OverlayBufferCommitOutcome = .succeeded
     var commitTargetAppPID: pid_t? = nil
+    var captureLiveCommitTargetAppPIDCallCount = 0
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
@@ -272,5 +273,8 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     ) -> OverlayBufferCommitOutcome { commitOutcome }
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
     func reset() {}
+    func captureLiveCommitTargetAppPID() {
+        captureLiveCommitTargetAppPIDCallCount += 1
+    }
 }
 #endif
