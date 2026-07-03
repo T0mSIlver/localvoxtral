@@ -218,7 +218,7 @@ private struct DictationSettingsPane: View {
                                         viewModel.applyHotKeySettingsChange()
                                     }
                                 ),
-                                in: 0.15...0.8,
+                                in: 0.1...0.8,
                                 step: 0.05
                             )
                             Text("\(Int(settings.modifierOnlyHoldDelay * 1000))ms")

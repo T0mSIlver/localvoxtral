@@ -265,7 +265,7 @@ final class SettingsStore {
         }
     }
 
-    /// Seconds to hold modifier before it triggers live auto-paste (0.15-0.8).
+    /// Seconds to hold modifier before it triggers live auto-paste (0.1-0.8).
     var modifierOnlyHoldDelay: Double {
         didSet { defaults.set(modifierOnlyHoldDelay, forKey: Keys.modifierOnlyHoldDelay) }
     }
@@ -418,7 +418,7 @@ final class SettingsStore {
         let storedHoldDelay = defaults.object(forKey: Keys.modifierOnlyHoldDelay) != nil
             ? defaults.double(forKey: Keys.modifierOnlyHoldDelay)
             : 0.35
-        modifierOnlyHoldDelay = min(max(storedHoldDelay, 0.15), 0.8)
+        modifierOnlyHoldDelay = min(max(storedHoldDelay, 0.1), 0.8)
 
         // --- Dual shortcut keys ---
         let hasExistingOverlayKeys = defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) != nil
