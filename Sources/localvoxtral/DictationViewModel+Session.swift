@@ -130,7 +130,6 @@ extension DictationViewModel {
 
             isConnectingRealtimeSession = false
             isDictating = true
-            EscapeCancelHandler.isDictatingRef = true
             escapeCancelHandler.start()
             statusText = "Listening..."
             restartAudioSendTask()
@@ -153,7 +152,6 @@ extension DictationViewModel {
             lastError = error.localizedDescription
             isConnectingRealtimeSession = false
             isDictating = false
-            EscapeCancelHandler.isDictatingRef = false
             escapeCancelHandler.stop()
             healthMonitor.stop()
             microphone.stop()
@@ -647,7 +645,6 @@ extension DictationViewModel {
         // cancellation flag must be cleared here or it leaks into the next
         // session and silently skips its overlay commit.
         wasCancelled = false
-        EscapeCancelHandler.isDictatingRef = false
         escapeCancelHandler.stop()
         isAwaitingMicrophonePermission = false
         isCompletingStoppedSession = false

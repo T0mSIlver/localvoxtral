@@ -594,9 +594,9 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
     func testUnexpectedDisconnectDuringDictationResetsEscapeCancelFlag() {
         // Regression: an unexpected realtime disconnect while actively dictating
-        // tears down the session (sets isDictating = false). It must also clear the
-        // EscapeCancelHandler "is dictating" flag; otherwise the CGEventTap stays
-        // armed and swallows Escape system-wide until the next session ends.
+        // tears down the session (sets isDictating = false). It must also stop
+        // EscapeCancelHandler; otherwise the Carbon hotkey stays registered and
+        // swallows Escape system-wide until the next session ends.
         let settings = makeSettings(outputMode: .overlayBuffer)
         let overlayCoordinator = MockOverlayCoordinator()
         let viewModel = DictationViewModel(
@@ -609,24 +609,22 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         viewModel.isDictating = true
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.currentDictationEventText = "hello"
-        // Simulate the EscapeCancelHandler being armed during active dictation.
-        EscapeCancelHandler.isDictatingRef = true
+        let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.handle(event: .disconnected)
 
         XCTAssertFalse(viewModel.isDictating)
-        XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
+        XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore)
     }
 
-    // The Escape CGEventTap is armed in a single shared code path
+    // The Escape Carbon hotkey is armed in a single shared code path
     // (startAudioCaptureAfterConnection) used by BOTH output modes and BOTH
     // shortcut modes (push-to-talk and toggle all funnel through
     // beginDictationSession -> connect -> startAudioCaptureAfterConnection).
     // What can regress is therefore the DISARM: every session-teardown path
-    // must clear isDictatingRef and call escapeCancelHandler.stop(), otherwise
-    // Escape is either swallowed system-wide (stuck armed) or — if the tap
-    // failed to create — never re-attempted. These cover each teardown path in
-    // both output modes.
+    // must call escapeCancelHandler.stop(), otherwise Escape is swallowed
+    // system-wide while the Carbon hotkey remains registered. These cover each
+    // teardown path in both output modes.
 
     func testStopDictationClearsEscapeCancelArmingInOverlayBufferMode() {
         assertStopDictationClearsEscapeCancelArming(outputMode: .overlayBuffer)
@@ -648,15 +646,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.isDictating = true
         viewModel.sessionOutputMode = outputMode
-        // Simulate the tap being armed during active dictation.
-        EscapeCancelHandler.isDictatingRef = true
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
 
         XCTAssertFalse(viewModel.isDictating)
-        XCTAssertFalse(EscapeCancelHandler.isDictatingRef,
-                       "isDictatingRef must clear on stop in \(outputMode) mode")
         XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore,
                              "escapeCancelHandler.stop() must run on session teardown in \(outputMode) mode")
     }
@@ -681,14 +675,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
         viewModel.isDictating = true
         viewModel.sessionOutputMode = outputMode
-        EscapeCancelHandler.isDictatingRef = true
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.cancelDictation()
 
         XCTAssertFalse(viewModel.isDictating)
-        XCTAssertFalse(EscapeCancelHandler.isDictatingRef,
-                       "isDictatingRef must clear on cancel in \(outputMode) mode")
         XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore,
                              "escapeCancelHandler.stop() must run on cancel in \(outputMode) mode")
     }
@@ -707,13 +698,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.isConnectingRealtimeSession = true
-        EscapeCancelHandler.isDictatingRef = true
         let stopCountBefore = EscapeCancelHandler.stopCallCount
 
         viewModel.abortConnectingSession()
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
-        XCTAssertFalse(EscapeCancelHandler.isDictatingRef)
         XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore)
     }
 

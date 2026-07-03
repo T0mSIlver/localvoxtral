@@ -757,7 +757,6 @@ final class DictationViewModel {
         microphone.stop()
         flushBufferedAudio()
         isDictating = false
-        EscapeCancelHandler.isDictatingRef = false
         escapeCancelHandler.stop()
 
         guard finalizeRemainingAudio else {

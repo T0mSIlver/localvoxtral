@@ -1,6 +1,5 @@
 import ApplicationServices
 import Carbon.HIToolbox
-import CoreGraphics
 import Foundation
 import IOKit.hid
 import os
@@ -9,50 +8,44 @@ import os
 /// so they don't reach the focused application (e.g. Claude Code), then
 /// cancels the active dictation session.
 ///
-/// Uses `.defaultTap` (NOT `.listenOnly`) because only `.defaultTap` can
-/// consume events by returning nil from the callback.
-///
-/// CGEventTap gotchas this handler defends against (all of which silently
-/// produce "Escape does nothing, dictation continues"):
-/// 1. `CGEvent.tapCreate` returns nil when the process is not
-///    Accessibility-trusted *at call time* (e.g. the first session of a
-///    freshly launched app, or after a TCC change that needs a relaunch).
-///    We gate on `AXIsProcessTrusted()` first so the failure is logged with
-///    an actionable message instead of a silent no-op.
-/// 2. The tap is added to `CFRunLoopGetMain()` explicitly, so it always lands
-///    on the running main run loop regardless of which thread calls `start()`.
-/// 3. The system periodically disables an active tap
-///    (`tapDisabledByTimeout` / `tapDisabledByUserInput`); we re-enable it from
-///    the callback, otherwise Escape interception dies mid-session.
+/// Escape is registered as a Carbon hotkey only for the active dictation
+/// session. Carbon hotkeys do not require Input Monitoring, and because the
+/// registration itself consumes the key system-wide, no extra "is dictating"
+/// callback gate is needed.
 @MainActor
 final class EscapeCancelHandler {
     var onCancel: (() -> Void)?
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var hotKeyRef: EventHotKeyRef?
+    private var hotKeyHandlerRef: EventHandlerRef?
+    private var isRegistered = false
 
-    /// Shared flag set by DictationViewModel. The CGEventTap callback
-    /// runs on the tap's run-loop thread, so this must be nonisolated(unsafe).
-    nonisolated(unsafe) static var isDictatingRef = false
-    fileprivate nonisolated(unsafe) static var shared: EscapeCancelHandler?
-
-    /// The active tap port, exposed nonisolated so the C callback can
-    /// re-enable the tap after the system disables it for timeout/user input.
-    /// Cleared by `stop()`.
-    fileprivate nonisolated(unsafe) static var activeTap: CFMachPort?
+    private static let hotKeySignature = OSType(0x4C564563) // LVEc
+    private static let hotKeyID = UInt32(1)
+    private nonisolated(unsafe) static weak var hotKeyTarget: EscapeCancelHandler?
 
     #if DEBUG
     /// Test-only record of what the last `start()` did. Lets unit tests assert
-    /// that a creation failure is recorded deterministically rather than
-    /// silently swallowed (the original Escape-cancel bug).
+    /// that registration failures are recorded deterministically rather than
+    /// silently swallowed.
     static var lastStartOutcome: EscapeCancelStartOutcome = .none
     static var startCallCount = 0
     static var stopCallCount = 0
+    static var registrationCallCount = 0
+    static var unregistrationCallCount = 0
+    private static var debugRegisterStatus: OSStatus?
 
     static func resetDebugState() {
         lastStartOutcome = .none
         startCallCount = 0
         stopCallCount = 0
+        registrationCallCount = 0
+        unregistrationCallCount = 0
+        debugRegisterStatus = nil
+    }
+
+    static func debugConfigureRegistration(status: OSStatus?) {
+        debugRegisterStatus = status
     }
 
     @inline(__always) private static func record(_ outcome: EscapeCancelStartOutcome) {
@@ -75,73 +68,37 @@ final class EscapeCancelHandler {
         Self.startCallCount += 1
         #endif
 
-        stop()
-        Self.shared = self
-
-        // (1) Accessibility trust is mandatory for an *active* (consuming)
-        // event tap. Checking it here (no prompt) yields a clear, actionable
-        // log line instead of a silent nil from tapCreate.
-        // Root-cause diagnostics: keyboard event taps involve two separate TCC
-        // services on modern macOS. Log both up front so a failing tap is
-        // attributable from a single `log stream` capture.
         let trusted = AXIsProcessTrusted()
         let inputMonitoring = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
         Log.escape.notice(
             "permission state: AXIsProcessTrusted=\(trusted, privacy: .public) inputMonitoring=\(Self.describeHIDAccess(inputMonitoring), privacy: .public)"
         )
-        guard trusted else {
-            Self.record(.notTrusted)
-            Log.escape.error(
-                "CGEventTap NOT created: process is not Accessibility-trusted. Grant Accessibility in System Settings > Privacy & Security > Accessibility and relaunch localvoxtral. Escape will not cancel dictation until then."
-            )
+
+        guard !isRegistered else {
+            Self.record(.registered)
+            Log.escape.notice("Escape Carbon hotkey already registered for this dictation session.")
             return
         }
 
-        let eventMask: CGEventMask = 1 << CGEventType.keyDown.rawValue
-
-        // (2) tapCreate still can return nil right after trust is granted if
-        // the process hasn't been relaunched (macOS caches TCC state for the
-        // event-tap path). Surface that explicitly.
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: eventMask,
-            callback: escapeTapCallback,
-            userInfo: nil
-        ) else {
-            Self.record(.creationFailedNil)
+        switch registerEscapeHotKey() {
+        case .registered:
+            isRegistered = true
+            Self.hotKeyTarget = self
+            Self.record(.registered)
+            Log.escape.notice("Escape Carbon hotkey registered for active dictation session.")
+        case .handlerInstallFailed(let status):
+            Self.record(.handlerInstallFailed(status))
+            cleanupCarbonHotKeyRegistration()
             Log.escape.error(
-                "CGEvent.tapCreate returned nil although AXIsProcessTrusted()==true. This usually means Accessibility was granted while localvoxtral was running; relaunch the app so the event tap can be created. Escape-cancel disabled for this session."
+                "Escape Carbon hotkey handler install failed with OSStatus \(status, privacy: .public); Escape-cancel disabled for this session."
             )
-            return
-        }
-
-        guard let source = CFMachPortCreateRunLoopSource(
-            kCFAllocatorDefault, tap, 0
-        ) else {
-            Self.record(.noRunLoopSource)
+        case .registrationFailed(let status):
+            Self.record(.registrationFailed(status))
+            cleanupCarbonHotKeyRegistration()
             Log.escape.error(
-                "CFMachPortCreateRunLoopSource returned nil; Escape events cannot be delivered. Escape-cancel disabled for this session."
+                "RegisterEventHotKey for Escape failed with OSStatus \(status, privacy: .public); Escape-cancel disabled for this session."
             )
-            // Nothing was wired to the run loop; drop the orphaned tap.
-            CGEvent.tapEnable(tap: tap, enable: false)
-            return
         }
-
-        // (3) Pin to the main run loop explicitly: the tap callback is
-        // delivered on whichever loop the source is attached to, and only the
-        // main loop is guaranteed to be spinning.
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-
-        eventTap = tap
-        Self.activeTap = tap
-        runLoopSource = source
-        Self.record(.created)
-        Log.escape.notice(
-            "Escape CGEventTap created and enabled on the main run loop (trusted=\(trusted, privacy: .public))."
-        )
     }
 
     func stop() {
@@ -149,78 +106,148 @@ final class EscapeCancelHandler {
         Self.stopCallCount += 1
         #endif
 
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
+        guard isRegistered || hotKeyRef != nil || hotKeyHandlerRef != nil else {
+            if Self.hotKeyTarget === self {
+                Self.hotKeyTarget = nil
+            }
+            return
         }
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
-        }
-        eventTap = nil
-        runLoopSource = nil
-        Self.activeTap = nil
-        if Self.shared === self {
-            Self.shared = nil
-        }
+
+        #if DEBUG
+        Self.unregistrationCallCount += 1
+        #endif
+
+        cleanupCarbonHotKeyRegistration()
     }
 
     deinit {
         // MainActor deinit — teardown is driven by DictationViewModel via stop().
     }
+
+    private func registerEscapeHotKey() -> CarbonRegistrationResult {
+        #if DEBUG
+        Self.registrationCallCount += 1
+        if let debugRegisterStatus = Self.debugRegisterStatus {
+            return debugRegisterStatus == noErr
+                ? .registered
+                : .registrationFailed(debugRegisterStatus)
+        }
+        #endif
+
+        var eventTypes = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+        ]
+
+        let installStatus = InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, eventRef, _ in
+                guard let eventRef else { return noErr }
+
+                var hotKeyID = EventHotKeyID()
+                let status = GetEventParameter(
+                    eventRef,
+                    EventParamName(kEventParamDirectObject),
+                    EventParamType(typeEventHotKeyID),
+                    nil,
+                    MemoryLayout<EventHotKeyID>.size,
+                    nil,
+                    &hotKeyID
+                )
+
+                guard status == noErr,
+                      hotKeyID.signature == EscapeCancelHandler.hotKeySignature,
+                      hotKeyID.id == EscapeCancelHandler.hotKeyID
+                else {
+                    return noErr
+                }
+
+                DispatchQueue.main.async {
+                    EscapeCancelHandler.hotKeyTarget?.handleEscapePressed()
+                }
+
+                return noErr
+            },
+            eventTypes.count,
+            &eventTypes,
+            nil,
+            &hotKeyHandlerRef
+        )
+
+        guard installStatus == noErr else {
+            return .handlerInstallFailed(installStatus)
+        }
+
+        let hotKeyID = EventHotKeyID(
+            signature: Self.hotKeySignature,
+            id: Self.hotKeyID
+        )
+        let registerStatus = RegisterEventHotKey(
+            UInt32(kVK_Escape),
+            0,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+
+        guard registerStatus == noErr else {
+            return .registrationFailed(registerStatus)
+        }
+
+        return .registered
+    }
+
+    private func cleanupCarbonHotKeyRegistration() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+
+        if let hotKeyHandlerRef {
+            RemoveEventHandler(hotKeyHandlerRef)
+            self.hotKeyHandlerRef = nil
+        }
+
+        isRegistered = false
+        if Self.hotKeyTarget === self {
+            Self.hotKeyTarget = nil
+        }
+    }
+
+    private func handleEscapePressed() {
+        Log.escape.notice("Escape consumed during active dictation; triggering cancel.")
+        onCancel?()
+    }
+}
+
+private enum CarbonRegistrationResult: Equatable {
+    case registered
+    case handlerInstallFailed(OSStatus)
+    case registrationFailed(OSStatus)
 }
 
 /// What the last `EscapeCancelHandler.start()` call produced. Always defined
 /// so `start()`'s `record(_:)` call sites type-check in release; only the
 /// mutable record + `resetDebugState()` are DEBUG-gated.
-enum EscapeCancelStartOutcome: String, Equatable {
+enum EscapeCancelStartOutcome: Equatable, CustomStringConvertible {
     case none
-    case notTrusted
-    case creationFailedNil
-    case noRunLoopSource
-    case created
-}
+    case registered
+    case handlerInstallFailed(OSStatus)
+    case registrationFailed(OSStatus)
 
-private func escapeTapCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    // The system disables an active tap when it decides the callback was too
-    // slow or after certain user-input sequences, then delivers exactly one of
-    // these sentinel event types. We MUST re-enable it here, otherwise Escape
-    // interception silently stops for the rest of the session.
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        if let tap = EscapeCancelHandler.activeTap {
-            CGEvent.tapEnable(tap: tap, enable: true)
-            Log.escape.notice(
-                "Escape CGEventTap disabled by system (type=\(type.rawValue)); re-enabled."
-            )
-        } else {
-            Log.escape.error(
-                "Escape CGEventTap disabled by system (type=\(type.rawValue)) but no active tap is available to re-enable; Escape-cancel inactive until next session."
-            )
+    var description: String {
+        switch self {
+        case .none:
+            return "none"
+        case .registered:
+            return "registered"
+        case .handlerInstallFailed(let status):
+            return "handlerInstallFailed(\(status))"
+        case .registrationFailed(let status):
+            return "registrationFailed(\(status))"
         }
-        return Unmanaged.passRetained(event)
     }
-
-    guard type == .keyDown else {
-        return Unmanaged.passRetained(event)
-    }
-
-    let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-    guard keyCode == Int64(kVK_Escape) else {
-        return Unmanaged.passRetained(event)
-    }
-
-    guard EscapeCancelHandler.isDictatingRef else {
-        // Not dictating — let Escape pass through normally.
-        return Unmanaged.passRetained(event)
-    }
-
-    // Dictating — consume Escape and trigger cancel on the main actor.
-    Log.escape.notice("Escape consumed during active dictation; triggering cancel.")
-    DispatchQueue.main.async {
-        EscapeCancelHandler.shared?.onCancel?()
-    }
-    return nil // Consumed — event never reaches focused app.
 }
