@@ -21,4 +21,5 @@ enum Log {
     /// privacy trade-off.
     static let deltas = Logger(subsystem: subsystem, category: "Deltas")
     static let escape = Logger(subsystem: subsystem, category: "Escape")
+    static let sweep = Logger(subsystem: subsystem, category: "Sweep")
 }

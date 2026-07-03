@@ -960,6 +960,7 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var dismissAfterHoldCallCount = 0
     var lastDismissAfterHoldMinimumVisibility: TimeInterval?
     var resetCallCount = 0
+    var captureLiveCommitTargetAppPIDCallCount = 0
     var commitTargetAppPID: pid_t? = nil
 
     func resolveAnchorNow() -> OverlayAnchor {
@@ -1000,5 +1001,9 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     func reset() {
         resetCallCount += 1
+    }
+
+    func captureLiveCommitTargetAppPID() {
+        captureLiveCommitTargetAppPIDCallCount += 1
     }
 }
