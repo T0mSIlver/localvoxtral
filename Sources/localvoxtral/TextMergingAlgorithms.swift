@@ -121,11 +121,18 @@ enum TextMergingAlgorithms {
         finalText: String,
         liveInsertedText: String
     ) -> String? {
-        guard !liveInsertedText.isEmpty, finalText.hasPrefix(liveInsertedText) else {
+        // The finalized-transcript path trims surrounding whitespace, so mirror
+        // that here: a final of "hello. " must type "." — never a dangling
+        // space the transcript itself discards.
+        let normalizedFinal = finalText.trimmed
+        guard !liveInsertedText.isEmpty, normalizedFinal.hasPrefix(liveInsertedText) else {
             return nil
         }
-        let startIndex = finalText.index(finalText.startIndex, offsetBy: liveInsertedText.count)
-        let suffix = String(finalText[startIndex...])
+        let startIndex = normalizedFinal.index(
+            normalizedFinal.startIndex,
+            offsetBy: liveInsertedText.count
+        )
+        let suffix = String(normalizedFinal[startIndex...])
         return suffix.isEmpty ? nil : suffix
     }
 

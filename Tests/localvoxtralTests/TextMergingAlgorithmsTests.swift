@@ -496,4 +496,32 @@ final class TextMergingAlgorithmsTests: XCTestCase {
             )
         )
     }
+
+    func testLivePasteExtensionSuffix_trailingWhitespaceInFinalIsNotTyped() {
+        // The finalized-transcript path trims trailing whitespace; the typed
+        // suffix must match, or the field diverges from the transcript.
+        XCTAssertEqual(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce. ",
+                liveInsertedText: "sparisce"
+            ),
+            "."
+        )
+        XCTAssertEqual(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce.\n",
+                liveInsertedText: "sparisce"
+            ),
+            "."
+        )
+    }
+
+    func testLivePasteExtensionSuffix_whitespaceOnlyExtensionReturnsNil() {
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce ",
+                liveInsertedText: "sparisce"
+            )
+        )
+    }
 }
