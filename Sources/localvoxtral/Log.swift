@@ -15,6 +15,7 @@ enum Log {
     static let polishing = Logger(subsystem: subsystem, category: "Polishing")
     static let persistence = Logger(subsystem: subsystem, category: "Persistence")
     static let config = Logger(subsystem: subsystem, category: "Config")
+    static let backends = Logger(subsystem: subsystem, category: "Backends")
     static let replacements = Logger(subsystem: subsystem, category: "Replacements")
     static let corrector = Logger(subsystem: subsystem, category: "Corrector")
     /// Opt-in raw realtime delta instrumentation for issue #13. Emits at notice
