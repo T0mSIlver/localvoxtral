@@ -224,7 +224,7 @@ extension DictationViewModel {
         commitTask?.cancel()
         commitTask = nil
 
-        let interval = min(1.0, max(0.1, settings.commitIntervalSeconds))
+        let interval = TimingConstants.commitInterval
         let client = realtimeAPIClient
         guard client.supportsPeriodicCommit else { return }
         commitTask = Task(priority: .utility) {

@@ -125,28 +125,6 @@ private struct ConnectionSettingsPane: View {
                         .textFieldStyle(.roundedBorder)
                 }
             }
-
-            SettingsGroup(title: "Streaming") {
-                SettingsFieldRow(title: "Commit interval") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            Slider(
-                                value: $settings.commitIntervalSeconds,
-                                in: 0.1...1.0,
-                                step: 0.1
-                            )
-                            Text(String(format: "%.2fs", settings.commitIntervalSeconds))
-                                .font(.callout.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 48, alignment: .trailing)
-                        }
-
-                        SettingsHelpText(
-                            "How often finalized transcript chunks are requested from the realtime server."
-                        )
-                    }
-                }
-            }
         }
     }
 }

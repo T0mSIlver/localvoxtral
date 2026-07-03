@@ -10,6 +10,9 @@ enum TimingConstants {
     /// Interval at which buffered PCM chunks are drained and sent to the WebSocket.
     static let audioSendInterval: TimeInterval = 0.1
 
+    /// Fixed cadence for periodic realtime commits (was a user setting, removed).
+    static let commitInterval: TimeInterval = 0.9
+
     // MARK: - Connection
 
     /// How long to wait for a WebSocket to reach `.connected` before timing out.

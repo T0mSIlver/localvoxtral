@@ -125,7 +125,6 @@ final class SettingsStore {
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         static let apiKey = "settings.api_key"
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
-        static let commitIntervalSeconds = "settings.commit_interval_seconds"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
@@ -179,10 +178,6 @@ final class SettingsStore {
 
     var realtimeAPIModelName: String {
         didSet { defaults.set(realtimeAPIModelName, forKey: Keys.realtimeAPIModelName) }
-    }
-
-    var commitIntervalSeconds: Double {
-        didSet { defaults.set(commitIntervalSeconds, forKey: Keys.commitIntervalSeconds) }
     }
 
     var autoCopyEnabled: Bool {
@@ -318,6 +313,10 @@ final class SettingsStore {
         // produce an invalid state.
         realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
 
+        // The commit interval setting was removed. Clean up stale persisted
+        // values so future defaults migrations do not preserve dead state.
+        defaults.removeObject(forKey: "settings.commit_interval_seconds")
+
         realtimeAPIEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.realtimeAPIEndpointURL,
             envKey: "REALTIME_ENDPOINT", fallback: RealtimeProvider.realtimeAPI.defaultEndpoint,
@@ -335,12 +334,6 @@ final class SettingsStore {
             envKey: "REALTIME_MODEL", provider: .realtimeAPI,
             environment: environment
         )
-
-        let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
-        commitIntervalSeconds =
-            storedInterval > 0
-            ? min(max(storedInterval, 0.1), 1.0)
-            : 0.9
 
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
