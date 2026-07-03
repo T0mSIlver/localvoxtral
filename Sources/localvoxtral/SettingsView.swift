@@ -163,54 +163,21 @@ private struct DictationSettingsPane: View {
 
     var body: some View {
         SettingsPage {
-            SettingsGroup(title: "Behavior") {
-                SettingsFieldRow(title: "Output mode") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $settings.dictationOutputMode) {
-                            ForEach(DictationOutputMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-
-                        SettingsHelpText(settings.dictationOutputMode.description)
-                    }
-                }
-
-                SettingsFieldRow(title: "Shortcut behavior") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $settings.dictationShortcutMode) {
-                            ForEach(DictationShortcutMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-
-                        SettingsHelpText(settings.dictationShortcutMode.description)
-                    }
-                }
-
-                ToggleSettingRow(
-                    title: "Auto-copy final segment",
-                    subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
-                    isOn: $settings.autoCopyEnabled
-                )
-            }
-
-            SettingsGroup(title: "Shortcut") {
-                ToggleSettingRow(
-                    title: "Single modifier key",
-                    subtitle: "Tap for overlay buffer, hold for live auto-paste.",
-                    isOn: Binding(
+            SettingsGroup(title: "Start dictation with") {
+                SettingsFieldRow(title: "Trigger") {
+                    Picker("", selection: Binding(
                         get: { settings.modifierOnlyHotKeyEnabled },
                         set: { newValue in
                             settings.modifierOnlyHotKeyEnabled = newValue
                             viewModel.applyHotKeySettingsChange()
                         }
-                    )
-                )
+                    )) {
+                        Text("Single modifier key").tag(true)
+                        Text("Keyboard shortcuts").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
 
                 if settings.modifierOnlyHotKeyEnabled {
                     SettingsFieldRow(title: "Modifier key") {
@@ -227,6 +194,18 @@ private struct DictationSettingsPane: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+                    }
+
+                    SettingsFieldRow(title: "Tap") {
+                        Text("Overlay Buffer — toggle dictation on and off.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    SettingsFieldRow(title: "Hold") {
+                        Text("Live Auto-Paste — talk while held, stops on release.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
                     }
 
                     SettingsFieldRow(title: "Hold delay") {
@@ -307,7 +286,48 @@ private struct DictationSettingsPane: View {
                             color: .secondary
                         )
                     }
+
+                    SettingsFieldRow(title: "Shortcut behavior") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.dictationShortcutMode) {
+                                ForEach(DictationShortcutMode.allCases) { mode in
+                                    Text(mode.displayName).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+
+                            SettingsHelpText(settings.dictationShortcutMode.description)
+                        }
+                    }
                 }
+            }
+
+            SettingsGroup(title: "Menu bar") {
+                SettingsFieldRow(title: "Output mode") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: $settings.dictationOutputMode) {
+                            ForEach(DictationOutputMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        SettingsHelpText(settings.dictationOutputMode.description)
+                        SettingsHelpText(
+                            "Used when starting dictation from the menu bar. Keyboard triggers above select their mode directly."
+                        )
+                    }
+                }
+            }
+
+            SettingsGroup(title: "General") {
+                ToggleSettingRow(
+                    title: "Auto-copy final segment",
+                    subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
+                    isOn: $settings.autoCopyEnabled
+                )
             }
         }
     }
