@@ -106,6 +106,14 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.realtimeProvider, .realtimeAPI)
     }
 
+    func testRemovedCommitIntervalSettingIsCleanedUp() {
+        defaults.set(0.5, forKey: "settings.commit_interval_seconds")
+
+        _ = makeStore()
+
+        XCTAssertNil(defaults.object(forKey: "settings.commit_interval_seconds"))
+    }
+
     // MARK: - effectiveModelName
 
     func testEffectiveModel_plainName() {

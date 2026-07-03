@@ -69,7 +69,6 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
 - Open **Settings** from the menu bar popover to set:
   - Dictation trigger: single modifier key (tap/hold) or per-mode keyboard shortcuts (`Toggle` / `Push to Talk`)
   - Realtime endpoint (URL, model name, API key)
-  - Commit interval (`vLLM`/`voxmlx`)
   - Auto-copy final segment
   - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Replacement dictionary (overlay buffer output mode only)
