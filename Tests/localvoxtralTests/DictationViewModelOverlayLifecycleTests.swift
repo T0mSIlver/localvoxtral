@@ -157,7 +157,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertNotNil(viewModel.lastError)
         XCTAssertTrue(
             viewModel.lastError?.contains(
-                "No connection response received in \(Int(TimingConstants.connectTimeout)) seconds"
+                "No connection response received in \(Self.formattedTimeout(TimingConstants.connectTimeout))"
             ) == true
         )
     }
@@ -902,6 +902,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
 
     private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
         Self.retainedViewModels.append(viewModel)
+    }
+
+    private static func formattedTimeout(_ timeout: TimeInterval) -> String {
+        let seconds = max(1, Int(timeout.rounded()))
+        return "\(seconds) \(seconds == 1 ? "second" : "seconds")"
     }
 }
 

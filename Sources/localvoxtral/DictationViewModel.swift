@@ -80,7 +80,9 @@ final class DictationViewModel {
 
         @MainActor
         static func from(_ message: String) -> ErrorToken {
-            if message == TextInsertionService.accessibilityErrorMessage {
+            if message == TextInsertionService.accessibilityErrorMessage
+                || message == DictationViewModel.liveAutoPasteAccessibilityWarningMessage
+            {
                 return .accessibilityPermissionRequired
             }
             if message == HotKeyManager.handlerRegistrationErrorMessage {
@@ -114,6 +116,12 @@ final class DictationViewModel {
     private static let microphoneDeniedMessage =
         "Grant microphone access in System Settings > Privacy & Security > Microphone."
 
+    /// Surfaced at dictation start (and in the popover) when Live Auto-Paste is
+    /// active but Accessibility isn't trusted — transcribed text would otherwise
+    /// land nowhere. Kept as a stable constant so `ErrorToken` can recognize it.
+    static let liveAutoPasteAccessibilityWarningMessage =
+        "Live Auto-Paste needs Accessibility access to type into other apps. Text won't appear until you enable it in System Settings > Privacy & Security > Accessibility."
+
     var isDictating = false
     var isFinalizingStop = false
     var isConnectingRealtimeSession = false
@@ -122,6 +130,14 @@ final class DictationViewModel {
     var livePartialText = ""
     var statusText = StatusStrings.ready
     var lastError: String?
+    // Raw message from the most recent websocket .error event this session.
+    // Kept separate from lastError, which holds user-facing UI state (e.g. the
+    // Accessibility warning) that must never leak into connection-failure details.
+    var lastSocketErrorMessage: String?
+    #if DEBUG
+    // Test seam: technicalDetails otherwise only reaches the log and the alert.
+    var debugLastConnectFailureTechnicalDetails: String?
+    #endif
     var lastFinalSegment = ""
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
@@ -174,6 +190,8 @@ final class DictationViewModel {
     var stopFinalizationTask: Task<Void, Never>?
     @ObservationIgnored
     var connectTimeoutTask: Task<Void, Never>?
+    @ObservationIgnored
+    var isResolvingConnectTimeout = false
     @ObservationIgnored
     var recentFailureResetTask: Task<Void, Never>?
     @ObservationIgnored
@@ -308,6 +326,12 @@ final class DictationViewModel {
                    || self.currentStatusToken == .pasteBlockedByAccessibilityPermission)
             {
                 self.statusText = StatusStrings.ready
+            } else if self.isDictating,
+                self.currentStatusToken == .pasteBlockedByAccessibilityPermission
+            {
+                // Accessibility just landed mid-session: clear the stale warning
+                // so the menu bar / popover reflects that text will now arrive.
+                self.statusText = "Listening..."
             }
         }
 
@@ -479,12 +503,7 @@ final class DictationViewModel {
             debugLog("network lost")
             if isConnectingRealtimeSession {
                 abortConnectingSession()
-                let message = "Network connection was lost while connecting."
-                handleConnectFailure(
-                    status: StatusStrings.networkLostDictationStopped,
-                    message: message,
-                    technicalDetails: "Network path changed to unavailable while opening websocket."
-                )
+                handleConnectFailure(reason: .networkLost)
             } else if isDictating {
                 stopDictation(reason: "network lost", finalizeRemainingAudio: false)
                 statusText = StatusStrings.networkLostDictationStopped
@@ -895,6 +914,17 @@ final class DictationViewModel {
 
     var isLiveAutoPasteModeEnabled: Bool {
         activeOutputMode == .liveAutoPaste
+    }
+
+    /// Non-nil when Live Auto-Paste is the active output mode but Accessibility
+    /// isn't trusted — the condition under which transcribed text lands nowhere.
+    /// Used to surface a warning in the popover and at dictation start. Derived
+    /// from existing state; no new stored state.
+    var liveAutoPasteAccessibilityWarning: String? {
+        guard isLiveAutoPasteModeEnabled, !textInsertion.isAccessibilityTrusted else {
+            return nil
+        }
+        return Self.liveAutoPasteAccessibilityWarningMessage
     }
 
     private var activeOutputMode: DictationOutputMode {

@@ -28,6 +28,10 @@ final class AccessibilityTrustManager {
     @ObservationIgnored private let now: DateProvider
     @ObservationIgnored private let pollingInterval: Duration
     @ObservationIgnored private let pollingTimeoutSeconds: TimeInterval
+    /// Test-only override of the trust verdict. When non-nil it is used in place
+    /// of `trustChecker()` so `refresh()` (called on the dictation-start path)
+    /// does not clobber the injected state. Always nil in release builds.
+    @ObservationIgnored private var debugTrustOverride: Bool?
 
     init(
         trustChecker: @escaping TrustChecker = { AXIsProcessTrusted() },
@@ -52,7 +56,7 @@ final class AccessibilityTrustManager {
 
     func refresh() {
         let wasTrusted = isTrusted
-        let trusted = trustChecker()
+        let trusted = debugTrustOverride ?? trustChecker()
         if isTrusted != trusted {
             isTrusted = trusted
         }
@@ -129,3 +133,14 @@ final class AccessibilityTrustManager {
         }
     }
 }
+
+#if DEBUG
+extension AccessibilityTrustManager {
+    /// Forces the trust verdict for tests, surviving subsequent `refresh()`
+    /// calls. Pass `nil` to restore the real `trustChecker`.
+    func debugSetTrustOverride(_ value: Bool?) {
+        debugTrustOverride = value
+        refresh()
+    }
+}
+#endif

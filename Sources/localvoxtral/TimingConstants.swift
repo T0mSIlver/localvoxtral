@@ -15,6 +15,11 @@ enum TimingConstants {
     /// How long to wait for a WebSocket to reach `.connected` before timing out.
     static let connectTimeout: TimeInterval = 1.0
 
+    /// Short grace after the app-level connect timeout fires before presenting
+    /// a timeout. This lets URLSession deliver a terminal socket error that
+    /// raced the timer, so refused ports are not mislabeled as silent timeouts.
+    static let connectTimeoutSocketErrorGrace: TimeInterval = 0.15
+
     /// Duration the "recent failure" indicator stays visible after a connection error.
     static let recentFailureIndicatorDuration: TimeInterval = 5.0
 
