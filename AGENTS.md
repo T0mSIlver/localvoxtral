@@ -66,8 +66,11 @@ backend, where the suite self-skips. The mic-capture tests
   GitHub-hosted macOS. Never move fork-PR jobs to the self-hosted runner — it
   is a personal machine.
 - Watch a PR's checks with `gh pr checks <n> --watch`.
-- Releases: push a `v*.*.*` tag (or `./scripts/release.sh vX.Y.Z` from main),
-  which triggers `release.yml` → GitHub Release with .zip + .dmg.
+- Releases: `./scripts/release.sh [patch|minor|major|X.Y.Z]` from any machine
+  with gh — dispatches `release.yml` on the self-hosted runner, which gates
+  (build, unit, live integration, packaging, smoke) and only then tags and
+  publishes the GitHub release (.zip + .dmg). Never push release tags by
+  hand; the pipeline owns them.
 - `scripts/package_app.sh` intentionally patches SwiftPM-generated sources in
   `.build/` (resource-bundle lookup for packaged .apps); the patches are
   idempotent.

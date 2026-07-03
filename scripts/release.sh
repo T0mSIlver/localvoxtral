@@ -1,78 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
+# One-command release from any machine with gh. Dispatches the Release App
+# workflow, which gates (build, unit tests, live integration, packaging,
+# launch smoke) on the self-hosted Mac runner and only then tags, builds the
+# DMG/zip, and publishes the GitHub release. A failed release leaves no tag.
+#
+# Usage:
+#   ./scripts/release.sh            # patch bump (v0.6.1 -> v0.6.2)
+#   ./scripts/release.sh minor      # v0.6.1 -> v0.7.0
+#   ./scripts/release.sh major      # v0.6.1 -> v1.0.0
+#   ./scripts/release.sh 1.2.3      # explicit version
 
-TAG="${1:-}"
-if [[ -z "$TAG" ]]; then
-  echo "Usage: ./scripts/release.sh v0.3.0"
-  exit 1
-fi
+ARG="${1:-patch}"
 
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-  echo "Invalid tag: $TAG"
-  echo "Expected semantic tag like v0.3.0"
-  exit 1
-fi
+case "$ARG" in
+  patch|minor|major)
+    FIELD="bump"; VALUE="$ARG" ;;
+  *)
+    if [[ "$ARG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      FIELD="version"; VALUE="$ARG"
+    else
+      echo "Usage: $0 [patch|minor|major|X.Y.Z]" >&2
+      exit 1
+    fi
+    ;;
+esac
 
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "Working tree is not clean. Commit or stash changes first."
-  exit 1
-fi
-
-CURRENT_BRANCH="$(git branch --show-current)"
-if [[ "$CURRENT_BRANCH" != "main" ]]; then
-  echo "Release must run from main. Current branch: $CURRENT_BRANCH"
-  exit 1
-fi
-
-if ! git remote get-url origin >/dev/null 2>&1; then
-  echo "Missing origin remote."
-  exit 1
-fi
-
-if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-  echo "Tag already exists locally: $TAG"
-  exit 1
-fi
-
-if git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
-  echo "Tag already exists on origin: $TAG"
-  exit 1
-fi
-
-VERSION="${TAG#v}"
-ARCHIVE_PATH="dist/localvoxtral-${TAG}.zip"
-DMG_PATH="dist/localvoxtral-${TAG}.dmg"
-
-echo "Running build and tests..."
-swift build -c release
-swift test
-
-echo "Packaging app..."
-./scripts/package_app.sh release "$VERSION" 1
-
-echo "Creating archive $ARCHIVE_PATH..."
-mkdir -p dist
-rm -f "$ARCHIVE_PATH"
-ditto -c -k --sequesterRsrc --keepParent "dist/localvoxtral.app" "$ARCHIVE_PATH"
-
-echo "Creating disk image $DMG_PATH..."
-rm -f "$DMG_PATH"
-DMG_STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/localvoxtral-dmg.XXXXXX")"
-trap 'rm -rf "$DMG_STAGING_DIR"' EXIT
-cp -R "dist/localvoxtral.app" "$DMG_STAGING_DIR/localvoxtral.app"
-ln -s /Applications "$DMG_STAGING_DIR/Applications"
-hdiutil create -volname "localvoxtral" -srcfolder "$DMG_STAGING_DIR" -ov -format UDZO "$DMG_PATH"
-
-echo "Pushing main..."
-git push origin main
-
-echo "Tagging and pushing $TAG..."
-git tag -a "$TAG" -m "Release $TAG"
-git push origin "$TAG"
-
-echo "Published $TAG"
-echo "GitHub Actions will build and publish the release artifact from this tag."
-echo "Release page: https://github.com/T0mSIlver/localvoxtral/releases/tag/$TAG"
+echo "Dispatching release ($FIELD=$VALUE)..."
+gh workflow run "Release App" -f "$FIELD=$VALUE"
+sleep 5
+RUN_ID="$(gh run list --workflow "Release App" --limit 1 --json databaseId --jq '.[0].databaseId')"
+echo "Watching run $RUN_ID (Ctrl+C detaches; the release continues remotely)"
+gh run watch "$RUN_ID" --exit-status
+echo "Done. Release page: https://github.com/T0mSIlver/localvoxtral/releases/latest"

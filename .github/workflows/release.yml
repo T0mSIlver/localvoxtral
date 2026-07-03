@@ -1,108 +1,129 @@
 name: Release App
 
+# One-command releases: dispatch with a bump level (or explicit version) and
+# the pipeline gates, tags, packages, and publishes. The tag is created ONLY
+# after every gate passes — a failed release leaves no orphan tag behind.
+# Trigger from anywhere: ./scripts/release.sh minor   (wraps gh workflow run)
+
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing tag to publish (example: v0.3.0)"
-        required: true
+      bump:
+        description: "Version bump from the latest v* tag"
+        required: false
+        default: "patch"
+        type: choice
+        options: [patch, minor, major]
+      version:
+        description: "Explicit version (X.Y.Z) — overrides bump"
+        required: false
         type: string
 
 permissions:
   contents: write
 
-jobs:
-  build-and-release:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout pushed ref
-        if: github.event_name != 'workflow_dispatch'
-        uses: actions/checkout@v4
+concurrency:
+  group: release
+  cancel-in-progress: false
 
-      - name: Checkout selected tag
-        if: github.event_name == 'workflow_dispatch'
+jobs:
+  release:
+    # Self-hosted for speed (warm build cache, live voxmlx for the integration
+    # gate). Releases stay ad-hoc signed: the runner's localvoxtral-dev cert
+    # is meaningless on users' machines, so we don't set the identity here.
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ github.event.inputs.tag }}
+          ref: main
+          fetch-depth: 0
 
-      - name: Derive release metadata
+      - name: Compute version
         id: meta
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            TAG="${{ github.event.inputs.tag }}"
+          set -euo pipefail
+          EXPLICIT="${{ inputs.version }}"
+          if [[ -n "$EXPLICIT" ]]; then
+            if [[ ! "$EXPLICIT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid explicit version: $EXPLICIT (expected X.Y.Z)"; exit 1
+            fi
+            VERSION="$EXPLICIT"
           else
-            TAG="${GITHUB_REF_NAME}"
+            LATEST="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.0.0)"
+            BASE="${LATEST#v}"
+            IFS=. read -r MA MI PA <<< "$BASE"
+            case "${{ inputs.bump }}" in
+              major) VERSION="$((MA+1)).0.0" ;;
+              minor) VERSION="$MA.$((MI+1)).0" ;;
+              patch) VERSION="$MA.$MI.$((PA+1))" ;;
+              *) echo "Unknown bump"; exit 1 ;;
+            esac
           fi
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Unsupported tag format: $TAG"
-            exit 1
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
+             || git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            echo "Tag already exists: $TAG"; exit 1
           fi
-          VERSION="${TAG#v}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG from $(git rev-parse --short HEAD)"
 
-      - name: Setup Swift
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
-
-      - name: Build
+      - name: Gate — build
         run: swift build -c release
 
-      - name: Test
-        run: swift test
+      - name: Gate — unit tests
+        run: |
+          swift test \
+            --skip RealtimeAPIVLLMIntegrationTests
 
-      - name: Package app bundle
+      - name: Gate — live integration (voxmlx)
+        env:
+          VLLM_REALTIME_TEST_ENABLE: "1"
+          VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+        run: swift test --filter RealtimeAPIVLLMIntegrationTests
+
+      - name: Gate — package app bundle
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
-      - name: Smoke test packaged app launch
+      - name: Gate — packaged app launch smoke test
         run: |
           python3 - <<'PY'
-          import subprocess
-          import time
-
-          app_binary = "dist/localvoxtral.app/Contents/MacOS/localvoxtral"
-          process = subprocess.Popen([app_binary])
+          import subprocess, time
+          process = subprocess.Popen(["dist/localvoxtral.app/Contents/MacOS/localvoxtral"])
           time.sleep(2)
-
-          exit_code = process.poll()
-          if exit_code is not None:
-            raise SystemExit(f"packaged app exited during smoke test: {exit_code}")
-
+          if process.poll() is not None:
+              raise SystemExit(f"packaged app exited during smoke test: {process.returncode}")
           process.terminate()
           try:
-            process.wait(timeout=5)
+              process.wait(timeout=5)
           except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+              process.kill(); process.wait(timeout=5)
           PY
 
-      - name: Create release artifacts
+      - name: Create release artifacts (zip + dmg)
         run: |
-          mkdir -p dist
-          ZIP_PATH="dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip"
-          DMG_PATH="dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg"
-
+          set -euo pipefail
+          TAG="${{ steps.meta.outputs.tag }}"
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/localvoxtral.app" \
-            "$ZIP_PATH"
-
+            "dist/localvoxtral.app" "dist/localvoxtral-$TAG.zip"
           DMG_STAGING_DIR="$(mktemp -d)"
           trap 'rm -rf "$DMG_STAGING_DIR"' EXIT
           cp -R "dist/localvoxtral.app" "$DMG_STAGING_DIR/localvoxtral.app"
           ln -s /Applications "$DMG_STAGING_DIR/Applications"
+          hdiutil create -volname "localvoxtral" -srcfolder "$DMG_STAGING_DIR" \
+            -ov -format UDZO "dist/localvoxtral-$TAG.dmg"
 
-          hdiutil create \
-            -volname "localvoxtral" \
-            -srcfolder "$DMG_STAGING_DIR" \
-            -ov \
-            -format UDZO \
-            "$DMG_PATH"
+      - name: Tag (all gates green)
+        run: |
+          TAG="${{ steps.meta.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "localvoxtral $TAG"
+          git push origin "$TAG"
 
-      - name: Create GitHub release
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
