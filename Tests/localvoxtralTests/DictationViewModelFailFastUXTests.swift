@@ -238,12 +238,60 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
+    // MARK: - Managed backend startup
+
+    func testStartDictationInManagedModeAwaitsBackendManagerAndSurfacesFailure() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.ensureError = FakeManagedBackendFailure(message: "voxmlx failed: missing wheel")
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession)
+        XCTAssertNil(viewModel.sessionProvider, "connection must not start until the managed backend is ready")
+        XCTAssertEqual(viewModel.statusText, "Installing dictation backend...")
+        XCTAssertEqual(backendManager.ensureIncludePolishingCalls, [false])
+
+        backendManager.resumeEnsure()
+        await Task.yield()
+
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertTrue(viewModel.lastError?.contains("voxmlx failed: missing wheel") == true)
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    func testStartDictationInExternalModeNeverTouchesManagedBackendManager() {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = ""
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+
+        XCTAssertTrue(backendManager.ensureIncludePolishingCalls.isEmpty)
+        XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")
+    }
+
     // MARK: - Helpers
 
-    private func makeViewModel(outputMode: DictationOutputMode) -> DictationViewModel {
+    private func makeViewModel(
+        outputMode: DictationOutputMode,
+        backendManager: (any ManagedBackendManaging)? = nil
+    ) -> DictationViewModel {
         let settings = makeSettings(outputMode: outputMode)
         let viewModel = DictationViewModel(
             settings: settings,
+            backendManager: backendManager,
             overlayBufferCoordinator: NoopOverlayCoordinator(),
             startRuntimeServices: false
         )
@@ -296,6 +344,63 @@ private final class NoopOverlayCoordinator: OverlayBufferSessionCoordinating {
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
     func reset() {}
     func captureLiveCommitTargetAppPID() {}
+}
+
+@MainActor
+private final class FakeManagedBackendManager: ManagedBackendManaging {
+    var voxmlxStatus: ManagedBackendStatus = .notInstalled
+    var mlxLMStatus: ManagedBackendStatus = .notInstalled
+    var ensureError: Error?
+    var suspendEnsure = false
+    private(set) var ensureIncludePolishingCalls: [Bool] = []
+    private(set) var stopAllCallCount = 0
+    private var ensureStartedContinuation: CheckedContinuation<Void, Never>?
+    private var ensureResumeContinuation: CheckedContinuation<Void, Never>?
+
+    func ensureReady(includePolishing: Bool) async throws {
+        ensureIncludePolishingCalls.append(includePolishing)
+        ensureStartedContinuation?.resume()
+        ensureStartedContinuation = nil
+
+        if suspendEnsure {
+            await withCheckedContinuation { continuation in
+                ensureResumeContinuation = continuation
+            }
+        }
+
+        if let ensureError {
+            throw ensureError
+        }
+
+        voxmlxStatus = .ready
+        if includePolishing {
+            mlxLMStatus = .ready
+        }
+    }
+
+    func stopAll() async {
+        stopAllCallCount += 1
+    }
+
+    func waitUntilEnsureStarted() async {
+        guard ensureIncludePolishingCalls.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            ensureStartedContinuation = continuation
+        }
+    }
+
+    func resumeEnsure() {
+        ensureResumeContinuation?.resume()
+        ensureResumeContinuation = nil
+    }
+}
+
+private struct FakeManagedBackendFailure: LocalizedError {
+    let message: String
+
+    var errorDescription: String? {
+        message
+    }
 }
 
 extension DictationViewModel {

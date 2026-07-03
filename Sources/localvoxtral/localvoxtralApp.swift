@@ -4,12 +4,15 @@ import SwiftUI
 @main
 struct localvoxtralApp: App {
     @State private var settingsStore: SettingsStore
+    @State private var backendManager: BackendManager
     @State private var viewModel: DictationViewModel
 
     init() {
         let settings = SettingsStore()
+        let manager = BackendManager()
         settingsStore = settings
-        viewModel = DictationViewModel(settings: settings)
+        backendManager = manager
+        viewModel = DictationViewModel(settings: settings, backendManager: manager)
     }
 
     var body: some Scene {
@@ -83,7 +86,7 @@ struct localvoxtralApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(settings: settingsStore, viewModel: viewModel)
+            SettingsView(settings: settingsStore, viewModel: viewModel, backendManager: backendManager)
                 .frame(minWidth: 560, idealWidth: 580, minHeight: 380, idealHeight: 420)
         }
         .defaultSize(width: 580, height: 420)

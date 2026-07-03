@@ -31,7 +31,15 @@ enum BackendInstallError: LocalizedError, Sendable {
     }
 }
 
-struct BackendInstaller {
+protocol BackendInstalling: Sendable {
+    func needsInstallOrUpdate(_ spec: ManagedBackendSpec) -> Bool
+    func install(
+        _ spec: ManagedBackendSpec,
+        progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
+    ) async throws
+}
+
+struct BackendInstaller: BackendInstalling {
     private let layout: BackendInstallLayout
     private let uvLocator: any UVBinaryLocating
     private let fileManager: FileManager
@@ -208,6 +216,8 @@ struct BackendInstaller {
         progress(event)
     }
 }
+
+extension BackendInstaller: @unchecked Sendable {}
 
 private struct UVToolProcessResult: Sendable {
     let exitCode: Int32

@@ -176,6 +176,8 @@ final class DictationViewModel {
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
     @ObservationIgnored
+    let backendManager: any ManagedBackendManaging
+    @ObservationIgnored
     var sessionStore: DictationSessionStore?
     @ObservationIgnored
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
@@ -253,6 +255,8 @@ final class DictationViewModel {
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
     @ObservationIgnored
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
+    @ObservationIgnored
+    var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -274,10 +278,12 @@ final class DictationViewModel {
 
     init(
         settings: SettingsStore,
+        backendManager: (any ManagedBackendManaging)? = nil,
         overlayBufferCoordinator: OverlayBufferSessionCoordinating? = nil,
         startRuntimeServices: Bool = true
     ) {
         self.settings = settings
+        self.backendManager = backendManager ?? BackendManager()
         self.managesRuntimeServices = startRuntimeServices
         if let overlayBufferCoordinator {
             self.overlayBufferCoordinator = overlayBufferCoordinator
@@ -420,8 +426,11 @@ final class DictationViewModel {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.isDictating else { return }
-                self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
+                guard let self else { return }
+                if self.isDictating {
+                    self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
+                }
+                await self.backendManager.stopAll()
             }
         }
 
@@ -671,6 +680,19 @@ final class DictationViewModel {
         }
     }
 
+    func applyBackendModeChange(_ mode: BackendMode) {
+        let previousMode = settings.backendMode
+        settings.backendMode = mode
+
+        guard previousMode == .managedLocal, mode == .externalURL else { return }
+        // Leaving managed mode means the app should no longer own local backend
+        // processes. Polishing toggles are intentionally lighter-weight: if
+        // mlx-lm is already running, it stays up until quit or a mode switch.
+        Task { @MainActor [backendManager] in
+            await backendManager.stopAll()
+        }
+    }
+
     /// Register hotkeys based on current settings.
     /// Uses modifier-only, dual shortcuts, or legacy single shortcut depending on config.
     @discardableResult
@@ -863,9 +885,9 @@ final class DictationViewModel {
         }
         lastError = nil
 
-        switch microphone.authorizationStatus() {
+        switch currentMicrophoneAuthorizationStatus() {
         case .authorized:
-            beginDictationSession(outputMode: outputMode)
+            beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
         case .notDetermined:
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
@@ -888,7 +910,7 @@ final class DictationViewModel {
                         self.hasActivePushToTalkShortcutSession = false
                         return
                     }
-                    self.beginDictationSession(outputMode: outputMode)
+                    self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
                 }
             }
             Task { [weak self] in
@@ -906,6 +928,15 @@ final class DictationViewModel {
             lastError = Self.microphoneDeniedMessage
             debugLog("microphone access denied or restricted")
         }
+    }
+
+    func currentMicrophoneAuthorizationStatus() -> MicrophoneAuthorizationStatus {
+        #if DEBUG
+        if let debugMicrophoneAuthorizationStatusOverride {
+            return debugMicrophoneAuthorizationStatusOverride
+        }
+        #endif
+        return microphone.authorizationStatus()
     }
 
     func stopDictation(reason: String = "unspecified", finalizeRemainingAudio: Bool = true) {

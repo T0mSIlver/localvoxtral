@@ -193,7 +193,7 @@ final class SettingsStore {
     /// Default model for the OpenAI-compatible LLM polishing server. Used as
     /// the external-mode fallback and as the model the managed mlx-lm backend
     /// is expected to serve.
-    private static let defaultLLMPolishingModel = "mlx-community/Qwen3.5-0.8B-8bit"
+    static let defaultLLMPolishingModel = "mlx-community/Qwen3.5-0.8B-8bit"
 
     var realtimeProvider: RealtimeProvider {
         didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }

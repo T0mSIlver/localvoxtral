@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
     var viewModel: DictationViewModel
+    var backendManager: BackendManager
     @State private var shortcutValidationError: String?
 
     private var endpointBinding: Binding<String> {
@@ -60,6 +61,8 @@ struct SettingsView: View {
         TabView {
             ConnectionSettingsPane(
                 settings: settings,
+                viewModel: viewModel,
+                backendManager: backendManager,
                 endpointBinding: endpointBinding,
                 modelBinding: modelBinding
             )
@@ -104,15 +107,26 @@ private enum SettingsLayout {
 
 private struct ConnectionSettingsPane: View {
     @Bindable var settings: SettingsStore
+    let viewModel: DictationViewModel
+    let backendManager: BackendManager
     let endpointBinding: Binding<String>
     let modelBinding: Binding<String>
+
+    private var backendModeBinding: Binding<BackendMode> {
+        Binding(
+            get: { settings.backendMode },
+            set: { newValue in
+                viewModel.applyBackendModeChange(newValue)
+            }
+        )
+    }
 
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Backend") {
                 SettingsFieldRow(title: "Mode") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $settings.backendMode) {
+                        Picker("", selection: backendModeBinding) {
                             ForEach(BackendMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
@@ -141,29 +155,115 @@ private struct ConnectionSettingsPane: View {
                             .textFieldStyle(.roundedBorder)
                     }
                 case .managedLocal:
-                    ManagedBackendSettingsPlaceholder()
+                    ManagedBackendStatusRows(backendManager: backendManager)
                 }
             }
         }
     }
 }
 
-// TODO: the wiring PR replaces this static info with live install/run status
-// for the managed voxmlx + mlx-lm backends.
-private struct ManagedBackendSettingsPlaceholder: View {
+private struct ManagedBackendStatusRows: View {
+    let backendManager: BackendManager
+
     var body: some View {
-        SettingsFieldRow(title: "Dictation") {
+        ManagedBackendStatusRow(
+            title: "Dictation",
+            spec: BackendCatalog.voxmlx,
+            endpoint: ManagedBackendEndpoints.realtimeURLString,
+            status: backendManager.voxmlxStatus
+        )
+
+        ManagedBackendStatusRow(
+            title: "Polishing",
+            spec: BackendCatalog.mlxLM,
+            endpoint: ManagedBackendEndpoints.polishingURLString,
+            status: backendManager.mlxLMStatus
+        )
+    }
+}
+
+private struct ManagedBackendStatusRow: View {
+    let title: String
+    let spec: ManagedBackendSpec
+    let endpoint: String
+    let status: ManagedBackendStatus
+
+    var body: some View {
+        SettingsFieldRow(title: title) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("voxmlx — \(ManagedBackendEndpoints.realtimeURLString)")
+                Text("\(spec.displayName) - \(endpoint)")
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
 
-                SettingsHelpText("Backends are installed and started automatically.")
+                ManagedBackendStatusLabel(status: status)
             }
         }
+    }
+}
 
-        SettingsFieldRow(title: "Polishing") {
-            Text("mlx-lm — \(ManagedBackendEndpoints.polishingURLString)")
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
+private struct ManagedBackendStatusLabel: View {
+    let status: ManagedBackendStatus
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if case .installing(let progress) = status {
+                if let fraction = installFraction(from: progress) {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                        .frame(width: 54)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 54)
+                }
+            }
+
+            Text(statusText)
+                .font(.caption)
+                .foregroundStyle(statusColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var statusText: String {
+        switch status {
+        case .notInstalled:
+            return "Not installed"
+        case .installing(let progress):
+            return installingText(progress)
+        case .starting:
+            return "Starting"
+        case .ready:
+            return "Ready"
+        case .stopped:
+            return "Stopped"
+        case .failed(let message):
+            return "Failed: \(message)"
+        }
+    }
+
+    private var statusColor: Color {
+        if case .failed = status {
+            return .red
+        }
+        return .secondary
+    }
+
+    private func installFraction(from progress: BackendInstallProgress) -> Double? {
+        guard case .downloading(let fraction) = progress else { return nil }
+        return fraction
+    }
+
+    private func installingText(_ progress: BackendInstallProgress) -> String {
+        switch progress {
+        case .downloading(let fraction):
+            guard let fraction else { return "Downloading" }
+            return "Downloading \(Int((fraction * 100).rounded()))%"
+        case .verifying:
+            return "Verifying"
+        case .installing(let logLine):
+            return logLine.trimmed.isEmpty ? "Installing" : "Installing: \(logLine)"
+        case .finished:
+            return "Installed"
         }
     }
 }
@@ -368,6 +468,8 @@ private struct TextProcessingSettingsPane: View {
                 if newValue, !wasEnabled {
                     viewModel.prepareLLMPolishingPromptAccessIfNeeded()
                 }
+                // Disabling polishing does not stop a managed mlx-lm process
+                // mid-run; it is stopped on quit or when switching to External URL.
             }
         )
     }

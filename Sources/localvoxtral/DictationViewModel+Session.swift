@@ -37,6 +37,67 @@ extension DictationViewModel {
         sessionReplacementDictionary = nil
     }
 
+    func beginDictationAfterManagedBackendIfNeeded(outputMode: DictationOutputMode? = nil) {
+        guard settings.backendMode == .managedLocal else {
+            beginDictationSession(outputMode: outputMode)
+            return
+        }
+
+        isConnectingRealtimeSession = true
+        let includePolishing = settings.llmPolishingEnabled
+        statusText = managedBackendStartupStatusText(includePolishing: includePolishing)
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.backendManager.ensureReady(includePolishing: includePolishing)
+            } catch {
+                self.abortConnectingSession()
+                self.handleManagedBackendStartupFailure(error)
+                return
+            }
+
+            guard !Task.isCancelled, self.isConnectingRealtimeSession else { return }
+            self.beginDictationSession(outputMode: outputMode)
+        }
+    }
+
+    private func managedBackendStartupStatusText(includePolishing: Bool) -> String {
+        if shouldShowManagedBackendInstallStatus(
+            voxmlxStatus: backendManager.voxmlxStatus,
+            mlxLMStatus: includePolishing ? backendManager.mlxLMStatus : nil
+        ) {
+            return "Installing dictation backend..."
+        }
+        return "Starting dictation backend - first run may download the model..."
+    }
+
+    private func shouldShowManagedBackendInstallStatus(
+        voxmlxStatus: ManagedBackendStatus,
+        mlxLMStatus: ManagedBackendStatus?
+    ) -> Bool {
+        if voxmlxStatus.requiresInstallProgressText {
+            return true
+        }
+        return mlxLMStatus?.requiresInstallProgressText == true
+    }
+
+    private func handleManagedBackendStartupFailure(_ error: Error) {
+        let detail = error.localizedDescription.trimmed.isEmpty
+            ? String(describing: error)
+            : error.localizedDescription
+        let message = "Unable to start the managed dictation backend: \(detail)"
+        statusText = "Managed backend failed."
+        lastError = message
+        logConnectionFailure(message: message, technicalDetails: detail)
+        markRecentConnectionFailureIndicator()
+        presentConnectionFailureAlert(
+            title: "Managed Backend Failed",
+            message: message,
+            technicalDetails: detail
+        )
+    }
+
     func beginDictationSession(outputMode: DictationOutputMode? = nil) {
         lastSocketErrorMessage = nil
         polishAndCommitTask?.cancel()
