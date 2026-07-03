@@ -144,7 +144,12 @@ final class EscapeCancelHandler {
         let installStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, eventRef, _ in
-                guard let eventRef else { return noErr }
+                // Returning noErr marks a Carbon event as HANDLED and stops
+                // propagation — HotKeyManager's handler shares this event
+                // target, so any hotkey that is not ours must be passed on
+                // with eventNotHandledErr or the dictation shortcut goes dead
+                // while Escape-cancel is armed.
+                guard let eventRef else { return OSStatus(eventNotHandledErr) }
 
                 var hotKeyID = EventHotKeyID()
                 let status = GetEventParameter(
@@ -161,7 +166,7 @@ final class EscapeCancelHandler {
                       hotKeyID.signature == EscapeCancelHandler.hotKeySignature,
                       hotKeyID.id == EscapeCancelHandler.hotKeyID
                 else {
-                    return noErr
+                    return OSStatus(eventNotHandledErr)
                 }
 
                 DispatchQueue.main.async {
