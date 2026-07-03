@@ -139,8 +139,6 @@ final class SettingsStore {
         static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
         static let llmPolishingModel = "settings.llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
-        static let liveAutoPastePostProcessingEnabled =
-            "settings.live_auto_paste_post_processing_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -228,21 +226,6 @@ final class SettingsStore {
     var replacementDictionaryEnabled: Bool {
         didSet {
             defaults.set(replacementDictionaryEnabled, forKey: Keys.replacementDictionaryEnabled)
-        }
-    }
-
-    /// When enabled, Live Auto-Paste sessions run a dictionary-only post-session
-    /// sweep: on stop, exact-match replacements from the replacement dictionary
-    /// are applied to the live-inserted text and the target field is revised in
-    /// place via an AX span replacement (with safe no-op fallbacks). Off by
-    /// default to preserve current Live Auto-Paste behavior. No effect in
-    /// Overlay Buffer mode.
-    var liveAutoPastePostProcessingEnabled: Bool {
-        didSet {
-            defaults.set(
-                liveAutoPastePostProcessingEnabled,
-                forKey: Keys.liveAutoPastePostProcessingEnabled
-            )
         }
     }
 
@@ -364,8 +347,6 @@ final class SettingsStore {
         )
         replacementDictionaryEnabled = Self.loadBool(
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
-        liveAutoPastePostProcessingEnabled = Self.loadBool(
-            defaults: defaults, key: Keys.liveAutoPastePostProcessingEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
     }

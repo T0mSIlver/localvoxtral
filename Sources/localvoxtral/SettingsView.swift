@@ -173,13 +173,6 @@ private struct DictationSettingsPane: View {
                     subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
                     isOn: $settings.autoCopyEnabled
                 )
-
-                ToggleSettingRow(
-                    title: "Live Auto-Paste post-processing",
-                    subtitle:
-                        "After a Live Auto-Paste session stops, apply exact-match replacements from the replacement dictionary to the inserted text and revise it in place. Only affects Live Auto-Paste output mode.",
-                    isOn: $settings.liveAutoPastePostProcessingEnabled
-                )
             }
 
             SettingsGroup(title: "Shortcut") {

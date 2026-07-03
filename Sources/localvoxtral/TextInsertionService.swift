@@ -4,7 +4,7 @@ import Foundation
 import Observation
 import os
 
-enum TextInsertResult {
+enum TextInsertResult: Equatable {
     case insertedByAccessibility
     case insertedByKeyboardFallback
     case failed
@@ -97,13 +97,16 @@ final class TextInsertionService {
     private var keyboardFallbackSuccessCount = 0
     private var activeModifierFallbackCount = 0
 
-    // Live Auto-Paste post-session sweep bookkeeping (issue #23, Stage 1).
-    // When non-nil, tracks the UTF-16 span of text inserted during the current
-    // Live Auto-Paste session so a dictionary sweep can locate and revise it
-    // in place on stop. This extends the existing insertion-tracking state
-    // (the diagnostic counters above) rather than introducing parallel state.
+    // Optional guard for Live Auto-Paste streaming replacements. When the
+    // target exposes a caret location, track where our typed session text
+    // should end; if the caret diverges, corrections stand down for the rest
+    // of the session.
     @ObservationIgnored
     private var liveSessionSpan: LiveSessionSpan?
+    @ObservationIgnored
+    private var liveReplacementCorrector: LiveReplacementCorrector?
+    @ObservationIgnored
+    private var didLogLiveReplacementStandDown = false
 
     private struct LiveSessionSpan: Sendable {
         var startCaretLocation: Int
@@ -115,20 +118,13 @@ final class TextInsertionService {
     @ObservationIgnored
     private var debugUnicodePoster: ((String) -> Bool)?
     @ObservationIgnored
+    private var debugBackspacePoster: ((Int) -> Bool)?
+    @ObservationIgnored
     private var debugModifierStateReader: (() -> Bool)?
     @ObservationIgnored
     private var debugAccessibilityInserter: ((String, pid_t?) -> Bool)?
-    // Sweep hooks (DEBUG-only). When set, the AX operations backing the sweep
-    // route through these closures instead of real Accessibility calls, so the
-    // decision logic and span arithmetic can be exercised headlessly.
     @ObservationIgnored
     private var debugCaretLocationReader: ((pid_t?) -> Int?)?
-    @ObservationIgnored
-    private var debugFieldReader: ((pid_t?) -> String?)?
-    @ObservationIgnored
-    private var debugSpanReplacer: ((Int, Int, String, pid_t?) -> String?)?
-    @ObservationIgnored
-    private var debugSelectionSetter: ((Int, Int, pid_t?) -> Bool)?
 #endif
 
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
@@ -249,8 +245,14 @@ final class TextInsertionService {
         switch result {
         case .insertedByAccessibility, .insertedByKeyboardFallback:
             pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
-            recordSuccessfulLiveInsertion(utf16Length: (insertedText as NSString).length)
+            recordSuccessfulLiveInsertion(
+                text: insertedText,
+                result: result
+            )
         case .failed:
+            standDownLiveReplacementCorrections(
+                reason: "realtime insertion failed"
+            )
             break
         }
     }
@@ -313,103 +315,115 @@ final class TextInsertionService {
         pendingRealtimeInsertionText = ""
     }
 
-    // MARK: - Live Auto-Paste Session Span Tracking
+    // MARK: - Live Auto-Paste Replacement Tracking
 
-    /// Begins tracking the insertion span for a Live Auto-Paste session.
-    ///
-    /// Reads the current caret location via one Accessibility query and records
-    /// it as the span start. If the read fails (AX untrusted, no focused text
-    /// element, field doesn't expose `kAXSelectedTextRange`), the session is
-    /// marked un-sweepable — `liveSessionSpanSnapshot` returns nil and the
-    /// post-session sweep silently no-ops. This is the design doc's option A2
-    /// "tracked-length" bookkeeping.
-    func beginLiveSessionSpan(preferredAppPID: pid_t?) {
-        guard let caretLocation = readCurrentCaretLocation(preferredAppPID: preferredAppPID) else {
-            liveSessionSpan = nil
-            Log.sweep.notice(
-                "live auto-paste sweep unavailable: could not read caret at session start"
-            )
-            return
+    func beginLiveReplacementSession(
+        dictionary: ReplacementDictionary?,
+        preferredAppPID: pid_t?
+    ) {
+        didLogLiveReplacementStandDown = false
+        liveReplacementCorrector = dictionary.map { LiveReplacementCorrector(dictionary: $0) }
+        if liveReplacementCorrector?.hasRules == false {
+            liveReplacementCorrector = nil
         }
-        liveSessionSpan = LiveSessionSpan(
-            startCaretLocation: caretLocation,
-            insertedUTF16Length: 0,
-            preferredAppPID: preferredAppPID
-        )
+
+        if let caretLocation = readCurrentCaretLocation(preferredAppPID: preferredAppPID) {
+            liveSessionSpan = LiveSessionSpan(
+                startCaretLocation: caretLocation,
+                insertedUTF16Length: 0,
+                preferredAppPID: preferredAppPID
+            )
+        } else {
+            liveSessionSpan = nil
+        }
     }
 
     /// Accumulates the UTF-16 length of text successfully inserted during the
-    /// session. Called from `flushPendingRealtimeInsertion` on every successful
-    /// live insertion. No-op when no session span is active (overlay sessions,
-    /// or when `beginLiveSessionSpan` could not read the caret).
+    /// session. Kept as a narrow test hook for the caret guard bookkeeping.
     func recordSuccessfulLiveInsertion(utf16Length: Int) {
         guard utf16Length > 0 else { return }
         liveSessionSpan?.insertedUTF16Length += utf16Length
     }
 
-    /// Clears the session span tracking. Called during stop-finalization cleanup.
-    func endLiveSessionSpan() {
+    func endLiveReplacementSession() {
         liveSessionSpan = nil
+        liveReplacementCorrector = nil
+        didLogLiveReplacementStandDown = false
     }
 
-    /// A snapshot of the tracked span, or nil if no span is active.
-    var liveSessionSpanSnapshot: (startCaret: Int, insertedLength: Int, preferredAppPID: pid_t?)? {
-        guard let span = liveSessionSpan else { return nil }
-        return (span.startCaretLocation, span.insertedUTF16Length, span.preferredAppPID)
-    }
-
-    // MARK: - Live Auto-Paste Post-Session Sweep
-
-    /// Attempts to revise the live-inserted text in place by replacing the
-    /// tracked span with `processedText`. The full safe algorithm:
-    ///
-    /// 1. Read the field's full value (`kAXValue`).
-    /// 2. Delegate to the pure `LiveAutoPasteSweep.computeDecision` planner,
-    ///    which verifies the tracked span currently contains exactly `rawText`
-    ///    (the safety guard against user edits / drift). If the decision is
-    ///    `.skip`, return without writing.
-    /// 3. Write the field's value with the span replaced (one AX value-set).
-    /// 4. Re-read to verify the write took effect (detects silent no-ops in
-    ///    web `contenteditable` fields). If unverified, fall back to
-    ///    select-range + Cmd+V.
-    /// 5. On any failure, leave the raw text intact — never corrupt user text.
-    func performLiveAutoPasteSweep(
-        rawText: String,
-        processedText: String,
-        startCaret: Int,
-        insertedUTF16Length: Int,
-        preferredAppPID: pid_t?
-    ) -> LivePasteSweepOutcome {
-        guard let fieldValue = readFieldValue(preferredAppPID: preferredAppPID) else {
-            return .skipped(reason: "field value not readable")
-        }
-
-        let decision = LiveAutoPasteSweep.computeDecision(
-            rawText: rawText,
-            processedText: processedText,
-            fieldValue: fieldValue,
-            startCaret: startCaret,
-            insertedUTF16Length: insertedUTF16Length
-        )
-
-        switch decision {
-        case .skip(let reason):
-            return .skipped(reason: reason)
-        case .apply(let replacement, let location, let length):
-            return applySpanReplacement(
-                replacement: replacement,
-                location: location,
-                length: length,
-                originalFullValue: fieldValue,
-                expectedFullValue: replaceSpanInString(
-                    fieldValue, location: location, length: length, with: replacement
-                ),
-                preferredAppPID: preferredAppPID
-            )
-        }
+    func flushFinalLiveReplacementCorrections() {
+        processLiveReplacementCorrections(includeFinalUnboundedWord: true)
     }
 
     // MARK: - Private
+
+    private func recordSuccessfulLiveInsertion(
+        text: String,
+        result: TextInsertResult
+    ) {
+        recordSuccessfulLiveInsertion(utf16Length: (text as NSString).length)
+
+        guard liveReplacementCorrector != nil else { return }
+        guard result == .insertedByKeyboardFallback else {
+            standDownLiveReplacementCorrections(
+                reason: "realtime insertion did not use the keyboard path"
+            )
+            return
+        }
+
+        liveReplacementCorrector?.recordInsertedText(text)
+        processLiveReplacementCorrections(includeFinalUnboundedWord: false)
+    }
+
+    private func processLiveReplacementCorrections(includeFinalUnboundedWord: Bool) {
+        while let correction = liveReplacementCorrector?.nextCompletedBoundaryCorrection() {
+            guard applyLiveReplacementCorrection(correction) else { return }
+        }
+
+        if includeFinalUnboundedWord,
+           let correction = liveReplacementCorrector?.finalUnboundedCorrection()
+        {
+            _ = applyLiveReplacementCorrection(correction)
+        }
+    }
+
+    private func applyLiveReplacementCorrection(_ correction: LiveReplacementCorrection) -> Bool {
+        guard liveReplacementCorrector != nil else { return false }
+        guard liveReplacementCaretStillMatches() else {
+            standDownLiveReplacementCorrections(reason: "tracked caret diverged")
+            return false
+        }
+        guard postBackspaceEvents(count: correction.backspaceCount),
+              postUnicodeTextEvents(correction.replacementText)
+        else {
+            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+            return false
+        }
+
+        liveReplacementCorrector?.apply(correction)
+        liveSessionSpan?.insertedUTF16Length +=
+            (correction.replacementText as NSString).length - (correction.erasedText as NSString).length
+        return true
+    }
+
+    private func liveReplacementCaretStillMatches() -> Bool {
+        guard let span = liveSessionSpan else { return true }
+        guard let caretLocation = readCurrentCaretLocation(preferredAppPID: span.preferredAppPID) else {
+            return false
+        }
+        return caretLocation == span.startCaretLocation + span.insertedUTF16Length
+    }
+
+    private func standDownLiveReplacementCorrections(reason: String) {
+        guard liveReplacementCorrector != nil else { return }
+        liveReplacementCorrector?.standDown()
+        if !didLogLiveReplacementStandDown {
+            didLogLiveReplacementStandDown = true
+            Log.replacements.notice(
+                "live replacement corrector disabled for session: \(reason, privacy: .public)"
+            )
+        }
+    }
 
     private func tryAccessibilityInsertion(
         _ text: String,
@@ -628,10 +642,10 @@ final class TextInsertionService {
         return true
     }
 
-    // MARK: - Sweep AX Primitives
+    // MARK: - Caret Guard
 
     /// Reads the caret location (UTF-16 offset) of the focused text element,
-    /// used to snapshot the span start at Live Auto-Paste session start.
+    /// used as an optional divergence guard for Live Auto-Paste corrections.
     private func readCurrentCaretLocation(preferredAppPID: pid_t?) -> Int? {
 #if DEBUG
         if let debugCaretLocationReader {
@@ -646,177 +660,7 @@ final class TextInsertionService {
         return readSelectedTextRangeLocation(in: element)
     }
 
-    /// Reads the full text of the focused field (`kAXValue`). Returns nil if AX
-    /// is untrusted, no target resolves, or the field does not expose its value
-    /// (terminals, some web views).
-    private func readFieldValue(preferredAppPID: pid_t?) -> String? {
-#if DEBUG
-        if let debugFieldReader {
-            return debugFieldReader(preferredAppPID)
-        }
-#endif
-        guard isAccessibilityTrusted,
-              let element = resolvedAccessibilityInsertionTarget(preferredAppPID: preferredAppPID)
-        else {
-            return nil
-        }
-        var valueObject: AnyObject?
-        let status = AXUIElementCopyAttributeValue(
-            element, kAXValueAttribute as CFString, &valueObject
-        )
-        guard status == .success else { return nil }
-        return valueObject as? String
-    }
-
-    /// Replaces the UTF-16 range `[location, location + length)` in the focused
-    /// field with `replacement` by writing the full revised `kAXValue`. Returns
-    /// the new full field value on success (for verify-after-write), or nil if
-    /// the write failed. Also advances the caret to the end of the replacement.
-    private func replaceFieldSpan(
-        location: Int,
-        length: Int,
-        with replacement: String,
-        expectedValue: String,
-        preferredAppPID: pid_t?
-    ) -> String? {
-#if DEBUG
-        if let debugSpanReplacer {
-            return debugSpanReplacer(location, length, replacement, preferredAppPID)
-        }
-#endif
-        guard isAccessibilityTrusted,
-              let element = resolvedAccessibilityInsertionTarget(preferredAppPID: preferredAppPID),
-              let currentValue = readElementValue(in: element)
-        else {
-            return nil
-        }
-
-        // Defense-in-depth against focus moving to a DIFFERENT field between
-        // the sweep's verification read and this write: the target element is
-        // re-resolved here, so re-assert it still holds the verified content
-        // before writing into it.
-        guard currentValue == expectedValue else {
-            return nil
-        }
-
-        let replaced = replaceSpanInString(
-            currentValue, location: location, length: length, with: replacement
-        )
-
-        guard AXUIElementSetAttributeValue(
-            element, kAXValueAttribute as CFString, replaced as CFTypeRef
-        ) == .success else {
-            return nil
-        }
-
-        moveCursor(in: element,
-                   to: min(location + (replacement as NSString).length,
-                           (replaced as NSString).length))
-        return replaced
-    }
-
-    /// Sets the field's selection to `[location, location + length)`. Used by
-    /// the sweep's select-then-Cmd+V fallback when a value-write does not verify.
-    private func setFieldSelection(
-        location: Int,
-        length: Int,
-        preferredAppPID: pid_t?
-    ) -> Bool {
-#if DEBUG
-        if let debugSelectionSetter {
-            return debugSelectionSetter(location, length, preferredAppPID)
-        }
-#endif
-        guard isAccessibilityTrusted,
-              let element = resolvedAccessibilityInsertionTarget(preferredAppPID: preferredAppPID)
-        else {
-            return false
-        }
-        var range = CFRange(location: location, length: length)
-        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
-        return AXUIElementSetAttributeValue(
-            element, kAXSelectedTextRangeAttribute as CFString, rangeValue
-        ) == .success
-    }
-
-    /// Executes the verified span replacement + select/Cmd+V fallback for the
-    /// sweep. Split out so the main sweep method stays readable.
-    private func applySpanReplacement(
-        replacement: String,
-        location: Int,
-        length: Int,
-        originalFullValue: String,
-        expectedFullValue: String,
-        preferredAppPID: pid_t?
-    ) -> LivePasteSweepOutcome {
-        guard replaceFieldSpan(
-            location: location,
-            length: length,
-            with: replacement,
-            expectedValue: expectedFullValue,
-            preferredAppPID: preferredAppPID
-        ) != nil else {
-            return attemptSelectionPasteFallback(
-                replacement: replacement,
-                location: location,
-                length: length,
-                preferredAppPID: preferredAppPID,
-                failureReason: "AX value-write failed and fallback failed; raw text left intact"
-            )
-        }
-
-        // Verify-after-write: detects silent no-ops in web contenteditable
-        // fields where the value-set appears to succeed but doesn't take.
-        guard let verifiedValue = readFieldValue(preferredAppPID: preferredAppPID) else {
-            return .failed(reason: "AX value-write could not be verified")
-        }
-        if verifiedValue == expectedFullValue {
-            return .applied
-        }
-        guard verifiedValue == originalFullValue else {
-            return .failed(reason: "AX value-write verification returned unexpected field value")
-        }
-
-        // Primary write did not verify. Fall back to selecting the span and
-        // pasting over it only when the re-read proves the field is still at
-        // its original value. If the field is in any other state, another edit
-        // would risk corrupting user text.
-        Log.sweep.notice(
-            "live auto-paste sweep: primary write did not verify; trying select+Cmd+V fallback"
-        )
-        return attemptSelectionPasteFallback(
-            replacement: replacement,
-            location: location,
-            length: length,
-            preferredAppPID: preferredAppPID,
-            failureReason: "primary write did not verify and fallback failed; raw text left intact"
-        )
-    }
-
-    private func attemptSelectionPasteFallback(
-        replacement: String,
-        location: Int,
-        length: Int,
-        preferredAppPID: pid_t?,
-        failureReason: String
-    ) -> LivePasteSweepOutcome {
-        if setFieldSelection(location: location, length: length, preferredAppPID: preferredAppPID),
-           pasteUsingCommandV(replacement, preferredAppPID: preferredAppPID) {
-            return .applied
-        }
-        return .failed(reason: failureReason)
-    }
-
     // MARK: - Low-level AX Helpers
-
-    private func readElementValue(in element: AXUIElement) -> String? {
-        var valueObject: AnyObject?
-        let status = AXUIElementCopyAttributeValue(
-            element, kAXValueAttribute as CFString, &valueObject
-        )
-        guard status == .success else { return nil }
-        return valueObject as? String
-    }
 
     private func readSelectedTextRangeLocation(in element: AXUIElement) -> Int? {
         var rangeObject: CFTypeRef?
@@ -836,28 +680,39 @@ final class TextInsertionService {
         return range.location
     }
 
-    private func moveCursor(in element: AXUIElement, to location: Int) {
-        var cursorRange = CFRange(location: location, length: 0)
-        if let newSelection = AXValueCreate(.cfRange, &cursorRange) {
-            _ = AXUIElementSetAttributeValue(
-                element, kAXSelectedTextRangeAttribute as CFString, newSelection
-            )
+    private func postBackspaceEvents(count: Int) -> Bool {
+#if DEBUG
+        if let debugBackspacePoster {
+            return debugBackspacePoster(count)
         }
-    }
+#endif
+        guard count > 0 else { return true }
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            return false
+        }
 
-    /// Pure helper: replaces `[location, location+length)` in `value` (treated
-    /// as an NSString for UTF-16 offset parity with the AX API) with
-    /// `replacement`, clamping the range to the string bounds.
-    private func replaceSpanInString(
-        _ value: String, location: Int, length: Int, with replacement: String
-    ) -> String {
-        let nsValue = value as NSString
-        let safeLocation = min(max(0, location), nsValue.length)
-        let safeLength = min(max(0, length), nsValue.length - safeLocation)
-        return nsValue.replacingCharacters(
-            in: NSRange(location: safeLocation, length: safeLength),
-            with: replacement
-        )
+        for _ in 0 ..< count {
+            guard let keyDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 51,
+                keyDown: true
+            ),
+                  let keyUp = CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 51,
+                    keyDown: false
+                  )
+            else {
+                return false
+            }
+
+            keyDown.flags = []
+            keyUp.flags = []
+            keyDown.post(tap: .cgAnnotatedSessionEventTap)
+            keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        }
+
+        return true
     }
 
     private func postUnicodeTextEvents(_ text: String) -> Bool {
@@ -986,12 +841,16 @@ extension TextInsertionService {
 
     func debugConfigureInsertionHooks(
         unicodePoster: ((String) -> Bool)? = nil,
+        backspacePoster: ((Int) -> Bool)? = nil,
         modifierStateReader: (() -> Bool)? = nil,
-        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil
+        accessibilityInserter: ((String, pid_t?) -> Bool)? = nil,
+        caretLocationReader: ((pid_t?) -> Int?)? = nil
     ) {
         debugUnicodePoster = unicodePoster
+        debugBackspacePoster = backspacePoster
         debugModifierStateReader = modifierStateReader
         debugAccessibilityInserter = accessibilityInserter
+        debugCaretLocationReader = caretLocationReader
     }
 
     func debugInsertionSnapshot() -> DebugInsertionSnapshot {
@@ -1003,35 +862,14 @@ extension TextInsertionService {
         )
     }
 
-    /// Configures DEBUG-only hooks that back the sweep's Accessibility
-    /// operations. When set, the sweep's caret read / field read / span
-    /// replace / selection set route through these closures instead of real
-    /// AX, so tests can model a target field and exercise the decision logic
-    /// and span arithmetic headlessly. Pass `nil` for any hook to restore real
-    /// AX behavior for that operation.
-    func debugConfigureSweepHooks(
-        caretLocationReader: ((pid_t?) -> Int?)? = nil,
-        fieldReader: ((pid_t?) -> String?)? = nil,
-        spanReplacer: ((Int, Int, String, pid_t?) -> String?)? = nil,
-        selectionSetter: ((Int, Int, pid_t?) -> Bool)? = nil,
-        clearExisting: Bool = true
-    ) {
-        if clearExisting {
-            debugCaretLocationReader = nil
-            debugFieldReader = nil
-            debugSpanReplacer = nil
-            debugSelectionSetter = nil
-        }
-        if let caretLocationReader { debugCaretLocationReader = caretLocationReader }
-        if let fieldReader { debugFieldReader = fieldReader }
-        if let spanReplacer { debugSpanReplacer = spanReplacer }
-        if let selectionSetter { debugSelectionSetter = selectionSetter }
-    }
-
     /// Test-only accessor for the live session span bookkeeping.
     func debugLiveSessionSpanSnapshot() -> (startCaret: Int, insertedLength: Int)? {
         guard let span = liveSessionSpan else { return nil }
         return (span.startCaretLocation, span.insertedUTF16Length)
+    }
+
+    var debugLiveReplacementCorrectorIsActive: Bool {
+        liveReplacementCorrector?.isStandingDown == false
     }
 }
 #endif

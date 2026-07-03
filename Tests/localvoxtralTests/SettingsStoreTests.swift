@@ -329,22 +329,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(reloadedStore.replacementDictionaryEnabled)
     }
 
-    // MARK: - liveAutoPastePostProcessingEnabled
-
-    func testLiveAutoPastePostProcessingEnabled_defaultsToFalse() {
-        let store = makeStore()
-
-        XCTAssertFalse(store.liveAutoPastePostProcessingEnabled)
-    }
-
-    func testLiveAutoPastePostProcessingEnabled_persistsAcrossReload() {
-        let store = makeStore()
-        store.liveAutoPastePostProcessingEnabled = true
-
-        let reloadedStore = makeStore()
-        XCTAssertTrue(reloadedStore.liveAutoPastePostProcessingEnabled)
-    }
-
     // MARK: - debugLogRealtimeDeltas (issue #13 instrumentation)
 
     func testDebugLogRealtimeDeltas_defaultsToFalse() {

@@ -145,19 +145,7 @@ extension DictationViewModel {
                 startOverlayBufferSession()
             } else {
                 overlayBufferCoordinator.reset()
-                if settings.liveAutoPastePostProcessingEnabled {
-                    // Live Auto-Paste: latch the original target app PID and
-                    // begin tracking the insertion span so the post-session
-                    // dictionary sweep can locate and revise the live-inserted
-                    // text on stop. Both degrade to safe no-ops (nil span) if
-                    // AX cannot read the caret at session start.
-                    overlayBufferCoordinator.captureLiveCommitTargetAppPID()
-                    textInsertion.beginLiveSessionSpan(
-                        preferredAppPID: overlayBufferCoordinator.commitTargetAppPID
-                    )
-                } else {
-                    textInsertion.endLiveSessionSpan()
-                }
+                configureLiveAutoPasteReplacementCorrectorForSession()
             }
             healthMonitor.start(microphone: microphone, callbacks: makeHealthMonitorCallbacks())
         } catch {
@@ -516,12 +504,7 @@ extension DictationViewModel {
         let capturedProvider = sessionProvider?.rawValue ?? settings.realtimeProvider.rawValue
         let capturedModel = sessionModelName ?? settings.effectiveModelName
         let capturedOutputMode = sessionMode.rawValue
-        // Stage 1 (issue #23): dictionary-only post-session sweep runs before
-        // cleanup so the tracked insertion span / target PID are still
-        // available. The sweep is a safe no-op unless the setting is enabled,
-        // the dictionary has entries, the span was tracked, and the field
-        // content at the span verifies — it never corrupts user text.
-        performLiveAutoPasteDictionarySweep()
+        textInsertion.flushFinalLiveReplacementCorrections()
         completeStoppedSessionCleanup(
             sessionMode: sessionMode,
             overlayCommitOutcome: nil,
@@ -542,53 +525,22 @@ extension DictationViewModel {
         )
     }
 
-    /// Issue #23 Stage 1: applies the replacement dictionary to the text that
-    /// was live-inserted this session and revises the target field in place.
-    /// Dictionary-only (no LLM), synchronous, opt-in via
-    /// `liveAutoPastePostProcessingEnabled`, and conservatively no-ops on any
-    /// safety check failure. `currentDictationEventText` is intentionally left
-    /// as the raw spoken text (per the design doc) so the session record stays
-    /// an accurate account of what was said.
-    private func performLiveAutoPasteDictionarySweep() {
-        guard settings.liveAutoPastePostProcessingEnabled else { return }
-        guard let span = textInsertion.liveSessionSpanSnapshot else {
-            Log.sweep.notice(
-                "live auto-paste sweep skipped: session span was not tracked"
-            )
+    func configureLiveAutoPasteReplacementCorrectorForSession() {
+        guard isLiveAutoPasteModeEnabled else {
+            textInsertion.endLiveReplacementSession()
             return
         }
-        let rawText = currentDictationEventText
-        guard !rawText.isEmpty else { return }
+        guard settings.replacementDictionaryEnabled else {
+            textInsertion.endLiveReplacementSession()
+            return
+        }
 
+        overlayBufferCoordinator.captureLiveCommitTargetAppPID()
         let dictionary = appConfigStore.loadReplacementDictionary()
-        guard !dictionary.entries.isEmpty else {
-            Log.sweep.notice(
-                "live auto-paste sweep skipped: replacement dictionary has no entries"
-            )
-            return
-        }
-
-        let processedText = dictionary.apply(to: rawText)
-        guard processedText != rawText else {
-            Log.sweep.info("live auto-paste sweep skipped: dictionary made no changes")
-            return
-        }
-
-        let outcome = textInsertion.performLiveAutoPasteSweep(
-            rawText: rawText,
-            processedText: processedText,
-            startCaret: span.startCaret,
-            insertedUTF16Length: span.insertedLength,
-            preferredAppPID: span.preferredAppPID
+        textInsertion.beginLiveReplacementSession(
+            dictionary: dictionary,
+            preferredAppPID: overlayBufferCoordinator.commitTargetAppPID
         )
-        switch outcome {
-        case .applied:
-            Log.sweep.info("live auto-paste sweep applied")
-        case .skipped(let reason):
-            Log.sweep.notice("live auto-paste sweep skipped: \(reason, privacy: .public)")
-        case .failed(let reason):
-            Log.sweep.notice("live auto-paste sweep failed: \(reason, privacy: .public)")
-        }
     }
 
     private func completeStoppedSessionCleanup(
@@ -614,7 +566,7 @@ extension DictationViewModel {
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
-        textInsertion.endLiveSessionSpan()
+        textInsertion.endLiveReplacementSession()
 
         if sessionMode == .liveAutoPaste, textInsertion.hasPendingInsertionText {
             lastError = "Some realtime text could not be inserted into the focused app."
@@ -722,7 +674,7 @@ extension DictationViewModel {
         microphone.stop()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
-        textInsertion.endLiveSessionSpan()
+        textInsertion.endLiveReplacementSession()
         overlayBufferCoordinator.reset()
         if disconnectSocket {
             realtimeAPIClient.disconnect()

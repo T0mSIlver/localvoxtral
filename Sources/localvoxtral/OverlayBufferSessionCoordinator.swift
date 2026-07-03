@@ -43,10 +43,10 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     func commitIfNeeded(using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool) -> OverlayBufferCommitOutcome
     func dismissAfterHold(minimumVisibility: TimeInterval)
     func reset()
-    /// Latches the frontmost non-self app PID for use as a commit/sweep target,
+    /// Latches the frontmost non-self app PID for use as a commit/correction target,
     /// without starting an overlay session. Used by Live Auto-Paste mode to
     /// capture the original target app at session start so the post-session
-    /// dictionary sweep can re-target it even if focus moved.
+    /// live replacement guard can re-target it even if focus moved.
     func captureLiveCommitTargetAppPID()
     var commitTargetAppPID: pid_t? { get }
 }
