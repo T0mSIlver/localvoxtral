@@ -643,6 +643,10 @@ extension DictationViewModel {
         clearPushToTalkShortcutSessionAttempt()
         isConnectingRealtimeSession = false
         isDictating = false
+        // An aborted connect never reaches stopped-session cleanup, so the
+        // cancellation flag must be cleared here or it leaks into the next
+        // session and silently skips its overlay commit.
+        wasCancelled = false
         EscapeCancelHandler.isDictatingRef = false
         escapeCancelHandler.stop()
         isAwaitingMicrophonePermission = false

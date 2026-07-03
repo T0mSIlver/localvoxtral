@@ -719,6 +719,37 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertGreaterThan(EscapeCancelHandler.stopCallCount, stopCountBefore)
     }
 
+    func testCancelWhileConnectingDoesNotLeakCancellationIntoNextSession() {
+        // Cancelling during the connecting phase routes through
+        // abortConnectingSession(), which never reaches stopped-session cleanup.
+        // A leaked wasCancelled would make the NEXT session silently skip
+        // segment promotion and the overlay commit, losing that dictation.
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.cancelDictation()
+        XCTAssertFalse(viewModel.wasCancelled)
+
+        // Next session: a normal stop must still promote and commit.
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello"
+        viewModel.pendingSegmentText = " world"
+
+        viewModel.finishStoppedSession(promotePendingSegment: true)
+
+        XCTAssertEqual(viewModel.currentDictationEventText, "hello\nworld")
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+    }
+
     func testCancelledOverlaySessionSkipsSegmentPromotionAndCommit() {
         // A cancelled overlay session must not promote the pending segment into
         // the buffer, must not commit/insert anything, and must reset the overlay
