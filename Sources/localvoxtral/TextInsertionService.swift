@@ -676,6 +676,7 @@ final class TextInsertionService {
         location: Int,
         length: Int,
         with replacement: String,
+        expectedValue: String,
         preferredAppPID: pid_t?
     ) -> String? {
 #if DEBUG
@@ -687,6 +688,14 @@ final class TextInsertionService {
               let element = resolvedAccessibilityInsertionTarget(preferredAppPID: preferredAppPID),
               let currentValue = readElementValue(in: element)
         else {
+            return nil
+        }
+
+        // Defense-in-depth against focus moving to a DIFFERENT field between
+        // the sweep's verification read and this write: the target element is
+        // re-resolved here, so re-assert it still holds the verified content
+        // before writing into it.
+        guard currentValue == expectedValue else {
             return nil
         }
 
@@ -744,6 +753,7 @@ final class TextInsertionService {
             location: location,
             length: length,
             with: replacement,
+            expectedValue: expectedFullValue,
             preferredAppPID: preferredAppPID
         ) != nil else {
             return attemptSelectionPasteFallback(
