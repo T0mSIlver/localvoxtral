@@ -130,6 +130,14 @@ final class DictationViewModel {
     var livePartialText = ""
     var statusText = StatusStrings.ready
     var lastError: String?
+    // Raw message from the most recent websocket .error event this session.
+    // Kept separate from lastError, which holds user-facing UI state (e.g. the
+    // Accessibility warning) that must never leak into connection-failure details.
+    var lastSocketErrorMessage: String?
+    #if DEBUG
+    // Test seam: technicalDetails otherwise only reaches the log and the alert.
+    var debugLastConnectFailureTechnicalDetails: String?
+    #endif
     var lastFinalSegment = ""
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""

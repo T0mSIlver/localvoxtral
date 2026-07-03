@@ -53,7 +53,7 @@ extension DictationViewModel {
         cancelConnectTimeout()
         if isConnectingRealtimeSession {
             abortConnectingSession(disconnectSocket: false)
-            handleConnectFailure(reason: .socketError(message: lastError))
+            handleConnectFailure(reason: .socketError(message: lastSocketErrorMessage))
             return
         }
 
@@ -199,6 +199,7 @@ extension DictationViewModel {
     }
 
     private func handleErrorEvent(_ message: String) {
+        lastSocketErrorMessage = message
         if isConnectingRealtimeSession {
             abortConnectingSession()
             handleConnectFailure(reason: .socketError(message: message))

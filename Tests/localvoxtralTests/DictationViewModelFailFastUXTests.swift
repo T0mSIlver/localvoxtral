@@ -107,6 +107,27 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.liveAutoPasteAccessibilityWarning)
     }
 
+    func testErrorlessDisconnectDoesNotLeakUIErrorIntoFailureDetails() {
+        // A handshake that closes without a websocket .error event classifies
+        // from lastSocketErrorMessage (nil here), never from lastError, which
+        // may hold unrelated UI state such as the Accessibility warning.
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
+        viewModel.activeClientSource = .realtimeAPI
+        viewModel.isConnectingRealtimeSession = true
+
+        viewModel.handle(event: .disconnected, source: .realtimeAPI)
+
+        XCTAssertFalse(
+            viewModel.debugLastConnectFailureTechnicalDetails?.contains("Accessibility") == true,
+            "failure details must not embed the AX warning, got: \(viewModel.debugLastConnectFailureTechnicalDetails ?? "nil")"
+        )
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
     func testWarningIsRecognizedAsAccessibilityErrorToken() {
         // Ensures the existing onAccessibilityTrustChanged callback (which clears
         // lastError when currentErrorToken == .accessibilityPermissionRequired)

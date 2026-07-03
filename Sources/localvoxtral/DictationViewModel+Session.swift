@@ -38,6 +38,7 @@ extension DictationViewModel {
     }
 
     func beginDictationSession() {
+        lastSocketErrorMessage = nil
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         stopFinalizationTask?.cancel()
@@ -802,6 +803,9 @@ extension DictationViewModel {
         // Surface the actionable, endpoint-naming message as the primary error so
         // it is visible in the popover; keep the raw system error for logs/alert.
         lastError = description.message
+        #if DEBUG
+        debugLastConnectFailureTechnicalDetails = description.technicalDetails
+        #endif
         logConnectionFailure(
             message: description.message,
             technicalDetails: description.technicalDetails
