@@ -354,6 +354,7 @@ final class DictationViewModel {
         hotKeyManager.onPress = { [weak self] in self?.handleDictationShortcutPress() }
         hotKeyManager.onRelease = { [weak self] in self?.handleDictationShortcutRelease() }
         hotKeyManager.onHoldStart = { [weak self] in self?.handleModifierOnlyHoldStart() }
+        hotKeyManager.onModifierOnlyTap = { [weak self] mode in self?.handleModifierOnlyTap(mode: mode) }
         if startRuntimeServices {
             registerCurrentHotKeys()
         }
@@ -525,8 +526,11 @@ final class DictationViewModel {
     // MARK: - Public API
 
     private func handleDictationShortcutPress(mode: DictationOutputMode? = nil) {
-        // If a mode is specified by the shortcut, pre-set it so startDictation uses it.
-        if let mode {
+        // If a mode is specified by the shortcut, pre-set it so startDictation
+        // uses it — but never while a session is active: the stop half of a
+        // toggle finalizes using sessionOutputMode, and overwriting it here
+        // would finalize the running session down the wrong mode's path.
+        if let mode, !isDictating, !isConnectingRealtimeSession, !isFinalizingStop {
             sessionOutputMode = mode
         }
 
@@ -599,16 +603,30 @@ final class DictationViewModel {
 
     /// Modifier-only hold gesture started — use push-to-talk semantics with live auto-paste.
     private func handleModifierOnlyHoldStart() {
+        // Nothing may be mutated while a session is already active: a stray
+        // hold during an overlay session would otherwise rewrite
+        // sessionOutputMode and finalize that session down the live path.
+        guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
         sessionOutputMode = .liveAutoPaste
         isModifierOnlyHoldActive = true
         isPushToTalkShortcutHeld = true
-        guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop else { return }
         hasActivePushToTalkShortcutSession = true
         startDictation()
         if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
             hasActivePushToTalkShortcutSession = false
             isModifierOnlyHoldActive = false
+            isPushToTalkShortcutHeld = false
         }
+    }
+
+    /// Modifier-only TAP is a toggle by contract regardless of the configured
+    /// shortcut behavior: taps have no release event, so routing them through
+    /// push-to-talk semantics latches dictation on with no way to stop it.
+    private func handleModifierOnlyTap(mode: DictationOutputMode) {
+        if !isDictating, !isConnectingRealtimeSession, !isFinalizingStop {
+            sessionOutputMode = mode
+        }
+        toggleDictation()
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
@@ -1104,6 +1122,18 @@ extension DictationViewModel {
 
     func debugHandleDictationShortcutReleaseForTesting() {
         handleDictationShortcutRelease()
+    }
+
+    func debugHandleModifierOnlyTapForTesting(mode: DictationOutputMode) {
+        handleModifierOnlyTap(mode: mode)
+    }
+
+    func debugHandleModifierOnlyHoldStartForTesting() {
+        handleModifierOnlyHoldStart()
+    }
+
+    var debugIsPushToTalkShortcutHeldForTesting: Bool {
+        isPushToTalkShortcutHeld
     }
 
     func debugSetPushToTalkShortcutStateForTesting(

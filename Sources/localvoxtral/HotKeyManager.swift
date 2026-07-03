@@ -43,6 +43,12 @@ final class HotKeyManager {
     /// Signals push-to-talk semantics with liveAutoPaste mode.
     var onHoldStart: (() -> Void)?
 
+    /// Fired for a modifier-only TAP. Distinct from onPress/onPressWithMode
+    /// because taps carry no release event: the consumer must treat them as a
+    /// toggle regardless of the configured shortcut behavior, or push-to-talk
+    /// semantics latch dictation on.
+    var onModifierOnlyTap: ((DictationOutputMode) -> Void)?
+
     private var hotKeyRefs: [UInt32: EventHotKeyRef] = [:]
     private var hotKeyHandlerRef: EventHandlerRef?
     private static let hotKeySignature = OSType(0x53565854) // SVXT
@@ -79,7 +85,9 @@ final class HotKeyManager {
         candidateManager.holdThresholdSeconds = holdThreshold
         candidateManager.onTap = { [weak self] in
             guard let self else { return }
-            if self.onPressWithMode != nil {
+            if let onModifierOnlyTap = self.onModifierOnlyTap {
+                onModifierOnlyTap(.overlayBuffer)
+            } else if self.onPressWithMode != nil {
                 self.onPressWithMode?(.overlayBuffer)
             } else {
                 self.onPress?()
@@ -283,7 +291,13 @@ final class HotKeyManager {
         let installStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, eventRef, _ in
-                guard let eventRef else { return noErr }
+                // Returning noErr marks a Carbon event as HANDLED and stops
+                // propagation — EscapeCancelHandler shares this event target,
+                // so any hotkey that is not ours must be passed on with
+                // eventNotHandledErr or Escape-cancel goes dead whenever this
+                // handler ends up earlier in the chain (see #41 for the
+                // mirror-image bug).
+                guard let eventRef else { return OSStatus(eventNotHandledErr) }
 
                 var hotKeyID = EventHotKeyID()
                 let status = GetEventParameter(
@@ -299,7 +313,7 @@ final class HotKeyManager {
                 guard status == noErr,
                       hotKeyID.signature == HotKeyManager.hotKeySignature
                 else {
-                    return noErr
+                    return OSStatus(eventNotHandledErr)
                 }
 
                 let eventKind = GetEventKind(eventRef)
