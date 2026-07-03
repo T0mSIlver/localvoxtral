@@ -107,10 +107,9 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         XCTAssertEqual(harness.events.value, [.type("hello ")])
     }
 
-    func testCorrectorStandsDownAfterCaretDivergence() {
+    func testCorrectorDefersWhenCaretHasNotSettled() async {
         let field = TestField("")
         let events = Box<[InsertionEvent]>([])
-        var caretReadCount = 0
         let harness = makeHarness(
             dictionary: ReplacementDictionary(entries: [
                 ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
@@ -118,21 +117,148 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             field: field,
             events: events,
             caretLocationReader: { _ in
-                caretReadCount += 1
-                if caretReadCount == 1 { return 0 }
+                if field.value.isEmpty { return 0 }
                 return max(0, (field.value as NSString).length - 1)
+            },
+            liveReplacementSettleSleep: {}
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+
+        XCTAssertEqual(harness.field.value, "voxtral ")
+        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectionIsInFlight)
+
+        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
+    }
+
+    func testCorrectorStandsDownAfterCaretSettleTimeout() async {
+        let field = TestField("")
+        let events = Box<[InsertionEvent]>([])
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            field: field,
+            events: events,
+            caretLocationReader: { _ in
+                if field.value.isEmpty { return 0 }
+                return max(0, (field.value as NSString).length - 1)
+            },
+            liveReplacementSettleSleep: {}
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertEqual(harness.field.value, "voxtral ")
+        XCTAssertEqual(harness.events.value, [
+            .type("voxtral "),
+        ])
+        XCTAssertFalse(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
+    }
+
+    func testCorrectorWaitsForLaggedCaretAndThenCorrects() async {
+        let field = TestField("")
+        var staleReadsRemaining = 3
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            field: field,
+            caretLocationReader: { _ in
+                let currentLocation = (field.value as NSString).length
+                guard currentLocation > 0, staleReadsRemaining > 0 else {
+                    return currentLocation
+                }
+                staleReadsRemaining -= 1
+                return 0
+            },
+            liveReplacementSettleSleep: {}
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+
+        XCTAssertEqual(harness.field.value, "voxtral ")
+        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectionIsInFlight)
+
+        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        XCTAssertEqual(harness.events.value, [
+            .type("voxtral "),
+            .backspace(8),
+            .type("localvoxtral "),
+        ])
+        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
+    }
+
+    func testDeltasArrivingDuringInFlightCorrectionAreBufferedUntilAfterCorrection() async {
+        let field = TestField("")
+        var staleReadsRemaining = 3
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            field: field,
+            caretLocationReader: { _ in
+                let currentLocation = (field.value as NSString).length
+                guard currentLocation > 0, staleReadsRemaining > 0 else {
+                    return currentLocation
+                }
+                staleReadsRemaining -= 1
+                return 0
+            },
+            liveReplacementSettleSleep: {}
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        harness.viewModel.textInsertion.enqueueRealtimeInsertion("next ")
+
+        XCTAssertEqual(harness.field.value, "voxtral ")
+        XCTAssertEqual(harness.events.value, [.type("voxtral ")])
+
+        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertEqual(harness.field.value, "localvoxtral next ")
+        XCTAssertEqual(harness.events.value, [
+            .type("voxtral "),
+            .backspace(8),
+            .type("localvoxtral "),
+            .type("next "),
+        ])
+    }
+
+    func testFailedReplacementRetypesOriginalTextBeforeStandingDown() {
+        let field = TestField("")
+        let events = Box<[InsertionEvent]>([])
+        var replacementFailuresRemaining = 1
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            field: field,
+            events: events,
+            unicodePoster: { chunk in
+                if chunk == "localvoxtral ", replacementFailuresRemaining > 0 {
+                    replacementFailuresRemaining -= 1
+                    return false
+                }
+                events.value.append(.type(chunk))
+                field.value.append(chunk)
+                return true
             }
         )
 
         harness.viewModel.handle(event: .partialTranscript("voxtral "))
-        harness.viewModel.handle(event: .partialTranscript("voxtral "))
 
-        XCTAssertEqual(harness.field.value, "voxtral voxtral ")
+        XCTAssertEqual(harness.field.value, "voxtral ")
         XCTAssertEqual(harness.events.value, [
             .type("voxtral "),
+            .backspace(8),
             .type("voxtral "),
         ])
         XCTAssertFalse(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
+        XCTAssertEqual(replacementFailuresRemaining, 0)
     }
 
     func testBackspaceCountUsesGraphemeCountForEmojiMatch() {
@@ -217,7 +343,10 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         configStore: MockAppConfigStore? = nil,
         field: TestField = TestField(""),
         events: Box<[InsertionEvent]> = Box([]),
-        caretLocationReader: ((pid_t?) -> Int?)? = nil
+        caretLocationReader: ((pid_t?) -> Int?)? = nil,
+        unicodePoster: ((String) -> Bool)? = nil,
+        backspacePoster: ((Int) -> Bool)? = nil,
+        liveReplacementSettleSleep: (() async -> Void)? = nil
     ) -> (
         viewModel: DictationViewModel,
         field: TestField,
@@ -243,12 +372,12 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         Self.retainedViewModels.append(viewModel)
 
         viewModel.textInsertion.debugConfigureInsertionHooks(
-            unicodePoster: { chunk in
+            unicodePoster: unicodePoster ?? { chunk in
                 events.value.append(.type(chunk))
                 field.value.append(chunk)
                 return true
             },
-            backspacePoster: { count in
+            backspacePoster: backspacePoster ?? { count in
                 events.value.append(.backspace(count))
                 for _ in 0 ..< count {
                     if !field.value.isEmpty {
@@ -259,7 +388,8 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             },
             modifierStateReader: { false },
             accessibilityInserter: { _, _ in false },
-            caretLocationReader: caretLocationReader ?? { _ in (field.value as NSString).length }
+            caretLocationReader: caretLocationReader ?? { _ in (field.value as NSString).length },
+            liveReplacementSettleSleep: liveReplacementSettleSleep
         )
 
         viewModel.sessionOutputMode = .liveAutoPaste

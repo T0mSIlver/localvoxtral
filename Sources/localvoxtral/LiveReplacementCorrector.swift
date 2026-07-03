@@ -1,6 +1,6 @@
 import Foundation
 
-struct LiveReplacementCorrection {
+struct LiveReplacementCorrection: Sendable {
     let erasedText: String
     let replacementText: String
     let backspaceCount: Int
@@ -135,6 +135,11 @@ struct LiveReplacementCorrector {
                 return LiveReplacementCorrection(
                     erasedText: erasedText,
                     replacementText: rule.replaceWith + boundaryText,
+                    // Keyboard backspace is counted by grapheme so composed
+                    // characters are erased as users expect in native fields.
+                    // Some web/Electron controls delete by UTF-16 unit instead;
+                    // the next caret-guard check catches that mismatch and
+                    // disables further live corrections for the session.
                     backspaceCount: erasedText.count,
                     startOffset: matchStartOffset,
                     endOffset: boundaryEndOffset
