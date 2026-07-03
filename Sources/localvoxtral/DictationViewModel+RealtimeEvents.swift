@@ -137,6 +137,13 @@ extension DictationViewModel {
         let finalizedSegment = resolvedFinalizedSegment(from: processedText)
         let hadLiveDelta = !pendingSegmentText.trimmed.isEmpty
             || !livePartialText.trimmed.isEmpty
+        // Text already typed into the field by the live partial path. Derived
+        // from the same state the `hadLiveDelta` guard reads (accumulated
+        // pending text, with live-partial text as fallback) so it cannot drift
+        // from a parallel bookkeeping. Captured before the reset below.
+        let liveInsertedText = pendingSegmentText.trimmed.isEmpty
+            ? livePartialText
+            : pendingSegmentText
         guard !finalizedSegment.isEmpty else {
             livePartialText = ""
             pendingSegmentText = ""
@@ -154,8 +161,23 @@ extension DictationViewModel {
         pendingSegmentText = ""
         statusText = activeStatusText
 
-        if !hadLiveDelta, isLiveAutoPasteModeEnabled {
-            textInsertion.enqueueRealtimeInsertion(finalizedSegment)
+        if isLiveAutoPasteModeEnabled {
+            if !hadLiveDelta {
+                // No partials were typed live: insert the whole segment.
+                textInsertion.enqueueRealtimeInsertion(finalizedSegment)
+            } else if let liveSuffix = TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: processedText,
+                liveInsertedText: liveInsertedText
+            ) {
+                // Partials were already typed live and the final is a pure
+                // extension of them (e.g. a trailing "." that only arrived in
+                // the final): insert only the missing suffix so the trailing
+                // addition reaches the field without duplicating earlier text.
+                // When the final revises earlier content the helper returns nil
+                // and nothing is inserted — live mode cannot rewrite already
+                // typed text.
+                textInsertion.enqueueRealtimeInsertion(liveSuffix)
+            }
             if let accessibilityError = textInsertion.lastAccessibilityError {
                 lastError = accessibilityError
             }

@@ -180,19 +180,77 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 
     // MARK: - Final transcript vs live deltas
 
-    func testFinalTranscriptDoesNotDoubleInsertWhenLiveDeltasAlreadyInserted() {
-        // When partials have already been typed live, the final transcript is
-        // folded into the running event text but is NOT re-inserted (avoids
-        // duplication). The live field therefore equals the partial stream.
+    func testFinalTranscriptInsertsTrailingPunctuationSuffixFromPureExtension() {
+        // Regression for the trailing-punctuation finding from issue #13's
+        // investigation: partials typed "sparisce" live, then the final
+        // delivers the trailing "." that never came as a partial delta. The
+        // final is a *pure extension* of the live-typed text, so the missing
+        // suffix (".") is inserted into the field — without duplicating the
+        // "sparisce" that is already there. Previously the `hadLiveDelta`
+        // guard skipped re-insertion entirely and the field ended "sparisce".
         let viewModel = makeViewModel()
         sendPartials(["sparisce"], to: viewModel)
         XCTAssertEqual(insertedChunks, ["sparisce"])
 
         viewModel.handle(event: .finalTranscript("sparisce."))
 
-        // No additional insertion beyond the live partial.
-        XCTAssertEqual(insertedChunks, ["sparisce"])
+        XCTAssertEqual(insertedChunks, ["sparisce", "."])
         XCTAssertEqual(viewModel.currentDictationEventText, "sparisce.")
+        XCTAssertEqual(viewModel.pendingSegmentText, "")
+    }
+
+    func testFinalTranscriptInsertsMultiCharSuffixFromPureExtension() {
+        // A multi-char trailing addition (", right?") that only arrives in the
+        // final is inserted as the missing suffix.
+        let viewModel = makeViewModel()
+        sendPartials(["you are", " right"], to: viewModel)
+        XCTAssertEqual(insertedChunks, ["you are", " right"])
+
+        viewModel.handle(event: .finalTranscript("you are right, right?"))
+
+        XCTAssertEqual(insertedChunks, ["you are", " right", ", right?"])
+        XCTAssertEqual(viewModel.currentDictationEventText, "you are right, right?")
+        XCTAssertEqual(viewModel.pendingSegmentText, "")
+    }
+
+    func testFinalTranscriptThatRevisesLiveTextIsNotInserted() {
+        // When the final REVISES earlier content (not a pure extension — here
+        // the spelling "sparisce" is corrected to "sparisci"), live mode
+        // cannot rewrite already-typed text, so nothing extra is inserted.
+        // Today's behavior is preserved (issue #23's territory).
+        let viewModel = makeViewModel()
+        sendPartials(["sparisce"], to: viewModel)
+        XCTAssertEqual(insertedChunks, ["sparisce"])
+
+        viewModel.handle(event: .finalTranscript("sparisci."))
+
+        // The field keeps the live-typed text; no extra chunk is inserted.
+        XCTAssertEqual(insertedChunks, ["sparisce"])
+        XCTAssertEqual(viewModel.pendingSegmentText, "")
+    }
+
+    func testEmptyFinalTranscriptWithNoLiveDeltasInsertsNothing() {
+        // No partials and an empty final: nothing is ever inserted.
+        let viewModel = makeViewModel()
+
+        viewModel.handle(event: .finalTranscript(""))
+
+        XCTAssertEqual(insertedChunks, [])
+        XCTAssertEqual(viewModel.currentDictationEventText, "")
+        XCTAssertEqual(viewModel.pendingSegmentText, "")
+    }
+
+    func testFinalTranscriptIdenticalToLiveTextIsNoOp() {
+        // Final equals the already-typed live text: the missing suffix is
+        // empty, so nothing is inserted (no-op, no duplication).
+        let viewModel = makeViewModel()
+        sendPartials(["sparisce"], to: viewModel)
+        XCTAssertEqual(insertedChunks, ["sparisce"])
+
+        viewModel.handle(event: .finalTranscript("sparisce"))
+
+        XCTAssertEqual(insertedChunks, ["sparisce"])
+        XCTAssertEqual(viewModel.currentDictationEventText, "sparisce")
         XCTAssertEqual(viewModel.pendingSegmentText, "")
     }
 }

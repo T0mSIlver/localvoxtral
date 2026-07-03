@@ -418,4 +418,110 @@ final class TextMergingAlgorithmsTests: XCTestCase {
         // Apostrophe glues (no leading space) so elisions like "l'acqua" form.
         XCTAssertTrue(TextMergingAlgorithms.shouldAvoidLeadingSpace(before: "'"))
     }
+
+    // MARK: - livePasteExtensionSuffix
+
+    func testLivePasteExtensionSuffix_trailingPeriod() {
+        // "sparisce" typed live, final "sparisce." is a pure extension → ".".
+        XCTAssertEqual(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce.",
+                liveInsertedText: "sparisce"
+            ),
+            "."
+        )
+    }
+
+    func testLivePasteExtensionSuffix_multiCharSuffix() {
+        // A multi-char trailing addition is returned verbatim.
+        XCTAssertEqual(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "you are right, right?",
+                liveInsertedText: "you are right"
+            ),
+            ", right?"
+        )
+    }
+
+    func testLivePasteExtensionSuffix_identicalReturnsNil() {
+        // Final equals the live text: empty suffix → no-op.
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce",
+                liveInsertedText: "sparisce"
+            )
+        )
+    }
+
+    func testLivePasteExtensionSuffix_revisionReturnsNil() {
+        // The final revises earlier content (not a pure extension) → nil.
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisci.",
+                liveInsertedText: "sparisce"
+            )
+        )
+    }
+
+    func testLivePasteExtensionSuffix_finalShorterThanLiveReturnsNil() {
+        // The final is a prefix of the live text (contraction) → not a pure
+        // extension → nil.
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "spari",
+                liveInsertedText: "sparisce"
+            )
+        )
+    }
+
+    func testLivePasteExtensionSuffix_emptyLiveReturnsNil() {
+        // No live text typed yet: the caller takes the whole-segment path, so a
+        // suffix must not be synthesized here.
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce.",
+                liveInsertedText: ""
+            )
+        )
+    }
+
+    func testLivePasteExtensionSuffix_disjointReturnsNil() {
+        // Final carries only the punctuation (disjoint from the live word) →
+        // not a pure extension → nil (the whole-segment boundary join is a
+        // separate concern handled by resolvedFinalizedSegment).
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: ".",
+                liveInsertedText: "sparisce"
+            )
+        )
+    }
+
+    func testLivePasteExtensionSuffix_trailingWhitespaceInFinalIsNotTyped() {
+        // The finalized-transcript path trims trailing whitespace; the typed
+        // suffix must match, or the field diverges from the transcript.
+        XCTAssertEqual(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce. ",
+                liveInsertedText: "sparisce"
+            ),
+            "."
+        )
+        XCTAssertEqual(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce.\n",
+                liveInsertedText: "sparisce"
+            ),
+            "."
+        )
+    }
+
+    func testLivePasteExtensionSuffix_whitespaceOnlyExtensionReturnsNil() {
+        XCTAssertNil(
+            TextMergingAlgorithms.livePasteExtensionSuffix(
+                finalText: "sparisce ",
+                liveInsertedText: "sparisce"
+            )
+        )
+    }
 }

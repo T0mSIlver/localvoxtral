@@ -103,6 +103,39 @@ enum TextMergingAlgorithms {
         return length
     }
 
+    /// Computes the missing suffix to type into the focused field when a final
+    /// transcript arrives after live partial deltas have already been inserted.
+    ///
+    /// Backends frequently deliver a trailing addition — typically the final
+    /// "." — only in the `.finalTranscript`, never as a partial delta. When the
+    /// final is a *pure extension* of the text already typed live
+    /// (`finalText == liveInsertedText + suffix`, using the same preprocessing
+    /// the live path applies on both sides), this returns exactly that suffix
+    /// so it can be appended to the field without duplicating earlier text.
+    ///
+    /// Returns nil when the final revises earlier content (not a pure
+    /// extension): live mode cannot rewrite already-typed text, so the caller
+    /// keeps today's behavior of inserting nothing. Also returns nil for an
+    /// empty suffix (final identical to the live text), making it a no-op.
+    static func livePasteExtensionSuffix(
+        finalText: String,
+        liveInsertedText: String
+    ) -> String? {
+        // The finalized-transcript path trims surrounding whitespace, so mirror
+        // that here: a final of "hello. " must type "." — never a dangling
+        // space the transcript itself discards.
+        let normalizedFinal = finalText.trimmed
+        guard !liveInsertedText.isEmpty, normalizedFinal.hasPrefix(liveInsertedText) else {
+            return nil
+        }
+        let startIndex = normalizedFinal.index(
+            normalizedFinal.startIndex,
+            offsetBy: liveInsertedText.count
+        )
+        let suffix = String(normalizedFinal[startIndex...])
+        return suffix.isEmpty ? nil : suffix
+    }
+
     static func stableWordBoundaryLength(in text: String, upTo rawLength: Int) -> Int {
         let length = min(max(0, rawLength), text.count)
         guard length > 0 else { return 0 }
