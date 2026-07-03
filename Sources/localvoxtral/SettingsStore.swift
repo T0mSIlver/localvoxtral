@@ -110,48 +110,22 @@ enum DictationShortcutValidation {
 final class SettingsStore {
     enum RealtimeProvider: String, CaseIterable, Identifiable {
         case realtimeAPI = "realtime_api"
-        case mlxAudio = "mlx_audio"
 
         var id: String { rawValue }
 
-        var displayName: String {
-            switch self {
-            case .realtimeAPI:
-                return "vLLM/voxmlx"
-            case .mlxAudio:
-                return "mlx-audio"
-            }
-        }
+        var displayName: String { "vLLM/voxmlx" }
 
-        var defaultEndpoint: String {
-            switch self {
-            case .realtimeAPI:
-                return "ws://127.0.0.1:8000/v1/realtime"
-            case .mlxAudio:
-                return "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"
-            }
-        }
+        var defaultEndpoint: String { "ws://127.0.0.1:8000/v1/realtime" }
 
-        var defaultModelName: String {
-            switch self {
-            case .realtimeAPI:
-                return "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit"
-            case .mlxAudio:
-                return "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
-            }
-        }
+        var defaultModelName: String { "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" }
     }
 
     private enum Keys {
         static let realtimeProvider = "settings.realtime_provider"
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
-        static let mlxAudioEndpointURL = "settings.mlx_audio_endpoint_url"
         static let apiKey = "settings.api_key"
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
-        static let mlxAudioModelName = "settings.mlx_audio_model_name"
         static let commitIntervalSeconds = "settings.commit_interval_seconds"
-        static let mlxAudioTranscriptionDelayMilliseconds =
-            "settings.mlx_audio_transcription_delay_ms"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
@@ -182,10 +156,6 @@ final class SettingsStore {
         didSet { defaults.set(realtimeAPIEndpointURL, forKey: Keys.realtimeAPIEndpointURL) }
     }
 
-    var mlxAudioEndpointURL: String {
-        didSet { defaults.set(mlxAudioEndpointURL, forKey: Keys.mlxAudioEndpointURL) }
-    }
-
     var apiKey: String {
         didSet { defaults.set(apiKey, forKey: Keys.apiKey) }
     }
@@ -194,20 +164,8 @@ final class SettingsStore {
         didSet { defaults.set(realtimeAPIModelName, forKey: Keys.realtimeAPIModelName) }
     }
 
-    var mlxAudioModelName: String {
-        didSet { defaults.set(mlxAudioModelName, forKey: Keys.mlxAudioModelName) }
-    }
-
     var commitIntervalSeconds: Double {
         didSet { defaults.set(commitIntervalSeconds, forKey: Keys.commitIntervalSeconds) }
-    }
-
-    var mlxAudioTranscriptionDelayMilliseconds: Int {
-        didSet {
-            defaults.set(
-                mlxAudioTranscriptionDelayMilliseconds,
-                forKey: Keys.mlxAudioTranscriptionDelayMilliseconds)
-        }
     }
 
     var autoCopyEnabled: Bool {
@@ -275,18 +233,14 @@ final class SettingsStore {
             envKey: "REALTIME_PROVIDER", fallback: RealtimeProvider.realtimeAPI.rawValue,
             environment: environment
         )
+        // A previously-selected provider may no longer exist (deprecated backends
+        // have been removed). Fall back to the default rather than crash or
+        // produce an invalid state.
         realtimeProvider = RealtimeProvider(rawValue: configuredProvider) ?? .realtimeAPI
 
         realtimeAPIEndpointURL = Self.loadString(
             defaults: defaults, key: Keys.realtimeAPIEndpointURL,
             envKey: "REALTIME_ENDPOINT", fallback: RealtimeProvider.realtimeAPI.defaultEndpoint,
-            environment: environment
-        )
-
-        mlxAudioEndpointURL = Self.loadString(
-            defaults: defaults, key: Keys.mlxAudioEndpointURL,
-            envKey: "MLX_AUDIO_REALTIME_ENDPOINT",
-            fallback: RealtimeProvider.mlxAudio.defaultEndpoint,
             environment: environment
         )
 
@@ -302,29 +256,11 @@ final class SettingsStore {
             environment: environment
         )
 
-        mlxAudioModelName = Self.loadModelName(
-            defaults: defaults, key: Keys.mlxAudioModelName,
-            envKey: "MLX_AUDIO_REALTIME_MODEL", provider: .mlxAudio,
-            environment: environment
-        )
-
         let storedInterval = defaults.double(forKey: Keys.commitIntervalSeconds)
         commitIntervalSeconds =
             storedInterval > 0
             ? min(max(storedInterval, 0.1), 1.0)
             : 0.9
-
-        let delayDefault = 900
-        if defaults.object(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds) != nil {
-            mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(
-                defaults.integer(forKey: Keys.mlxAudioTranscriptionDelayMilliseconds))
-        } else if let envDelay = environment["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"],
-            let parsedDelay = Int(envDelay)
-        {
-            mlxAudioTranscriptionDelayMilliseconds = Self.clampedTranscriptionDelay(parsedDelay)
-        } else {
-            mlxAudioTranscriptionDelayMilliseconds = delayDefault
-        }
 
         autoCopyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.autoCopyEnabled, fallback: false)
@@ -486,12 +422,7 @@ final class SettingsStore {
     }
 
     func modelName(for provider: RealtimeProvider) -> String {
-        switch provider {
-        case .realtimeAPI:
-            return realtimeAPIModelName
-        case .mlxAudio:
-            return mlxAudioModelName
-        }
+        realtimeAPIModelName
     }
 
     func effectiveModelName(for provider: RealtimeProvider) -> String {
@@ -500,12 +431,7 @@ final class SettingsStore {
     }
 
     func endpointURL(for provider: RealtimeProvider) -> String {
-        switch provider {
-        case .realtimeAPI:
-            return realtimeAPIEndpointURL
-        case .mlxAudio:
-            return mlxAudioEndpointURL
-        }
+        realtimeAPIEndpointURL
     }
 
     var resolvedWebSocketURL: URL? {
@@ -553,10 +479,6 @@ final class SettingsStore {
         }
 
         return candidate
-    }
-
-    private static func clampedTranscriptionDelay(_ value: Int) -> Int {
-        min(max(value, 400), 2_000)
     }
 
     var llmPolishingConfiguration: LLMPolishingConfiguration? {

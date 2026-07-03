@@ -354,7 +354,7 @@ final class TextInsertionService {
 
         // Retry once: the Accessibility API can fail on the first attempt when
         // the focused element's attribute state hasn't fully settled (common with
-        // larger text blocks from mlx-audio finalization).
+        // larger text blocks during finalization).
         if replaceSelectedTextRange(in: focusedElement, with: text) {
             return true
         }

@@ -100,12 +100,11 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
             session.invalidateAndCancel()
         }
 
-        viewModel.activeClientSource = .realtimeAPI
         viewModel.isFinalizingStop = true
         viewModel.sessionOutputMode = .overlayBuffer
         viewModel.realtimeAPIClient.debugPrimeConnectedStateForTesting(task: task)
 
-        viewModel.handle(event: .transcriptionFinalized, source: .realtimeAPI)
+        viewModel.handle(event: .transcriptionFinalized)
 
         let timeoutAt = Date().addingTimeInterval(1.0)
         while viewModel.isFinalizingStop, Date() < timeoutAt {
@@ -113,7 +112,6 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         }
 
         XCTAssertFalse(viewModel.isFinalizingStop)
-        XCTAssertNil(viewModel.activeClientSource)
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
         XCTAssertEqual(overlayCoordinator.dismissAfterHoldCallCount, 1)
@@ -175,17 +173,15 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.activeClientSource = .realtimeAPI
         viewModel.isConnectingRealtimeSession = true
         viewModel.statusText = "Connecting to realtime backend..."
         viewModel.debugSetPushToTalkShortcutStateForTesting(isHeld: true, hasActiveSession: true)
 
         viewModel.debugHandleDictationShortcutReleaseForTesting()
-        viewModel.handle(event: .connected, source: .realtimeAPI)
+        viewModel.handle(event: .connected)
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertFalse(viewModel.isDictating)
-        XCTAssertNil(viewModel.activeClientSource)
         XCTAssertEqual(viewModel.statusText, "Ready")
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .idle)
     }

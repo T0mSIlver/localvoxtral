@@ -85,12 +85,25 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://example.com")
     }
 
-    func testResolvedURL_mlxProviderUsesMlxEndpoint() {
+    // MARK: - realtimeProvider migration
+
+    func testRealtimeProvider_legacyRawValueFallsBackToDefault() {
+        // A user who previously selected the now-removed deprecated backend has
+        // its raw value persisted in UserDefaults. Decoding must fall back to the
+        // default provider instead of crashing or producing an invalid state.
+        defaults.set("mlx_audio", forKey: "settings.realtime_provider")
+
         let store = makeStore()
-        store.mlxAudioEndpointURL = "ws://mlx-host:5000/transcribe"
-        store.realtimeAPIEndpointURL = "ws://openai-host:8000/realtime"
-        store.realtimeProvider = .mlxAudio
-        XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://mlx-host:5000/transcribe")
+
+        XCTAssertEqual(store.realtimeProvider, .realtimeAPI)
+    }
+
+    func testRealtimeProvider_unknownRawValueFallsBackToDefault() {
+        defaults.set("some_future_provider", forKey: "settings.realtime_provider")
+
+        let store = makeStore()
+
+        XCTAssertEqual(store.realtimeProvider, .realtimeAPI)
     }
 
     // MARK: - effectiveModelName
@@ -147,10 +160,6 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(
             SettingsStore.RealtimeProvider.realtimeAPI.defaultEndpoint,
             "ws://127.0.0.1:8000/v1/realtime"
-        )
-        XCTAssertEqual(
-            SettingsStore.RealtimeProvider.mlxAudio.defaultEndpoint,
-            "ws://127.0.0.1:8000/v1/audio/transcriptions/realtime"
         )
     }
 

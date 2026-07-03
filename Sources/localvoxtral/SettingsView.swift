@@ -5,32 +5,13 @@ struct SettingsView: View {
     var viewModel: DictationViewModel
     @State private var shortcutValidationError: String?
 
-    private var mlxTranscriptionDelaySecondsBinding: Binding<Double> {
-        Binding(
-            get: { Double(settings.mlxAudioTranscriptionDelayMilliseconds) / 1000.0 },
-            set: { newValue in
-                let milliseconds = Int((newValue * 1000.0).rounded())
-                settings.mlxAudioTranscriptionDelayMilliseconds = min(max(milliseconds, 400), 2_000)
-            }
-        )
-    }
-
-    private var mlxTranscriptionDelayLabel: String {
-        String(format: "%.2fs", Double(settings.mlxAudioTranscriptionDelayMilliseconds) / 1000.0)
-    }
-
     private var endpointBinding: Binding<String> {
         Binding(
             get: {
                 settings.endpointURL(for: settings.realtimeProvider)
             },
             set: { newValue in
-                switch settings.realtimeProvider {
-                case .realtimeAPI:
-                    settings.realtimeAPIEndpointURL = newValue
-                case .mlxAudio:
-                    settings.mlxAudioEndpointURL = newValue
-                }
+                settings.realtimeAPIEndpointURL = newValue
             }
         )
     }
@@ -41,12 +22,7 @@ struct SettingsView: View {
                 settings.modelName(for: settings.realtimeProvider)
             },
             set: { newValue in
-                switch settings.realtimeProvider {
-                case .realtimeAPI:
-                    settings.realtimeAPIModelName = newValue
-                case .mlxAudio:
-                    settings.mlxAudioModelName = newValue
-                }
+                settings.realtimeAPIModelName = newValue
             }
         )
     }
@@ -67,9 +43,7 @@ struct SettingsView: View {
             ConnectionSettingsPane(
                 settings: settings,
                 endpointBinding: endpointBinding,
-                modelBinding: modelBinding,
-                mlxTranscriptionDelaySecondsBinding: mlxTranscriptionDelaySecondsBinding,
-                mlxTranscriptionDelayLabel: mlxTranscriptionDelayLabel
+                modelBinding: modelBinding
             )
             .tabItem {
                 Label("Realtime Endpoint", systemImage: "network")
@@ -112,22 +86,10 @@ private struct ConnectionSettingsPane: View {
     @Bindable var settings: SettingsStore
     let endpointBinding: Binding<String>
     let modelBinding: Binding<String>
-    let mlxTranscriptionDelaySecondsBinding: Binding<Double>
-    let mlxTranscriptionDelayLabel: String
 
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Backend") {
-                SettingsFieldRow(title: "Provider") {
-                    Picker("", selection: $settings.realtimeProvider) {
-                        ForEach(SettingsStore.RealtimeProvider.allCases) { provider in
-                            Text(provider.displayName).tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                }
-
                 SettingsFieldRow(title: "Realtime endpoint") {
                     TextField(settings.endpointPlaceholder, text: endpointBinding)
                         .textFieldStyle(.roundedBorder)
@@ -138,54 +100,30 @@ private struct ConnectionSettingsPane: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                if settings.realtimeProvider == .realtimeAPI {
-                    SettingsFieldRow(title: "API key") {
-                        SecureField("Required for remote providers", text: $settings.apiKey)
-                            .textFieldStyle(.roundedBorder)
-                    }
+                SettingsFieldRow(title: "API key") {
+                    SecureField("Required for remote providers", text: $settings.apiKey)
+                        .textFieldStyle(.roundedBorder)
                 }
             }
 
             SettingsGroup(title: "Streaming") {
-                if settings.realtimeProvider == .realtimeAPI {
-                    SettingsFieldRow(title: "Commit interval") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                Slider(
-                                    value: $settings.commitIntervalSeconds,
-                                    in: 0.1...1.0,
-                                    step: 0.1
-                                )
-                                Text(String(format: "%.2fs", settings.commitIntervalSeconds))
-                                    .font(.callout.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 48, alignment: .trailing)
-                            }
-
-                            SettingsHelpText(
-                                "How often finalized transcript chunks are requested from the realtime server."
+                SettingsFieldRow(title: "Commit interval") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Slider(
+                                value: $settings.commitIntervalSeconds,
+                                in: 0.1...1.0,
+                                step: 0.1
                             )
+                            Text(String(format: "%.2fs", settings.commitIntervalSeconds))
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 48, alignment: .trailing)
                         }
-                    }
-                } else {
-                    SettingsFieldRow(title: "Transcription delay") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                Slider(
-                                    value: mlxTranscriptionDelaySecondsBinding,
-                                    in: 0.4...2.0,
-                                    step: 0.1
-                                )
-                                Text(mlxTranscriptionDelayLabel)
-                                    .font(.callout.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 48, alignment: .trailing)
-                            }
 
-                            SettingsHelpText(
-                                "How long mlx-audio waits for right-context before emitting tokens."
-                            )
-                        }
+                        SettingsHelpText(
+                            "How often finalized transcript chunks are requested from the realtime server."
+                        )
                     }
                 }
             }

@@ -5,9 +5,6 @@ import Foundation
 /// Gathered here so related values are visible side-by-side and
 /// the rationale for each can be documented once.
 enum TimingConstants {
-    /// Target PCM sample rate for the audio pipeline (16 kHz mono).
-    static let audioSampleRateHz: Double = 16_000
-
     // MARK: - Audio Send Loop
 
     /// Interval at which buffered PCM chunks are drained and sent to the WebSocket.
@@ -43,18 +40,4 @@ enum TimingConstants {
     /// Minimum time to keep the overlay visible after the most recent
     /// visible overlay text update before committing/hiding.
     static let overlayFinalWordVisibilityMinimum: TimeInterval = 0.5
-
-    // MARK: - Stop Finalization (mlx-audio path)
-
-    /// Hard timeout for the stop-finalization phase on the mlx-audio path.
-    /// Longer than the Realtime API path because mlx inference on 6-12 s of
-    /// audio can take 5+ seconds.
-    static let mlxStopFinalizationTimeout: TimeInterval = 25.0
-
-    /// Duration of silence appended after the user stops speaking, giving
-    /// the mlx-audio server enough trailing context to finalize.
-    static let mlxTrailingSilenceDuration: TimeInterval = 1.6
-
-    /// Per-chunk duration for the trailing silence frames.
-    static let mlxTrailingSilenceChunkDuration: TimeInterval = 0.1
 }

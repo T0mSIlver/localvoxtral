@@ -42,9 +42,8 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         )
         Self.retainedViewModels.append(viewModel)
 
-        // Configure the VM as an active Live Auto-Paste RealtimeAPI session so
-        // `handle(event:source:)` accepts and routes transcript events.
-        viewModel.activeClientSource = .realtimeAPI
+        // Configure the VM as an active Live Auto-Paste session so
+        // `handle(event:)` accepts and routes transcript events.
         viewModel.isDictating = true
 
         // Capture every chunk the insertion service would type, and report
@@ -64,7 +63,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
 
     private func sendPartials(_ deltas: [String], to viewModel: DictationViewModel) {
         for delta in deltas {
-            viewModel.handle(event: .partialTranscript(delta), source: .realtimeAPI)
+            viewModel.handle(event: .partialTranscript(delta))
         }
     }
 
@@ -189,7 +188,7 @@ final class RealtimeAPILivePastePunctuationTests: XCTestCase {
         sendPartials(["sparisce"], to: viewModel)
         XCTAssertEqual(insertedChunks, ["sparisce"])
 
-        viewModel.handle(event: .finalTranscript("sparisce."), source: .realtimeAPI)
+        viewModel.handle(event: .finalTranscript("sparisce."))
 
         // No additional insertion beyond the live partial.
         XCTAssertEqual(insertedChunks, ["sparisce"])

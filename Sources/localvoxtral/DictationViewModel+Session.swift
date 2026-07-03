@@ -73,9 +73,8 @@ extension DictationViewModel {
         }
 
         let model = settings.effectiveModelName(for: provider)
-        let client = selectedRealtimeClient()
-        let source = selectedClientSource()
-        inactiveRealtimeClient(for: source).disconnect()
+        // Reset the realtime client from any prior session before reconnecting.
+        realtimeAPIClient.disconnect()
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         sessionProvider = provider
         sessionModelName = model
@@ -91,7 +90,6 @@ extension DictationViewModel {
         livePartialText = ""
         pendingSegmentText = ""
         currentDictationEventText = ""
-        mlxStabilizer.reset()
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         realtimeFinalizationLastActivityAt = nil
@@ -99,20 +97,16 @@ extension DictationViewModel {
         textInsertion.resetDiagnostics()
 
         isConnectingRealtimeSession = true
-        activeClientSource = source
         statusText = "Connecting to realtime backend..."
         debugLog(
             "beginDictationSession endpoint=\(endpoint.absoluteString) model=\(model) input=\(preferredInputID ?? "default")"
         )
 
         do {
-            try client.connect(configuration: .init(
+            try realtimeAPIClient.connect(configuration: .init(
                 endpoint: endpoint,
                 apiKey: settings.trimmedAPIKey,
-                model: model,
-                transcriptionDelayMilliseconds: provider == .mlxAudio
-                    ? settings.mlxAudioTranscriptionDelayMilliseconds
-                    : nil
+                model: model
             ))
             scheduleConnectTimeout()
         } catch {
@@ -159,8 +153,7 @@ extension DictationViewModel {
             isDictating = false
             healthMonitor.stop()
             microphone.stop()
-            activeRealtimeClient().disconnect()
-            activeClientSource = nil
+            realtimeAPIClient.disconnect()
             setRealtimeIndicatorIdle()
             Log.dictation.error("Failed to start microphone after realtime connect: \(error.localizedDescription, privacy: .public)")
             debugLog("startAudioCaptureAfterConnection failed error=\(error.localizedDescription)")
@@ -207,7 +200,7 @@ extension DictationViewModel {
         commitTask = nil
 
         let interval = min(1.0, max(0.1, settings.commitIntervalSeconds))
-        let client = activeRealtimeClient()
+        let client = realtimeAPIClient
         guard client.supportsPeriodicCommit else { return }
         commitTask = Task(priority: .utility) {
             while !Task.isCancelled {
@@ -222,7 +215,7 @@ extension DictationViewModel {
         audioSendTask?.cancel()
 
         let interval = TimingConstants.audioSendInterval
-        let client = activeRealtimeClient()
+        let client = realtimeAPIClient
         let chunkBuffer = audioChunkBuffer
         let debugLoggingEnabled = debugLoggingEnabled
         audioSendTask = Task(priority: .utility) {
@@ -248,7 +241,7 @@ extension DictationViewModel {
     func flushBufferedAudio() {
         let chunk = audioChunkBuffer.takeAll()
         guard !chunk.isEmpty else { return }
-        activeRealtimeClient().sendAudioChunk(chunk)
+        realtimeAPIClient.sendAudioChunk(chunk)
     }
 
     // MARK: - Stop Finalization
@@ -257,87 +250,48 @@ extension DictationViewModel {
         stopFinalizationTask?.cancel()
         stopFinalizationTask = Task { [weak self] in
             guard let self else { return }
-            if self.activeClientSource == .mlxAudio {
-                await self.sendTrailingSilenceForMlxAudio()
-            }
             guard self.isFinalizingStop else { return }
 
-            if self.activeClientSource != .mlxAudio {
-                if !self.activeRealtimeClient().isConnected {
-                    self.debugLog("socket already disconnected before final commit; finishing stop")
-                    self.finishStoppedSession(promotePendingSegment: true)
-                    return
-                }
-                let startedAt = Date()
-                self.realtimeFinalizationLastActivityAt = startedAt
-                self.activeRealtimeClient().sendCommit(final: true)
-                while self.isFinalizingStop {
-                    if !self.activeRealtimeClient().isConnected {
-                        self.debugLog("socket disconnected during finalization; finishing stop")
-                        self.finishStoppedSession(promotePendingSegment: true)
-                        return
-                    }
-
-                    let now = Date()
-                    let elapsed = now.timeIntervalSince(startedAt)
-                    let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
-                    let inactivity = now.timeIntervalSince(lastActivity)
-
-                    if elapsed >= TimingConstants.stopFinalizationTimeout {
-                        self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
-                        self.activeRealtimeClient().disconnect()
-                        self.finishStoppedSession(promotePendingSegment: true)
-                        return
-                    }
-
-                    if elapsed >= TimingConstants.finalizationMinimumOpen,
-                       inactivity >= TimingConstants.finalizationInactivityThreshold
-                    {
-                        self.debugLog(
-                            "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
-                        )
-                        self.activeRealtimeClient().disconnect()
-                        self.finishStoppedSession(promotePendingSegment: true)
-                        return
-                    }
-
-                    try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
-                }
+            if !self.realtimeAPIClient.isConnected {
+                self.debugLog("socket already disconnected before final commit; finishing stop")
+                self.finishStoppedSession(promotePendingSegment: true)
                 return
             }
-
-            let timeout = TimingConstants.mlxStopFinalizationTimeout
             let startedAt = Date()
+            self.realtimeFinalizationLastActivityAt = startedAt
+            self.realtimeAPIClient.sendCommit(final: true)
             while self.isFinalizingStop {
-                if !self.activeRealtimeClient().isConnected {
-                    self.debugLog("mlx socket disconnected during finalization; finishing stop")
+                if !self.realtimeAPIClient.isConnected {
+                    self.debugLog("socket disconnected during finalization; finishing stop")
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
 
-                let elapsed = Date().timeIntervalSince(startedAt)
-                if elapsed >= timeout {
-                    self.debugLog("stop finalization timeout (\(timeout)s); forcing disconnect")
-                    self.activeRealtimeClient().disconnect()
+                let now = Date()
+                let elapsed = now.timeIntervalSince(startedAt)
+                let lastActivity = self.realtimeFinalizationLastActivityAt ?? startedAt
+                let inactivity = now.timeIntervalSince(lastActivity)
+
+                if elapsed >= TimingConstants.stopFinalizationTimeout {
+                    self.debugLog("stop finalization timeout (\(TimingConstants.stopFinalizationTimeout)s); forcing disconnect")
+                    self.realtimeAPIClient.disconnect()
+                    self.finishStoppedSession(promotePendingSegment: true)
+                    return
+                }
+
+                if elapsed >= TimingConstants.finalizationMinimumOpen,
+                   inactivity >= TimingConstants.finalizationInactivityThreshold
+                {
+                    self.debugLog(
+                        "realtime finalization idle for \(String(format: "%.2f", inactivity))s; disconnecting"
+                    )
+                    self.realtimeAPIClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }
 
                 try? await Task.sleep(for: .seconds(TimingConstants.finalizationPollInterval))
             }
-        }
-    }
-
-    func sendTrailingSilenceForMlxAudio() async {
-        guard activeClientSource == .mlxAudio else { return }
-        let frameCount = max(1, Int(TimingConstants.audioSampleRateHz * TimingConstants.mlxTrailingSilenceChunkDuration))
-        let silenceChunk = Data(count: frameCount * MemoryLayout<Int16>.size)
-        let iterations = max(1, Int(ceil(TimingConstants.mlxTrailingSilenceDuration / TimingConstants.mlxTrailingSilenceChunkDuration)))
-        debugLog("send mlx trailing silence chunks=\(iterations)")
-        for _ in 0 ..< iterations {
-            guard isFinalizingStop, activeClientSource == .mlxAudio else { return }
-            activeRealtimeClient().sendAudioChunk(silenceChunk)
-            try? await Task.sleep(for: .seconds(TimingConstants.mlxTrailingSilenceChunkDuration))
         }
     }
 
@@ -354,20 +308,11 @@ extension DictationViewModel {
         finalizationWatchdogTask = nil
         cancelConnectTimeout()
 
-        let wasMlxAudio = activeClientSource == .mlxAudio
         let sessionMode = sessionOutputMode ?? settings.dictationOutputMode
         let shouldCommitOverlay = sessionMode == .overlayBuffer
 
         if promotePendingSegment {
-            let promoted = wasMlxAudio
-                ? promotePendingMlxTextToLatestSegment()
-                : promotePendingRealtimeTextToLatestSegment()
-
-            if sessionMode == .liveAutoPaste, wasMlxAudio, let promoted, !promoted.isEmpty {
-                if !textInsertion.insertTextUsingAccessibilityOnly(promoted) {
-                    _ = textInsertion.pasteUsingCommandV(promoted)
-                }
-            }
+            _ = promotePendingRealtimeTextToLatestSegment()
         }
 
         if shouldCommitOverlay {
@@ -579,13 +524,11 @@ extension DictationViewModel {
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingSegmentText = ""
-        mlxStabilizer.resetSegment()
         if case .failed = overlayCommitOutcome {
             statusText = "Insert failed."
         } else {
             statusText = "Ready"
         }
-        activeClientSource = nil
 
         textInsertion.stopInsertionRetryTask()
         textInsertion.logDiagnostics()
@@ -693,9 +636,8 @@ extension DictationViewModel {
         firstChunkPreprocessor.reset()
         overlayBufferCoordinator.reset()
         if disconnectSocket {
-            activeRealtimeClient().disconnect()
+            realtimeAPIClient.disconnect()
         }
-        activeClientSource = nil
         healthMonitor.stop()
     }
 
@@ -814,37 +756,6 @@ extension DictationViewModel {
         }
     }
 
-    // MARK: - Client Selection
-
-    func client(for source: ActiveClientSource) -> RealtimeClient {
-        switch source {
-        case .realtimeAPI: return realtimeAPIClient
-        case .mlxAudio: return mlxAudioRealtimeClient
-        }
-    }
-
-    func selectedClientSource() -> ActiveClientSource {
-        switch settings.realtimeProvider {
-        case .realtimeAPI: return .realtimeAPI
-        case .mlxAudio: return .mlxAudio
-        }
-    }
-
-    func selectedRealtimeClient() -> RealtimeClient {
-        client(for: selectedClientSource())
-    }
-
-    func activeRealtimeClient() -> RealtimeClient {
-        client(for: activeClientSource ?? selectedClientSource())
-    }
-
-    func inactiveRealtimeClient(for source: ActiveClientSource) -> RealtimeClient {
-        switch source {
-        case .realtimeAPI: return mlxAudioRealtimeClient
-        case .mlxAudio: return realtimeAPIClient
-        }
-    }
-
     // MARK: - Helpers
 
     private func openSystemConsole() {
@@ -905,9 +816,7 @@ extension DictationViewModel {
 
     func startStopFinalizationWatchdog() {
         finalizationWatchdogTask?.cancel()
-        let timeout: TimeInterval = (activeClientSource == .mlxAudio)
-            ? TimingConstants.mlxStopFinalizationTimeout + 2.0
-            : TimingConstants.stopFinalizationTimeout + 2.0
+        let timeout: TimeInterval = TimingConstants.stopFinalizationTimeout + 2.0
 
         finalizationWatchdogTask = Task { [weak self] in
             let startedAt = Date()
@@ -916,7 +825,7 @@ extension DictationViewModel {
                 guard let self else { return }
                 guard self.isFinalizingStop else { return }
 
-                if !self.activeRealtimeClient().isConnected {
+                if !self.realtimeAPIClient.isConnected {
                     self.debugLog("watchdog observed disconnected socket during finalization; finishing stop")
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
@@ -924,7 +833,7 @@ extension DictationViewModel {
 
                 if Date().timeIntervalSince(startedAt) >= timeout {
                     self.debugLog("finalization watchdog fired after \(timeout)s; forcing stop cleanup")
-                    self.activeRealtimeClient().disconnect()
+                    self.realtimeAPIClient.disconnect()
                     self.finishStoppedSession(promotePendingSegment: true)
                     return
                 }

@@ -58,8 +58,6 @@ as the launchd service `com.localvoxtral.voxmlx` (logs:
 `~/Library/Logs/voxmlx.log`). Fork PRs run on GitHub-hosted runners with no
 backend, where the suite self-skips. The mic-capture tests
 (`LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE`) stay off in CI until tier 2.
-`MlxAudioTranscriptionIntegrationTests` targets the deprecated mlx-audio
-backend and stays manual.
 
 ## CI / shipping
 
@@ -89,10 +87,9 @@ Key subsystems:
 - Audio: `MicrophoneCaptureService` (raw CoreAudio AUHAL → 16kHz PCM16),
   `AudioChunkBuffer` (Mutex), `AudioCaptureHealthMonitor` (device changes)
 - Realtime clients: `RealtimeClient` protocol; `RealtimeAPIWebSocketClient`
-  (vLLM/voxmlx) and `MlxAudioRealtimeWebSocketClient` over
-  `BaseRealtimeWebSocketClient`
+  (vLLM/voxmlx) over `BaseRealtimeWebSocketClient`
 - Text merge: `TextMergingAlgorithms` (pure functions — overlap merge,
-  word-boundary stabilization, punctuation spacing), `MlxHypothesisStabilizer`
+  word-boundary stabilization, punctuation spacing), `FirstChunkPreprocessor`
 - Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V)
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
