@@ -166,10 +166,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
-        viewModel.activeClientSource = .realtimeAPI
         viewModel.isConnectingRealtimeSession = true
 
-        viewModel.handle(event: .disconnected, source: .realtimeAPI)
+        viewModel.handle(event: .disconnected)
 
         XCTAssertFalse(
             viewModel.debugLastConnectFailureTechnicalDetails?.contains("Accessibility") == true,
@@ -291,6 +290,7 @@ private final class NoopOverlayCoordinator: OverlayBufferSessionCoordinating {
     }
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
     func reset() {}
+    func captureLiveCommitTargetAppPID() {}
 }
 
 extension DictationViewModel {
