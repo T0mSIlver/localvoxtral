@@ -33,6 +33,44 @@ patch_local_resource_bundle_lookup() {
   perl -0pi -e 's/let preferredBundle = Bundle\(path: mainPath\)/\/\/ localvoxtral packaged resources fallback\n        let resourcePath = Bundle.main.resourceURL?.appendingPathComponent("localvoxtral_localvoxtral.bundle").path\n        let preferredBundle = resourcePath.flatMap(Bundle.init(path:)) ?? Bundle(path: mainPath)/g' "$accessor"
 }
 
+embed_uv_binary() {
+  local uv_version="0.11.26"
+  local uv_archive_name="uv-${uv_version}-aarch64-apple-darwin.tar.gz"
+  local uv_url="https://github.com/astral-sh/uv/releases/download/${uv_version}/uv-aarch64-apple-darwin.tar.gz"
+  local uv_sha256="8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6"
+  local uv_dist_dir="$ROOT_DIR/.build/uv-dist"
+  local uv_tarball="$uv_dist_dir/$uv_archive_name"
+  local uv_destination="$APP_DIR/Contents/MacOS/uv"
+  local tmp_dir
+  local actual_sha256
+
+  echo "Embedding uv ${uv_version}..."
+  mkdir -p "$uv_dist_dir"
+  if [[ ! -f "$uv_tarball" ]]; then
+    echo "Downloading uv ${uv_version} from ${uv_url}"
+    curl -fL --retry 3 "$uv_url" -o "$uv_tarball"
+  else
+    echo "Using cached uv tarball: $uv_tarball"
+  fi
+
+  echo "Verifying uv ${uv_version} sha256..."
+  actual_sha256="$(shasum -a 256 "$uv_tarball" | awk '{print $1}')"
+  if [[ "$actual_sha256" != "$uv_sha256" ]]; then
+    rm -f "$uv_tarball"
+    echo "uv sha256 mismatch: expected $uv_sha256, got $actual_sha256"
+    exit 1
+  fi
+
+  tmp_dir="$(mktemp -d)"
+  tar -xzf "$uv_tarball" -C "$tmp_dir" "uv-aarch64-apple-darwin/uv"
+  install -m 755 "$tmp_dir/uv-aarch64-apple-darwin/uv" "$uv_destination"
+  rm -rf "$tmp_dir"
+
+  echo "Installed embedded uv: $uv_destination"
+  codesign --force --sign "$CODESIGN_IDENTITY" "$uv_destination"
+  echo "Signed embedded uv with identity: $CODESIGN_IDENTITY"
+}
+
 CONFIGURATION="${1:-release}"
 APP_VERSION="${2:-0.3.0}"
 BUILD_NUMBER="${3:-1}"
@@ -210,6 +248,7 @@ PLIST
 # because codesign rejects bundles containing that detritus.
 chmod -R u+w "$APP_DIR"
 xattr -cr "$APP_DIR"
+embed_uv_binary
 
 # Sign the packaged app so Gatekeeper can evaluate a usable signature.
 # This does not replace Developer ID signing/notarization, but it avoids the
