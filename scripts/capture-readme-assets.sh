@@ -44,12 +44,12 @@ import CoreGraphics
 
 var ok = true
 if !AXIsProcessTrusted() {
-    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility — enable the terminal app you are running this from, then rerun.")
+    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility — enable the app that launched this script (your terminal, or the CI runner app for workflow runs), then rerun.")
     ok = false
 }
 if !CGPreflightScreenCaptureAccess() {
     _ = CGRequestScreenCaptureAccess()
-    print("MISSING Screen Recording: System Settings > Privacy & Security > Screen Recording — enable the terminal app you are running this from, then rerun.")
+    print("MISSING Screen Recording: System Settings > Privacy & Security > Screen Recording — enable the app that launched this script (your terminal, or the CI runner app for workflow runs), then rerun.")
     ok = false
 }
 exit(ok ? 0 : 1)
@@ -60,7 +60,20 @@ swift "$PREFLIGHT" || exit 1
 # Prints the CGWindowID of the largest on-screen window owned by <pid> whose
 # window layer is >= <min-layer> (0 = normal windows, 100+ = open menus).
 HELPER="$(mktemp -t lv-windowid).swift"
-trap 'rm -f "$HELPER" "$PREFLIGHT"' EXIT
+# Cleanup must also quit the app we launch below: with set -e, any failed
+# capture step would otherwise strand a localvoxtral instance (and possibly
+# an open menu) in the GUI session, poisoning the next run.
+LAUNCHED_APP=0
+cleanup() {
+  rm -f "$HELPER" "$PREFLIGHT"
+  if [[ "$LAUNCHED_APP" == 1 ]]; then
+    osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
+    osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+    sleep 1
+    pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM HUP
 cat > "$HELPER" <<'SWIFT'
 import CoreGraphics
 import Foundation
@@ -103,9 +116,16 @@ wait_for_window() { # <pid> <min-layer> [timeout-seconds]
 # --- launch a fresh instance ------------------------------------------------
 if pgrep -xq "$APP_PROCESS"; then
   echo "Quitting running $APP_PROCESS instance..."
-  osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || pkill -x "$APP_PROCESS" || true
+  osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+  for _ in $(seq 1 10); do pgrep -xq "$APP_PROCESS" || break; sleep 0.5; done
+  pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
   sleep 1
 fi
+if pgrep -xq "$APP_PROCESS"; then
+  echo "A previous $APP_PROCESS instance refuses to quit; captures would show stale state. Aborting." >&2
+  exit 1
+fi
+LAUNCHED_APP=1
 open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
 APP_PID="$(pgrep -xn "$APP_PROCESS")"
