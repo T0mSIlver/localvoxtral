@@ -251,6 +251,9 @@ final class BackendManager: ManagedBackendManaging {
                 parentPID,
             ]
         case BackendCatalog.mlxLM.id:
+            // Prompt caching avoids reprocessing the full polishing prompt on
+            // every request — the mlx-lm fork's main optimization (~50% faster
+            // prompt processing on M1 Pro with the default prompts).
             return [
                 "--model",
                 SettingsStore.defaultLLMPolishingModel,
@@ -258,6 +261,10 @@ final class BackendManager: ManagedBackendManaging {
                 "\(spec.port)",
                 "--parent-pid",
                 parentPID,
+                "--prompt-cache-size",
+                "1",
+                "--prompt-cache-bytes",
+                "1GB",
             ]
         default:
             return []
