@@ -31,13 +31,19 @@ final class BackendManagerTests: XCTestCase {
 
     func testAlreadyInstalledSkipsInstaller() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
 
         try await manager.ensureReady(includePolishing: false)
 
         XCTAssertTrue(installer.installCalls.isEmpty)
+        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.voxmlx.id])
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.voxmlx.displayName])
         XCTAssertEqual(manager.voxmlxStatus, .ready)
     }
@@ -62,18 +68,28 @@ final class BackendManagerTests: XCTestCase {
 
     func testPolishingFlagControlsWhetherMLXLMIsTouched() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
 
         try await manager.ensureReady(includePolishing: false)
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.voxmlx.displayName])
+        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.voxmlx.id])
 
         try await manager.ensureReady(includePolishing: true)
         XCTAssertEqual(
             supervisorFactory.createdConfigurations.map(\.name),
             [BackendCatalog.voxmlx.displayName, BackendCatalog.mlxLM.displayName]
+        )
+        XCTAssertEqual(
+            modelPreparer.prepareCalls.map(\.backendID),
+            [BackendCatalog.voxmlx.id, BackendCatalog.mlxLM.id]
         )
         XCTAssertEqual(manager.mlxLMStatus, .ready)
 
@@ -170,6 +186,153 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
+    func testEnsureReadySurfacesModelPreparationBeforeStarting() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer(
+            scriptedProgress: [
+                BackendCatalog.voxmlx.id: [
+                    ModelDownloadProgress(downloadedBytes: 0, totalBytes: 100),
+                    ModelDownloadProgress(downloadedBytes: 40, totalBytes: 100),
+                ],
+            ]
+        )
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+        var voxmlxStatuses: [ManagedBackendStatus] = []
+        manager.debugStatusChangeSink = { spec, status in
+            guard spec.id == BackendCatalog.voxmlx.id else { return }
+            voxmlxStatuses.append(status)
+        }
+
+        try await manager.ensureReady(includePolishing: false)
+
+        XCTAssertEqual(
+            modelPreparer.prepareCalls.map(\.repoID),
+            [SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName]
+        )
+        XCTAssertTrue(voxmlxStatuses.contains(.preparingModel(progress: ModelDownloadProgress(downloadedBytes: 40, totalBytes: 100))))
+        XCTAssertTrue(voxmlxStatuses.contains(.starting))
+        XCTAssertEqual(voxmlxStatuses.last, .ready)
+        XCTAssertLessThan(
+            try XCTUnwrap(voxmlxStatuses.firstIndex(of: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 40, totalBytes: 100)))),
+            try XCTUnwrap(voxmlxStatuses.firstIndex(of: .starting))
+        )
+    }
+
+    func testEnsureReadyWithPolishingPreparesBothModels() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(includePolishing: true)
+
+        XCTAssertEqual(
+            modelPreparer.prepareCalls.map(\.backendID),
+            [BackendCatalog.voxmlx.id, BackendCatalog.mlxLM.id]
+        )
+        XCTAssertEqual(
+            modelPreparer.prepareCalls.map(\.repoID),
+            [
+                SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName,
+                SettingsStore.defaultLLMPolishingModel,
+            ]
+        )
+    }
+
+    func testEnsureReadyWithoutPolishingPreparesOnlyVoxmlx() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(includePolishing: false)
+
+        XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.voxmlx.id])
+        XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.voxmlx.displayName])
+    }
+
+    func testCancellingEnsureReadyDuringModelPreparationTerminatesAndDoesNotMarkReady() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.voxmlx.id])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let task = Task { @MainActor in
+            try await manager.ensureReady(includePolishing: false)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        task.cancel()
+
+        do {
+            try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.voxmlx.id])
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
+        XCTAssertNotEqual(manager.voxmlxStatus, .ready)
+    }
+
+    func testModelPreparationFailureMarksBackendFailedWithDetails() async {
+        let marker = "HF_TRACE"
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer(
+            failures: [
+                BackendCatalog.voxmlx.id: ModelDownloadError.downloaderReportedError(
+                    message: "Hugging Face rejected the request.",
+                    stderrTail: "stderr \(marker)"
+                ),
+            ]
+        )
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: FakeSupervisorFactory()
+        )
+
+        do {
+            try await manager.ensureReady(includePolishing: false)
+            XCTFail("expected ensureReady to throw")
+        } catch let error as ManagedBackendManagerError {
+            XCTAssertEqual(error.localizedDescription, "voxmlx failed: Hugging Face rejected the request.")
+            XCTAssertEqual(error.technicalDetails, "stderr \(marker)")
+        } catch {
+            XCTFail("expected ManagedBackendManagerError, got \(error)")
+        }
+
+        XCTAssertEqual(
+            manager.voxmlxStatus,
+            .failed(summary: "Hugging Face rejected the request.", detail: "stderr \(marker)")
+        )
+    }
+
     func testSupervisorFailureErrorSplitsSummaryFromTechnicalDetails() async throws {
         let marker = "FAKE_STDERR_TRACEBACK"
         let installer = FakeBackendInstaller(needsInstall: [])
@@ -208,15 +371,76 @@ final class BackendManagerTests: XCTestCase {
 
     private func makeManager(
         installer: FakeBackendInstaller,
+        modelPreparer: FakeModelPreparer = FakeModelPreparer(),
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
             installer: installer,
+            modelPreparer: modelPreparer,
             layout: BackendInstallLayout(root: URL(fileURLWithPath: "/tmp/localvoxtral-backend-manager-tests")),
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }
         )
+    }
+}
+
+private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
+    private let scriptedProgress: [String: [ModelDownloadProgress]]
+    private let failures: [String: Error]
+    private let suspendBackendIDs: Set<String>
+    private var prepareStartedContinuation: CheckedContinuation<Void, Never>?
+    private var prepareResumeContinuation: CheckedContinuation<Void, Error>?
+
+    private(set) var prepareCalls: [ModelPreparationRequest] = []
+    private(set) var terminatedBackendIDs: [String] = []
+
+    init(
+        scriptedProgress: [String: [ModelDownloadProgress]] = [:],
+        failures: [String: Error] = [:],
+        suspendBackendIDs: Set<String> = []
+    ) {
+        self.scriptedProgress = scriptedProgress
+        self.failures = failures
+        self.suspendBackendIDs = suspendBackendIDs
+    }
+
+    func prepare(
+        _ request: ModelPreparationRequest,
+        progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
+    ) async throws {
+        prepareCalls.append(request)
+        prepareStartedContinuation?.resume()
+        prepareStartedContinuation = nil
+
+        for event in scriptedProgress[request.backendID] ?? [] {
+            await progress(event)
+        }
+
+        if suspendBackendIDs.contains(request.backendID) {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    prepareResumeContinuation = continuation
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    self?.terminatedBackendIDs.append(request.backendID)
+                    self?.prepareResumeContinuation?.resume(throwing: CancellationError())
+                    self?.prepareResumeContinuation = nil
+                }
+            }
+        }
+
+        if let failure = failures[request.backendID] {
+            throw failure
+        }
+    }
+
+    func waitUntilPrepareStarted() async {
+        guard prepareCalls.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            prepareStartedContinuation = continuation
+        }
     }
 }
 

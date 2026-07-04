@@ -164,6 +164,11 @@ final class DiagnosticsExporterTests: XCTestCase {
         )
         XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .verifying)).contains("installing"))
         XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .downloading(fraction: 0.5))).contains("50%"))
+        XCTAssertTrue(
+            DiagnosticsExporter
+                .describe(.preparingModel(progress: ModelDownloadProgress(downloadedBytes: 50, totalBytes: 100)))
+                .contains("50%")
+        )
     }
 
     // MARK: - File writing: injected directory + injected timestamp

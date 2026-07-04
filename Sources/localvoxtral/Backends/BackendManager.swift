@@ -2,9 +2,15 @@ import Darwin
 import Foundation
 import Observation
 
-enum ManagedBackendStatus: Equatable {
+struct ManagedBackendStatusUpdate: Equatable, Sendable {
+    let spec: ManagedBackendSpec
+    let status: ManagedBackendStatus
+}
+
+enum ManagedBackendStatus: Equatable, Sendable {
     case notInstalled
     case installing(progress: BackendInstallProgress)
+    case preparingModel(progress: ModelDownloadProgress)
     case starting
     case ready
     case stopped
@@ -14,7 +20,7 @@ enum ManagedBackendStatus: Equatable {
         switch self {
         case .notInstalled, .installing:
             return true
-        case .starting, .ready, .stopped, .failed:
+        case .preparingModel, .starting, .ready, .stopped, .failed:
             return false
         }
     }
@@ -63,6 +69,7 @@ extension BackendProcessSupervisor: ManagedBackendSupervising {}
 protocol ManagedBackendManaging: AnyObject {
     var voxmlxStatus: ManagedBackendStatus { get }
     var mlxLMStatus: ManagedBackendStatus { get }
+    var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> { get }
 
     func ensureReady(includePolishing: Bool) async throws
     func stopAll() async
@@ -81,6 +88,7 @@ final class BackendManager: ManagedBackendManaging {
     private(set) var mlxLMStatus: ManagedBackendStatus
 
     @ObservationIgnored private let installer: any BackendInstalling
+    @ObservationIgnored private let modelPreparer: any ModelPreparing
     @ObservationIgnored private let layout: BackendInstallLayout
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private var voxmlxSupervisor: (any ManagedBackendSupervising)?
@@ -88,12 +96,14 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private var ensureReadyTask: Task<Void, Error>?
     @ObservationIgnored private var voxmlxStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var mlxLMStateMirrorTask: Task<Void, Never>?
+    @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     #if DEBUG
     @ObservationIgnored var debugStatusChangeSink: ((ManagedBackendSpec, ManagedBackendStatus) -> Void)?
     #endif
 
     init(
         installer: any BackendInstalling = BackendInstaller(),
+        modelPreparer: (any ModelPreparing)? = nil,
         layout: BackendInstallLayout = BackendInstallLayout(),
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
@@ -101,6 +111,7 @@ final class BackendManager: ManagedBackendManaging {
     ) {
         self.installer = installer
         self.layout = layout
+        self.modelPreparer = modelPreparer ?? HFModelDownloader(layout: layout)
         self.supervisorFactory = supervisorFactory
         self.voxmlxStatus = installer.needsInstallOrUpdate(BackendCatalog.voxmlx)
             ? .notInstalled
@@ -110,10 +121,22 @@ final class BackendManager: ManagedBackendManaging {
             : .stopped
     }
 
+    var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
+        let id = UUID()
+        let stream = AsyncStream<ManagedBackendStatusUpdate>.makeStream(of: ManagedBackendStatusUpdate.self)
+        statusUpdateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.statusUpdateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
+
     func ensureReady(includePolishing: Bool) async throws {
         while true {
             if let ensureReadyTask {
-                try await ensureReadyTask.value
+                try await awaitEnsureReadyTask(ensureReadyTask)
                 if includePolishing, !isReady(BackendCatalog.mlxLM) {
                     continue
                 }
@@ -125,13 +148,21 @@ final class BackendManager: ManagedBackendManaging {
             }
             ensureReadyTask = task
             do {
-                try await task.value
+                try await awaitEnsureReadyTask(task)
                 ensureReadyTask = nil
                 return
             } catch {
                 ensureReadyTask = nil
                 throw error
             }
+        }
+    }
+
+    private func awaitEnsureReadyTask(_ task: Task<Void, Error>) async throws {
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
     }
 
@@ -203,9 +234,38 @@ final class BackendManager: ManagedBackendManaging {
             }
         }
 
+        try await prepareModel(for: spec)
+
         setStatus(.starting, for: spec)
         let supervisor = supervisor(for: spec)
         try await startAndWaitUntilReady(supervisor, spec: spec)
+    }
+
+    private func prepareModel(for spec: ManagedBackendSpec) async throws {
+        let request = modelPreparationRequest(for: spec)
+        setStatus(
+            .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil)),
+            for: spec
+        )
+        do {
+            try await modelPreparer.prepare(request) { [weak self] progress in
+                guard let self else { return }
+                self.setStatus(.preparingModel(progress: progress), for: spec)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let summary = error.localizedDescription.trimmed.isEmpty
+                ? "Model download failed."
+                : error.localizedDescription
+            let detail = (error as? ModelDownloadError)?.technicalDetails
+            setStatus(.failed(summary: summary, detail: detail), for: spec)
+            throw ManagedBackendManagerError.backendFailed(
+                name: spec.displayName,
+                summary: summary,
+                detail: detail
+            )
+        }
     }
 
     private func startAndWaitUntilReady(
@@ -320,6 +380,47 @@ final class BackendManager: ManagedBackendManaging {
         }
     }
 
+    private func modelPreparationRequest(for spec: ManagedBackendSpec) -> ModelPreparationRequest {
+        // Keep these include patterns in sync with:
+        // - /home/dev/work/voxmlx/voxmlx/weights.py download_model
+        // - /home/dev/work/mlx-lm/mlx_lm/utils.py _download
+        switch spec.id {
+        case BackendCatalog.voxmlx.id:
+            return ModelPreparationRequest(
+                backendID: spec.id,
+                displayName: spec.displayName,
+                repoID: SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName,
+                includePatterns: [
+                    "consolidated.safetensors",
+                    "model*.safetensors",
+                    "model.safetensors.index.json",
+                    "params.json",
+                    "config.json",
+                    "tekken.json",
+                ]
+            )
+        case BackendCatalog.mlxLM.id:
+            return ModelPreparationRequest(
+                backendID: spec.id,
+                displayName: spec.displayName,
+                repoID: SettingsStore.defaultLLMPolishingModel,
+                includePatterns: [
+                    "*.json",
+                    "model*.safetensors",
+                    "*.py",
+                    "tokenizer.model",
+                    "*.tiktoken",
+                    "tiktoken.model",
+                    "*.txt",
+                    "*.jsonl",
+                    "*.jinja",
+                ]
+            )
+        default:
+            preconditionFailure("Unknown managed backend '\(spec.id)'.")
+        }
+    }
+
     private func processEnvironment() -> [String: String] {
         let inherited = ProcessInfo.processInfo.environment
         var environment: [String: String] = [:]
@@ -419,5 +520,9 @@ final class BackendManager: ManagedBackendManaging {
         #if DEBUG
         debugStatusChangeSink?(spec, status)
         #endif
+        let update = ManagedBackendStatusUpdate(spec: spec, status: status)
+        for continuation in statusUpdateContinuations.values {
+            continuation.yield(update)
+        }
     }
 }
