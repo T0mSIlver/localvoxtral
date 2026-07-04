@@ -157,7 +157,11 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertEqual(DiagnosticsExporter.describe(.starting), "starting")
         XCTAssertEqual(DiagnosticsExporter.describe(.stopped), "stopped")
         XCTAssertEqual(DiagnosticsExporter.describe(.notInstalled), "not installed")
-        XCTAssertEqual(DiagnosticsExporter.describe(.failed(message: "boom")), "failed: boom")
+        XCTAssertEqual(DiagnosticsExporter.describe(.failed(summary: "boom", detail: nil)), "failed: boom")
+        XCTAssertEqual(
+            DiagnosticsExporter.describe(.failed(summary: "boom", detail: "stderr: trace")),
+            "failed: boom — stderr: trace"
+        )
         XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .verifying)).contains("installing"))
         XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .downloading(fraction: 0.5))).contains("50%"))
     }

@@ -259,11 +259,45 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.ensureIncludePolishingCalls, [false])
 
         backendManager.resumeEnsure()
-        await Task.yield()
+        // A bare Task.yield() races the startup task's failure continuation
+        // (seen flaking in CI); await the tracked task instead.
+        await viewModel.managedStartupTask?.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
-        XCTAssertTrue(viewModel.lastError?.contains("voxmlx failed: missing wheel") == true)
+        // Popover rule (AGENTS.md): lastError is one short sentence; the full
+        // failure summary stays in the alert/log, not the popover. This fake
+        // is not a ManagedBackendManagerError, so the generic wording applies.
+        XCTAssertEqual(viewModel.lastError, "Managed backend failed to start.")
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    func testManagedStartupFailureKeepsStderrOutOfLastErrorButPreservesTechnicalDetails() async {
+        let marker = "FAKE_STDERR_TRACEBACK"
+        let backendManager = FakeManagedBackendManager()
+        backendManager.ensureError = ManagedBackendManagerError.backendFailed(
+            name: "mlx-lm",
+            summary: "mlx-lm exited 5 consecutive times.",
+            detail: "stderr: Python traceback \(marker)"
+        )
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+
+        XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
+        XCTAssertFalse(viewModel.lastError?.contains("exited 5 consecutive times") == true)
+        XCTAssertFalse(viewModel.lastError?.contains(marker) == true)
+        XCTAssertTrue(viewModel.debugLastConnectFailureTechnicalDetails?.contains(marker) == true)
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
@@ -280,6 +314,37 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertTrue(backendManager.ensureIncludePolishingCalls.isEmpty)
         XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")
+    }
+
+    func testManagedStartupCancelledByModeSwitchDoesNotBeginSessionOrSurfaceError() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        viewModel.settings.dictationShortcutMode = .pushToTalk
+        viewModel.settings.realtimeAPIEndpointURL = ""
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.debugHandleDictationShortcutPressForTesting()
+        await backendManager.waitUntilEnsureStarted()
+
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession)
+        XCTAssertNil(viewModel.sessionProvider)
+
+        viewModel.applyBackendModeChange(.externalURL)
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+        await Task.yield()
+
+        XCTAssertEqual(backendManager.ensureIncludePolishingCalls, [false])
+        XCTAssertNil(viewModel.sessionProvider)
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertNotEqual(viewModel.statusText, "Invalid endpoint URL.")
     }
 
     // MARK: - Helpers

@@ -214,8 +214,13 @@ enum DiagnosticsExporter {
             return "ready"
         case .stopped:
             return "stopped"
-        case .failed(let message):
-            return "failed: \(message)"
+        case .failed(let summary, let detail):
+            // Unlike the popover (one short sentence only), the diagnostics
+            // report is the place for the full failure story.
+            if let detail {
+                return "failed: \(summary) — \(detail)"
+            }
+            return "failed: \(summary)"
         }
     }
 

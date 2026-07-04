@@ -42,10 +42,13 @@ enum BackendCatalog {
     static let mlxLM = ManagedBackendSpec(
         id: "mlx-lm",
         displayName: "mlx-lm",
-        version: "0.31.3.post1",
+        // post2 pins transformers <5.13: 5.13.0 broke the string-keyed
+        // AutoTokenizer.register call in mlx_lm/tokenizer_utils.py, so fresh
+        // installs resolving latest transformers crashed mlx_lm.server at import.
+        version: "0.31.3.post2",
         requirementName: "mlx-lm",
-        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post1/mlx_lm-0.31.3.post1-py3-none-any.whl")!,
-        wheelSHA256: "05bcc1a66f5f3b1127e9eae9ed54f9ad046b12af97c0829632ecde70c6f3a87b",
+        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post2/mlx_lm-0.31.3.post2-py3-none-any.whl")!,
+        wheelSHA256: "61c49eba2e8651bded681f6d717a78fc635d768e487222530a2e239a58e47cdd",
         executableName: "mlx_lm.server",
         pythonVersion: "3.12",
         port: 8472

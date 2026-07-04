@@ -113,3 +113,13 @@ Key subsystems:
   warning-free under Swift 6.2 strict concurrency.
 - Tests are XCTest. Prefer the existing DI seams (protocols + `#if DEBUG`
   hooks like `debugConfigureInsertionHooks`) over adding singletons.
+- Menu bar popover (owner rule, 2026-07-04): NEVER render long text there —
+  no raw errors, stderr, or URLs; it stretches the popover. Anything shown in
+  the popover (`lastError`, status lines) is one short sentence, e.g.
+  "mlx-lm failed to start." Full details belong in the alert popup and the
+  log (and Settings shows the one-line failure summary only).
+  `StatusPopoverView.statusDetailView` line-limits as a backstop — keep it.
+- Hand-testing local builds: each locally built/re-signed .app has a new code
+  signature, and macOS ties Accessibility (TCC) grants to it. If the hotkey
+  does nothing after installing a new build, toggle localvoxtral off/on in
+  System Settings → Privacy & Security → Accessibility.

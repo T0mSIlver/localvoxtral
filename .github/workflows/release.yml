@@ -116,6 +116,11 @@ jobs:
             -s scripts/dmg_settings.py \
             -D app=dist/localvoxtral.app \
             "localvoxtral" "dist/localvoxtral-$TAG.dmg"
+          (
+            cd dist
+            shasum -a 256 "localvoxtral-$TAG.zip" > "localvoxtral-$TAG.zip.sha256"
+            shasum -a 256 "localvoxtral-$TAG.dmg" > "localvoxtral-$TAG.dmg.sha256"
+          )
 
       - name: Tag (all gates green)
         run: |
@@ -133,4 +138,6 @@ jobs:
           generate_release_notes: true
           files: |
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip.sha256
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256

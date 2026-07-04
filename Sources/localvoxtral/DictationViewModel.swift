@@ -190,6 +190,10 @@ final class DictationViewModel {
     @ObservationIgnored
     var commitTask: Task<Void, Never>?
     @ObservationIgnored
+    var managedStartupTask: Task<Void, Never>?
+    @ObservationIgnored
+    var managedStartupTaskID: UUID?
+    @ObservationIgnored
     var audioSendTask: Task<Void, Never>?
     @ObservationIgnored
     var stopFinalizationTask: Task<Void, Never>?
@@ -383,6 +387,8 @@ final class DictationViewModel {
         }
         lifecycleObservers.removeAll()
         commitTask?.cancel()
+        managedStartupTask?.cancel()
+        managedStartupTaskID = nil
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
@@ -427,6 +433,7 @@ final class DictationViewModel {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                self.cancelManagedStartupTask()
                 if self.isDictating {
                     self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
                 }
@@ -648,6 +655,7 @@ final class DictationViewModel {
     func cancelDictation() {
         guard isDictating || isFinalizingStop || isConnectingRealtimeSession else { return }
         wasCancelled = true
+        cancelManagedStartupTask()
         if isDictating {
             stopDictation(reason: "cancelled", finalizeRemainingAudio: false)
         } else if isConnectingRealtimeSession {
@@ -685,6 +693,11 @@ final class DictationViewModel {
         settings.backendMode = mode
 
         guard previousMode == .managedLocal, mode == .externalURL else { return }
+        cancelManagedStartupTask()
+        if isConnectingRealtimeSession {
+            abortConnectingSession()
+            statusText = StatusStrings.ready
+        }
         // Leaving managed mode means the app should no longer own local backend
         // processes. Polishing toggles are intentionally lighter-weight: if
         // mlx-lm is already running, it stays up until quit or a mode switch.
