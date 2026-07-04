@@ -82,7 +82,7 @@ The shared config directory lives at `~/Library/Application Support/localvoxtral
 
 ### Managed local (default)
 
-In Managed local mode, localvoxtral installs pinned wheel releases of the backends into `~/Library/Application Support/localvoxtral/backends` using an embedded [uv](https://github.com/astral-sh/uv), and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
+In Managed local mode, localvoxtral installs pinned wheel releases of the backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use, and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
 
 **Dictation — voxmlx.** [voxmlx](https://github.com/awni/voxmlx) running [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit) on M1 Pro, streaming partial text fast enough for realtime dictation (latency and throughput vary by hardware, model, and quantization). The managed build is [this fork](https://github.com/T0mSIlver/voxmlx), which adds a WebSocket server that speaks the OpenAI Realtime API protocol, memory-management optimizations, and managed-launch support (readiness signal + parent-pid watchdog).
 
