@@ -25,6 +25,42 @@ On a Mac, just `swift build` / `swift test`.
 When several agents work in parallel, each must set its own remote dir:
 `LV_BUILD_DIR=work/localvoxtral-<task> ./scripts/remote-build.sh ...`
 
+## Hand-testing & field debugging (the fast loop)
+
+Learned the hard way (2026-07-04) — use these instead of manual steps:
+
+- **Trying a PR build on the Mac**: `./scripts/try-pr.sh <pr-number|main>`
+  downloads the exact CI-built artifact and launches it. No checkout, no
+  build. Push → CI (~1.5 min) → try-pr.sh is the whole owner iteration loop.
+- **Code signing (why TCC used to reset)**: `package_app.sh` signs with
+  `$LOCALVOXTRAL_CODESIGN_IDENTITY` when set, else ad-hoc. The owner's Mac
+  has a self-signed code-signing cert `localvoxtral-dev`; the identity env
+  var is set in the owner's shell AND in the runner's `.env`
+  (`~/actions-runner/.env`, restart via `cd ~/actions-runner && ./svc.sh
+  stop && ./svc.sh start`). Identity-signed builds keep their Accessibility
+  (TCC) grant across rebuilds; ad-hoc builds get a fresh signature each time
+  and macOS silently invalidates the old grant (fix: toggle the app off/on in
+  System Settings → Accessibility). First codesign with a new key needs one
+  GUI "Always Allow" keychain prompt — trigger it with a local
+  `package_app.sh` run before relying on CI, or the runner job hangs.
+- **macOS 26 launch stall**: first launch of a *downloaded* ad-hoc-signed
+  bundle stalls forever at `_dyld_start` (Gatekeeper first-exec scan);
+  `xattr -cr` does NOT fix it, a LOCAL `codesign --force --deep --sign -`
+  does. `install.sh` re-signs unconditionally for end users; `try-pr.sh`
+  re-signs only ad-hoc artifacts (never downgrades identity-signed ones).
+  Durable fix is Developer ID + notarization (roadmap #1).
+- **Crash reports without hands on the Mac**: dispatch
+  `gh workflow run mac-crashlog.yml --ref main` — it prints a redacted
+  summary (exception + crashed-thread frames) of recent localvoxtral `.ips`
+  reports from the self-hosted Mac. Actions logs are public: keep the
+  redaction if you extend it. Deeper diagnostics: `scripts/mac-diag.sh` on
+  the Mac, Export Diagnostics… in the app, and (once the v2 gate is
+  installed) `./scripts/remote-build.sh diag|applog|voxlog|svc-status`.
+- **Pipes from child processes**: never read with
+  `FileHandle.availableData` — it raises an uncatchable ObjC exception on
+  descriptor errors and aborts the app (field crash, PR #60). Use
+  `POSIXPipeRead.nextChunk(fromDescriptor:)`.
+
 ## Proof culture — non-negotiable
 
 This is a real app with daily users. Nothing ships on "it compiles".
@@ -119,7 +155,5 @@ Key subsystems:
   "mlx-lm failed to start." Full details belong in the alert popup and the
   log (and Settings shows the one-line failure summary only).
   `StatusPopoverView.statusDetailView` line-limits as a backstop — keep it.
-- Hand-testing local builds: each locally built/re-signed .app has a new code
-  signature, and macOS ties Accessibility (TCC) grants to it. If the hotkey
-  does nothing after installing a new build, toggle localvoxtral off/on in
-  System Settings → Privacy & Security → Accessibility.
+- Hand-testing builds: see "Hand-testing & field debugging" above — use
+  try-pr.sh and the stable signing identity, don't reinvent manual steps.
