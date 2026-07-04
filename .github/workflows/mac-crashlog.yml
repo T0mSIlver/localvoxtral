@@ -1,0 +1,89 @@
+name: mac-crashlog
+
+# Manually dispatched diagnostic: summarize recent localvoxtral crash reports
+# from the self-hosted Mac so remote agents can debug field crashes without
+# hands on the machine. Prints a FILTERED summary only (exception info +
+# crashed-thread frames, $HOME redacted) because this repo's Actions logs are
+# public. Never prints environment, arguments, or full register state.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes_back:
+        description: "How far back to look for reports (minutes)"
+        default: "240"
+      max_reports:
+        description: "Max number of reports to summarize"
+        default: "3"
+
+jobs:
+  crashlog:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 5
+    steps:
+      - name: Summarize recent localvoxtral crash reports
+        env:
+          MINUTES_BACK: ${{ inputs.minutes_back }}
+          MAX_REPORTS: ${{ inputs.max_reports }}
+        run: |
+          set -uo pipefail
+          dir="$HOME/Library/Logs/DiagnosticReports"
+          reports=$(find "$dir" -name 'localvoxtral*.ips' -mmin "-${MINUTES_BACK}" 2>/dev/null | sort -r | head -n "${MAX_REPORTS}")
+          if [ -z "$reports" ]; then
+            echo "No localvoxtral crash reports in the last ${MINUTES_BACK} minutes."
+            ls -lt "$dir" 2>/dev/null | head -10 | sed "s|$HOME|~|g" || true
+            exit 0
+          fi
+          for f in $reports; do
+            echo "===== $(basename "$f") ====="
+            # .ips = one JSON header line, then one JSON body. Extract the
+            # fields that identify the crash; redact the home directory.
+            /usr/bin/python3 - "$f" <<'PY'
+          import json, os, re, sys
+
+          path = sys.argv[1]
+          home = os.path.expanduser("~")
+
+          def redact(s):
+              return s.replace(home, "~") if isinstance(s, str) else s
+
+          with open(path) as fh:
+              lines = fh.read().splitlines()
+          header = json.loads(lines[0])
+          body = json.loads("\n".join(lines[1:]))
+
+          print("captureTime:", header.get("timestamp", "?"))
+          print("bundle:", header.get("bundleID", "?"), header.get("app_version", ""))
+          print("os:", body.get("osVersion", {}).get("train", "?"), body.get("osVersion", {}).get("build", ""))
+          exc = body.get("exception", {})
+          print("exception:", exc.get("type", "?"), exc.get("signal", ""), exc.get("subtype", ""))
+          term = body.get("termination", {})
+          if term:
+              print("termination:", term.get("indicator", ""), redact(" ".join(str(r) for r in term.get("reasons", []))))
+          asi = body.get("asi")
+          if asi:
+              for k, v in asi.items():
+                  for line in v:
+                      print("asi:", redact(line))
+          ktriage = body.get("ktriageinfo")
+          if ktriage:
+              print("ktriage:", redact(str(ktriage)))
+          images = body.get("usedImages", [])
+          faulting = body.get("faultingThread", 0)
+          for t in body.get("threads", []):
+              if not t.get("triggered") and body.get("threads", []).index(t) != faulting:
+                  continue
+              print(f"-- crashed thread {faulting} ({redact(t.get('name', t.get('queue', '')) or '')}) --")
+              for i, fr in enumerate(t.get("frames", [])[:20]):
+                  img = images[fr["imageIndex"]] if fr.get("imageIndex") is not None and fr["imageIndex"] < len(images) else {}
+                  name = img.get("name", "?")
+                  sym = fr.get("symbol", "")
+                  off = fr.get("symbolLocation", "")
+                  src = fr.get("sourceFile", "")
+                  line = fr.get("sourceLine", "")
+                  loc = f" ({src}:{line})" if src else ""
+                  print(f"  {i:2d} {name}  {sym} + {off}{loc}")
+              break
+          PY
+            echo
+          done
