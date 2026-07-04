@@ -27,6 +27,11 @@ means nothing on users' machines); proper distribution signing needs a
 Developer ID cert. Dispatch-only: pushing tags by hand no longer triggers a
 release.
 
+## `dmg-test.yml`
+
+Manual-dispatch harness on the self-hosted Mac runner that packages the app,
+builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing.
+
 ## `mlx-lm-test.yml`
 
 Manual-dispatch harness that installs `mlx_lm.server` from any ref of the

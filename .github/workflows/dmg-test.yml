@@ -1,0 +1,41 @@
+name: DMG layout test
+
+# Manual verification harness for the styled release DMG. Builds the packaged
+# app and DMG on the self-hosted Mac so the layout can be inspected before the
+# next real release.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-dmg:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package app bundle
+        run: ./scripts/package_app.sh release
+
+      - name: Build styled DMG
+        run: |
+          set -euo pipefail
+          if ! command -v uvx >/dev/null 2>&1; then
+            echo "uvx is required to build the styled DMG; install uv on the Mac runner."
+            exit 1
+          fi
+          uvx --from dmgbuild dmgbuild \
+            -s scripts/dmg_settings.py \
+            -D app=dist/localvoxtral.app \
+            "localvoxtral" "dist/localvoxtral-dmg-test.dmg"
+
+      - name: Verify DMG
+        run: hdiutil verify "dist/localvoxtral-dmg-test.dmg"
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-dmg
+          path: dist/localvoxtral-dmg-test.dmg
+          retention-days: 3
