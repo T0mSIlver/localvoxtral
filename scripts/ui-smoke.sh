@@ -14,12 +14,21 @@ set -uo pipefail
 APP_PATH="${1:-dist/localvoxtral.app}"
 APP_PROCESS="localvoxtral"
 BUNDLE_ID="com.localvoxtral.app"
-DEFAULTS_SNAPSHOT=""
-HAD_DEFAULTS=0
+PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-ui-smoke.pre.plist"
+PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 PREFLIGHT_HELPER=""
 APP_PID=""
 FAILED=0
+CLEANED_UP=0
+OSASCRIPT_TIMEOUT_SECONDS="${OSASCRIPT_TIMEOUT_SECONDS:-8}"
+OSASCRIPT_TIMEOUT_BIN=""
+BACKEND_SAMPLE_FILE=""
+BACKEND_SAMPLER_PID=""
 SUMMARY=()
+
+if command -v timeout >/dev/null 2>&1; then
+  OSASCRIPT_TIMEOUT_BIN="$(command -v timeout)"
+fi
 
 record_pass() {
   SUMMARY+=("PASS: $1")
@@ -45,13 +54,62 @@ print_summary() {
 }
 
 restore_defaults() {
-  if [[ -z "$DEFAULTS_SNAPSHOT" ]]; then
+  if [[ ! -f "$PERSISTENT_DEFAULTS_BACKUP" ]]; then
     return
   fi
 
   defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
-  if ((HAD_DEFAULTS)); then
-    defaults import "$BUNDLE_ID" "$DEFAULTS_SNAPSHOT" >/dev/null 2>&1 || true
+  if [[ -f "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN" ]]; then
+    defaults import "$BUNDLE_ID" "$PERSISTENT_DEFAULTS_BACKUP" >/dev/null 2>&1 || return 1
+  fi
+  rm -f "$PERSISTENT_DEFAULTS_BACKUP" "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
+}
+
+recover_previous_defaults_backup() {
+  if [[ ! -f "$PERSISTENT_DEFAULTS_BACKUP" ]]; then
+    rm -f "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
+    return 0
+  fi
+
+  printf 'WARNING: found %s from a previous interrupted UI smoke run; restoring owner defaults before continuing.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
+  if restore_defaults; then
+    printf 'WARNING: previous UI smoke defaults backup restored and removed.\n' >&2
+    return 0
+  fi
+
+  record_fail "Could not restore previous defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
+  return 1
+}
+
+write_empty_defaults_backup() {
+  cat >"$PERSISTENT_DEFAULTS_BACKUP" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+PLIST
+}
+
+snapshot_defaults() {
+  rm -f "$PERSISTENT_DEFAULTS_BACKUP" "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
+  if defaults export "$BUNDLE_ID" "$PERSISTENT_DEFAULTS_BACKUP" >/dev/null 2>&1; then
+    : >"$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN" || return 1
+  elif defaults read "$BUNDLE_ID" >/dev/null 2>&1; then
+    return 1
+  else
+    write_empty_defaults_backup || return 1
+  fi
+  [[ -f "$PERSISTENT_DEFAULTS_BACKUP" ]] || return 1
+}
+
+run_osascript() {
+  if [[ -n "$OSASCRIPT_TIMEOUT_BIN" ]]; then
+    "$OSASCRIPT_TIMEOUT_BIN" "${OSASCRIPT_TIMEOUT_SECONDS}s" osascript "$@"
+  else
+    # macOS does not ship GNU timeout; if it is unavailable, run osascript
+    # directly rather than failing the smoke drill before AX checks can run.
+    osascript "$@"
   fi
 }
 
@@ -60,7 +118,7 @@ quit_app() {
     return
   fi
 
-  osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+  run_osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
   local deadline=$((SECONDS + 10))
   while ((SECONDS < deadline)); do
     if ! pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
@@ -70,17 +128,71 @@ quit_app() {
   done
 }
 
+managed_backend_pids() {
+  pgrep -f 'voxmlx-serve|mlx_lm\.server' 2>/dev/null | sort || true
+}
+
+start_backend_sampler() {
+  BACKEND_SAMPLE_FILE="$(mktemp -t localvoxtral-backend-samples.XXXXXX)"
+  (
+    while :; do
+      managed_backend_pids >>"$BACKEND_SAMPLE_FILE"
+      sleep 0.2
+    done
+  ) &
+  BACKEND_SAMPLER_PID=$!
+}
+
+stop_backend_sampler() {
+  if [[ -z "$BACKEND_SAMPLER_PID" ]]; then
+    return
+  fi
+
+  kill "$BACKEND_SAMPLER_PID" >/dev/null 2>&1 || true
+  wait "$BACKEND_SAMPLER_PID" >/dev/null 2>&1 || true
+  BACKEND_SAMPLER_PID=""
+}
+
+sampled_backend_pids() {
+  if [[ -n "$BACKEND_SAMPLE_FILE" && -f "$BACKEND_SAMPLE_FILE" ]]; then
+    sort -u "$BACKEND_SAMPLE_FILE" | sed '/^$/d'
+  fi
+}
+
 cleanup() {
+  if ((CLEANED_UP)); then
+    return
+  fi
+  CLEANED_UP=1
+
+  stop_backend_sampler
   quit_app
-  restore_defaults
+  if ! restore_defaults; then
+    printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
+  fi
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
-  [[ -n "$DEFAULTS_SNAPSHOT" ]] && rm -f "$DEFAULTS_SNAPSHOT"
+  [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
+}
+
+signal_cleanup() {
+  local status="$1"
+  trap - EXIT INT TERM HUP
+  cleanup
+  exit "$status"
 }
 
 trap cleanup EXIT
+trap 'signal_cleanup 130' INT
+trap 'signal_cleanup 143' TERM
+trap 'signal_cleanup 129' HUP
 
 if [[ "$(uname)" != "Darwin" ]]; then
   record_fail "ui-smoke.sh drives macOS AX APIs and must run on macOS."
+  print_summary
+  exit 1
+fi
+
+if ! recover_previous_defaults_backup; then
   print_summary
   exit 1
 fi
@@ -122,23 +234,22 @@ else
   exit 1
 fi
 
-DEFAULTS_SNAPSHOT="$(mktemp -t localvoxtral-defaults.XXXXXX.plist)"
-if defaults export "$BUNDLE_ID" "$DEFAULTS_SNAPSHOT" >/dev/null 2>&1; then
-  HAD_DEFAULTS=1
-else
-  HAD_DEFAULTS=0
+if ! snapshot_defaults; then
+  record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
+  print_summary
+  exit 1
 fi
-defaults write "$BUNDLE_ID" settings.backend_mode -string managed_local
+if ! defaults write "$BUNDLE_ID" settings.backend_mode -string managed_local; then
+  record_fail "Could not force managed backend mode in defaults."
+  print_summary
+  exit 1
+fi
 record_pass "Defaults domain snapshot captured and smoke run forced to managed mode."
 
 # Managed backends are Python entry-point processes, so match the full
 # command line (-f). The runner legitimately hosts a voxmlx-serve launchd
 # service, so the invariant is baseline-diffed: only processes that appear
 # AFTER app launch count as violations.
-managed_backend_pids() {
-  pgrep -f 'voxmlx-serve|mlx_lm\.server' 2>/dev/null | sort || true
-}
-
 BASELINE_BACKEND_PIDS="$(managed_backend_pids)"
 
 quit_app
@@ -148,6 +259,7 @@ if pgrep -x "$APP_PROCESS" >/dev/null 2>&1; then
   exit 1
 fi
 
+start_backend_sampler
 open -n "$APP_PATH"
 launch_deadline=$((SECONDS + 10))
 while ((SECONDS < launch_deadline)); do
@@ -164,7 +276,7 @@ fi
 record_pass "Fresh app instance launched with pid $APP_PID."
 
 status_item_exists() {
-  osascript <<OSA
+  run_osascript <<OSA
 tell application "System Events"
   if not (exists process "$APP_PROCESS") then return "missing"
   tell process "$APP_PROCESS"
@@ -209,15 +321,16 @@ else
   record_fail "Menu bar status item did not appear within 10 seconds."
 fi
 
-NEW_BACKEND_PIDS="$(comm -13 <(printf '%s\n' "$BASELINE_BACKEND_PIDS") <(managed_backend_pids) 2>/dev/null || true)"
+stop_backend_sampler
+NEW_BACKEND_PIDS="$(comm -13 <(printf '%s\n' "$BASELINE_BACKEND_PIDS" | sed '/^$/d') <(sampled_backend_pids) 2>/dev/null || true)"
 if [[ -n "$NEW_BACKEND_PIDS" ]]; then
   record_fail "App launch spawned managed backend process(es) — lazy-bootstrap invariant violated. New pids: $NEW_BACKEND_PIDS"
 else
-  record_pass "No managed backend process spawned by app launch (baseline-diffed)."
+  record_pass "No managed backend process spawned by app launch, including transient samples."
 fi
 
 open_status_menu() {
-  if ! osascript >/dev/null <<OSA
+  if ! run_osascript >/dev/null <<OSA
 tell application "System Events" to tell process "$APP_PROCESS"
   ignoring application responses
     click menu bar item 1 of menu bar 2
@@ -231,13 +344,13 @@ OSA
 }
 
 dismiss_menu() {
-  osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
+  run_osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
   sleep 0.5
 }
 
 open_settings() {
   open_status_menu || return 1
-  if osascript >/dev/null <<OSA
+  if run_osascript >/dev/null <<OSA
 tell application "System Events" to tell process "$APP_PROCESS"
   click menu item "Settings…" of menu 1 of menu bar item 1 of menu bar 2
 end tell
@@ -248,7 +361,7 @@ OSA
 
   dismiss_menu
   open_status_menu || return 1
-  osascript >/dev/null <<OSA
+  run_osascript >/dev/null <<OSA
 tell application "System Events" to tell process "$APP_PROCESS"
   click menu item "Settings..." of menu 1 of menu bar item 1 of menu bar 2
 end tell
@@ -258,7 +371,7 @@ OSA
 wait_for_settings_window() {
   local deadline=$((SECONDS + 10))
   while ((SECONDS < deadline)); do
-    if [[ "$(osascript <<OSA 2>/dev/null
+    if [[ "$(run_osascript <<OSA 2>/dev/null
 tell application "System Events"
   if not (exists process "$APP_PROCESS") then return "missing"
   tell process "$APP_PROCESS"
@@ -283,7 +396,7 @@ fi
 
 window_has_static_text() {
   local expected="$1"
-  osascript <<OSA
+  run_osascript <<OSA
 on hasStaticText(elementRef, expectedText)
   try
     if class of elementRef is static text then
@@ -314,7 +427,7 @@ OSA
 
 select_tab() {
   local tab_name="$1"
-  osascript >/dev/null <<OSA
+  run_osascript >/dev/null <<OSA
 tell application "System Events" to tell process "$APP_PROCESS"
   click button "$tab_name" of toolbar 1 of window 1
 end tell
