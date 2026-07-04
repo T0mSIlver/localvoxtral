@@ -259,7 +259,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.ensureIncludePolishingCalls, [false])
 
         backendManager.resumeEnsure()
-        await Task.yield()
+        // A bare Task.yield() races the startup task's failure continuation
+        // (seen flaking in CI); await the tracked task instead.
+        await viewModel.managedStartupTask?.value
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
@@ -302,7 +304,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.applyBackendModeChange(.externalURL)
         viewModel.debugHandleDictationShortcutReleaseForTesting()
         backendManager.resumeEnsure()
-        await Task.yield()
+        await viewModel.managedStartupTask?.value
         await Task.yield()
 
         XCTAssertEqual(backendManager.ensureIncludePolishingCalls, [false])
