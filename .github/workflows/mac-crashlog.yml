@@ -39,8 +39,8 @@ jobs:
           MINUTES_BACK: ${{ inputs.minutes_back }}
         run: |
           log show --last "${MINUTES_BACK}m" --info --debug \
-            --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null \
-            | sed "s|$HOME|~|g" | tail -200 || echo "log query failed"
+            --predicate 'subsystem == "com.localvoxtral" AND process == "localvoxtral"' 2>/dev/null \
+            | sed "s|$HOME|~|g" | tail -150 || echo "log query failed"
 
       - name: Reproduce the app's model pre-download command (mlx-lm repo)
         run: |
