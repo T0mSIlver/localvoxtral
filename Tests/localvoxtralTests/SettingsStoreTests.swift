@@ -33,7 +33,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "ws://127.0.0.1:8000/v1/realtime"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://127.0.0.1:8000/v1/realtime")
     }
 
@@ -41,7 +41,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "wss://example.com/realtime"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "wss://example.com/realtime")
     }
 
@@ -49,7 +49,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "http://localhost:8000/v1/realtime"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://localhost:8000/v1/realtime")
     }
 
@@ -57,7 +57,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "https://example.com/realtime"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "wss://example.com/realtime")
     }
 
@@ -65,7 +65,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "myhost:9000/path"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://myhost:9000/path")
     }
 
@@ -73,7 +73,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = ""
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertNil(store.resolvedWebSocketURL)
     }
 
@@ -81,7 +81,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "   \n  "
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertNil(store.resolvedWebSocketURL)
     }
 
@@ -89,7 +89,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIEndpointURL = "  ws://example.com  "
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.resolvedWebSocketURL?.absoluteString, "ws://example.com")
     }
 
@@ -122,27 +122,33 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "settings.commit_interval_seconds"))
     }
 
-    // MARK: - backendMode migration
+    // MARK: - per-backend mode migration
 
-    func testBackendMode_freshDefaults_defaultToManagedLocal() {
+    func testBackendModes_freshDefaults_defaultToManagedLocal() {
         let store = makeStore()
 
-        XCTAssertEqual(store.backendMode, .managedLocal)
+        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(store.polishingBackendMode, .managedLocal)
     }
 
-    func testBackendMode_freshDefaults_persistsManagedLocalImmediately() {
+    func testBackendModes_freshDefaults_persistManagedLocalImmediately() {
         // The migration heuristic must persist its resolved value on first
         // init so it only ever runs once (a second store on the same defaults
         // must not re-derive from endpoint/env state).
         _ = makeStore()
 
         XCTAssertEqual(
-            defaults.string(forKey: "settings.backend_mode"),
+            defaults.string(forKey: "settings.dictation_backend_mode"),
             BackendMode.managedLocal.rawValue
         )
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.polishing_backend_mode"),
+            BackendMode.managedLocal.rawValue
+        )
+        XCTAssertNil(defaults.string(forKey: "settings.backend_mode"))
     }
 
-    func testBackendMode_persistedEndpointKey_migratesToExternalURL() {
+    func testBackendModes_persistedEndpointKey_migratesToExternalURL() {
         // An existing user who has already configured a realtime endpoint
         // keeps their working external setup.
         defaults.set(
@@ -152,10 +158,11 @@ final class SettingsStoreTests: XCTestCase {
 
         let store = makeStore()
 
-        XCTAssertEqual(store.backendMode, .externalURL)
+        XCTAssertEqual(store.dictationBackendMode, .externalURL)
+        XCTAssertEqual(store.polishingBackendMode, .externalURL)
     }
 
-    func testBackendMode_realtimeEndpointEnv_migratesToExternalURL() {
+    func testBackendModes_realtimeEndpointEnv_migratesToExternalURL() {
         // The REALTIME_ENDPOINT env var is also evidence of a pre-existing
         // external setup (e.g. launched from a wrapper script).
         let store = SettingsStore(
@@ -163,10 +170,11 @@ final class SettingsStoreTests: XCTestCase {
             environment: ["REALTIME_ENDPOINT": "ws://example.com/realtime"]
         )
 
-        XCTAssertEqual(store.backendMode, .externalURL)
+        XCTAssertEqual(store.dictationBackendMode, .externalURL)
+        XCTAssertEqual(store.polishingBackendMode, .externalURL)
     }
 
-    func testBackendMode_explicitStoredValueWinsOverEndpointHeuristic() {
+    func testBackendModes_legacyStoredValueSeedsBothNewModes() {
         // An explicit stored preference beats the endpoint/env heuristic in
         // both directions. Here a persisted endpoint would normally select
         // external, but an explicit managed_local preference must win.
@@ -178,31 +186,33 @@ final class SettingsStoreTests: XCTestCase {
 
         let store = makeStore()
 
-        XCTAssertEqual(store.backendMode, .managedLocal)
+        XCTAssertEqual(store.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(store.polishingBackendMode, .managedLocal)
+        XCTAssertEqual(defaults.string(forKey: "settings.backend_mode"), "managed_local")
+        XCTAssertEqual(defaults.string(forKey: "settings.dictation_backend_mode"), "managed_local")
+        XCTAssertEqual(defaults.string(forKey: "settings.polishing_backend_mode"), "managed_local")
     }
 
-    func testBackendMode_externalURL_roundTripsAcrossReload() {
+    func testBackendModes_roundTripIndependentlyAcrossReload() {
         let store = makeStore()
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
+        store.polishingBackendMode = .managedLocal
 
         XCTAssertEqual(
-            defaults.string(forKey: "settings.backend_mode"),
+            defaults.string(forKey: "settings.dictation_backend_mode"),
             "external_url"
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: "settings.polishing_backend_mode"),
+            "managed_local"
         )
 
         let reloadedStore = makeStore()
-        XCTAssertEqual(reloadedStore.backendMode, .externalURL)
+        XCTAssertEqual(reloadedStore.dictationBackendMode, .externalURL)
+        XCTAssertEqual(reloadedStore.polishingBackendMode, .managedLocal)
     }
 
-    func testBackendMode_managedLocal_roundTripsAcrossReload() {
-        let store = makeStore()
-        store.backendMode = .managedLocal
-
-        let reloadedStore = makeStore()
-        XCTAssertEqual(reloadedStore.backendMode, .managedLocal)
-    }
-
-    // MARK: - backendMode-dependent resolution
+    // MARK: - per-backend mode-dependent resolution
 
     func testResolvedWebSocketURL_managedLocal_returnsManagedEndpoint() {
         // A fresh store is managed; the user-typed endpoint must be ignored.
@@ -236,7 +246,7 @@ final class SettingsStoreTests: XCTestCase {
 
     func testTrimmedAPIKey_externalURL_returnsApiKey() {
         let store = makeStore()
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         store.apiKey = "  sk-external  "
 
         XCTAssertEqual(store.trimmedAPIKey, "sk-external")
@@ -268,7 +278,7 @@ final class SettingsStoreTests: XCTestCase {
 
     func testLLMPolishingConfiguration_externalURL_usesConfiguredEndpoint() {
         let store = makeStore()
-        store.backendMode = .externalURL
+        store.polishingBackendMode = .externalURL
         store.llmPolishingEnabled = true
         store.llmPolishingEndpointURL = "https://api.openai.com/v1/chat/completions"
         store.llmPolishingAPIKey = "sk-test"
@@ -283,13 +293,69 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.model, "gpt-4o-mini")
     }
 
+    func testBackendResolutionUsesIndependentDictationAndPolishingModes() {
+        let combinations: [(BackendMode, BackendMode)] = [
+            (.managedLocal, .managedLocal),
+            (.managedLocal, .externalURL),
+            (.externalURL, .managedLocal),
+            (.externalURL, .externalURL),
+        ]
+
+        for (dictationMode, polishingMode) in combinations {
+            let store = makeStore()
+            store.dictationBackendMode = dictationMode
+            store.polishingBackendMode = polishingMode
+            store.realtimeAPIEndpointURL = "ws://external.example/v1/realtime"
+            store.realtimeAPIModelName = "external-realtime-model"
+            store.apiKey = "  sk-realtime  "
+            store.llmPolishingEnabled = true
+            store.llmPolishingEndpointURL = "https://polish.example/v1/chat/completions"
+            store.llmPolishingAPIKey = "  sk-polish  "
+            store.llmPolishingModel = "external-polish-model"
+
+            let expectedRealtimeURL = dictationMode == .managedLocal
+                ? ManagedBackendEndpoints.realtimeURLString
+                : "ws://external.example/v1/realtime"
+            XCTAssertEqual(
+                store.resolvedWebSocketURL?.absoluteString,
+                expectedRealtimeURL,
+                "dictation=\(dictationMode.rawValue) polishing=\(polishingMode.rawValue)"
+            )
+            XCTAssertEqual(
+                store.effectiveModelName,
+                dictationMode == .managedLocal
+                    ? SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
+                    : "external-realtime-model"
+            )
+            XCTAssertEqual(
+                store.trimmedAPIKey,
+                dictationMode == .managedLocal ? "" : "sk-realtime"
+            )
+
+            let configuration = store.llmPolishingConfiguration
+            XCTAssertEqual(
+                configuration?.endpointURL.absoluteString,
+                polishingMode == .managedLocal
+                    ? ManagedBackendEndpoints.polishingURLString
+                    : "https://polish.example/v1/chat/completions"
+            )
+            XCTAssertEqual(configuration?.apiKey, polishingMode == .managedLocal ? "" : "sk-polish")
+            XCTAssertEqual(
+                configuration?.model,
+                polishingMode == .managedLocal
+                    ? SettingsStore.defaultLLMPolishingModel
+                    : "external-polish-model"
+            )
+        }
+    }
+
     // MARK: - effectiveModelName
 
     func testEffectiveModel_plainName() {
         let store = makeStore()
         store.realtimeAPIModelName = "my-model"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.effectiveModelName, "my-model")
     }
 
@@ -297,7 +363,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIModelName = "  my-model  "
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.effectiveModelName, "my-model")
     }
 
@@ -305,7 +371,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIModelName = "junk-line\nactual-model"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.effectiveModelName, "actual-model")
     }
 
@@ -313,7 +379,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIModelName = "some prefix model-name"
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(store.effectiveModelName, "model-name")
     }
 
@@ -321,7 +387,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIModelName = ""
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(
             store.effectiveModelName,
             SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
@@ -332,7 +398,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.realtimeAPIModelName = "   \n  "
         store.realtimeProvider = .realtimeAPI
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
         XCTAssertEqual(
             store.effectiveModelName,
             SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
@@ -522,7 +588,7 @@ final class SettingsStoreTests: XCTestCase {
         let store = makeStore()
         store.llmPolishingEnabled = true
         store.llmPolishingEndpointURL = "not a url"
-        store.backendMode = .externalURL
+        store.polishingBackendMode = .externalURL
 
         XCTAssertNil(store.llmPolishingConfiguration)
     }
@@ -533,7 +599,7 @@ final class SettingsStoreTests: XCTestCase {
         store.llmPolishingEndpointURL = "https://api.openai.com/v1/chat/completions"
         store.llmPolishingAPIKey = "  sk-test  "
         store.llmPolishingModel = "  gpt-4o-mini  "
-        store.backendMode = .externalURL
+        store.polishingBackendMode = .externalURL
 
         let configuration = store.llmPolishingConfiguration
         XCTAssertEqual(

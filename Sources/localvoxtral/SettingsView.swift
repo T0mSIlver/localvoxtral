@@ -67,7 +67,7 @@ struct SettingsView: View {
                 modelBinding: modelBinding
             )
             .tabItem {
-                Label("Realtime Endpoint", systemImage: "network")
+                Label("Endpoints", systemImage: "network")
             }
 
             DictationSettingsPane(
@@ -89,6 +89,11 @@ struct SettingsView: View {
             .tabItem {
                 Label("Text Processing", systemImage: "text.badge.checkmark")
             }
+
+            AboutSettingsPane(viewModel: viewModel)
+                .tabItem {
+                    Label("About", systemImage: "info.circle")
+                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -112,21 +117,30 @@ private struct ConnectionSettingsPane: View {
     let endpointBinding: Binding<String>
     let modelBinding: Binding<String>
 
-    private var backendModeBinding: Binding<BackendMode> {
+    private var dictationBackendModeBinding: Binding<BackendMode> {
         Binding(
-            get: { settings.backendMode },
+            get: { settings.dictationBackendMode },
             set: { newValue in
-                viewModel.applyBackendModeChange(newValue)
+                viewModel.applyDictationBackendModeChange(newValue)
+            }
+        )
+    }
+
+    private var polishingBackendModeBinding: Binding<BackendMode> {
+        Binding(
+            get: { settings.polishingBackendMode },
+            set: { newValue in
+                viewModel.applyPolishingBackendModeChange(newValue)
             }
         )
     }
 
     var body: some View {
         SettingsPage {
-            SettingsGroup(title: "Backend") {
+            SettingsGroup(title: "Dictation") {
                 SettingsFieldRow(title: "Mode") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: backendModeBinding) {
+                        Picker("", selection: dictationBackendModeBinding) {
                             ForEach(BackendMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
@@ -134,13 +148,13 @@ private struct ConnectionSettingsPane: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
 
-                        SettingsHelpText(settings.backendMode.description)
+                        SettingsHelpText(settings.dictationBackendMode.dictationDescription)
                     }
                 }
 
-                switch settings.backendMode {
+                switch settings.dictationBackendMode {
                 case .externalURL:
-                    SettingsFieldRow(title: "Realtime endpoint") {
+                    SettingsFieldRow(title: "Endpoint") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
                             .textFieldStyle(.roundedBorder)
                     }
@@ -155,30 +169,73 @@ private struct ConnectionSettingsPane: View {
                             .textFieldStyle(.roundedBorder)
                     }
                 case .managedLocal:
-                    ManagedBackendStatusRows(backendManager: backendManager)
+                    ManagedBackendStatusRow(
+                        title: "Status",
+                        spec: BackendCatalog.voxmlx,
+                        endpoint: ManagedBackendEndpoints.realtimeURLString,
+                        status: backendManager.voxmlxStatus
+                    )
+                }
+            }
+
+            SettingsGroup(title: "Polishing") {
+                SettingsFieldRow(title: "Mode") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: polishingBackendModeBinding) {
+                            ForEach(BackendMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        SettingsHelpText(settings.polishingBackendMode.polishingDescription)
+                    }
+                }
+
+                switch settings.polishingBackendMode {
+                case .externalURL:
+                    SettingsFieldRow(title: "Endpoint") {
+                        TextField(
+                            "http://127.0.0.1:8080/v1/chat/completions",
+                            text: $settings.llmPolishingEndpointURL
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "API key") {
+                        SecureField(
+                            "Required for remote providers",
+                            text: $settings.llmPolishingAPIKey
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "Model") {
+                        TextField(
+                            "mlx-community/Qwen3.5-0.8B-8bit",
+                            text: $settings.llmPolishingModel
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+                case .managedLocal:
+                    ManagedBackendStatusRow(
+                        title: "Status",
+                        spec: BackendCatalog.mlxLM,
+                        endpoint: ManagedBackendEndpoints.polishingURLString,
+                        status: backendManager.mlxLMStatus
+                    )
+                }
+
+                if settings.polishingBackendMode == .managedLocal, !settings.llmPolishingEnabled {
+                    SettingsHelpText(
+                        "LLM polishing is disabled - enable it in the Text Processing tab to start this backend."
+                    )
+                } else {
+                    SettingsHelpText("Used only while LLM polishing is enabled (Text Processing tab).")
                 }
             }
         }
-    }
-}
-
-private struct ManagedBackendStatusRows: View {
-    let backendManager: BackendManager
-
-    var body: some View {
-        ManagedBackendStatusRow(
-            title: "Dictation",
-            spec: BackendCatalog.voxmlx,
-            endpoint: ManagedBackendEndpoints.realtimeURLString,
-            status: backendManager.voxmlxStatus
-        )
-
-        ManagedBackendStatusRow(
-            title: "Polishing",
-            spec: BackendCatalog.mlxLM,
-            endpoint: ManagedBackendEndpoints.polishingURLString,
-            status: backendManager.mlxLMStatus
-        )
     }
 }
 
@@ -468,8 +525,11 @@ private struct TextProcessingSettingsPane: View {
                 if newValue, !wasEnabled {
                     viewModel.prepareLLMPolishingPromptAccessIfNeeded()
                 }
-                // Disabling polishing does not stop a managed mlx-lm process
-                // mid-run; it is stopped on quit or when switching to External URL.
+                // Turning polishing off stops the managed mlx-lm process
+                // (Managed local mode only). External URL mode owns no local
+                // process, and re-enabling stays lazy: the next dictation
+                // restarts it via the managed backend bootstrap.
+                viewModel.llmPolishingEnabledDidChange(newValue)
             }
         )
     }
@@ -507,30 +567,24 @@ private struct TextProcessingSettingsPane: View {
                         isOn: llmPolishingEnabledBinding
                     )
 
-                    if settings.llmPolishingEnabled {
-                        SettingsFieldRow(title: "Endpoint") {
-                            TextField(
-                                "http://127.0.0.1:8080/v1/chat/completions",
-                                text: $settings.llmPolishingEndpointURL
-                            )
-                            .textFieldStyle(.roundedBorder)
+                    // Live mirror of the polishing backend state at the point
+                    // of control, so the toggle <-> server relationship is
+                    // visible without tab-hopping (and the future inline model
+                    // download progress renders right here).
+                    switch settings.polishingBackendMode {
+                    case .managedLocal:
+                        SettingsFieldRow(title: "Backend") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ManagedBackendStatusLabel(status: viewModel.backendManager.mlxLMStatus)
+                                SettingsHelpText(
+                                    "Managed mlx-lm - starts with dictation while polishing is on. Details in the Endpoints tab."
+                                )
+                            }
                         }
-
-                        SettingsFieldRow(title: "API key") {
-                            SecureField(
-                                "Required for remote providers",
-                                text: $settings.llmPolishingAPIKey
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsFieldRow(title: "Model") {
-                            TextField(
-                                "mlx-community/Qwen3.5-0.8B-8bit",
-                                text: $settings.llmPolishingModel
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
+                    case .externalURL:
+                        SettingsHelpText(
+                            "Uses the polishing server configured in the Endpoints tab."
+                        )
                     }
                 }
                 .disabled(!isLLMPolishingAvailableInCurrentMode)
@@ -567,6 +621,53 @@ private struct TextProcessingSettingsPane: View {
                                 "User prompt template used for LLM polishing. Remove the {{replacement_dictionary}} placeholder if you do not want to send the dictionary to the LLM."
                         ),
                     ])
+                }
+            }
+        }
+    }
+}
+
+private struct AboutSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    private var appName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "localvoxtral"
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "dev"
+    }
+
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "dev"
+    }
+
+    var body: some View {
+        SettingsPage {
+            SettingsGroup(title: "Application") {
+                SettingsFieldRow(title: "Name") {
+                    Text(appName)
+                }
+
+                SettingsFieldRow(title: "Version") {
+                    Text("\(appVersion) (build \(appBuild))")
+                }
+            }
+
+            SettingsGroup(title: "Diagnostics") {
+                SettingsFieldRow(title: "Export") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Export Diagnostics…") {
+                            viewModel.exportDiagnostics()
+                        }
+
+                        SettingsHelpText(
+                            "Writes a redacted report to the Desktop; review before sharing."
+                        )
+                    }
                 }
             }
         }

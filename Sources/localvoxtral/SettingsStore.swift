@@ -80,12 +80,21 @@ enum BackendMode: String, CaseIterable, Identifiable {
         }
     }
 
-    var description: String {
+    var dictationDescription: String {
         switch self {
         case .managedLocal:
-            return "localvoxtral installs and runs the dictation and polishing backends on this Mac automatically."
+            return "localvoxtral installs and runs voxmlx for dictation on this Mac."
         case .externalURL:
-            return "Connect to a vLLM or OpenAI-compatible realtime endpoint you run yourself."
+            return "Use an OpenAI Realtime-compatible endpoint you run yourself."
+        }
+    }
+
+    var polishingDescription: String {
+        switch self {
+        case .managedLocal:
+            return "localvoxtral installs and runs mlx-lm for LLM polishing on this Mac."
+        case .externalURL:
+            return "Use an OpenAI-compatible chat completions endpoint you run yourself."
         }
     }
 }
@@ -150,6 +159,9 @@ final class SettingsStore {
         static let realtimeAPIEndpointURL = "settings.realtime_api_endpoint_url"
         static let apiKey = "settings.api_key"
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
+        static let dictationBackendMode = "settings.dictation_backend_mode"
+        static let polishingBackendMode = "settings.polishing_backend_mode"
+        // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
@@ -199,8 +211,12 @@ final class SettingsStore {
         didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
     }
 
-    var backendMode: BackendMode {
-        didSet { defaults.set(backendMode.rawValue, forKey: Keys.backendMode) }
+    var dictationBackendMode: BackendMode {
+        didSet { defaults.set(dictationBackendMode.rawValue, forKey: Keys.dictationBackendMode) }
+    }
+
+    var polishingBackendMode: BackendMode {
+        didSet { defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode) }
     }
 
     var realtimeAPIEndpointURL: String {
@@ -338,29 +354,11 @@ final class SettingsStore {
     ) {
         self.defaults = defaults
 
-        // Resolve backend mode. Order matters:
-        // 1. An explicit stored preference always wins.
-        // 2. Otherwise an existing user — one who has already configured an
-        //    endpoint via defaults or the REALTIME_ENDPOINT env var — keeps
-        //    their working external setup rather than being silently switched
-        //    to managed local.
-        // 3. A fresh install defaults to managed local.
-        // The resolved value is persisted immediately so the one-time
-        // heuristic in step 2 only ever runs once.
-        let resolvedBackendMode: BackendMode
-        if let storedBackendMode = defaults.string(forKey: Keys.backendMode),
-            let parsedBackendMode = BackendMode(rawValue: storedBackendMode)
-        {
-            resolvedBackendMode = parsedBackendMode
-        } else if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
-            || environment["REALTIME_ENDPOINT"] != nil
-        {
-            resolvedBackendMode = .externalURL
-        } else {
-            resolvedBackendMode = .managedLocal
-        }
-        backendMode = resolvedBackendMode
-        defaults.set(resolvedBackendMode.rawValue, forKey: Keys.backendMode)
+        let resolvedBackendModes = Self.resolveBackendModes(defaults: defaults, environment: environment)
+        dictationBackendMode = resolvedBackendModes.dictation
+        polishingBackendMode = resolvedBackendModes.polishing
+        defaults.set(resolvedBackendModes.dictation.rawValue, forKey: Keys.dictationBackendMode)
+        defaults.set(resolvedBackendModes.polishing.rawValue, forKey: Keys.polishingBackendMode)
 
         let configuredProvider = Self.loadString(
             defaults: defaults, key: Keys.realtimeProvider,
@@ -553,6 +551,38 @@ final class SettingsStore {
             : fallback
     }
 
+    private static func resolveBackendModes(
+        defaults: UserDefaults,
+        environment: [String: String]
+    ) -> (dictation: BackendMode, polishing: BackendMode) {
+        let storedDictationMode = defaults.string(forKey: Keys.dictationBackendMode)
+            .flatMap(BackendMode.init(rawValue:))
+        let storedPolishingMode = defaults.string(forKey: Keys.polishingBackendMode)
+            .flatMap(BackendMode.init(rawValue:))
+
+        if let storedDictationMode, let storedPolishingMode {
+            return (storedDictationMode, storedPolishingMode)
+        }
+
+        let migratedMode: BackendMode
+        if let storedBackendMode = defaults.string(forKey: Keys.backendMode),
+            let parsedBackendMode = BackendMode(rawValue: storedBackendMode)
+        {
+            migratedMode = parsedBackendMode
+        } else if defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
+            || environment["REALTIME_ENDPOINT"] != nil
+        {
+            migratedMode = .externalURL
+        } else {
+            migratedMode = .managedLocal
+        }
+
+        return (
+            storedDictationMode ?? migratedMode,
+            storedPolishingMode ?? migratedMode
+        )
+    }
+
     private static func loadModelName(
         defaults: UserDefaults,
         key: String,
@@ -575,7 +605,7 @@ final class SettingsStore {
         // `trimmedAPIKey` is only ever used as the realtime connection bearer
         // token (see RealtimeAPIWebSocketClient, which omits the Authorization
         // header when it is empty). Managed local servers need no key.
-        backendMode == .managedLocal ? "" : apiKey.trimmed
+        dictationBackendMode == .managedLocal ? "" : apiKey.trimmed
     }
 
     var effectiveModelName: String {
@@ -694,7 +724,7 @@ final class SettingsStore {
     }
 
     func effectiveModelName(for provider: RealtimeProvider) -> String {
-        if backendMode == .managedLocal {
+        if dictationBackendMode == .managedLocal {
             // Managed mode always serves the managed default model; a
             // user-typed override in external-mode fields is ignored.
             return RealtimeProvider.realtimeAPI.defaultModelName
@@ -712,7 +742,7 @@ final class SettingsStore {
     }
 
     func resolvedWebSocketURL(for provider: RealtimeProvider) -> URL? {
-        if backendMode == .managedLocal {
+        if dictationBackendMode == .managedLocal {
             return URL(string: ManagedBackendEndpoints.realtimeURLString)
         }
         let trimmed = endpointURL(for: provider).trimmed
@@ -759,7 +789,7 @@ final class SettingsStore {
 
     var llmPolishingConfiguration: LLMPolishingConfiguration? {
         guard llmPolishingEnabled else { return nil }
-        if backendMode == .managedLocal {
+        if polishingBackendMode == .managedLocal {
             guard let url = URL(string: ManagedBackendEndpoints.polishingURLString)
             else { return nil }
             return LLMPolishingConfiguration(

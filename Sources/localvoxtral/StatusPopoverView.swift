@@ -110,10 +110,6 @@ struct StatusPopoverView: View {
                 openSettings()
             }
 
-            Button("Export Diagnostics…") {
-                exportDiagnostics()
-            }
-
             if !viewModel.isAccessibilityTrusted {
                 Button("Enable Accessibility…") {
                     viewModel.requestAccessibilityPermission()
@@ -182,45 +178,4 @@ struct StatusPopoverView: View {
         NSWorkspace.shared.open(url)
     }
 
-    /// Writes a local-first diagnostics report to the Desktop. The report
-    /// contains only non-secret configuration/status (no API keys, no dictated
-    /// content). See `DiagnosticsExporter` for the redaction boundary.
-    private func exportDiagnostics() {
-        let backendManager = viewModel.backendManager
-        let snapshot = DiagnosticsExporter.makeSnapshot(
-            settings: viewModel.settings,
-            voxmlxStatus: backendManager.voxmlxStatus,
-            mlxLMStatus: backendManager.mlxLMStatus,
-            voxmlxRecentOutput: backendManager.recentOutput(for: BackendCatalog.voxmlx),
-            mlxLMRecentOutput: backendManager.recentOutput(for: BackendCatalog.mlxLM)
-        )
-
-        guard let desktop = FileManager.default.urls(
-            for: .desktopDirectory,
-            in: .userDomainMask
-        ).first else {
-            Log.diagnostics.error("diagnostics export failed: Desktop directory unavailable")
-            return
-        }
-
-        // Snapshot is built on the MainActor above; rendering and the file
-        // write happen off-main so a slow/iCloud-backed Desktop can never
-        // beachball the menu bar app.
-        let exportedAt = Date()
-        Task.detached(priority: .utility) {
-            do {
-                let writtenURL = try DiagnosticsExporter.writeReport(
-                    snapshot: snapshot,
-                    to: desktop,
-                    now: exportedAt
-                )
-                Log.diagnostics.info("diagnostics exported: \(writtenURL.path, privacy: .public)")
-                await MainActor.run {
-                    NSWorkspace.shared.activateFileViewerSelecting([writtenURL])
-                }
-            } catch {
-                Log.diagnostics.error("diagnostics export failed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-    }
 }

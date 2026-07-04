@@ -14,7 +14,7 @@ Unlike Whisper-based tools that transcribe after you stop speaking, Voxtral Real
 On Apple Silicon, `localvoxtral` + `voxmlx` + `mlx-lm` provides a fully local path (audio + inference + LLM polishing stay on-device), improving privacy and avoiding API costs.
 
 On Apple Silicon the default **Managed local** mode runs everything for you: localvoxtral installs and manages `voxmlx` (dictation) and `mlx-lm` (LLM polishing) itself.
-**External URL** mode connects to any OpenAI Realtime-compatible endpoint you run yourself (e.g. `vLLM` on NVIDIA GPU), and LLM polishing to any OpenAI /chat/completions endpoint.
+You can switch dictation and polishing independently to **External URL** mode for OpenAI-compatible endpoints you run yourself.
 
 Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model, but it works with any OpenAI-compatible Realtime API backend and model.
 
@@ -80,12 +80,13 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
 
 - Open **Settings** from the menu bar popover to set:
   - Dictation trigger: single modifier key (tap/hold) or per-mode keyboard shortcuts (`Toggle` / `Push to Talk`)
-  - Backend mode (`Managed local` / `External URL`)
+  - Dictation and polishing backend modes (`Managed local` / `External URL`)
   - Realtime endpoint (URL, model name, API key)
   - Auto-copy final segment
   - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Replacement dictionary (overlay buffer output mode only)
-  - LLM polishing endpoint (URL, model name, API key - overlay buffer output mode only)
+  - LLM polishing endpoint (URL, model name, API key) — in the **Endpoints** tab when polishing is in External URL mode (overlay buffer output mode)
+  - Export Diagnostics in **About** — writes a redacted local report to the Desktop
   - Open the shared config folder for `replacement_dictionary.toml`, `llm_system_prompt.toml`, and `llm_user_prompt.toml`
 
 The shared config directory lives at `~/Library/Application Support/localvoxtral/config`.
@@ -94,7 +95,7 @@ The shared config directory lives at `~/Library/Application Support/localvoxtral
 
 ### Managed local (default)
 
-In Managed local mode, localvoxtral installs pinned wheel releases of the backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use, and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
+In Managed local mode, localvoxtral installs pinned wheel releases of the selected managed backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use, and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
 
 **Dictation — voxmlx.** [voxmlx](https://github.com/awni/voxmlx) running [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit) on M1 Pro, streaming partial text fast enough for realtime dictation (latency and throughput vary by hardware, model, and quantization). The managed build is [this fork](https://github.com/T0mSIlver/voxmlx), which adds a WebSocket server that speaks the OpenAI Realtime API protocol, memory-management optimizations, and managed-launch support (readiness signal + parent-pid watchdog).
 
@@ -109,7 +110,7 @@ VLLM_DISABLE_COMPILE_CACHE=1
 vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudagraph_mode": "PIECEWISE"}'
 ```
 
-Any other OpenAI Realtime-compatible endpoint works the same way — set it (plus model name and API key if needed) in **Settings → Connection** with backend mode `External URL`.
+Any other OpenAI Realtime-compatible endpoint works the same way — set the dictation backend to `External URL` in **Settings → Endpoints**, then enter the URL, model name, and API key if needed.
 
 ## Roadmap
 
@@ -132,8 +133,8 @@ Any other OpenAI Realtime-compatible endpoint works the same way — set it (plu
   Menubar icon
 </p>
 
-| Realtime Endpoint | Dictation |
+| Endpoints | Dictation |
 | --- | --- |
-| ![localvoxtral realtime endpoint settings](assets/settings-realtime-endpoint.png) | ![localvoxtral dictation settings](assets/settings-dictation.png) |
+| ![localvoxtral endpoints settings](assets/settings-endpoints.png) | ![localvoxtral dictation settings](assets/settings-dictation.png) |
 | Text Processing | Popover |
 | ![localvoxtral text processing settings](assets/settings-text-processing.png) | ![localvoxtral popover view](assets/popover.png) |
