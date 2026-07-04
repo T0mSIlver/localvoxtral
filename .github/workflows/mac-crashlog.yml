@@ -55,9 +55,17 @@ jobs:
           export UV_CACHE_DIR="$B/uv-cache" UV_PYTHON_INSTALL_DIR="$B/python" \
                  UV_TOOL_DIR="$B/tools" UV_TOOL_BIN_DIR="$B/bin" \
                  LOCALVOXTRAL_HF_EMIT_INTERVAL=0
-          "$UV" run --python 3.12 \
+          # Faithful to the app: minimal env (PATH/HOME + UV vars only) and
+          # the full mlx-lm include pattern set.
+          env -i PATH="$PATH" HOME="$HOME" \
+            UV_CACHE_DIR="$UV_CACHE_DIR" UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" \
+            UV_TOOL_DIR="$UV_TOOL_DIR" UV_TOOL_BIN_DIR="$UV_TOOL_BIN_DIR" \
+            "$UV" run --python 3.12 \
             --with 'huggingface_hub<2' --with 'tqdm<5' \
-            python -u "$SCRIPT" mlx-community/Qwen3.5-0.8B-8bit --include '*.json' \
+            python -u "$SCRIPT" mlx-community/Qwen3.5-0.8B-8bit \
+            --include '*.json' --include 'model*.safetensors' --include '*.py' \
+            --include 'tokenizer.model' --include '*.tiktoken' --include 'tiktoken.model' \
+            --include '*.txt' --include '*.jsonl' --include '*.jinja' \
             > /tmp/dlprobe.out 2>&1 &
           pid=$!
           (sleep 90 && kill "$pid" 2>/dev/null) &
