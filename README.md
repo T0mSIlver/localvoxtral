@@ -85,7 +85,7 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
   - Auto-copy final segment
   - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Replacement dictionary (overlay buffer output mode only)
-  - LLM polishing endpoint (URL, model name, API key - overlay buffer output mode only)
+  - LLM polishing endpoint (URL, model name, API key) — in the **Endpoints** tab, External URL mode only (overlay buffer output mode)
   - Open the shared config folder for `replacement_dictionary.toml`, `llm_system_prompt.toml`, and `llm_user_prompt.toml`
 
 The shared config directory lives at `~/Library/Application Support/localvoxtral/config`.
@@ -132,8 +132,8 @@ Any other OpenAI Realtime-compatible endpoint works the same way — set it (plu
   Menubar icon
 </p>
 
-| Realtime Endpoint | Dictation |
+| Endpoints | Dictation |
 | --- | --- |
-| ![localvoxtral realtime endpoint settings](assets/settings-realtime-endpoint.png) | ![localvoxtral dictation settings](assets/settings-dictation.png) |
+| ![localvoxtral endpoints settings](assets/settings-endpoints.png) | ![localvoxtral dictation settings](assets/settings-dictation.png) |
 | Text Processing | Popover |
 | ![localvoxtral text processing settings](assets/settings-text-processing.png) | ![localvoxtral popover view](assets/popover.png) |

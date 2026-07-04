@@ -133,6 +133,27 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.mlxLMStatus, .stopped)
     }
 
+    func testStopPolishingStopsOnlyMLXLM() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(includePolishing: true)
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+
+        await manager.stopPolishing()
+
+        // mlx-lm is stopped...
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.mlxLM.displayName]?.stopCallCount, 1)
+        XCTAssertEqual(manager.mlxLMStatus, .stopped)
+        // ...while voxmlx (dictation) is untouched and stays ready.
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName]?.stopCallCount, 0)
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+    }
+
     func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()

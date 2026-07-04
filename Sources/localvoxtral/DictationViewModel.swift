@@ -193,6 +193,10 @@ final class DictationViewModel {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
+    // Stops the managed mlx-lm (polishing) process when LLM polishing is turned
+    // off in Managed local mode. Kept awaitable so tests can await the shutdown.
+    @ObservationIgnored
+    var polishingShutdownTask: Task<Void, Never>?
     @ObservationIgnored
     var audioSendTask: Task<Void, Never>?
     @ObservationIgnored
@@ -389,6 +393,7 @@ final class DictationViewModel {
         commitTask?.cancel()
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
+        polishingShutdownTask?.cancel()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
@@ -703,6 +708,20 @@ final class DictationViewModel {
         // mlx-lm is already running, it stays up until quit or a mode switch.
         Task { @MainActor [backendManager] in
             await backendManager.stopAll()
+        }
+    }
+
+    /// React to the LLM polishing enable toggle. Disabling polishing in Managed
+    /// local mode stops the managed mlx-lm process so it stops holding memory.
+    /// External URL mode owns no local process, and enabling (or re-enabling)
+    /// stays lazy: the next dictation's `ensureReady(includePolishing: true)`
+    /// starts mlx-lm again. Any polish request in flight when the process stops
+    /// fails, and the existing polish-failure fallback commits the raw text.
+    func llmPolishingEnabledDidChange(_ enabled: Bool) {
+        guard !enabled, settings.backendMode == .managedLocal else { return }
+        polishingShutdownTask?.cancel()
+        polishingShutdownTask = Task { @MainActor [backendManager] in
+            await backendManager.stopPolishing()
         }
     }
 

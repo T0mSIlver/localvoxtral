@@ -66,6 +66,9 @@ protocol ManagedBackendManaging: AnyObject {
 
     func ensureReady(includePolishing: Bool) async throws
     func stopAll() async
+    /// Stop only the managed mlx-lm (polishing) process, leaving voxmlx
+    /// (dictation) untouched. A no-op if mlx-lm was never started.
+    func stopPolishing() async
     /// Recent supervisor output lines for the given backend, or empty if the
     /// supervisor has not been created yet (backend never started). For local
     /// diagnostics export only.
@@ -145,6 +148,18 @@ final class BackendManager: ManagedBackendManaging {
         if voxmlxSupervisor != nil {
             voxmlxStatus = .stopped
         }
+        if mlxLMSupervisor != nil {
+            mlxLMStatus = .stopped
+        }
+    }
+
+    func stopPolishing() async {
+        // Stop only the polishing supervisor. voxmlx (dictation) keeps running
+        // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
+        // branch: cancel the mirror task and pin the status to .stopped.
+        await mlxLMSupervisor?.stop()
+        mlxLMStateMirrorTask?.cancel()
+        mlxLMStateMirrorTask = nil
         if mlxLMSupervisor != nil {
             mlxLMStatus = .stopped
         }

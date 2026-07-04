@@ -347,6 +347,48 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNotEqual(viewModel.statusText, "Invalid endpoint URL.")
     }
 
+    // MARK: - LLM polishing enable toggle stops managed mlx-lm
+
+    func testLLMPolishingDisabledInManagedModeStopsPolishing() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(false)
+        // The shutdown runs in a tracked task; await it deterministically
+        // rather than racing on Task.yield().
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+    }
+
+    func testLLMPolishingDisabledInExternalModeDoesNotStopPolishing() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .externalURL
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(false)
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
+        XCTAssertNil(viewModel.polishingShutdownTask)
+    }
+
+    func testLLMPolishingEnabledInManagedModeDoesNotStopPolishing() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(true)
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
+        XCTAssertNil(viewModel.polishingShutdownTask)
+    }
+
     // MARK: - Helpers
 
     private func makeViewModel(
@@ -419,6 +461,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     var suspendEnsure = false
     private(set) var ensureIncludePolishingCalls: [Bool] = []
     private(set) var stopAllCallCount = 0
+    private(set) var stopPolishingCallCount = 0
     private var ensureStartedContinuation: CheckedContinuation<Void, Never>?
     private var ensureResumeContinuation: CheckedContinuation<Void, Never>?
 
@@ -445,6 +488,10 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
 
     func stopAll() async {
         stopAllCallCount += 1
+    }
+
+    func stopPolishing() async {
+        stopPolishingCallCount += 1
     }
 
     func recentOutput(for spec: ManagedBackendSpec) -> [String] {

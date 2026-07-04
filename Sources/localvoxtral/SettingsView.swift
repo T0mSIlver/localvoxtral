@@ -67,7 +67,7 @@ struct SettingsView: View {
                 modelBinding: modelBinding
             )
             .tabItem {
-                Label("Realtime Endpoint", systemImage: "network")
+                Label("Endpoints", systemImage: "network")
             }
 
             DictationSettingsPane(
@@ -156,6 +156,39 @@ private struct ConnectionSettingsPane: View {
                     }
                 case .managedLocal:
                     ManagedBackendStatusRows(backendManager: backendManager)
+                }
+            }
+
+            // The polishing server is only user-configurable in External URL
+            // mode. In Managed local mode the endpoint is fixed and its status
+            // is shown by ManagedBackendStatusRows above (Polishing row).
+            if settings.backendMode == .externalURL {
+                SettingsGroup(title: "Polishing") {
+                    SettingsFieldRow(title: "Endpoint") {
+                        TextField(
+                            "http://127.0.0.1:8080/v1/chat/completions",
+                            text: $settings.llmPolishingEndpointURL
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "API key") {
+                        SecureField(
+                            "Required for remote providers",
+                            text: $settings.llmPolishingAPIKey
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsFieldRow(title: "Model") {
+                        TextField(
+                            "mlx-community/Qwen3.5-0.8B-8bit",
+                            text: $settings.llmPolishingModel
+                        )
+                        .textFieldStyle(.roundedBorder)
+                    }
+
+                    SettingsHelpText("Used when LLM polishing is enabled (Text Processing tab).")
                 }
             }
         }
@@ -468,8 +501,11 @@ private struct TextProcessingSettingsPane: View {
                 if newValue, !wasEnabled {
                     viewModel.prepareLLMPolishingPromptAccessIfNeeded()
                 }
-                // Disabling polishing does not stop a managed mlx-lm process
-                // mid-run; it is stopped on quit or when switching to External URL.
+                // Turning polishing off stops the managed mlx-lm process
+                // (Managed local mode only). External URL mode owns no local
+                // process, and re-enabling stays lazy: the next dictation
+                // restarts it via ensureReady(includePolishing: true).
+                viewModel.llmPolishingEnabledDidChange(newValue)
             }
         )
     }
@@ -507,31 +543,9 @@ private struct TextProcessingSettingsPane: View {
                         isOn: llmPolishingEnabledBinding
                     )
 
-                    if settings.llmPolishingEnabled {
-                        SettingsFieldRow(title: "Endpoint") {
-                            TextField(
-                                "http://127.0.0.1:8080/v1/chat/completions",
-                                text: $settings.llmPolishingEndpointURL
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsFieldRow(title: "API key") {
-                            SecureField(
-                                "Required for remote providers",
-                                text: $settings.llmPolishingAPIKey
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsFieldRow(title: "Model") {
-                            TextField(
-                                "mlx-community/Qwen3.5-0.8B-8bit",
-                                text: $settings.llmPolishingModel
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-                    }
+                    SettingsHelpText(
+                        "Configure the polishing server (endpoint, model, API key) in the Endpoints tab. Only needed in External URL mode; the managed backend needs no configuration."
+                    )
                 }
                 .disabled(!isLLMPolishingAvailableInCurrentMode)
                 .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)

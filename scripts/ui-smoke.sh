@@ -451,17 +451,17 @@ assert_tab() {
   fi
 }
 
-assert_tab "Realtime Endpoint" "Backend"
+assert_tab "Endpoints" "Backend"
 assert_tab "Dictation" "Start dictation with"
 assert_tab "Text Processing" "Replacements"
 
-select_tab "Realtime Endpoint" >/dev/null 2>&1 || true
+select_tab "Endpoints" >/dev/null 2>&1 || true
 sleep 0.5
 if [[ "$(window_has_static_text "voxmlx - ws://127.0.0.1:8471/v1/realtime" 2>/dev/null || true)" == "found" ]] \
   && [[ "$(window_has_static_text "mlx-lm - http://127.0.0.1:8472/v1/chat/completions" 2>/dev/null || true)" == "found" ]]; then
-  record_pass "Managed-mode Realtime Endpoint pane shows dictation and polishing backend rows."
+  record_pass "Managed-mode Endpoints pane shows dictation and polishing backend rows."
 else
-  record_fail "Managed-mode Realtime Endpoint pane did not show both expected backend rows."
+  record_fail "Managed-mode Endpoints pane did not show both expected backend rows."
 fi
 
 quit_app
