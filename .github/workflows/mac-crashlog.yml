@@ -55,10 +55,17 @@ jobs:
           export UV_CACHE_DIR="$B/uv-cache" UV_PYTHON_INSTALL_DIR="$B/python" \
                  UV_TOOL_DIR="$B/tools" UV_TOOL_BIN_DIR="$B/bin" \
                  LOCALVOXTRAL_HF_EMIT_INTERVAL=0
-          /opt/homebrew/bin/gtimeout 90 "$UV" run --python 3.12 \
+          "$UV" run --python 3.12 \
             --with 'huggingface_hub<2' --with 'tqdm<5' \
-            python -u "$SCRIPT" mlx-community/Qwen3.5-0.8B-8bit --include '*.json' 2>&1 \
-            | sed "s|$HOME|~|g" | tail -30 || echo "exit: $?"
+            python -u "$SCRIPT" mlx-community/Qwen3.5-0.8B-8bit --include '*.json' \
+            > /tmp/dlprobe.out 2>&1 &
+          pid=$!
+          (sleep 90 && kill "$pid" 2>/dev/null) &
+          watchdog=$!
+          wait "$pid"; code=$?
+          kill "$watchdog" 2>/dev/null || true
+          echo "downloader exit code: $code"
+          sed "s|$HOME|~|g" /tmp/dlprobe.out | tail -40
 
       - name: List running localvoxtral instances
         run: |
