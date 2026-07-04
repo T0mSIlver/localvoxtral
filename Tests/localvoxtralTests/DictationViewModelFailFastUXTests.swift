@@ -247,6 +247,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
+        // This test reaches beginDictationSession, which arms the real
+        // connect-timeout timer on a process-retained view model; without
+        // this suppression the timer's failure alert fires ~10s later inside
+        // whatever test is then running (field flake, 2026-07-05).
+        viewModel.isShowingConnectionFailureAlert = true
         viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
         retainForTestProcessLifetime(viewModel)
 

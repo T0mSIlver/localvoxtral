@@ -1044,6 +1044,14 @@ extension DictationViewModel {
         isShowingConnectionFailureAlert = true
         defer { isShowingConnectionFailureAlert = false }
 
+        // NSApp is nil in processes without an NSApplication (unit tests,
+        // headless tools); an alert cannot be presented there and force-
+        // unwrapping aborts the process (field flake: a leaked connect-timeout
+        // timer SIGTRAPed the test runner mid-suite).
+        guard NSApp != nil else {
+            Log.dictation.error("connection-failure alert skipped: no NSApplication in this process")
+            return
+        }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
