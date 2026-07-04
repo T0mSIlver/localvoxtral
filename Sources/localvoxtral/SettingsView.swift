@@ -138,9 +138,16 @@ private struct ConnectionSettingsPane: View {
                     }
                 }
 
+                }
+
+            // Constant section structure across modes (owner rule): one group
+            // per backend function — Dictation and Polishing — and only each
+            // group's CONTENT switches between managed status and external
+            // config. The section count must never change with the mode.
+            SettingsGroup(title: "Dictation") {
                 switch settings.backendMode {
                 case .externalURL:
-                    SettingsFieldRow(title: "Realtime endpoint") {
+                    SettingsFieldRow(title: "Endpoint") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
                             .textFieldStyle(.roundedBorder)
                     }
@@ -155,15 +162,18 @@ private struct ConnectionSettingsPane: View {
                             .textFieldStyle(.roundedBorder)
                     }
                 case .managedLocal:
-                    ManagedBackendStatusRows(backendManager: backendManager)
+                    ManagedBackendStatusRow(
+                        title: "Status",
+                        spec: BackendCatalog.voxmlx,
+                        endpoint: ManagedBackendEndpoints.realtimeURLString,
+                        status: backendManager.voxmlxStatus
+                    )
                 }
             }
 
-            // The polishing server is only user-configurable in External URL
-            // mode. In Managed local mode the endpoint is fixed and its status
-            // is shown by ManagedBackendStatusRows above (Polishing row).
-            if settings.backendMode == .externalURL {
-                SettingsGroup(title: "Polishing") {
+            SettingsGroup(title: "Polishing") {
+                switch settings.backendMode {
+                case .externalURL:
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(
                             "http://127.0.0.1:8080/v1/chat/completions",
@@ -187,31 +197,18 @@ private struct ConnectionSettingsPane: View {
                         )
                         .textFieldStyle(.roundedBorder)
                     }
-
-                    SettingsHelpText("Used when LLM polishing is enabled (Text Processing tab).")
+                case .managedLocal:
+                    ManagedBackendStatusRow(
+                        title: "Status",
+                        spec: BackendCatalog.mlxLM,
+                        endpoint: ManagedBackendEndpoints.polishingURLString,
+                        status: backendManager.mlxLMStatus
+                    )
                 }
+
+                SettingsHelpText("Used only while LLM polishing is enabled (Text Processing tab).")
             }
         }
-    }
-}
-
-private struct ManagedBackendStatusRows: View {
-    let backendManager: BackendManager
-
-    var body: some View {
-        ManagedBackendStatusRow(
-            title: "Dictation",
-            spec: BackendCatalog.voxmlx,
-            endpoint: ManagedBackendEndpoints.realtimeURLString,
-            status: backendManager.voxmlxStatus
-        )
-
-        ManagedBackendStatusRow(
-            title: "Polishing",
-            spec: BackendCatalog.mlxLM,
-            endpoint: ManagedBackendEndpoints.polishingURLString,
-            status: backendManager.mlxLMStatus
-        )
     }
 }
 
