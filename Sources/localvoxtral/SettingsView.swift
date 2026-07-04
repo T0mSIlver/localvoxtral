@@ -206,7 +206,13 @@ private struct ConnectionSettingsPane: View {
                     )
                 }
 
-                SettingsHelpText("Used only while LLM polishing is enabled (Text Processing tab).")
+                if settings.backendMode == .managedLocal, !settings.llmPolishingEnabled {
+                    SettingsHelpText(
+                        "LLM polishing is disabled - enable it in the Text Processing tab to start this backend."
+                    )
+                } else {
+                    SettingsHelpText("Used only while LLM polishing is enabled (Text Processing tab).")
+                }
             }
         }
     }
@@ -540,9 +546,25 @@ private struct TextProcessingSettingsPane: View {
                         isOn: llmPolishingEnabledBinding
                     )
 
-                    SettingsHelpText(
-                        "Configure the polishing server (endpoint, model, API key) in the Endpoints tab. Only needed in External URL mode; the managed backend needs no configuration."
-                    )
+                    // Live mirror of the polishing backend state at the point
+                    // of control, so the toggle <-> server relationship is
+                    // visible without tab-hopping (and the future inline model
+                    // download progress renders right here).
+                    switch settings.backendMode {
+                    case .managedLocal:
+                        SettingsFieldRow(title: "Backend") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ManagedBackendStatusLabel(status: viewModel.backendManager.mlxLMStatus)
+                                SettingsHelpText(
+                                    "Managed mlx-lm - starts with dictation while polishing is on. Details in the Endpoints tab."
+                                )
+                            }
+                        }
+                    case .externalURL:
+                        SettingsHelpText(
+                            "Uses the polishing server configured in the Endpoints tab."
+                        )
+                    }
                 }
                 .disabled(!isLLMPolishingAvailableInCurrentMode)
                 .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)
