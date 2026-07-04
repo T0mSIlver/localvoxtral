@@ -266,8 +266,13 @@ final class BackendProcessSupervisor {
     }
 
     private func attachOutputReader(to pipe: Pipe, source: String) {
+        // Capture the raw descriptor while the handle is known-valid;
+        // availableData inside the handler can raise an uncatchable ObjC
+        // exception if cleanup() closes the pipe while a callback is in
+        // flight (same abort class as the PipeLineReader field crash).
+        let descriptor = pipe.fileHandleForReading.fileDescriptor
         pipe.fileHandleForReading.readabilityHandler = { [weak self] fileHandle in
-            let data = fileHandle.availableData
+            let data = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
             guard !data.isEmpty else {
                 fileHandle.readabilityHandler = nil
                 return
