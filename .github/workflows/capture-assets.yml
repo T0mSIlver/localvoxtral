@@ -1,0 +1,49 @@
+name: Capture README Assets
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: capture-assets-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture-assets:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check capture script
+        id: guard
+        run: |
+          if [[ ! -f scripts/capture-readme-assets.sh ]]; then
+            echo "scripts/capture-readme-assets.sh is not present on this ref; skipping README screenshot capture."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
+      - name: Package app bundle
+        if: steps.guard.outputs.present == 'true'
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+        run: ./scripts/package_app.sh release
+
+      - name: Capture README screenshots
+        id: capture
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          bash scripts/capture-readme-assets.sh dist/localvoxtral.app
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload README screenshots
+        if: steps.capture.outputs.ran == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-screenshots
+          path: assets/*.png
+          if-no-files-found: error
+          retention-days: 14
