@@ -6,12 +6,16 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|package|exec] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|package|exec|diag|applog|voxlog|svc-status] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
+#     diag         build-host diagnostic summary (gate v2 required)
+#     applog       unified log for process == "localvoxtral" (gate v2 required)
+#     voxlog       tail ~/Library/Logs/voxmlx.log (gate v2 required)
+#     svc-status   launchctl status for com.localvoxtral.voxmlx (gate v2 required)
 #
 # Examples:
 #   ./scripts/remote-build.sh
@@ -47,6 +51,38 @@ fi
 CMD="${1:-test}"
 if [[ $# -gt 0 ]]; then shift; fi
 
+quote_remote_command() {
+  local first="${1:?}"
+  shift
+  printf '%q' "$first"
+  if [[ $# -gt 0 ]]; then
+    printf ' %q' "$@"
+  fi
+}
+
+case "$CMD" in
+  diag|svc-status)
+    if [[ $# -ne 0 ]]; then
+      echo "$CMD does not accept extra arguments" >&2
+      exit 1
+    fi
+    REMOTE_DIAG_CMD="$(quote_remote_command "$CMD")"
+    echo "==> Running on $HOST: $REMOTE_DIAG_CMD"
+    ssh "$HOST" "$REMOTE_DIAG_CMD"
+    exit 0
+    ;;
+  applog|voxlog)
+    if [[ $# -gt 1 ]]; then
+      echo "$CMD accepts at most one numeric argument" >&2
+      exit 1
+    fi
+    REMOTE_DIAG_CMD="$(quote_remote_command "$CMD" "$@")"
+    echo "==> Running on $HOST: $REMOTE_DIAG_CMD"
+    ssh "$HOST" "$REMOTE_DIAG_CMD"
+    exit 0
+    ;;
+esac
+
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests)
 
 case "$CMD" in
@@ -66,7 +102,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|package|exec] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
