@@ -21,6 +21,19 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 5
     steps:
+      - name: Snapshot non-secret settings defaults
+        run: |
+          # Allowlisted, non-secret keys only — Actions logs are public.
+          for key in settings.dictation_backend_mode settings.polishing_backend_mode \
+                     settings.llm_polishing_enabled settings.dictation_output_mode \
+                     settings.dictation_shortcut_mode settings.onboarding_completed \
+                     settings.backend_mode settings.auto_copy_enabled; do
+            printf '%s = ' "$key"
+            defaults read com.localvoxtral.app "$key" 2>/dev/null || echo "<absent>"
+          done
+          echo "--- backend processes:"
+          pgrep -fl 'voxmlx-serve|mlx_lm' | sed "s|$HOME|~|g" || echo "none"
+
       - name: List running localvoxtral instances
         run: |
           pids=$(pgrep -x localvoxtral || true)
