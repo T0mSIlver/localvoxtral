@@ -466,23 +466,31 @@ private final class ProcessLineCollector: @unchecked Sendable {
 // Internal (not private) so the crash regression tests can drive it directly.
 final class PipeLineReader: @unchecked Sendable {
     private let fileHandle: FileHandle
+    // Captured once while the handle is known-valid; the read loop uses the
+    // raw descriptor so no NSFileHandle method can raise mid-read.
+    private let descriptor: Int32
     private let onLine: @Sendable (String) -> Void
     private let state = PipeLineReaderState()
     private var thread: Thread?
 
     init(fileHandle: FileHandle, onLine: @Sendable @escaping (String) -> Void) {
         self.fileHandle = fileHandle
+        self.descriptor = fileHandle.fileDescriptor
         self.onLine = onLine
     }
 
     func start() {
+        let descriptor = descriptor
         let fileHandle = fileHandle
         let onLine = onLine
         let state = state
         let thread = Thread {
+            // Retain the FileHandle for the loop's lifetime so the descriptor
+            // is not closed-and-reused underneath the reads.
+            withExtendedLifetime(fileHandle) {}
             var buffer = Data()
             while true {
-                let chunk = fileHandle.availableData
+                let chunk = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
                 if chunk.isEmpty {
                     break
                 }
