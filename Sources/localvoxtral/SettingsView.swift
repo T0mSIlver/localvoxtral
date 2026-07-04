@@ -637,7 +637,7 @@ private struct TextProcessingSettingsPane: View {
             SettingsGroup(title: "Replacements") {
                 ToggleSettingRow(
                     title: "Exact match replacements",
-                    subtitle: "Applied in both output modes.",
+                    subtitle: nil,
                     isOn: $settings.replacementDictionaryEnabled
                 )
                 .help(
