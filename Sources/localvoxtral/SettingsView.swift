@@ -217,9 +217,9 @@ private struct ConnectionSettingsPane: View {
 
                 if !isLLMPolishingAvailableInCurrentMode {
                     SettingsAvailabilityCard(
-                        title: "Unavailable in Live Auto-Paste output mode",
+                        title: "Unavailable in Live Auto-Paste mode",
                         message:
-                            "LLM polishing runs before Overlay Buffer commits. Switch Dictation > Output mode to Overlay Buffer to enable it.",
+                            "Set Dictation > Output mode to Overlay Buffer to enable it.",
                         systemImage: "exclamationmark.triangle.fill",
                         tint: .orange
                     )
@@ -227,9 +227,8 @@ private struct ConnectionSettingsPane: View {
 
                 Group {
                     ToggleSettingRow(
-                        title: "LLM polishing",
-                        subtitle:
-                            "Send dictation text to an OpenAI-compatible chat completions server.",
+                        title: "Enable",
+                        subtitle: nil,
                         isOn: llmPolishingEnabledBinding
                     )
 
@@ -265,14 +264,6 @@ private struct ConnectionSettingsPane: View {
                             endpoint: ManagedBackendEndpoints.polishingURLString,
                             status: backendManager.mlxLMStatus
                         )
-                    }
-
-                    if settings.polishingBackendMode == .managedLocal, !settings.llmPolishingEnabled {
-                        SettingsHelpText(
-                            "Enable LLM polishing to start this backend."
-                        )
-                    } else {
-                        SettingsHelpText("Used only while LLM polishing is enabled.")
                     }
                 }
                 .disabled(!isLLMPolishingAvailableInCurrentMode)
@@ -564,7 +555,7 @@ private struct DictationSettingsPane: View {
 
                         SettingsHelpText(settings.dictationOutputMode.description)
                         SettingsHelpText(
-                            "Used when starting dictation from the menu bar. Keyboard triggers above select their mode directly."
+                            "Keyboard triggers select their mode directly."
                         )
                     }
                 }
@@ -573,7 +564,7 @@ private struct DictationSettingsPane: View {
             SettingsGroup(title: "General") {
                 ToggleSettingRow(
                     title: "Auto-copy final segment",
-                    subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
+                    subtitle: "Copies to the clipboard when dictation stops.",
                     isOn: $settings.autoCopyEnabled
                 )
             }
@@ -590,8 +581,7 @@ private struct TextProcessingSettingsPane: View {
             SettingsGroup(title: "Replacements") {
                 ToggleSettingRow(
                     title: "Exact match replacements",
-                    subtitle:
-                        "Apply dictionary replacements during live correction and overlay finalization.",
+                    subtitle: "Applied in both output modes.",
                     isOn: $settings.replacementDictionaryEnabled
                 )
                 .help(
@@ -601,14 +591,8 @@ private struct TextProcessingSettingsPane: View {
 
             SettingsGroup(title: "Shared Configuration") {
                 SettingsFieldRow(title: "Config folder") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button("Open Config Folder") {
-                            viewModel.openConfigFolder()
-                        }
-
-                        SettingsHelpText(
-                            "Dictionary changes apply to live corrections and overlay finalization."
-                        )
+                    Button("Open Config Folder") {
+                        viewModel.openConfigFolder()
                     }
                 }
 
@@ -621,12 +605,12 @@ private struct TextProcessingSettingsPane: View {
                         ),
                         SettingsFileNote(
                             name: "llm_system_prompt.toml",
-                            description: "System prompt used for polishing."
+                            description: "System prompt for polishing."
                         ),
                         SettingsFileNote(
                             name: "llm_user_prompt.toml",
                             description:
-                                "User prompt template used for polishing. Remove the {{replacement_dictionary}} placeholder if you do not want to send the dictionary to the LLM."
+                                "User prompt template for polishing. Remove {{replacement_dictionary}} to stop sending the dictionary to the LLM."
                         ),
                     ])
                 }

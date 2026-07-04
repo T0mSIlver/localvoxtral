@@ -83,7 +83,7 @@ enum BackendMode: String, CaseIterable, Identifiable {
     var dictationDescription: String {
         switch self {
         case .managedLocal:
-            return "localvoxtral installs and runs voxmlx for dictation on this Mac."
+            return "Installs and runs voxmlx on this Mac."
         case .externalURL:
             return "Use an OpenAI Realtime-compatible endpoint you run yourself."
         }
@@ -92,7 +92,7 @@ enum BackendMode: String, CaseIterable, Identifiable {
     var polishingDescription: String {
         switch self {
         case .managedLocal:
-            return "localvoxtral installs and runs mlx-lm for LLM polishing on this Mac."
+            return "Installs and runs mlx-lm on this Mac."
         case .externalURL:
             return "Use an OpenAI-compatible chat completions endpoint you run yourself."
         }
