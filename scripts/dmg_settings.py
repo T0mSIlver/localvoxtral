@@ -1,13 +1,14 @@
 from pathlib import Path
 
-
-repo_root = Path(__file__).resolve().parents[1]
+# dmgbuild exec()s this file without __file__ in the namespace, so paths must
+# be CWD-relative — both release.yml and dmg-test.yml invoke dmgbuild from the
+# repo root.
 app = defines.get("app", "dist/localvoxtral.app")
 
 format = "UDZO"
 files = [app]
 symlinks = {"Applications": "/Applications"}
-background = str(repo_root / "assets" / "dmg-background.png")
+background = str(Path("assets/dmg-background.png").resolve())
 
 window_rect = ((200, 200), (600, 400))
 icon_size = 128
