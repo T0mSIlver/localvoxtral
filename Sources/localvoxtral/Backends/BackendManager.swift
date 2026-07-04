@@ -49,6 +49,9 @@ enum ManagedBackendManagerError: LocalizedError {
 protocol ManagedBackendSupervising: AnyObject {
     var state: BackendProcessSupervisor.State { get }
     var stateUpdates: AsyncStream<BackendProcessSupervisor.State> { get }
+    /// Ring buffer of recent stdout/stderr lines (capped by the supervisor).
+    /// Surfaced for local diagnostics export only.
+    var recentOutput: [String] { get }
 
     func start() async
     func stop() async
@@ -63,6 +66,10 @@ protocol ManagedBackendManaging: AnyObject {
 
     func ensureReady(includePolishing: Bool) async throws
     func stopAll() async
+    /// Recent supervisor output lines for the given backend, or empty if the
+    /// supervisor has not been created yet (backend never started). For local
+    /// diagnostics export only.
+    func recentOutput(for spec: ManagedBackendSpec) -> [String]
 }
 
 @MainActor
@@ -151,6 +158,17 @@ final class BackendManager: ManagedBackendManaging {
             return mlxLMStatus
         default:
             return .failed(summary: "Unknown managed backend '\(spec.id)'.", detail: nil)
+        }
+    }
+
+    func recentOutput(for spec: ManagedBackendSpec) -> [String] {
+        switch spec.id {
+        case BackendCatalog.voxmlx.id:
+            return voxmlxSupervisor?.recentOutput ?? []
+        case BackendCatalog.mlxLM.id:
+            return mlxLMSupervisor?.recentOutput ?? []
+        default:
+            return []
         }
     }
 

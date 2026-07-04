@@ -291,6 +291,7 @@ private final class FakeBackendSupervisor: ManagedBackendSupervising {
     private var stateContinuations: [UUID: AsyncStream<BackendProcessSupervisor.State>.Continuation] = [:]
 
     private(set) var state: BackendProcessSupervisor.State = .idle
+    var recentOutput: [String] = []
     var stateUpdates: AsyncStream<BackendProcessSupervisor.State> {
         let id = UUID()
         let stream = AsyncStream<BackendProcessSupervisor.State>.makeStream(of: BackendProcessSupervisor.State.self)
