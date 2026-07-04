@@ -354,7 +354,7 @@ final class BackendManagerTests: XCTestCase {
 
         XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.voxmlx.id])
         XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
-        XCTAssertNotEqual(manager.voxmlxStatus, .ready)
+        XCTAssertEqual(manager.voxmlxStatus, .stopped)
     }
 
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {

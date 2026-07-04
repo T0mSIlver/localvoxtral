@@ -60,23 +60,26 @@ extension DictationViewModel {
         managedStartupTaskID = startupTaskID
         managedStartupTask = Task { @MainActor [weak self, startupTaskID] in
             guard let self else { return }
+            let statusUpdates = self.backendManager.statusUpdates
             let statusMirrorTask = Task { @MainActor [weak self, startupTaskID] in
                 guard let self else { return }
-                for await _ in self.backendManager.statusUpdates {
-                    guard !Task.isCancelled,
-                          self.managedStartupTaskID == startupTaskID,
-                          (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
+                for await _ in statusUpdates {
+                    if Task.isCancelled || self.managedStartupTaskID != startupTaskID {
+                        return
+                    }
+                    guard (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
                           (!needsManagedPolishing
                               || (self.settings.llmPolishingEnabled
                                   && self.settings.polishingBackendMode == .managedLocal)),
                           self.isConnectingRealtimeSession
-                    else { return }
+                    else { continue }
                     self.statusText = self.managedBackendStartupStatusText(
                         dictation: needsManagedDictation,
                         polishing: needsManagedPolishing
                     )
                 }
             }
+            await Task.yield()
             defer {
                 statusMirrorTask.cancel()
                 if self.managedStartupTaskID == startupTaskID {

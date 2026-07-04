@@ -142,6 +142,7 @@ struct HFModelDownloader: ModelPreparing {
     static let pythonDownloaderScript = #"""
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -164,18 +165,40 @@ def should_count_for_download(info):
 
 
 class JSONTqdm(tqdm):
-    last_emit_at = 0.0
-
     def __init__(self, *args, **kwargs):
-        kwargs["disable"] = True
+        self._localvoxtral_reports_bytes = kwargs.get("unit") == "B"
+        self._localvoxtral_last_emit_at = 0.0
+        self._localvoxtral_emit_interval = self._emit_interval()
+        kwargs["file"] = _NullTqdmFile()
         super().__init__(*args, **kwargs)
+
+    def _emit_interval(self):
+        value = os.environ.get("LOCALVOXTRAL_HF_EMIT_INTERVAL")
+        if value is None:
+            return 0.5
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            return 0.5
+
+    def refresh(self, *args, **kwargs):
+        return True
+
+    def display(self, *args, **kwargs):
+        return None
 
     def update(self, n=1):
         result = super().update(n)
+        if not self._localvoxtral_reports_bytes:
+            return result
         now = time.monotonic()
         total = self.total
-        if now - JSONTqdm.last_emit_at >= 0.5 or (total and self.n >= total):
-            JSONTqdm.last_emit_at = now
+        if (
+            self._localvoxtral_emit_interval == 0
+            or now - self._localvoxtral_last_emit_at >= self._localvoxtral_emit_interval
+            or (total and self.n >= total)
+        ):
+            self._localvoxtral_last_emit_at = now
             emit({
                 "event": "progress",
                 "repo": ARGS.repo,
@@ -183,6 +206,14 @@ class JSONTqdm(tqdm):
                 "total": int(total) if total is not None else None,
             })
         return result
+
+
+class _NullTqdmFile:
+    def write(self, value):
+        return len(value)
+
+    def flush(self):
+        pass
 
 
 def resolve_total(repo, include_patterns):
@@ -295,18 +326,27 @@ final class ModelDownloadProcess {
     ) async throws -> ModelDownloadProcessResult {
         let processBox = CancellableProcessBox()
         return try await withTaskCancellationHandler {
-            try await Task.detached {
-                try runSynchronously(
-                    executableURL: executableURL,
-                    arguments: arguments,
-                    environment: environment,
-                    livenessTimeoutSeconds: livenessTimeoutSeconds,
-                    progress: progress,
-                    processBox: processBox
-                )
-            }.value
+            try await withCheckedThrowingContinuation { continuation in
+                let thread = Thread {
+                    do {
+                        let result = try runSynchronously(
+                            executableURL: executableURL,
+                            arguments: arguments,
+                            environment: environment,
+                            livenessTimeoutSeconds: livenessTimeoutSeconds,
+                            progress: progress,
+                            processBox: processBox
+                        )
+                        continuation.resume(returning: result)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+                thread.name = "localvoxtral-model-download"
+                thread.start()
+            }
         } onCancel: {
-            processBox.terminate()
+            processBox.requestCancel()
         }
     }
 
@@ -343,22 +383,22 @@ final class ModelDownloadProcess {
 
         while process.isRunning {
             if processBox.wasCancelled {
-                processBox.terminate()
+                processBox.terminateRunningProcess()
                 break
             }
             if let message = collector.downloaderErrorMessage() {
-                processBox.terminate()
+                processBox.terminateRunningProcess()
                 process.waitUntilExit()
-                finishReaders(stdout: stdout, stderr: stderr, stdoutReader: stdoutReader, stderrReader: stderrReader)
+                finishReaders(stdoutReader: stdoutReader, stderrReader: stderrReader)
                 throw ModelDownloadError.downloaderReportedError(
                     message: message,
                     stderrTail: collector.stderrTail()
                 )
             }
             if collector.secondsSinceLastEvent() >= livenessTimeoutSeconds {
-                processBox.terminate()
+                processBox.terminateRunningProcess()
                 process.waitUntilExit()
-                finishReaders(stdout: stdout, stderr: stderr, stdoutReader: stdoutReader, stderrReader: stderrReader)
+                finishReaders(stdoutReader: stdoutReader, stderrReader: stderrReader)
                 throw ModelDownloadError.noProgress(
                     timeoutSeconds: livenessTimeoutSeconds,
                     stderrTail: collector.stderrTail()
@@ -368,7 +408,7 @@ final class ModelDownloadProcess {
         }
 
         process.waitUntilExit()
-        finishReaders(stdout: stdout, stderr: stderr, stdoutReader: stdoutReader, stderrReader: stderrReader)
+        finishReaders(stdoutReader: stdoutReader, stderrReader: stderrReader)
         processBox.clear(process)
 
         if processBox.wasCancelled {
@@ -388,13 +428,9 @@ final class ModelDownloadProcess {
     }
 
     private static func finishReaders(
-        stdout: Pipe,
-        stderr: Pipe,
         stdoutReader: PipeLineReader,
         stderrReader: PipeLineReader
     ) {
-        stdout.fileHandleForReading.closeFile()
-        stderr.fileHandleForReading.closeFile()
         stdoutReader.waitUntilFinished()
         stderrReader.waitUntilFinished()
     }
@@ -414,11 +450,7 @@ private final class CancellableProcessBox: @unchecked Sendable {
     func set(_ process: Process) {
         lock.lock()
         self.process = process
-        let shouldTerminate = cancelled
         lock.unlock()
-        if shouldTerminate {
-            terminate()
-        }
     }
 
     func clear(_ process: Process) {
@@ -429,9 +461,14 @@ private final class CancellableProcessBox: @unchecked Sendable {
         lock.unlock()
     }
 
-    func terminate() {
+    func requestCancel() {
         lock.lock()
         cancelled = true
+        lock.unlock()
+    }
+
+    func terminateRunningProcess() {
+        lock.lock()
         let process = process
         lock.unlock()
 

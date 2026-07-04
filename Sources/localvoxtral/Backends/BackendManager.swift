@@ -286,6 +286,7 @@ final class BackendManager: ManagedBackendManaging {
                 self.setStatus(.preparingModel(progress: progress), for: spec)
             }
         } catch is CancellationError {
+            setStatus(.stopped, for: spec)
             throw CancellationError()
         } catch {
             let summary = error.localizedDescription.trimmed.isEmpty
