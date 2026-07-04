@@ -5,15 +5,19 @@ protocol UVBinaryLocating: Sendable {
 }
 
 struct UVBinaryLocator: UVBinaryLocating {
+    private let layout: BackendInstallLayout
+
+    init(layout: BackendInstallLayout = BackendInstallLayout()) {
+        self.layout = layout
+    }
+
     func uvBinaryURL() -> URL? {
         let fileManager = FileManager.default
         let candidates = [
-            Bundle.main.executableURL?
-                .deletingLastPathComponent()
-                .appendingPathComponent("uv"),
+            layout.managedUVBinary,
             URL(fileURLWithPath: "/opt/homebrew/bin/uv"),
             URL(fileURLWithPath: "/usr/local/bin/uv"),
-        ].compactMap { $0 }
+        ]
 
         return candidates.first { url in
             fileManager.isExecutableFile(atPath: url.path)

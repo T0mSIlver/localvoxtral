@@ -12,17 +12,20 @@ enum BackendInstallError: LocalizedError, Sendable {
     case uvNotFound
     case downloadFailed(String)
     case checksumMismatch(expected: String, actual: String)
+    case uvExtractionFailed(String)
     case uvExited(code: Int32, stderrTail: String)
     case executableMissing(URL)
 
     var errorDescription: String? {
         switch self {
         case .uvNotFound:
-            return "Unable to find uv. Expected an embedded uv binary or Homebrew uv at /opt/homebrew/bin/uv or /usr/local/bin/uv."
+            return "Unable to find or install uv. Expected managed uv or Homebrew uv at /opt/homebrew/bin/uv or /usr/local/bin/uv."
         case .downloadFailed(let message):
-            return "Backend wheel download failed: \(message)"
+            return "Download failed: \(message)"
         case .checksumMismatch(let expected, let actual):
-            return "Backend wheel checksum mismatch. Expected \(expected), got \(actual)."
+            return "Downloaded artifact checksum mismatch. Expected \(expected), got \(actual)."
+        case .uvExtractionFailed(let message):
+            return "uv archive extraction failed: \(message)"
         case .uvExited(let code, let stderrTail):
             return "uv exited with status \(code): \(stderrTail)"
         case .executableMissing(let url):
@@ -42,15 +45,18 @@ protocol BackendInstalling: Sendable {
 struct BackendInstaller: BackendInstalling {
     private let layout: BackendInstallLayout
     private let uvLocator: any UVBinaryLocating
+    private let uvDistribution: UVDistribution
     private let fileManager: FileManager
 
     init(
         layout: BackendInstallLayout = BackendInstallLayout(),
-        uvLocator: any UVBinaryLocating = UVBinaryLocator(),
+        uvLocator: (any UVBinaryLocating)? = nil,
+        uvDistribution: UVDistribution = .pinned,
         fileManager: FileManager = .default
     ) {
         self.layout = layout
-        self.uvLocator = uvLocator
+        self.uvLocator = uvLocator ?? UVBinaryLocator(layout: layout)
+        self.uvDistribution = uvDistribution
         self.fileManager = fileManager
     }
 
@@ -69,11 +75,8 @@ struct BackendInstaller: BackendInstalling {
         _ spec: ManagedBackendSpec,
         progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
     ) async throws {
-        guard let uvURL = uvLocator.uvBinaryURL() else {
-            throw BackendInstallError.uvNotFound
-        }
-
         try createLayoutDirectories()
+        let uvURL = try await resolveUVBinary(progress: progress)
         let wheelURL = try await downloadWheel(for: spec, progress: progress)
 
         await Self.report(.verifying, progress)
@@ -114,7 +117,15 @@ struct BackendInstaller: BackendInstalling {
     }
 
     private func createLayoutDirectories() throws {
-        for directory in [layout.root, layout.uvCache, layout.pythonInstalls, layout.tools, layout.toolBin, layout.downloads] {
+        for directory in [
+            layout.root,
+            layout.uvCache,
+            layout.uvBinaryDirectory,
+            layout.pythonInstalls,
+            layout.tools,
+            layout.toolBin,
+            layout.downloads,
+        ] {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
     }
@@ -147,19 +158,101 @@ struct BackendInstaller: BackendInstalling {
         return environment
     }
 
+    private func resolveUVBinary(
+        progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
+    ) async throws -> URL {
+        if let uvURL = uvLocator.uvBinaryURL() {
+            return uvURL
+        }
+
+        try await provisionManagedUV(progress: progress)
+        guard fileManager.isExecutableFile(atPath: layout.managedUVBinary.path) else {
+            throw BackendInstallError.uvNotFound
+        }
+        return layout.managedUVBinary
+    }
+
+    private func provisionManagedUV(
+        progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
+    ) async throws {
+        await Self.report(
+            .installing(logLine: "Downloading uv \(uvDistribution.version)"),
+            progress
+        )
+        let tarballURL = try await downloadArtifact(
+            from: uvDistribution.tarballURL,
+            to: layout.downloads.appendingPathComponent(uvDistribution.tarballURL.lastPathComponent),
+            progress: progress
+        )
+
+        await Self.report(.verifying, progress)
+        let actualSHA256 = try sha256Hex(for: tarballURL)
+        guard actualSHA256 == uvDistribution.tarballSHA256 else {
+            try? fileManager.removeItem(at: tarballURL)
+            throw BackendInstallError.checksumMismatch(
+                expected: uvDistribution.tarballSHA256,
+                actual: actualSHA256
+            )
+        }
+
+        await Self.report(
+            .installing(logLine: "Installing uv \(uvDistribution.version)"),
+            progress
+        )
+        let temporaryDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("localvoxtral-uv-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: temporaryDirectory)
+        }
+
+        let extractionResult = try await TarExtractionProcess.extract(
+            tarballURL: tarballURL,
+            destinationDirectory: temporaryDirectory,
+            memberPath: uvDistribution.archiveBinaryPath
+        )
+        guard extractionResult.exitCode == 0 else {
+            throw BackendInstallError.uvExtractionFailed(extractionResult.stderrTail)
+        }
+
+        let extractedUV = temporaryDirectory.appendingPathComponent(uvDistribution.archiveBinaryPath)
+        guard fileManager.fileExists(atPath: extractedUV.path) else {
+            throw BackendInstallError.uvExtractionFailed(
+                "Archive did not contain \(uvDistribution.archiveBinaryPath)."
+            )
+        }
+
+        if fileManager.fileExists(atPath: layout.managedUVBinary.path) {
+            try fileManager.removeItem(at: layout.managedUVBinary)
+        }
+        try fileManager.copyItem(at: extractedUV, to: layout.managedUVBinary)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: layout.managedUVBinary.path)
+    }
+
     private func downloadWheel(
         for spec: ManagedBackendSpec,
         progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
     ) async throws -> URL {
-        await Self.report(.downloading(fraction: nil), progress)
-        let destination = layout.downloads.appendingPathComponent(spec.wheelURL.lastPathComponent)
+        try await downloadArtifact(
+            from: spec.wheelURL,
+            to: layout.downloads.appendingPathComponent(spec.wheelURL.lastPathComponent),
+            progress: progress
+        )
+    }
 
-        if spec.wheelURL.isFileURL {
+    private func downloadArtifact(
+        from sourceURL: URL,
+        to destination: URL,
+        progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
+    ) async throws -> URL {
+        await Self.report(.downloading(fraction: nil), progress)
+
+        if sourceURL.isFileURL {
             do {
                 if fileManager.fileExists(atPath: destination.path) {
                     try fileManager.removeItem(at: destination)
                 }
-                try fileManager.copyItem(at: spec.wheelURL, to: destination)
+                try fileManager.copyItem(at: sourceURL, to: destination)
                 await Self.report(.downloading(fraction: 1), progress)
                 return destination
             } catch {
@@ -168,7 +261,7 @@ struct BackendInstaller: BackendInstalling {
         }
 
         do {
-            let (bytes, response) = try await URLSession.shared.bytes(from: spec.wheelURL)
+            let (bytes, response) = try await URLSession.shared.bytes(from: sourceURL)
             let expectedLength = response.expectedContentLength
             var data = Data()
             var downloadedByteCount: Int64 = 0
@@ -222,6 +315,56 @@ extension BackendInstaller: @unchecked Sendable {}
 private struct UVToolProcessResult: Sendable {
     let exitCode: Int32
     let stderrTail: String
+}
+
+private struct TarExtractionProcessResult: Sendable {
+    let exitCode: Int32
+    let stderrTail: String
+}
+
+private final class TarExtractionProcess {
+    static func extract(
+        tarballURL: URL,
+        destinationDirectory: URL,
+        memberPath: String
+    ) async throws -> TarExtractionProcessResult {
+        try await Task.detached {
+            try extractSynchronously(
+                tarballURL: tarballURL,
+                destinationDirectory: destinationDirectory,
+                memberPath: memberPath
+            )
+        }.value
+    }
+
+    private static func extractSynchronously(
+        tarballURL: URL,
+        destinationDirectory: URL,
+        memberPath: String
+    ) throws -> TarExtractionProcessResult {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = [
+            "-xzf",
+            tarballURL.path,
+            "-C",
+            destinationDirectory.path,
+            memberPath,
+        ]
+
+        let stderr = Pipe()
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
+        return TarExtractionProcessResult(
+            exitCode: process.terminationStatus,
+            stderrTail: stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
 }
 
 private final class UVToolProcess {

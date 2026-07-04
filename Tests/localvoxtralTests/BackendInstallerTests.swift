@@ -19,6 +19,13 @@ final class BackendInstallerTests: XCTestCase {
         let layout = BackendInstallLayout(root: root)
 
         XCTAssertEqual(layout.uvCache, root.appendingPathComponent("uv-cache", isDirectory: true))
+        XCTAssertEqual(
+            layout.uvBinaryDirectory,
+            root
+                .appendingPathComponent("uv", isDirectory: true)
+                .appendingPathComponent(UVDistribution.pinned.version, isDirectory: true)
+        )
+        XCTAssertEqual(layout.managedUVBinary, layout.uvBinaryDirectory.appendingPathComponent("uv"))
         XCTAssertEqual(layout.pythonInstalls, root.appendingPathComponent("python", isDirectory: true))
         XCTAssertEqual(layout.tools, root.appendingPathComponent("tools", isDirectory: true))
         XCTAssertEqual(layout.toolBin, root.appendingPathComponent("bin", isDirectory: true))
@@ -41,7 +48,7 @@ final class BackendInstallerTests: XCTestCase {
         )
         let capture = root.appendingPathComponent("uv-capture.txt")
         let fakeUV = try writeFakeUV(
-            in: root,
+            in: fakeUVDirectory(in: root),
             capture: capture,
             executableNameToCreate: spec.executableName,
             exitCode: 0,
@@ -77,6 +84,134 @@ final class BackendInstallerTests: XCTestCase {
         XCTAssertEqual(progressEvents.last, .finished)
     }
 
+    @MainActor
+    func testInstallProvisionsPinnedUVWhenLocatorFindsNothing() async throws {
+        let root = makeTemporaryDirectory()
+        let layout = BackendInstallLayout(root: root)
+        let wheel = try writeWheel(named: "voxmlx.whl", contents: "wheel-data")
+        let spec = makeSpec(
+            wheelURL: wheel,
+            wheelSHA256: try sha256Hex(for: wheel),
+            executableName: "voxmlx-serve"
+        )
+        let capture = root.appendingPathComponent("provisioned-uv-capture.txt")
+        let uvTarball = try writeUVTarball(
+            capture: capture,
+            executableNameToCreate: spec.executableName,
+            exitCode: 0,
+            stdoutLines: ["provisioned uv stdout"]
+        )
+        let uvDistribution = makeUVDistribution(
+            tarballURL: uvTarball,
+            tarballSHA256: try sha256Hex(for: uvTarball)
+        )
+        let installer = BackendInstaller(
+            layout: layout,
+            uvLocator: FakeUVLocator(url: nil),
+            uvDistribution: uvDistribution
+        )
+
+        var progressEvents: [BackendInstallProgress] = []
+        try await installer.install(spec) { event in
+            progressEvents.append(event)
+        }
+
+        let captureText = try String(contentsOf: capture, encoding: .utf8)
+        XCTAssertTrue(captureText.contains("ARGS:tool|install|--python|3.12|--reinstall|"))
+        XCTAssertTrue(captureText.contains("voxmlx[server] @ file://"))
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: layout.managedUVBinary.path))
+        XCTAssertEqual(
+            layout.managedUVBinary.path,
+            root
+                .appendingPathComponent("uv", isDirectory: true)
+                .appendingPathComponent(UVDistribution.pinned.version, isDirectory: true)
+                .appendingPathComponent("uv")
+                .path
+        )
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: layout.toolBin.appendingPathComponent(spec.executableName).path))
+        XCTAssertEqual(installer.installedVersion(of: spec), spec.version)
+        XCTAssertTrue(progressEvents.contains(.installing(logLine: "Downloading uv \(UVDistribution.pinned.version)")))
+        XCTAssertTrue(progressEvents.contains(.installing(logLine: "Installing uv \(UVDistribution.pinned.version)")))
+        XCTAssertTrue(progressEvents.contains(.installing(logLine: "provisioned uv stdout")))
+        XCTAssertEqual(progressEvents.last, .finished)
+    }
+
+    func testUVTarballChecksumMismatchDoesNotExtractOrInstallBackend() async throws {
+        let root = makeTemporaryDirectory()
+        let layout = BackendInstallLayout(root: root)
+        let wheel = try writeWheel(named: "voxmlx.whl", contents: "wheel-data")
+        let spec = makeSpec(
+            wheelURL: wheel,
+            wheelSHA256: try sha256Hex(for: wheel),
+            executableName: "voxmlx-serve"
+        )
+        let capture = root.appendingPathComponent("bad-uv-capture.txt")
+        let uvTarball = try writeUVTarball(
+            capture: capture,
+            executableNameToCreate: spec.executableName,
+            exitCode: 0
+        )
+        let uvDistribution = makeUVDistribution(
+            tarballURL: uvTarball,
+            tarballSHA256: String(repeating: "0", count: 64)
+        )
+        let installer = BackendInstaller(
+            layout: layout,
+            uvLocator: FakeUVLocator(url: nil),
+            uvDistribution: uvDistribution
+        )
+
+        do {
+            try await installer.install(spec) { _ in }
+            XCTFail("Expected uv checksum mismatch")
+        } catch BackendInstallError.checksumMismatch(let expected, let actual) {
+            XCTAssertEqual(expected, uvDistribution.tarballSHA256)
+            XCTAssertEqual(actual, try sha256Hex(for: uvTarball))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: capture.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: layout.managedUVBinary.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: layout.toolBin.appendingPathComponent(spec.executableName).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: layout.downloads.appendingPathComponent(uvTarball.lastPathComponent).path))
+        XCTAssertNil(installer.installedVersion(of: spec))
+    }
+
+    func testLocatorFoundUVSkipsProvisioningDownload() async throws {
+        let root = makeTemporaryDirectory()
+        let layout = BackendInstallLayout(root: root)
+        let wheel = try writeWheel(named: "voxmlx.whl", contents: "wheel-data")
+        let spec = makeSpec(
+            wheelURL: wheel,
+            wheelSHA256: try sha256Hex(for: wheel),
+            executableName: "voxmlx-serve"
+        )
+        let capture = root.appendingPathComponent("existing-uv-capture.txt")
+        let fakeUV = try writeFakeUV(
+            in: fakeUVDirectory(in: root),
+            capture: capture,
+            executableNameToCreate: spec.executableName,
+            exitCode: 0
+        )
+        let uvDistribution = makeUVDistribution(
+            tarballURL: URL(fileURLWithPath: "/tmp/localvoxtral-missing-uv-fixture-\(UUID().uuidString).tar.gz"),
+            tarballSHA256: String(repeating: "0", count: 64)
+        )
+        let installer = BackendInstaller(
+            layout: layout,
+            uvLocator: FakeUVLocator(url: fakeUV),
+            uvDistribution: uvDistribution
+        )
+
+        try await installer.install(spec) { _ in }
+
+        let captureText = try String(contentsOf: capture, encoding: .utf8)
+        XCTAssertTrue(captureText.contains("ARGS:tool|install|--python|3.12|--reinstall|"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: layout.managedUVBinary.path))
+        XCTAssertEqual(installer.installedVersion(of: spec), spec.version)
+    }
+
     func testChecksumMismatchDeletesWheelAndDoesNotInvokeUV() async throws {
         let root = makeTemporaryDirectory()
         let layout = BackendInstallLayout(root: root)
@@ -88,7 +223,7 @@ final class BackendInstallerTests: XCTestCase {
         )
         let capture = root.appendingPathComponent("uv-capture.txt")
         let fakeUV = try writeFakeUV(
-            in: root,
+            in: fakeUVDirectory(in: root),
             capture: capture,
             executableNameToCreate: spec.executableName,
             exitCode: 0
@@ -123,7 +258,7 @@ final class BackendInstallerTests: XCTestCase {
             executableName: "voxmlx-serve"
         )
         let fakeUV = try writeFakeUV(
-            in: root,
+            in: fakeUVDirectory(in: root),
             capture: root.appendingPathComponent("uv-capture.txt"),
             executableNameToCreate: spec.executableName,
             exitCode: 7,
@@ -160,7 +295,7 @@ final class BackendInstallerTests: XCTestCase {
             executableName: "voxmlx-serve"
         )
         let fakeUV = try writeFakeUV(
-            in: root,
+            in: fakeUVDirectory(in: root),
             capture: root.appendingPathComponent("uv-capture.txt"),
             executableNameToCreate: nil,
             exitCode: 0
@@ -192,7 +327,7 @@ final class BackendInstallerTests: XCTestCase {
             executableName: "voxmlx-serve"
         )
         let fakeUV = try writeFakeUV(
-            in: root,
+            in: fakeUVDirectory(in: root),
             capture: root.appendingPathComponent("uv-capture.txt"),
             executableNameToCreate: spec.executableName,
             exitCode: 0
@@ -234,6 +369,10 @@ final class BackendInstallerTests: XCTestCase {
         return url
     }
 
+    private func fakeUVDirectory(in root: URL) -> URL {
+        root.appendingPathComponent("fake-uv-bin", isDirectory: true)
+    }
+
     private func writeFakeUV(
         in directory: URL,
         capture: URL,
@@ -242,6 +381,7 @@ final class BackendInstallerTests: XCTestCase {
         stderrLines: [String] = [],
         stdoutLines: [String] = []
     ) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("uv")
         let createExecutableBlock: String
         if let executableNameToCreate {
@@ -283,6 +423,53 @@ final class BackendInstallerTests: XCTestCase {
         return url
     }
 
+    private func writeUVTarball(
+        capture: URL,
+        executableNameToCreate: String?,
+        exitCode: Int,
+        stderrLines: [String] = [],
+        stdoutLines: [String] = []
+    ) throws -> URL {
+        let fixtureRoot = makeTemporaryDirectory()
+        let archiveDirectory = fixtureRoot.appendingPathComponent("uv-aarch64-apple-darwin", isDirectory: true)
+        try FileManager.default.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
+        _ = try writeFakeUV(
+            in: archiveDirectory,
+            capture: capture,
+            executableNameToCreate: executableNameToCreate,
+            exitCode: exitCode,
+            stderrLines: stderrLines,
+            stdoutLines: stdoutLines
+        )
+
+        let tarball = fixtureRoot.appendingPathComponent("uv-fixture-\(UUID().uuidString).tar.gz")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        process.arguments = [
+            "-czf",
+            tarball.path,
+            "-C",
+            fixtureRoot.path,
+            "uv-aarch64-apple-darwin/uv",
+        ]
+
+        let stderr = Pipe()
+        process.standardError = stderr
+        try process.run()
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            let data = stderr.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: data, encoding: .utf8) ?? "tar exited \(process.terminationStatus)"
+            throw NSError(
+                domain: "BackendInstallerTests",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+        return tarball
+    }
+
     private func makeSpec(
         version: String = "1.2.3",
         wheelURL: URL,
@@ -299,6 +486,18 @@ final class BackendInstallerTests: XCTestCase {
             executableName: executableName,
             pythonVersion: "3.12",
             port: 8471
+        )
+    }
+
+    private func makeUVDistribution(
+        tarballURL: URL,
+        tarballSHA256: String
+    ) -> UVDistribution {
+        UVDistribution(
+            version: UVDistribution.pinned.version,
+            tarballURL: tarballURL,
+            tarballSHA256: tarballSHA256,
+            archiveBinaryPath: UVDistribution.pinned.archiveBinaryPath
         )
     }
 
