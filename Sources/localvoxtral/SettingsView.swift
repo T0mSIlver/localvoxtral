@@ -89,6 +89,11 @@ struct SettingsView: View {
             .tabItem {
                 Label("Text Processing", systemImage: "text.badge.checkmark")
             }
+
+            AboutSettingsPane(viewModel: viewModel)
+                .tabItem {
+                    Label("About", systemImage: "info.circle")
+                }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -112,21 +117,30 @@ private struct ConnectionSettingsPane: View {
     let endpointBinding: Binding<String>
     let modelBinding: Binding<String>
 
-    private var backendModeBinding: Binding<BackendMode> {
+    private var dictationBackendModeBinding: Binding<BackendMode> {
         Binding(
-            get: { settings.backendMode },
+            get: { settings.dictationBackendMode },
             set: { newValue in
-                viewModel.applyBackendModeChange(newValue)
+                viewModel.applyDictationBackendModeChange(newValue)
+            }
+        )
+    }
+
+    private var polishingBackendModeBinding: Binding<BackendMode> {
+        Binding(
+            get: { settings.polishingBackendMode },
+            set: { newValue in
+                viewModel.applyPolishingBackendModeChange(newValue)
             }
         )
     }
 
     var body: some View {
         SettingsPage {
-            SettingsGroup(title: "Backend") {
+            SettingsGroup(title: "Dictation") {
                 SettingsFieldRow(title: "Mode") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: backendModeBinding) {
+                        Picker("", selection: dictationBackendModeBinding) {
                             ForEach(BackendMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
@@ -134,18 +148,11 @@ private struct ConnectionSettingsPane: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
 
-                        SettingsHelpText(settings.backendMode.description)
+                        SettingsHelpText(settings.dictationBackendMode.dictationDescription)
                     }
                 }
 
-                }
-
-            // Constant section structure across modes (owner rule): one group
-            // per backend function — Dictation and Polishing — and only each
-            // group's CONTENT switches between managed status and external
-            // config. The section count must never change with the mode.
-            SettingsGroup(title: "Dictation") {
-                switch settings.backendMode {
+                switch settings.dictationBackendMode {
                 case .externalURL:
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
@@ -172,7 +179,21 @@ private struct ConnectionSettingsPane: View {
             }
 
             SettingsGroup(title: "Polishing") {
-                switch settings.backendMode {
+                SettingsFieldRow(title: "Mode") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Picker("", selection: polishingBackendModeBinding) {
+                            ForEach(BackendMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+
+                        SettingsHelpText(settings.polishingBackendMode.polishingDescription)
+                    }
+                }
+
+                switch settings.polishingBackendMode {
                 case .externalURL:
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(
@@ -206,7 +227,7 @@ private struct ConnectionSettingsPane: View {
                     )
                 }
 
-                if settings.backendMode == .managedLocal, !settings.llmPolishingEnabled {
+                if settings.polishingBackendMode == .managedLocal, !settings.llmPolishingEnabled {
                     SettingsHelpText(
                         "LLM polishing is disabled - enable it in the Text Processing tab to start this backend."
                     )
@@ -507,7 +528,7 @@ private struct TextProcessingSettingsPane: View {
                 // Turning polishing off stops the managed mlx-lm process
                 // (Managed local mode only). External URL mode owns no local
                 // process, and re-enabling stays lazy: the next dictation
-                // restarts it via ensureReady(includePolishing: true).
+                // restarts it via the managed backend bootstrap.
                 viewModel.llmPolishingEnabledDidChange(newValue)
             }
         )
@@ -550,7 +571,7 @@ private struct TextProcessingSettingsPane: View {
                     // of control, so the toggle <-> server relationship is
                     // visible without tab-hopping (and the future inline model
                     // download progress renders right here).
-                    switch settings.backendMode {
+                    switch settings.polishingBackendMode {
                     case .managedLocal:
                         SettingsFieldRow(title: "Backend") {
                             VStack(alignment: .leading, spacing: 6) {
@@ -600,6 +621,53 @@ private struct TextProcessingSettingsPane: View {
                                 "User prompt template used for LLM polishing. Remove the {{replacement_dictionary}} placeholder if you do not want to send the dictionary to the LLM."
                         ),
                     ])
+                }
+            }
+        }
+    }
+}
+
+private struct AboutSettingsPane: View {
+    let viewModel: DictationViewModel
+
+    private var appName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
+            ?? "localvoxtral"
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+            ?? "dev"
+    }
+
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "dev"
+    }
+
+    var body: some View {
+        SettingsPage {
+            SettingsGroup(title: "Application") {
+                SettingsFieldRow(title: "Name") {
+                    Text(appName)
+                }
+
+                SettingsFieldRow(title: "Version") {
+                    Text("\(appVersion) (build \(appBuild))")
+                }
+            }
+
+            SettingsGroup(title: "Diagnostics") {
+                SettingsFieldRow(title: "Export") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Export Diagnostics…") {
+                            viewModel.exportDiagnostics()
+                        }
+
+                        SettingsHelpText(
+                            "Writes a redacted report to the Desktop; review before sharing."
+                        )
+                    }
                 }
             }
         }

@@ -19,7 +19,7 @@ final class BackendManagerTests: XCTestCase {
             voxmlxStatuses.append(status)
         }
 
-        try await manager.ensureReady(includePolishing: false)
+        try await manager.ensureReady(dictation: true, polishing: false)
 
         XCTAssertEqual(installer.installCalls.map(\.id), [BackendCatalog.voxmlx.id])
         XCTAssertEqual(manager.voxmlxStatus, .ready)
@@ -35,7 +35,7 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
-        try await manager.ensureReady(includePolishing: false)
+        try await manager.ensureReady(dictation: true, polishing: false)
 
         XCTAssertTrue(installer.installCalls.isEmpty)
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.voxmlx.displayName])
@@ -50,7 +50,7 @@ final class BackendManagerTests: XCTestCase {
         let manager = makeManager(installer: installer, supervisorFactory: FakeSupervisorFactory())
 
         do {
-            try await manager.ensureReady(includePolishing: false)
+            try await manager.ensureReady(dictation: true, polishing: false)
             XCTFail("expected ensureReady to throw")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("voxmlx"))
@@ -67,10 +67,10 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
-        try await manager.ensureReady(includePolishing: false)
+        try await manager.ensureReady(dictation: true, polishing: false)
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.voxmlx.displayName])
 
-        try await manager.ensureReady(includePolishing: true)
+        try await manager.ensureReady(dictation: true, polishing: true)
         XCTAssertEqual(
             supervisorFactory.createdConfigurations.map(\.name),
             [BackendCatalog.voxmlx.displayName, BackendCatalog.mlxLM.displayName]
@@ -89,6 +89,19 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertTrue(mlxLMArguments.contains("--parent-pid"))
     }
 
+    func testPolishingOnlyEnsureReadyDoesNotTouchVoxmlx() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(dictation: false, polishing: true)
+
+        XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.mlxLM.displayName])
+        XCTAssertEqual(manager.voxmlxStatus, .stopped)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+    }
+
     func testConcurrentEnsureReadyDoesNotDoubleInstall() async throws {
         let installer = FakeBackendInstaller(
             needsInstall: [BackendCatalog.voxmlx.id],
@@ -99,12 +112,12 @@ final class BackendManagerTests: XCTestCase {
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
         let first = Task { @MainActor in
-            try await manager.ensureReady(includePolishing: false)
+            try await manager.ensureReady(dictation: true, polishing: false)
         }
         await installer.waitUntilInstallStarted()
 
         let second = Task { @MainActor in
-            try await manager.ensureReady(includePolishing: false)
+            try await manager.ensureReady(dictation: true, polishing: false)
         }
         await Task.yield()
 
@@ -124,7 +137,7 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
-        try await manager.ensureReady(includePolishing: true)
+        try await manager.ensureReady(dictation: true, polishing: true)
         await manager.stopAll()
 
         XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName]?.stopCallCount, 1)
@@ -140,7 +153,7 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
-        try await manager.ensureReady(includePolishing: true)
+        try await manager.ensureReady(dictation: true, polishing: true)
         XCTAssertEqual(manager.voxmlxStatus, .ready)
         XCTAssertEqual(manager.mlxLMStatus, .ready)
 
@@ -154,13 +167,32 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.voxmlxStatus, .ready)
     }
 
+    func testStopDictationStopsOnlyVoxmlx() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(dictation: true, polishing: true)
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+
+        await manager.stopDictation()
+
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName]?.stopCallCount, 1)
+        XCTAssertEqual(manager.voxmlxStatus, .stopped)
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.mlxLM.displayName]?.stopCallCount, 0)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+    }
+
     func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
-        try await manager.ensureReady(includePolishing: false)
+        try await manager.ensureReady(dictation: true, polishing: false)
         let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName])
         XCTAssertEqual(manager.voxmlxStatus, .ready)
         XCTAssertEqual(supervisor.startCallCount, 1)
@@ -170,7 +202,7 @@ final class BackendManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.voxmlxStatus, .failed(summary: "process crashed after readiness", detail: nil))
 
-        try await manager.ensureReady(includePolishing: false)
+        try await manager.ensureReady(dictation: true, polishing: false)
 
         XCTAssertEqual(supervisor.startCallCount, 2)
         XCTAssertEqual(manager.voxmlxStatus, .ready)
@@ -183,7 +215,7 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
-        try await manager.ensureReady(includePolishing: true)
+        try await manager.ensureReady(dictation: true, polishing: true)
 
         XCTAssertEqual(
             supervisorFactory.createdConfigurations.map(\.readinessTimeout),
@@ -205,7 +237,7 @@ final class BackendManagerTests: XCTestCase {
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
 
         do {
-            try await manager.ensureReady(includePolishing: true)
+            try await manager.ensureReady(dictation: true, polishing: true)
             XCTFail("expected ensureReady to throw")
         } catch let error as ManagedBackendManagerError {
             XCTAssertEqual(

@@ -239,7 +239,8 @@ if ! snapshot_defaults; then
   print_summary
   exit 1
 fi
-if ! defaults write "$BUNDLE_ID" settings.backend_mode -string managed_local; then
+if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string managed_local \
+  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string managed_local; then
   record_fail "Could not force managed backend mode in defaults."
   print_summary
   exit 1
@@ -451,9 +452,10 @@ assert_tab() {
   fi
 }
 
-assert_tab "Endpoints" "Backend"
+assert_tab "Endpoints" "Dictation"
 assert_tab "Dictation" "Start dictation with"
 assert_tab "Text Processing" "Replacements"
+assert_tab "About" "Diagnostics"
 
 select_tab "Endpoints" >/dev/null 2>&1 || true
 sleep 0.5
