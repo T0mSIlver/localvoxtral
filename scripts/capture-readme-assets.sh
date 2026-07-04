@@ -32,11 +32,35 @@ TAB_FILES=("settings-realtime-endpoint.png" "settings-dictation.png" "settings-t
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
 
+# --- permission preflight ----------------------------------------------------
+# System Events needs Accessibility; screencapture -l needs Screen Recording.
+# Without them the failures are cryptic (error 1002) or silent (empty grabs),
+# so check both up front and say exactly what to enable.
+PREFLIGHT="$(mktemp -t lv-preflight).swift"
+trap 'rm -f "$PREFLIGHT"' EXIT
+cat > "$PREFLIGHT" <<'SWIFT'
+import ApplicationServices
+import CoreGraphics
+
+var ok = true
+if !AXIsProcessTrusted() {
+    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility — enable the terminal app you are running this from, then rerun.")
+    ok = false
+}
+if !CGPreflightScreenCaptureAccess() {
+    _ = CGRequestScreenCaptureAccess()
+    print("MISSING Screen Recording: System Settings > Privacy & Security > Screen Recording — enable the terminal app you are running this from, then rerun.")
+    ok = false
+}
+exit(ok ? 0 : 1)
+SWIFT
+swift "$PREFLIGHT" || exit 1
+
 # --- window-id helper -------------------------------------------------------
 # Prints the CGWindowID of the largest on-screen window owned by <pid> whose
 # window layer is >= <min-layer> (0 = normal windows, 100+ = open menus).
 HELPER="$(mktemp -t lv-windowid).swift"
-trap 'rm -f "$HELPER"' EXIT
+trap 'rm -f "$HELPER" "$PREFLIGHT"' EXIT
 cat > "$HELPER" <<'SWIFT'
 import CoreGraphics
 import Foundation
