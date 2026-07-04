@@ -187,6 +187,9 @@ main() {
   step "Done"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# BASH_SOURCE is unset when the script arrives on stdin (`curl ... | bash`),
+# and `set -u` turns that into a fatal unbound-variable error. Empty means
+# "not being sourced", so run main in that case too.
+if [[ "${BASH_SOURCE[0]:-}" == "" || "${BASH_SOURCE[0]:-}" == "$0" ]]; then
   main "$@"
 fi
