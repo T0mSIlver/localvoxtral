@@ -57,7 +57,7 @@ final class BackendManagerTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("wheel unavailable"))
         }
 
-        XCTAssertEqual(manager.voxmlxStatus, .failed(message: "wheel unavailable"))
+        XCTAssertEqual(manager.voxmlxStatus, .failed(summary: "wheel unavailable", detail: nil))
     }
 
     func testPolishingFlagControlsWhetherMLXLMIsTouched() async throws {
@@ -120,6 +120,79 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.mlxLM.displayName]?.stopCallCount, 1)
         XCTAssertEqual(manager.voxmlxStatus, .stopped)
         XCTAssertEqual(manager.mlxLMStatus, .stopped)
+    }
+
+    func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(includePolishing: false)
+        let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName])
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+        XCTAssertEqual(supervisor.startCallCount, 1)
+
+        supervisor.emit(.failed(summary: "process crashed after readiness", detail: nil))
+        await Task.yield()
+
+        XCTAssertEqual(manager.voxmlxStatus, .failed(summary: "process crashed after readiness", detail: nil))
+
+        try await manager.ensureReady(includePolishing: false)
+
+        XCTAssertEqual(supervisor.startCallCount, 2)
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+    }
+
+    func testManagedBackendConfigurationsUseLongFirstRunReadinessTimeouts() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(includePolishing: true)
+
+        XCTAssertEqual(
+            supervisorFactory.createdConfigurations.map(\.readinessTimeout),
+            [.seconds(1800), .seconds(1800)]
+        )
+    }
+
+    func testSupervisorFailureErrorSplitsSummaryFromTechnicalDetails() async throws {
+        let marker = "FAKE_STDERR_TRACEBACK"
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [
+            .failed(
+                summary: "mlx-lm exited 5 consecutive times.",
+                detail: "stderr: Python traceback \(marker)"
+            ),
+        ]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        do {
+            try await manager.ensureReady(includePolishing: true)
+            XCTFail("expected ensureReady to throw")
+        } catch let error as ManagedBackendManagerError {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "mlx-lm failed: mlx-lm exited 5 consecutive times."
+            )
+            XCTAssertFalse(error.localizedDescription.contains(marker))
+            XCTAssertTrue(error.technicalDetails?.contains(marker) == true)
+        } catch {
+            XCTFail("expected ManagedBackendManagerError, got \(error)")
+        }
+
+        XCTAssertEqual(
+            manager.mlxLMStatus,
+            .failed(
+                summary: "mlx-lm exited 5 consecutive times.",
+                detail: "stderr: Python traceback \(marker)"
+            )
+        )
     }
 
     private func makeManager(
@@ -215,32 +288,44 @@ private final class FakeSupervisorFactory {
 @MainActor
 private final class FakeBackendSupervisor: ManagedBackendSupervising {
     private let statesOnStart: [BackendProcessSupervisor.State]
-    private let stateContinuation: AsyncStream<BackendProcessSupervisor.State>.Continuation
+    private var stateContinuations: [UUID: AsyncStream<BackendProcessSupervisor.State>.Continuation] = [:]
 
     private(set) var state: BackendProcessSupervisor.State = .idle
-    let stateUpdates: AsyncStream<BackendProcessSupervisor.State>
+    var stateUpdates: AsyncStream<BackendProcessSupervisor.State> {
+        let id = UUID()
+        let stream = AsyncStream<BackendProcessSupervisor.State>.makeStream(of: BackendProcessSupervisor.State.self)
+        stateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.stateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
 
     init(statesOnStart: [BackendProcessSupervisor.State]) {
         self.statesOnStart = statesOnStart
-        let stream = AsyncStream<BackendProcessSupervisor.State>.makeStream(of: BackendProcessSupervisor.State.self)
-        self.stateUpdates = stream.stream
-        self.stateContinuation = stream.continuation
     }
 
     func start() async {
         startCallCount += 1
         for state in statesOnStart {
-            self.state = state
-            stateContinuation.yield(state)
+            emit(state)
         }
     }
 
     func stop() async {
         stopCallCount += 1
-        state = .stopped
-        stateContinuation.yield(.stopped)
+        emit(.stopped)
+    }
+
+    func emit(_ state: BackendProcessSupervisor.State) {
+        self.state = state
+        for continuation in stateContinuations.values {
+            continuation.yield(state)
+        }
     }
 }
 

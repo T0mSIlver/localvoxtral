@@ -68,10 +68,11 @@ final class BackendProcessSupervisorTests: XCTestCase {
             return false
         }
 
-        guard case let .failed(message) = state else {
+        guard case let .failed(summary, detail) = state else {
             return XCTFail("expected failed state, got \(state)")
         }
-        XCTAssertTrue(message.contains("port already in use"))
+        XCTAssertTrue(summary.contains("port already in use"))
+        XCTAssertNil(detail)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
     }
 
@@ -108,10 +109,11 @@ final class BackendProcessSupervisorTests: XCTestCase {
             return false
         }
 
-        guard case let .failed(message) = state else {
+        guard case let .failed(summary, detail) = state else {
             return XCTFail("expected failed state, got \(state)")
         }
-        XCTAssertTrue(message.contains("did not become ready"))
+        XCTAssertTrue(summary.contains("did not become ready"))
+        XCTAssertNil(detail)
         if let pid = try readPID(from: pidFile) {
             XCTAssertFalse(isProcessRunning(pid))
         }
@@ -220,15 +222,69 @@ final class BackendProcessSupervisorTests: XCTestCase {
             return false
         }
 
-        guard case let .failed(message) = state else {
+        guard case let .failed(summary, optionalDetail) = state else {
             return XCTFail("expected failed state, got \(state)")
         }
-        XCTAssertTrue(message.contains("fatal backend failure"), message)
+        XCTAssertEqual(summary, "test-backend exited 3 consecutive times.")
+        let detail = try XCTUnwrap(optionalDetail)
+        XCTAssertTrue(detail.contains("fatal backend failure"), detail)
         XCTAssertEqual(try readCount(from: countFile), 3)
         XCTAssertEqual(
             sleeps.recordedDurations.filter { $0 >= .milliseconds(500) },
             [.milliseconds(500), .seconds(1)]
         )
+    }
+
+    func testRestartAfterFailureClearsStaleFailedStateSynchronouslyAndCanRun() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let succeedMarker = directory.appendingPathComponent("succeed")
+        let readyMarker = directory.appendingPathComponent("ready")
+        let script = try writeScript(
+            in: directory,
+            name: "backend.sh",
+            body: """
+            #!/bin/sh
+            if [ -f "\(succeedMarker.path)" ]; then
+              touch "\(readyMarker.path)"
+              trap 'exit 0' TERM
+              while true; do sleep 1; done
+            fi
+            echo "intentional fast failure" >&2
+            exit 7
+            """
+        )
+        let supervisor = makeSupervisor(
+            executableURL: script,
+            readinessPollInterval: .milliseconds(1),
+            readinessTimeout: .seconds(5),
+            maxConsecutiveRestartFailures: 1,
+            probe: { _ in FileManager.default.fileExists(atPath: readyMarker.path) },
+            sleepFor: { _ in await Task.yield() }
+        )
+        let watcher = StateWatcher(stream: supervisor.stateUpdates)
+        defer { watcher.cancel() }
+
+        await supervisor.start()
+        let failedState = try await watcher.waitForState { state in
+            if case .failed = state { return true }
+            return false
+        }
+        guard case .failed = failedState else {
+            return XCTFail("expected failed state, got \(failedState)")
+        }
+
+        XCTAssertTrue(FileManager.default.createFile(atPath: succeedMarker.path, contents: Data()))
+        await supervisor.start()
+
+        XCTAssertNotEqual(supervisor.state, .failed(summary: "intentional fast failure", detail: nil))
+        if case .failed = supervisor.state {
+            XCTFail("start() must synchronously leave the stale failed state, got \(supervisor.state)")
+        }
+
+        _ = try await watcher.waitForState(.running)
+        await supervisor.stop()
     }
 
     func testStopHonorsTERMWithoutRestarting() async throws {

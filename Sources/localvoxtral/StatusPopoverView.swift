@@ -159,11 +159,14 @@ struct StatusPopoverView: View {
     }
 
     // Same typography as the Status line so failure details read as part of
-    // the popover, not a styled callout.
+    // the popover, not a styled callout. The popover never shows long text
+    // (AGENTS.md): callers pass one short sentence, and the line limit here
+    // is the backstop for any path that slips a long string through.
     private func statusDetailView(_ detail: String) -> some View {
         Text(detail)
             .foregroundStyle(.secondary)
-            .lineLimit(nil)
+            .lineLimit(2)
+            .truncationMode(.tail)
             .fixedSize(horizontal: false, vertical: true)
             .frame(width: Self.contentWidth, alignment: .leading)
     }

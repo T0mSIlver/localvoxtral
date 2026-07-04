@@ -47,19 +47,41 @@ extension DictationViewModel {
         let includePolishing = settings.llmPolishingEnabled
         statusText = managedBackendStartupStatusText(includePolishing: includePolishing)
 
-        Task { @MainActor [weak self] in
+        managedStartupTask?.cancel()
+        let startupTaskID = UUID()
+        managedStartupTaskID = startupTaskID
+        managedStartupTask = Task { @MainActor [weak self, startupTaskID] in
             guard let self else { return }
+            defer {
+                if self.managedStartupTaskID == startupTaskID {
+                    self.managedStartupTask = nil
+                    self.managedStartupTaskID = nil
+                }
+            }
             do {
                 try await self.backendManager.ensureReady(includePolishing: includePolishing)
             } catch {
+                guard !Task.isCancelled else { return }
                 self.abortConnectingSession()
                 self.handleManagedBackendStartupFailure(error)
                 return
             }
 
-            guard !Task.isCancelled, self.isConnectingRealtimeSession else { return }
+            guard !Task.isCancelled,
+                  self.settings.backendMode == .managedLocal,
+                  self.isConnectingRealtimeSession
+            else { return }
             self.beginDictationSession(outputMode: outputMode)
         }
+    }
+
+    func cancelManagedStartupTask() {
+        // This cancels only the view-model caller. BackendManager owns and
+        // shares its in-flight ensureReady task, so another UI path may keep
+        // awaiting the same backend startup.
+        managedStartupTask?.cancel()
+        managedStartupTask = nil
+        managedStartupTaskID = nil
     }
 
     private func managedBackendStartupStatusText(includePolishing: Bool) -> String {
@@ -83,18 +105,32 @@ extension DictationViewModel {
     }
 
     private func handleManagedBackendStartupFailure(_ error: Error) {
-        let detail = error.localizedDescription.trimmed.isEmpty
+        let summary = error.localizedDescription.trimmed.isEmpty
             ? String(describing: error)
             : error.localizedDescription
-        let message = "Unable to start the managed dictation backend: \(detail)"
+        let technicalDetails: String?
+        let popoverError: String
+        if let managedError = error as? ManagedBackendManagerError {
+            technicalDetails = normalizedFailureDetails(managedError.technicalDetails)
+            popoverError = "\(managedError.backendName) failed to start."
+        } else {
+            technicalDetails = summary
+            popoverError = "Managed backend failed to start."
+        }
+        let message = "Unable to start the managed dictation backend: \(summary)"
         statusText = "Managed backend failed."
-        lastError = message
-        logConnectionFailure(message: message, technicalDetails: detail)
+        // lastError renders in the menu-bar popover, which never shows long
+        // text (AGENTS.md); the full story goes to the alert and the log.
+        lastError = popoverError
+        #if DEBUG
+        debugLastConnectFailureTechnicalDetails = technicalDetails
+        #endif
+        logConnectionFailure(message: message, technicalDetails: technicalDetails)
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
             title: "Managed Backend Failed",
             message: message,
-            technicalDetails: detail
+            technicalDetails: technicalDetails
         )
     }
 
