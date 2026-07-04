@@ -240,12 +240,21 @@ if ! snapshot_defaults; then
   exit 1
 fi
 if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string managed_local \
-  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string managed_local; then
-  record_fail "Could not force managed backend mode in defaults."
+  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string managed_local \
+  || ! defaults write "$BUNDLE_ID" settings.onboarding_completed -bool true; then
+  record_fail "Could not force managed backend mode and completed onboarding in defaults."
   print_summary
   exit 1
 fi
-record_pass "Defaults domain snapshot captured and smoke run forced to managed mode."
+# onboarding_completed is forced true so the first-launch wizard never appears
+# and the launch invariants below (menu-bar item, no backend spawned) hold. A
+# dedicated wizard smoke would need a second launch with the flag false plus AX
+# drilling of the wizard window; that is out of scope for this single-launch
+# drill.
+# TODO(tier-2): add a wizard-appears smoke by launching once with
+# settings.onboarding_completed=false and asserting the "Welcome to localvoxtral"
+# window, then completing it.
+record_pass "Defaults domain snapshot captured and smoke run forced to managed mode with onboarding completed."
 
 # Managed backends are Python entry-point processes, so match the full
 # command line (-f). The runner legitimately hosts a voxmlx-serve launchd
@@ -452,6 +461,7 @@ assert_tab() {
   fi
 }
 
+assert_tab "General" "Permissions"
 assert_tab "Endpoints" "Dictation"
 assert_tab "Dictation" "Start dictation with"
 assert_tab "Text Processing" "Replacements"

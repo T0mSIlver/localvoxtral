@@ -163,6 +163,7 @@ final class SettingsStore {
         static let polishingBackendMode = "settings.polishing_backend_mode"
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
+        static let onboardingCompleted = "settings.onboarding_completed"
         static let dictationOutputMode = "settings.dictation_output_mode"
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
@@ -217,6 +218,14 @@ final class SettingsStore {
 
     var polishingBackendMode: BackendMode {
         didSet { defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode) }
+    }
+
+    /// True once the user has completed (or skipped) the first-launch onboarding
+    /// wizard. Resolved once at init (see `resolveOnboardingCompleted`) and
+    /// persisted immediately so the wizard shows exactly once for fresh installs.
+    /// The General settings pane's "Re-run Setup…" resets it to false.
+    var onboardingCompleted: Bool {
+        didSet { defaults.set(onboardingCompleted, forKey: Keys.onboardingCompleted) }
     }
 
     var realtimeAPIEndpointURL: String {
@@ -353,6 +362,14 @@ final class SettingsStore {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) {
         self.defaults = defaults
+
+        // Resolve onboarding completion BEFORE any migration below persists the
+        // per-backend mode keys — the freshness heuristic reads whether those
+        // keys were *already* stored, so it must observe the untouched domain.
+        let resolvedOnboardingCompleted = Self.resolveOnboardingCompleted(
+            defaults: defaults, environment: environment)
+        onboardingCompleted = resolvedOnboardingCompleted
+        defaults.set(resolvedOnboardingCompleted, forKey: Keys.onboardingCompleted)
 
         let resolvedBackendModes = Self.resolveBackendModes(defaults: defaults, environment: environment)
         dictationBackendMode = resolvedBackendModes.dictation
@@ -549,6 +566,33 @@ final class SettingsStore {
         defaults.object(forKey: key) != nil
             ? defaults.bool(forKey: key)
             : fallback
+    }
+
+    /// Decide whether the first-launch wizard should be skipped.
+    ///
+    /// - If the flag was already persisted, honor it verbatim.
+    /// - Otherwise treat the install as "not fresh" (skip the wizard) when any
+    ///   signal of a prior configured install is present: the legacy global
+    ///   backend-mode key, a persisted realtime endpoint, the REALTIME_ENDPOINT
+    ///   env override, or either per-backend mode key. These mirror the exact
+    ///   signals the backend-mode migration keys off, plus the newer mode keys.
+    /// - A genuinely fresh install has none of these → show the wizard.
+    private static func resolveOnboardingCompleted(
+        defaults: UserDefaults,
+        environment: [String: String]
+    ) -> Bool {
+        if defaults.object(forKey: Keys.onboardingCompleted) != nil {
+            return defaults.bool(forKey: Keys.onboardingCompleted)
+        }
+
+        let isExistingInstall =
+            defaults.string(forKey: Keys.backendMode) != nil
+            || defaults.string(forKey: Keys.realtimeAPIEndpointURL) != nil
+            || environment["REALTIME_ENDPOINT"] != nil
+            || defaults.string(forKey: Keys.dictationBackendMode) != nil
+            || defaults.string(forKey: Keys.polishingBackendMode) != nil
+
+        return isExistingInstall
     }
 
     private static func resolveBackendModes(

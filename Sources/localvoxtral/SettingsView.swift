@@ -1,9 +1,29 @@
 import SwiftUI
 
+/// Identifies each Settings tab so navigation can be driven programmatically
+/// (e.g. the onboarding "I run my own server" link jumps to Endpoints).
+enum SettingsTab: String, Hashable, CaseIterable, Sendable {
+    case general
+    case endpoints
+    case dictation
+    case textProcessing
+    case about
+}
+
+/// Shared, observable selection for the Settings `TabView`. Owned by the app
+/// delegate so a programmatic tab change survives the Settings window's
+/// open/close lifecycle.
+@MainActor
+@Observable
+final class SettingsNavigator {
+    var selectedTab: SettingsTab = .general
+}
+
 struct SettingsView: View {
     @Bindable var settings: SettingsStore
     var viewModel: DictationViewModel
     var backendManager: BackendManager
+    @Bindable var navigator: SettingsNavigator
     @State private var shortcutValidationError: String?
 
     private var endpointBinding: Binding<String> {
@@ -58,7 +78,13 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView {
+        TabView(selection: $navigator.selectedTab) {
+            GeneralSettingsPane(settings: settings, viewModel: viewModel)
+                .tabItem {
+                    Label("General", systemImage: "gearshape")
+                }
+                .tag(SettingsTab.general)
+
             ConnectionSettingsPane(
                 settings: settings,
                 viewModel: viewModel,
@@ -69,6 +95,7 @@ struct SettingsView: View {
             .tabItem {
                 Label("Endpoints", systemImage: "network")
             }
+            .tag(SettingsTab.endpoints)
 
             DictationSettingsPane(
                 settings: settings,
@@ -81,6 +108,7 @@ struct SettingsView: View {
             .tabItem {
                 Label("Dictation", systemImage: "mic")
             }
+            .tag(SettingsTab.dictation)
 
             TextProcessingSettingsPane(
                 settings: settings,
@@ -89,13 +117,48 @@ struct SettingsView: View {
             .tabItem {
                 Label("Text Processing", systemImage: "text.badge.checkmark")
             }
+            .tag(SettingsTab.textProcessing)
 
             AboutSettingsPane(viewModel: viewModel)
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
+                .tag(SettingsTab.about)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct GeneralSettingsPane: View {
+    @Bindable var settings: SettingsStore
+    let viewModel: DictationViewModel
+
+    var body: some View {
+        SettingsPage {
+            SettingsGroup(title: "Permissions") {
+                PermissionRowsView(viewModel: viewModel)
+            }
+
+            SettingsGroup(title: "App") {
+                ToggleSettingRow(
+                    title: "Auto-copy final segment",
+                    subtitle: "Copies to the clipboard when dictation stops.",
+                    isOn: $settings.autoCopyEnabled
+                )
+
+                SettingsFieldRow(title: "Setup") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Re-run Setup…") {
+                            viewModel.reRunOnboarding()
+                        }
+
+                        SettingsHelpText(
+                            "Reopen the first-launch setup wizard for permissions and downloads."
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -561,13 +624,6 @@ private struct DictationSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "General") {
-                ToggleSettingRow(
-                    title: "Auto-copy final segment",
-                    subtitle: "Copies to the clipboard when dictation stops.",
-                    isOn: $settings.autoCopyEnabled
-                )
-            }
         }
     }
 }

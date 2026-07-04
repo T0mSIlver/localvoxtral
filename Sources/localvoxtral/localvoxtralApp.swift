@@ -3,22 +3,13 @@ import SwiftUI
 
 @main
 struct localvoxtralApp: App {
-    @State private var settingsStore: SettingsStore
-    @State private var backendManager: BackendManager
-    @State private var viewModel: DictationViewModel
-
-    init() {
-        let settings = SettingsStore()
-        let manager = BackendManager()
-        settingsStore = settings
-        backendManager = manager
-        viewModel = DictationViewModel(settings: settings, backendManager: manager)
-    }
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
         MenuBarExtra {
-            StatusPopoverView(viewModel: viewModel)
+            StatusPopoverView(viewModel: appDelegate.viewModel)
         } label: {
+            let viewModel = appDelegate.viewModel
             let state = viewModel.realtimeSessionIndicatorState
             if let idleIcon = MenuBarIconAsset.idleIcon {
                 let iconConfiguration: (
@@ -86,11 +77,69 @@ struct localvoxtralApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(settings: settingsStore, viewModel: viewModel, backendManager: backendManager)
-                .frame(minWidth: 560, idealWidth: 580, minHeight: 380, idealHeight: 420)
+            SettingsView(
+                settings: appDelegate.settingsStore,
+                viewModel: appDelegate.viewModel,
+                backendManager: appDelegate.backendManager,
+                navigator: appDelegate.settingsNavigator
+            )
+            .frame(minWidth: 560, idealWidth: 580, minHeight: 380, idealHeight: 420)
         }
         .defaultSize(width: 580, height: 420)
         .restorationBehavior(.disabled)
+    }
+}
+
+/// Owns the shared model graph and presents the first-launch onboarding wizard.
+/// A menu-bar (LSUIElement) app has no launch window scene, so the wizard is
+/// shown here from `applicationDidFinishLaunching`.
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    let settingsStore: SettingsStore
+    let backendManager: BackendManager
+    let viewModel: DictationViewModel
+    let settingsNavigator = SettingsNavigator()
+
+    private var onboardingController: OnboardingWindowController?
+
+    override init() {
+        let settings = SettingsStore()
+        let manager = BackendManager()
+        settingsStore = settings
+        backendManager = manager
+        viewModel = DictationViewModel(settings: settings, backendManager: manager)
+        super.init()
+        viewModel.onRequestReRunOnboarding = { [weak self] in
+            self?.presentOnboarding()
+        }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !settingsStore.onboardingCompleted else { return }
+        presentOnboarding()
+    }
+
+    private func presentOnboarding() {
+        if let onboardingController {
+            onboardingController.present()
+            return
+        }
+        let controller = OnboardingWindowController(
+            settings: settingsStore,
+            viewModel: viewModel,
+            backendManager: backendManager,
+            openEndpointsSettings: { [weak self] in self?.openEndpointsSettings() }
+        )
+        controller.onFinished = { [weak self] in self?.onboardingController = nil }
+        onboardingController = controller
+        controller.present()
+    }
+
+    private func openEndpointsSettings() {
+        settingsNavigator.selectedTab = .endpoints
+        NSApp.activate(ignoringOtherApps: true)
+        // AppKit entry point for the SwiftUI `Settings` scene on macOS 14+.
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
     }
 }
 
