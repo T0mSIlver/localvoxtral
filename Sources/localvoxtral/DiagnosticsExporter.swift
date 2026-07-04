@@ -211,6 +211,8 @@ enum DiagnosticsExporter {
             return "not installed"
         case .installing(let progress):
             return "installing (\(describe(progress)))"
+        case .preparingModel(let progress):
+            return "preparing model (\(describe(progress)))"
         case .starting:
             return "starting"
         case .ready:
@@ -241,5 +243,15 @@ enum DiagnosticsExporter {
         case .finished:
             return "finished"
         }
+    }
+
+    private static func describe(_ progress: ModelDownloadProgress) -> String {
+        if let fraction = progress.fraction {
+            return String(format: "downloading %.0f%%", fraction * 100)
+        }
+        if let totalBytes = progress.totalBytes {
+            return "downloading \(progress.downloadedBytes) of \(totalBytes) bytes"
+        }
+        return "downloading"
     }
 }

@@ -2,9 +2,15 @@ import Darwin
 import Foundation
 import Observation
 
-enum ManagedBackendStatus: Equatable {
+struct ManagedBackendStatusUpdate: Equatable, Sendable {
+    let spec: ManagedBackendSpec
+    let status: ManagedBackendStatus
+}
+
+enum ManagedBackendStatus: Equatable, Sendable {
     case notInstalled
     case installing(progress: BackendInstallProgress)
+    case preparingModel(progress: ModelDownloadProgress)
     case starting
     case ready
     case stopped
@@ -14,7 +20,7 @@ enum ManagedBackendStatus: Equatable {
         switch self {
         case .notInstalled, .installing:
             return true
-        case .starting, .ready, .stopped, .failed:
+        case .preparingModel, .starting, .ready, .stopped, .failed:
             return false
         }
     }
@@ -63,6 +69,7 @@ extension BackendProcessSupervisor: ManagedBackendSupervising {}
 protocol ManagedBackendManaging: AnyObject {
     var voxmlxStatus: ManagedBackendStatus { get }
     var mlxLMStatus: ManagedBackendStatus { get }
+    var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> { get }
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws
     func stopAll() async
@@ -87,19 +94,28 @@ final class BackendManager: ManagedBackendManaging {
     private(set) var mlxLMStatus: ManagedBackendStatus
 
     @ObservationIgnored private let installer: any BackendInstalling
+    @ObservationIgnored private let modelPreparer: any ModelPreparing
     @ObservationIgnored private let layout: BackendInstallLayout
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private var voxmlxSupervisor: (any ManagedBackendSupervising)?
     @ObservationIgnored private var mlxLMSupervisor: (any ManagedBackendSupervising)?
-    @ObservationIgnored private var ensureReadyTask: Task<Void, Error>?
+    // Per-backend single-flight slots. A global shared slot (the previous
+    // design) let a lingering dictation run swallow a polishing request whose
+    // flags it never covered — field-hit 2026-07-04: enabling polishing did
+    // nothing while an old ensure task lingered. Disjoint backends must never
+    // share a slot.
+    @ObservationIgnored private var dictationEnsureTask: Task<Void, Error>?
+    @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var voxmlxStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var mlxLMStateMirrorTask: Task<Void, Never>?
+    @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     #if DEBUG
     @ObservationIgnored var debugStatusChangeSink: ((ManagedBackendSpec, ManagedBackendStatus) -> Void)?
     #endif
 
     init(
         installer: any BackendInstalling = BackendInstaller(),
+        modelPreparer: (any ModelPreparing)? = nil,
         layout: BackendInstallLayout = BackendInstallLayout(),
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
@@ -107,6 +123,7 @@ final class BackendManager: ManagedBackendManaging {
     ) {
         self.installer = installer
         self.layout = layout
+        self.modelPreparer = modelPreparer ?? HFModelDownloader(layout: layout)
         self.supervisorFactory = supervisorFactory
         self.voxmlxStatus = installer.needsInstallOrUpdate(BackendCatalog.voxmlx)
             ? .notInstalled
@@ -116,56 +133,108 @@ final class BackendManager: ManagedBackendManaging {
             : .stopped
     }
 
+    var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
+        let id = UUID()
+        let stream = AsyncStream<ManagedBackendStatusUpdate>.makeStream(of: ManagedBackendStatusUpdate.self)
+        statusUpdateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.statusUpdateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
+
     func ensureReady(dictation: Bool, polishing: Bool) async throws {
         guard dictation || polishing else { return }
-        while true {
-            if let ensureReadyTask {
-                try await ensureReadyTask.value
-                if dictation, !isReady(BackendCatalog.voxmlx) {
-                    continue
-                }
-                if polishing, !isReady(BackendCatalog.mlxLM) {
-                    continue
-                }
-                return
-            }
+        Log.backends.info(
+            "ensureReady requested dictation=\(dictation, privacy: .public) polishing=\(polishing, privacy: .public)"
+        )
+        var tasks: [Task<Void, Error>] = []
+        if dictation {
+            tasks.append(singleFlightEnsureTask(for: BackendCatalog.voxmlx))
+        }
+        if polishing {
+            tasks.append(singleFlightEnsureTask(for: BackendCatalog.mlxLM))
+        }
+        for task in tasks {
+            try await awaitEnsureReadyTask(task)
+        }
+    }
 
-            let task = Task { @MainActor in
-                try await self.performEnsureReady(dictation: dictation, polishing: polishing)
-            }
-            ensureReadyTask = task
+    /// Returns the in-flight ensure task for the backend, or starts one. Each
+    /// backend has its own slot so concurrent callers join per-backend work
+    /// and requests for different backends never block or swallow each other.
+    private func singleFlightEnsureTask(for spec: ManagedBackendSpec) -> Task<Void, Error> {
+        if spec.id == BackendCatalog.voxmlx.id, let dictationEnsureTask {
+            return dictationEnsureTask
+        }
+        if spec.id == BackendCatalog.mlxLM.id, let polishingEnsureTask {
+            return polishingEnsureTask
+        }
+        let task = Task { @MainActor in
+            defer { self.clearEnsureTask(for: spec) }
             do {
-                try await task.value
-                ensureReadyTask = nil
-                return
+                try await self.ensureReady(spec)
+                Log.backends.info("\(spec.displayName, privacy: .public) ensure finished ready")
+            } catch is CancellationError {
+                Log.backends.info("\(spec.displayName, privacy: .public) ensure cancelled")
+                throw CancellationError()
             } catch {
-                ensureReadyTask = nil
+                Log.backends.error(
+                    "\(spec.displayName, privacy: .public) ensure failed: \(error.localizedDescription, privacy: .public)"
+                )
                 throw error
             }
+        }
+        if spec.id == BackendCatalog.voxmlx.id {
+            dictationEnsureTask = task
+        } else {
+            polishingEnsureTask = task
+        }
+        return task
+    }
+
+    private func clearEnsureTask(for spec: ManagedBackendSpec) {
+        if spec.id == BackendCatalog.voxmlx.id {
+            dictationEnsureTask = nil
+        } else {
+            polishingEnsureTask = nil
+        }
+    }
+
+    private func awaitEnsureReadyTask(_ task: Task<Void, Error>) async throws {
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
         }
     }
 
     func stopAll() async {
+        let cancelledDictationEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
+        let cancelledPolishingEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
         await voxmlxSupervisor?.stop()
         await mlxLMSupervisor?.stop()
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
         mlxLMStateMirrorTask?.cancel()
         mlxLMStateMirrorTask = nil
-        if voxmlxSupervisor != nil {
-            voxmlxStatus = .stopped
+        if cancelledDictationEnsure || voxmlxSupervisor != nil {
+            setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
-        if mlxLMSupervisor != nil {
-            mlxLMStatus = .stopped
+        if cancelledPolishingEnsure || mlxLMSupervisor != nil {
+            setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
     }
 
     func stopDictation() async {
+        let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
         await voxmlxSupervisor?.stop()
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
-        if voxmlxSupervisor != nil {
-            voxmlxStatus = .stopped
+        if cancelledEnsure || voxmlxSupervisor != nil {
+            setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
     }
 
@@ -173,12 +242,24 @@ final class BackendManager: ManagedBackendManaging {
         // Stop only the polishing supervisor. voxmlx (dictation) keeps running
         // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
         // branch: cancel the mirror task and pin the status to .stopped.
+        let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
         await mlxLMSupervisor?.stop()
         mlxLMStateMirrorTask?.cancel()
         mlxLMStateMirrorTask = nil
-        if mlxLMSupervisor != nil {
-            mlxLMStatus = .stopped
+        if cancelledEnsure || mlxLMSupervisor != nil {
+            setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
+    }
+
+    private func cancelEnsureTask(for spec: ManagedBackendSpec) -> Bool {
+        let task: Task<Void, Error>?
+        if spec.id == BackendCatalog.voxmlx.id {
+            task = dictationEnsureTask
+        } else {
+            task = polishingEnsureTask
+        }
+        task?.cancel()
+        return task != nil
     }
 
     func status(for spec: ManagedBackendSpec) -> ManagedBackendStatus {
@@ -200,15 +281,6 @@ final class BackendManager: ManagedBackendManaging {
             return mlxLMSupervisor?.recentOutput ?? []
         default:
             return []
-        }
-    }
-
-    private func performEnsureReady(dictation: Bool, polishing: Bool) async throws {
-        if dictation {
-            try await ensureReady(BackendCatalog.voxmlx)
-        }
-        if polishing {
-            try await ensureReady(BackendCatalog.mlxLM)
         }
     }
 
@@ -234,11 +306,44 @@ final class BackendManager: ManagedBackendManaging {
                     detail: nil
                 )
             }
+            try Task.checkCancellation()
         }
 
+        try await prepareModel(for: spec)
+        try Task.checkCancellation()
+
         setStatus(.starting, for: spec)
+        try Task.checkCancellation()
         let supervisor = supervisor(for: spec)
         try await startAndWaitUntilReady(supervisor, spec: spec)
+    }
+
+    private func prepareModel(for spec: ManagedBackendSpec) async throws {
+        let request = modelPreparationRequest(for: spec)
+        setStatus(
+            .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil)),
+            for: spec
+        )
+        do {
+            try await modelPreparer.prepare(request) { [weak self] progress in
+                guard let self else { return }
+                self.setStatus(.preparingModel(progress: progress), for: spec)
+            }
+        } catch is CancellationError {
+            setStatus(.stopped, for: spec)
+            throw CancellationError()
+        } catch {
+            let summary = error.localizedDescription.trimmed.isEmpty
+                ? "Model download failed."
+                : error.localizedDescription
+            let detail = (error as? ModelDownloadError)?.technicalDetails
+            setStatus(.failed(summary: summary, detail: detail), for: spec)
+            throw ManagedBackendManagerError.backendFailed(
+                name: spec.displayName,
+                summary: summary,
+                detail: detail
+            )
+        }
     }
 
     private func startAndWaitUntilReady(
@@ -353,6 +458,47 @@ final class BackendManager: ManagedBackendManaging {
         }
     }
 
+    private func modelPreparationRequest(for spec: ManagedBackendSpec) -> ModelPreparationRequest {
+        // Keep these include patterns in sync with:
+        // - /home/dev/work/voxmlx/voxmlx/weights.py download_model
+        // - /home/dev/work/mlx-lm/mlx_lm/utils.py _download
+        switch spec.id {
+        case BackendCatalog.voxmlx.id:
+            return ModelPreparationRequest(
+                backendID: spec.id,
+                displayName: spec.displayName,
+                repoID: SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName,
+                includePatterns: [
+                    "consolidated.safetensors",
+                    "model*.safetensors",
+                    "model.safetensors.index.json",
+                    "params.json",
+                    "config.json",
+                    "tekken.json",
+                ]
+            )
+        case BackendCatalog.mlxLM.id:
+            return ModelPreparationRequest(
+                backendID: spec.id,
+                displayName: spec.displayName,
+                repoID: SettingsStore.defaultLLMPolishingModel,
+                includePatterns: [
+                    "*.json",
+                    "model*.safetensors",
+                    "*.py",
+                    "tokenizer.model",
+                    "*.tiktoken",
+                    "tiktoken.model",
+                    "*.txt",
+                    "*.jsonl",
+                    "*.jinja",
+                ]
+            )
+        default:
+            preconditionFailure("Unknown managed backend '\(spec.id)'.")
+        }
+    }
+
     private func processEnvironment() -> [String: String] {
         let inherited = ProcessInfo.processInfo.environment
         var environment: [String: String] = [:]
@@ -452,5 +598,9 @@ final class BackendManager: ManagedBackendManaging {
         #if DEBUG
         debugStatusChangeSink?(spec, status)
         #endif
+        let update = ManagedBackendStatusUpdate(spec: spec, status: status)
+        for continuation in statusUpdateContinuations.values {
+            continuation.yield(update)
+        }
     }
 }

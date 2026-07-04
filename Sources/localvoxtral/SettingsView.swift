@@ -335,6 +335,16 @@ private struct ManagedBackendStatusLabel: View {
                         .controlSize(.small)
                         .frame(width: 54)
                 }
+            } else if case .preparingModel(let progress) = status {
+                if let fraction = progress.fraction {
+                    ProgressView(value: fraction)
+                        .controlSize(.small)
+                        .frame(width: 54)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 54)
+                }
             }
 
             Text(statusText)
@@ -350,6 +360,8 @@ private struct ManagedBackendStatusLabel: View {
             return "Not installed"
         case .installing(let progress):
             return installingText(progress)
+        case .preparingModel(let progress):
+            return modelDownloadText(progress)
         case .starting:
             return "Starting"
         case .ready:
@@ -385,6 +397,25 @@ private struct ManagedBackendStatusLabel: View {
         case .finished:
             return "Installed"
         }
+    }
+
+    private func modelDownloadText(_ progress: ModelDownloadProgress) -> String {
+        guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            // No total yet: the downloader is still resolving what (if
+            // anything) needs fetching — on a warm cache this phase is all
+            // the user ever sees, so don't claim a download is happening.
+            return "Checking model..."
+        }
+        return "Downloading model - \(Self.byteText(progress.downloadedBytes)) of \(Self.byteText(totalBytes))"
+    }
+
+    private static func byteText(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        return formatter.string(fromByteCount: bytes)
     }
 }
 

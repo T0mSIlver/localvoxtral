@@ -73,6 +73,28 @@ final class OnboardingItemStateMappingTests: XCTestCase {
             .working(detail: "Installed", fraction: nil)
         )
     }
+
+    func testPreparingModel_withKnownTotal_isDeterminateWorking() {
+        XCTAssertEqual(
+            OnboardingItemState(
+                managedStatus: .preparingModel(
+                    progress: ModelDownloadProgress(downloadedBytes: 64, totalBytes: 128)
+                )
+            ),
+            .working(detail: "Downloading model 50%", fraction: 0.5)
+        )
+    }
+
+    func testPreparingModel_withoutKnownTotal_isCheckingWorking() {
+        XCTAssertEqual(
+            OnboardingItemState(
+                managedStatus: .preparingModel(
+                    progress: ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil)
+                )
+            ),
+            .working(detail: "Checking model...", fraction: nil)
+        )
+    }
 }
 
 // MARK: - Live driver
@@ -127,12 +149,26 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
             .working(detail: "Loading the model…", fraction: nil)
         )
 
-        manager.voxmlxStatus = .ready
-        let converged = await OnboardingTestPump.waitUntil {
-            driver.itemStates[.dictation] == .ready
+        let states = await awaitReadyStateChange(from: driver) {
+            manager.voxmlxStatus = .ready
         }
 
-        XCTAssertTrue(converged, "driver did not mirror the backend status change to .ready")
+        XCTAssertEqual(states[.dictation], .ready)
+        XCTAssertEqual(driver.itemStates[.dictation], .ready)
+    }
+
+    private func awaitReadyStateChange(
+        from driver: LiveOnboardingBootstrapDriver,
+        afterStartingObservation mutate: () -> Void
+    ) async -> [OnboardingItemID: OnboardingItemState] {
+        await withCheckedContinuation { continuation in
+            driver.onItemStatesChanged = { [weak driver] states in
+                guard states[.dictation] == .ready else { return }
+                driver?.onItemStatesChanged = nil
+                continuation.resume(returning: states)
+            }
+            mutate()
+        }
     }
 }
 
@@ -209,6 +245,18 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
 
     var voxmlxStatus: ManagedBackendStatus = .notInstalled
     var mlxLMStatus: ManagedBackendStatus = .notInstalled
+    @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
+    var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
+        let id = UUID()
+        let stream = AsyncStream<ManagedBackendStatusUpdate>.makeStream(of: ManagedBackendStatusUpdate.self)
+        statusUpdateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.statusUpdateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
 
     @ObservationIgnored private(set) var ensureCalls: [EnsureCall] = []
     @ObservationIgnored private(set) var stopAllCallCount = 0
@@ -233,18 +281,5 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
         await withCheckedContinuation { continuation in
             ensureContinuation = continuation
         }
-    }
-}
-
-/// Cooperative main-actor pump: yields until a condition holds, without any
-/// wall-clock. Used to let a scheduled observation callback run.
-enum OnboardingTestPump {
-    @MainActor
-    static func waitUntil(iterations: Int = 500, _ condition: () -> Bool) async -> Bool {
-        for _ in 0..<iterations {
-            if condition() { return true }
-            await Task.yield()
-        }
-        return condition()
     }
 }

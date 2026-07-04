@@ -60,7 +60,28 @@ extension DictationViewModel {
         managedStartupTaskID = startupTaskID
         managedStartupTask = Task { @MainActor [weak self, startupTaskID] in
             guard let self else { return }
+            let statusUpdates = self.backendManager.statusUpdates
+            let statusMirrorTask = Task { @MainActor [weak self, startupTaskID] in
+                guard let self else { return }
+                for await _ in statusUpdates {
+                    if Task.isCancelled || self.managedStartupTaskID != startupTaskID {
+                        return
+                    }
+                    guard (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
+                          (!needsManagedPolishing
+                              || (self.settings.llmPolishingEnabled
+                                  && self.settings.polishingBackendMode == .managedLocal)),
+                          self.isConnectingRealtimeSession
+                    else { continue }
+                    self.statusText = self.managedBackendStartupStatusText(
+                        dictation: needsManagedDictation,
+                        polishing: needsManagedPolishing
+                    )
+                }
+            }
+            await Task.yield()
             defer {
+                statusMirrorTask.cancel()
                 if self.managedStartupTaskID == startupTaskID {
                     self.managedStartupTask = nil
                     self.managedStartupTaskID = nil
@@ -90,15 +111,20 @@ extension DictationViewModel {
     }
 
     func cancelManagedStartupTask() {
-        // This cancels only the view-model caller. BackendManager owns and
-        // shares its in-flight ensureReady task, so another UI path may keep
-        // awaiting the same backend startup.
+        // Cancelling the caller also asks BackendManager to abort its in-flight
+        // startup, including any child model downloader process.
         managedStartupTask?.cancel()
         managedStartupTask = nil
         managedStartupTaskID = nil
     }
 
     private func managedBackendStartupStatusText(dictation: Bool, polishing: Bool) -> String {
+        if dictation, case .preparingModel(let progress) = backendManager.voxmlxStatus {
+            return modelDownloadStartupText(kind: "dictation", progress: progress)
+        }
+        if polishing, case .preparingModel(let progress) = backendManager.mlxLMStatus {
+            return modelDownloadStartupText(kind: "polishing", progress: progress)
+        }
         if shouldShowManagedBackendInstallStatus(
             voxmlxStatus: dictation ? backendManager.voxmlxStatus : nil,
             mlxLMStatus: polishing ? backendManager.mlxLMStatus : nil
@@ -109,9 +135,17 @@ extension DictationViewModel {
             return "Installing dictation backend..."
         }
         if !dictation, polishing {
-            return "Starting polishing backend - first run may download the model..."
+            return "Starting polishing backend..."
         }
-        return "Starting dictation backend - first run may download the model..."
+        return "Starting dictation backend..."
+    }
+
+    private func modelDownloadStartupText(kind: String, progress: ModelDownloadProgress) -> String {
+        guard let fraction = progress.fraction else {
+            // No byte total yet: could be a warm-cache no-op check.
+            return "Preparing \(kind) model..."
+        }
+        return "Downloading \(kind) model (\(Int((fraction * 100).rounded()))%)..."
     }
 
     private func shouldShowManagedBackendInstallStatus(

@@ -209,6 +209,11 @@ final class DictationViewModel {
     // off in Managed local mode. Kept awaitable so tests can await the shutdown.
     @ObservationIgnored
     var polishingShutdownTask: Task<Void, Never>?
+    // Eagerly installs/downloads/starts managed mlx-lm when the polishing
+    // toggle turns on, so the user watches inline progress in Settings
+    // instead of waiting for the next dictation. Kept awaitable for tests.
+    @ObservationIgnored
+    var polishingWarmupTask: Task<Void, Never>?
     @ObservationIgnored
     var audioSendTask: Task<Void, Never>?
     @ObservationIgnored
@@ -277,6 +282,8 @@ final class DictationViewModel {
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
+    @ObservationIgnored
+    var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -406,6 +413,7 @@ final class DictationViewModel {
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
         polishingShutdownTask?.cancel()
+        polishingWarmupTask?.cancel()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
@@ -463,6 +471,10 @@ final class DictationViewModel {
 
     private func requestStartupPermissionsIfNeeded() {
         guard managesRuntimeServices else { return }
+        guard settings.onboardingCompleted else {
+            debugLog("startup permission prompts skipped until onboarding completes")
+            return
+        }
         guard !hasRequestedStartupPermissions else { return }
         hasRequestedStartupPermissions = true
 
@@ -726,6 +738,7 @@ final class DictationViewModel {
 
         guard previousMode == .managedLocal, mode == .externalURL else { return }
         cancelManagedStartupTask()
+        polishingWarmupTask?.cancel()
         Task { @MainActor [backendManager] in
             await backendManager.stopPolishing()
         }
@@ -738,10 +751,23 @@ final class DictationViewModel {
     /// Any polish request in flight when the process stops fails, and the
     /// existing polish-failure fallback commits the raw text.
     func llmPolishingEnabledDidChange(_ enabled: Bool) {
-        guard !enabled, settings.polishingBackendMode == .managedLocal else { return }
+        guard settings.polishingBackendMode == .managedLocal else { return }
         polishingShutdownTask?.cancel()
-        polishingShutdownTask = Task { @MainActor [backendManager] in
-            await backendManager.stopPolishing()
+        polishingWarmupTask?.cancel()
+        if enabled {
+            // Owner-specified UX (field-hit 2026-07-04): enabling polishing
+            // eagerly installs/downloads/starts the managed backend, with
+            // progress rendered inline by the Text Processing mirror and the
+            // Endpoints status row. Failures land in mlxLMStatus, which those
+            // same rows show; no alert (the user is in Settings, not
+            // dictating). Dictation-time ensureReady remains the backstop.
+            polishingWarmupTask = Task { @MainActor [backendManager] in
+                try? await backendManager.ensureReady(dictation: false, polishing: true)
+            }
+        } else {
+            polishingShutdownTask = Task { @MainActor [backendManager] in
+                await backendManager.stopPolishing()
+            }
         }
     }
 
