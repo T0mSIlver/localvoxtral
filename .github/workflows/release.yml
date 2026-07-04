@@ -108,12 +108,14 @@ jobs:
           TAG="${{ steps.meta.outputs.tag }}"
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/localvoxtral.app" "dist/localvoxtral-$TAG.zip"
-          DMG_STAGING_DIR="$(mktemp -d)"
-          trap 'rm -rf "$DMG_STAGING_DIR"' EXIT
-          cp -R "dist/localvoxtral.app" "$DMG_STAGING_DIR/localvoxtral.app"
-          ln -s /Applications "$DMG_STAGING_DIR/Applications"
-          hdiutil create -volname "localvoxtral" -srcfolder "$DMG_STAGING_DIR" \
-            -ov -format UDZO "dist/localvoxtral-$TAG.dmg"
+          if ! command -v uvx >/dev/null 2>&1; then
+            echo "uvx is required to build the styled DMG; install uv on the release runner."
+            exit 1
+          fi
+          uvx --from dmgbuild dmgbuild \
+            -s scripts/dmg_settings.py \
+            -D app=dist/localvoxtral.app \
+            "localvoxtral" "dist/localvoxtral-$TAG.dmg"
 
       - name: Tag (all gates green)
         run: |
