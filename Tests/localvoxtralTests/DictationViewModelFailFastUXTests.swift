@@ -604,6 +604,48 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
     }
 
+    func testWarmUpPolishingAtLaunchIfNeededEnabledManagedWarmsUpPolishingOnly() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.warmUpPolishingAtLaunchIfNeeded()
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
+    }
+
+    func testWarmUpPolishingAtLaunchIfNeededDisabledDoesNotWarmUp() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = false
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.warmUpPolishingAtLaunchIfNeeded()
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+        XCTAssertNil(viewModel.polishingWarmupTask)
+    }
+
+    func testWarmUpPolishingAtLaunchIfNeededExternalModeDoesNotWarmUp() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.settings.llmPolishingEnabled = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.warmUpPolishingAtLaunchIfNeeded()
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+        XCTAssertNil(viewModel.polishingWarmupTask)
+    }
+
     // MARK: - Helpers
 
     private func makeViewModel(

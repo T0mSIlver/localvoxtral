@@ -84,8 +84,8 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
   - Realtime endpoint (URL, model name, API key)
   - Auto-copy final segment
   - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
-  - Replacement dictionary (overlay buffer output mode only)
-  - LLM polishing endpoint (URL, model name, API key) — in the **Endpoints** tab when polishing is in External URL mode (overlay buffer output mode)
+  - Replacement dictionary for live corrections and overlay finalization
+  - LLM polishing toggle and endpoint (URL, model name, API key) — in the **Endpoints** tab; endpoint fields appear when polishing is in External URL mode
   - Export Diagnostics in **About** — writes a redacted local report to the Desktop
   - Open the shared config folder for `replacement_dictionary.toml`, `llm_system_prompt.toml`, and `llm_user_prompt.toml`
 
