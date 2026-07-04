@@ -165,6 +165,10 @@ final class BackendProcessSupervisorTests: XCTestCase {
         await supervisor.start()
 
         _ = try await watcher.waitForState(.restarting(attempt: 1))
+        // .restarting is emitted BEFORE the supervisor requests the backoff
+        // sleep; wait for the recorded sleep itself or this assertion races
+        // (seen once on the release-gate runner).
+        try await sleeps.waitUntilRecorded { $0 == .milliseconds(500) }
         XCTAssertEqual(
             sleeps.recordedDurations.filter { $0 == .milliseconds(500) },
             [.milliseconds(500)]
@@ -576,9 +580,37 @@ private final class ControlledSleep: @unchecked Sendable {
     private var durations: [Duration] = []
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private var isReleased = false
+    private let recordedStream: AsyncStream<Duration>
+    private let recordedContinuation: AsyncStream<Duration>.Continuation
 
     init(shouldPause: @escaping @Sendable (Duration) -> Bool = { _ in true }) {
         self.shouldPause = shouldPause
+        (recordedStream, recordedContinuation) = AsyncStream.makeStream(of: Duration.self)
+    }
+
+    /// Waits until a sleep matching `matches` has been REQUESTED. State
+    /// transitions (e.g. `.restarting`) are emitted before the supervisor
+    /// calls `sleepFor`, so tests must synchronize on the recording itself
+    /// before asserting `recordedDurations`. Single consumer; yields are
+    /// buffered from init, so calls after the fact still see the sleep.
+    func waitUntilRecorded(
+        timeout: Duration = .seconds(5),
+        where matches: @escaping @Sendable (Duration) -> Bool
+    ) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await duration in self.recordedStream where matches(duration) {
+                    return
+                }
+                throw WaitTimeout()
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw WaitTimeout()
+            }
+            try await group.next()!
+            group.cancelAll()
+        }
     }
 
     var recordedDurations: [Duration] {
@@ -591,6 +623,9 @@ private final class ControlledSleep: @unchecked Sendable {
         await withCheckedContinuation { continuation in
             lock.lock()
             durations.append(duration)
+            // Yield after the append (still under the lock) so a waiter woken
+            // by this yield always observes the duration in recordedDurations.
+            recordedContinuation.yield(duration)
             guard !isReleased && shouldPause(duration) else {
                 lock.unlock()
                 continuation.resume()
