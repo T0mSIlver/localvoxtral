@@ -197,6 +197,12 @@ run_svc_status() {
   show_voxmlx_service 40
 }
 
+# Fail-closed metacharacter blocklist. Note the glob subtlety: a `]` inside
+# the bracket expression terminates the set early, so part of this pattern
+# matches as literal text — empirically ALL listed characters still block
+# (verified on bash 5; bash 3.2 glob semantics are the same vintage), and the
+# exact-prefix checks below are an independent second layer. Over-blocking is
+# acceptable here; never "fix" this toward permissiveness without re-testing.
 payload_has_safe_chars() {
   local payload="$1"
   case "$payload" in
@@ -288,7 +294,12 @@ run_rsync_command() {
 
   [[ "${argv[0]}" == "rsync" ]] || deny
   [[ "${argv[1]}" == "--server" ]] || deny
-  [[ "${argv[2]}" == "-logDtprze.iLsfxCIvu" ]] || deny
+  if [[ "${argv[2]}" != "-logDtprze.iLsfxCIvu" ]]; then
+    # Deliberately pinned to the exact flag string the current rsync client
+    # sends. If rsync was upgraded on either end, this is the line to update
+    # (compare against a logged deny below).
+    deny
+  fi
   [[ "${argv[3]}" == "--delete" ]] || deny
   [[ "${argv[argc - 2]}" == "." ]] || deny
 
