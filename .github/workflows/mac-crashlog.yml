@@ -34,6 +34,14 @@ jobs:
           echo "--- backend processes:"
           pgrep -fl 'voxmlx-serve|mlx_lm' | sed "s|$HOME|~|g" || echo "none"
 
+      - name: Recent localvoxtral app log (redacted)
+        env:
+          MINUTES_BACK: ${{ inputs.minutes_back }}
+        run: |
+          log show --last "${MINUTES_BACK}m" --info \
+            --predicate 'process == "localvoxtral" AND NOT (category == "Deltas")' 2>/dev/null \
+            | sed "s|$HOME|~|g" | tail -120 || echo "log query failed"
+
       - name: List running localvoxtral instances
         run: |
           pids=$(pgrep -x localvoxtral || true)
