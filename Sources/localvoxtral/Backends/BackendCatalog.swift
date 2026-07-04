@@ -12,6 +12,20 @@ struct ManagedBackendSpec: Equatable, Sendable {
     let port: Int
 }
 
+struct UVDistribution: Equatable, Sendable {
+    let version: String
+    let tarballURL: URL
+    let tarballSHA256: String
+    let archiveBinaryPath: String
+
+    static let pinned = UVDistribution(
+        version: "0.11.26",
+        tarballURL: URL(string: "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-aarch64-apple-darwin.tar.gz")!,
+        tarballSHA256: "8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6",
+        archiveBinaryPath: "uv-aarch64-apple-darwin/uv"
+    )
+}
+
 enum BackendCatalog {
     static let voxmlx = ManagedBackendSpec(
         id: "voxmlx",

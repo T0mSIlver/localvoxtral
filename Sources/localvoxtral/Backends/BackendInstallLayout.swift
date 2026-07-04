@@ -21,6 +21,16 @@ struct BackendInstallLayout: Equatable, Sendable {
         root.appendingPathComponent("uv-cache", isDirectory: true)
     }
 
+    var uvBinaryDirectory: URL {
+        root
+            .appendingPathComponent("uv", isDirectory: true)
+            .appendingPathComponent(UVDistribution.pinned.version, isDirectory: true)
+    }
+
+    var managedUVBinary: URL {
+        uvBinaryDirectory.appendingPathComponent("uv")
+    }
+
     var pythonInstalls: URL {
         root.appendingPathComponent("python", isDirectory: true)
     }

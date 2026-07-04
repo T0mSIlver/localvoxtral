@@ -98,8 +98,9 @@ Key subsystems:
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
 - Backends: `BackendManager` lazily bootstraps app-managed local serving on
   first dictation start; catalog pinned to fork wheel releases; installer
-  shells out to the embedded `uv`; supervisors spawn/health-check/stop the
-  managed processes; install root lives under Application Support.
+  downloads a pinned `uv` on first use, then shells out to it; supervisors
+  spawn/health-check/stop the managed processes; install root lives under
+  Application Support.
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
