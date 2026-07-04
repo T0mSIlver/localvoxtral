@@ -105,18 +105,27 @@ extension DictationViewModel {
     }
 
     private func handleManagedBackendStartupFailure(_ error: Error) {
-        let detail = error.localizedDescription.trimmed.isEmpty
+        let summary = error.localizedDescription.trimmed.isEmpty
             ? String(describing: error)
             : error.localizedDescription
-        let message = "Unable to start the managed dictation backend: \(detail)"
+        let technicalDetails: String?
+        if let managedError = error as? ManagedBackendManagerError {
+            technicalDetails = normalizedFailureDetails(managedError.technicalDetails)
+        } else {
+            technicalDetails = summary
+        }
+        let message = "Unable to start the managed dictation backend: \(summary)"
         statusText = "Managed backend failed."
         lastError = message
-        logConnectionFailure(message: message, technicalDetails: detail)
+        #if DEBUG
+        debugLastConnectFailureTechnicalDetails = technicalDetails
+        #endif
+        logConnectionFailure(message: message, technicalDetails: technicalDetails)
         markRecentConnectionFailureIndicator()
         presentConnectionFailureAlert(
             title: "Managed Backend Failed",
             message: message,
-            technicalDetails: detail
+            technicalDetails: technicalDetails
         )
     }
 

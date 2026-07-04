@@ -57,7 +57,7 @@ final class BackendManagerTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("wheel unavailable"))
         }
 
-        XCTAssertEqual(manager.voxmlxStatus, .failed(message: "wheel unavailable"))
+        XCTAssertEqual(manager.voxmlxStatus, .failed(summary: "wheel unavailable", detail: nil))
     }
 
     func testPolishingFlagControlsWhetherMLXLMIsTouched() async throws {
@@ -133,10 +133,10 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.voxmlxStatus, .ready)
         XCTAssertEqual(supervisor.startCallCount, 1)
 
-        supervisor.emit(.failed(message: "process crashed after readiness"))
+        supervisor.emit(.failed(summary: "process crashed after readiness", detail: nil))
         await Task.yield()
 
-        XCTAssertEqual(manager.voxmlxStatus, .failed(message: "process crashed after readiness"))
+        XCTAssertEqual(manager.voxmlxStatus, .failed(summary: "process crashed after readiness", detail: nil))
 
         try await manager.ensureReady(includePolishing: false)
 
@@ -156,6 +156,42 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(
             supervisorFactory.createdConfigurations.map(\.readinessTimeout),
             [.seconds(1800), .seconds(1800)]
+        )
+    }
+
+    func testSupervisorFailureErrorSplitsSummaryFromTechnicalDetails() async throws {
+        let marker = "FAKE_STDERR_TRACEBACK"
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [
+            .failed(
+                summary: "mlx-lm exited 5 consecutive times.",
+                detail: "stderr: Python traceback \(marker)"
+            ),
+        ]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        do {
+            try await manager.ensureReady(includePolishing: true)
+            XCTFail("expected ensureReady to throw")
+        } catch let error as ManagedBackendManagerError {
+            XCTAssertEqual(
+                error.localizedDescription,
+                "mlx-lm failed: mlx-lm exited 5 consecutive times."
+            )
+            XCTAssertFalse(error.localizedDescription.contains(marker))
+            XCTAssertTrue(error.technicalDetails?.contains(marker) == true)
+        } catch {
+            XCTFail("expected ManagedBackendManagerError, got \(error)")
+        }
+
+        XCTAssertEqual(
+            manager.mlxLMStatus,
+            .failed(
+                summary: "mlx-lm exited 5 consecutive times.",
+                detail: "stderr: Python traceback \(marker)"
+            )
         )
     }
 

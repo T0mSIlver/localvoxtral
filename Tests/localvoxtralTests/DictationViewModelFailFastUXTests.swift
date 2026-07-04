@@ -269,6 +269,34 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
+    func testManagedStartupFailureKeepsStderrOutOfLastErrorButPreservesTechnicalDetails() async {
+        let marker = "FAKE_STDERR_TRACEBACK"
+        let backendManager = FakeManagedBackendManager()
+        backendManager.ensureError = ManagedBackendManagerError.backendFailed(
+            name: "mlx-lm",
+            summary: "mlx-lm exited 5 consecutive times.",
+            detail: "stderr: Python traceback \(marker)"
+        )
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+
+        XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
+        XCTAssertTrue(viewModel.lastError?.contains("mlx-lm failed: mlx-lm exited 5 consecutive times.") == true)
+        XCTAssertFalse(viewModel.lastError?.contains(marker) == true)
+        XCTAssertTrue(viewModel.debugLastConnectFailureTechnicalDetails?.contains(marker) == true)
+        XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
     func testStartDictationInExternalModeNeverTouchesManagedBackendManager() {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)

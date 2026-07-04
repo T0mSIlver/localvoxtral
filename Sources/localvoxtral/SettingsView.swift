@@ -236,8 +236,8 @@ private struct ManagedBackendStatusLabel: View {
             return "Ready"
         case .stopped:
             return "Stopped"
-        case .failed(let message):
-            return "Failed: \(message)"
+        case .failed(let summary, _):
+            return "Failed: \(summary)"
         }
     }
 

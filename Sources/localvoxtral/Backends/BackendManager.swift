@@ -8,7 +8,7 @@ enum ManagedBackendStatus: Equatable {
     case starting
     case ready
     case stopped
-    case failed(message: String)
+    case failed(summary: String, detail: String?)
 
     var requiresInstallProgressText: Bool {
         switch self {
@@ -21,12 +21,19 @@ enum ManagedBackendStatus: Equatable {
 }
 
 enum ManagedBackendManagerError: LocalizedError {
-    case backendFailed(name: String, detail: String)
+    case backendFailed(name: String, summary: String, detail: String?)
 
     var errorDescription: String? {
         switch self {
-        case .backendFailed(let name, let detail):
-            return "\(name) failed: \(detail)"
+        case .backendFailed(let name, let summary, _):
+            return "\(name) failed: \(summary)"
+        }
+    }
+
+    var technicalDetails: String? {
+        switch self {
+        case .backendFailed(_, _, let detail):
+            return detail
         }
     }
 }
@@ -136,7 +143,7 @@ final class BackendManager: ManagedBackendManaging {
         case BackendCatalog.mlxLM.id:
             return mlxLMStatus
         default:
-            return .failed(message: "Unknown managed backend '\(spec.id)'.")
+            return .failed(summary: "Unknown managed backend '\(spec.id)'.", detail: nil)
         }
     }
 
@@ -162,10 +169,11 @@ final class BackendManager: ManagedBackendManaging {
                 }
             } catch {
                 let detail = error.localizedDescription
-                setStatus(.failed(message: detail), for: spec)
+                setStatus(.failed(summary: detail, detail: nil), for: spec)
                 throw ManagedBackendManagerError.backendFailed(
                     name: spec.displayName,
-                    detail: detail
+                    summary: detail,
+                    detail: nil
                 )
             }
         }
@@ -189,21 +197,33 @@ final class BackendManager: ManagedBackendManaging {
             case .running:
                 mirrorSupervisorState(state, for: spec)
                 return
-            case .failed(let message):
+            case .failed(let summary, let detail):
                 mirrorSupervisorState(state, for: spec)
-                throw ManagedBackendManagerError.backendFailed(name: spec.displayName, detail: message)
+                throw ManagedBackendManagerError.backendFailed(
+                    name: spec.displayName,
+                    summary: summary,
+                    detail: detail
+                )
             case .stopped:
                 let message = "\(spec.displayName) stopped before it became ready."
-                setStatus(.failed(message: message), for: spec)
-                throw ManagedBackendManagerError.backendFailed(name: spec.displayName, detail: message)
+                setStatus(.failed(summary: message, detail: nil), for: spec)
+                throw ManagedBackendManagerError.backendFailed(
+                    name: spec.displayName,
+                    summary: message,
+                    detail: nil
+                )
             case .idle:
                 break
             }
         }
 
         let message = "\(spec.displayName) stopped reporting status before it became ready."
-        setStatus(.failed(message: message), for: spec)
-        throw ManagedBackendManagerError.backendFailed(name: spec.displayName, detail: message)
+        setStatus(.failed(summary: message, detail: nil), for: spec)
+        throw ManagedBackendManagerError.backendFailed(
+            name: spec.displayName,
+            summary: message,
+            detail: nil
+        )
     }
 
     private func supervisor(for spec: ManagedBackendSpec) -> any ManagedBackendSupervising {
@@ -348,8 +368,8 @@ final class BackendManager: ManagedBackendManaging {
             setStatus(.starting, for: spec)
         case .running:
             setStatus(.ready, for: spec)
-        case .failed(let message):
-            setStatus(.failed(message: message), for: spec)
+        case .failed(let summary, let detail):
+            setStatus(.failed(summary: summary, detail: detail), for: spec)
         case .stopped:
             setStatus(.stopped, for: spec)
         }

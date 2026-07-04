@@ -12,7 +12,7 @@ final class BackendProcessSupervisor {
         case running
         case restarting(attempt: Int)
         case stopped
-        case failed(message: String)
+        case failed(summary: String, detail: String?)
     }
 
     typealias Probe = @Sendable (URL) async -> Bool
@@ -110,7 +110,8 @@ final class BackendProcessSupervisor {
         guard !(await probe(configuration.readinessURL)) else {
             transition(
                 to: .failed(
-                    message: "\(configuration.name) port already in use; refusing to adopt an existing backend process."
+                    summary: "\(configuration.name) port already in use; refusing to adopt an existing backend process.",
+                    detail: nil
                 )
             )
             return
@@ -126,7 +127,8 @@ final class BackendProcessSupervisor {
             } catch {
                 transition(
                     to: .failed(
-                        message: "Failed to launch \(configuration.name): \(error.localizedDescription)"
+                        summary: "Failed to launch \(configuration.name): \(error.localizedDescription)",
+                        detail: nil
                     )
                 )
                 return
@@ -148,14 +150,15 @@ final class BackendProcessSupervisor {
                 consecutiveFailures += 1
 
             case .timedOut:
-                let stderrTail = stderrTailDescription()
+                let stderrTail = stderrTailDetail()
                 if let process = currentProcess {
                     await terminate(process: process, gracePeriod: configuration.terminationGracePeriod)
                 }
                 clearCurrentProcess()
                 transition(
                     to: .failed(
-                        message: "\(configuration.name) did not become ready before timeout.\(stderrTail)"
+                        summary: "\(configuration.name) did not become ready before timeout.",
+                        detail: stderrTail
                     )
                 )
                 return
@@ -169,7 +172,8 @@ final class BackendProcessSupervisor {
             if consecutiveFailures >= max(1, configuration.maxConsecutiveRestartFailures) {
                 transition(
                     to: .failed(
-                        message: "\(configuration.name) exited \(consecutiveFailures) consecutive times.\(stderrTailDescription())"
+                        summary: "\(configuration.name) exited \(consecutiveFailures) consecutive times.",
+                        detail: stderrTailDetail()
                     )
                 )
                 return
@@ -420,9 +424,9 @@ final class BackendProcessSupervisor {
         transition(to: newState)
     }
 
-    private func stderrTailDescription() -> String {
-        guard !recentErrorOutput.isEmpty else { return "" }
-        return " stderr: " + recentErrorOutput.suffix(5).joined(separator: "\n")
+    private func stderrTailDetail() -> String? {
+        guard !recentErrorOutput.isEmpty else { return nil }
+        return "stderr: " + recentErrorOutput.suffix(5).joined(separator: "\n")
     }
 
     private func backoffDuration(attempt: Int) -> Duration {
