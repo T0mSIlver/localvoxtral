@@ -32,11 +32,19 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 ## Quick start
 
-### Recommended: install from GitHub Releases (DMG)
+### Recommended: one-command installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
+```
+
+This downloads the latest release, clears quarantine metadata, re-signs the app locally, installs it into `/Applications`, and opens it.
+
+### Manual install from GitHub Releases (DMG)
 
 Download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
 
-Releases are ad-hoc signed (not notarized). Depending on macOS version, first launch is either blocked with an **Open Anyway** button in **System Settings -> Privacy & Security**, or reported as "damaged". In both cases this clears the quarantine flag and the app opens normally:
+Releases are ad-hoc signed (not notarized). On macOS 26, launching the raw downloaded app can hang on first launch unless you use the installer script above. On older macOS versions, first launch may instead be blocked with an **Open Anyway** button in **System Settings -> Privacy & Security**, or reported as "damaged". This clears the quarantine flag:
 
 ```bash
 xattr -cr /Applications/localvoxtral.app
