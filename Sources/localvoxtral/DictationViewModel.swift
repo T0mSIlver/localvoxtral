@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import Foundation
 import Observation
@@ -282,6 +283,8 @@ final class DictationViewModel {
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
+    @ObservationIgnored
+    var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -470,6 +473,10 @@ final class DictationViewModel {
 
     private func requestStartupPermissionsIfNeeded() {
         guard managesRuntimeServices else { return }
+        guard settings.onboardingCompleted else {
+            debugLog("startup permission prompts skipped until onboarding completes")
+            return
+        }
         guard !hasRequestedStartupPermissions else { return }
         hasRequestedStartupPermissions = true
 
@@ -1060,6 +1067,24 @@ final class DictationViewModel {
             return debugMicrophoneAuthorizationStatusOverride
         }
         #endif
+        // A mere status read (the onboarding/General permission rows) must
+        // not force the lazy capture service into existence; but once the
+        // service exists, ask it, so any injected replacement stays
+        // authoritative.
+        guard hasInitializedMicrophone else {
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized:
+                return .authorized
+            case .denied:
+                return .denied
+            case .restricted:
+                return .restricted
+            case .notDetermined:
+                return .notDetermined
+            @unknown default:
+                return .notDetermined
+            }
+        }
         return microphone.authorizationStatus()
     }
 

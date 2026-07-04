@@ -177,6 +177,9 @@ final class BackendManager: ManagedBackendManaging {
             do {
                 try await self.ensureReady(spec)
                 Log.backends.info("\(spec.displayName, privacy: .public) ensure finished ready")
+            } catch is CancellationError {
+                Log.backends.info("\(spec.displayName, privacy: .public) ensure cancelled")
+                throw CancellationError()
             } catch {
                 Log.backends.error(
                     "\(spec.displayName, privacy: .public) ensure failed: \(error.localizedDescription, privacy: .public)"
@@ -209,25 +212,28 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     func stopAll() async {
+        let cancelledDictationEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
+        let cancelledPolishingEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
         await voxmlxSupervisor?.stop()
         await mlxLMSupervisor?.stop()
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
         mlxLMStateMirrorTask?.cancel()
         mlxLMStateMirrorTask = nil
-        if voxmlxSupervisor != nil {
+        if cancelledDictationEnsure || voxmlxSupervisor != nil {
             setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
-        if mlxLMSupervisor != nil {
+        if cancelledPolishingEnsure || mlxLMSupervisor != nil {
             setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
     }
 
     func stopDictation() async {
+        let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
         await voxmlxSupervisor?.stop()
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
-        if voxmlxSupervisor != nil {
+        if cancelledEnsure || voxmlxSupervisor != nil {
             setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
     }
@@ -236,12 +242,24 @@ final class BackendManager: ManagedBackendManaging {
         // Stop only the polishing supervisor. voxmlx (dictation) keeps running
         // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
         // branch: cancel the mirror task and pin the status to .stopped.
+        let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
         await mlxLMSupervisor?.stop()
         mlxLMStateMirrorTask?.cancel()
         mlxLMStateMirrorTask = nil
-        if mlxLMSupervisor != nil {
+        if cancelledEnsure || mlxLMSupervisor != nil {
             setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
+    }
+
+    private func cancelEnsureTask(for spec: ManagedBackendSpec) -> Bool {
+        let task: Task<Void, Error>?
+        if spec.id == BackendCatalog.voxmlx.id {
+            task = dictationEnsureTask
+        } else {
+            task = polishingEnsureTask
+        }
+        task?.cancel()
+        return task != nil
     }
 
     func status(for spec: ManagedBackendSpec) -> ManagedBackendStatus {
@@ -288,11 +306,14 @@ final class BackendManager: ManagedBackendManaging {
                     detail: nil
                 )
             }
+            try Task.checkCancellation()
         }
 
         try await prepareModel(for: spec)
+        try Task.checkCancellation()
 
         setStatus(.starting, for: spec)
+        try Task.checkCancellation()
         let supervisor = supervisor(for: spec)
         try await startAndWaitUntilReady(supervisor, spec: spec)
     }

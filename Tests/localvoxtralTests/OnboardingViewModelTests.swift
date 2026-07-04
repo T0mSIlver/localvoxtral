@@ -52,6 +52,50 @@ final class OnboardingViewModelTests: XCTestCase {
 
     private final class Counter { var value = 0 }
 
+    // MARK: - Review findings (opencode, 2026-07-05)
+
+    func testStartDownloadsForcesManagedModes() {
+        let (model, settings, _, _, _) = makeModel()
+        settings.dictationBackendMode = .externalURL
+        settings.polishingBackendMode = .externalURL
+        model.polishingConsent = true
+
+        model.startDownloads()
+
+        // Re-run Setup from external mode: downloading managed backends must
+        // also switch the modes, or the download is dead weight.
+        XCTAssertEqual(settings.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(settings.polishingBackendMode, .managedLocal)
+    }
+
+    func testStartDownloadsWithoutConsentLeavesPolishingModeAlone() {
+        let (model, settings, _, _, _) = makeModel()
+        settings.dictationBackendMode = .externalURL
+        settings.polishingBackendMode = .externalURL
+        model.polishingConsent = false
+
+        model.startDownloads()
+
+        XCTAssertEqual(settings.dictationBackendMode, .managedLocal)
+        XCTAssertEqual(settings.polishingBackendMode, .externalURL)
+        XCTAssertFalse(settings.llmPolishingEnabled)
+    }
+
+    func testUseOwnServerAfterConsentedDownloadDisablesPolishing() {
+        let (model, settings, _, _, _) = makeModel()
+        model.polishingConsent = true
+        model.startDownloads()
+        XCTAssertTrue(settings.llmPolishingEnabled)
+
+        model.useOwnServer()
+
+        // Leaving polishing enabled against the unconfigured default external
+        // URL would fire a silently failing polish request on every commit.
+        XCTAssertFalse(settings.llmPolishingEnabled)
+        XCTAssertEqual(settings.dictationBackendMode, .externalURL)
+        XCTAssertEqual(settings.polishingBackendMode, .externalURL)
+    }
+
     // MARK: - Navigation
 
     func testAdvance_walksAllPagesInOrder() {

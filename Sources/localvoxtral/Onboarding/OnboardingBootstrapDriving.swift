@@ -75,13 +75,15 @@ extension OnboardingItemState {
                 detail: Self.installingDetail(progress),
                 fraction: Self.installingFraction(progress)
             )
+        case .preparingModel(let progress):
+            self = .working(
+                detail: Self.modelDownloadDetail(progress),
+                fraction: progress.fraction
+            )
         case .starting:
             // Managed servers download the model weights internally before
             // /health responds, so "starting" can be a long, opaque wait.
             self = .working(detail: "Loading the model…", fraction: nil)
-        // #62: add `case .preparingModel(let progress): self = .working(
-        //   detail: "Downloading the model…", fraction: progress)` so the
-        //   in-server weight download renders as a determinate bar.
         case .ready:
             self = .ready
         case .failed(let summary, _):
@@ -107,5 +109,12 @@ extension OnboardingItemState {
         case .finished:
             return "Installed"
         }
+    }
+
+    private static func modelDownloadDetail(_ progress: ModelDownloadProgress) -> String {
+        guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            return "Checking model..."
+        }
+        return "Downloading model \(Int(((progress.fraction ?? 0) * 100).rounded()))%"
     }
 }

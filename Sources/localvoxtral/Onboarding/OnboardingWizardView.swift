@@ -50,10 +50,25 @@ struct OnboardingWizardView: View {
 
             Spacer(minLength: 0)
 
-            Button(model.isFinalPage ? "Get Started" : "Continue") {
-                model.advance()
+            Button(primaryActionTitle) {
+                performPrimaryAction()
             }
             .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private var primaryActionTitle: String {
+        if model.page == .downloads, !model.downloadsStarted {
+            return "Begin Download"
+        }
+        return model.isFinalPage ? "Get Started" : "Continue"
+    }
+
+    private func performPrimaryAction() {
+        if model.page == .downloads, !model.downloadsStarted {
+            model.startDownloads()
+        } else {
+            model.advance()
         }
     }
 }
@@ -209,9 +224,6 @@ private struct DownloadsPage: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Button("Begin Download") { model.startDownloads() }
-                    .keyboardShortcut(.defaultAction)
             }
 
             Button("I run my own server instead") { model.useOwnServer() }

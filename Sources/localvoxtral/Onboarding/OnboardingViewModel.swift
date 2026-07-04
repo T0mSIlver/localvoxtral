@@ -76,7 +76,13 @@ final class OnboardingViewModel {
         guard !downloadsStarted else { return }
         downloadsStarted = true
 
+        // Downloading managed backends only makes sense in managed mode.
+        // Matters for Re-run Setup: a user who previously switched to
+        // External URL and now chooses the managed download path must end
+        // up actually using what was downloaded.
+        viewModel.applyDictationBackendModeChange(.managedLocal)
         if polishingConsent {
+            viewModel.applyPolishingBackendModeChange(.managedLocal)
             settings.llmPolishingEnabled = true
         }
         driver.start(dictation: true, polishing: polishingConsent)
@@ -86,6 +92,11 @@ final class OnboardingViewModel {
     /// external URLs, finish onboarding, and jump the user to the Endpoints tab.
     func useOwnServer() {
         driver.cancel()
+        // Undo any polishing opt-in from this wizard run: leaving it enabled
+        // against the unconfigured default external URL would make every
+        // overlay commit fire a silently failing polish request. The user
+        // re-enables it once their endpoint is configured.
+        settings.llmPolishingEnabled = false
         viewModel.applyDictationBackendModeChange(.externalURL)
         viewModel.applyPolishingBackendModeChange(.externalURL)
         completeOnboarding()

@@ -17,6 +17,9 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
     @ObservationIgnored private var dictationRequested = false
     @ObservationIgnored private var polishingRequested = false
     @ObservationIgnored private var isObserving = false
+    #if DEBUG
+    @ObservationIgnored var onItemStatesChanged: (([OnboardingItemID: OnboardingItemState]) -> Void)?
+    #endif
 
     init(backendManager: any ManagedBackendManaging) {
         self.backendManager = backendManager
@@ -80,6 +83,9 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
         }
         if itemStates != states {
             itemStates = states
+            #if DEBUG
+            onItemStatesChanged?(states)
+            #endif
         }
     }
 }
