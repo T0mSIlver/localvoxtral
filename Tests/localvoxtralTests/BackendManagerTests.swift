@@ -76,6 +76,17 @@ final class BackendManagerTests: XCTestCase {
             [BackendCatalog.voxmlx.displayName, BackendCatalog.mlxLM.displayName]
         )
         XCTAssertEqual(manager.mlxLMStatus, .ready)
+
+        let mlxLMArguments = try XCTUnwrap(
+            supervisorFactory.createdConfigurations
+                .first { $0.name == BackendCatalog.mlxLM.displayName }?
+                .arguments
+        )
+        // The managed server must run with the fork's prompt caching enabled;
+        // the README's polishing-latency claim depends on these flags.
+        XCTAssertTrue(mlxLMArguments.contains("--prompt-cache-size"))
+        XCTAssertTrue(mlxLMArguments.contains("--prompt-cache-bytes"))
+        XCTAssertTrue(mlxLMArguments.contains("--parent-pid"))
     }
 
     func testConcurrentEnsureReadyDoesNotDoubleInstall() async throws {

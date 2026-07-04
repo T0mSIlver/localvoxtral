@@ -13,8 +13,8 @@ It keeps the loop simple: start dictation, speak, get text fast.
 Unlike Whisper-based tools that transcribe after you stop speaking, Voxtral Realtime streams text as audio arrives, so words appear while you're still talking.
 On Apple Silicon, `localvoxtral` + `voxmlx` + `mlx-lm` provides a fully local path (audio + inference + LLM polishing stay on-device), improving privacy and avoiding API costs.
 
-It connects to any OpenAI Realtime-compatible endpoint. Recommended backends are `voxmlx` (Apple Silicon) and `vLLM` (NVIDIA GPU).
-LLM Polishing connect to any OpenAI /chat/completions endpoint. The recommended backend is `mlx-lm` (Apple Silicon).
+On Apple Silicon the default **Managed local** mode runs everything for you: localvoxtral installs and manages `voxmlx` (dictation) and `mlx-lm` (LLM polishing) itself.
+**External URL** mode connects to any OpenAI Realtime-compatible endpoint you run yourself (e.g. `vLLM` on NVIDIA GPU), and LLM polishing to any OpenAI /chat/completions endpoint.
 
 Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model, but it works with any OpenAI-compatible Realtime API backend and model.
 
@@ -94,19 +94,11 @@ The shared config directory lives at `~/Library/Application Support/localvoxtral
 
 ### Managed local (default)
 
-In Managed local mode, localvoxtral installs the pinned `voxmlx` and `mlx-lm` backend wheels automatically into `~/Library/Application Support/localvoxtral/backends` and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts in managed mode.
+In Managed local mode, localvoxtral installs pinned wheel releases of the backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use, and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
 
-In this tested setup, `vLLM` and `voxmlx` stream partial text fast enough for realtime dictation; latency and throughput will vary by hardware, model, and quantization.
+**Dictation — voxmlx.** [voxmlx](https://github.com/awni/voxmlx) running [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit) on M1 Pro, streaming partial text fast enough for realtime dictation (latency and throughput vary by hardware, model, and quantization). The managed build is [this fork](https://github.com/T0mSIlver/voxmlx), which adds a WebSocket server that speaks the OpenAI Realtime API protocol, memory-management optimizations, and managed-launch support (readiness signal + parent-pid watchdog).
 
-### External URL: voxmlx
-
-[voxmlx](https://github.com/awni/voxmlx) OpenAI Realtime-compatible running on M1 Pro with a 4-bit quantized model. Use [this fork](https://github.com/T0mSIlver/voxmlx) which adds a WebSocket server that speaks the OpenAI Realtime API protocol and memory management optimizations.
-
-```bash
-# install uv once: https://docs.astral.sh/uv/getting-started/installation/
-uvx --from "git+https://github.com/T0mSIlver/voxmlx.git[server]" \
-  voxmlx-serve --model T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
-```
+**LLM polishing — mlx-lm.** When polishing is enabled, `mlx_lm.server` runs [Qwen3.5-0.8B in 8-bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) — a lightweight default that adds little overhead while remaining smart enough for reliable polishing. The managed build is [this fork](https://github.com/T0mSIlver/mlx-lm), which adds enhanced prompt caching (enabled by the managed launch): with the default polishing prompts, prompt processing is roughly 286 ms (~50%) faster on average on M1 Pro. On more powerful Apple Silicon the absolute savings will be lower because prompt processing is faster.
 
 ### External URL: vLLM
 
@@ -117,28 +109,7 @@ VLLM_DISABLE_COMPILE_CACHE=1
 vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudagraph_mode": "PIECEWISE"}'
 ```
 
-## Tested setup (LLM polishing)
-
-### Managed local (default)
-
-When LLM polishing is enabled in Managed local mode, localvoxtral starts the pinned `mlx-lm` backend lazily and points polishing at its local chat completions endpoint.
-
-### External URL: mlx-lm
-
-`mlx_lm.server` on M1 Pro, running [Qwen3.5-0.8B in 8 bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) for local LLM polishing.
-Use [this fork](https://github.com/T0mSIlver/mlx-lm) which adds prompt caching optimizations.
-Qwen3.5-0.8B is a lightweight default that adds little overhead while remaining smart enough for reliable polishing.
-
-```bash
-# install uv once: https://docs.astral.sh/uv/getting-started/installation/
-# use prompt caching to avoid reprocessing the full conversation on every request
-uvx --from "git+https://github.com/T0mSIlver/mlx-lm.git" mlx_lm.server \
-  --model mlx-community/Qwen3.5-0.8B-8bit \
-  --prompt-cache-size 1 \
-  --prompt-cache-bytes 1GB
-```
-
-With the default polishing prompts, prompt processing is roughly 286 ms (~50%) faster on average on M1 Pro with my fork's enhanced prompt caching. On more powerful Apple Silicon, the absolute ms savings will likely be lower because prompt processing is faster.
+Any other OpenAI Realtime-compatible endpoint works the same way — set it (plus model name and API key if needed) in **Settings → Connection** with backend mode `External URL`.
 
 ## Roadmap
 
@@ -150,6 +121,8 @@ With the default polishing prompts, prompt processing is roughly 286 ms (~50%) f
   - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
 
 ## UI
+
+<!-- Regenerate the screenshots below with ./scripts/capture-readme-assets.sh (run on a Mac; demo.gif is manual). -->
 
 <p>
   <picture>
