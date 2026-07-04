@@ -20,12 +20,22 @@ final class BackendProcessSupervisor {
 
     private(set) var state: State
     private(set) var recentOutput: [String]
-    @ObservationIgnored var stateUpdates: AsyncStream<State>
+    @ObservationIgnored var stateUpdates: AsyncStream<State> {
+        let id = UUID()
+        let stream = AsyncStream<State>.makeStream(of: State.self)
+        stateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.stateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
 
     @ObservationIgnored private let configuration: BackendProcessConfiguration
     @ObservationIgnored private let probe: Probe
     @ObservationIgnored private let sleepFor: SleepClosure
-    @ObservationIgnored private let stateContinuation: AsyncStream<State>.Continuation
+    @ObservationIgnored private var stateContinuations: [UUID: AsyncStream<State>.Continuation] = [:]
 
     @ObservationIgnored private var supervisionTask: Task<Void, Never>?
     @ObservationIgnored private var currentProcess: Process?
@@ -52,10 +62,6 @@ final class BackendProcessSupervisor {
         self.sleepFor = sleepFor
         self.state = .idle
         self.recentOutput = []
-
-        let stream = AsyncStream<State>.makeStream(of: State.self)
-        self.stateUpdates = stream.stream
-        self.stateContinuation = stream.continuation
     }
 
     func start() async {
@@ -63,6 +69,7 @@ final class BackendProcessSupervisor {
         guard !isActiveState(state) else { return }
 
         stoppingIntentionally = false
+        transition(to: .launching)
         supervisionTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.supervise()
@@ -112,7 +119,7 @@ final class BackendProcessSupervisor {
         var consecutiveFailures = 0
 
         while !stoppingIntentionally && !Task.isCancelled {
-            transition(to: .launching)
+            transitionIfNeeded(to: .launching)
 
             do {
                 try spawnProcess()
@@ -400,10 +407,17 @@ final class BackendProcessSupervisor {
 
     private func transition(to newState: State) {
         state = newState
-        stateContinuation.yield(newState)
+        for continuation in stateContinuations.values {
+            continuation.yield(newState)
+        }
         Log.backends.info(
             "\(self.configuration.name, privacy: .public) backend state \(String(describing: newState), privacy: .public)"
         )
+    }
+
+    private func transitionIfNeeded(to newState: State) {
+        guard state != newState else { return }
+        transition(to: newState)
     }
 
     private func stderrTailDescription() -> String {

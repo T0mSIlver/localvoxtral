@@ -282,6 +282,37 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")
     }
 
+    func testManagedStartupCancelledByModeSwitchDoesNotBeginSessionOrSurfaceError() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.backendMode = .managedLocal
+        viewModel.settings.dictationShortcutMode = .pushToTalk
+        viewModel.settings.realtimeAPIEndpointURL = ""
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.debugHandleDictationShortcutPressForTesting()
+        await backendManager.waitUntilEnsureStarted()
+
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession)
+        XCTAssertNil(viewModel.sessionProvider)
+
+        viewModel.applyBackendModeChange(.externalURL)
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+        backendManager.resumeEnsure()
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertEqual(backendManager.ensureIncludePolishingCalls, [false])
+        XCTAssertNil(viewModel.sessionProvider)
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertNotEqual(viewModel.statusText, "Invalid endpoint URL.")
+    }
+
     // MARK: - Helpers
 
     private func makeViewModel(

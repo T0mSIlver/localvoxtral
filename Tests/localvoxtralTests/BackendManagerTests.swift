@@ -122,6 +122,43 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.mlxLMStatus, .stopped)
     }
 
+    func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(includePolishing: false)
+        let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName])
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+        XCTAssertEqual(supervisor.startCallCount, 1)
+
+        supervisor.emit(.failed(message: "process crashed after readiness"))
+        await Task.yield()
+
+        XCTAssertEqual(manager.voxmlxStatus, .failed(message: "process crashed after readiness"))
+
+        try await manager.ensureReady(includePolishing: false)
+
+        XCTAssertEqual(supervisor.startCallCount, 2)
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+    }
+
+    func testManagedBackendConfigurationsUseLongFirstRunReadinessTimeouts() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(includePolishing: true)
+
+        XCTAssertEqual(
+            supervisorFactory.createdConfigurations.map(\.readinessTimeout),
+            [.seconds(1800), .seconds(1800)]
+        )
+    }
+
     private func makeManager(
         installer: FakeBackendInstaller,
         supervisorFactory: FakeSupervisorFactory
@@ -215,32 +252,44 @@ private final class FakeSupervisorFactory {
 @MainActor
 private final class FakeBackendSupervisor: ManagedBackendSupervising {
     private let statesOnStart: [BackendProcessSupervisor.State]
-    private let stateContinuation: AsyncStream<BackendProcessSupervisor.State>.Continuation
+    private var stateContinuations: [UUID: AsyncStream<BackendProcessSupervisor.State>.Continuation] = [:]
 
     private(set) var state: BackendProcessSupervisor.State = .idle
-    let stateUpdates: AsyncStream<BackendProcessSupervisor.State>
+    var stateUpdates: AsyncStream<BackendProcessSupervisor.State> {
+        let id = UUID()
+        let stream = AsyncStream<BackendProcessSupervisor.State>.makeStream(of: BackendProcessSupervisor.State.self)
+        stateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.stateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
 
     init(statesOnStart: [BackendProcessSupervisor.State]) {
         self.statesOnStart = statesOnStart
-        let stream = AsyncStream<BackendProcessSupervisor.State>.makeStream(of: BackendProcessSupervisor.State.self)
-        self.stateUpdates = stream.stream
-        self.stateContinuation = stream.continuation
     }
 
     func start() async {
         startCallCount += 1
         for state in statesOnStart {
-            self.state = state
-            stateContinuation.yield(state)
+            emit(state)
         }
     }
 
     func stop() async {
         stopCallCount += 1
-        state = .stopped
-        stateContinuation.yield(.stopped)
+        emit(.stopped)
+    }
+
+    func emit(_ state: BackendProcessSupervisor.State) {
+        self.state = state
+        for continuation in stateContinuations.values {
+            continuation.yield(state)
+        }
     }
 }
 

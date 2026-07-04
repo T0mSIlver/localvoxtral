@@ -47,19 +47,41 @@ extension DictationViewModel {
         let includePolishing = settings.llmPolishingEnabled
         statusText = managedBackendStartupStatusText(includePolishing: includePolishing)
 
-        Task { @MainActor [weak self] in
+        managedStartupTask?.cancel()
+        let startupTaskID = UUID()
+        managedStartupTaskID = startupTaskID
+        managedStartupTask = Task { @MainActor [weak self, startupTaskID] in
             guard let self else { return }
+            defer {
+                if self.managedStartupTaskID == startupTaskID {
+                    self.managedStartupTask = nil
+                    self.managedStartupTaskID = nil
+                }
+            }
             do {
                 try await self.backendManager.ensureReady(includePolishing: includePolishing)
             } catch {
+                guard !Task.isCancelled else { return }
                 self.abortConnectingSession()
                 self.handleManagedBackendStartupFailure(error)
                 return
             }
 
-            guard !Task.isCancelled, self.isConnectingRealtimeSession else { return }
+            guard !Task.isCancelled,
+                  self.settings.backendMode == .managedLocal,
+                  self.isConnectingRealtimeSession
+            else { return }
             self.beginDictationSession(outputMode: outputMode)
         }
+    }
+
+    func cancelManagedStartupTask() {
+        // This cancels only the view-model caller. BackendManager owns and
+        // shares its in-flight ensureReady task, so another UI path may keep
+        // awaiting the same backend startup.
+        managedStartupTask?.cancel()
+        managedStartupTask = nil
+        managedStartupTaskID = nil
     }
 
     private func managedBackendStartupStatusText(includePolishing: Bool) -> String {
