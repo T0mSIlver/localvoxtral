@@ -1,0 +1,38 @@
+name: UI Smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *"
+
+concurrency:
+  group: ui-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui-smoke:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package app bundle
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+        run: ./scripts/package_app.sh release
+
+      - name: Run AX UI smoke
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          ./scripts/ui-smoke.sh 2>&1 | tee logs/ui-smoke.log
+
+      - name: Upload UI smoke log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-log
+          path: logs/ui-smoke.log
+          retention-days: 14
+

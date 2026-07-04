@@ -32,6 +32,38 @@ release.
 Manual-dispatch harness on the self-hosted Mac runner that packages the app,
 builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing.
 
+## `ui-smoke.yml`
+
+Nightly and manual-dispatch AX smoke drill on the self-hosted Mac runner.
+It packages the app, launches a fresh menu bar instance, verifies the status
+item, checks that launch alone does not spawn managed backend processes, opens
+Settings from the status menu, selects the three settings tabs, checks the
+managed backend rows, and verifies clean quit. Failure uploads
+`ui-smoke-log`.
+
+One-time runner TCC grants are required because the runner is a launchd agent
+inside the owner's GUI session:
+
+- Accessibility: allow the self-hosted runner process so System Events can
+  drive the menu bar and settings window.
+- Screen Recording: allow the self-hosted runner process so CoreGraphics
+  preflight and screenshot capture can read window contents.
+
+When either grant is missing, the smoke script fails immediately with an
+actionable TCC message. Grant it once in System Settings > Privacy & Security,
+then rerun the workflow.
+
+## `capture-assets.yml`
+
+Manual-dispatch screenshot refresh on the self-hosted Mac runner. It packages
+the app and runs `scripts/capture-readme-assets.sh` when that script exists on
+the selected ref, then uploads `assets/*.png` as the `readme-screenshots`
+artifact. Before the screenshot script lands, the workflow intentionally
+prints a clear skip message and exits successfully.
+
+It needs the same one-time Accessibility and Screen Recording TCC grants as
+`ui-smoke.yml`.
+
 ## `mlx-lm-test.yml`
 
 Manual-dispatch harness that installs `mlx_lm.server` from any ref of the
