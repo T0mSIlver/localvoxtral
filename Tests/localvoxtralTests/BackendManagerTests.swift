@@ -219,6 +219,7 @@ private final class FakeBackendSupervisor: ManagedBackendSupervising {
 
     private(set) var state: BackendProcessSupervisor.State = .idle
     let stateUpdates: AsyncStream<BackendProcessSupervisor.State>
+    var recentOutput: [String] = []
     private(set) var startCallCount = 0
     private(set) var stopCallCount = 0
 

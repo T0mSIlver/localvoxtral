@@ -382,6 +382,10 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         stopAllCallCount += 1
     }
 
+    func recentOutput(for spec: ManagedBackendSpec) -> [String] {
+        []
+    }
+
     func waitUntilEnsureStarted() async {
         guard ensureIncludePolishingCalls.isEmpty else { return }
         await withCheckedContinuation { continuation in
