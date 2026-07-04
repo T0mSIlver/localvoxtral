@@ -654,7 +654,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         // mode so the configured endpoint is validated; managed mode ignores
         // the user-typed endpoint and is covered at the SettingsStore level
         // (testLLMPolishingConfiguration_managedLocal_*).
-        settings.backendMode = .externalURL
+        settings.polishingBackendMode = .externalURL
 
         let overlayCoordinator = MockOverlayCoordinator()
         let viewModel = DictationViewModel(

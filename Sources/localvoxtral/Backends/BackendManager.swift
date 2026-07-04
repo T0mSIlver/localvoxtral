@@ -71,8 +71,14 @@ protocol ManagedBackendManaging: AnyObject {
     var mlxLMStatus: ManagedBackendStatus { get }
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> { get }
 
-    func ensureReady(includePolishing: Bool) async throws
+    func ensureReady(dictation: Bool, polishing: Bool) async throws
     func stopAll() async
+    /// Stop only the managed voxmlx (dictation) process, leaving mlx-lm
+    /// (polishing) untouched. A no-op if voxmlx was never started.
+    func stopDictation() async
+    /// Stop only the managed mlx-lm (polishing) process, leaving voxmlx
+    /// (dictation) untouched. A no-op if mlx-lm was never started.
+    func stopPolishing() async
     /// Recent supervisor output lines for the given backend, or empty if the
     /// supervisor has not been created yet (backend never started). For local
     /// diagnostics export only.
@@ -133,18 +139,22 @@ final class BackendManager: ManagedBackendManaging {
         return stream.stream
     }
 
-    func ensureReady(includePolishing: Bool) async throws {
+    func ensureReady(dictation: Bool, polishing: Bool) async throws {
+        guard dictation || polishing else { return }
         while true {
             if let ensureReadyTask {
                 try await awaitEnsureReadyTask(ensureReadyTask)
-                if includePolishing, !isReady(BackendCatalog.mlxLM) {
+                if dictation, !isReady(BackendCatalog.voxmlx) {
+                    continue
+                }
+                if polishing, !isReady(BackendCatalog.mlxLM) {
                     continue
                 }
                 return
             }
 
             let task = Task { @MainActor in
-                try await self.performEnsureReady(includePolishing: includePolishing)
+                try await self.performEnsureReady(dictation: dictation, polishing: polishing)
             }
             ensureReadyTask = task
             do {
@@ -174,10 +184,31 @@ final class BackendManager: ManagedBackendManaging {
         mlxLMStateMirrorTask?.cancel()
         mlxLMStateMirrorTask = nil
         if voxmlxSupervisor != nil {
-            voxmlxStatus = .stopped
+            setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
         if mlxLMSupervisor != nil {
-            mlxLMStatus = .stopped
+            setStatus(.stopped, for: BackendCatalog.mlxLM)
+        }
+    }
+
+    func stopDictation() async {
+        await voxmlxSupervisor?.stop()
+        voxmlxStateMirrorTask?.cancel()
+        voxmlxStateMirrorTask = nil
+        if voxmlxSupervisor != nil {
+            setStatus(.stopped, for: BackendCatalog.voxmlx)
+        }
+    }
+
+    func stopPolishing() async {
+        // Stop only the polishing supervisor. voxmlx (dictation) keeps running
+        // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
+        // branch: cancel the mirror task and pin the status to .stopped.
+        await mlxLMSupervisor?.stop()
+        mlxLMStateMirrorTask?.cancel()
+        mlxLMStateMirrorTask = nil
+        if mlxLMSupervisor != nil {
+            setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
     }
 
@@ -203,9 +234,11 @@ final class BackendManager: ManagedBackendManaging {
         }
     }
 
-    private func performEnsureReady(includePolishing: Bool) async throws {
-        try await ensureReady(BackendCatalog.voxmlx)
-        if includePolishing {
+    private func performEnsureReady(dictation: Bool, polishing: Bool) async throws {
+        if dictation {
+            try await ensureReady(BackendCatalog.voxmlx)
+        }
+        if polishing {
             try await ensureReady(BackendCatalog.mlxLM)
         }
     }

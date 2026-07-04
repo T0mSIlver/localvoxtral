@@ -21,6 +21,15 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 5
     steps:
+      - name: List running localvoxtral instances
+        run: |
+          pids=$(pgrep -x localvoxtral || true)
+          if [ -z "$pids" ]; then echo "no running localvoxtral instances"; else
+            for pid in $pids; do
+              ps -p "$pid" -o pid=,lstart=,comm= | sed "s|$HOME|~|g"
+            done
+          fi
+
       - name: Summarize recent localvoxtral crash reports
         env:
           MINUTES_BACK: ${{ inputs.minutes_back }}
@@ -53,6 +62,16 @@ jobs:
           body = json.loads("\n".join(lines[1:]))
 
           print("captureTime:", header.get("timestamp", "?"))
+          print("procPath:", redact(body.get("procPath", header.get("procPath", "?"))))
+          # Swift fatalError/assertion text lives in various fields depending
+          # on OS version; scan the raw JSON for it.
+          raw = "\n".join(lines)
+          for marker in ("Fatal error", "Precondition failed", "Assertion failed"):
+              idx = raw.find(marker)
+              if idx != -1:
+                  print("fatalMessage:", redact(raw[idx:idx + 300].split("\\n")[0]))
+                  break
+          print("translocated:", "AppTranslocation" in str(body.get("procPath", "")))
           print("bundle:", header.get("bundleID", "?"), header.get("app_version", ""))
           print("os:", body.get("osVersion", {}).get("train", "?"), body.get("osVersion", {}).get("build", ""))
           exc = body.get("exception", {})

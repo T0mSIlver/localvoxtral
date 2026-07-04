@@ -16,7 +16,8 @@ struct DiagnosticsSnapshot: Sendable, Equatable {
     var appBuild: String
     var bundleIdentifier: String
     var osVersion: String
-    var backendMode: String
+    var dictationBackendMode: String
+    var polishingBackendMode: String
     var realtimeEndpoint: String
     var realtimeModel: String
     var hasRealtimeAPIKey: Bool
@@ -90,7 +91,8 @@ enum DiagnosticsExporter {
             appBuild: appBuild,
             bundleIdentifier: bundleIdentifier,
             osVersion: processInfo.operatingSystemVersionString,
-            backendMode: settings.backendMode.displayName,
+            dictationBackendMode: settings.dictationBackendMode.displayName,
+            polishingBackendMode: settings.polishingBackendMode.displayName,
             realtimeEndpoint: realtimeEndpoint,
             realtimeModel: realtimeModel,
             hasRealtimeAPIKey: !settings.apiKey.trimmed.isEmpty,
@@ -126,7 +128,8 @@ enum DiagnosticsExporter {
         lines.append("")
 
         lines.append("== Backend configuration ==")
-        lines.append("mode: \(snapshot.backendMode)")
+        lines.append("dictation mode: \(snapshot.dictationBackendMode)")
+        lines.append("polishing mode: \(snapshot.polishingBackendMode)")
         lines.append("realtime endpoint: \(snapshot.realtimeEndpoint)")
         lines.append("realtime model: \(snapshot.realtimeModel)")
         lines.append("realtime API key: \(snapshot.hasRealtimeAPIKey ? "set" : "not set")")

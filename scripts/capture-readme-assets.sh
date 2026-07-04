@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Regenerate the README screenshots:
 #   assets/popover.png                     (menu bar menu)
-#   assets/settings-realtime-endpoint.png  (Settings > Realtime Endpoint)
+#   assets/settings-endpoints.png          (Settings > Endpoints)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
 #
@@ -26,8 +26,8 @@ fi
 APP_PATH="${1:-dist/localvoxtral.app}"
 APP_PROCESS="localvoxtral"
 ASSETS_DIR="assets"
-TAB_NAMES=("Realtime Endpoint" "Dictation" "Text Processing")
-TAB_FILES=("settings-realtime-endpoint.png" "settings-dictation.png" "settings-text-processing.png")
+TAB_NAMES=("Endpoints" "Dictation" "Text Processing")
+TAB_FILES=("settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }

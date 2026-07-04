@@ -149,6 +149,9 @@ Key subsystems:
   warning-free under Swift 6.2 strict concurrency.
 - Tests are XCTest. Prefer the existing DI seams (protocols + `#if DEBUG`
   hooks like `debugConfigureInsertionHooks`) over adding singletons.
+- Settings panes (owner rule, 2026-07-04): the group structure of a pane is
+  constant — a mode picker or toggle may switch a group's CONTENT (status row
+  vs config fields), never the number or identity of the groups themselves.
 - Menu bar popover (owner rule, 2026-07-04): NEVER render long text there —
   no raw errors, stderr, or URLs; it stretches the popover. Anything shown in
   the popover (`lastError`, status lines) is one short sentence, e.g.

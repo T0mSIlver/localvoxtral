@@ -38,14 +38,22 @@ extension DictationViewModel {
     }
 
     func beginDictationAfterManagedBackendIfNeeded(outputMode: DictationOutputMode? = nil) {
-        guard settings.backendMode == .managedLocal else {
+        let requestedOutputMode = outputMode ?? settings.dictationOutputMode
+        let needsManagedDictation = settings.dictationBackendMode == .managedLocal
+        let needsManagedPolishing = requestedOutputMode == .overlayBuffer
+            && settings.llmPolishingEnabled
+            && settings.polishingBackendMode == .managedLocal
+
+        guard needsManagedDictation || needsManagedPolishing else {
             beginDictationSession(outputMode: outputMode)
             return
         }
 
         isConnectingRealtimeSession = true
-        let includePolishing = settings.llmPolishingEnabled
-        statusText = managedBackendStartupStatusText(includePolishing: includePolishing)
+        statusText = managedBackendStartupStatusText(
+            dictation: needsManagedDictation,
+            polishing: needsManagedPolishing
+        )
 
         managedStartupTask?.cancel()
         let startupTaskID = UUID()
@@ -57,10 +65,16 @@ extension DictationViewModel {
                 for await _ in self.backendManager.statusUpdates {
                     guard !Task.isCancelled,
                           self.managedStartupTaskID == startupTaskID,
-                          self.settings.backendMode == .managedLocal,
+                          (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
+                          (!needsManagedPolishing
+                              || (self.settings.llmPolishingEnabled
+                                  && self.settings.polishingBackendMode == .managedLocal)),
                           self.isConnectingRealtimeSession
                     else { return }
-                    self.statusText = self.managedBackendStartupStatusText(includePolishing: includePolishing)
+                    self.statusText = self.managedBackendStartupStatusText(
+                        dictation: needsManagedDictation,
+                        polishing: needsManagedPolishing
+                    )
                 }
             }
             defer {
@@ -71,7 +85,10 @@ extension DictationViewModel {
                 }
             }
             do {
-                try await self.backendManager.ensureReady(includePolishing: includePolishing)
+                try await self.backendManager.ensureReady(
+                    dictation: needsManagedDictation,
+                    polishing: needsManagedPolishing
+                )
             } catch {
                 guard !Task.isCancelled else { return }
                 self.abortConnectingSession()
@@ -80,7 +97,10 @@ extension DictationViewModel {
             }
 
             guard !Task.isCancelled,
-                  self.settings.backendMode == .managedLocal,
+                  (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
+                  (!needsManagedPolishing
+                      || (self.settings.llmPolishingEnabled
+                          && self.settings.polishingBackendMode == .managedLocal)),
                   self.isConnectingRealtimeSession
             else { return }
             self.beginDictationSession(outputMode: outputMode)
@@ -95,20 +115,24 @@ extension DictationViewModel {
         managedStartupTaskID = nil
     }
 
-    private func managedBackendStartupStatusText(includePolishing: Bool) -> String {
-        if case .preparingModel(let progress) = backendManager.voxmlxStatus {
+    private func managedBackendStartupStatusText(dictation: Bool, polishing: Bool) -> String {
+        if dictation, case .preparingModel(let progress) = backendManager.voxmlxStatus {
             return modelDownloadStartupText(kind: "dictation", progress: progress)
         }
-        if includePolishing,
-           case .preparingModel(let progress) = backendManager.mlxLMStatus
-        {
+        if polishing, case .preparingModel(let progress) = backendManager.mlxLMStatus {
             return modelDownloadStartupText(kind: "polishing", progress: progress)
         }
         if shouldShowManagedBackendInstallStatus(
-            voxmlxStatus: backendManager.voxmlxStatus,
-            mlxLMStatus: includePolishing ? backendManager.mlxLMStatus : nil
+            voxmlxStatus: dictation ? backendManager.voxmlxStatus : nil,
+            mlxLMStatus: polishing ? backendManager.mlxLMStatus : nil
         ) {
+            if !dictation, polishing {
+                return "Installing polishing backend..."
+            }
             return "Installing dictation backend..."
+        }
+        if !dictation, polishing {
+            return "Starting polishing backend..."
         }
         return "Starting dictation backend..."
     }
@@ -121,10 +145,10 @@ extension DictationViewModel {
     }
 
     private func shouldShowManagedBackendInstallStatus(
-        voxmlxStatus: ManagedBackendStatus,
+        voxmlxStatus: ManagedBackendStatus?,
         mlxLMStatus: ManagedBackendStatus?
     ) -> Bool {
-        if voxmlxStatus.requiresInstallProgressText {
+        if voxmlxStatus?.requiresInstallProgressText == true {
             return true
         }
         return mlxLMStatus?.requiresInstallProgressText == true
@@ -143,7 +167,7 @@ extension DictationViewModel {
             technicalDetails = summary
             popoverError = "Managed backend failed to start."
         }
-        let message = "Unable to start the managed dictation backend: \(summary)"
+        let message = "Unable to start the managed backend: \(summary)"
         statusText = "Managed backend failed."
         // lastError renders in the menu-bar popover, which never shows long
         // text (AGENTS.md); the full story goes to the alert and the log.

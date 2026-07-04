@@ -193,6 +193,10 @@ final class DictationViewModel {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
+    // Stops the managed mlx-lm (polishing) process when LLM polishing is turned
+    // off in Managed local mode. Kept awaitable so tests can await the shutdown.
+    @ObservationIgnored
+    var polishingShutdownTask: Task<Void, Never>?
     @ObservationIgnored
     var audioSendTask: Task<Void, Never>?
     @ObservationIgnored
@@ -389,6 +393,7 @@ final class DictationViewModel {
         commitTask?.cancel()
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
+        polishingShutdownTask?.cancel()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
         connectTimeoutTask?.cancel()
@@ -688,9 +693,9 @@ final class DictationViewModel {
         }
     }
 
-    func applyBackendModeChange(_ mode: BackendMode) {
-        let previousMode = settings.backendMode
-        settings.backendMode = mode
+    func applyDictationBackendModeChange(_ mode: BackendMode) {
+        let previousMode = settings.dictationBackendMode
+        settings.dictationBackendMode = mode
 
         guard previousMode == .managedLocal, mode == .externalURL else { return }
         cancelManagedStartupTask()
@@ -698,11 +703,71 @@ final class DictationViewModel {
             abortConnectingSession()
             statusText = StatusStrings.ready
         }
-        // Leaving managed mode means the app should no longer own local backend
-        // processes. Polishing toggles are intentionally lighter-weight: if
-        // mlx-lm is already running, it stays up until quit or a mode switch.
         Task { @MainActor [backendManager] in
-            await backendManager.stopAll()
+            await backendManager.stopDictation()
+        }
+    }
+
+    func applyPolishingBackendModeChange(_ mode: BackendMode) {
+        let previousMode = settings.polishingBackendMode
+        settings.polishingBackendMode = mode
+
+        guard previousMode == .managedLocal, mode == .externalURL else { return }
+        cancelManagedStartupTask()
+        Task { @MainActor [backendManager] in
+            await backendManager.stopPolishing()
+        }
+    }
+
+    /// React to the LLM polishing enable toggle. Disabling polishing in Managed
+    /// local polishing mode stops the managed mlx-lm process so it stops holding memory.
+    /// External URL mode owns no local process, and enabling (or re-enabling)
+    /// stays lazy: the next dictation's managed bootstrap starts mlx-lm again.
+    /// Any polish request in flight when the process stops fails, and the
+    /// existing polish-failure fallback commits the raw text.
+    func llmPolishingEnabledDidChange(_ enabled: Bool) {
+        guard !enabled, settings.polishingBackendMode == .managedLocal else { return }
+        polishingShutdownTask?.cancel()
+        polishingShutdownTask = Task { @MainActor [backendManager] in
+            await backendManager.stopPolishing()
+        }
+    }
+
+    /// Writes a local-first diagnostics report to the Desktop. The report
+    /// contains only non-secret configuration/status (no API keys, no dictated
+    /// content). See `DiagnosticsExporter` for the redaction boundary.
+    func exportDiagnostics() {
+        let snapshot = DiagnosticsExporter.makeSnapshot(
+            settings: settings,
+            voxmlxStatus: backendManager.voxmlxStatus,
+            mlxLMStatus: backendManager.mlxLMStatus,
+            voxmlxRecentOutput: backendManager.recentOutput(for: BackendCatalog.voxmlx),
+            mlxLMRecentOutput: backendManager.recentOutput(for: BackendCatalog.mlxLM)
+        )
+
+        guard let desktop = FileManager.default.urls(
+            for: .desktopDirectory,
+            in: .userDomainMask
+        ).first else {
+            Log.diagnostics.error("diagnostics export failed: Desktop directory unavailable")
+            return
+        }
+
+        let exportedAt = Date()
+        Task.detached(priority: .utility) {
+            do {
+                let writtenURL = try DiagnosticsExporter.writeReport(
+                    snapshot: snapshot,
+                    to: desktop,
+                    now: exportedAt
+                )
+                Log.diagnostics.info("diagnostics exported: \(writtenURL.path, privacy: .public)")
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting([writtenURL])
+                }
+            } catch {
+                Log.diagnostics.error("diagnostics export failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

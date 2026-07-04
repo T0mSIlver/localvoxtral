@@ -37,7 +37,8 @@ final class DiagnosticsExporterTests: XCTestCase {
     /// embedded credential could otherwise leak).
     private func makeExternalStore(endpoint: String = "ws://127.0.0.1:8000/v1/realtime") -> SettingsStore {
         let store = makeStore()
-        store.backendMode = .externalURL
+        store.dictationBackendMode = .externalURL
+        store.polishingBackendMode = .externalURL
         store.realtimeProvider = .realtimeAPI
         store.realtimeAPIEndpointURL = endpoint
         return store
@@ -72,7 +73,8 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("== Backend configuration =="))
         XCTAssertTrue(report.contains("== Managed backend status =="))
         XCTAssertTrue(report.contains("== Managed backend recent output =="))
-        XCTAssertTrue(report.contains("mode: External URL"))
+        XCTAssertTrue(report.contains("dictation mode: External URL"))
+        XCTAssertTrue(report.contains("polishing mode: External URL"))
         XCTAssertTrue(report.contains("realtime endpoint: ws://127.0.0.1:8000/v1/realtime"))
         XCTAssertTrue(report.contains("realtime API key: not set"))
         XCTAssertTrue(report.contains("LLM polishing: <disabled>"))
