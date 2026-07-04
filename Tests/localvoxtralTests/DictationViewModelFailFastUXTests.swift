@@ -240,6 +240,24 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     // MARK: - Managed backend startup
 
+    func testStartDictationManagedBothWithPolishingEnabledRequestsBothBackends() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: true)])
+    }
+
     func testStartDictationInManagedModeAwaitsBackendManagerAndSurfacesFailure() async {
         let backendManager = FakeManagedBackendManager()
         backendManager.ensureError = FakeManagedBackendFailure(message: "voxmlx failed: missing wheel")
@@ -302,6 +320,59 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertFalse(viewModel.lastError?.contains(marker) == true)
         XCTAssertTrue(viewModel.debugLastConnectFailureTechnicalDetails?.contains(marker) == true)
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
+    }
+
+    func testManagedStartupShowsDictationModelDownloadProgress() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+
+        backendManager.emitStatus(
+            spec: BackendCatalog.voxmlx,
+            status: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 36, totalBytes: 100))
+        )
+        await Task.yield()
+
+        XCTAssertEqual(viewModel.statusText, "Downloading dictation model (36%)...")
+
+        backendManager.ensureError = FakeManagedBackendFailure(message: "cancelled")
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+    }
+
+    func testManagedStartupShowsPolishingModelDownloadProgress() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+
+        backendManager.emitStatus(
+            spec: BackendCatalog.mlxLM,
+            status: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4))
+        )
+        await Task.yield()
+
+        XCTAssertEqual(viewModel.statusText, "Downloading polishing model (25%)...")
+
+        backendManager.ensureError = FakeManagedBackendFailure(message: "cancelled")
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
     }
 
     func testStartDictationInExternalModeNeverTouchesManagedBackendManager() {
@@ -482,17 +553,55 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingShutdownTask)
     }
 
-    func testLLMPolishingEnabledInManagedModeDoesNotStopPolishing() async {
+    func testLLMPolishingEnabledInManagedModeWarmsUpPolishingEagerly() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.polishingBackendMode = .managedLocal
         retainForTestProcessLifetime(viewModel)
 
         viewModel.llmPolishingEnabledDidChange(true)
-        await viewModel.polishingShutdownTask?.value
+        await viewModel.polishingWarmupTask?.value
 
+        // Owner-specified UX: enabling the toggle immediately bootstraps the
+        // managed polishing backend (install/model download/start) so the
+        // inline Settings progress has something to show — it must not wait
+        // for the next dictation.
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
         XCTAssertNil(viewModel.polishingShutdownTask)
+    }
+
+    func testLLMPolishingEnabledInExternalModeDoesNotWarmUp() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .externalURL
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(true)
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+        XCTAssertNil(viewModel.polishingWarmupTask)
+    }
+
+    func testLLMPolishingDisabledCancelsInFlightWarmup() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(true)
+        await backendManager.waitUntilEnsureStarted()
+        let warmup = viewModel.polishingWarmupTask
+
+        viewModel.llmPolishingEnabledDidChange(false)
+        backendManager.resumeEnsure()
+        await warmup?.value
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertTrue(warmup?.isCancelled == true)
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
     }
 
     // MARK: - Helpers
@@ -569,6 +678,18 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
 
     var voxmlxStatus: ManagedBackendStatus = .notInstalled
     var mlxLMStatus: ManagedBackendStatus = .notInstalled
+    private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
+    var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
+        let id = UUID()
+        let stream = AsyncStream<ManagedBackendStatusUpdate>.makeStream(of: ManagedBackendStatusUpdate.self)
+        statusUpdateContinuations[id] = stream.continuation
+        stream.continuation.onTermination = { @Sendable [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.statusUpdateContinuations[id] = nil
+            }
+        }
+        return stream.stream
+    }
     var ensureError: Error?
     var suspendEnsure = false
     private(set) var ensureCalls: [EnsureCall] = []
@@ -596,10 +717,10 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         }
 
         if dictation {
-            voxmlxStatus = .ready
+            emitStatus(spec: BackendCatalog.voxmlx, status: .ready)
         }
         if polishing {
-            mlxLMStatus = .ready
+            emitStatus(spec: BackendCatalog.mlxLM, status: .ready)
         }
     }
 
@@ -621,6 +742,21 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
 
     func recentOutput(for spec: ManagedBackendSpec) -> [String] {
         []
+    }
+
+    func emitStatus(spec: ManagedBackendSpec, status: ManagedBackendStatus) {
+        switch spec.id {
+        case BackendCatalog.voxmlx.id:
+            voxmlxStatus = status
+        case BackendCatalog.mlxLM.id:
+            mlxLMStatus = status
+        default:
+            break
+        }
+        let update = ManagedBackendStatusUpdate(spec: spec, status: status)
+        for continuation in statusUpdateContinuations.values {
+            continuation.yield(update)
+        }
     }
 
     func waitUntilEnsureStarted() async {
