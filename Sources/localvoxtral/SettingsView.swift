@@ -338,7 +338,10 @@ private struct ManagedBackendStatusLabel: View {
 
     private func modelDownloadText(_ progress: ModelDownloadProgress) -> String {
         guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
-            return "Downloading model"
+            // No total yet: the downloader is still resolving what (if
+            // anything) needs fetching — on a warm cache this phase is all
+            // the user ever sees, so don't claim a download is happening.
+            return "Checking model..."
         }
         return "Downloading model - \(Self.byteText(progress.downloadedBytes)) of \(Self.byteText(totalBytes))"
     }

@@ -142,7 +142,8 @@ extension DictationViewModel {
 
     private func modelDownloadStartupText(kind: String, progress: ModelDownloadProgress) -> String {
         guard let fraction = progress.fraction else {
-            return "Downloading \(kind) model..."
+            // No byte total yet: could be a warm-cache no-op check.
+            return "Preparing \(kind) model..."
         }
         return "Downloading \(kind) model (\(Int((fraction * 100).rounded()))%)..."
     }

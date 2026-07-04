@@ -240,6 +240,24 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     // MARK: - Managed backend startup
 
+    func testStartDictationManagedBothWithPolishingEnabledRequestsBothBackends() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.startDictation()
+        await backendManager.waitUntilEnsureStarted()
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: true)])
+    }
+
     func testStartDictationInManagedModeAwaitsBackendManagerAndSurfacesFailure() async {
         let backendManager = FakeManagedBackendManager()
         backendManager.ensureError = FakeManagedBackendFailure(message: "voxmlx failed: missing wheel")
@@ -535,17 +553,55 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingShutdownTask)
     }
 
-    func testLLMPolishingEnabledInManagedModeDoesNotStopPolishing() async {
+    func testLLMPolishingEnabledInManagedModeWarmsUpPolishingEagerly() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.polishingBackendMode = .managedLocal
         retainForTestProcessLifetime(viewModel)
 
         viewModel.llmPolishingEnabledDidChange(true)
-        await viewModel.polishingShutdownTask?.value
+        await viewModel.polishingWarmupTask?.value
 
+        // Owner-specified UX: enabling the toggle immediately bootstraps the
+        // managed polishing backend (install/model download/start) so the
+        // inline Settings progress has something to show — it must not wait
+        // for the next dictation.
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
         XCTAssertNil(viewModel.polishingShutdownTask)
+    }
+
+    func testLLMPolishingEnabledInExternalModeDoesNotWarmUp() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .externalURL
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(true)
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+        XCTAssertNil(viewModel.polishingWarmupTask)
+    }
+
+    func testLLMPolishingDisabledCancelsInFlightWarmup() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(true)
+        await backendManager.waitUntilEnsureStarted()
+        let warmup = viewModel.polishingWarmupTask
+
+        viewModel.llmPolishingEnabledDidChange(false)
+        backendManager.resumeEnsure()
+        await warmup?.value
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertTrue(warmup?.isCancelled == true)
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
     }
 
     // MARK: - Helpers

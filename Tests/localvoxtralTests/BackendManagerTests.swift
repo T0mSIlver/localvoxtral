@@ -426,6 +426,24 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
+    func testSecondEnsureReadyAddsPolishingAfterDictationOnlyRun() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        // First dictation: polishing disabled at the time.
+        try await manager.ensureReady(dictation: true, polishing: false)
+        XCTAssertEqual(manager.voxmlxStatus, .ready)
+        XCTAssertEqual(manager.mlxLMStatus, .stopped)
+
+        // User enables polishing, dictates again: mlx-lm must come up now.
+        try await manager.ensureReady(dictation: true, polishing: true)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+        XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.mlxLM.displayName]?.startCallCount, 1)
+    }
+
     private func makeManager(
         installer: FakeBackendInstaller,
         modelPreparer: FakeModelPreparer = FakeModelPreparer(),
