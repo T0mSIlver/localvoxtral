@@ -38,9 +38,27 @@ jobs:
         env:
           MINUTES_BACK: ${{ inputs.minutes_back }}
         run: |
-          log show --last "${MINUTES_BACK}m" --info \
-            --predicate 'process == "localvoxtral" AND NOT (category == "Deltas")' 2>/dev/null \
-            | sed "s|$HOME|~|g" | tail -120 || echo "log query failed"
+          log show --last "${MINUTES_BACK}m" --info --debug \
+            --predicate 'subsystem == "com.localvoxtral"' 2>/dev/null \
+            | sed "s|$HOME|~|g" | tail -200 || echo "log query failed"
+
+      - name: Reproduce the app's model pre-download command (mlx-lm repo)
+        run: |
+          B="$HOME/Library/Application Support/localvoxtral/backends"
+          echo "--- downloads dir:"
+          ls -la "$B/downloads" 2>/dev/null | sed "s|$HOME|~|g" || echo "<no downloads dir: prepareModel never ran>"
+          UV="$B/uv/0.11.26/uv"
+          SCRIPT="$B/downloads/hf_model_download.py"
+          if [ ! -x "$UV" ]; then echo "managed uv missing at $UV" | sed "s|$HOME|~|g"; exit 0; fi
+          if [ ! -f "$SCRIPT" ]; then echo "downloader script absent"; exit 0; fi
+          echo "--- running the exact app command (90s cap):"
+          export UV_CACHE_DIR="$B/uv-cache" UV_PYTHON_INSTALL_DIR="$B/python" \
+                 UV_TOOL_DIR="$B/tools" UV_TOOL_BIN_DIR="$B/bin" \
+                 LOCALVOXTRAL_HF_EMIT_INTERVAL=0
+          /opt/homebrew/bin/gtimeout 90 "$UV" run --python 3.12 \
+            --with 'huggingface_hub<2' --with 'tqdm<5' \
+            python -u "$SCRIPT" mlx-community/Qwen3.5-0.8B-8bit --include '*.json' 2>&1 \
+            | sed "s|$HOME|~|g" | tail -30 || echo "exit: $?"
 
       - name: List running localvoxtral instances
         run: |
