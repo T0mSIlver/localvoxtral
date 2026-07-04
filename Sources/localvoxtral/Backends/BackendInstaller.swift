@@ -463,7 +463,8 @@ private final class ProcessLineCollector: @unchecked Sendable {
     }
 }
 
-private final class PipeLineReader: @unchecked Sendable {
+// Internal (not private) so the crash regression tests can drive it directly.
+final class PipeLineReader: @unchecked Sendable {
     private let fileHandle: FileHandle
     private let onLine: @Sendable (String) -> Void
     private let state = PipeLineReaderState()

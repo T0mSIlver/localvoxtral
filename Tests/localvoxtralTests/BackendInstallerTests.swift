@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -514,5 +515,38 @@ private struct FakeUVLocator: UVBinaryLocating {
 
     func uvBinaryURL() -> URL? {
         url
+    }
+}
+
+// MARK: - PipeLineReader crash regression (field SIGABRT 2026-07-04)
+//
+// FileHandle.availableData raises an uncatchable ObjC
+// NSFileHandleOperationException when the descriptor errors mid-read, which
+// aborts the whole app. Field-hit during a managed mlx-lm install. The reader
+// must treat read errors as EOF and finish cleanly instead.
+final class PipeLineReaderCrashRegressionTests: XCTestCase {
+    func testReaderFinishesCleanlyWhenDescriptorIsNotReadable() {
+        // A write-only descriptor makes read(2) fail with EBADF immediately —
+        // the same failure availableData turns into a process abort.
+        let writeOnly = FileHandle(forWritingAtPath: "/dev/null")!
+        defer { try? writeOnly.close() }
+
+        let reader = PipeLineReader(fileHandle: writeOnly) { _ in }
+        reader.start()
+        reader.waitUntilFinished()
+        // Reaching here without SIGABRT is the assertion.
+    }
+
+    func testReaderDeliversLinesThenFinishesOnEOF() {
+        let pipe = Pipe()
+        let lines = Mutex<[String]>([])
+        let reader = PipeLineReader(fileHandle: pipe.fileHandleForReading) { line in
+            lines.withLock { $0.append(line) }
+        }
+        reader.start()
+        pipe.fileHandleForWriting.write(Data("alpha\nbeta\n".utf8))
+        try? pipe.fileHandleForWriting.close()
+        reader.waitUntilFinished()
+        XCTAssertEqual(lines.withLock { $0 }, ["alpha", "beta"])
     }
 }
