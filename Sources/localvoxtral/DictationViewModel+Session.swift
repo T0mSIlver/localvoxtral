@@ -109,14 +109,19 @@ extension DictationViewModel {
             ? String(describing: error)
             : error.localizedDescription
         let technicalDetails: String?
+        let popoverError: String
         if let managedError = error as? ManagedBackendManagerError {
             technicalDetails = normalizedFailureDetails(managedError.technicalDetails)
+            popoverError = "\(managedError.backendName) failed to start."
         } else {
             technicalDetails = summary
+            popoverError = "Managed backend failed to start."
         }
         let message = "Unable to start the managed dictation backend: \(summary)"
         statusText = "Managed backend failed."
-        lastError = message
+        // lastError renders in the menu-bar popover, which never shows long
+        // text (AGENTS.md); the full story goes to the alert and the log.
+        lastError = popoverError
         #if DEBUG
         debugLastConnectFailureTechnicalDetails = technicalDetails
         #endif

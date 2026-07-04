@@ -36,6 +36,13 @@ enum ManagedBackendManagerError: LocalizedError {
             return detail
         }
     }
+
+    var backendName: String {
+        switch self {
+        case .backendFailed(let name, _, _):
+            return name
+        }
+    }
 }
 
 @MainActor

@@ -265,7 +265,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
-        XCTAssertTrue(viewModel.lastError?.contains("voxmlx failed: missing wheel") == true)
+        // Popover rule (AGENTS.md): lastError is one short sentence; the full
+        // failure summary stays in the alert/log, not the popover. This fake
+        // is not a ManagedBackendManagerError, so the generic wording applies.
+        XCTAssertEqual(viewModel.lastError, "Managed backend failed to start.")
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
     }
 
@@ -291,7 +294,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await viewModel.managedStartupTask?.value
 
         XCTAssertEqual(viewModel.statusText, "Managed backend failed.")
-        XCTAssertTrue(viewModel.lastError?.contains("mlx-lm failed: mlx-lm exited 5 consecutive times.") == true)
+        XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
+        XCTAssertFalse(viewModel.lastError?.contains("exited 5 consecutive times") == true)
         XCTAssertFalse(viewModel.lastError?.contains(marker) == true)
         XCTAssertTrue(viewModel.debugLastConnectFailureTechnicalDetails?.contains(marker) == true)
         XCTAssertEqual(viewModel.realtimeSessionIndicatorState, .recentFailure)
