@@ -426,6 +426,32 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
+    func testPolishingEnsureIsNotBlockedByAStuckDictationEnsure() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        // voxmlx never reaches .running: its ensure blocks awaiting readiness.
+        supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = []
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        let stuckDictation = Task { try await manager.ensureReady(dictation: true, polishing: false) }
+        while supervisorFactory.supervisors[BackendCatalog.voxmlx.displayName]?.startCallCount != 1 {
+            await Task.yield()
+        }
+
+        // Field regression (2026-07-04): with one shared single-flight slot,
+        // this joined the stuck dictation run — whose flags never covered
+        // polishing — and silently never started mlx-lm.
+        try await manager.ensureReady(dictation: false, polishing: true)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+        XCTAssertEqual(
+            supervisorFactory.supervisors[BackendCatalog.mlxLM.displayName]?.startCallCount, 1
+        )
+
+        stuckDictation.cancel()
+        _ = try? await stuckDictation.value
+    }
+
     func testSecondEnsureReadyAddsPolishingAfterDictationOnlyRun() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()

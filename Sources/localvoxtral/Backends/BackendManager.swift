@@ -99,7 +99,13 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private var voxmlxSupervisor: (any ManagedBackendSupervising)?
     @ObservationIgnored private var mlxLMSupervisor: (any ManagedBackendSupervising)?
-    @ObservationIgnored private var ensureReadyTask: Task<Void, Error>?
+    // Per-backend single-flight slots. A global shared slot (the previous
+    // design) let a lingering dictation run swallow a polishing request whose
+    // flags it never covered — field-hit 2026-07-04: enabling polishing did
+    // nothing while an old ensure task lingered. Disjoint backends must never
+    // share a slot.
+    @ObservationIgnored private var dictationEnsureTask: Task<Void, Error>?
+    @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var voxmlxStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var mlxLMStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
@@ -141,30 +147,56 @@ final class BackendManager: ManagedBackendManaging {
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws {
         guard dictation || polishing else { return }
-        while true {
-            if let ensureReadyTask {
-                try await awaitEnsureReadyTask(ensureReadyTask)
-                if dictation, !isReady(BackendCatalog.voxmlx) {
-                    continue
-                }
-                if polishing, !isReady(BackendCatalog.mlxLM) {
-                    continue
-                }
-                return
-            }
+        Log.backends.info(
+            "ensureReady requested dictation=\(dictation, privacy: .public) polishing=\(polishing, privacy: .public)"
+        )
+        var tasks: [Task<Void, Error>] = []
+        if dictation {
+            tasks.append(singleFlightEnsureTask(for: BackendCatalog.voxmlx))
+        }
+        if polishing {
+            tasks.append(singleFlightEnsureTask(for: BackendCatalog.mlxLM))
+        }
+        for task in tasks {
+            try await awaitEnsureReadyTask(task)
+        }
+    }
 
-            let task = Task { @MainActor in
-                try await self.performEnsureReady(dictation: dictation, polishing: polishing)
-            }
-            ensureReadyTask = task
+    /// Returns the in-flight ensure task for the backend, or starts one. Each
+    /// backend has its own slot so concurrent callers join per-backend work
+    /// and requests for different backends never block or swallow each other.
+    private func singleFlightEnsureTask(for spec: ManagedBackendSpec) -> Task<Void, Error> {
+        if spec.id == BackendCatalog.voxmlx.id, let dictationEnsureTask {
+            return dictationEnsureTask
+        }
+        if spec.id == BackendCatalog.mlxLM.id, let polishingEnsureTask {
+            return polishingEnsureTask
+        }
+        let task = Task { @MainActor in
+            defer { self.clearEnsureTask(for: spec) }
             do {
-                try await awaitEnsureReadyTask(task)
-                ensureReadyTask = nil
-                return
+                try await self.ensureReady(spec)
+                Log.backends.info("\(spec.displayName, privacy: .public) ensure finished ready")
             } catch {
-                ensureReadyTask = nil
+                Log.backends.error(
+                    "\(spec.displayName, privacy: .public) ensure failed: \(error.localizedDescription, privacy: .public)"
+                )
                 throw error
             }
+        }
+        if spec.id == BackendCatalog.voxmlx.id {
+            dictationEnsureTask = task
+        } else {
+            polishingEnsureTask = task
+        }
+        return task
+    }
+
+    private func clearEnsureTask(for spec: ManagedBackendSpec) {
+        if spec.id == BackendCatalog.voxmlx.id {
+            dictationEnsureTask = nil
+        } else {
+            polishingEnsureTask = nil
         }
     }
 
@@ -231,15 +263,6 @@ final class BackendManager: ManagedBackendManaging {
             return mlxLMSupervisor?.recentOutput ?? []
         default:
             return []
-        }
-    }
-
-    private func performEnsureReady(dictation: Bool, polishing: Bool) async throws {
-        if dictation {
-            try await ensureReady(BackendCatalog.voxmlx)
-        }
-        if polishing {
-            try await ensureReady(BackendCatalog.mlxLM)
         }
     }
 
