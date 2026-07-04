@@ -19,6 +19,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so package_app.sh can git-describe the
+          # artifact version (shallow clones can't, and fall back to 0.0.0-dev).
+          fetch-depth: 0
 
       - name: Setup Swift
         if: runner.environment == 'github-hosted'
