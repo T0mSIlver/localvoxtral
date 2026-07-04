@@ -112,6 +112,8 @@ enum DiagnosticsExporter {
         let headerFormatter = makeHeaderFormatter()
         lines.append("localvoxtral diagnostics")
         lines.append("generated: \(headerFormatter.string(from: now))")
+        lines.append("This file was generated locally and is never uploaded anywhere.")
+        lines.append("Review it before sharing — backend process output below is verbatim.")
         lines.append("")
 
         lines.append("== App ==")
@@ -168,8 +170,15 @@ enum DiagnosticsExporter {
         now: Date
     ) throws -> URL {
         let filenameFormatter = makeFilenameFormatter()
-        let filename = "\(filenamePrefix)\(filenameFormatter.string(from: now))\(filenameSuffix)"
-        let destination = directory.appendingPathComponent(filename)
+        let stem = "\(filenamePrefix)\(filenameFormatter.string(from: now))"
+        // Second-precision timestamps can collide on rapid re-export; never
+        // silently overwrite an earlier report.
+        var destination = directory.appendingPathComponent(stem + filenameSuffix)
+        var attempt = 2
+        while FileManager.default.fileExists(atPath: destination.path), attempt <= 100 {
+            destination = directory.appendingPathComponent("\(stem)-\(attempt)\(filenameSuffix)")
+            attempt += 1
+        }
         let report = makeReport(snapshot: snapshot, now: now)
         // `atomic: true` so a partial write never leaves a misleading file.
         try report.write(to: destination, atomically: true, encoding: .utf8)

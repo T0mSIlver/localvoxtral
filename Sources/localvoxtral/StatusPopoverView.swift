@@ -200,16 +200,24 @@ struct StatusPopoverView: View {
             return
         }
 
-        do {
-            let writtenURL = try DiagnosticsExporter.writeReport(
-                snapshot: snapshot,
-                to: desktop,
-                now: Date()
-            )
-            Log.diagnostics.info("diagnostics exported: \(writtenURL.path, privacy: .public)")
-            NSWorkspace.shared.activateFileViewerSelecting([writtenURL])
-        } catch {
-            Log.diagnostics.error("diagnostics export failed: \(error.localizedDescription, privacy: .public)")
+        // Snapshot is built on the MainActor above; rendering and the file
+        // write happen off-main so a slow/iCloud-backed Desktop can never
+        // beachball the menu bar app.
+        let exportedAt = Date()
+        Task.detached(priority: .utility) {
+            do {
+                let writtenURL = try DiagnosticsExporter.writeReport(
+                    snapshot: snapshot,
+                    to: desktop,
+                    now: exportedAt
+                )
+                Log.diagnostics.info("diagnostics exported: \(writtenURL.path, privacy: .public)")
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting([writtenURL])
+                }
+            } catch {
+                Log.diagnostics.error("diagnostics export failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }

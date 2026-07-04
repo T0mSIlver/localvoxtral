@@ -25,6 +25,17 @@ VOXMLX_LAUNCHD_LABEL="com.localvoxtral.voxmlx"
 # nc connect timeout (seconds) so a down port does not hang the report.
 PORT_TIMEOUT=2
 
+# Runs a command under a wall-clock bound when a timeout binary exists
+# (log show can be slow over ssh); degrades to unbounded otherwise.
+bounded() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  else
+    "$@"
+  fi
+}
+
 print_header() {
   printf '\n=== %s ===\n' "$1"
 }
@@ -111,10 +122,11 @@ fi
 
 print_header "Process state"
 for proc in localvoxtral voxmlx-serve mlx_lm.server; do
-  matches="$(pgrep -fl "$proc" 2>/dev/null || true)"
-  if [[ -n "$matches" ]]; then
-    printf '[%s] running:\n' "$proc"
-    printf '%s\n' "$matches"
+  # PIDs only — full command lines (pgrep -fl) could leak flags such as API
+  # keys from user-run backend invocations.
+  pids="$(pgrep -f "$proc" 2>/dev/null | tr '\n' ' ' || true)"
+  if [[ -n "$pids" ]]; then
+    print_kv "$proc" "running (pids: ${pids})"
   else
     print_kv "$proc" "not running"
   fi
@@ -144,8 +156,10 @@ dump_file "${BACKENDS_ROOT}/installed.json"
 # --- Recent app logs (default level only — never raises verbosity) --------
 
 print_header "Recent app logs (last 10m, default level, last 80 lines)"
-app_logs="$(log show \
-  --predicate 'process == "localvoxtral"' \
+# Excludes the opt-in Deltas category, which logs dictated content in
+# cleartext when debug.log_realtime_deltas is enabled.
+app_logs="$(bounded 30 log show \
+  --predicate 'process == "localvoxtral" AND NOT (category == "Deltas")' \
   --last 10m \
   --style compact 2>&1 | tail -80 || true)"
 if [[ -z "$app_logs" ]]; then
@@ -157,7 +171,7 @@ fi
 # --- syspolicyd errors (macOS 26 launch-stall class) ----------------------
 
 print_header "syspolicyd errors/rejections (last 10m, last 20 lines)"
-syspolicy_logs="$(log show \
+syspolicy_logs="$(bounded 30 log show \
   --predicate 'process == "syspolicyd"' \
   --last 10m \
   --style compact 2>&1 | grep -iE 'error|reject' | tail -20 || true)"
