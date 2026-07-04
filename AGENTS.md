@@ -25,6 +25,11 @@ On a Mac, just `swift build` / `swift test`.
 When several agents work in parallel, each must set its own remote dir:
 `LV_BUILD_DIR=work/localvoxtral-<task> ./scripts/remote-build.sh ...`
 
+- An interrupted remote run can leave a stale SwiftPM lock in its remote dir —
+  don't debug it, switch to a fresh `LV_BUILD_DIR`.
+- Never pipe a full test run only through grep: `tee` the raw output to a file
+  first, or a crash eats the failing test's name and you pay for reruns.
+
 ## Hand-testing & field debugging (the fast loop)
 
 Learned the hard way (2026-07-04) — use these instead of manual steps:
@@ -49,13 +54,18 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   does. `install.sh` re-signs unconditionally for end users; `try-pr.sh`
   re-signs only ad-hoc artifacts (never downgrades identity-signed ones).
   Durable fix is Developer ID + notarization (roadmap #1).
-- **Crash reports without hands on the Mac**: dispatch
-  `gh workflow run mac-crashlog.yml --ref main` — it prints a redacted
-  summary (exception + crashed-thread frames) of recent localvoxtral `.ips`
-  reports from the self-hosted Mac. Actions logs are public: keep the
-  redaction if you extend it. Deeper diagnostics: `scripts/mac-diag.sh` on
-  the Mac, Export Diagnostics… in the app, and (once the v2 gate is
-  installed) `./scripts/remote-build.sh diag|applog|voxlog|svc-status`.
+- **Field bug on the Mac? Dispatch `mac-crashlog.yml` FIRST, theorize
+  second** (`gh workflow run mac-crashlog.yml --ref main`). It reports, all
+  redacted for the public Actions log: recent crash summaries (procPath +
+  translocation + crashed-thread frames), running localvoxtral instances
+  with their binary paths, an allowlisted settings snapshot, the app's
+  subsystem-filtered unified log, and an exact reproduction of the model
+  pre-download command. Confirm WHICH binary the user is actually running
+  (try-pr copy vs /Applications) before debugging its behavior — that
+  confusion and theorize-first cost an hour on 2026-07-05. Deeper tools:
+  `scripts/mac-diag.sh` on the Mac, Export Diagnostics… in Settings > About,
+  and (once the v2 gate is installed)
+  `./scripts/remote-build.sh diag|applog|voxlog|svc-status`.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
   descriptor errors and aborts the app (field crash, PR #60). Use
@@ -77,6 +87,11 @@ This is a real app with daily users. Nothing ships on "it compiles".
 - No wall-clock in tests (`Date()` / real `Task.sleep` polling) — inject
   clocks. `OverlayBufferSessionCoordinator` (`now:` / `sleepFor:` seams) is
   the reference pattern.
+- Any test that reaches `beginDictationSession` arms the REAL 10s
+  connect-timeout on a process-retained view model and MUST set
+  `viewModel.isShowingConnectionFailureAlert = true`, or the timer's alert
+  fires inside whatever test runs ~10s later and SIGTRAPs the suite (PR #66).
+  Known debt: session code arms wall-clock timers; new code must not add more.
 - UI-affecting changes: until the automated UI tier exists, state in the PR
   exactly what was verified by hand and how.
 
@@ -160,3 +175,6 @@ Key subsystems:
   `StatusPopoverView.statusDetailView` line-limits as a backstop — keep it.
 - Hand-testing builds: see "Hand-testing & field debugging" above — use
   try-pr.sh and the stable signing identity, don't reinvent manual steps.
+- Backend/lifecycle code paths log their requests, completions, and failures
+  (`Log.backends`) — a silent failure path is how the ensureReady
+  single-flight bug cost an hour of remote probing. Keep new paths loud.
