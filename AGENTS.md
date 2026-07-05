@@ -72,6 +72,16 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `scripts/mac-diag.sh` on the Mac, Export Diagnostics… in Settings > About,
   and (once the v2 gate is installed — owner runbook: `scripts/mac/README.md`)
   `./scripts/remote-build.sh diag|applog|voxlog|svc-status`.
+- **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
+  stages the scene, drives the real Right-Command tap/hold gesture with
+  synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator
+  speaks the prompted lines. On the self-hosted runner, dispatch
+  `record-demo.yml` instead: it runs hands-free (`DEMO_HANDS_FREE=1` — TTS
+  through the BlackHole loopback, app mic pinned to it) and uploads the video
+  as an artifact; one-time runner setup is `brew install blackhole-2ch
+  ffmpeg`. GitHub renders inline video only from user-attachments URLs (no
+  API for those), so the owner drag-drops the mp4 into a PR comment and
+  pastes the URL into the README by hand.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
   descriptor errors and aborts the app (field crash, PR #60). Use
@@ -157,7 +167,10 @@ Key subsystems:
   first dictation start; catalog pinned to fork wheel releases; installer
   downloads a pinned `uv` on first use, then shells out to it; supervisors
   spawn/health-check/stop the managed processes; install root lives under
-  Application Support.
+  Application Support. User-facing backend copy (pinned models, fork
+  optimizations, vLLM example) lives in the README "Under the hood" section
+  (`/docs` is gitignored local notes — nothing user-facing goes there); keep
+  it in sync when pins change.
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)

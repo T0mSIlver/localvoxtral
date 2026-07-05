@@ -17,7 +17,7 @@ set -euo pipefail
 #   - Accessibility    (System Events drives the menu and settings tabs)
 #   - Screen Recording (screencapture -l reads window contents)
 #
-# demo.gif is not automated — record it by hand.
+# The demo video is separate — see scripts/record-demo.sh / record-demo.yml.
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "This script drives a macOS app — run it on the Mac." >&2
