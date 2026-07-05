@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Record the README demo video as H.264:
+#   dist/demo/demo.mp4      (encoded, ready to drag-drop into a GitHub PR/issue
+#                            comment — GitHub only renders inline video from
+#                            user-attachments uploads, so that step is manual)
+#   dist/demo/demo-raw.mov  (raw capture, kept so the encode can be redone)
+#
+# The script stages the whole scene and drives the app; the voice is either
+# YOU (default) or macOS text-to-speech through a loopback audio device
+# (hands-free mode — how the CI runner records it, see record-demo.yml).
+# It pins dark mode, opens an empty TextEdit document at a fixed size, stages
+# the Right Command tap/hold gesture, warms up the backend off-camera, then
+# records two scenes, prompting in the terminal what to say and when:
+#
+#   Scene 1  tap Right Command  -> overlay dictation -> speak -> tap -> commit
+#   Scene 2  hold Right Command -> live auto-paste while speaking -> release
+#
+# Run ON A MAC from the repo root, in a GUI session:
+#   ./scripts/record-demo.sh [path/to/localvoxtral.app]
+# Default app: dist/localvoxtral.app (build it with ./scripts/package_app.sh).
+#
+# One-time TCC grants for the terminal running this script:
+#   - Accessibility     (posts the Right Command gesture, drives TextEdit)
+#   - Screen Recording  (screencapture -v)
+#   - Microphone        (only when DEMO_CAPTURE_AUDIO=1, the default)
+# The app itself must already have its mic + Accessibility grants and a
+# working dictation backend (managed local installed, or your endpoints up).
+# ffmpeg (brew install ffmpeg) is needed for the final encode; without it the
+# raw .mov is still produced (GitHub accepts .mov drag-drops too).
+#
+# Tunables (env):
+#   DEMO_WIDTH / DEMO_HEIGHT      capture region in points (default 1280x800)
+#   DEMO_SPEAK_SECONDS            speaking window per scene (default 9)
+#   DEMO_WARMUP_SECONDS           off-camera backend warmup (default 12)
+#   DEMO_COMMIT_SECONDS           wait for polish+commit after scene 1 (default 6)
+#   DEMO_CAPTURE_AUDIO            1 = record default-input audio into the video
+#                                 (default: 1 for a human take, 0 hands-free)
+#   DEMO_SENTENCE_1 / _2          suggested lines shown in the prompts
+#   DEMO_HANDS_FREE               1 = no human: render the lines with `say`
+#                                 into the "BlackHole 2ch" loopback device and
+#                                 pin the app's mic to it. One-time machine
+#                                 setup: brew install blackhole-2ch
+#   DEMO_SAY_DEVICE               loopback device name for hands-free mode
+#                                 (default "BlackHole 2ch"; setting this also
+#                                 implies hands-free)
+#   DEMO_SAY_INPUT_UID            audio-device UID the app's mic is pinned to;
+#                                 resolved automatically from DEMO_SAY_DEVICE
+#                                 when unset
+
+if [[ "$(uname)" != "Darwin" ]]; then
+  echo "This script records a macOS app — run it on the Mac." >&2
+  exit 1
+fi
+
+APP_PATH="${1:-dist/localvoxtral.app}"
+APP_PROCESS="localvoxtral"
+BUNDLE_ID="com.localvoxtral.app"
+TEXTEDIT_ID="com.apple.TextEdit"
+
+DEMO_WIDTH="${DEMO_WIDTH:-1280}"
+DEMO_HEIGHT="${DEMO_HEIGHT:-800}"
+DEMO_SPEAK_SECONDS="${DEMO_SPEAK_SECONDS:-9}"
+DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
+DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-6}"
+DEMO_SENTENCE_1="${DEMO_SENTENCE_1:-This is localvoxtral, dictating fully offline on my Mac. The overlay streams every word as I say it, and a local language model polishes the text before it lands in the document.}"
+DEMO_SENTENCE_2="${DEMO_SENTENCE_2:-And if I hold the key instead, my words are typed straight into the document, live, while I am still talking.}"
+DEMO_HANDS_FREE="${DEMO_HANDS_FREE:-0}"
+DEMO_SAY_DEVICE="${DEMO_SAY_DEVICE:-}"
+DEMO_SAY_INPUT_UID="${DEMO_SAY_INPUT_UID:-}"
+if [[ "$DEMO_HANDS_FREE" == 1 && -z "$DEMO_SAY_DEVICE" ]]; then
+  DEMO_SAY_DEVICE="BlackHole 2ch"
+fi
+# Audio-track default: a human take records their real voice from the default
+# input; a hands-free take renders TTS into the loopback, which the recorder's
+# default input can't hear — so default the track off there.
+if [[ -z "${DEMO_CAPTURE_AUDIO:-}" ]]; then
+  if [[ -n "$DEMO_SAY_DEVICE" ]]; then DEMO_CAPTURE_AUDIO=0; else DEMO_CAPTURE_AUDIO=1; fi
+fi
+
+OUT_DIR="dist/demo"
+RAW_MOV="$OUT_DIR/demo-raw.mov"
+OUT_MP4="$OUT_DIR/demo.mp4"
+
+DEFAULTS_BACKUP="${HOME}/.localvoxtral-record-demo.pre.plist"
+DEFAULTS_BACKUP_HAD_DOMAIN="${DEFAULTS_BACKUP}.had-domain"
+TEXTEDIT_BACKUP="${HOME}/.localvoxtral-record-demo.textedit.pre.plist"
+TEXTEDIT_BACKUP_HAD_DOMAIN="${TEXTEDIT_BACKUP}.had-domain"
+
+[[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
+
+# TextEdit gets its defaults mutated (plain text, big font) and its front
+# document discarded on cleanup — refuse to run over the user's open documents.
+if pgrep -xq TextEdit; then
+  echo "TextEdit is running. Quit it first (unsaved documents would be at risk)." >&2
+  exit 1
+fi
+
+# --- defaults snapshot/restore (same pattern as capture-readme-assets.sh) ----
+write_empty_plist() {
+  cat >"$1" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+PLIST
+}
+
+snapshot_domain() { # <domain> <backup> <had-domain-marker>
+  rm -f "$2" "$3"
+  if defaults export "$1" "$2" >/dev/null 2>&1; then
+    : >"$3" || return 1
+  elif defaults read "$1" >/dev/null 2>&1; then
+    return 1
+  else
+    write_empty_plist "$2" || return 1
+  fi
+  [[ -f "$2" ]] || return 1
+}
+
+restore_domain() { # <domain> <backup> <had-domain-marker>
+  [[ -f "$2" ]] || return 0
+  defaults delete "$1" >/dev/null 2>&1 || true
+  if [[ -f "$3" ]]; then
+    defaults import "$1" "$2" >/dev/null 2>&1 || return 1
+  fi
+  rm -f "$2" "$3"
+}
+
+# --- permission preflight -----------------------------------------------------
+PREFLIGHT="$(mktemp -t lv-demo-preflight).swift"
+cat > "$PREFLIGHT" <<'SWIFT'
+import ApplicationServices
+import CoreGraphics
+
+var ok = true
+if !AXIsProcessTrusted() {
+    print("MISSING Accessibility: System Settings > Privacy & Security > Accessibility — enable the app that launched this script, then rerun.")
+    ok = false
+}
+if !CGPreflightScreenCaptureAccess() {
+    _ = CGRequestScreenCaptureAccess()
+    print("MISSING Screen Recording: System Settings > Privacy & Security > Screen Recording — enable the app that launched this script, then rerun.")
+    ok = false
+}
+exit(ok ? 0 : 1)
+SWIFT
+
+# --- Right Command gesture helper ----------------------------------------------
+# Posts synthetic flagsChanged events for Right Command (keycode 54) at the HID
+# tap; the app's modifier-only monitors match on that keycode, so this drives
+# the REAL tap/hold gesture path, not a side door.
+GESTURE="$(mktemp -t lv-demo-gesture).swift"
+cat > "$GESTURE" <<'SWIFT'
+import CoreGraphics
+import Foundation
+
+// usage: gesture.swift tap | down | up | hold <seconds>
+let rightCommand: CGKeyCode = 54
+func post(down: Bool) {
+    guard let event = CGEvent(keyboardEventSource: nil, virtualKey: rightCommand, keyDown: down) else { exit(3) }
+    event.type = .flagsChanged
+    event.flags = down ? [.maskCommand] : []
+    event.post(tap: .cghidEventTap)
+}
+let mode = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "tap"
+switch mode {
+case "tap":
+    post(down: true)
+    Thread.sleep(forTimeInterval: 0.08)
+    post(down: false)
+case "down":
+    post(down: true)
+case "up":
+    post(down: false)
+case "hold":
+    let seconds = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2]) ?? 2 : 2
+    post(down: true)
+    Thread.sleep(forTimeInterval: seconds)
+    post(down: false)
+default:
+    exit(2)
+}
+SWIFT
+
+tap_hotkey()  { swift "$GESTURE" tap; }
+hold_hotkey() { swift "$GESTURE" hold "$1"; } # blocks for the hold duration
+press_hotkey()   { swift "$GESTURE" down; }
+release_hotkey() { swift "$GESTURE" up; }
+
+# --- audio-device UID resolver (hands-free mode) --------------------------------
+# The app pins its mic by device UID; resolve it from the loopback's name so
+# nothing is hardcoded and a missing BlackHole fails fast with instructions.
+AUDIO_UID="$(mktemp -t lv-demo-audiouid).swift"
+cat > "$AUDIO_UID" <<'SWIFT'
+import CoreAudio
+import Foundation
+
+// usage: audiouid.swift <device name> — prints the device UID, exit 1 if absent
+guard CommandLine.arguments.count > 1 else { exit(2) }
+let wanted = CommandLine.arguments[1]
+
+func stringProperty(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+    var addr = AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var value: CFString?
+    var size = UInt32(MemoryLayout<CFString?>.size)
+    let status = withUnsafeMutablePointer(to: &value) {
+        AudioObjectGetPropertyData(id, &addr, 0, nil, &size, $0)
+    }
+    guard status == noErr, let value else { return nil }
+    return value as String
+}
+
+var addr = AudioObjectPropertyAddress(
+    mSelector: kAudioHardwarePropertyDevices,
+    mScope: kAudioObjectPropertyScopeGlobal,
+    mElement: kAudioObjectPropertyElementMain)
+var size: UInt32 = 0
+guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { exit(1) }
+var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { exit(1) }
+
+for id in ids where stringProperty(id, kAudioObjectPropertyName) == wanted {
+    if let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) {
+        print(uid)
+        exit(0)
+    }
+}
+exit(1)
+SWIFT
+
+# --- cleanup -------------------------------------------------------------------
+RECORDER_PID=""
+LAUNCHED_APP=0
+LAUNCHED_TEXTEDIT=0
+ORIGINAL_DARK_MODE=""
+cleanup() {
+  if [[ -f "$GESTURE" ]]; then
+    swift "$GESTURE" up >/dev/null 2>&1 || true # never leave Right Command stuck down
+  fi
+  rm -f "$PREFLIGHT" "$GESTURE" "$AUDIO_UID"
+  if [[ -n "$RECORDER_PID" ]] && kill -0 "$RECORDER_PID" 2>/dev/null; then
+    kill -INT "$RECORDER_PID" 2>/dev/null || true
+    wait "$RECORDER_PID" 2>/dev/null || true
+  fi
+  if [[ "$LAUNCHED_APP" == 1 ]]; then
+    osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true
+    osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+    sleep 1
+    pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
+  fi
+  if [[ "$LAUNCHED_TEXTEDIT" == 1 ]]; then
+    osascript -e 'tell application "TextEdit" to close every document saving no' >/dev/null 2>&1 || true
+    osascript -e 'tell application "TextEdit" to quit' >/dev/null 2>&1 || true
+  fi
+  if ! restore_domain "$BUNDLE_ID" "$DEFAULTS_BACKUP" "$DEFAULTS_BACKUP_HAD_DOMAIN"; then
+    echo "WARNING: failed to restore $BUNDLE_ID defaults; backup left at $DEFAULTS_BACKUP" >&2
+  fi
+  if ! restore_domain "$TEXTEDIT_ID" "$TEXTEDIT_BACKUP" "$TEXTEDIT_BACKUP_HAD_DOMAIN"; then
+    echo "WARNING: failed to restore $TEXTEDIT_ID defaults; backup left at $TEXTEDIT_BACKUP" >&2
+  fi
+  if [[ -n "$ORIGINAL_DARK_MODE" ]]; then
+    osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM HUP
+
+swift "$PREFLIGHT" || exit 1
+
+if [[ -n "$DEMO_SAY_DEVICE" ]]; then
+  if [[ -z "$DEMO_SAY_INPUT_UID" ]]; then
+    DEMO_SAY_INPUT_UID="$(swift "$AUDIO_UID" "$DEMO_SAY_DEVICE")" || {
+      echo "Hands-free mode needs the loopback audio device \"$DEMO_SAY_DEVICE\", which is not present." >&2
+      echo "One-time setup on this Mac: brew install blackhole-2ch" >&2
+      exit 1
+    }
+  fi
+  echo "Hands-free mode: TTS -> \"$DEMO_SAY_DEVICE\", app mic pinned to UID $DEMO_SAY_INPUT_UID"
+fi
+
+command -v ffmpeg >/dev/null || \
+  echo "NOTE: ffmpeg not found — the raw .mov will be produced but not encoded (brew install ffmpeg)." >&2
+
+# --- stage settings -------------------------------------------------------------
+if pgrep -xq "$APP_PROCESS"; then
+  echo "Quitting running $APP_PROCESS instance..."
+  osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+  for _ in $(seq 1 10); do pgrep -xq "$APP_PROCESS" || break; sleep 0.5; done
+  pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
+  sleep 1
+fi
+pgrep -xq "$APP_PROCESS" && { echo "$APP_PROCESS refuses to quit; aborting." >&2; exit 1; }
+
+snapshot_domain "$BUNDLE_ID" "$DEFAULTS_BACKUP" "$DEFAULTS_BACKUP_HAD_DOMAIN" \
+  || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate them." >&2; exit 1; }
+snapshot_domain "$TEXTEDIT_ID" "$TEXTEDIT_BACKUP" "$TEXTEDIT_BACKUP_HAD_DOMAIN" \
+  || { echo "Could not snapshot TextEdit defaults; refusing to mutate them." >&2; exit 1; }
+
+# The demo always shows the Right Command tap/hold gesture; backend settings
+# are left as configured on this Mac (the demo should use the real setup).
+defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
+defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
+defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_modifier" -string "right_command"
+if [[ -n "$DEMO_SAY_INPUT_UID" ]]; then
+  defaults write "$BUNDLE_ID" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
+fi
+# TextEdit: plain-text mode with a large monospaced font so dictated text is
+# legible at README size.
+defaults write "$TEXTEDIT_ID" RichText -int 0
+defaults write "$TEXTEDIT_ID" NSFixedPitchFontSize -int 22
+
+# Dark mode pinned, like the README screenshots.
+ORIGINAL_DARK_MODE="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'
+sleep 1
+
+# --- launch + warm up the backend off-camera ------------------------------------
+LAUNCHED_APP=1
+open "$APP_PATH"
+for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
+pgrep -xq "$APP_PROCESS" || { echo "$APP_PROCESS did not launch." >&2; exit 1; }
+sleep 2
+
+echo "Warming up the dictation backend off-camera (${DEMO_WARMUP_SECONDS}s, stay quiet)..."
+tap_hotkey
+sleep "$DEMO_WARMUP_SECONDS"
+tap_hotkey
+sleep 3
+osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 || true # dismiss overlay
+sleep 1
+
+# --- stage TextEdit inside the capture region ------------------------------------
+read -r SCREEN_W SCREEN_H < <(osascript -e 'tell application "Finder" to get bounds of window of desktop' \
+  | awk -F', ' '{print $3, $4}')
+REGION_X=$(( (SCREEN_W - DEMO_WIDTH) / 2 ))
+REGION_Y=$(( (SCREEN_H - DEMO_HEIGHT) / 2 ))
+(( REGION_X < 0 || REGION_Y < 0 )) && { echo "Screen (${SCREEN_W}x${SCREEN_H}) is smaller than the ${DEMO_WIDTH}x${DEMO_HEIGHT} capture region." >&2; exit 1; }
+
+LAUNCHED_TEXTEDIT=1
+osascript >/dev/null <<OSA
+tell application "TextEdit"
+  activate
+  make new document
+end tell
+tell application "System Events" to tell process "TextEdit"
+  set position of front window to {$((REGION_X + 40)), $((REGION_Y + 60))}
+  set size of front window to {$((DEMO_WIDTH - 80)), $((DEMO_HEIGHT - 120))}
+end tell
+OSA
+sleep 1
+
+# --- record ----------------------------------------------------------------------
+mkdir -p "$OUT_DIR"
+rm -f "$RAW_MOV" "$OUT_MP4"
+CAPTURE_FLAGS=(-v -x)
+[[ "$DEMO_CAPTURE_AUDIO" == 1 ]] && CAPTURE_FLAGS+=(-g)
+screencapture "${CAPTURE_FLAGS[@]}" -R "${REGION_X},${REGION_Y},${DEMO_WIDTH},${DEMO_HEIGHT}" "$RAW_MOV" &
+RECORDER_PID=$!
+sleep 2
+
+cue() { # <scene-label> <sentence>
+  echo
+  echo "==================================================================="
+  echo "  $1"
+  echo "  SAY: \"$2\""
+  echo "==================================================================="
+  afplay /System/Library/Sounds/Tink.aiff >/dev/null 2>&1 || true
+}
+
+speak_or_wait() { # <sentence>
+  if [[ -n "$DEMO_SAY_DEVICE" ]]; then
+    say -a "$DEMO_SAY_DEVICE" -r 180 "$1"
+    sleep 1
+  else
+    sleep "$DEMO_SPEAK_SECONDS"
+  fi
+}
+
+# Scene 1 — tap: overlay dictation, then commit.
+osascript -e 'tell application "TextEdit" to activate' >/dev/null
+sleep 1
+cue "SCENE 1 — overlay (tap). Speak after the beep." "$DEMO_SENTENCE_1"
+tap_hotkey
+speak_or_wait "$DEMO_SENTENCE_1"
+tap_hotkey
+echo "Committing (polish + insert)..."
+sleep "$DEMO_COMMIT_SECONDS"
+
+# Scene 2 — hold: live auto-paste while the key is down.
+cue "SCENE 2 — live typing (hold). Speak after the beep, keep talking." "$DEMO_SENTENCE_2"
+if [[ -n "$DEMO_SAY_DEVICE" ]]; then
+  press_hotkey
+  sleep 1 # get past the hold threshold so live dictation runs before the TTS starts
+  say -a "$DEMO_SAY_DEVICE" -r 180 "$DEMO_SENTENCE_2"
+  sleep 1
+  release_hotkey
+else
+  hold_hotkey "$DEMO_SPEAK_SECONDS"
+fi
+sleep 4 # let the last words land
+
+kill -INT "$RECORDER_PID"
+wait "$RECORDER_PID" 2>/dev/null || true
+RECORDER_PID=""
+[[ -s "$RAW_MOV" ]] || { echo "screencapture produced no output at $RAW_MOV" >&2; exit 1; }
+echo "Raw capture: $RAW_MOV"
+
+# --- encode ----------------------------------------------------------------------
+if command -v ffmpeg >/dev/null; then
+  AUDIO_OPTS=(-an)
+  [[ "$DEMO_CAPTURE_AUDIO" == 1 ]] && AUDIO_OPTS=(-c:a aac -b:a 160k)
+  ffmpeg -hide_banner -loglevel error -y -i "$RAW_MOV" \
+    -vf "scale=${DEMO_WIDTH}:-2:flags=lanczos,fps=30" \
+    -c:v libx264 -crf 20 -preset slow -pix_fmt yuv420p -movflags +faststart \
+    "${AUDIO_OPTS[@]}" "$OUT_MP4"
+  echo "Encoded:     $OUT_MP4 ($(du -h "$OUT_MP4" | cut -f1))"
+  echo
+  echo "Next: review it (open $OUT_MP4), then drag-drop it into a GitHub PR/issue"
+  echo "comment to get a user-attachments URL, and put that URL on its own line"
+  echo "in README.md where the demo goes."
+else
+  echo "ffmpeg missing — upload $RAW_MOV as-is or install ffmpeg and re-run the encode."
+fi
