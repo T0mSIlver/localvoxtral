@@ -78,11 +78,13 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
 
 ## Settings
 
+A first-launch setup wizard (Welcome → Permissions → Downloads → Finish) grants microphone/Accessibility permissions and downloads the managed local engine. It appears once on a fresh install; re-run it any time from **Settings → General → Re-run Setup…**.
+
 - Open **Settings** from the menu bar popover to set:
+  - **General**: microphone and Accessibility permissions, auto-copy final segment, and re-run the setup wizard
   - Dictation trigger: single modifier key (tap/hold) or per-mode keyboard shortcuts (`Toggle` / `Push to Talk`)
   - Dictation and polishing backend modes (`Managed local` / `External URL`)
   - Realtime endpoint (URL, model name, API key)
-  - Auto-copy final segment
   - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
   - Replacement dictionary (overlay buffer output mode only)
   - LLM polishing endpoint (URL, model name, API key) — in the **Endpoints** tab when polishing is in External URL mode (overlay buffer output mode)
@@ -95,7 +97,7 @@ The shared config directory lives at `~/Library/Application Support/localvoxtral
 
 ### Managed local (default)
 
-In Managed local mode, localvoxtral installs pinned wheel releases of the selected managed backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use, and starts them lazily on the first dictation request. App launch stays network-inert; downloads happen only when dictation starts. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
+In Managed local mode, localvoxtral installs pinned wheel releases of the selected managed backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use. Downloads start only from explicit setup/dictation actions; enabling managed polishing may warm that backend immediately. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
 
 **Dictation — voxmlx.** [voxmlx](https://github.com/awni/voxmlx) running [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit) on M1 Pro, streaming partial text fast enough for realtime dictation (latency and throughput vary by hardware, model, and quantization). The managed build is [this fork](https://github.com/T0mSIlver/voxmlx), which adds a WebSocket server that speaks the OpenAI Realtime API protocol, memory-management optimizations, and managed-launch support (readiness signal + parent-pid watchdog).
 
@@ -123,7 +125,7 @@ Any other OpenAI Realtime-compatible endpoint works the same way — set the dic
 
 ## UI
 
-<!-- Regenerate the screenshots below with ./scripts/capture-readme-assets.sh (run on a Mac; demo.gif is manual). -->
+<!-- Regenerate the screenshots below with ./scripts/capture-readme-assets.sh (run on a Mac; demo.gif is manual). They are auto-recaptured after merge, so a new/updated pane (e.g. settings-general.png) may render broken until that runs. -->
 
 <p>
   <picture>
@@ -133,8 +135,10 @@ Any other OpenAI Realtime-compatible endpoint works the same way — set the dic
   Menubar icon
 </p>
 
-| Endpoints | Dictation |
+| General | Endpoints |
 | --- | --- |
-| ![localvoxtral endpoints settings](assets/settings-endpoints.png) | ![localvoxtral dictation settings](assets/settings-dictation.png) |
-| Text Processing | Popover |
-| ![localvoxtral text processing settings](assets/settings-text-processing.png) | ![localvoxtral popover view](assets/popover.png) |
+| ![localvoxtral general settings](assets/settings-general.png) | ![localvoxtral endpoints settings](assets/settings-endpoints.png) |
+| Dictation | Text Processing |
+| ![localvoxtral dictation settings](assets/settings-dictation.png) | ![localvoxtral text processing settings](assets/settings-text-processing.png) |
+| Popover | |
+| ![localvoxtral popover view](assets/popover.png) | |

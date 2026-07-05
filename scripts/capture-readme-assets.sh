@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Regenerate the README screenshots:
 #   assets/popover.png                     (menu bar menu)
+#   assets/settings-general.png            (Settings > General)
 #   assets/settings-endpoints.png          (Settings > Endpoints)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
@@ -25,12 +26,53 @@ fi
 
 APP_PATH="${1:-dist/localvoxtral.app}"
 APP_PROCESS="localvoxtral"
+BUNDLE_ID="com.localvoxtral.app"
+PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
+PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
-TAB_NAMES=("Endpoints" "Dictation" "Text Processing")
-TAB_FILES=("settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
+TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing")
+TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
+
+# Defaults isolation:
+# localvoxtral uses UserDefaults.standard under bundle id com.localvoxtral.app.
+# This script snapshots that domain, writes only settings.onboarding_completed
+# so the first-launch wizard does not cover Settings, and restores on exit.
+restore_defaults() {
+  if [[ ! -f "$PERSISTENT_DEFAULTS_BACKUP" ]]; then
+    return
+  fi
+
+  defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+  if [[ -f "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN" ]]; then
+    defaults import "$BUNDLE_ID" "$PERSISTENT_DEFAULTS_BACKUP" >/dev/null 2>&1 || return 1
+  fi
+  rm -f "$PERSISTENT_DEFAULTS_BACKUP" "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
+}
+
+write_empty_defaults_backup() {
+  cat >"$PERSISTENT_DEFAULTS_BACKUP" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict/>
+</plist>
+PLIST
+}
+
+snapshot_defaults() {
+  rm -f "$PERSISTENT_DEFAULTS_BACKUP" "$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN"
+  if defaults export "$BUNDLE_ID" "$PERSISTENT_DEFAULTS_BACKUP" >/dev/null 2>&1; then
+    : >"$PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN" || return 1
+  elif defaults read "$BUNDLE_ID" >/dev/null 2>&1; then
+    return 1
+  else
+    write_empty_defaults_backup || return 1
+  fi
+  [[ -f "$PERSISTENT_DEFAULTS_BACKUP" ]] || return 1
+}
 
 # --- permission preflight ----------------------------------------------------
 # System Events needs Accessibility; screencapture -l needs Screen Recording.
@@ -71,6 +113,9 @@ cleanup() {
     osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
     sleep 1
     pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
+  fi
+  if ! restore_defaults; then
+    echo "WARNING: failed to restore defaults backup at $PERSISTENT_DEFAULTS_BACKUP; leaving it in place." >&2
   fi
 }
 trap cleanup EXIT INT TERM HUP
@@ -125,6 +170,8 @@ if pgrep -xq "$APP_PROCESS"; then
   echo "A previous $APP_PROCESS instance refuses to quit; captures would show stale state. Aborting." >&2
   exit 1
 fi
+snapshot_defaults || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate owner defaults." >&2; exit 1; }
+defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
 LAUNCHED_APP=1
 open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done

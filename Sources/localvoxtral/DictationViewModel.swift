@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import Foundation
 import Observation
@@ -145,6 +146,18 @@ final class DictationViewModel {
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
 
+    /// Observable mirror of the live microphone authorization status, refreshed
+    /// on demand via `refreshMicrophonePermissionState()`. Stored (rather than
+    /// read live) so permission UI re-renders when the grant changes while the
+    /// app is foregrounded. Seeded lazily — reading the real status touches the
+    /// microphone service, so it stays `.notDetermined` until the first refresh.
+    private(set) var microphoneAuthorizationStatus: MicrophoneAuthorizationStatus = .notDetermined
+
+    /// Set by the app delegate so the General settings pane can re-present the
+    /// onboarding wizard. Kept as a seam rather than a singleton reference.
+    @ObservationIgnored
+    var onRequestReRunOnboarding: (() -> Void)?
+
     var isAccessibilityTrusted: Bool { textInsertion.isAccessibilityTrusted }
     var currentStatusToken: StatusToken { StatusToken.from(statusText) }
     var currentErrorToken: ErrorToken? {
@@ -270,6 +283,8 @@ final class DictationViewModel {
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
+    @ObservationIgnored
+    var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
     @ObservationIgnored
     let debugLoggingEnabled = ProcessInfo.processInfo.environment["LOCALVOXTRAL_DEBUG"] == "1"
@@ -457,6 +472,10 @@ final class DictationViewModel {
 
     private func requestStartupPermissionsIfNeeded() {
         guard managesRuntimeServices else { return }
+        guard settings.onboardingCompleted else {
+            debugLog("startup permission prompts skipped until onboarding completes")
+            return
+        }
         guard !hasRequestedStartupPermissions else { return }
         hasRequestedStartupPermissions = true
 
@@ -1034,6 +1053,24 @@ final class DictationViewModel {
             return debugMicrophoneAuthorizationStatusOverride
         }
         #endif
+        // A mere status read (the onboarding/General permission rows) must
+        // not force the lazy capture service into existence; but once the
+        // service exists, ask it, so any injected replacement stays
+        // authoritative.
+        guard hasInitializedMicrophone else {
+            switch AVCaptureDevice.authorizationStatus(for: .audio) {
+            case .authorized:
+                return .authorized
+            case .denied:
+                return .denied
+            case .restricted:
+                return .restricted
+            case .notDetermined:
+                return .notDetermined
+            @unknown default:
+                return .notDetermined
+            }
+        }
         return microphone.authorizationStatus()
     }
 
@@ -1118,6 +1155,35 @@ final class DictationViewModel {
         } else {
             statusText = StatusStrings.waitingForAccessibilityPermission
         }
+    }
+
+    /// Re-read the live microphone authorization status into the observable
+    /// mirror. Reading only — never prompts. Call on appear / app activation so
+    /// permission rows reflect grants made in System Settings.
+    func refreshMicrophonePermissionState() {
+        let status = currentMicrophoneAuthorizationStatus()
+        if microphoneAuthorizationStatus != status {
+            microphoneAuthorizationStatus = status
+        }
+    }
+
+    /// Prompt for microphone access if it has not been decided yet. When access
+    /// was already denied/restricted the system dialog no longer appears, so the
+    /// permission UI routes the user to System Settings instead. Refreshes the
+    /// observable status once the request resolves.
+    func requestMicrophonePermission() {
+        microphone.requestAccess { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshMicrophonePermissionState()
+            }
+        }
+    }
+
+    /// Reset the first-launch flag and ask the app delegate to re-present the
+    /// onboarding wizard. Invoked by the General settings pane's "Re-run Setup…".
+    func reRunOnboarding() {
+        settings.onboardingCompleted = false
+        onRequestReRunOnboarding?()
     }
 
     func refreshAccessibilityTrustState() {

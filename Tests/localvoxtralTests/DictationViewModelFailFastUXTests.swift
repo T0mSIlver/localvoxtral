@@ -238,6 +238,19 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
+    func testStartupPermissionPromptsAreSkippedUntilOnboardingCompletes() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.onboardingCompleted = false
+        let viewModel = DictationViewModel(
+            settings: settings,
+            backendManager: FakeManagedBackendManager(),
+            overlayBufferCoordinator: NoopOverlayCoordinator(),
+            startRuntimeServices: true
+        )
+
+        XCTAssertFalse(viewModel.debugHasRequestedStartupPermissions)
+    }
+
     // MARK: - Managed backend startup
 
     func testStartDictationManagedBothWithPolishingEnabledRequestsBothBackends() async {
@@ -607,6 +620,20 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertTrue(warmup?.isCancelled == true)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+    }
+
+    func testReRunOnboardingResetsFlagAndInvokesPresenter() {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.onboardingCompleted = true
+        var presentations = 0
+        viewModel.onRequestReRunOnboarding = { presentations += 1 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.reRunOnboarding()
+
+        XCTAssertFalse(viewModel.settings.onboardingCompleted)
+        XCTAssertEqual(presentations, 1)
     }
 
     // MARK: - Helpers

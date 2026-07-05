@@ -357,6 +357,37 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.voxmlxStatus, .stopped)
     }
 
+    func testStopPolishingCancelsInFlightEnsureBeforeSupervisorCanStart() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.mlxLM.id])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let task = Task { @MainActor in
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        await manager.stopPolishing()
+
+        do {
+            try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.mlxLM.id])
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
+        XCTAssertEqual(manager.mlxLMStatus, .stopped)
+    }
+
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {
         let marker = "HF_TRACE"
         let installer = FakeBackendInstaller(needsInstall: [])
