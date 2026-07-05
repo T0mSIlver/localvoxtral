@@ -20,15 +20,14 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 
 ## Features
 
-- Global shortcuts: a single modifier key (tap for Overlay Buffer, hold for Live Auto-Paste) or per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
-- Native menu bar app with instant open and visual feedback with the icon
-- Output modes: overlay buffer (commit on stop) or live auto-paste into focused input
-- Personal replacement dictionary (exact match or exact match + LLM-aware-replacement)
-- Editable LLM system and user prompt templates
-- Fully local dictation option with `voxmlx` (no third-party API traffic)
-- Fully local LLM polishing option with `mlx-lm` (no third-party API traffic)
-- Pick your preferred microphone input device
-- Copy the latest transcribed segment
+- **Fully local by default** — dictation (`voxmlx`) and LLM polishing (`mlx-lm`) run on-device in Managed local mode: no audio or text leaves the Mac, no API costs
+- **Guided first launch** — a setup wizard grants permissions and downloads the local engine with real download progress; re-run it any time from Settings
+- **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option): tap to dictate into the overlay, hold to type live — or classic per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
+- **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
+- **LLM polishing** — cleans up the transcript before it commits, with editable system/user prompt templates; runs on the managed local model or any OpenAI-compatible chat endpoint
+- **Replacement dictionary** — exact-match corrections applied in both output modes, optionally fed to the polishing LLM
+- **Bring your own backend** — dictation and polishing switch independently to External URL mode for any OpenAI Realtime-compatible / chat-completions server
+- **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final segment
 
 ## Quick start
 
@@ -39,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts
 ```
 
 This downloads the latest release, clears quarantine metadata, re-signs the app locally, installs it into `/Applications`, and opens it.
+
+The setup wizard takes it from there on first launch: grant the microphone and Accessibility permissions, choose whether to include LLM polishing, and watch the local engine download with live progress. You can dictate the moment it finishes.
 
 ### Manual install from GitHub Releases (DMG)
 
@@ -78,18 +79,15 @@ The **Output mode** setting applies to dictation started from the menu bar. Keyb
 
 ## Settings
 
-A first-launch setup wizard (Welcome → Permissions → Downloads → Finish) grants microphone/Accessibility permissions and downloads the managed local engine. It appears once on a fresh install; re-run it any time from **Settings → General → Re-run Setup…**.
+A first-launch setup wizard (Welcome → Permissions → Downloads → Finish) grants microphone/Accessibility permissions and downloads the managed local engine, showing real download progress for the models. It appears once on a fresh install; re-run it any time from **Settings → General → Re-run Setup…**.
 
-- Open **Settings** from the menu bar popover to set:
-  - **General**: microphone and Accessibility permissions, auto-copy final segment, and re-run the setup wizard
-  - Dictation trigger: single modifier key (tap/hold) or per-mode keyboard shortcuts (`Toggle` / `Push to Talk`)
-  - Dictation and polishing backend modes (`Managed local` / `External URL`)
-  - Realtime endpoint (URL, model name, API key)
-  - Output mode (`Overlay Buffer` / `Live Auto-Paste`)
-  - Replacement dictionary for live corrections and overlay finalization
-  - LLM polishing toggle and endpoint (URL, model name, API key) — in the **Endpoints** tab; endpoint fields appear when polishing is in External URL mode
-  - Export Diagnostics in **About** — writes a redacted local report to the Desktop
-  - Open the shared config folder for `replacement_dictionary.toml`, `llm_system_prompt.toml`, and `llm_user_prompt.toml`
+Open **Settings** from the menu bar popover:
+
+- **General** — permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
+- **Endpoints** — Dictation and Polishing sections; each switches independently between `Managed local` (status row with inline install/download progress) and `External URL` (endpoint URL, model name, API key)
+- **Dictation** — the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts with `Toggle` / `Push to Talk`) and the menu-bar output mode
+- **Text Processing** — exact-match replacements toggle and the shared config folder (`replacement_dictionary.toml`, `llm_system_prompt.toml`, `llm_user_prompt.toml`)
+- **About** — version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
 
 The shared config directory lives at `~/Library/Application Support/localvoxtral/config`.
 
@@ -125,7 +123,7 @@ Any other OpenAI Realtime-compatible endpoint works the same way — set the dic
 
 ## UI
 
-<!-- Regenerate the screenshots below with ./scripts/capture-readme-assets.sh (run on a Mac; demo.gif is manual). They are auto-recaptured after merge, so a new/updated pane (e.g. settings-general.png) may render broken until that runs. -->
+<!-- Regenerate the screenshots below with the "Capture README Assets" workflow (Actions -> capture-assets.yml, run on the branch) or ./scripts/capture-readme-assets.sh on a Mac. Captures are pinned to dark mode for consistency; demo.gif is recorded by hand. -->
 
 <p>
   <picture>
