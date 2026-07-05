@@ -361,6 +361,11 @@ private struct ManagedBackendStatusLabel: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+
             if case .installing(let progress) = status {
                 if let fraction = installFraction(from: progress) {
                     ProgressView(value: fraction)
@@ -385,7 +390,7 @@ private struct ManagedBackendStatusLabel: View {
 
             Text(statusText)
                 .font(.caption)
-                .foregroundStyle(statusColor)
+                .foregroundStyle(.primary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -410,10 +415,16 @@ private struct ManagedBackendStatusLabel: View {
     }
 
     private var statusColor: Color {
-        if case .failed = status {
+        switch status {
+        case .ready:
+            return .green
+        case .installing, .preparingModel, .starting:
+            return .orange
+        case .failed:
             return .red
+        case .notInstalled, .stopped:
+            return .secondary
         }
-        return .secondary
     }
 
     private func installFraction(from progress: BackendInstallProgress) -> Double? {
@@ -462,6 +473,15 @@ private struct DictationSettingsPane: View {
     let overlayBufferShortcutBinding: Binding<DictationShortcut?>
     let livePasteShortcutBinding: Binding<DictationShortcut?>
     @Binding var shortcutValidationError: String?
+
+    private var dictationOutputModeBinding: Binding<DictationOutputMode> {
+        Binding(
+            get: { settings.dictationOutputMode },
+            set: { newValue in
+                viewModel.applyDictationOutputModeChange(newValue)
+            }
+        )
+    }
     @State private var overlayValidationError: String?
     @State private var livePasteValidationError: String?
 
@@ -610,7 +630,7 @@ private struct DictationSettingsPane: View {
             SettingsGroup(title: "Menu bar") {
                 SettingsFieldRow(title: "Output mode") {
                     VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: $settings.dictationOutputMode) {
+                        Picker("", selection: dictationOutputModeBinding) {
                             ForEach(DictationOutputMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }

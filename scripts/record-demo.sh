@@ -64,7 +64,7 @@ DEMO_HEIGHT="${DEMO_HEIGHT:-800}"
 DEMO_SPEAK_SECONDS="${DEMO_SPEAK_SECONDS:-9}"
 DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
 DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-6}"
-DEMO_SENTENCE_1="${DEMO_SENTENCE_1:-This is localvoxtral, dictating fully offline on my Mac. The overlay streams every word as I say it, and a local language model polishes the text before it lands in the document.}"
+DEMO_SENTENCE_1="${DEMO_SENTENCE_1:-This is realtime dictation, running fully offline on my Mac. The overlay streams every word as I say it, and a local language model polishes the text before it lands in the document.}"
 DEMO_SENTENCE_2="${DEMO_SENTENCE_2:-And if I hold the key instead, my words are typed straight into the document, live, while I am still talking.}"
 DEMO_HANDS_FREE="${DEMO_HANDS_FREE:-0}"
 DEMO_SAY_DEVICE="${DEMO_SAY_DEVICE:-}"
@@ -198,7 +198,8 @@ cat > "$AUDIO_UID" <<'SWIFT'
 import CoreAudio
 import Foundation
 
-// usage: audiouid.swift <device name> — prints the device UID, exit 1 if absent
+// usage: audiouid.swift <device name>  — prints the device UID, exit 1 if absent
+//        audiouid.swift --list         — prints every audio device name
 guard CommandLine.arguments.count > 1 else { exit(2) }
 let wanted = CommandLine.arguments[1]
 
@@ -224,6 +225,15 @@ var size: UInt32 = 0
 guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { exit(1) }
 var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
 guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { exit(1) }
+
+if wanted == "--list" {
+    for id in ids {
+        if let name = stringProperty(id, kAudioObjectPropertyName) {
+            print(name)
+        }
+    }
+    exit(0)
+}
 
 for id in ids where stringProperty(id, kAudioObjectPropertyName) == wanted {
     if let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) {
@@ -277,6 +287,8 @@ if [[ -n "$DEMO_SAY_DEVICE" ]]; then
     DEMO_SAY_INPUT_UID="$(swift "$AUDIO_UID" "$DEMO_SAY_DEVICE")" || {
       echo "Hands-free mode needs the loopback audio device \"$DEMO_SAY_DEVICE\", which is not present." >&2
       echo "One-time setup on this Mac: brew install blackhole-2ch" >&2
+      echo "Audio devices visible to this session:" >&2
+      swift "$AUDIO_UID" --list >&2 || true
       exit 1
     }
   fi
@@ -313,6 +325,7 @@ fi
 # legible at README size.
 defaults write "$TEXTEDIT_ID" RichText -int 0
 defaults write "$TEXTEDIT_ID" NSFixedPitchFontSize -int 22
+defaults write "$TEXTEDIT_ID" CheckSpellingWhileTyping -bool false
 
 # Dark mode pinned, like the README screenshots.
 ORIGINAL_DARK_MODE="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
@@ -335,21 +348,34 @@ osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 |
 sleep 1
 
 # --- stage TextEdit inside the capture region ------------------------------------
-read -r SCREEN_W SCREEN_H < <(osascript -e 'tell application "Finder" to get bounds of window of desktop' \
-  | awk -F', ' '{print $3, $4}')
-REGION_X=$(( (SCREEN_W - DEMO_WIDTH) / 2 ))
-REGION_Y=$(( (SCREEN_H - DEMO_HEIGHT) / 2 ))
-(( REGION_X < 0 || REGION_Y < 0 )) && { echo "Screen (${SCREEN_W}x${SCREEN_H}) is smaller than the ${DEMO_WIDTH}x${DEMO_HEIGHT} capture region." >&2; exit 1; }
+# Region and window placement are computed from the MAIN display only. The
+# desktop-union bounding box is wrong on multi-monitor setups: its center can
+# be a void between displays, which records as black while macOS clamps the
+# window elsewhere (first hands-free runner take failed exactly like that).
+# CGDisplayBounds uses the same global top-left coordinates as screencapture
+# -R and System Events window positions.
+read -r MAIN_X MAIN_Y MAIN_W MAIN_H < <(swift - <<'SWIFT'
+import CoreGraphics
+let b = CGDisplayBounds(CGMainDisplayID())
+print("\(Int(b.origin.x)) \(Int(b.origin.y)) \(Int(b.width)) \(Int(b.height))")
+SWIFT
+)
+REGION_X=$(( MAIN_X + (MAIN_W - DEMO_WIDTH) / 2 ))
+REGION_Y=$(( MAIN_Y + (MAIN_H - DEMO_HEIGHT) / 2 ))
+(( MAIN_W < DEMO_WIDTH || MAIN_H < DEMO_HEIGHT )) && { echo "Main display (${MAIN_W}x${MAIN_H}) is smaller than the ${DEMO_WIDTH}x${DEMO_HEIGHT} capture region." >&2; exit 1; }
+(( REGION_Y < MAIN_Y + 30 )) && REGION_Y=$(( MAIN_Y + 30 )) # keep clear of the menu bar
 
 LAUNCHED_TEXTEDIT=1
+# The window fills the region exactly so the recording never shows whatever
+# else is on the desktop.
 osascript >/dev/null <<OSA
 tell application "TextEdit"
   activate
   make new document
 end tell
 tell application "System Events" to tell process "TextEdit"
-  set position of front window to {$((REGION_X + 40)), $((REGION_Y + 60))}
-  set size of front window to {$((DEMO_WIDTH - 80)), $((DEMO_HEIGHT - 120))}
+  set position of front window to {$REGION_X, $REGION_Y}
+  set size of front window to {$DEMO_WIDTH, $DEMO_HEIGHT}
 end tell
 OSA
 sleep 1
@@ -390,6 +416,10 @@ speak_or_wait "$DEMO_SENTENCE_1"
 tap_hotkey
 echo "Committing (polish + insert)..."
 sleep "$DEMO_COMMIT_SECONDS"
+
+# New line so scene 2's live text doesn't run into scene 1's commit.
+osascript -e 'tell application "System Events" to key code 36' >/dev/null
+sleep 1
 
 # Scene 2 — hold: live auto-paste while the key is down.
 cue "SCENE 2 — live typing (hold). Speak after the beep, keep talking." "$DEMO_SENTENCE_2"

@@ -7,11 +7,9 @@ set -euo pipefail
 # build-host SSH key. It keeps the existing build/test/package allowlist and
 # adds read-only diagnostics without granting an interactive shell.
 #
-# Gate v2 install notes:
-#   scp scripts/mac/localvoxtral-build-gate.sh <host>:bin/ && ssh <host> chmod +x bin/localvoxtral-build-gate.sh
-#
-# Run that from a trusted owner session, not through this gate. New diagnostic
-# verbs allowed through the gate:
+# Gate v2 install notes: see scripts/mac/README.md. Install from a trusted
+# owner session, not through this gate. New diagnostic verbs allowed through
+# the gate:
 #   diag
 #   applog [minutes]    # integer, clamped to 1..120, default 10
 #   voxlog [lines]      # integer, clamped to 1..500, default 80
@@ -20,6 +18,19 @@ set -euo pipefail
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
 VOXLOG_FILE="$HOME/Library/Logs/voxmlx.log"
 VOXMLX_SERVICE="com.localvoxtral.voxmlx"
+# The GUI-session uid whose launchd domain hosts the voxmlx service. The gate
+# account is deliberately not that user, so launchctl needs to be told.
+VOXMLX_GUI_UID="$(id -u)"
+
+# Machine-local overrides (never committed): the gate account is separate
+# from the GUI owner account, so voxmlx's log path and GUI uid differ per
+# machine. Anyone who can write this file can already replace the gate
+# script itself, so sourcing it adds no new trust.
+GATE_CONF="$HOME/.localvoxtral-gate.conf"
+if [[ -f "$GATE_CONF" ]]; then
+  # shellcheck source=/dev/null
+  source "$GATE_CONF"
+fi
 
 original_command="${SSH_ORIGINAL_COMMAND:-}"
 
@@ -71,7 +82,7 @@ clamp_integer() {
 }
 
 launchctl_target() {
-  printf 'gui/%s/%s\n' "$(id -u)" "$VOXMLX_SERVICE"
+  printf 'gui/%s/%s\n' "$VOXMLX_GUI_UID" "$VOXMLX_SERVICE"
 }
 
 show_versions() {
@@ -101,7 +112,7 @@ show_versions() {
 
 show_processes() {
   section "Processes"
-  local process pattern
+  local process pattern pids
   for process in localvoxtral voxmlx-serve mlx_lm.server; do
     printf -- '-- %s --\n' "$process"
     if command -v pgrep >/dev/null 2>&1; then
@@ -110,7 +121,17 @@ show_processes() {
         voxmlx-serve) pattern='(^|/)voxmlx-serve( |$)' ;;
         mlx_lm.server) pattern='(^|/)mlx_lm[.]server( |$)' ;;
       esac
-      pgrep -fl "$pattern" 2>&1 || printf 'not running\n'
+      # pid/user/executable only — NEVER full command lines: other users'
+      # cmdlines can carry secrets in embedded env assignments (a Zed
+      # remote-ssh cmdline leaked a GitHub PAT through diag, 2026-07-05),
+      # and this output flows into agent transcripts and logs.
+      pids="$(pgrep -f "$pattern" 2>/dev/null || true)"
+      if [[ -n "$pids" ]]; then
+        # shellcheck disable=SC2086
+        ps -o pid=,user=,comm= -p $pids 2>/dev/null || printf 'pids: %s\n' "$pids"
+      else
+        printf 'not running\n'
+      fi
     else
       printf 'pgrep: not found\n'
     fi
@@ -122,10 +143,16 @@ show_ports() {
   local port
   for port in 8000 8471 8472; do
     printf -- '-- port %s --\n' "$port"
-    if command -v lsof >/dev/null 2>&1; then
+    # Connect test first: lsof only sees this account's sockets, so it
+    # reported "no listener" while another user's voxmlx was serving.
+    if command -v nc >/dev/null 2>&1; then
+      if nc -z -w 2 127.0.0.1 "$port" >/dev/null 2>&1; then
+        printf 'listening (connect test)\n'
+      else
+        printf 'no listener (connect test)\n'
+      fi
+    elif command -v lsof >/dev/null 2>&1; then
       lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>&1 || printf 'no listener\n'
-    elif command -v nc >/dev/null 2>&1; then
-      nc -vz 127.0.0.1 "$port" 2>&1 || printf 'no listener\n'
     else
       printf 'lsof/nc: not found\n'
     fi
@@ -148,6 +175,9 @@ show_voxlog() {
 
   section "voxmlx.log"
   if [[ -f "$VOXLOG_FILE" ]]; then
+    # Size/mtime line so an empty file is distinguishable from a missing one
+    # when diagnosing remotely.
+    ls -l "$VOXLOG_FILE" 2>/dev/null || true
     tail -n "$lines" "$VOXLOG_FILE" 2>&1 || true
   else
     printf '%s: not found\n' "$VOXLOG_FILE"
@@ -157,13 +187,18 @@ show_voxlog() {
 show_applog() {
   local minutes="$1"
   local tail_lines="${2:-}"
+  local output
 
   section "localvoxtral unified log"
   if command -v log >/dev/null 2>&1; then
+    output="$(log show --style compact --last "${minutes}m" --predicate 'process == "localvoxtral"' 2>&1 || true)"
     if [[ -n "$tail_lines" ]]; then
-      (log show --style compact --last "${minutes}m" --predicate 'process == "localvoxtral"' 2>&1 || true) | tail -n "$tail_lines"
+      printf '%s\n' "$output" | tail -n "$tail_lines"
     else
-      log show --style compact --last "${minutes}m" --predicate 'process == "localvoxtral"'
+      printf '%s\n' "$output"
+    fi
+    if [[ "$output" == *"not permitted"* ]]; then
+      printf '(unified log access is restricted for this account — dispatch mac-crashlog.yml for app logs)\n'
     fi
   else
     printf 'log: not found\n'
@@ -195,6 +230,11 @@ run_voxlog_command() {
 
 run_svc_status() {
   show_voxmlx_service 40
+  # launchctl can't read another user's GUI domain, so when the gate account
+  # is not the service owner the print above comes back empty — processes and
+  # ports still answer the question that matters: is voxmlx up and serving?
+  show_processes
+  show_ports
 }
 
 # Fail-closed metacharacter blocklist. Note the glob subtlety: a `]` inside

@@ -9,7 +9,7 @@ set -uo pipefail
 # There is no app-code hook for a separate suite/domain, and NSUserDefaults
 # command-line overrides do not move standard defaults to an isolated suite.
 # This script therefore snapshots that defaults domain, forces only the smoke
-# test's required managed-mode setting, and restores the snapshot on exit.
+# test's required external-mode setting, and restores the snapshot on exit.
 
 APP_PATH="${1:-dist/localvoxtral.app}"
 APP_PROCESS="localvoxtral"
@@ -239,18 +239,17 @@ if ! snapshot_defaults; then
   print_summary
   exit 1
 fi
-if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string managed_local \
-  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string managed_local \
+if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string external_url \
+  || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string external_url \
   || ! defaults write "$BUNDLE_ID" settings.llm_polishing_enabled -bool false \
   || ! defaults write "$BUNDLE_ID" settings.onboarding_completed -bool true; then
-  record_fail "Could not force managed backend mode and completed onboarding in defaults."
+  record_fail "Could not force external backend mode and completed onboarding in defaults."
   print_summary
   exit 1
 fi
-# llm_polishing_enabled is forced false so the launch invariant below tests
-# pure lazy bootstrap: with it enabled (managed + Overlay Buffer) the app now
-# intentionally warms up mlx-lm at launch, and the invariant would then hinge
-# on whatever toggle state the owner's persisted defaults happen to hold.
+# Backend modes are forced external so the launch invariant below tests that
+# externally managed servers are never spawned by the app. Managed local mode
+# now intentionally launches required backends eagerly at app start.
 # onboarding_completed is forced true so the first-launch wizard never appears
 # and the launch invariants below (menu-bar item, no backend spawned) hold. A
 # dedicated wizard smoke would need a second launch with the flag false plus AX
@@ -259,7 +258,7 @@ fi
 # TODO(tier-2): add a wizard-appears smoke by launching once with
 # settings.onboarding_completed=false and asserting the "Welcome to localvoxtral"
 # window, then completing it.
-record_pass "Defaults domain snapshot captured and smoke run forced to managed mode with onboarding completed."
+record_pass "Defaults domain snapshot captured and smoke run forced to external mode with onboarding completed."
 
 # Managed backends are Python entry-point processes, so match the full
 # command line (-f). The runner legitimately hosts a voxmlx-serve launchd
@@ -339,9 +338,9 @@ fi
 stop_backend_sampler
 NEW_BACKEND_PIDS="$(comm -13 <(printf '%s\n' "$BASELINE_BACKEND_PIDS" | sed '/^$/d') <(sampled_backend_pids) 2>/dev/null || true)"
 if [[ -n "$NEW_BACKEND_PIDS" ]]; then
-  record_fail "App launch spawned managed backend process(es) — lazy-bootstrap invariant violated. New pids: $NEW_BACKEND_PIDS"
+  record_fail "App launch spawned managed backend process(es) in external mode. New pids: $NEW_BACKEND_PIDS"
 else
-  record_pass "No managed backend process spawned by app launch, including transient samples."
+  record_pass "No managed backend process spawned by app launch in external mode, including transient samples."
 fi
 
 open_status_menu() {
@@ -472,13 +471,17 @@ assert_tab "Dictation" "Start dictation with"
 assert_tab "Text Processing" "Replacements"
 assert_tab "About" "Diagnostics"
 
+# The launch phase forces external URL modes (managed mode now eagerly spawns
+# at launch), so the Endpoints pane renders endpoint configuration fields, not
+# the managed status rows. Managed-row AX coverage would need a second launch
+# that tolerates the eager spawn.
 select_tab "Endpoints" >/dev/null 2>&1 || true
 sleep 0.5
-if [[ "$(window_has_static_text "voxmlx - ws://127.0.0.1:8471/v1/realtime" 2>/dev/null || true)" == "found" ]] \
-  && [[ "$(window_has_static_text "mlx-lm - http://127.0.0.1:8472/v1/chat/completions" 2>/dev/null || true)" == "found" ]]; then
-  record_pass "Managed-mode Endpoints pane shows dictation and polishing backend rows."
+if [[ "$(window_has_static_text "Endpoint" 2>/dev/null || true)" == "found" ]] \
+  && [[ "$(window_has_static_text "API key" 2>/dev/null || true)" == "found" ]]; then
+  record_pass "External-mode Endpoints pane shows endpoint configuration fields."
 else
-  record_fail "Managed-mode Endpoints pane did not show both expected backend rows."
+  record_fail "External-mode Endpoints pane did not show endpoint configuration fields."
 fi
 
 quit_app

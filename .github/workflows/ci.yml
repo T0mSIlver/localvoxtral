@@ -41,12 +41,35 @@ jobs:
       - name: Build
         run: swift build
 
+      - name: Format lint (advisory)
+        # Advisory until the one-shot tree reformat lands: swift-format exits 0
+        # on findings without --strict. After the reformat, add --strict here
+        # to make style regressions block.
+        run: |
+          swift format lint --recursive --parallel Sources Tests Package.swift 2>&1 \
+            | tee format-lint.txt | tail -n 5
+          echo "format-lint findings: $(wc -l < format-lint.txt | tr -d ' ')"
+
       - name: Test (unit suite)
         # The integration suite needs a live inference backend and is exercised
         # manually; see CLAUDE.md.
         run: |
           swift test \
-            --skip RealtimeAPIVLLMIntegrationTests
+            --skip RealtimeAPIVLLMIntegrationTests \
+            --enable-code-coverage
+
+      - name: Coverage summary
+        # Visibility, not a gate: lets a PR's Proof section cite real coverage
+        # of the changed files instead of "a test exists".
+        run: |
+          set -euo pipefail
+          BIN="$(find .build -type f -name localvoxtralPackageTests -path '*.xctest/Contents/MacOS/*' | head -n 1)"
+          PROF="$(find .build -type f -name default.profdata -path '*debug*' | head -n 1)"
+          if [[ -z "$BIN" || -z "$PROF" ]]; then
+            echo "coverage data not found under .build"; exit 1
+          fi
+          xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
+            -ignore-filename-regex '(Tests|\.build)/'
 
       - name: Integration tests (live voxmlx)
         # The self-hosted runner has voxmlx serving locally (launchd service
@@ -77,6 +100,18 @@ jobs:
           name: localvoxtral-app
           path: dist/localvoxtral-app.zip
           retention-days: 7
+
+      - name: Zip dSYM for artifact upload
+        run: ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
+
+      - name: Upload dSYM artifact
+        # Longer retention than the app: field crashes surface days after the
+        # try-pr build that produced them.
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-dsym
+          path: dist/localvoxtral-dSYM.zip
+          retention-days: 30
 
       - name: Smoke test packaged app launch
         run: |
