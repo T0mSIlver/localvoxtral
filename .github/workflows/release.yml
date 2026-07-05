@@ -15,7 +15,7 @@ on:
         type: choice
         options: [patch, minor, major]
       version:
-        description: "Explicit version (X.Y.Z) — overrides bump"
+        description: "Explicit version (X.Y.Z, or X.Y.Z-rc.N for a prerelease) — overrides bump"
         required: false
         type: string
 
@@ -34,10 +34,14 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     steps:
-      - name: Checkout main
+      # Stable releases dispatch on main; X.Y.Z-rc.N prereleases may dispatch
+      # on any branch (the Compute version step enforces this pairing), so a
+      # release candidate can be installed via install.sh and hand-tested
+      # end-to-end before the branch merges.
+      - name: Checkout release ref
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Compute version
@@ -46,12 +50,14 @@ jobs:
           set -euo pipefail
           EXPLICIT="${{ inputs.version }}"
           if [[ -n "$EXPLICIT" ]]; then
-            if [[ ! "$EXPLICIT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Invalid explicit version: $EXPLICIT (expected X.Y.Z)"; exit 1
+            if [[ ! "$EXPLICIT" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+              echo "Invalid explicit version: $EXPLICIT (expected X.Y.Z or X.Y.Z-rc.N)"; exit 1
             fi
             VERSION="$EXPLICIT"
           else
-            LATEST="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo v0.0.0)"
+            # --exclude keeps rc tags out of the bump base, or a stale rc
+            # would poison the arithmetic below.
+            LATEST="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude 'v*-*' 2>/dev/null || echo v0.0.0)"
             BASE="${LATEST#v}"
             IFS=. read -r MA MI PA <<< "$BASE"
             case "${{ inputs.bump }}" in
@@ -61,6 +67,10 @@ jobs:
               *) echo "Unknown bump"; exit 1 ;;
             esac
           fi
+          if [[ "$VERSION" == *-rc.* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
+          if [[ "${{ github.ref_name }}" != "main" && "$PRERELEASE" != "true" ]]; then
+            echo "Stable releases dispatch on main only. To cut a prerelease from '${{ github.ref_name }}', pass an explicit X.Y.Z-rc.N version."; exit 1
+          fi
           TAG="v$VERSION"
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null \
              || git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
@@ -68,7 +78,8 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Releasing $TAG from $(git rev-parse --short HEAD)"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (prerelease=$PRERELEASE) from ${{ github.ref_name }} @ $(git rev-parse --short HEAD)"
 
       - name: Gate — build
         run: swift build -c release
@@ -135,6 +146,7 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: localvoxtral ${{ steps.meta.outputs.tag }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip

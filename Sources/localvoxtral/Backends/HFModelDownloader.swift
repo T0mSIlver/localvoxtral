@@ -144,6 +144,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 
 from huggingface_hub import snapshot_download
@@ -151,7 +152,9 @@ from tqdm.auto import tqdm
 
 
 def emit(payload):
-    print(json.dumps(payload, separators=(",", ":")), flush=True)
+    # Single write keeps concurrent download threads from interleaving lines.
+    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 def should_count_for_download(info):
@@ -164,10 +167,19 @@ def should_count_for_download(info):
     return True
 
 
+# snapshot_download runs one byte-unit tqdm bar per file, on worker threads.
+# Reporting a single bar's n/total made the UI fraction bounce between files
+# and let a per-file total stomp the aggregate from resolve_total, so the bar
+# jumped around. Instead every byte delta from every bar feeds one shared
+# counter, reported against the aggregate total only (total is omitted here;
+# the Swift side keeps the one from the "total" event).
+_AGGREGATE_LOCK = threading.Lock()
+_AGGREGATE = {"downloaded": 0, "last_emit_at": 0.0}
+
+
 class JSONTqdm(tqdm):
     def __init__(self, *args, **kwargs):
         self._localvoxtral_reports_bytes = kwargs.get("unit") == "B"
-        self._localvoxtral_last_emit_at = 0.0
         self._localvoxtral_emit_interval = self._emit_interval()
         kwargs["file"] = _NullTqdmFile()
         super().__init__(*args, **kwargs)
@@ -189,22 +201,25 @@ class JSONTqdm(tqdm):
 
     def update(self, n=1):
         result = super().update(n)
-        if not self._localvoxtral_reports_bytes:
+        if not self._localvoxtral_reports_bytes or not n or n < 0:
             return result
         now = time.monotonic()
         total = self.total
-        if (
-            self._localvoxtral_emit_interval == 0
-            or now - self._localvoxtral_last_emit_at >= self._localvoxtral_emit_interval
-            or (total and self.n >= total)
-        ):
-            self._localvoxtral_last_emit_at = now
-            emit({
-                "event": "progress",
-                "repo": ARGS.repo,
-                "downloaded": int(self.n),
-                "total": int(total) if total is not None else None,
-            })
+        bar_finished = total is not None and self.n >= total
+        with _AGGREGATE_LOCK:
+            _AGGREGATE["downloaded"] += int(n)
+            if (
+                self._localvoxtral_emit_interval == 0
+                or now - _AGGREGATE["last_emit_at"] >= self._localvoxtral_emit_interval
+                or bar_finished
+            ):
+                _AGGREGATE["last_emit_at"] = now
+                emit({
+                    "event": "progress",
+                    "repo": ARGS.repo,
+                    "downloaded": _AGGREGATE["downloaded"],
+                    "total": None,
+                })
         return result
 
 

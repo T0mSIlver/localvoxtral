@@ -64,6 +64,7 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
         XCTAssertEqual(summary.primary, "Fn / Globe")
         XCTAssertTrue(summary.explanation.contains("Tap"))
         XCTAssertTrue(summary.explanation.contains("hold"))
+        XCTAssertTrue(summary.isModifierOnly)
     }
 
     func testSummary_keyboardDefault_showsOverlayShortcut() {
@@ -75,6 +76,7 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
 
         XCTAssertEqual(summary.primary, "⌥Space")
         XCTAssertTrue(summary.explanation.contains("any text field"))
+        XCTAssertFalse(summary.isModifierOnly)
     }
 
     func testSummary_keyboardWithLivePaste_mentionsBoth() {

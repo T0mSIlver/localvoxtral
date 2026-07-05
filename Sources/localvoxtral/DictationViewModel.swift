@@ -401,6 +401,7 @@ final class DictationViewModel {
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
+            warmUpPolishingAtLaunchIfNeeded()
         }
     }
 
@@ -747,28 +748,46 @@ final class DictationViewModel {
 
     /// React to the LLM polishing enable toggle. Disabling polishing in Managed
     /// local polishing mode stops the managed mlx-lm process so it stops holding memory.
-    /// External URL mode owns no local process, and enabling (or re-enabling)
-    /// stays lazy: the next dictation's managed bootstrap starts mlx-lm again.
+    /// Enabling in Managed local mode eagerly starts the polishing warmup so
+    /// install/model progress is visible in Settings. External URL mode owns
+    /// no local process.
     /// Any polish request in flight when the process stops fails, and the
     /// existing polish-failure fallback commits the raw text.
     func llmPolishingEnabledDidChange(_ enabled: Bool) {
         guard settings.polishingBackendMode == .managedLocal else { return }
         polishingShutdownTask?.cancel()
-        polishingWarmupTask?.cancel()
         if enabled {
-            // Owner-specified UX (field-hit 2026-07-04): enabling polishing
-            // eagerly installs/downloads/starts the managed backend, with
-            // progress rendered inline by the Text Processing mirror and the
-            // Endpoints status row. Failures land in mlxLMStatus, which those
-            // same rows show; no alert (the user is in Settings, not
-            // dictating). Dictation-time ensureReady remains the backstop.
-            polishingWarmupTask = Task { @MainActor [backendManager] in
-                try? await backendManager.ensureReady(dictation: false, polishing: true)
-            }
+            startPolishingWarmup()
         } else {
+            polishingWarmupTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
                 await backendManager.stopPolishing()
             }
+        }
+    }
+
+    func warmUpPolishingAtLaunchIfNeeded() {
+        // Mirrors the dictation-time gate in
+        // beginDictationAfterManagedBackendIfNeeded: polishing only ever runs
+        // in Overlay Buffer, so a persisted enabled flag must not spawn
+        // mlx-lm on a Live Auto-Paste launch.
+        guard settings.llmPolishingEnabled,
+              settings.polishingBackendMode == .managedLocal,
+              settings.dictationOutputMode == .overlayBuffer
+        else { return }
+
+        startPolishingWarmup()
+    }
+
+    func startPolishingWarmup() {
+        polishingWarmupTask?.cancel()
+        // Owner-specified UX (field-hit 2026-07-04): enabling polishing or
+        // launching with it already enabled eagerly installs/downloads/starts
+        // the managed backend, with progress rendered inline in Endpoints.
+        // Failures land in mlxLMStatus; dictation-time ensureReady remains the
+        // backstop and retry path.
+        polishingWarmupTask = Task { @MainActor [backendManager] in
+            try? await backendManager.ensureReady(dictation: false, polishing: true)
         }
     }
 

@@ -10,13 +10,17 @@ struct DictationTriggerSummary: Equatable {
     var primary: String
     /// One line explaining how to use it.
     var explanation: String
+    /// True when the trigger already is a single modifier key, so the Finish
+    /// page skips the tip suggesting one.
+    var isModifierOnly = false
 
     @MainActor
     static func make(settings: SettingsStore) -> DictationTriggerSummary {
         if settings.modifierOnlyHotKeyEnabled {
             return DictationTriggerSummary(
                 primary: settings.modifierOnlyHotKeyModifier.displayName,
-                explanation: "Tap for Overlay Buffer, hold for Live Auto-Paste."
+                explanation: "Tap for Overlay Buffer, hold for Live Auto-Paste.",
+                isModifierOnly: true
             )
         }
 

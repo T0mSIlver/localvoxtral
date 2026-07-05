@@ -140,11 +140,13 @@ private struct GeneralSettingsPane: View {
             }
 
             SettingsGroup(title: "App") {
-                ToggleSettingRow(
-                    title: "Auto-copy final segment",
-                    subtitle: "Copy the finalized segment to the clipboard after dictation stops.",
-                    isOn: $settings.autoCopyEnabled
-                )
+                SettingsFieldRow(title: "Copy final segment") {
+                    Toggle("", isOn: $settings.autoCopyEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+
+                    SettingsHelpText("Copies to the clipboard on stop.")
+                }
 
                 SettingsFieldRow(title: "Setup") {
                     VStack(alignment: .leading, spacing: 6) {
@@ -194,6 +196,28 @@ private struct ConnectionSettingsPane: View {
             get: { settings.polishingBackendMode },
             set: { newValue in
                 viewModel.applyPolishingBackendModeChange(newValue)
+            }
+        )
+    }
+
+    private var isLLMPolishingAvailableInCurrentMode: Bool {
+        settings.dictationOutputMode == .overlayBuffer
+    }
+
+    private var llmPolishingEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settings.llmPolishingEnabled },
+            set: { newValue in
+                let wasEnabled = settings.llmPolishingEnabled
+                settings.llmPolishingEnabled = newValue
+
+                if newValue, !wasEnabled {
+                    viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+                }
+                // Turning polishing off stops the managed mlx-lm process
+                // (Managed local mode only). External URL mode owns no local
+                // process, and re-enabling starts managed mlx-lm eagerly.
+                viewModel.llmPolishingEnabledDidChange(newValue)
             }
         )
     }
@@ -256,47 +280,59 @@ private struct ConnectionSettingsPane: View {
                     }
                 }
 
-                switch settings.polishingBackendMode {
-                case .externalURL:
-                    SettingsFieldRow(title: "Endpoint") {
-                        TextField(
-                            "http://127.0.0.1:8080/v1/chat/completions",
-                            text: $settings.llmPolishingEndpointURL
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
-
-                    SettingsFieldRow(title: "API key") {
-                        SecureField(
-                            "Required for remote providers",
-                            text: $settings.llmPolishingAPIKey
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
-
-                    SettingsFieldRow(title: "Model") {
-                        TextField(
-                            "mlx-community/Qwen3.5-0.8B-8bit",
-                            text: $settings.llmPolishingModel
-                        )
-                        .textFieldStyle(.roundedBorder)
-                    }
-                case .managedLocal:
-                    ManagedBackendStatusRow(
-                        title: "Status",
-                        spec: BackendCatalog.mlxLM,
-                        endpoint: ManagedBackendEndpoints.polishingURLString,
-                        status: backendManager.mlxLMStatus
+                if !isLLMPolishingAvailableInCurrentMode {
+                    SettingsAvailabilityCard(
+                        title: "Unavailable in Live Auto-Paste mode",
+                        message:
+                            "Set Dictation > Output mode to Overlay Buffer to enable it.",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tint: .orange
                     )
                 }
 
-                if settings.polishingBackendMode == .managedLocal, !settings.llmPolishingEnabled {
-                    SettingsHelpText(
-                        "LLM polishing is disabled - enable it in the Text Processing tab to start this backend."
-                    )
-                } else {
-                    SettingsHelpText("Used only while LLM polishing is enabled (Text Processing tab).")
+                Group {
+                    SettingsFieldRow(title: "Enable") {
+                        Toggle("", isOn: llmPolishingEnabledBinding)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
+
+                    switch settings.polishingBackendMode {
+                    case .externalURL:
+                        SettingsFieldRow(title: "Endpoint") {
+                            TextField(
+                                "http://127.0.0.1:8080/v1/chat/completions",
+                                text: $settings.llmPolishingEndpointURL
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+
+                        SettingsFieldRow(title: "API key") {
+                            SecureField(
+                                "Required for remote providers",
+                                text: $settings.llmPolishingAPIKey
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+
+                        SettingsFieldRow(title: "Model") {
+                            TextField(
+                                "mlx-community/Qwen3.5-0.8B-8bit",
+                                text: $settings.llmPolishingModel
+                            )
+                            .textFieldStyle(.roundedBorder)
+                        }
+                    case .managedLocal:
+                        ManagedBackendStatusRow(
+                            title: "Status",
+                            spec: BackendCatalog.mlxLM,
+                            endpoint: ManagedBackendEndpoints.polishingURLString,
+                            status: backendManager.mlxLMStatus
+                        )
+                    }
                 }
+                .disabled(!isLLMPolishingAvailableInCurrentMode)
+                .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)
             }
         }
     }
@@ -584,7 +620,7 @@ private struct DictationSettingsPane: View {
 
                         SettingsHelpText(settings.dictationOutputMode.description)
                         SettingsHelpText(
-                            "Used when starting dictation from the menu bar. Keyboard triggers above select their mode directly."
+                            "Keyboard triggers select their mode directly."
                         )
                     }
                 }
@@ -597,96 +633,23 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
-    private var isLLMPolishingAvailableInCurrentMode: Bool {
-        settings.dictationOutputMode == .overlayBuffer
-    }
-
-    private var llmPolishingEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { settings.llmPolishingEnabled },
-            set: { newValue in
-                let wasEnabled = settings.llmPolishingEnabled
-                settings.llmPolishingEnabled = newValue
-
-                if newValue, !wasEnabled {
-                    viewModel.prepareLLMPolishingPromptAccessIfNeeded()
-                }
-                // Turning polishing off stops the managed mlx-lm process
-                // (Managed local mode only). External URL mode owns no local
-                // process, and re-enabling stays lazy: the next dictation
-                // restarts it via the managed backend bootstrap.
-                viewModel.llmPolishingEnabledDidChange(newValue)
-            }
-        )
-    }
-
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Replacements") {
-                ToggleSettingRow(
-                    title: "Exact match replacements",
-                    subtitle:
-                        "Apply dictionary replacements while streaming in Live Auto-Paste and before commit in Overlay Buffer.",
-                    isOn: $settings.replacementDictionaryEnabled
-                )
-                .help(
-                    "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
-                )
-            }
-
-            SettingsGroup(title: "LLM Polishing") {
-                if !isLLMPolishingAvailableInCurrentMode {
-                    SettingsAvailabilityCard(
-                        title: "Unavailable in Live Auto-Paste output mode",
-                        message:
-                            "LLM polishing runs before Overlay Buffer commits. Switch Dictation > Output mode to Overlay Buffer to enable it.",
-                        systemImage: "exclamationmark.triangle.fill",
-                        tint: .orange
-                    )
-                }
-
-                Group {
-                    ToggleSettingRow(
-                        title: "LLM polishing",
-                        subtitle:
-                            "Send dictation text to an OpenAI-compatible chat completions server.",
-                        isOn: llmPolishingEnabledBinding
-                    )
-
-                    // Live mirror of the polishing backend state at the point
-                    // of control, so the toggle <-> server relationship is
-                    // visible without tab-hopping (and the future inline model
-                    // download progress renders right here).
-                    switch settings.polishingBackendMode {
-                    case .managedLocal:
-                        SettingsFieldRow(title: "Backend") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ManagedBackendStatusLabel(status: viewModel.backendManager.mlxLMStatus)
-                                SettingsHelpText(
-                                    "Managed mlx-lm - starts with dictation while polishing is on. Details in the Endpoints tab."
-                                )
-                            }
-                        }
-                    case .externalURL:
-                        SettingsHelpText(
-                            "Uses the polishing server configured in the Endpoints tab."
+                SettingsFieldRow(title: "Exact match") {
+                    Toggle("", isOn: $settings.replacementDictionaryEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .help(
+                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
                         )
-                    }
                 }
-                .disabled(!isLLMPolishingAvailableInCurrentMode)
-                .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)
             }
 
             SettingsGroup(title: "Shared Configuration") {
                 SettingsFieldRow(title: "Config folder") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button("Open Config Folder") {
-                            viewModel.openConfigFolder()
-                        }
-
-                        SettingsHelpText(
-                            "Dictionary changes apply to live corrections and overlay finalization."
-                        )
+                    Button("Open Config Folder") {
+                        viewModel.openConfigFolder()
                     }
                 }
 
@@ -699,12 +662,12 @@ private struct TextProcessingSettingsPane: View {
                         ),
                         SettingsFileNote(
                             name: "llm_system_prompt.toml",
-                            description: "System prompt used for LLM polishing."
+                            description: "System prompt for polishing."
                         ),
                         SettingsFileNote(
                             name: "llm_user_prompt.toml",
                             description:
-                                "User prompt template used for LLM polishing. Remove the {{replacement_dictionary}} placeholder if you do not want to send the dictionary to the LLM."
+                                "User prompt template for polishing. Remove {{replacement_dictionary}} to stop sending the dictionary to the LLM."
                         ),
                     ])
                 }
@@ -740,6 +703,13 @@ private struct AboutSettingsPane: View {
 
                 SettingsFieldRow(title: "Version") {
                     Text("\(appVersion) (build \(appBuild))")
+                }
+
+                SettingsFieldRow(title: "Project") {
+                    Link(
+                        "github.com/T0mSIlver/localvoxtral",
+                        destination: URL(string: "https://github.com/T0mSIlver/localvoxtral")!
+                    )
                 }
             }
 
@@ -949,32 +919,6 @@ private struct SettingsMessageRow: View {
                 .frame(width: SettingsLayout.labelWidth, height: 1)
             SettingsInlineMessage(message, color: color)
             Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ToggleSettingRow: View {
-    let title: String
-    let subtitle: String?
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-
-                if let subtitle {
-                    SettingsHelpText(subtitle)
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
