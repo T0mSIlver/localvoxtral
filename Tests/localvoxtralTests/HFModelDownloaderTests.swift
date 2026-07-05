@@ -74,8 +74,9 @@ final class HFModelDownloaderTests: XCTestCase {
         XCTAssertEqual(
             progressEvents,
             [
-                .progress(repo: "org/model", downloadedBytes: 7, totalBytes: 100),
-                .progress(repo: "org/model", downloadedBytes: 20, totalBytes: 100),
+                .progress(repo: "org/model", downloadedBytes: 7, totalBytes: nil),
+                .progress(repo: "org/model", downloadedBytes: 20, totalBytes: nil),
+                .progress(repo: "org/model", downloadedBytes: 25, totalBytes: nil),
             ]
         )
         XCTAssertFalse(result.stderr.contains("Fetching"), "tqdm rendered to stderr: \(result.stderr)")
@@ -156,6 +157,8 @@ end = source.index("\ndef resolve_total", start)
 namespace = {
     "json": json,
     "os": os,
+    "sys": sys,
+    "threading": __import__("threading"),
     "time": __import__("time"),
     "tqdm": tqdm,
     "ARGS": types.SimpleNamespace(repo="org/model"),
@@ -175,10 +178,18 @@ count_bar.update(1)
 count_bar.update(1)
 count_bar.close()
 
-expected_downloaded = [7, 20]
+# A second byte bar (snapshot_download runs one per file) must continue the
+# shared aggregate, not restart from its own n.
+second_byte_bar = namespace["JSONTqdm"](total=50, unit="B")
+second_byte_bar.update(5)
+second_byte_bar.close()
+
+expected_downloaded = [7, 20, 25]
 actual_downloaded = [event["downloaded"] for event in events]
 if actual_downloaded != expected_downloaded:
     raise AssertionError(f"downloaded counts {actual_downloaded} != {expected_downloaded}")
+if any(event["total"] is not None for event in events):
+    raise AssertionError("progress events must not carry per-bar totals")
 
 for event in events:
     print(json.dumps(event, separators=(",", ":")), flush=True)
