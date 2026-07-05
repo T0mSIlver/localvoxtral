@@ -145,14 +145,6 @@ open ./dist/localvoxtral.app
     <td width="50%"><img src="assets/settings-dictation.png" alt="localvoxtral dictation settings" width="100%" /></td>
     <td width="50%"><img src="assets/settings-text-processing.png" alt="localvoxtral text processing settings" width="100%" /></td>
   </tr>
-  <tr>
-    <td width="50%" align="center"><b>Popover</b></td>
-    <td width="50%"></td>
-  </tr>
-  <tr>
-    <td width="50%"><img src="assets/popover.png" alt="localvoxtral popover view" width="100%" /></td>
-    <td width="50%"></td>
-  </tr>
 </table>
 
 ## Roadmap
