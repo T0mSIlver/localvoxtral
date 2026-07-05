@@ -241,11 +241,16 @@ if ! snapshot_defaults; then
 fi
 if ! defaults write "$BUNDLE_ID" settings.dictation_backend_mode -string managed_local \
   || ! defaults write "$BUNDLE_ID" settings.polishing_backend_mode -string managed_local \
+  || ! defaults write "$BUNDLE_ID" settings.llm_polishing_enabled -bool false \
   || ! defaults write "$BUNDLE_ID" settings.onboarding_completed -bool true; then
   record_fail "Could not force managed backend mode and completed onboarding in defaults."
   print_summary
   exit 1
 fi
+# llm_polishing_enabled is forced false so the launch invariant below tests
+# pure lazy bootstrap: with it enabled (managed + Overlay Buffer) the app now
+# intentionally warms up mlx-lm at launch, and the invariant would then hinge
+# on whatever toggle state the owner's persisted defaults happen to hold.
 # onboarding_completed is forced true so the first-launch wizard never appears
 # and the launch invariants below (menu-bar item, no backend spawned) hold. A
 # dedicated wizard smoke would need a second launch with the flag false plus AX

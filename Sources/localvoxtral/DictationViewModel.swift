@@ -767,8 +767,13 @@ final class DictationViewModel {
     }
 
     func warmUpPolishingAtLaunchIfNeeded() {
+        // Mirrors the dictation-time gate in
+        // beginDictationAfterManagedBackendIfNeeded: polishing only ever runs
+        // in Overlay Buffer, so a persisted enabled flag must not spawn
+        // mlx-lm on a Live Auto-Paste launch.
         guard settings.llmPolishingEnabled,
-              settings.polishingBackendMode == .managedLocal
+              settings.polishingBackendMode == .managedLocal,
+              settings.dictationOutputMode == .overlayBuffer
         else { return }
 
         startPolishingWarmup()

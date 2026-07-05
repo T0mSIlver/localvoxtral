@@ -650,6 +650,20 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingWarmupTask)
     }
 
+    func testWarmUpPolishingAtLaunchIfNeededLiveAutoPasteDoesNotWarmUp() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.warmUpPolishingAtLaunchIfNeeded()
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+        XCTAssertNil(viewModel.polishingWarmupTask)
+    }
+
     func testWarmUpPolishingAtLaunchIfNeededExternalModeDoesNotWarmUp() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
