@@ -167,10 +167,10 @@ Key subsystems:
   first dictation start; catalog pinned to fork wheel releases; installer
   downloads a pinned `uv` on first use, then shells out to it; supervisors
   spawn/health-check/stop the managed processes; install root lives under
-  Application Support. User-facing backend docs (pinned models, fork
-  details, vLLM example) live in `BACKENDS.md` at the repo root (`/docs` is
-  gitignored local notes — nothing user-facing goes there); keep it in sync
-  when pins change.
+  Application Support. User-facing backend copy (pinned models, fork
+  optimizations, vLLM example) lives in the README "Under the hood" section
+  (`/docs` is gitignored local notes — nothing user-facing goes there); keep
+  it in sync when pins change.
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
