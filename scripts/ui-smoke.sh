@@ -471,13 +471,17 @@ assert_tab "Dictation" "Start dictation with"
 assert_tab "Text Processing" "Replacements"
 assert_tab "About" "Diagnostics"
 
+# The launch phase forces external URL modes (managed mode now eagerly spawns
+# at launch), so the Endpoints pane renders endpoint configuration fields, not
+# the managed status rows. Managed-row AX coverage would need a second launch
+# that tolerates the eager spawn.
 select_tab "Endpoints" >/dev/null 2>&1 || true
 sleep 0.5
-if [[ "$(window_has_static_text "voxmlx - ws://127.0.0.1:8471/v1/realtime" 2>/dev/null || true)" == "found" ]] \
-  && [[ "$(window_has_static_text "mlx-lm - http://127.0.0.1:8472/v1/chat/completions" 2>/dev/null || true)" == "found" ]]; then
-  record_pass "Managed-mode Endpoints pane shows dictation and polishing backend rows."
+if [[ "$(window_has_static_text "Endpoint" 2>/dev/null || true)" == "found" ]] \
+  && [[ "$(window_has_static_text "API key" 2>/dev/null || true)" == "found" ]]; then
+  record_pass "External-mode Endpoints pane shows endpoint configuration fields."
 else
-  record_fail "Managed-mode Endpoints pane did not show both expected backend rows."
+  record_fail "External-mode Endpoints pane did not show endpoint configuration fields."
 fi
 
 quit_app

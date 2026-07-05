@@ -569,6 +569,50 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
     }
 
+    func testDictationModeFlipBackToManagedSerializesWarmupBehindPendingStop() async {
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendStopDictation = true
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applyDictationBackendModeChange(.externalURL)
+        await backendManager.waitForStopDictationCallCount(1)
+
+        // Flip back while the stop is still executing: the warmup must wait for
+        // the stop to finish, or the stale stop kills the fresh voxmlx process
+        // (review finding on rapid managed→external→managed flips).
+        viewModel.applyDictationBackendModeChange(.managedLocal)
+        await Task.yield()
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+
+        backendManager.resumeStopDictation()
+        await viewModel.dictationWarmupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
+        XCTAssertEqual(backendManager.stopDictationCallCount, 1)
+    }
+
+    func testPolishingToggleOffThenOnCancelsQueuedStop() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        // Off then immediately on: the queued stop must never run, or it lands
+        // after the warmup and stops the mlx-lm the settings now require.
+        viewModel.llmPolishingEnabledDidChange(false)
+        viewModel.llmPolishingEnabledDidChange(true)
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
+    }
+
     func testPolishingModeSwitchToManagedStartsPolishingWarmupWhenRequired() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
@@ -1047,6 +1091,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     }
     var ensureError: Error?
     var suspendEnsure = false
+    var suspendStopDictation = false
     private(set) var ensureCalls: [EnsureCall] = []
     private(set) var stopAllCallCount = 0
     private(set) var stopDictationCallCount = 0
@@ -1054,6 +1099,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     private var ensureStartedContinuation: CheckedContinuation<Void, Never>?
     private var ensureResumeContinuation: CheckedContinuation<Void, Never>?
     private var stopDictationContinuation: CheckedContinuation<Void, Never>?
+    private var stopDictationResumeContinuation: CheckedContinuation<Void, Never>?
     private var stopPolishingContinuation: CheckedContinuation<Void, Never>?
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws {
@@ -1087,6 +1133,12 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         stopDictationCallCount += 1
         stopDictationContinuation?.resume()
         stopDictationContinuation = nil
+
+        if suspendStopDictation {
+            await withCheckedContinuation { continuation in
+                stopDictationResumeContinuation = continuation
+            }
+        }
     }
 
     func stopPolishing() async {
@@ -1124,6 +1176,11 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     func resumeEnsure() {
         ensureResumeContinuation?.resume()
         ensureResumeContinuation = nil
+    }
+
+    func resumeStopDictation() {
+        stopDictationResumeContinuation?.resume()
+        stopDictationResumeContinuation = nil
     }
 
     func waitForStopDictationCallCount(_ expected: Int) async {

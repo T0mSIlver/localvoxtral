@@ -134,7 +134,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backendManager: backendManager,
             openEndpointsSettings: { [weak self] in self?.openEndpointsSettings() }
         )
-        controller.onFinished = { [weak self] in self?.onboardingController = nil }
+        controller.onFinished = { [weak self] in
+            self?.onboardingController = nil
+            // First launch skips the eager warmup (the wizard owns bootstrap);
+            // once the wizard is done — finished or skipped — start whatever
+            // required managed backends it didn't already start.
+            self?.viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
+        }
         onboardingController = controller
         controller.present()
     }

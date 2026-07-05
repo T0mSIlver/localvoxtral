@@ -239,8 +239,14 @@ final class DictationViewModel {
     var managedStartupTaskID: UUID?
     // Stops the managed mlx-lm (polishing) process when LLM polishing is turned
     // off in Managed local mode. Kept awaitable so tests can await the shutdown.
+    // Shutdown tasks are tracked (never fire-and-forget) so a warmup requested
+    // right after a stop can cancel a still-queued stop and serialize behind a
+    // running one — otherwise a stale stop lands after the fresh warmup and
+    // kills the backend the settings now require.
     @ObservationIgnored
     var polishingShutdownTask: Task<Void, Never>?
+    @ObservationIgnored
+    var dictationShutdownTask: Task<Void, Never>?
     // Eagerly installs/downloads/starts required managed backends so the user
     // watches inline progress in Settings instead of waiting for dictation.
     // One slot per backend (mirroring BackendManager's per-backend single-flight
@@ -450,6 +456,7 @@ final class DictationViewModel {
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
         polishingShutdownTask?.cancel()
+        dictationShutdownTask?.cancel()
         dictationWarmupTask?.cancel()
         polishingWarmupTask?.cancel()
         audioSendTask?.cancel()
@@ -765,13 +772,16 @@ final class DictationViewModel {
         }
 
         if previousMode == .managedLocal, mode == .externalURL {
+            Log.backends.info("dictation backend mode switched to external; stopping managed voxmlx")
             cancelManagedStartupTask()
             dictationWarmupTask?.cancel()
             if isConnectingRealtimeSession {
                 abortConnectingSession()
                 statusText = StatusStrings.ready
             }
-            Task { @MainActor [backendManager] in
+            dictationShutdownTask?.cancel()
+            dictationShutdownTask = Task { @MainActor [backendManager] in
+                guard !Task.isCancelled else { return }
                 await backendManager.stopDictation()
             }
         }
@@ -789,9 +799,12 @@ final class DictationViewModel {
         }
 
         if previousMode == .managedLocal, mode == .externalURL {
+            Log.backends.info("polishing backend mode switched to external; stopping managed mlx-lm")
             cancelManagedStartupTask()
             polishingWarmupTask?.cancel()
-            Task { @MainActor [backendManager] in
+            polishingShutdownTask?.cancel()
+            polishingShutdownTask = Task { @MainActor [backendManager] in
+                guard !Task.isCancelled else { return }
                 await backendManager.stopPolishing()
             }
         }
@@ -808,9 +821,11 @@ final class DictationViewModel {
                   mode == .liveAutoPaste,
                   settings.polishingBackendMode == .managedLocal
         {
+            Log.backends.info("output mode switched to Live Auto-Paste; stopping managed mlx-lm")
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
+                guard !Task.isCancelled else { return }
                 await backendManager.stopPolishing()
             }
         }
@@ -829,8 +844,10 @@ final class DictationViewModel {
         if enabled, settings.dictationOutputMode == .overlayBuffer {
             startPolishingWarmup()
         } else {
+            Log.backends.info("polishing disabled; stopping managed mlx-lm")
             polishingWarmupTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
+                guard !Task.isCancelled else { return }
                 await backendManager.stopPolishing()
             }
         }
@@ -865,15 +882,27 @@ final class DictationViewModel {
         Log.backends.info(
             "managed backend warmup requested dictation=\(dictation, privacy: .public) polishing=\(polishing, privacy: .public)"
         )
+        // A stop decided just before this warmup must not land on the fresh
+        // process: cancel the shutdown if it hasn't run yet, and serialize the
+        // warmup behind it if it has (rapid managed→external→managed or
+        // polishing off→on flips race the async stop otherwise).
         if dictation {
             dictationWarmupTask?.cancel()
+            let pendingShutdown = dictationShutdownTask
+            dictationShutdownTask = nil
+            pendingShutdown?.cancel()
             dictationWarmupTask = Task { @MainActor [backendManager] in
+                await pendingShutdown?.value
                 try? await backendManager.ensureReady(dictation: true, polishing: false)
             }
         }
         if polishing {
             polishingWarmupTask?.cancel()
+            let pendingShutdown = polishingShutdownTask
+            polishingShutdownTask = nil
+            pendingShutdown?.cancel()
             polishingWarmupTask = Task { @MainActor [backendManager] in
+                await pendingShutdown?.value
                 try? await backendManager.ensureReady(dictation: false, polishing: true)
             }
         }
