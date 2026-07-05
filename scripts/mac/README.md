@@ -64,8 +64,13 @@ ssh <gate-destination> 'echo pwned'   # must print "denied command"
 
 Notes:
 
-- `applog` uses `log show`, which macOS may restrict for non-admin accounts.
-  If it returns nothing for the gate account, that's the cause — the crashlog
-  workflow (`mac-crashlog.yml`) runs as the runner user and is the fallback.
+- `applog` uses `log show`, which is restricted for non-admin accounts
+  (confirmed on macOS 26: "Could not open local log store: Operation not
+  permitted" for the gate account). The crashlog workflow
+  (`mac-crashlog.yml`) runs as the runner user and is the fallback.
 - `svc-status` includes process and port sections because `launchctl print`
-  cannot read another user's GUI domain.
+  cannot read another user's GUI domain. Port checks are connect tests
+  (`nc -z`) — `lsof` only sees the gate account's own sockets.
+- Process listings deliberately print pid/user/executable only, never full
+  command lines: other users' cmdlines can embed secrets (env assignments in
+  remote-ssh invocations), and diag output flows into agent transcripts.
