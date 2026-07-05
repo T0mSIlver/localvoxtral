@@ -117,8 +117,18 @@ cleanup() {
   if ! restore_defaults; then
     echo "WARNING: failed to restore defaults backup at $PERSISTENT_DEFAULTS_BACKUP; leaving it in place." >&2
   fi
+  if [[ -n "${ORIGINAL_DARK_MODE:-}" ]]; then
+    osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT INT TERM HUP
+
+# Appearance isolation: README assets are always captured in dark mode so
+# reruns are deterministic regardless of the Mac's current (possibly
+# auto-switching) appearance; restored in cleanup.
+ORIGINAL_DARK_MODE="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
+osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to true'
+sleep 1
 cat > "$HELPER" <<'SWIFT'
 import CoreGraphics
 import Foundation
