@@ -399,6 +399,7 @@ final class DictationViewModel {
 
         textInsertion.onAccessibilityTrustChanged = { [weak self] in
             guard let self else { return }
+            self.retryModifierOnlyHotKeyRegistrationIfNeeded()
             if self.currentErrorToken == .accessibilityPermissionRequired {
                 self.lastError = nil
             }
@@ -760,6 +761,23 @@ final class DictationViewModel {
         case .failure(let reason):
             applyHotKeyRegistrationFailure(reason)
         }
+    }
+
+    /// Modifier-only NSEvent monitors require Accessibility trust, and
+    /// `AXIsProcessTrusted()` can transiently report false at cold launch even
+    /// with a persisted grant (field-hit 2026-07-05: launch-time registration
+    /// died and the shortcut stayed dead until the user touched the modifier
+    /// setting). Once trust lands, re-register — but never churn a live
+    /// registration.
+    private func retryModifierOnlyHotKeyRegistrationIfNeeded() {
+        guard settings.modifierOnlyHotKeyEnabled,
+              textInsertion.isAccessibilityTrusted,
+              !hotKeyManager.isModifierOnlyRegistrationActive
+        else { return }
+        Log.modifierKeys.notice(
+            "Accessibility trust granted; retrying modifier-only hotkey registration."
+        )
+        applyHotKeySettingsChange()
     }
 
     func applyDictationBackendModeChange(_ mode: BackendMode) {
