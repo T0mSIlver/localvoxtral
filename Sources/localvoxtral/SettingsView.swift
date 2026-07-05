@@ -140,11 +140,13 @@ private struct GeneralSettingsPane: View {
             }
 
             SettingsGroup(title: "App") {
-                ToggleSettingRow(
-                    title: "Auto-copy final segment",
-                    subtitle: "Copies to the clipboard when dictation stops.",
-                    isOn: $settings.autoCopyEnabled
-                )
+                SettingsFieldRow(title: "Copy final segment") {
+                    Toggle("", isOn: $settings.autoCopyEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+
+                    SettingsHelpText("Copies to the clipboard on stop.")
+                }
 
                 SettingsFieldRow(title: "Setup") {
                     VStack(alignment: .leading, spacing: 6) {
@@ -289,11 +291,11 @@ private struct ConnectionSettingsPane: View {
                 }
 
                 Group {
-                    ToggleSettingRow(
-                        title: "Enable",
-                        subtitle: nil,
-                        isOn: llmPolishingEnabledBinding
-                    )
+                    SettingsFieldRow(title: "Enable") {
+                        Toggle("", isOn: llmPolishingEnabledBinding)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                    }
 
                     switch settings.polishingBackendMode {
                     case .externalURL:
@@ -635,14 +637,14 @@ private struct TextProcessingSettingsPane: View {
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Replacements") {
-                ToggleSettingRow(
-                    title: "Exact match replacements",
-                    subtitle: nil,
-                    isOn: $settings.replacementDictionaryEnabled
-                )
-                .help(
-                    "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
-                )
+                SettingsFieldRow(title: "Exact match") {
+                    Toggle("", isOn: $settings.replacementDictionaryEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .help(
+                            "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
+                        )
+                }
             }
 
             SettingsGroup(title: "Shared Configuration") {
@@ -918,32 +920,6 @@ private struct SettingsMessageRow: View {
                 .frame(width: SettingsLayout.labelWidth, height: 1)
             SettingsInlineMessage(message, color: color)
             Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct ToggleSettingRow: View {
-    let title: String
-    let subtitle: String?
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-
-                if let subtitle {
-                    SettingsHelpText(subtitle)
-                }
-            }
-
-            Spacer(minLength: 12)
-
-            Toggle("", isOn: $isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
