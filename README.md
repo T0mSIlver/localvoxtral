@@ -10,17 +10,35 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/T0mSIlver/localvoxtral/stargazers"><img src="https://img.shields.io/github/stars/T0mSIlver/localvoxtral?style=social" alt="GitHub stars" /></a>
+  &nbsp;
   <a href="https://github.com/T0mSIlver/localvoxtral/releases/latest"><img src="https://img.shields.io/github/v/release/T0mSIlver/localvoxtral?label=release" alt="Latest release" /></a>
-  <a href="https://github.com/T0mSIlver/localvoxtral/actions/workflows/ci.yml"><img src="https://github.com/T0mSIlver/localvoxtral/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/badge/macOS%2015%2B-Apple%20Silicon-black?logo=apple" alt="macOS 15+ on Apple Silicon" />
+  &nbsp;
   <a href="LICENSE"><img src="https://img.shields.io/github/license/T0mSIlver/localvoxtral" alt="License" /></a>
 </p>
 
-<p align="center">
-  <img src="assets/demo.gif" alt="localvoxtral demo" width="760" />
-</p>
+https://github.com/user-attachments/assets/d1c42aaf-6180-440a-bce4-3b90306ef3e2
 
-Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. By default everything happens on-device — the speech model and the optional LLM that polishes your transcript before it lands. No account, no subscription, no audio or text ever leaving your Mac.
+Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. Everything happens on-device — the speech model and the optional LLM that polishes your transcript before it lands. No account, no subscription, no audio or text ever leaving your Mac.
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
+```
+
+Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
+
+On first launch, a setup wizard walks you through the microphone and Accessibility permissions and downloads the local engine with live progress. Dictate the moment it finishes.
+
+> [!NOTE]
+> **Requirements:** an Apple Silicon Mac running macOS 15 or later.
+
+> [!IMPORTANT]
+> Releases are ad-hoc signed (not notarized yet — see [Roadmap](#roadmap)). The installer script handles Gatekeeper for you. If you install the DMG by hand and macOS blocks or stalls the first launch ("damaged", **Open Anyway**, or a hang on macOS 26), clear the quarantine flag:
+> ```bash
+> xattr -cr /Applications/localvoxtral.app
+> ```
 
 ## Features
 
@@ -32,36 +50,12 @@ Unlike tools that transcribe after you stop speaking, localvoxtral streams text 
 - **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
 - **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text
 
+> [!TIP]
+> If localvoxtral is useful to you, a ⭐ on this repo helps others find it.
+
 ## Privacy
 
 In the default Managed local mode, nothing you say or write is sent anywhere: audio capture, transcription, and LLM polishing all run as local processes on your Mac. The only network traffic is the one-time engine and model download. No telemetry, no account, no cloud fallback — and if you point localvoxtral at your own External URL server instead, your data goes only where you send it.
-
-## Quick start
-
-**Requirements:** an Apple Silicon Mac running macOS 15 or later.
-
-### Recommended: one-command installer
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
-```
-
-### Manual install from GitHub Releases (DMG)
-
-Download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/localvoxtral/releases/latest).
-
-Releases are ad-hoc signed (not notarized). On macOS 26, launching the raw downloaded app can hang on first launch unless you use the installer script above. On older macOS versions, first launch may instead be blocked with an **Open Anyway** button in **System Settings → Privacy & Security**, or reported as "damaged". This clears the quarantine flag:
-
-```bash
-xattr -cr /Applications/localvoxtral.app
-```
-
-### Alternatively, build from source as an app bundle
-
-```bash
-./scripts/package_app.sh release
-open ./dist/localvoxtral.app
-```
 
 ## Shortcuts
 
@@ -81,8 +75,6 @@ The gesture selects the output mode, so both workflows are always one key away. 
 **Escape** cancels an in-progress dictation.
 
 ## Settings
-
-A first-launch setup wizard (Welcome → Permissions → Downloads → Finish) grants microphone/Accessibility permissions and downloads the managed local engine, showing download progress for the models. It appears once on a fresh install; re-run it any time from **Settings → General → Re-run Setup…**.
 
 Open **Settings** from the menu bar popover:
 
@@ -117,16 +109,16 @@ The settings recommended on the [model page](https://huggingface.co/mistralai/Vo
 
 </details>
 
-## Roadmap
+## Build from source
 
-- [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
-- [ ] Documentation website — a visual, end-user guide beyond this README
-- [ ] Model choice in Managed local mode — pick the polishing LLM instead of the pinned default
-- [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+```bash
+./scripts/package_app.sh release
+open ./dist/localvoxtral.app
+```
 
-## UI
+## Screenshots
 
-<!-- Regenerate the screenshots below with the "Capture README Assets" workflow (Actions -> capture-assets.yml, run on the branch) or ./scripts/capture-readme-assets.sh on a Mac. Captures are pinned to dark mode for consistency. The demo video is recorded with ./scripts/record-demo.sh (operator speaks the prompted lines) or hands-free via the "Record README Demo" workflow (record-demo.yml, TTS through BlackHole on the self-hosted runner); GitHub only renders inline video from user-attachments URLs, so the resulting mp4 is drag-dropped into a PR comment by hand and the URL pasted here on its own line. -->
+<!-- Regenerate the screenshots below with the "Capture README Assets" workflow (Actions -> capture-assets.yml, run on the branch) or ./scripts/capture-readme-assets.sh on a Mac. Captures are pinned to dark mode for consistency. The demo video is recorded with ./scripts/record-demo.sh (operator speaks the prompted lines) or hands-free via the "Record README Demo" workflow (record-demo.yml, TTS through BlackHole on the self-hosted runner); GitHub only renders inline video from user-attachments URLs, so the resulting mp4 is drag-dropped into a PR comment by hand and the URL pasted after the badges on its own line. -->
 
 <p>
   <picture>
@@ -143,3 +135,14 @@ The settings recommended on the [model page](https://huggingface.co/mistralai/Vo
 | ![localvoxtral dictation settings](assets/settings-dictation.png) | ![localvoxtral text processing settings](assets/settings-text-processing.png) |
 | Popover | |
 | ![localvoxtral popover view](assets/popover.png) | |
+
+## Roadmap
+
+- [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
+- [ ] Documentation website — a visual, end-user guide beyond this README
+- [ ] Model choice in Managed local mode — pick the polishing LLM instead of the pinned default
+- [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+
+## License
+
+[MIT](LICENSE)
