@@ -10,7 +10,7 @@ struct localvoxtralApp: App {
             StatusPopoverView(viewModel: appDelegate.viewModel)
         } label: {
             let viewModel = appDelegate.viewModel
-            let state = viewModel.realtimeSessionIndicatorState
+            let state = viewModel.menuBarIndicatorState
             if let idleIcon = MenuBarIconAsset.idleIcon {
                 let iconConfiguration: (
                     icon: NSImage,
@@ -36,20 +36,24 @@ struct localvoxtralApp: App {
                             "realtime-connected",
                             "localvoxtral, realtime session active"
                         )
-                    case .recentFailure:
+                    case .failure:
                         if let failureIcon = MenuBarIconAsset.failureIcon {
                             return (
                                 failureIcon,
                                 .original,
                                 "realtime-failed",
-                                "localvoxtral, realtime connection failed recently"
+                                viewModel.realtimeSessionIndicatorState == .recentFailure
+                                    ? "localvoxtral, realtime connection failed recently"
+                                    : "localvoxtral, dictation backend not ready"
                             )
                         }
                         return (
                             idleIcon,
                             .template,
                             "realtime-failed",
-                            "localvoxtral, realtime connection failed recently"
+                            viewModel.realtimeSessionIndicatorState == .recentFailure
+                                ? "localvoxtral, realtime connection failed recently"
+                                : "localvoxtral, dictation backend not ready"
                         )
                     }
                 }()
@@ -68,7 +72,7 @@ struct localvoxtralApp: App {
                 case .connected:
                     Label("localvoxtral", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
-                case .recentFailure:
+                case .failure:
                     Label("localvoxtral", systemImage: "xmark.circle.fill")
                         .foregroundStyle(.red)
                 }

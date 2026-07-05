@@ -10,6 +10,12 @@ enum RealtimeSessionIndicatorState {
     case recentFailure
 }
 
+enum MenuBarIndicatorState: Equatable {
+    case idle
+    case connected
+    case failure
+}
+
 /// A single raw realtime-delta log emission, captured before any
 /// merge/preprocess/insertion processing. Mirrors what `Log.deltas` records
 /// when `SettingsStore.debugLogRealtimeDeltas` is on; surfaced through the
@@ -164,6 +170,31 @@ final class DictationViewModel {
         guard let lastError else { return nil }
         return ErrorToken.from(lastError)
     }
+    var requiredManagedBackendsReady: Bool {
+        guard settings.onboardingCompleted else { return true }
+        if settings.dictationBackendMode == .managedLocal,
+           !isReady(backendManager.voxmlxStatus)
+        {
+            return false
+        }
+        if isManagedPolishingRequired(outputMode: settings.dictationOutputMode),
+           !isReady(backendManager.mlxLMStatus)
+        {
+            return false
+        }
+        return true
+    }
+
+    var menuBarIndicatorState: MenuBarIndicatorState {
+        switch realtimeSessionIndicatorState {
+        case .connected:
+            return .connected
+        case .recentFailure:
+            return .failure
+        case .idle:
+            return requiredManagedBackendsReady ? .idle : .failure
+        }
+    }
 
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
@@ -210,9 +241,13 @@ final class DictationViewModel {
     // off in Managed local mode. Kept awaitable so tests can await the shutdown.
     @ObservationIgnored
     var polishingShutdownTask: Task<Void, Never>?
-    // Eagerly installs/downloads/starts managed mlx-lm when the polishing
-    // toggle turns on, so the user watches inline progress in Settings
-    // instead of waiting for the next dictation. Kept awaitable for tests.
+    // Eagerly installs/downloads/starts required managed backends so the user
+    // watches inline progress in Settings instead of waiting for dictation.
+    // One slot per backend (mirroring BackendManager's per-backend single-flight
+    // rationale): a polishing toggle/mode flip must never cancel an in-flight
+    // voxmlx warmup, and vice versa. Kept awaitable for tests.
+    @ObservationIgnored
+    var dictationWarmupTask: Task<Void, Never>?
     @ObservationIgnored
     var polishingWarmupTask: Task<Void, Never>?
     @ObservationIgnored
@@ -401,7 +436,7 @@ final class DictationViewModel {
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
-            warmUpPolishingAtLaunchIfNeeded()
+            warmUpManagedBackendsAtLaunchIfNeeded()
         }
     }
 
@@ -415,6 +450,7 @@ final class DictationViewModel {
         managedStartupTask?.cancel()
         managedStartupTaskID = nil
         polishingShutdownTask?.cancel()
+        dictationWarmupTask?.cancel()
         polishingWarmupTask?.cancel()
         audioSendTask?.cancel()
         stopFinalizationTask?.cancel()
@@ -723,14 +759,21 @@ final class DictationViewModel {
         let previousMode = settings.dictationBackendMode
         settings.dictationBackendMode = mode
 
-        guard previousMode == .managedLocal, mode == .externalURL else { return }
-        cancelManagedStartupTask()
-        if isConnectingRealtimeSession {
-            abortConnectingSession()
-            statusText = StatusStrings.ready
+        if previousMode == .externalURL, mode == .managedLocal {
+            startManagedBackendWarmup(dictation: true, polishing: false)
+            return
         }
-        Task { @MainActor [backendManager] in
-            await backendManager.stopDictation()
+
+        if previousMode == .managedLocal, mode == .externalURL {
+            cancelManagedStartupTask()
+            dictationWarmupTask?.cancel()
+            if isConnectingRealtimeSession {
+                abortConnectingSession()
+                statusText = StatusStrings.ready
+            }
+            Task { @MainActor [backendManager] in
+                await backendManager.stopDictation()
+            }
         }
     }
 
@@ -738,11 +781,38 @@ final class DictationViewModel {
         let previousMode = settings.polishingBackendMode
         settings.polishingBackendMode = mode
 
-        guard previousMode == .managedLocal, mode == .externalURL else { return }
-        cancelManagedStartupTask()
-        polishingWarmupTask?.cancel()
-        Task { @MainActor [backendManager] in
-            await backendManager.stopPolishing()
+        if previousMode == .externalURL, mode == .managedLocal {
+            if isManagedPolishingRequired(outputMode: settings.dictationOutputMode) {
+                startPolishingWarmup()
+            }
+            return
+        }
+
+        if previousMode == .managedLocal, mode == .externalURL {
+            cancelManagedStartupTask()
+            polishingWarmupTask?.cancel()
+            Task { @MainActor [backendManager] in
+                await backendManager.stopPolishing()
+            }
+        }
+    }
+
+    func applyDictationOutputModeChange(_ mode: DictationOutputMode) {
+        let previousMode = settings.dictationOutputMode
+        settings.dictationOutputMode = mode
+
+        guard previousMode != mode else { return }
+        if mode == .overlayBuffer, isManagedPolishingRequired(outputMode: mode) {
+            startPolishingWarmup()
+        } else if previousMode == .overlayBuffer,
+                  mode == .liveAutoPaste,
+                  settings.polishingBackendMode == .managedLocal
+        {
+            polishingWarmupTask?.cancel()
+            polishingShutdownTask?.cancel()
+            polishingShutdownTask = Task { @MainActor [backendManager] in
+                await backendManager.stopPolishing()
+            }
         }
     }
 
@@ -756,7 +826,7 @@ final class DictationViewModel {
     func llmPolishingEnabledDidChange(_ enabled: Bool) {
         guard settings.polishingBackendMode == .managedLocal else { return }
         polishingShutdownTask?.cancel()
-        if enabled {
+        if enabled, settings.dictationOutputMode == .overlayBuffer {
             startPolishingWarmup()
         } else {
             polishingWarmupTask?.cancel()
@@ -766,28 +836,46 @@ final class DictationViewModel {
         }
     }
 
-    func warmUpPolishingAtLaunchIfNeeded() {
-        // Mirrors the dictation-time gate in
-        // beginDictationAfterManagedBackendIfNeeded: polishing only ever runs
-        // in Overlay Buffer, so a persisted enabled flag must not spawn
-        // mlx-lm on a Live Auto-Paste launch.
-        guard settings.llmPolishingEnabled,
-              settings.polishingBackendMode == .managedLocal,
-              settings.dictationOutputMode == .overlayBuffer
-        else { return }
+    func warmUpManagedBackendsAtLaunchIfNeeded() {
+        guard settings.onboardingCompleted else {
+            Log.backends.info("launch managed backend warmup skipped until onboarding completes")
+            return
+        }
 
-        startPolishingWarmup()
+        let needsDictation = settings.dictationBackendMode == .managedLocal
+        let needsPolishing = isManagedPolishingRequired(outputMode: settings.dictationOutputMode)
+        startManagedBackendWarmup(dictation: needsDictation, polishing: needsPolishing)
     }
 
     func startPolishingWarmup() {
-        polishingWarmupTask?.cancel()
-        // Owner-specified UX (field-hit 2026-07-04): enabling polishing or
-        // launching with it already enabled eagerly installs/downloads/starts
-        // the managed backend, with progress rendered inline in Endpoints.
-        // Failures land in mlxLMStatus; dictation-time ensureReady remains the
+        startManagedBackendWarmup(dictation: false, polishing: true)
+    }
+
+    func startManagedBackendWarmup(dictation: Bool, polishing: Bool) {
+        guard dictation || polishing else { return }
+        guard settings.onboardingCompleted else {
+            Log.backends.info("managed backend warmup skipped until onboarding completes")
+            return
+        }
+
+        // Owner-specified UX: required managed backends install/download/start
+        // eagerly, with progress rendered inline in Endpoints.
+        // Failures land in the manager statuses; dictation-time ensureReady remains the
         // backstop and retry path.
-        polishingWarmupTask = Task { @MainActor [backendManager] in
-            try? await backendManager.ensureReady(dictation: false, polishing: true)
+        Log.backends.info(
+            "managed backend warmup requested dictation=\(dictation, privacy: .public) polishing=\(polishing, privacy: .public)"
+        )
+        if dictation {
+            dictationWarmupTask?.cancel()
+            dictationWarmupTask = Task { @MainActor [backendManager] in
+                try? await backendManager.ensureReady(dictation: true, polishing: false)
+            }
+        }
+        if polishing {
+            polishingWarmupTask?.cancel()
+            polishingWarmupTask = Task { @MainActor [backendManager] in
+                try? await backendManager.ensureReady(dictation: false, polishing: true)
+            }
         }
     }
 
@@ -1286,8 +1374,21 @@ final class DictationViewModel {
         return Self.liveAutoPasteAccessibilityWarningMessage
     }
 
+    func isManagedPolishingRequired(outputMode: DictationOutputMode) -> Bool {
+        outputMode == .overlayBuffer
+            && settings.llmPolishingEnabled
+            && settings.polishingBackendMode == .managedLocal
+    }
+
     private var activeOutputMode: DictationOutputMode {
         sessionOutputMode ?? settings.dictationOutputMode
+    }
+
+    private func isReady(_ status: ManagedBackendStatus) -> Bool {
+        if case .ready = status {
+            return true
+        }
+        return false
     }
 
     func debugLog(_ message: String) {
