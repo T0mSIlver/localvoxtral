@@ -128,13 +128,32 @@ open ./dist/localvoxtral.app
   Menubar icon
 </p>
 
-| General | Endpoints |
-| --- | --- |
-| ![localvoxtral general settings](assets/settings-general.png) | ![localvoxtral endpoints settings](assets/settings-endpoints.png) |
-| Dictation | Text Processing |
-| ![localvoxtral dictation settings](assets/settings-dictation.png) | ![localvoxtral text processing settings](assets/settings-text-processing.png) |
-| Popover | |
-| ![localvoxtral popover view](assets/popover.png) | |
+<table>
+  <tr>
+    <td width="50%" align="center"><b>General</b></td>
+    <td width="50%" align="center"><b>Endpoints</b></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/settings-general.png" alt="localvoxtral general settings" width="100%" /></td>
+    <td width="50%"><img src="assets/settings-endpoints.png" alt="localvoxtral endpoints settings" width="100%" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>Dictation</b></td>
+    <td width="50%" align="center"><b>Text Processing</b></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/settings-dictation.png" alt="localvoxtral dictation settings" width="100%" /></td>
+    <td width="50%"><img src="assets/settings-text-processing.png" alt="localvoxtral text processing settings" width="100%" /></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center"><b>Popover</b></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/popover.png" alt="localvoxtral popover view" width="100%" /></td>
+    <td width="50%"></td>
+  </tr>
+</table>
 
 ## Roadmap
 
