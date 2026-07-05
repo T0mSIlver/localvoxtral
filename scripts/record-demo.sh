@@ -64,7 +64,7 @@ DEMO_HEIGHT="${DEMO_HEIGHT:-800}"
 DEMO_SPEAK_SECONDS="${DEMO_SPEAK_SECONDS:-9}"
 DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
 DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-6}"
-DEMO_SENTENCE_1="${DEMO_SENTENCE_1:-This is localvoxtral, dictating fully offline on my Mac. The overlay streams every word as I say it, and a local language model polishes the text before it lands in the document.}"
+DEMO_SENTENCE_1="${DEMO_SENTENCE_1:-This is realtime dictation, running fully offline on my Mac. The overlay streams every word as I say it, and a local language model polishes the text before it lands in the document.}"
 DEMO_SENTENCE_2="${DEMO_SENTENCE_2:-And if I hold the key instead, my words are typed straight into the document, live, while I am still talking.}"
 DEMO_HANDS_FREE="${DEMO_HANDS_FREE:-0}"
 DEMO_SAY_DEVICE="${DEMO_SAY_DEVICE:-}"
@@ -325,6 +325,7 @@ fi
 # legible at README size.
 defaults write "$TEXTEDIT_ID" RichText -int 0
 defaults write "$TEXTEDIT_ID" NSFixedPitchFontSize -int 22
+defaults write "$TEXTEDIT_ID" CheckSpellingWhileTyping -bool false
 
 # Dark mode pinned, like the README screenshots.
 ORIGINAL_DARK_MODE="$(osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode')"
@@ -415,6 +416,10 @@ speak_or_wait "$DEMO_SENTENCE_1"
 tap_hotkey
 echo "Committing (polish + insert)..."
 sleep "$DEMO_COMMIT_SECONDS"
+
+# New line so scene 2's live text doesn't run into scene 1's commit.
+osascript -e 'tell application "System Events" to key code 36' >/dev/null
+sleep 1
 
 # Scene 2 — hold: live auto-paste while the key is down.
 cue "SCENE 2 — live typing (hold). Speak after the beep, keep talking." "$DEMO_SENTENCE_2"
