@@ -22,13 +22,19 @@ is machine-local config, set once per clone (never committed):
 
 On a Mac, just `swift build` / `swift test`.
 
-When several agents work in parallel, each must set its own remote dir:
-`LV_BUILD_DIR=work/localvoxtral-<task> ./scripts/remote-build.sh ...`
+Before starting long remote work, `./scripts/mac-health.sh` — it fails fast
+with an actionable message when the Mac is asleep/unreachable instead of
+letting rsync hang or CI queue forever.
+
+Parallel agents are isolated automatically: the remote dir defaults to a
+per-worktree name derived from the local checkout path. `LV_BUILD_DIR`
+still overrides it when you need a specific dir.
 
 - An interrupted remote run can leave a stale SwiftPM lock in its remote dir —
   don't debug it, switch to a fresh `LV_BUILD_DIR`.
-- Never pipe a full test run only through grep: `tee` the raw output to a file
-  first, or a crash eats the failing test's name and you pay for reruns.
+- Every run's full remote output lands in `.build/last-remote.log`. Never pipe
+  the script itself through grep (a crash eats the failing test's name) — let
+  it print, then grep the log file.
 
 ## Hand-testing & field debugging (the fast loop)
 
@@ -64,7 +70,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   (try-pr copy vs /Applications) before debugging its behavior — that
   confusion and theorize-first cost an hour on 2026-07-05. Deeper tools:
   `scripts/mac-diag.sh` on the Mac, Export Diagnostics… in Settings > About,
-  and (once the v2 gate is installed)
+  and (once the v2 gate is installed — owner runbook: `scripts/mac/README.md`)
   `./scripts/remote-build.sh diag|applog|voxlog|svc-status`.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
