@@ -703,6 +703,13 @@ private struct AboutSettingsPane: View {
                 SettingsFieldRow(title: "Version") {
                     Text("\(appVersion) (build \(appBuild))")
                 }
+
+                SettingsFieldRow(title: "Project") {
+                    Link(
+                        "github.com/T0mSIlver/localvoxtral",
+                        destination: URL(string: "https://github.com/T0mSIlver/localvoxtral")!
+                    )
+                }
             }
 
             SettingsGroup(title: "Diagnostics") {

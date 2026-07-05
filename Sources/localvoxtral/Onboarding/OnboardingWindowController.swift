@@ -39,6 +39,10 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         window.title = "Welcome to localvoxtral"
         window.isReleasedWhenClosed = false
         window.delegate = self
+        // The hosting view reports its fixed 540x480 only after a layout pass;
+        // centering before it means the frame grows off-center afterwards.
+        hosting.view.layoutSubtreeIfNeeded()
+        window.setContentSize(hosting.view.fittingSize)
         window.center()
         self.window = window
 

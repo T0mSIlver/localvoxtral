@@ -328,6 +328,15 @@ private struct FinishPage: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if !summary.isModifierOnly {
+                Text(
+                    "Prefer a single key? The trigger can be just a modifier like Fn / Globe — tap it for the overlay, hold it to type live. Switch anytime in Settings ▸ Dictation."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
