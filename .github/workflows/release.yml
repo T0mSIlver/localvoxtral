@@ -127,6 +127,8 @@ jobs:
             -s scripts/dmg_settings.py \
             -D app=dist/localvoxtral.app \
             "localvoxtral" "dist/localvoxtral-$TAG.dmg"
+          ditto -c -k --keepParent \
+            "dist/localvoxtral.dSYM" "dist/localvoxtral-$TAG.dSYM.zip"
           (
             cd dist
             shasum -a 256 "localvoxtral-$TAG.zip" > "localvoxtral-$TAG.zip.sha256"
@@ -153,3 +155,4 @@ jobs:
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip.sha256
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256
+            dist/localvoxtral-${{ steps.meta.outputs.tag }}.dSYM.zip

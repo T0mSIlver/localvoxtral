@@ -38,8 +38,12 @@ CONFIGURATION="${1:-release}"
 # identify the exact build — every non-release build used to say "0.3.0".
 # Releases still pass an explicit version. Fallback covers trees without git
 # metadata (remote-build rsync excludes .git) and shallow clones without tags.
-GIT_VERSION="$(git describe --tags 2>/dev/null | sed 's/^v//')"
-GIT_BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null)"
+# `|| true` because trees without git metadata (remote-build rsync excludes
+# .git) make git exit 128, which pipefail+set -e turns into a silent death
+# before the first echo — the fallback below never got a chance (broke
+# `remote-build.sh package` when #67 introduced git-derived versions).
+GIT_VERSION="$(git describe --tags 2>/dev/null | sed 's/^v//' || true)"
+GIT_BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || true)"
 APP_VERSION="${2:-${GIT_VERSION:-0.0.0-dev}}"
 BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
 
@@ -92,9 +96,12 @@ done
 swift package resolve >/dev/null
 patch_shortcutrecorder_bundle_lookup
 
-swift build -c "$CONFIGURATION" --product localvoxtral
+# -g keeps DWARF in the object files so dsymutil can produce a dSYM below —
+# without it, field crash reports only symbolicate as well as the stripped
+# binary allows. It does not change optimization (-O still applies in release).
+swift build -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
 if patch_local_resource_bundle_lookup "$CONFIGURATION"; then
-  swift build -c "$CONFIGURATION" --product localvoxtral
+  swift build -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
 fi
 
 BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
@@ -102,6 +109,13 @@ if [[ -z "$BINARY_PATH" ]]; then
   echo "Unable to find built localvoxtral binary under .build."
   exit 1
 fi
+
+# Collect debug symbols while the object files still exist; CI uploads the
+# dSYM so crashes from any distributed build can be symbolicated later.
+DSYM_PATH="$ROOT_DIR/dist/localvoxtral.dSYM"
+mkdir -p "$ROOT_DIR/dist"
+rm -rf "$DSYM_PATH"
+dsymutil "$BINARY_PATH" -o "$DSYM_PATH"
 
 APP_DIR="$ROOT_DIR/dist/localvoxtral.app"
 rm -rf "$APP_DIR"
@@ -232,6 +246,8 @@ fi
 touch "$APP_DIR"
 
 echo "Packaged app: $APP_DIR"
+echo "Debug symbols: $DSYM_PATH"
+dwarfdump --uuid "$DSYM_PATH" 2>/dev/null | head -n 1 || true
 echo "Contents/MacOS:"
 find "$APP_DIR/Contents/MacOS" -maxdepth 1 -type f -exec basename {} \; | sort | sed 's/^/  /'
 echo "Launch with: open \"$APP_DIR\""

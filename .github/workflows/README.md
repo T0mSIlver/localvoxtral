@@ -2,10 +2,14 @@
 
 ## `ci.yml`
 
-Every PR and push to main: build, unit tests, live voxmlx integration tests,
-app packaging, launch smoke test, and an installable app artifact
-(`localvoxtral-app`, fetch with `scripts/try-pr.sh`). Same-repo branches run
-on the self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
+Every PR and push to main: build, advisory format lint (`.swift-format`;
+flips to `--strict` after the one-shot tree reformat), unit tests with a
+coverage summary (`llvm-cov report` over Sources — visibility for the PR
+Proof section, not a gate), live voxmlx integration tests, app packaging,
+launch smoke test, an installable app artifact (`localvoxtral-app`, fetch
+with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
+retention) for symbolicating field crashes. Same-repo branches run on the
+self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
 
 ## `release.yml`
 
@@ -35,6 +39,9 @@ builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing
 ## `ui-smoke.yml`
 
 Nightly and manual-dispatch AX smoke drill on the self-hosted Mac runner.
+Also runs on same-repo PRs when the `needs-ui-smoke` label is added — the
+on-demand proof path for UI-affecting PRs (re-add the label to rerun after
+new pushes; fork PRs never reach the self-hosted runner, label or no label).
 It packages the app, launches a fresh menu bar instance, verifies the status
 item, checks that launch alone does not spawn managed backend processes, opens
 Settings from the status menu, selects the three settings tabs, checks the
