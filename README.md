@@ -9,25 +9,19 @@
 </p>
 
 localvoxtral is a native macOS menu bar app for realtime dictation.
-It keeps the loop simple: start dictation, speak, get text fast.
-Unlike Whisper-based tools that transcribe after you stop speaking, Voxtral Realtime streams text as audio arrives, so words appear while you're still talking.
-On Apple Silicon, `localvoxtral` + `voxmlx` + `mlx-lm` provides a fully local path (audio + inference + LLM polishing stay on-device), improving privacy and avoiding API costs.
+Press a key, speak, and the text appears while you're still talking — no waiting for a recording to be transcribed after you stop.
 
-On Apple Silicon the default **Managed local** mode runs everything for you: localvoxtral installs and manages `voxmlx` (dictation) and `mlx-lm` (LLM polishing) itself.
-You can switch dictation and polishing independently to **External URL** mode for OpenAI-compatible endpoints you run yourself.
-
-Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model, but it works with any OpenAI-compatible Realtime API backend and model.
+By default everything runs on your Mac (Apple Silicon): the speech model and the optional LLM that polishes your transcript. No audio or text leaves the machine, no account, no API costs. Powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) model.
 
 ## Features
 
-- **Fully local by default** — dictation (`voxmlx`) and LLM polishing (`mlx-lm`) run on-device in Managed local mode: no audio or text leaves the Mac, no API costs
-- **Guided first launch** — a setup wizard grants permissions and downloads the local engine with real download progress; re-run it any time from Settings
-- **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option): tap to dictate into the overlay, hold to type live — or classic per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
+- **Fully local by default** — dictation and polishing run on-device: no audio or text leaves the Mac, no API costs
+- **Guided first launch** — a setup wizard grants permissions and downloads the local engine with live progress; re-run it any time from Settings
+- **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option): tap to dictate into a review overlay, hold to type live — or classic per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
 - **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
-- **LLM polishing** — cleans up the transcript before it commits, with editable system/user prompt templates; runs on the managed local model or any OpenAI-compatible chat endpoint
-- **Replacement dictionary** — exact-match corrections applied in both output modes, optionally fed to the polishing LLM
-- **Bring your own backend** — dictation and polishing switch independently to External URL mode for any OpenAI Realtime-compatible / chat-completions server
-- **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final segment
+- **Automatic cleanup** — optional LLM polishing with editable prompts, plus an exact-match replacement dictionary
+- **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
+- **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text
 
 ## Quick start
 
@@ -36,10 +30,6 @@ Built for Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistral
 ```bash
 curl -fsSL https://raw.githubusercontent.com/T0mSIlver/localvoxtral/main/scripts/install.sh | bash
 ```
-
-This downloads the latest release, clears quarantine metadata, re-signs the app locally, installs it into `/Applications`, and opens it.
-
-The setup wizard takes it from there on first launch: grant the microphone and Accessibility permissions, choose whether to include LLM polishing, and watch the local engine download with live progress. You can dictate the moment it finishes.
 
 ### Manual install from GitHub Releases (DMG)
 
@@ -69,17 +59,15 @@ Two ways to trigger dictation, configured in **Settings -> Dictation**:
 | Tap | Toggle Overlay Buffer dictation on/off |
 | Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk — dictates while held, stops on release |
 
-The gesture selects the output mode, so both workflows are always one key away. Pressing any other key while the modifier is down cancels the gesture, so regular keyboard combos are unaffected. Requires Accessibility permission.
+The gesture selects the output mode, so both workflows are always one key away. Pressing any other key while the modifier is down cancels the gesture, so regular keyboard combos involving the modifier are unaffected. Requires Accessibility permission.
 
 **Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
-
-The **Output mode** setting applies to dictation started from the menu bar. Keyboard gestures and per-mode shortcuts select their mode directly.
 
 **Escape** cancels an in-progress dictation.
 
 ## Settings
 
-A first-launch setup wizard (Welcome → Permissions → Downloads → Finish) grants microphone/Accessibility permissions and downloads the managed local engine, showing real download progress for the models. It appears once on a fresh install; re-run it any time from **Settings → General → Re-run Setup…**.
+A first-launch setup wizard (Welcome → Permissions → Downloads → Finish) grants microphone/Accessibility permissions and downloads the managed local engine, showing download progress for the models. It appears once on a fresh install; re-run it any time from **Settings → General → Re-run Setup…**.
 
 Open **Settings** from the menu bar popover:
 
@@ -91,39 +79,23 @@ Open **Settings** from the menu bar popover:
 
 The shared config directory lives at `~/Library/Application Support/localvoxtral/config`.
 
-## Tested setup
+## Under the hood
 
-### Managed local (default)
+In the default **Managed local** mode, localvoxtral installs and runs two local engines for you: [voxmlx](https://github.com/T0mSIlver/voxmlx) streaming Voxtral Mini 4B Realtime for dictation, and [mlx-lm](https://github.com/T0mSIlver/mlx-lm) running a small Qwen model for polishing. Everything installs under `~/Library/Application Support/localvoxtral` and uninstalls by deleting that folder.
 
-In Managed local mode, localvoxtral installs pinned wheel releases of the selected managed backends into `~/Library/Application Support/localvoxtral/backends` using a pinned [uv](https://github.com/astral-sh/uv) it downloads on first use. Downloads start only from explicit setup/dictation actions; enabling managed polishing may warm that backend immediately. The managed processes exit with the app — even after a crash, via a parent-pid watchdog. Uninstalling the backends is deleting that one directory.
-
-**Dictation — voxmlx.** [voxmlx](https://github.com/awni/voxmlx) running [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit) on M1 Pro, streaming partial text fast enough for realtime dictation (latency and throughput vary by hardware, model, and quantization). The managed build is [this fork](https://github.com/T0mSIlver/voxmlx), which adds a WebSocket server that speaks the OpenAI Realtime API protocol, memory-management optimizations, and managed-launch support (readiness signal + parent-pid watchdog).
-
-**LLM polishing — mlx-lm.** When polishing is enabled, `mlx_lm.server` runs [Qwen3.5-0.8B in 8-bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit) — a lightweight default that adds little overhead while remaining smart enough for reliable polishing. The managed build is [this fork](https://github.com/T0mSIlver/mlx-lm), which adds enhanced prompt caching (enabled by the managed launch): with the default polishing prompts, prompt processing is roughly 286 ms (~50%) faster on average on M1 Pro. On more powerful Apple Silicon the absolute savings will be lower because prompt processing is faster.
-
-### External URL: vLLM
-
-[vllm](https://github.com/vllm-project/vllm) OpenAI Realtime-compatible server running on an NVIDIA RTX 3090, using the default settings recommended on the [Voxtral Mini 4B Realtime model page](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602).
-
-```bash
-VLLM_DISABLE_COMPILE_CACHE=1
-vllm serve mistralai/Voxtral-Mini-4B-Realtime-2602 --compilation_config '{"cudagraph_mode": "PIECEWISE"}'
-```
-
-Any other OpenAI Realtime-compatible endpoint works the same way — set the dictation backend to `External URL` in **Settings → Endpoints**, then enter the URL, model name, and API key if needed.
+Prefer to run your own server (e.g. vLLM on a GPU box)? Dictation and polishing each switch independently to **External URL** mode in **Settings → Endpoints**. Pinned models, fork details, and a tested vLLM setup: [BACKENDS.md](BACKENDS.md).
 
 ## Roadmap
 
-- [ ] Enhance the server connection UX
-- [x] Drive `voxmlx-serve` (from the `voxmlx` fork) upstream and assess app-managed local serving (start/stop/config) in localvoxtral.
-- [ ] Implement more of the on-device Voxtral Realtime integrations recommended in the model README:
-  - [Pure C](https://github.com/antirez/voxtral.c) - thanks [Salvatore Sanfilippo](https://github.com/antirez)
-  - **done** ~~[MLX](https://github.com/awni/voxmlx) - thanks [Awni Hannun](https://github.com/awni)~~
-  - [Rust](https://github.com/TrevorS/voxtral-mini-realtime-rs) - thanks [TrevorS](https://github.com/TrevorS)
+- [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
+- [ ] Documentation website — a visual, end-user guide beyond this README
+- [ ] Model choice in Managed local mode — pick the polishing LLM instead of the pinned default
+- [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+- [ ] Professional, reproducible demo recording for this README
 
 ## UI
 
-<!-- Regenerate the screenshots below with the "Capture README Assets" workflow (Actions -> capture-assets.yml, run on the branch) or ./scripts/capture-readme-assets.sh on a Mac. Captures are pinned to dark mode for consistency; demo.gif is recorded by hand. -->
+<!-- Regenerate the screenshots below with the "Capture README Assets" workflow (Actions -> capture-assets.yml, run on the branch) or ./scripts/capture-readme-assets.sh on a Mac. Captures are pinned to dark mode for consistency. The demo video is recorded with ./scripts/record-demo.sh (operator speaks the prompted lines) or hands-free via the "Record README Demo" workflow (record-demo.yml, TTS through BlackHole on the self-hosted runner); GitHub only renders inline video from user-attachments URLs, so the resulting mp4 is drag-dropped into a PR comment by hand and the URL pasted here on its own line. -->
 
 <p>
   <picture>

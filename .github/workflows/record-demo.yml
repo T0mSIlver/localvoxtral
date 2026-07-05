@@ -1,0 +1,62 @@
+name: Record README Demo
+
+# Hands-free demo recording on the self-hosted runner (the owner's Mac, GUI
+# session): scripts/record-demo.sh drives the app and speaks the demo lines
+# via TTS into the BlackHole loopback device. The encoded mp4 lands in the
+# run's artifacts; publishing it is manual by design — GitHub only renders
+# inline README video from user-attachments URLs, which have no upload API,
+# so the owner drag-drops the mp4 into a PR comment and pastes the URL.
+#
+# One-time runner-machine setup (beyond the capture-assets grants):
+#   brew install blackhole-2ch ffmpeg
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: record-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  record-demo:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check record script
+        id: guard
+        run: |
+          if [[ ! -f scripts/record-demo.sh ]]; then
+            echo "scripts/record-demo.sh is not present on this ref; skipping demo recording."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "present=true" >> "$GITHUB_OUTPUT"
+
+      - name: Package app bundle
+        if: steps.guard.outputs.present == 'true'
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+        run: ./scripts/package_app.sh release
+
+      - name: Record demo (hands-free)
+        id: record
+        if: steps.guard.outputs.present == 'true'
+        env:
+          DEMO_HANDS_FREE: "1"
+          DEMO_WARMUP_SECONDS: "25"
+        run: |
+          bash scripts/record-demo.sh dist/localvoxtral.app
+          echo "ran=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload demo video
+        if: steps.record.outputs.ran == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-demo
+          path: dist/demo/
+          if-no-files-found: error
+          retention-days: 14
