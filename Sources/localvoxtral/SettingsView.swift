@@ -625,7 +625,6 @@ private struct DictationSettingsPane: View {
                     }
                 }
             }
-
         }
     }
 }

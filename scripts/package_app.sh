@@ -34,8 +34,14 @@ patch_local_resource_bundle_lookup() {
 }
 
 CONFIGURATION="${1:-release}"
-APP_VERSION="${2:-0.3.0}"
-BUILD_NUMBER="${3:-1}"
+# Default the version from git so About, crash reports, and diagnostics can
+# identify the exact build — every non-release build used to say "0.3.0".
+# Releases still pass an explicit version. Fallback covers trees without git
+# metadata (remote-build rsync excludes .git) and shallow clones without tags.
+GIT_VERSION="$(git describe --tags 2>/dev/null | sed 's/^v//')"
+GIT_BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null)"
+APP_VERSION="${2:-${GIT_VERSION:-0.0.0-dev}}"
+BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
 
 # Sign with a stable identity when available so TCC grants (Accessibility)
 # survive rebuilds; ad-hoc signatures change every build and invalidate them.
