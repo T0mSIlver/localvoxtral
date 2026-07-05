@@ -4,6 +4,10 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 4 * * *"
+  # UI-affecting PRs get automated proof on demand: add the needs-ui-smoke
+  # label (re-add it to rerun after new pushes).
+  pull_request:
+    types: [labeled]
 
 concurrency:
   group: ui-smoke-${{ github.ref }}
@@ -11,6 +15,12 @@ concurrency:
 
 jobs:
   ui-smoke:
+    # Same security invariant as ci.yml: fork PRs must never reach the
+    # self-hosted runner, label or no label.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.label.name == 'needs-ui-smoke' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 20
     steps:
