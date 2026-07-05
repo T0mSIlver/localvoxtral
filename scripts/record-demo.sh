@@ -347,21 +347,34 @@ osascript -e 'tell application "System Events" to key code 53' >/dev/null 2>&1 |
 sleep 1
 
 # --- stage TextEdit inside the capture region ------------------------------------
-read -r SCREEN_W SCREEN_H < <(osascript -e 'tell application "Finder" to get bounds of window of desktop' \
-  | awk -F', ' '{print $3, $4}')
-REGION_X=$(( (SCREEN_W - DEMO_WIDTH) / 2 ))
-REGION_Y=$(( (SCREEN_H - DEMO_HEIGHT) / 2 ))
-(( REGION_X < 0 || REGION_Y < 0 )) && { echo "Screen (${SCREEN_W}x${SCREEN_H}) is smaller than the ${DEMO_WIDTH}x${DEMO_HEIGHT} capture region." >&2; exit 1; }
+# Region and window placement are computed from the MAIN display only. The
+# desktop-union bounding box is wrong on multi-monitor setups: its center can
+# be a void between displays, which records as black while macOS clamps the
+# window elsewhere (first hands-free runner take failed exactly like that).
+# CGDisplayBounds uses the same global top-left coordinates as screencapture
+# -R and System Events window positions.
+read -r MAIN_X MAIN_Y MAIN_W MAIN_H < <(swift - <<'SWIFT'
+import CoreGraphics
+let b = CGDisplayBounds(CGMainDisplayID())
+print("\(Int(b.origin.x)) \(Int(b.origin.y)) \(Int(b.width)) \(Int(b.height))")
+SWIFT
+)
+REGION_X=$(( MAIN_X + (MAIN_W - DEMO_WIDTH) / 2 ))
+REGION_Y=$(( MAIN_Y + (MAIN_H - DEMO_HEIGHT) / 2 ))
+(( MAIN_W < DEMO_WIDTH || MAIN_H < DEMO_HEIGHT )) && { echo "Main display (${MAIN_W}x${MAIN_H}) is smaller than the ${DEMO_WIDTH}x${DEMO_HEIGHT} capture region." >&2; exit 1; }
+(( REGION_Y < MAIN_Y + 30 )) && REGION_Y=$(( MAIN_Y + 30 )) # keep clear of the menu bar
 
 LAUNCHED_TEXTEDIT=1
+# The window fills the region exactly so the recording never shows whatever
+# else is on the desktop.
 osascript >/dev/null <<OSA
 tell application "TextEdit"
   activate
   make new document
 end tell
 tell application "System Events" to tell process "TextEdit"
-  set position of front window to {$((REGION_X + 40)), $((REGION_Y + 60))}
-  set size of front window to {$((DEMO_WIDTH - 80)), $((DEMO_HEIGHT - 120))}
+  set position of front window to {$REGION_X, $REGION_Y}
+  set size of front window to {$DEMO_WIDTH, $DEMO_HEIGHT}
 end tell
 OSA
 sleep 1
