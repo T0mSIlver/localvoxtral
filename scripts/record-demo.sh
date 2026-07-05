@@ -198,7 +198,8 @@ cat > "$AUDIO_UID" <<'SWIFT'
 import CoreAudio
 import Foundation
 
-// usage: audiouid.swift <device name> — prints the device UID, exit 1 if absent
+// usage: audiouid.swift <device name>  — prints the device UID, exit 1 if absent
+//        audiouid.swift --list         — prints every audio device name
 guard CommandLine.arguments.count > 1 else { exit(2) }
 let wanted = CommandLine.arguments[1]
 
@@ -224,6 +225,15 @@ var size: UInt32 = 0
 guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size) == noErr else { exit(1) }
 var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
 guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { exit(1) }
+
+if wanted == "--list" {
+    for id in ids {
+        if let name = stringProperty(id, kAudioObjectPropertyName) {
+            print(name)
+        }
+    }
+    exit(0)
+}
 
 for id in ids where stringProperty(id, kAudioObjectPropertyName) == wanted {
     if let uid = stringProperty(id, kAudioDevicePropertyDeviceUID) {
@@ -277,6 +287,8 @@ if [[ -n "$DEMO_SAY_DEVICE" ]]; then
     DEMO_SAY_INPUT_UID="$(swift "$AUDIO_UID" "$DEMO_SAY_DEVICE")" || {
       echo "Hands-free mode needs the loopback audio device \"$DEMO_SAY_DEVICE\", which is not present." >&2
       echo "One-time setup on this Mac: brew install blackhole-2ch" >&2
+      echo "Audio devices visible to this session:" >&2
+      swift "$AUDIO_UID" --list >&2 || true
       exit 1
     }
   fi
