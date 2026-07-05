@@ -26,11 +26,32 @@ set -euo pipefail
 # order:
 #   1. LV_BUILD_HOST env var (ssh destination, e.g. user@host or an ssh alias)
 #   2. git config localvoxtral.buildhost   (set once per clone, lives in .git/config)
-# Optional: LV_BUILD_DIR — remote work dir, ~-relative (default: work/localvoxtral-remote)
+# Optional: LV_BUILD_DIR — remote work dir, ~-relative. Defaults to a
+# per-worktree name derived from the local checkout path, so parallel agents
+# in separate worktrees never contend on remote build state or its SwiftPM
+# lock. The full remote output of every run is also written to
+# .build/last-remote.log, so a crash mid-run can never eat the failing test's
+# name (don't pipe this script straight into grep — grep the log file).
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
-DIR="${LV_BUILD_DIR:-work/localvoxtral-remote}"
+
+TREE_SLUG="$(basename "$ROOT_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')"
+TREE_SLUG="${TREE_SLUG%-}"
+TREE_HASH="$(printf '%s' "$ROOT_DIR" | md5sum | cut -c1-8)"
+DIR="${LV_BUILD_DIR:-work/localvoxtral-${TREE_SLUG}-${TREE_HASH}}"
+
+REMOTE_LOG="$ROOT_DIR/.build/last-remote.log"
+
+run_remote() {
+  local remote_command="$1"
+  local status=0
+  mkdir -p "$(dirname "$REMOTE_LOG")"
+  echo "==> Running on $HOST: $remote_command"
+  ssh "$HOST" "$remote_command" 2>&1 | tee "$REMOTE_LOG" || status=$?
+  echo "==> Full output: $REMOTE_LOG"
+  return "$status"
+}
 
 if [[ -z "$HOST" ]]; then
   cat >&2 <<'MSG'
@@ -66,20 +87,16 @@ case "$CMD" in
       echo "$CMD does not accept extra arguments" >&2
       exit 1
     fi
-    REMOTE_DIAG_CMD="$(quote_remote_command "$CMD")"
-    echo "==> Running on $HOST: $REMOTE_DIAG_CMD"
-    ssh "$HOST" "$REMOTE_DIAG_CMD"
-    exit 0
+    run_remote "$(quote_remote_command "$CMD")"
+    exit $?
     ;;
   applog|voxlog)
     if [[ $# -gt 1 ]]; then
       echo "$CMD accepts at most one numeric argument" >&2
       exit 1
     fi
-    REMOTE_DIAG_CMD="$(quote_remote_command "$CMD" "$@")"
-    echo "==> Running on $HOST: $REMOTE_DIAG_CMD"
-    ssh "$HOST" "$REMOTE_DIAG_CMD"
-    exit 0
+    run_remote "$(quote_remote_command "$CMD" "$@")"
+    exit $?
     ;;
 esac
 
@@ -115,5 +132,4 @@ rsync -az --delete \
   --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
   "$ROOT_DIR/" "$HOST:$DIR/"
 
-echo "==> Running on $HOST: ${REMOTE_CMD[*]}"
-ssh "$HOST" "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")"
+run_remote "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")"

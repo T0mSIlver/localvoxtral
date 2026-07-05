@@ -7,11 +7,9 @@ set -euo pipefail
 # build-host SSH key. It keeps the existing build/test/package allowlist and
 # adds read-only diagnostics without granting an interactive shell.
 #
-# Gate v2 install notes:
-#   scp scripts/mac/localvoxtral-build-gate.sh <host>:bin/ && ssh <host> chmod +x bin/localvoxtral-build-gate.sh
-#
-# Run that from a trusted owner session, not through this gate. New diagnostic
-# verbs allowed through the gate:
+# Gate v2 install notes: see scripts/mac/README.md. Install from a trusted
+# owner session, not through this gate. New diagnostic verbs allowed through
+# the gate:
 #   diag
 #   applog [minutes]    # integer, clamped to 1..120, default 10
 #   voxlog [lines]      # integer, clamped to 1..500, default 80
@@ -20,6 +18,19 @@ set -euo pipefail
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
 VOXLOG_FILE="$HOME/Library/Logs/voxmlx.log"
 VOXMLX_SERVICE="com.localvoxtral.voxmlx"
+# The GUI-session uid whose launchd domain hosts the voxmlx service. The gate
+# account is deliberately not that user, so launchctl needs to be told.
+VOXMLX_GUI_UID="$(id -u)"
+
+# Machine-local overrides (never committed): the gate account is separate
+# from the GUI owner account, so voxmlx's log path and GUI uid differ per
+# machine. Anyone who can write this file can already replace the gate
+# script itself, so sourcing it adds no new trust.
+GATE_CONF="$HOME/.localvoxtral-gate.conf"
+if [[ -f "$GATE_CONF" ]]; then
+  # shellcheck source=/dev/null
+  source "$GATE_CONF"
+fi
 
 original_command="${SSH_ORIGINAL_COMMAND:-}"
 
@@ -71,7 +82,7 @@ clamp_integer() {
 }
 
 launchctl_target() {
-  printf 'gui/%s/%s\n' "$(id -u)" "$VOXMLX_SERVICE"
+  printf 'gui/%s/%s\n' "$VOXMLX_GUI_UID" "$VOXMLX_SERVICE"
 }
 
 show_versions() {
@@ -195,6 +206,11 @@ run_voxlog_command() {
 
 run_svc_status() {
   show_voxmlx_service 40
+  # launchctl can't read another user's GUI domain, so when the gate account
+  # is not the service owner the print above comes back empty — processes and
+  # ports still answer the question that matters: is voxmlx up and serving?
+  show_processes
+  show_ports
 }
 
 # Fail-closed metacharacter blocklist. Note the glob subtlety: a `]` inside
