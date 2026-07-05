@@ -56,6 +56,11 @@ final class HotKeyManager {
     private var modifierOnlyManager = ModifierOnlyHotKeyManager()
     private var isUsingModifierOnly = false
 
+    /// True while a modifier-only registration is installed. Lets the view
+    /// model retry a launch-time registration that failed because
+    /// Accessibility trust had not landed yet, without churning a live one.
+    var isModifierOnlyRegistrationActive: Bool { isUsingModifierOnly }
+
     /// Maps hotkey IDs to output modes for dual-shortcut dispatch.
     private var hotKeyIDToMode: [UInt32: DictationOutputMode] = [:]
 

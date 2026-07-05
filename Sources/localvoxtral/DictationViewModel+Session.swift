@@ -40,9 +40,7 @@ extension DictationViewModel {
     func beginDictationAfterManagedBackendIfNeeded(outputMode: DictationOutputMode? = nil) {
         let requestedOutputMode = outputMode ?? settings.dictationOutputMode
         let needsManagedDictation = settings.dictationBackendMode == .managedLocal
-        let needsManagedPolishing = requestedOutputMode == .overlayBuffer
-            && settings.llmPolishingEnabled
-            && settings.polishingBackendMode == .managedLocal
+        let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
 
         guard needsManagedDictation || needsManagedPolishing else {
             beginDictationSession(outputMode: outputMode)

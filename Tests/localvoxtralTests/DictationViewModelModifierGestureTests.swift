@@ -99,6 +99,66 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
+    func testAccessibilityTrustArrivalRetriesFailedModifierOnlyRegistration() {
+        // Launch-time modifier-only registration fails while AXIsProcessTrusted()
+        // is transiently false (cold-launch TCC race, field-hit 2026-07-05).
+        // When trust lands, the trust-change hook must re-register instead of
+        // leaving the shortcut dead until the user touches the modifier setting.
+        ModifierOnlyHotKeyManager.resetDebugState()
+        defer { ModifierOnlyHotKeyManager.resetDebugState() }
+
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.modifierOnlyHotKeyEnabled = true
+        // Force the failure BEFORE the view model exists: on an AX-trusted
+        // test host, init's trust refresh already fires the retry hook, and a
+        // real registration there would break the "dead at launch" premise.
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .monitorInstallationFailed
+        let viewModel = makeViewModel(settings: settings)
+        viewModel.textInsertion.debugSetAccessibilityTrusted(false)
+
+        viewModel.applyHotKeySettingsChange()
+        XCTAssertNotEqual(
+            viewModel.debugCurrentHotKeyRegistrationKindForTesting, .modifierOnly,
+            "sanity: the launch-time registration attempt must have failed"
+        )
+
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+
+        XCTAssertEqual(
+            viewModel.debugCurrentHotKeyRegistrationKindForTesting, .modifierOnly,
+            "trust arrival must re-register the modifier-only hotkey"
+        )
+        XCTAssertNil(
+            viewModel.lastError,
+            "a healed registration must clear the stale hotkey error"
+        )
+    }
+
+    func testAccessibilityTrustArrivalDoesNotChurnLiveModifierOnlyRegistration() {
+        ModifierOnlyHotKeyManager.resetDebugState()
+        defer { ModifierOnlyHotKeyManager.resetDebugState() }
+
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.modifierOnlyHotKeyEnabled = true
+        // Forced before init so an AX-trusted test host cannot install real
+        // NSEvent monitors through the init-time trust refresh.
+        ModifierOnlyHotKeyManager.forcedStartOutcome = .created
+        let viewModel = makeViewModel(settings: settings)
+        viewModel.textInsertion.debugSetAccessibilityTrusted(false)
+
+        viewModel.applyHotKeySettingsChange()
+        XCTAssertEqual(viewModel.debugCurrentHotKeyRegistrationKindForTesting, .modifierOnly)
+        let startCallsAfterRegistration = ModifierOnlyHotKeyManager.startCallCount
+
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+
+        XCTAssertEqual(
+            ModifierOnlyHotKeyManager.startCallCount, startCallsAfterRegistration,
+            "trust arrival must not re-register a modifier-only hotkey that is already live"
+        )
+    }
+
     private func makeSettings(outputMode: DictationOutputMode) -> SettingsStore {
         let suiteName = "localvoxtral.DictationViewModelModifierGestureTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
