@@ -27,6 +27,34 @@ final class SettingsStoreTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:])
     }
 
+    // MARK: - Overlay Buffer session reachability
+
+    func testOverlayBufferReachability_truthTable() {
+        let store = makeStore()
+
+        // Fresh install: shortcuts mode with the default overlay shortcut.
+        XCTAssertTrue(store.isOverlayBufferSessionReachable)
+
+        // Shortcuts mode with the overlay shortcut cleared: unreachable.
+        store.modifierOnlyHotKeyEnabled = false
+        store.setOverlayBufferShortcut(nil)
+        XCTAssertFalse(store.isOverlayBufferSessionReachable)
+
+        // The menu-bar output mode is NOT a trigger (field report 2026-07-06:
+        // clearing the shortcut must disable polishing even with the menu-bar
+        // mode on Overlay Buffer).
+        store.dictationOutputMode = .overlayBuffer
+        XCTAssertFalse(store.isOverlayBufferSessionReachable)
+
+        // Each keyboard trigger alone restores reachability.
+        store.setOverlayBufferShortcut(SettingsStore.defaultDictationShortcut)
+        XCTAssertTrue(store.isOverlayBufferSessionReachable)
+        store.setOverlayBufferShortcut(nil)
+
+        store.modifierOnlyHotKeyEnabled = true
+        XCTAssertTrue(store.isOverlayBufferSessionReachable)
+    }
+
     // MARK: - resolvedWebSocketURL
 
     func testResolvedURL_wsPassthrough() {

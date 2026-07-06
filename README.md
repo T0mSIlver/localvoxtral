@@ -45,7 +45,7 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 - **Fully local by default** — dictation and polishing run on-device: no audio or text leaves the Mac, no API costs
 - **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option): tap to dictate into a review overlay, hold to type live — or classic per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
 - **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
-- **Automatic cleanup** — optional LLM polishing with editable prompts, plus an exact-match replacement dictionary
+- **Automatic cleanup** — an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
 - **Guided first launch** — a setup wizard grants permissions and downloads the local engine with live progress; re-run it any time from Settings
 - **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
 - **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text
@@ -68,7 +68,7 @@ Two ways to trigger dictation, configured in **Settings → Dictation**:
 | Tap | Toggle Overlay Buffer dictation on/off |
 | Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk — dictates while held, stops on release |
 
-The gesture selects the output mode, so both workflows are always one key away. Pressing any other key while the modifier is down cancels the gesture, so regular keyboard combos involving the modifier are unaffected. Requires Accessibility permission.
+The gesture selects the output mode, so both workflows are always one key away. It also selects the treatment: tap commits through optional LLM polishing, while hold streams words in real time (the replacement dictionary applies in both). Pressing any other key while the modifier is down cancels the gesture, so regular keyboard combos involving the modifier are unaffected. Requires Accessibility permission.
 
 **Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
 

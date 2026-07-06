@@ -720,6 +720,18 @@ final class SettingsStore {
         return candidate
     }
 
+    /// True when a keyboard trigger can start an Overlay Buffer session: the
+    /// single-modifier tap gesture, or a dedicated Overlay Buffer shortcut.
+    /// LLM polishing runs only on Overlay Buffer commits, so when this is
+    /// false Settings shows polishing as unavailable and managed mlx-lm is
+    /// kept stopped. The menu-bar Start Dictation button deliberately does
+    /// not count (owner call, 2026-07-06): an overlay session started from
+    /// the popover still polishes via the session-time ensureReady backstop,
+    /// paying the mlx-lm cold start.
+    var isOverlayBufferSessionReachable: Bool {
+        modifierOnlyHotKeyEnabled || overlayBufferShortcut != nil
+    }
+
     var livePasteShortcut: DictationShortcut? {
         guard livePasteShortcutEnabled else { return nil }
         let candidate = DictationShortcut(

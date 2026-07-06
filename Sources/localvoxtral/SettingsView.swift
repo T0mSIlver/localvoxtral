@@ -200,8 +200,8 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
-    private var isLLMPolishingAvailableInCurrentMode: Bool {
-        settings.dictationOutputMode == .overlayBuffer
+    private var isLLMPolishingReachable: Bool {
+        settings.isOverlayBufferSessionReachable
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -280,11 +280,11 @@ private struct ConnectionSettingsPane: View {
                     }
                 }
 
-                if !isLLMPolishingAvailableInCurrentMode {
+                if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
-                        title: "Unavailable in Live Auto-Paste mode",
+                        title: "No Overlay Buffer shortcut",
                         message:
-                            "Set Dictation > Output mode to Overlay Buffer to enable it.",
+                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
                         systemImage: "exclamationmark.triangle.fill",
                         tint: .orange
                     )
@@ -292,9 +292,13 @@ private struct ConnectionSettingsPane: View {
 
                 Group {
                     SettingsFieldRow(title: "Enable") {
-                        Toggle("", isOn: llmPolishingEnabledBinding)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: llmPolishingEnabledBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText("Overlay Buffer dictations only.")
+                        }
                     }
 
                     switch settings.polishingBackendMode {
@@ -331,8 +335,8 @@ private struct ConnectionSettingsPane: View {
                         )
                     }
                 }
-                .disabled(!isLLMPolishingAvailableInCurrentMode)
-                .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)
+                .disabled(!isLLMPolishingReachable)
+                .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
         }
     }
@@ -492,8 +496,9 @@ private struct DictationSettingsPane: View {
                     Picker("", selection: Binding(
                         get: { settings.modifierOnlyHotKeyEnabled },
                         set: { newValue in
-                            settings.modifierOnlyHotKeyEnabled = newValue
-                            viewModel.applyHotKeySettingsChange()
+                            viewModel.applyDictationTriggerModeChange(
+                                modifierOnlyEnabled: newValue
+                            )
                         }
                     )) {
                         Text("Single modifier key").tag(true)
@@ -569,17 +574,15 @@ private struct DictationSettingsPane: View {
                             .disabled(
                                 settings.overlayBufferShortcut == SettingsStore.defaultDictationShortcut)
                         }
-                    }
 
-                    if let overlayValidationError {
-                        SettingsMessageRow(overlayValidationError, color: .red)
-                    }
-
-                    if settings.overlayBufferShortcut == nil {
-                        SettingsMessageRow(
-                            "Overlay Buffer shortcut is currently disabled.",
-                            color: .secondary
-                        )
+                        if let overlayValidationError {
+                            SettingsInlineMessage(overlayValidationError, color: .red)
+                        } else if settings.overlayBufferShortcut == nil {
+                            SettingsInlineMessage(
+                                "Not set. Record one to enable.",
+                                color: .secondary
+                            )
+                        }
                     }
 
                     SettingsFieldRow(title: "Live Auto-Paste") {
@@ -591,24 +594,23 @@ private struct DictationSettingsPane: View {
                             )
                             .frame(height: 24, alignment: .leading)
 
-                            if settings.livePasteShortcut != nil {
-                                Button("Clear") {
-                                    livePasteValidationError = nil
-                                    viewModel.updateLivePasteShortcut(nil)
-                                }
+                            // Always present (disabled when empty) so both
+                            // shortcut rows keep identical heights and spacing.
+                            Button("Clear") {
+                                livePasteValidationError = nil
+                                viewModel.updateLivePasteShortcut(nil)
                             }
+                            .disabled(settings.livePasteShortcut == nil)
                         }
-                    }
 
-                    if let livePasteValidationError {
-                        SettingsMessageRow(livePasteValidationError, color: .red)
-                    }
-
-                    if settings.livePasteShortcut == nil {
-                        SettingsMessageRow(
-                            "Live Auto-Paste shortcut is not set. Record one above to enable.",
-                            color: .secondary
-                        )
+                        if let livePasteValidationError {
+                            SettingsInlineMessage(livePasteValidationError, color: .red)
+                        } else if settings.livePasteShortcut == nil {
+                            SettingsInlineMessage(
+                                "Not set. Record one to enable.",
+                                color: .secondary
+                            )
+                        }
                     }
 
                     SettingsFieldRow(title: "Shortcut behavior") {
@@ -639,9 +641,6 @@ private struct DictationSettingsPane: View {
                         .labelsHidden()
 
                         SettingsHelpText(settings.dictationOutputMode.description)
-                        SettingsHelpText(
-                            "Keyboard triggers select their mode directly."
-                        )
                     }
                 }
             }
@@ -924,22 +923,3 @@ private struct SettingsInlineMessage: View {
     }
 }
 
-private struct SettingsMessageRow: View {
-    let message: String
-    let color: Color
-
-    init(_ message: String, color: Color) {
-        self.message = message
-        self.color = color
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
-            Color.clear
-                .frame(width: SettingsLayout.labelWidth, height: 1)
-            SettingsInlineMessage(message, color: color)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
