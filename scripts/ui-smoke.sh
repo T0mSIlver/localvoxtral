@@ -236,7 +236,6 @@ else
   exit 1
 fi
 
-
 if ! snapshot_defaults; then
   record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
   print_summary
@@ -458,11 +457,20 @@ func texts(_ element: AXUIElement) -> (role: String, title: String, value: Strin
     return (role, title, value, desc)
 }
 
+// Only text-bearing roles count as visible pane content. The toolbar tab
+// AXButtons (titled "General", "Endpoints", "Dictation", ...) exist on every
+// pane, so an unscoped match would let e.g. the Endpoints check pass off the
+// "Dictation" tab button without the pane ever rendering.
+let textRoles: Set<String> = ["AXStaticText", "AXTextField", "AXTextArea"]
+
 func containsNeedle(_ element: AXUIElement, depth: Int, budget: inout Int) -> Bool {
     if depth > 40 || budget <= 0 { return false }
     budget -= 1
     let t = texts(element)
-    if t.title.contains(needle) || t.value.contains(needle) || t.desc.contains(needle) { return true }
+    if textRoles.contains(t.role),
+       t.title.contains(needle) || t.value.contains(needle) || t.desc.contains(needle) {
+        return true
+    }
     for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
         if containsNeedle(child, depth: depth + 1, budget: &budget) { return true }
     }
