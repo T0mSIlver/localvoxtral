@@ -558,7 +558,8 @@ assert_tab "About" "Diagnostics"
 # the managed status rows. Managed-row AX coverage would need a second launch
 # that tolerates the eager spawn.
 select_tab "Endpoints" >/dev/null 2>&1 || true
-if window_shows_text "Endpoint" 10 && window_shows_text "API key" 10 --dump-on-fail; then
+if window_shows_text "Endpoint" 10 --dump-on-fail \
+  && window_shows_text "API key" 10 --dump-on-fail; then
   record_pass "External-mode Endpoints pane shows endpoint configuration fields."
 else
   record_fail "External-mode Endpoints pane did not show endpoint configuration fields."
