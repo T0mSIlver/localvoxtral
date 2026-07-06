@@ -829,11 +829,9 @@ final class DictationViewModel {
     }
 
     func applyDictationOutputModeChange(_ mode: DictationOutputMode) {
-        let previousMode = settings.dictationOutputMode
-        guard previousMode != mode else { return }
-        let wasReachable = settings.isOverlayBufferSessionReachable
+        // The menu-bar output mode is not a reachability input (see
+        // `isOverlayBufferSessionReachable`), so managed mlx-lm is unaffected.
         settings.dictationOutputMode = mode
-        handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
     /// The trigger picker in Settings > Dictation. Switching between the

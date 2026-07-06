@@ -35,18 +35,18 @@ final class SettingsStoreTests: XCTestCase {
         // Fresh install: shortcuts mode with the default overlay shortcut.
         XCTAssertTrue(store.isOverlayBufferSessionReachable)
 
-        // Shortcuts mode, overlay shortcut cleared, menu-bar mode Live: no
-        // trigger can start an Overlay Buffer session.
+        // Shortcuts mode with the overlay shortcut cleared: unreachable.
         store.modifierOnlyHotKeyEnabled = false
         store.setOverlayBufferShortcut(nil)
-        store.dictationOutputMode = .liveAutoPaste
         XCTAssertFalse(store.isOverlayBufferSessionReachable)
 
-        // Each trigger alone restores reachability.
+        // The menu-bar output mode is NOT a trigger (field report 2026-07-06:
+        // clearing the shortcut must disable polishing even with the menu-bar
+        // mode on Overlay Buffer).
         store.dictationOutputMode = .overlayBuffer
-        XCTAssertTrue(store.isOverlayBufferSessionReachable)
-        store.dictationOutputMode = .liveAutoPaste
+        XCTAssertFalse(store.isOverlayBufferSessionReachable)
 
+        // Each keyboard trigger alone restores reachability.
         store.setOverlayBufferShortcut(SettingsStore.defaultDictationShortcut)
         XCTAssertTrue(store.isOverlayBufferSessionReachable)
         store.setOverlayBufferShortcut(nil)

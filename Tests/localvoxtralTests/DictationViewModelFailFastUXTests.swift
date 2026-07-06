@@ -652,12 +652,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
     }
 
+    /// Exact field repro (2026-07-06): shortcuts mode, menu-bar output mode
+    /// still on Overlay Buffer, user clears the Overlay Buffer shortcut —
+    /// polishing must become unavailable and managed mlx-lm must stop. The
+    /// menu-bar output mode does not count as a trigger.
     func testClearingOverlayShortcutStopsManagedPolishing() async {
         let backendManager = FakeManagedBackendManager()
-        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.modifierOnlyHotKeyEnabled = false
-        // Fresh defaults keep the Overlay Buffer shortcut enabled, so overlay
-        // sessions start reachable here despite the Live menu-bar output mode.
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
@@ -667,6 +669,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitForStopPolishingCallCount(1)
 
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+        XCTAssertFalse(viewModel.settings.isOverlayBufferSessionReachable)
     }
 
     func testReachabilityTransitionToReachableStartsPolishingWarmup() async {
@@ -823,40 +826,24 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
     }
 
-    func testDictationOutputModeSwitchToLiveStopsManagedPolishing() async {
+    /// The menu-bar output mode is not a reachability input: switching it in
+    /// either direction must never start or stop managed mlx-lm.
+    func testDictationOutputModeSwitchesNeverTouchManagedPolishing() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
-        // No gesture and no overlay shortcut: switching the menu-bar output
-        // mode to Live makes Overlay Buffer sessions unreachable entirely.
-        viewModel.settings.setOverlayBufferShortcut(nil)
-        viewModel.settings.polishingBackendMode = .managedLocal
-        viewModel.settings.llmPolishingEnabled = true
-        retainForTestProcessLifetime(viewModel)
-
-        viewModel.applyDictationOutputModeChange(.liveAutoPaste)
-        await viewModel.polishingShutdownTask?.value
-
-        XCTAssertEqual(viewModel.settings.dictationOutputMode, .liveAutoPaste)
-        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
-        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-    }
-
-    func testDictationOutputModeSwitchToOverlayWarmsUpManagedPolishingWhenEnabled() async {
-        let backendManager = FakeManagedBackendManager()
-        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
-        // Start genuinely unreachable so the switch to Overlay Buffer is a
-        // reachability transition that must trigger the warmup.
         viewModel.settings.setOverlayBufferShortcut(nil)
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
         retainForTestProcessLifetime(viewModel)
 
+        viewModel.applyDictationOutputModeChange(.liveAutoPaste)
+        await Task.yield()
         viewModel.applyDictationOutputModeChange(.overlayBuffer)
-        await viewModel.polishingWarmupTask?.value
+        await Task.yield()
 
         XCTAssertEqual(viewModel.settings.dictationOutputMode, .overlayBuffer)
-        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
     }
 

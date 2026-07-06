@@ -282,9 +282,9 @@ private struct ConnectionSettingsPane: View {
 
                 if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
-                        title: "No Overlay Buffer trigger",
+                        title: "No Overlay Buffer shortcut",
                         message:
-                            "Polishing runs on Overlay Buffer dictations. Set an Overlay Buffer shortcut in Dictation to enable it.",
+                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
                         systemImage: "exclamationmark.triangle.fill",
                         tint: .orange
                     )
@@ -574,17 +574,15 @@ private struct DictationSettingsPane: View {
                             .disabled(
                                 settings.overlayBufferShortcut == SettingsStore.defaultDictationShortcut)
                         }
-                    }
 
-                    if let overlayValidationError {
-                        SettingsMessageRow(overlayValidationError, color: .red)
-                    }
-
-                    if settings.overlayBufferShortcut == nil {
-                        SettingsMessageRow(
-                            "Overlay Buffer shortcut is currently disabled.",
-                            color: .secondary
-                        )
+                        if let overlayValidationError {
+                            SettingsInlineMessage(overlayValidationError, color: .red)
+                        } else if settings.overlayBufferShortcut == nil {
+                            SettingsInlineMessage(
+                                "Not set. Record one to enable.",
+                                color: .secondary
+                            )
+                        }
                     }
 
                     SettingsFieldRow(title: "Live Auto-Paste") {
@@ -603,17 +601,15 @@ private struct DictationSettingsPane: View {
                                 }
                             }
                         }
-                    }
 
-                    if let livePasteValidationError {
-                        SettingsMessageRow(livePasteValidationError, color: .red)
-                    }
-
-                    if settings.livePasteShortcut == nil {
-                        SettingsMessageRow(
-                            "Live Auto-Paste shortcut is not set. Record one above to enable.",
-                            color: .secondary
-                        )
+                        if let livePasteValidationError {
+                            SettingsInlineMessage(livePasteValidationError, color: .red)
+                        } else if settings.livePasteShortcut == nil {
+                            SettingsInlineMessage(
+                                "Not set. Record one to enable.",
+                                color: .secondary
+                            )
+                        }
                     }
 
                     SettingsFieldRow(title: "Shortcut behavior") {
@@ -926,22 +922,3 @@ private struct SettingsInlineMessage: View {
     }
 }
 
-private struct SettingsMessageRow: View {
-    let message: String
-    let color: Color
-
-    init(_ message: String, color: Color) {
-        self.message = message
-        self.color = color
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
-            Color.clear
-                .frame(width: SettingsLayout.labelWidth, height: 1)
-            SettingsInlineMessage(message, color: color)
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
