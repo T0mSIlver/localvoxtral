@@ -6,10 +6,14 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|package|exec|diag|applog|voxlog|svc-status] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
+#     eval-llm     default-polish-prompt eval against a live mlx-lm server;
+#                  optional arg = chat/completions endpoint (default
+#                  http://127.0.0.1:8080/v1/chat/completions, the
+#                  com.localvoxtral.mlxlm service — runbook scripts/mac/README.md)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -100,7 +104,7 @@ case "$CMD" in
     ;;
 esac
 
-UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests)
+UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests)
 
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
@@ -109,6 +113,20 @@ case "$CMD" in
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
+    ;;
+  eval-llm)
+    # Enablement travels as a gitignored marker file inside the synced tree
+    # (removed again on exit): the build gate only allowlists exact
+    # `swift test ...` payloads, so env prefixes can't be passed per-run.
+    if [[ $# -gt 1 ]]; then
+      echo "eval-llm accepts at most one argument (the chat/completions endpoint)" >&2
+      exit 1
+    fi
+    EVAL_ENDPOINT="${1:-http://127.0.0.1:8080/v1/chat/completions}"
+    EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
+    printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
+    trap 'rm -f "$EVAL_MARKER"' EXIT
+    REMOTE_CMD=(swift test --filter LLMPolishPromptEvalTests)
     ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
   exec)
@@ -119,7 +137,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
