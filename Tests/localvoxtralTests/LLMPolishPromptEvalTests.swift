@@ -39,93 +39,109 @@ final class LLMPolishPromptEvalTests: XCTestCase {
     private struct EvalCase {
         let id: String
         let input: String
+        /// Full expected output, compared by normalized whole-string
+        /// equality. Set on required cases — their outputs are
+        /// deterministic, and equality (unlike substring needles) also
+        /// rejects prepended labels like "Corrected: …" that the prompt
+        /// forbids. Nil on known-hard cases, which use the needles below.
+        let expectedText: String?
         /// Substrings that must appear in the normalized output.
         let mustContain: [String]
         /// Substrings that must NOT appear in the normalized output.
         let mustNotContain: [String]
+
+        init(
+            id: String,
+            input: String,
+            expectedText: String? = nil,
+            mustContain: [String] = [],
+            mustNotContain: [String] = []
+        ) {
+            self.id = id
+            self.input = input
+            self.expectedText = expectedText
+            self.mustContain = mustContain
+            self.mustNotContain = mustNotContain
+        }
     }
 
-    /// Tricky sentences the pinned default model handles deterministically
-    /// against the canonical eval substrate (the com.localvoxtral.mlxlm
-    /// launchd service; verified stable across repeated runs 2026-07-06 —
-    /// the server responds identically for identical requests). Every one
-    /// of these MUST pass; a failure means the default prompt (or the model
-    /// pin, or the server) regressed. Calibrate only against that service:
-    /// a long-lived app-managed instance was observed answering from stale
-    /// prompt-cache state, scoring differently than a fresh server for the
-    /// same requests. Comparison is done on normalized text (narrow
-    /// no-break and no-break spaces unified to a plain space, runs of
-    /// spaces collapsed, lowercased), so a typographically correct French
-    /// narrow no-break space counts as the required space.
+    /// Sentences the pinned default model fixed in EVERY server state
+    /// observed on 2026-07-06: a warm app-managed instance, a fresh
+    /// com.localvoxtral.mlxlm service, and that service in a later state.
+    /// mlx_lm.server answers identically for identical requests within one
+    /// server state, but a handful of borderline cases were seen flipping
+    /// deterministically BETWEEN states (suspected prompt-cache influence
+    /// on logits — see the stale-cache issue on the mlx-lm fork), so only
+    /// cases stable across all states qualify as required. Every one of
+    /// these MUST pass; a failure means the default prompt (or the model
+    /// pin, or the server) regressed. Comparison is done on normalized
+    /// text (narrow no-break and no-break spaces unified to a plain space,
+    /// runs of spaces collapsed, lowercased), so a typographically correct
+    /// French narrow no-break space counts as the required space.
     private static let requiredCases: [EvalCase] = [
         // French — space before ":" must be inserted when missing.
         EvalCase(
             id: "fr-colon-missing-space",
             input: "Voici le plan: on commence demain matin.",
-            mustContain: ["plan :"],
-            mustNotContain: ["plan:"]
+            expectedText: "Voici le plan : on commence demain matin."
         ),
         // French — already correct, must be preserved (no over-correction).
         EvalCase(
             id: "fr-already-correct",
             input: "Où est la gare ?",
-            mustContain: ["gare ?"],
-            mustNotContain: ["gare?"]
+            expectedText: "Où est la gare ?"
         ),
         // English — stray space before punctuation must be removed.
         EvalCase(
             id: "en-question-extra-space",
             input: "Are you coming to the meeting tomorrow ?",
-            mustContain: ["tomorrow?"],
-            mustNotContain: ["tomorrow ?"]
-        ),
-        EvalCase(
-            id: "en-exclamation-extra-space",
-            input: "That demo was really impressive !",
-            mustContain: ["impressive!"],
-            mustNotContain: ["impressive !"]
+            expectedText: "Are you coming to the meeting tomorrow?"
         ),
         EvalCase(
             id: "en-comma-extra-space",
             input: "Well , I think we should try again.",
-            mustContain: ["well,"],
-            mustNotContain: ["well ,"]
+            expectedText: "Well, I think we should try again."
         ),
         EvalCase(
             id: "en-accented-word-question",
             input: "Did you enjoy the café ?",
-            mustContain: ["café?"],
-            mustNotContain: ["café ?"]
+            expectedText: "Did you enjoy the café?"
         ),
         EvalCase(
             id: "en-multi-questions",
             input: "Is it ready ? Can we ship it ?",
-            mustContain: ["ready?", "it?"],
-            mustNotContain: [" ?"]
+            expectedText: "Is it ready? Can we ship it?"
         ),
         // English — already correct, must be preserved.
         EvalCase(
             id: "en-already-correct",
             input: "What time is it? It is already late!",
-            mustContain: ["it?", "late!"],
-            mustNotContain: [" ?", " !"]
+            expectedText: "What time is it? It is already late!"
         ),
     ]
 
-    /// Cases the pinned 0.8B model cannot do reliably: a probe battery
-    /// (2026-07-06) showed it cannot even perceive most of these errors —
-    /// it answers "the spacing is correct" when asked yes/no with the rule
-    /// stated in the question. French space INSERTION (except before ":")
-    /// is the systematic gap. Tracked and printed but NOT asserted, so the
-    /// suite stays deterministic-green while these serve as the acceptance
-    /// list for a future fine-tune or model-pin bump: when one starts
-    /// passing consistently, promote it to `requiredCases`.
+    /// Cases the pinned 0.8B model cannot do reliably. Two flavors:
+    /// never-pass cases (a probe battery showed the model cannot even
+    /// perceive the error — it answers "the spacing is correct" when asked
+    /// yes/no with the rule stated in the question) and state-dependent
+    /// wobblers that flip between server states (see `requiredCases` doc).
+    /// Tracked and printed but NOT asserted, so the suite stays
+    /// deterministic-green while these serve as the acceptance list for a
+    /// future fine-tune or model-pin bump: promote one to `requiredCases`
+    /// only after it passes across server restarts and prompt-cache
+    /// configurations.
     private static let knownHardCases: [EvalCase] = [
         EvalCase(
             id: "fr-question-missing-space",
             input: "Tu viens demain?",
             mustContain: ["demain ?"],
             mustNotContain: ["demain?"]
+        ),
+        EvalCase(
+            id: "en-exclamation-extra-space",
+            input: "That demo was really impressive !",
+            mustContain: ["impressive!"],
+            mustNotContain: ["impressive !"]
         ),
         EvalCase(
             id: "fr-exclamation-missing-space",
@@ -206,6 +222,11 @@ final class LLMPolishPromptEvalTests: XCTestCase {
     }
 
     private func loadMarkerConfig() throws -> MarkerConfig? {
+        // #filePath walk-up assumes the SwiftPM source layout
+        // (Tests/localvoxtralTests/<file>), which holds for `swift test` and
+        // remote-build.sh. Under an Xcode-derived build #filePath can point
+        // into DerivedData and the marker would not be found — use the env
+        // enablement there instead.
         let markerURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // localvoxtralTests
             .deletingLastPathComponent() // Tests
@@ -214,8 +235,14 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: markerURL.path) else {
             return nil
         }
-        let data = try Data(contentsOf: markerURL)
-        return try JSONDecoder().decode(MarkerConfig.self, from: data)
+        do {
+            let data = try Data(contentsOf: markerURL)
+            return try JSONDecoder().decode(MarkerConfig.self, from: data)
+        } catch {
+            // A corrupt marker means "not properly enabled", not "eval
+            // regressed" — skip loudly instead of failing the suite.
+            throw XCTSkip("Eval marker \(Self.markerFileName) exists but is unreadable: \(error)")
+        }
     }
 
     /// The bundled default templates, loaded through the production config
@@ -263,21 +290,30 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             outputForLog = result.polishedText
             let output = normalized(result.polishedText)
 
-            for needle in evalCase.mustContain where !output.contains(normalized(needle)) {
-                caseFailures.append("missing \"\(needle)\"")
-            }
-            for needle in evalCase.mustNotContain where output.contains(normalized(needle)) {
-                caseFailures.append("still contains \"\(needle)\"")
-            }
+            if let expectedText = evalCase.expectedText {
+                // Whole-output equality: substring needles would false-pass
+                // outputs with prepended labels ("Corrected: …") or trailing
+                // commentary that the prompt forbids.
+                if output != normalized(expectedText) {
+                    caseFailures.append("expected \"\(expectedText)\"")
+                }
+            } else {
+                for needle in evalCase.mustContain where !output.contains(normalized(needle)) {
+                    caseFailures.append("missing \"\(needle)\"")
+                }
+                for needle in evalCase.mustNotContain where output.contains(normalized(needle)) {
+                    caseFailures.append("still contains \"\(needle)\"")
+                }
 
-            let wordAccuracy = IntegrationTestSupport.wordAccuracy(
-                expected: evalCase.input,
-                actual: result.polishedText
-            )
-            if wordAccuracy < Self.requiredWordAccuracy {
-                caseFailures.append(
-                    "word accuracy \(String(format: "%.2f", wordAccuracy)) < \(Self.requiredWordAccuracy) (rewrote the text)"
+                let wordAccuracy = IntegrationTestSupport.wordAccuracy(
+                    expected: evalCase.input,
+                    actual: result.polishedText
                 )
+                if wordAccuracy < Self.requiredWordAccuracy {
+                    caseFailures.append(
+                        "word accuracy \(String(format: "%.2f", wordAccuracy)) < \(Self.requiredWordAccuracy) (rewrote the text)"
+                    )
+                }
             }
         } catch {
             caseFailures.append("request failed: \(error.localizedDescription)")
@@ -317,7 +353,9 @@ final class LLMPolishPromptEvalTests: XCTestCase {
                 evalCase, service: service, templates: templates, configuration: configuration
             )
             if failures.isEmpty {
-                scoreboard.append("PASS \(evalCase.id) (known-hard — consider promoting to required)")
+                scoreboard.append(
+                    "PASS \(evalCase.id) (known-hard — promote only if stable across server restarts)"
+                )
                 passingHardCases.append(evalCase.id)
             } else {
                 scoreboard.append("XFAIL \(evalCase.id) (known-hard) — output: \(output)")

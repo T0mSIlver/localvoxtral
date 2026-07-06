@@ -124,8 +124,10 @@ case "$CMD" in
     fi
     EVAL_ENDPOINT="${1:-http://127.0.0.1:8080/v1/chat/completions}"
     EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
-    printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
+    # Trap registered before the marker exists, so no kill window leaves a
+    # stale marker behind.
     trap 'rm -f "$EVAL_MARKER"' EXIT
+    printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
     REMOTE_CMD=(swift test --filter LLMPolishPromptEvalTests)
     ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
