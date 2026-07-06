@@ -594,12 +594,13 @@ private struct DictationSettingsPane: View {
                             )
                             .frame(height: 24, alignment: .leading)
 
-                            if settings.livePasteShortcut != nil {
-                                Button("Clear") {
-                                    livePasteValidationError = nil
-                                    viewModel.updateLivePasteShortcut(nil)
-                                }
+                            // Always present (disabled when empty) so both
+                            // shortcut rows keep identical heights and spacing.
+                            Button("Clear") {
+                                livePasteValidationError = nil
+                                viewModel.updateLivePasteShortcut(nil)
                             }
+                            .disabled(settings.livePasteShortcut == nil)
                         }
 
                         if let livePasteValidationError {

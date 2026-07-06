@@ -1449,8 +1449,12 @@ final class DictationViewModel {
     }
 
     /// Warmup-time variant of `isManagedPolishingRequired`: instead of a
-    /// session's output mode, gates on whether any trigger can start an
-    /// Overlay Buffer session at all.
+    /// session's output mode, gates on whether a keyboard trigger can start
+    /// an Overlay Buffer session at all. When false, managed mlx-lm stays
+    /// stopped — an overlay session started from the menu-bar button still
+    /// polishes via the dictation-time `ensureReady` backstop, paying the
+    /// mlx-lm cold start (deliberate: see
+    /// `SettingsStore.isOverlayBufferSessionReachable`).
     var isManagedPolishingWarmupWanted: Bool {
         settings.llmPolishingEnabled
             && settings.polishingBackendMode == .managedLocal
