@@ -132,7 +132,12 @@ backend, where the suite self-skips. The mic-capture tests
   on the self-hosted Mac runner (fast, warm cache); fork PRs run on
   GitHub-hosted macOS. Never move fork-PR jobs to the self-hosted runner — it
   is a personal machine.
-- Watch a PR's checks with `gh pr checks <n> --watch`.
+- Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
+  <run-id>` for a push/rerun). It polls like `gh pr checks --watch` but also
+  probes the build host over SSH and fail-fasts in ~30 s with a wake-the-Mac
+  message when the host stops answering — bare `gh` watching silently eats
+  GitHub's 10-minute "runner lost communication" window (and a queued job on
+  a sleeping Mac just sits forever).
 - Releases: `./scripts/release.sh [patch|minor|major|X.Y.Z]` from any machine
   with gh — dispatches `release.yml` on the self-hosted runner, which gates
   (build, unit, live integration, packaging, smoke) and only then tags and
