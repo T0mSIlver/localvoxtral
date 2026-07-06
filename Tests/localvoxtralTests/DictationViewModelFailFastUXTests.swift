@@ -353,11 +353,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.startDictation()
         await backendManager.waitUntilEnsureStarted()
 
-        backendManager.emitStatus(
+        await emitStatusAndAwaitMirror(
+            backendManager, viewModel: viewModel,
             spec: BackendCatalog.voxmlx,
             status: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 36, totalBytes: 100))
         )
-        await Task.yield()
 
         XCTAssertEqual(viewModel.statusText, "Downloading dictation model (36%)...")
 
@@ -380,11 +380,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.startDictation()
         await backendManager.waitUntilEnsureStarted()
 
-        backendManager.emitStatus(
+        await emitStatusAndAwaitMirror(
+            backendManager, viewModel: viewModel,
             spec: BackendCatalog.mlxLM,
             status: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4))
         )
-        await Task.yield()
 
         XCTAssertEqual(viewModel.statusText, "Downloading polishing model (25%)...")
 
@@ -1035,6 +1035,26 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         settings.polishingBackendMode = .externalURL
         settings.dictationOutputMode = outputMode
         return settings
+    }
+
+    /// Emits a fake backend status and suspends until the view model's
+    /// managed-startup status mirror has processed it. A bare `Task.yield()`
+    /// after `emitStatus` is a scheduling race: the mirror's `for await` loop
+    /// may not have run yet when the test asserts on `statusText` (flaked on
+    /// main, CI run 28752686491).
+    private func emitStatusAndAwaitMirror(
+        _ backendManager: FakeManagedBackendManager,
+        viewModel: DictationViewModel,
+        spec: ManagedBackendSpec,
+        status: ManagedBackendStatus
+    ) async {
+        await withCheckedContinuation { continuation in
+            viewModel.debugManagedStatusMirrorEventSink = {
+                viewModel.debugManagedStatusMirrorEventSink = nil
+                continuation.resume()
+            }
+            backendManager.emitStatus(spec: spec, status: status)
+        }
     }
 
     private func retainForTestProcessLifetime(_ viewModel: DictationViewModel) {
