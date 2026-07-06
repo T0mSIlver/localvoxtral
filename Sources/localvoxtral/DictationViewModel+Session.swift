@@ -65,6 +65,7 @@ extension DictationViewModel {
                     if Task.isCancelled || self.managedStartupTaskID != startupTaskID {
                         return
                     }
+                    defer { self.debugManagedStatusMirrorEventSink?() }
                     guard (!needsManagedDictation || self.settings.dictationBackendMode == .managedLocal),
                           (!needsManagedPolishing
                               || (self.settings.llmPolishingEnabled

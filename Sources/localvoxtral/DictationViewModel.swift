@@ -322,6 +322,12 @@ final class DictationViewModel {
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
     @ObservationIgnored
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
+    /// Test seam: invoked after the managed-startup status mirror finishes
+    /// handling each status update (including updates its guard skips), so
+    /// tests can await mirror processing deterministically instead of
+    /// guessing with `Task.yield()`.
+    @ObservationIgnored
+    var debugManagedStatusMirrorEventSink: (() -> Void)?
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
     @ObservationIgnored
