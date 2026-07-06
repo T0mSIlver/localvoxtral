@@ -595,6 +595,102 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopDictationCallCount, 1)
     }
 
+    // MARK: - Overlay Buffer reachability gating (polishing warmup follows triggers)
+
+    /// Shortcuts mode with no Overlay Buffer shortcut and the menu-bar output
+    /// mode on Live Auto-Paste: no trigger can start an Overlay Buffer session,
+    /// so enabling polishing must not start managed mlx-lm.
+    func testPolishingEnableSkipsWarmupWhenOverlayBufferUnreachable() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.modifierOnlyHotKeyEnabled = false
+        viewModel.settings.setOverlayBufferShortcut(nil)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.llmPolishingEnabledDidChange(true)
+        await backendManager.waitForStopPolishingCallCount(1)
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+    }
+
+    func testLaunchWarmupSkipsPolishingWhenOverlayBufferUnreachable() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.modifierOnlyHotKeyEnabled = false
+        viewModel.settings.setOverlayBufferShortcut(nil)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
+        await viewModel.polishingWarmupTask?.value
+        await Task.yield()
+
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
+    /// With the single-modifier gesture active, tap always starts an Overlay
+    /// Buffer session, so switching the menu-bar output mode to Live Auto-Paste
+    /// must keep managed mlx-lm running (regression: the old check stopped it).
+    func testOutputModeSwitchToLiveKeepsPolishingWhenGestureConfigured() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.modifierOnlyHotKeyEnabled = true
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applyDictationOutputModeChange(.liveAutoPaste)
+        await Task.yield()
+
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
+    }
+
+    func testClearingOverlayShortcutStopsManagedPolishing() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.modifierOnlyHotKeyEnabled = false
+        // Fresh defaults keep the Overlay Buffer shortcut enabled, so overlay
+        // sessions start reachable here despite the Live menu-bar output mode.
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.updateOverlayBufferShortcut(nil)
+        await backendManager.waitForStopPolishingCallCount(1)
+
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+    }
+
+    func testReachabilityTransitionToReachableStartsPolishingWarmup() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.modifierOnlyHotKeyEnabled = false
+        viewModel.settings.setOverlayBufferShortcut(nil)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        // The trigger picker switching to the single-modifier gesture makes
+        // overlay sessions reachable again (wired via
+        // applyDictationTriggerModeChange, which registers real hotkeys, so the
+        // transition handler is driven directly here).
+        viewModel.settings.modifierOnlyHotKeyEnabled = true
+        viewModel.handleOverlayReachabilityTransition(wasReachable: false)
+        await viewModel.polishingWarmupTask?.value
+
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 0)
+    }
+
     func testPolishingToggleOffThenOnCancelsQueuedStop() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
@@ -631,6 +727,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testPolishingModeSwitchToManagedDoesNotWarmUpWhenPolishingUnavailable() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.setOverlayBufferShortcut(nil)
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
@@ -729,6 +826,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testDictationOutputModeSwitchToLiveStopsManagedPolishing() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        // No gesture and no overlay shortcut: switching the menu-bar output
+        // mode to Live makes Overlay Buffer sessions unreachable entirely.
+        viewModel.settings.setOverlayBufferShortcut(nil)
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         retainForTestProcessLifetime(viewModel)
@@ -744,6 +844,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testDictationOutputModeSwitchToOverlayWarmsUpManagedPolishingWhenEnabled() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        // Start genuinely unreachable so the switch to Overlay Buffer is a
+        // reachability transition that must trigger the warmup.
+        viewModel.settings.setOverlayBufferShortcut(nil)
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
@@ -781,6 +884,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testWarmUpManagedBackendsAtLaunchIfNeededManagedDictationOnlyRequestsDictationOnly() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        // Polishing is enabled but unreachable (no gesture, no overlay
+        // shortcut, Live output mode), so launch must warm dictation only.
+        viewModel.settings.setOverlayBufferShortcut(nil)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
         viewModel.settings.llmPolishingEnabled = true
@@ -858,7 +964,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingWarmupTask)
     }
 
-    func testWarmUpManagedBackendsAtLaunchIfNeededLiveAutoPasteDoesNotWarmUpPolishing() async {
+    /// Live menu-bar output mode with the Overlay Buffer shortcut still
+    /// configured: overlay sessions stay one keystroke away, so launch warms
+    /// polishing anyway (the old output-mode-only check skipped it and the
+    /// first overlay dictation paid the cold start).
+    func testWarmUpManagedBackendsAtLaunchIfNeededLiveOutputModeWarmsPolishingWhenOverlayShortcutConfigured() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.polishingBackendMode = .managedLocal
@@ -869,8 +979,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
         await viewModel.polishingWarmupTask?.value
 
-        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
-        XCTAssertNil(viewModel.polishingWarmupTask)
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
     }
 
     func testWarmUpManagedBackendsAtLaunchIfNeededExternalPolishingModeDoesNotWarmUpPolishing() async {

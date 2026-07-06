@@ -177,7 +177,7 @@ final class DictationViewModel {
         {
             return false
         }
-        if isManagedPolishingRequired(outputMode: settings.dictationOutputMode),
+        if isManagedPolishingWarmupWanted,
            !isReady(backendManager.mlxLMStatus)
         {
             return false
@@ -810,7 +810,7 @@ final class DictationViewModel {
         settings.polishingBackendMode = mode
 
         if previousMode == .externalURL, mode == .managedLocal {
-            if isManagedPolishingRequired(outputMode: settings.dictationOutputMode) {
+            if isManagedPolishingWarmupWanted {
                 startPolishingWarmup()
             }
             return
@@ -830,16 +830,37 @@ final class DictationViewModel {
 
     func applyDictationOutputModeChange(_ mode: DictationOutputMode) {
         let previousMode = settings.dictationOutputMode
-        settings.dictationOutputMode = mode
-
         guard previousMode != mode else { return }
-        if mode == .overlayBuffer, isManagedPolishingRequired(outputMode: mode) {
+        let wasReachable = settings.isOverlayBufferSessionReachable
+        settings.dictationOutputMode = mode
+        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+    }
+
+    /// The trigger picker in Settings > Dictation. Switching between the
+    /// single-modifier gesture and per-mode shortcuts changes whether an
+    /// Overlay Buffer session is reachable, so managed mlx-lm follows.
+    func applyDictationTriggerModeChange(modifierOnlyEnabled: Bool) {
+        guard settings.modifierOnlyHotKeyEnabled != modifierOnlyEnabled else { return }
+        let wasReachable = settings.isOverlayBufferSessionReachable
+        settings.modifierOnlyHotKeyEnabled = modifierOnlyEnabled
+        applyHotKeySettingsChange()
+        handleOverlayReachabilityTransition(wasReachable: wasReachable)
+    }
+
+    /// Managed mlx-lm follows Overlay Buffer reachability: polishing runs only
+    /// on Overlay Buffer commits, so when no trigger can start one the process
+    /// is stopped instead of idling in memory.
+    func handleOverlayReachabilityTransition(wasReachable: Bool) {
+        let isReachable = settings.isOverlayBufferSessionReachable
+        guard wasReachable != isReachable,
+              settings.llmPolishingEnabled,
+              settings.polishingBackendMode == .managedLocal
+        else { return }
+
+        if isReachable {
             startPolishingWarmup()
-        } else if previousMode == .overlayBuffer,
-                  mode == .liveAutoPaste,
-                  settings.polishingBackendMode == .managedLocal
-        {
-            Log.backends.info("output mode switched to Live Auto-Paste; stopping managed mlx-lm")
+        } else {
+            Log.backends.info("no Overlay Buffer trigger configured; stopping managed mlx-lm")
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
@@ -859,7 +880,7 @@ final class DictationViewModel {
     func llmPolishingEnabledDidChange(_ enabled: Bool) {
         guard settings.polishingBackendMode == .managedLocal else { return }
         polishingShutdownTask?.cancel()
-        if enabled, settings.dictationOutputMode == .overlayBuffer {
+        if enabled, settings.isOverlayBufferSessionReachable {
             startPolishingWarmup()
         } else {
             Log.backends.info("polishing disabled; stopping managed mlx-lm")
@@ -878,7 +899,7 @@ final class DictationViewModel {
         }
 
         let needsDictation = settings.dictationBackendMode == .managedLocal
-        let needsPolishing = isManagedPolishingRequired(outputMode: settings.dictationOutputMode)
+        let needsPolishing = isManagedPolishingWarmupWanted
         startManagedBackendWarmup(dictation: needsDictation, polishing: needsPolishing)
     }
 
@@ -1020,6 +1041,7 @@ final class DictationViewModel {
     func updateOverlayBufferShortcut(_ shortcut: DictationShortcut?) {
         let previousShortcut = settings.overlayBufferShortcut
         let previousWasEnabled = settings.overlayBufferShortcutEnabled
+        let wasReachable = settings.isOverlayBufferSessionReachable
 
         settings.setOverlayBufferShortcut(shortcut)
 
@@ -1035,6 +1057,7 @@ final class DictationViewModel {
             _ = registerCurrentHotKeys()
             applyHotKeyRegistrationFailure(reason)
         }
+        handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
     func updateLivePasteShortcut(_ shortcut: DictationShortcut?) {
@@ -1425,6 +1448,15 @@ final class DictationViewModel {
         outputMode == .overlayBuffer
             && settings.llmPolishingEnabled
             && settings.polishingBackendMode == .managedLocal
+    }
+
+    /// Warmup-time variant of `isManagedPolishingRequired`: instead of a
+    /// session's output mode, gates on whether any trigger can start an
+    /// Overlay Buffer session at all.
+    var isManagedPolishingWarmupWanted: Bool {
+        settings.llmPolishingEnabled
+            && settings.polishingBackendMode == .managedLocal
+            && settings.isOverlayBufferSessionReachable
     }
 
     private var activeOutputMode: DictationOutputMode {

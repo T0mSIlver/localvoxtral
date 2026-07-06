@@ -200,8 +200,8 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
-    private var isLLMPolishingAvailableInCurrentMode: Bool {
-        settings.dictationOutputMode == .overlayBuffer
+    private var isLLMPolishingReachable: Bool {
+        settings.isOverlayBufferSessionReachable
     }
 
     private var llmPolishingEnabledBinding: Binding<Bool> {
@@ -280,11 +280,11 @@ private struct ConnectionSettingsPane: View {
                     }
                 }
 
-                if !isLLMPolishingAvailableInCurrentMode {
+                if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
-                        title: "Unavailable in Live Auto-Paste mode",
+                        title: "No Overlay Buffer trigger",
                         message:
-                            "Set Dictation > Output mode to Overlay Buffer to enable it.",
+                            "Polishing runs on Overlay Buffer dictations. Set an Overlay Buffer shortcut in Dictation to enable it.",
                         systemImage: "exclamationmark.triangle.fill",
                         tint: .orange
                     )
@@ -297,9 +297,7 @@ private struct ConnectionSettingsPane: View {
                                 .labelsHidden()
                                 .toggleStyle(.switch)
 
-                            SettingsHelpText(
-                                "Polishes the transcript when an Overlay Buffer dictation commits. Live Auto-Paste inserts words while you speak, so they land unpolished."
-                            )
+                            SettingsHelpText("Overlay Buffer dictations only.")
                         }
                     }
 
@@ -337,8 +335,8 @@ private struct ConnectionSettingsPane: View {
                         )
                     }
                 }
-                .disabled(!isLLMPolishingAvailableInCurrentMode)
-                .opacity(isLLMPolishingAvailableInCurrentMode ? 1.0 : 0.5)
+                .disabled(!isLLMPolishingReachable)
+                .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
         }
     }
@@ -498,8 +496,9 @@ private struct DictationSettingsPane: View {
                     Picker("", selection: Binding(
                         get: { settings.modifierOnlyHotKeyEnabled },
                         set: { newValue in
-                            settings.modifierOnlyHotKeyEnabled = newValue
-                            viewModel.applyHotKeySettingsChange()
+                            viewModel.applyDictationTriggerModeChange(
+                                modifierOnlyEnabled: newValue
+                            )
                         }
                     )) {
                         Text("Single modifier key").tag(true)
