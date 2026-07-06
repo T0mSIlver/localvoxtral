@@ -644,9 +644,6 @@ private struct DictationSettingsPane: View {
                         .labelsHidden()
 
                         SettingsHelpText(settings.dictationOutputMode.description)
-                        SettingsHelpText(
-                            "Keyboard triggers select their mode directly."
-                        )
                     }
                 }
             }
