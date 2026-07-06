@@ -17,6 +17,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh                 # build + unit tests
 ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
 ./scripts/remote-build.sh integration     # realtime pipeline vs live voxmlx
+./scripts/remote-build.sh eval-llm        # default polish prompt eval vs live mlx-lm
 ./scripts/remote-build.sh package         # build the .app bundle
 ```
 
@@ -125,6 +126,17 @@ as the launchd service `com.localvoxtral.voxmlx` (logs:
 `~/Library/Logs/voxmlx.log`). Fork PRs run on GitHub-hosted runners with no
 backend, where the suite self-skips. The mic-capture tests
 (`LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE`) stay off in CI until tier 2.
+
+LLM polish prompt eval: `LLMPolishPromptEvalTests` scores the bundled default
+polishing prompt (punctuation-spacing cases, French vs English) against a live
+mlx-lm server through the production request path. Run it with
+`./scripts/remote-build.sh eval-llm [endpoint]` — default endpoint is the
+`com.localvoxtral.mlxlm` launchd service on port 8080 (owner runbook:
+`scripts/mac/README.md`); don't point it at the app-managed instance on 8472,
+which dies whenever the app quits. Enablement is env
+(`LLM_POLISH_EVAL_ENABLE=1`) or the marker file the script writes into the
+synced tree (the SSH gate can't pass env vars). Prompt changes MUST re-run
+this eval and paste the scoreboard in the PR's Proof section.
 
 ## CI / shipping
 

@@ -14,3 +14,6 @@ DerivedData/
 # Agent runtime dirs (opencode/Claude workers) — never commit
 .agent-runs/
 .opencode/
+
+# Transient enable marker written by remote-build.sh eval-llm
+/.llm-polish-eval-enable.json

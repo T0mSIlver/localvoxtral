@@ -1,5 +1,59 @@
 # Mac build-host scripts
 
+## `com.localvoxtral.mlxlm` — polish-LLM eval service (owner runbook)
+
+The LLM polish prompt eval (`./scripts/remote-build.sh eval-llm`,
+`LLMPolishPromptEvalTests`) needs an mlx-lm chat/completions server that is
+always up on the build host, exactly like `com.localvoxtral.voxmlx` (port
+8000) serves the tier-1 realtime tests. It listens on **8080** (mlx-lm's
+stock port) so it never collides with the app-managed instances on 8471/8472.
+Installed on the build host 2026-07-06. Don't point evals at the app-managed
+server on 8472 instead — it only exists while the app is running with
+polishing enabled, so it vanishes whenever the app quits.
+
+Install from a trusted owner session on the Mac. Pins mirror
+`BackendCatalog.mlxLM` — keep them in sync when the catalog moves:
+
+```bash
+# One-time venv with the pinned fork wheel (same wheel the app installs).
+uv venv --python 3.12 ~/.local/share/localvoxtral-eval/mlx-lm
+uv pip install --python ~/.local/share/localvoxtral-eval/mlx-lm/bin/python \
+  'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post2/mlx_lm-0.31.3.post2-py3-none-any.whl'
+
+# LaunchAgent (adjust $HOME):
+cat > ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.localvoxtral.mlxlm</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE_ME/.local/share/localvoxtral-eval/mlx-lm/bin/mlx_lm.server</string>
+    <string>--model</string><string>mlx-community/Qwen3.5-0.8B-8bit</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>8080</string>
+    <!-- Same prompt-cache flags as the app-managed instance
+         (BackendManager.arguments) so evals measure production behavior. -->
+    <string>--prompt-cache-size</string><string>1</string>
+    <string>--prompt-cache-bytes</string><string>1GB</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/Shared/localvoxtral/mlxlm.log</string>
+  <key>StandardErrorPath</key><string>/Users/Shared/localvoxtral/mlxlm.log</string>
+</dict>
+</plist>
+PLIST
+
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist
+curl -s http://127.0.0.1:8080/v1/models   # verify
+```
+
+Log path matches the voxmlx service's shared-location convention (see the
+gate conf section below) so the gate account can read it if a `voxlog`-style
+verb is ever added. `svc-status`/`diag` already probe port 8080.
+
 ## `localvoxtral-build-gate.sh` — SSH build gate (v2)
 
 Forced command for the Linux dev box's build key on the Mac build host. It

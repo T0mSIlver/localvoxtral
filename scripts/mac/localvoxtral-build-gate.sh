@@ -141,7 +141,9 @@ show_processes() {
 show_ports() {
   section "Ports"
   local port
-  for port in 8000 8471 8472; do
+  # 8000 = voxmlx launchd service, 8080 = mlx-lm eval launchd service,
+  # 8471/8472 = app-managed voxmlx/mlx-lm.
+  for port in 8000 8080 8471 8472; do
     printf -- '-- port %s --\n' "$port"
     # Connect test first: lsof only sees this account's sockets, so it
     # reported "no listener" while another user's voxmlx was serving.
