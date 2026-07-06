@@ -292,9 +292,15 @@ private struct ConnectionSettingsPane: View {
 
                 Group {
                     SettingsFieldRow(title: "Enable") {
-                        Toggle("", isOn: llmPolishingEnabledBinding)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: llmPolishingEnabledBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Polishes the transcript when an Overlay Buffer dictation commits. Live Auto-Paste inserts words while you speak, so they land unpolished."
+                            )
+                        }
                     }
 
                     switch settings.polishingBackendMode {
