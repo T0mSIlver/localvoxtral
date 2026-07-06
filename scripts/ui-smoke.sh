@@ -17,6 +17,7 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-ui-smoke.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 PREFLIGHT_HELPER=""
+AX_PROBE_HELPER=""
 APP_PID=""
 FAILED=0
 CLEANED_UP=0
@@ -171,6 +172,7 @@ cleanup() {
     printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
   fi
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
+  [[ -n "$AX_PROBE_HELPER" ]] && rm -f "$AX_PROBE_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
 }
 
@@ -408,35 +410,110 @@ else
   record_fail "Settings did not open from the status menu within 10 seconds."
 fi
 
-window_has_static_text() {
-  local expected="$1"
-  run_osascript <<OSA
-on hasStaticText(elementRef, expectedText)
-  try
-    if class of elementRef is static text then
-      try
-        if (value of elementRef as text) contains expectedText then return true
-      end try
-      try
-        if (name of elementRef as text) contains expectedText then return true
-      end try
-    end if
-    repeat with childRef in UI elements of elementRef
-      if my hasStaticText(childRef, expectedText) then return true
-    end repeat
-  end try
-  return false
-end hasStaticText
+# Content-visibility checks go through the direct AX C API, not System Events.
+# The previous AppleScript walk never compiled (the `static text` class term is
+# unresolvable outside a System Events tell block, error -2741) and the call
+# sites' 2>/dev/null hid that for every CI run — issue #72. System Events is
+# also unreliable against this SwiftUI window (`entire contents of window 1`
+# returns 0 elements on the macOS 26 runner) while the AX API sees the full
+# tree, so the AppleScript approach is dropped rather than fixed.
+#
+# The helper polls the app's windows until <needle> appears in any element's
+# title/value/description or the deadline passes; with --dump-on-fail it prints
+# the AX tree so the uploaded log shows what was actually on screen.
+write_ax_probe_helper() {
+  local stem
+  stem="$(mktemp -t localvoxtral-ax-probe)" || return 1
+  AX_PROBE_HELPER="${stem}.swift"
+  mv "$stem" "$AX_PROBE_HELPER" || return 1
+  cat >"$AX_PROBE_HELPER" <<'SWIFT'
+import ApplicationServices
+import Foundation
 
-tell application "System Events"
-  if not (exists process "$APP_PROCESS") then return "missing"
-  tell process "$APP_PROCESS"
-    if not (exists window 1) then return "missing"
-    if my hasStaticText(window 1, "$expected") then return "found"
-  end tell
-end tell
-return "missing"
-OSA
+let args = CommandLine.arguments
+guard args.count >= 4, let pid = Int32(args[1]), let timeoutSeconds = Double(args[3]) else {
+    print("usage: ax-probe <pid> <needle> <timeout-seconds> [--dump-on-fail]")
+    exit(2)
+}
+let needle = args[2]
+let dumpOnFail = args.contains("--dump-on-fail")
+let app = AXUIElementCreateApplication(pid)
+
+func copyAttr(_ element: AXUIElement, _ name: String) -> AnyObject? {
+    var value: AnyObject?
+    return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+}
+
+func windows() -> [AXUIElement] {
+    (copyAttr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+}
+
+func texts(_ element: AXUIElement) -> (role: String, title: String, value: String, desc: String) {
+    let role = copyAttr(element, kAXRoleAttribute) as? String ?? "?"
+    let title = copyAttr(element, kAXTitleAttribute) as? String ?? ""
+    let desc = copyAttr(element, kAXDescriptionAttribute) as? String ?? ""
+    var value = ""
+    if let raw = copyAttr(element, kAXValueAttribute) { value = String(describing: raw) }
+    return (role, title, value, desc)
+}
+
+// Only text-bearing roles count as visible pane content. The toolbar tab
+// AXButtons (titled "General", "Endpoints", "Dictation", ...) exist on every
+// pane, so an unscoped match would let e.g. the Endpoints check pass off the
+// "Dictation" tab button without the pane ever rendering.
+let textRoles: Set<String> = ["AXStaticText", "AXTextField", "AXTextArea"]
+
+func containsNeedle(_ element: AXUIElement, depth: Int, budget: inout Int) -> Bool {
+    if depth > 40 || budget <= 0 { return false }
+    budget -= 1
+    let t = texts(element)
+    if textRoles.contains(t.role),
+       t.title.contains(needle) || t.value.contains(needle) || t.desc.contains(needle) {
+        return true
+    }
+    for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+        if containsNeedle(child, depth: depth + 1, budget: &budget) { return true }
+    }
+    return false
+}
+
+func dump(_ element: AXUIElement, depth: Int, budget: inout Int) {
+    if depth > 40 || budget <= 0 { return }
+    budget -= 1
+    let t = texts(element)
+    let indent = String(repeating: "  ", count: depth)
+    print("\(indent)\(t.role) title=\(t.title.prefix(60)) value=\(t.value.prefix(100)) desc=\(t.desc.prefix(60))")
+    for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+        dump(child, depth: depth + 1, budget: &budget)
+    }
+}
+
+let deadline = Date().addingTimeInterval(timeoutSeconds)
+repeat {
+    for window in windows() {
+        var budget = 20000
+        if containsNeedle(window, depth: 0, budget: &budget) { exit(0) }
+    }
+    usleep(250_000)
+} while Date() < deadline
+
+if dumpOnFail {
+    let wins = windows()
+    print("AXPROBE: needle \"\(needle)\" not visible after \(timeoutSeconds)s; windows=\(wins.count)")
+    for (index, window) in wins.enumerated() {
+        print("AXPROBE: === window \(index) ===")
+        var budget = 8000
+        dump(window, depth: 0, budget: &budget)
+    }
+}
+exit(1)
+SWIFT
+}
+
+window_shows_text() {
+  local expected="$1" timeout_seconds="${2:-10}"
+  shift 2 || true
+  swift "$AX_PROBE_HELPER" "$APP_PID" "$expected" "$timeout_seconds" "$@"
 }
 
 select_tab() {
@@ -456,14 +533,19 @@ assert_tab() {
     record_fail "Could not select Settings tab: $tab_name."
     return
   fi
-  sleep 0.5
 
-  if [[ "$(window_has_static_text "$expected_text" 2>/dev/null || true)" == "found" ]]; then
-    record_pass "Settings tab selectable: $tab_name."
+  if window_shows_text "$expected_text" 10 --dump-on-fail; then
+    record_pass "Settings tab shows expected content: $tab_name -> $expected_text."
   else
     record_fail "Settings tab selected but expected text was not visible: $tab_name -> $expected_text."
   fi
 }
+
+if ! write_ax_probe_helper; then
+  record_fail "Could not write the AX text-probe helper."
+  print_summary
+  exit 1
+fi
 
 assert_tab "General" "Permissions"
 assert_tab "Endpoints" "Dictation"
@@ -476,9 +558,8 @@ assert_tab "About" "Diagnostics"
 # the managed status rows. Managed-row AX coverage would need a second launch
 # that tolerates the eager spawn.
 select_tab "Endpoints" >/dev/null 2>&1 || true
-sleep 0.5
-if [[ "$(window_has_static_text "Endpoint" 2>/dev/null || true)" == "found" ]] \
-  && [[ "$(window_has_static_text "API key" 2>/dev/null || true)" == "found" ]]; then
+if window_shows_text "Endpoint" 10 --dump-on-fail \
+  && window_shows_text "API key" 10 --dump-on-fail; then
   record_pass "External-mode Endpoints pane shows endpoint configuration fields."
 else
   record_fail "External-mode Endpoints pane did not show endpoint configuration fields."
