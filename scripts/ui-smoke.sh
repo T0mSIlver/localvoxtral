@@ -17,6 +17,7 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-ui-smoke.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 PREFLIGHT_HELPER=""
+AX_PROBE_HELPER=""
 APP_PID=""
 FAILED=0
 CLEANED_UP=0
@@ -171,6 +172,7 @@ cleanup() {
     printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
   fi
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
+  [[ -n "$AX_PROBE_HELPER" ]] && rm -f "$AX_PROBE_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
 }
 
@@ -233,6 +235,7 @@ else
   print_summary
   exit 1
 fi
+
 
 if ! snapshot_defaults; then
   record_fail "Could not create persistent defaults backup at $PERSISTENT_DEFAULTS_BACKUP; refusing to mutate owner defaults."
@@ -408,35 +411,101 @@ else
   record_fail "Settings did not open from the status menu within 10 seconds."
 fi
 
-window_has_static_text() {
-  local expected="$1"
-  run_osascript <<OSA
-on hasStaticText(elementRef, expectedText)
-  try
-    if class of elementRef is static text then
-      try
-        if (value of elementRef as text) contains expectedText then return true
-      end try
-      try
-        if (name of elementRef as text) contains expectedText then return true
-      end try
-    end if
-    repeat with childRef in UI elements of elementRef
-      if my hasStaticText(childRef, expectedText) then return true
-    end repeat
-  end try
-  return false
-end hasStaticText
+# Content-visibility checks go through the direct AX C API, not System Events.
+# The previous AppleScript walk never compiled (the `static text` class term is
+# unresolvable outside a System Events tell block, error -2741) and the call
+# sites' 2>/dev/null hid that for every CI run — issue #72. System Events is
+# also unreliable against this SwiftUI window (`entire contents of window 1`
+# returns 0 elements on the macOS 26 runner) while the AX API sees the full
+# tree, so the AppleScript approach is dropped rather than fixed.
+#
+# The helper polls the app's windows until <needle> appears in any element's
+# title/value/description or the deadline passes; with --dump-on-fail it prints
+# the AX tree so the uploaded log shows what was actually on screen.
+write_ax_probe_helper() {
+  local stem
+  stem="$(mktemp -t localvoxtral-ax-probe)" || return 1
+  AX_PROBE_HELPER="${stem}.swift"
+  mv "$stem" "$AX_PROBE_HELPER" || return 1
+  cat >"$AX_PROBE_HELPER" <<'SWIFT'
+import ApplicationServices
+import Foundation
 
-tell application "System Events"
-  if not (exists process "$APP_PROCESS") then return "missing"
-  tell process "$APP_PROCESS"
-    if not (exists window 1) then return "missing"
-    if my hasStaticText(window 1, "$expected") then return "found"
-  end tell
-end tell
-return "missing"
-OSA
+let args = CommandLine.arguments
+guard args.count >= 4, let pid = Int32(args[1]), let timeoutSeconds = Double(args[3]) else {
+    print("usage: ax-probe <pid> <needle> <timeout-seconds> [--dump-on-fail]")
+    exit(2)
+}
+let needle = args[2]
+let dumpOnFail = args.contains("--dump-on-fail")
+let app = AXUIElementCreateApplication(pid)
+
+func copyAttr(_ element: AXUIElement, _ name: String) -> AnyObject? {
+    var value: AnyObject?
+    return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+}
+
+func windows() -> [AXUIElement] {
+    (copyAttr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+}
+
+func texts(_ element: AXUIElement) -> (role: String, title: String, value: String, desc: String) {
+    let role = copyAttr(element, kAXRoleAttribute) as? String ?? "?"
+    let title = copyAttr(element, kAXTitleAttribute) as? String ?? ""
+    let desc = copyAttr(element, kAXDescriptionAttribute) as? String ?? ""
+    var value = ""
+    if let raw = copyAttr(element, kAXValueAttribute) { value = String(describing: raw) }
+    return (role, title, value, desc)
+}
+
+func containsNeedle(_ element: AXUIElement, depth: Int, budget: inout Int) -> Bool {
+    if depth > 40 || budget <= 0 { return false }
+    budget -= 1
+    let t = texts(element)
+    if t.title.contains(needle) || t.value.contains(needle) || t.desc.contains(needle) { return true }
+    for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+        if containsNeedle(child, depth: depth + 1, budget: &budget) { return true }
+    }
+    return false
+}
+
+func dump(_ element: AXUIElement, depth: Int, budget: inout Int) {
+    if depth > 40 || budget <= 0 { return }
+    budget -= 1
+    let t = texts(element)
+    let indent = String(repeating: "  ", count: depth)
+    print("\(indent)\(t.role) title=\(t.title.prefix(60)) value=\(t.value.prefix(100)) desc=\(t.desc.prefix(60))")
+    for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
+        dump(child, depth: depth + 1, budget: &budget)
+    }
+}
+
+let deadline = Date().addingTimeInterval(timeoutSeconds)
+repeat {
+    for window in windows() {
+        var budget = 20000
+        if containsNeedle(window, depth: 0, budget: &budget) { exit(0) }
+    }
+    usleep(250_000)
+} while Date() < deadline
+
+if dumpOnFail {
+    let wins = windows()
+    print("AXPROBE: needle \"\(needle)\" not visible after \(timeoutSeconds)s; windows=\(wins.count)")
+    for (index, window) in wins.enumerated() {
+        print("AXPROBE: === window \(index) ===")
+        var budget = 8000
+        dump(window, depth: 0, budget: &budget)
+    }
+}
+exit(1)
+SWIFT
+}
+
+window_shows_text() {
+  local expected="$1" timeout_seconds="${2:-10}"
+  shift 2 || true
+  swift "$AX_PROBE_HELPER" "$APP_PID" "$expected" "$timeout_seconds" "$@"
 }
 
 select_tab() {
@@ -448,20 +517,6 @@ end tell
 OSA
 }
 
-# DEBUG(#72): one content check with result, exit status, and timing logged.
-# The 8s osascript timeout (when GNU timeout is installed) is the prime
-# suspect: the recursive AppleScript AX walk pays one Apple Event round trip
-# per element and a SwiftUI settings pane exposes hundreds of them.
-debug_probe_text() {
-  local expected="$1" label="$2"
-  local started=$SECONDS out status
-  out="$(window_has_static_text "$expected" 2>&1)"
-  status=$?
-  printf 'DEBUG: %s: check "%s" -> [%s] exit=%d elapsed=%ds\n' \
-    "$label" "$expected" "${out:-empty}" "$status" "$((SECONDS - started))"
-  [[ "$out" == "found" ]]
-}
-
 assert_tab() {
   local tab_name="$1"
   local expected_text="$2"
@@ -470,19 +525,19 @@ assert_tab() {
     record_fail "Could not select Settings tab: $tab_name."
     return
   fi
-  sleep 0.5
 
-  if debug_probe_text "$expected_text" "tab $tab_name (${OSASCRIPT_TIMEOUT_SECONDS}s cap)"; then
-    record_pass "Settings tab selectable: $tab_name."
-  elif OSASCRIPT_TIMEOUT_SECONDS=120 debug_probe_text "$expected_text" "tab $tab_name (120s retry)"; then
-    record_fail "Settings tab text found only with a 120s osascript timeout (default ${OSASCRIPT_TIMEOUT_SECONDS}s too short): $tab_name -> $expected_text."
+  if window_shows_text "$expected_text" 10 --dump-on-fail; then
+    record_pass "Settings tab shows expected content: $tab_name -> $expected_text."
   else
     record_fail "Settings tab selected but expected text was not visible: $tab_name -> $expected_text."
   fi
 }
 
-printf 'DEBUG: osascript timeout wrapper: %s (cap %ss)\n' \
-  "${OSASCRIPT_TIMEOUT_BIN:-none}" "$OSASCRIPT_TIMEOUT_SECONDS"
+if ! write_ax_probe_helper; then
+  record_fail "Could not write the AX text-probe helper."
+  print_summary
+  exit 1
+fi
 
 assert_tab "General" "Permissions"
 assert_tab "Endpoints" "Dictation"
@@ -495,83 +550,10 @@ assert_tab "About" "Diagnostics"
 # the managed status rows. Managed-row AX coverage would need a second launch
 # that tolerates the eager spawn.
 select_tab "Endpoints" >/dev/null 2>&1 || true
-sleep 0.5
-if debug_probe_text "Endpoint" "endpoints pane" && debug_probe_text "API key" "endpoints pane"; then
+if window_shows_text "Endpoint" 10 && window_shows_text "API key" 10 --dump-on-fail; then
   record_pass "External-mode Endpoints pane shows endpoint configuration fields."
 else
   record_fail "External-mode Endpoints pane did not show endpoint configuration fields."
-fi
-
-# DEBUG(#72): on content-check failure, dump the AX tree through the direct AX
-# C API (fast — no per-element Apple Event round trips) so the log finally
-# shows what is actually exposed. If the needles hit here but the AppleScript
-# checks said "missing", the walk (timeout/System Events) is the bug, not AX
-# exposure. Also time a System Events `entire contents` enumeration for the
-# same window to compare the two paths.
-if ((FAILED)); then
-  printf 'DEBUG: content checks failed; dumping AX tree via direct AX API (current tab: Endpoints).\n'
-  AXDUMP_STEM="$(mktemp -t localvoxtral-axdump)"
-  AXDUMP_HELPER="${AXDUMP_STEM}.swift"
-  mv "$AXDUMP_STEM" "$AXDUMP_HELPER"
-  cat >"$AXDUMP_HELPER" <<'SWIFT'
-import ApplicationServices
-import Foundation
-
-let args = CommandLine.arguments
-guard args.count >= 2, let pid = Int32(args[1]) else {
-    print("usage: axdump <pid> [needle ...]")
-    exit(2)
-}
-let needles = Array(args.dropFirst(2))
-let app = AXUIElementCreateApplication(pid)
-
-func copyAttr(_ el: AXUIElement, _ name: String) -> AnyObject? {
-    var v: AnyObject?
-    return AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success ? v : nil
-}
-
-var printed = 0
-var hits: [String: Int] = [:]
-
-func describe(_ el: AXUIElement, depth: Int) {
-    if depth > 30 || printed > 8000 { return }
-    printed += 1
-    let role = copyAttr(el, kAXRoleAttribute) as? String ?? "?"
-    let title = copyAttr(el, kAXTitleAttribute) as? String ?? ""
-    let desc = copyAttr(el, kAXDescriptionAttribute) as? String ?? ""
-    var value = ""
-    if let v = copyAttr(el, kAXValueAttribute) { value = String(describing: v) }
-    for n in needles where title.contains(n) || value.contains(n) || desc.contains(n) {
-        hits[n, default: 0] += 1
-    }
-    let indent = String(repeating: "  ", count: depth)
-    print("\(indent)\(role) title=\(title.prefix(60)) value=\(value.prefix(100)) desc=\(desc.prefix(60))")
-    for child in (copyAttr(el, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
-        describe(child, depth: depth + 1)
-    }
-}
-
-let windows = (copyAttr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
-print("AXDUMP: app pid=\(pid) windows=\(windows.count)")
-for (index, window) in windows.enumerated() {
-    print("AXDUMP: === window index \(index) ===")
-    describe(window, depth: 0)
-}
-print("AXDUMP: total elements printed: \(printed)")
-for n in needles {
-    print("AXDUMP: needle \"\(n)\" -> \(hits[n, default: 0]) hit(s)")
-}
-SWIFT
-  axdump_started=$SECONDS
-  swift "$AXDUMP_HELPER" "$APP_PID" "Endpoint" "API key" "Dictation" "Permissions" \
-    || printf 'DEBUG: AX dump helper failed with exit %d\n' "$?"
-  printf 'DEBUG: direct AX dump took %ds\n' "$((SECONDS - axdump_started))"
-  rm -f "$AXDUMP_HELPER"
-
-  ec_started=$SECONDS
-  ec_count="$(OSASCRIPT_TIMEOUT_SECONDS=120 run_osascript -e "tell application \"System Events\" to tell process \"$APP_PROCESS\" to count (entire contents of window 1)" 2>&1)"
-  printf 'DEBUG: System Events entire-contents count of window 1 -> [%s] exit=%d elapsed=%ds\n' \
-    "$ec_count" "$?" "$((SECONDS - ec_started))"
 fi
 
 quit_app
