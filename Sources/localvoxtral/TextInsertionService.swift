@@ -345,7 +345,8 @@ final class TextInsertionService {
 
     func beginLiveReplacementSession(
         dictionary: ReplacementDictionary?,
-        preferredAppPID: pid_t?
+        preferredAppPID: pid_t?,
+        isTerminalLikeTarget: Bool = false
     ) {
         didLogLiveReplacementStandDown = false
         let entryCount = dictionary?.entries.count ?? 0
