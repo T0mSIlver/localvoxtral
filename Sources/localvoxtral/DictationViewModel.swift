@@ -1383,8 +1383,9 @@ final class DictationViewModel {
     /// the app focused right now. Called from `beginDictationSession` before
     /// the socket opens (see `preCapturedSessionTargetVerdict`).
     func captureSessionTargetVerdict() {
+        let userBundleIDs = Set(appConfigStore.loadTerminalAppBundleIDs())
         preCapturedSessionTargetVerdict = SessionTargetVerdict(
-            decision: TerminalTargetDetector.detectCurrentTarget(),
+            decision: TerminalTargetDetector.detectCurrentTarget(userBundleIDs: userBundleIDs),
             secureKeyboardEntryEnabled: TerminalTargetDetector.isSecureKeyboardEntryEnabled()
         )
     }

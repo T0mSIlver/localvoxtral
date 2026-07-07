@@ -12,8 +12,11 @@ import Carbon
 enum TerminalTargetDetector {
     /// Why the verdict was reached; logged at session start.
     enum Reason: String, Sendable {
-        /// The frontmost app's bundle ID is on the terminal allowlist.
+        /// The frontmost app's bundle ID is on the built-in terminal allowlist.
         case bundleMatch = "bundle-match"
+        /// The frontmost app's bundle ID is in the user's terminal_apps.toml
+        /// list (apps that embed a terminal the built-in detection misses).
+        case userBundleMatch = "user-bundle-match"
         /// Unknown bundle, Accessibility trust present, and confirmed that
         /// nothing has AX focus.
         case axProbeNoFocusedElement = "ax-probe-no-focus"
@@ -82,17 +85,22 @@ enum TerminalTargetDetector {
         return terminalBundleIDPrefixes.contains { bundleID.hasPrefix($0) }
     }
 
-    /// Core decision: allowlist first; for unknown bundles fall back to the
+    /// Core decision: built-in allowlist first, then the user's
+    /// terminal_apps.toml bundle IDs; for unknown bundles fall back to the
     /// AX probe — a confirmed-missing focused element or a confirmed
     /// unsettable value attribute read as terminal-like, while an
     /// inconclusive probe does not. The probe closure is only invoked when
-    /// the bundle is unknown.
+    /// the bundle is unknown to both lists.
     static func decision(
         forBundleID bundleID: String?,
+        userBundleIDs: Set<String> = [],
         focusedElementProbe: () -> FocusedElementProbe
     ) -> Decision {
         if isTerminalLikeBundleID(bundleID) {
             return Decision(isTerminalLike: true, reason: .bundleMatch)
+        }
+        if let bundleID, userBundleIDs.contains(bundleID) {
+            return Decision(isTerminalLike: true, reason: .userBundleMatch)
         }
         switch focusedElementProbe() {
         case .noFocusedElement:
@@ -109,9 +117,9 @@ enum TerminalTargetDetector {
     /// Live verdict for the app focused right now, logged loudly (one line
     /// per session start) so field logs always show what the session decided
     /// and why.
-    static func detectCurrentTarget() -> Decision {
+    static func detectCurrentTarget(userBundleIDs: Set<String> = []) -> Decision {
         let bundleID = currentFrontmostBundleID()
-        let verdict = decision(forBundleID: bundleID) {
+        let verdict = decision(forBundleID: bundleID, userBundleIDs: userBundleIDs) {
             probeFocusedElementLive()
         }
         Log.target.notice(

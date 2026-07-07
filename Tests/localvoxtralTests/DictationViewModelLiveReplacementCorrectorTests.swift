@@ -410,6 +410,36 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         })
     }
 
+    func testUserAllowlistedBundleSelectsHoldBack() {
+        // cmux field case: the app reports a writable AX value, so detection
+        // needs the user's terminal_apps.toml entry to classify it — and the
+        // session must then behave exactly like a built-in terminal.
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            configStore: MockAppConfigStore(
+                replacementDictionary: ReplacementDictionary(entries: [
+                    ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+                ]),
+                terminalAppBundleIDs: ["com.cmuxterm.app"]
+            ),
+            frontmostBundleID: "com.cmuxterm.app"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        XCTAssertFalse(harness.events.value.contains {
+            if case .backspace = $0 { return true }
+            return false
+        })
+    }
+
     func testNonTerminalVerdictKeepsGuardedCorrector() {
         TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
@@ -541,10 +571,15 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
 private final class MockAppConfigStore: AppConfigServing {
     private let replacementDictionary: ReplacementDictionary
+    private let terminalAppBundleIDs: [String]
     private(set) var loadReplacementDictionaryCallCount = 0
 
-    init(replacementDictionary: ReplacementDictionary) {
+    init(
+        replacementDictionary: ReplacementDictionary,
+        terminalAppBundleIDs: [String] = []
+    ) {
         self.replacementDictionary = replacementDictionary
+        self.terminalAppBundleIDs = terminalAppBundleIDs
     }
 
     func configDirectoryURL() -> URL {
@@ -558,6 +593,10 @@ private final class MockAppConfigStore: AppConfigServing {
 
     func loadLLMPromptTemplates() -> LLMPromptTemplates {
         LLMPromptTemplates(systemContent: "{{input_text}}", userContent: "{{input_text}}")
+    }
+
+    func loadTerminalAppBundleIDs() -> [String] {
+        terminalAppBundleIDs
     }
 }
 #endif

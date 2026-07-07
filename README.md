@@ -81,7 +81,7 @@ Open **Settings** from the menu bar popover:
 - **General** — permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
 - **Endpoints** — Dictation and Polishing sections; each switches independently between `Managed local` (status row with inline install/download progress) and `External URL` (endpoint URL, model name, API key)
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts with `Toggle` / `Push to Talk`) and the menu-bar output mode
-- **Text Processing** — exact-match replacements toggle and the shared config folder (`replacement_dictionary.toml`, `llm_system_prompt.toml`, `llm_user_prompt.toml`)
+- **Text Processing** — exact-match replacements toggle and the shared config folder (`replacement_dictionary.toml`, `llm_system_prompt.toml`, `llm_user_prompt.toml`, `terminal_apps.toml` — extra apps to treat as terminals, e.g. ones that embed one)
 - **About** — version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
 
 The shared config directory lives at `~/Library/Application Support/localvoxtral/config`.

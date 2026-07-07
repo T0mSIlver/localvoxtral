@@ -115,6 +115,54 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.detectCurrentTarget().isTerminalLike)
     }
 
+    // MARK: - User allowlist (terminal_apps.toml)
+
+    func testUserBundleIDIsTerminalLikeWithoutProbing() {
+        let decision = TerminalTargetDetector.decision(
+            forBundleID: "com.cmuxterm.app",
+            userBundleIDs: ["com.cmuxterm.app"]
+        ) {
+            XCTFail("AX probe must not run for user-allowlisted bundles")
+            return .valueSettable
+        }
+        XCTAssertTrue(decision.isTerminalLike)
+        XCTAssertEqual(decision.reason, .userBundleMatch)
+    }
+
+    func testUserBundleIDDoesNotOverrideBuiltInReason() {
+        let decision = TerminalTargetDetector.decision(
+            forBundleID: "com.mitchellh.ghostty",
+            userBundleIDs: ["com.mitchellh.ghostty"]
+        ) {
+            XCTFail("AX probe must not run for allowlisted bundles")
+            return .valueSettable
+        }
+        XCTAssertEqual(decision.reason, .bundleMatch)
+    }
+
+    func testCaptureUsesUserTerminalAppsFromConfigStore() {
+        // The field case (2026-07-07): cmux hosts a terminal but reports a
+        // writable AX value, so only the user's terminal_apps.toml entry can
+        // classify it.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.cmuxterm.app" }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+
+        let viewModel = makeViewModel(
+            outputMode: .liveAutoPaste,
+            terminalAppBundleIDs: ["com.cmuxterm.app"]
+        )
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+        XCTAssertTrue(viewModel.sessionTargetIsTerminalLike)
+
+        // Without the config entry the same app stays non-terminal.
+        let unconfigured = makeViewModel(outputMode: .liveAutoPaste)
+        unconfigured.captureSessionTargetVerdict()
+        unconfigured.applyPreCapturedSessionTargetVerdict()
+        XCTAssertFalse(unconfigured.sessionTargetIsTerminalLike)
+    }
+
     // MARK: - Capture-at-begin / consume-at-audio-start lifecycle
 
     func testBeginDictationSessionCapturesVerdictBeforeConnect() {
@@ -233,7 +281,10 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
     // MARK: - Fixture
 
-    private func makeViewModel(outputMode: DictationOutputMode) -> DictationViewModel {
+    private func makeViewModel(
+        outputMode: DictationOutputMode,
+        terminalAppBundleIDs: [String] = []
+    ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -242,11 +293,41 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
         let settings = SettingsStore(defaults: defaults, environment: [:])
         settings.dictationOutputMode = outputMode
-        return DictationViewModel(
+        let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: TargetDetectorNoopOverlayCoordinator(),
             startRuntimeServices: false
         )
+        // Keep tests hermetic: capture reads the terminal-apps config through
+        // the store, which must never touch the real config directory here.
+        viewModel.appConfigStore = TargetDetectorMockConfigStore(
+            terminalAppBundleIDs: terminalAppBundleIDs
+        )
+        return viewModel
+    }
+}
+
+private final class TargetDetectorMockConfigStore: AppConfigServing {
+    private let terminalAppBundleIDs: [String]
+
+    init(terminalAppBundleIDs: [String]) {
+        self.terminalAppBundleIDs = terminalAppBundleIDs
+    }
+
+    func configDirectoryURL() -> URL {
+        FileManager.default.temporaryDirectory
+    }
+
+    func loadReplacementDictionary() -> ReplacementDictionary {
+        ReplacementDictionary(entries: [])
+    }
+
+    func loadLLMPromptTemplates() -> LLMPromptTemplates {
+        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
+    }
+
+    func loadTerminalAppBundleIDs() -> [String] {
+        terminalAppBundleIDs
     }
 }
 

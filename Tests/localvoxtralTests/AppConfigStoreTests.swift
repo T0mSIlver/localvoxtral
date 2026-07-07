@@ -35,10 +35,67 @@ final class AppConfigStoreTests: XCTestCase {
                 atPath: configDirectory.appendingPathComponent("llm_user_prompt.toml").path
             )
         )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: configDirectory.appendingPathComponent("terminal_apps.toml").path
+            )
+        )
 
         let templates = store.loadLLMPromptTemplates()
         XCTAssertFalse(templates.systemContent.trimmed.isEmpty)
         XCTAssertFalse(templates.userContent.trimmed.isEmpty)
+        // Bundled terminal_apps template ships an empty list.
+        XCTAssertEqual(store.loadTerminalAppBundleIDs(), [])
+    }
+
+    func testTerminalAppsConfigParsesBundleIDs() throws {
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            """
+            # apps that embed a terminal
+            bundle_ids = [
+                "com.cmuxterm.app", # agent manager
+                "com.microsoft.VSCode",
+                "  ",
+            ]
+            """,
+            named: "terminal_apps.toml",
+            in: directory
+        )
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        XCTAssertEqual(
+            store.loadTerminalAppBundleIDs(),
+            ["com.cmuxterm.app", "com.microsoft.VSCode"]
+        )
+    }
+
+    func testInvalidTerminalAppsConfigFallsBackToEmptyList() throws {
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            """
+            bundle_ids = ["com.cmuxterm.app"
+            """,
+            named: "terminal_apps.toml",
+            in: directory
+        )
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        XCTAssertEqual(store.loadTerminalAppBundleIDs(), [])
+    }
+
+    func testTerminalAppsConfigRejectsUnsupportedKeys() throws {
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            """
+            apps = ["com.cmuxterm.app"]
+            """,
+            named: "terminal_apps.toml",
+            in: directory
+        )
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        XCTAssertEqual(store.loadTerminalAppBundleIDs(), [])
     }
 
     func testInvalidReplacementDictionaryFallsBackToBundledDefault() throws {
