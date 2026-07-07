@@ -12,11 +12,13 @@ xcodebuild -downloadComponent MetalToolchain
 xcodebuild -showComponent MetalToolchain   # expect "Status: installed"
 ```
 
-Installed on the build host 2026-07-07. Gotchas: the catalog fetch fails
-transiently sometimes ("Failed fetching catalog for assetType") — just retry;
-and `xcrun --find metal` succeeds even when the component is missing (the
-shim exists), so only an actual invocation (`xcrun metal --version`) proves
-it works. Runs as a normal user, no sudo needed.
+Installed on the build host 2026-07-07 (builder user; ci.yml self-provisions
+it for the runner user, since activation is PER-USER even though the asset
+lands system-wide). Gotchas: the catalog fetch fails transiently sometimes
+("Failed fetching catalog for assetType") — just retry; and `xcrun --find
+metal` succeeds even when the component is missing (the shim exists), so
+only an actual invocation (`xcrun metal --version`) proves it works. Runs
+as a normal user, no sudo needed.
 
 ## `com.localvoxtral.mlxlm` — polish-LLM eval service (owner runbook)
 
