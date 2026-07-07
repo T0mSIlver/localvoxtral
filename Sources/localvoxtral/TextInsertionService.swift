@@ -113,6 +113,13 @@ final class TextInsertionService {
     private var liveReplacementCorrectionTask: Task<Void, Never>?
     @ObservationIgnored
     private var pendingFinalLiveReplacementFlush = false
+    /// The correction the deferred task is currently working on, with the
+    /// phase it has reached — consulted at teardown so an abandoned
+    /// correction whose backspaces were already posted gets its erased text
+    /// restored instead of staying silently deleted from the target.
+    @ObservationIgnored
+    private var inFlightLiveReplacementCorrectionState:
+        (correction: LiveReplacementCorrection, phase: LiveReplacementCorrectionPhase)?
     private let liveReplacementCaretSettleInterval: Duration = .milliseconds(10)
     private let liveReplacementCaretSettleAttemptCount = 15
 
@@ -126,6 +133,11 @@ final class TextInsertionService {
     /// failed; retried as-is and never re-ingested into the stream.
     @ObservationIgnored
     private var pendingHoldBackReleasedText = ""
+    /// The session dictionary, retained while the guarded corrector is armed
+    /// so a caret-related stand-down can convert the session to a fresh
+    /// hold-back stream instead of giving up on replacements.
+    @ObservationIgnored
+    private var liveGuardedSessionDictionary: ReplacementDictionary?
 
     private struct LiveSessionSpan: Sendable {
         var startCaretLocation: Int
@@ -351,6 +363,7 @@ final class TextInsertionService {
         liveReplacementCorrectionTask = nil
         isLiveReplacementCorrectionInFlight = false
         pendingFinalLiveReplacementFlush = false
+        inFlightLiveReplacementCorrectionState = nil
         accessibilityTrust.stopTasks()
     }
 
@@ -369,6 +382,7 @@ final class TextInsertionService {
         didLogLiveReplacementStandDown = false
         liveReplacementCorrector = nil
         liveSessionSpan = nil
+        liveGuardedSessionDictionary = nil
         liveHoldBackStream = nil
         pendingHoldBackReleasedText = ""
 
@@ -405,6 +419,7 @@ final class TextInsertionService {
 
         if let caretLocation = readCurrentCaretLocation(preferredAppPID: preferredAppPID) {
             liveReplacementCorrector = corrector
+            liveGuardedSessionDictionary = dictionary
             liveSessionSpan = LiveSessionSpan(
                 startCaretLocation: caretLocation,
                 insertedUTF16Length: 0,
@@ -436,12 +451,60 @@ final class TextInsertionService {
     }
 
     func endLiveReplacementSession() {
+        // Session stop can land while a deferred correction is in flight
+        // (the production stop flow runs flushFinalLiveReplacementCorrections
+        // and this teardown in the same MainActor turn, so the correction
+        // task never gets to finish — pre-existing on the guarded path).
+        // Abandoning that correction must not eat text:
+        // - if its backspaces were already posted, the erased text is
+        //   retyped raw (the correction itself is skipped);
+        // - a final flush that queued behind the in-flight correction is
+        //   drained synchronously here — the task it was deferred to is
+        //   being cancelled, so the flag would otherwise never fire and the
+        //   queued text would be silently dropped.
+        let hadQueuedFinalFlush = pendingFinalLiveReplacementFlush
+        let abandonedCorrection = inFlightLiveReplacementCorrectionState
+        let sessionDictionary = liveGuardedSessionDictionary
+
         liveReplacementCorrectionTask?.cancel()
         liveReplacementCorrectionTask = nil
         isLiveReplacementCorrectionInFlight = false
         pendingFinalLiveReplacementFlush = false
+        inFlightLiveReplacementCorrectionState = nil
         liveSessionSpan = nil
         liveReplacementCorrector = nil
+        liveGuardedSessionDictionary = nil
+
+        if let abandonedCorrection, abandonedCorrection.phase == .backspacePosted {
+            // Best-effort: if the restore cannot post, the keyboard path is
+            // broken and teardown proceeds regardless.
+            if postUnicodeTextEvents(abandonedCorrection.correction.erasedText) {
+                Log.corrector.notice(
+                    "corrector teardown restored erased text chars=\(abandonedCorrection.correction.erasedText.count, privacy: .public)"
+                )
+            }
+        }
+
+        if hadQueuedFinalFlush {
+            // Route the queued text through a hold-back stream so dictionary
+            // replacements still apply to it (the corrector is already torn
+            // down above, so no backspaces can be posted). A converted or
+            // pure hold-back session drains its own stream; a guarded
+            // session gets a fresh, empty one for the queued text.
+            if liveHoldBackStream == nil, let sessionDictionary {
+                liveHoldBackStream = LiveHoldBackReplacementStream(
+                    dictionary: sessionDictionary,
+                    sanitizesNewlines: false
+                )
+            }
+            if liveHoldBackStream != nil {
+                Log.corrector.notice("corrector teardown drained queued final flush")
+                flushLiveHoldBackStream(releaseRemainder: true)
+            } else {
+                flushPendingRealtimeInsertion()
+            }
+        }
+
         liveHoldBackStream = nil
         // pendingHoldBackReleasedText intentionally survives: the session
         // cleanup path reads hasPendingInsertionText to surface lost text
@@ -544,19 +607,19 @@ final class TextInsertionService {
         guard liveSessionSpan != nil else {
             // The guarded corrector never runs without an armed caret guard
             // (caret-less sessions use the hold-back stream instead), so a
-            // missing span mid-session means the session state was torn down.
-            // Never post unverified backspaces.
-            standDownLiveReplacementCorrections(reason: "caret guard unavailable")
+            // missing span mid-session means the caret guard is gone. Never
+            // post unverified backspaces — convert to pre-typing replacements.
+            convertLiveReplacementCorrectionsToHoldBack(reason: "caret guard unavailable")
             return .stopped
         }
         guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else {
-            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            convertLiveReplacementCorrectionsToHoldBack(reason: "caret unavailable")
             return .stopped
         }
 
         switch currentCaretSettlement(expectedLocation: expectedInsertedCaret) {
         case .unavailable:
-            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            convertLiveReplacementCorrectionsToHoldBack(reason: "caret unavailable")
             return .stopped
         case .mismatched:
             beginDeferredLiveReplacementCorrection(correction, phase: .insertedTextPosted)
@@ -574,14 +637,16 @@ final class TextInsertionService {
             return .stopped
         }
 
+        // From here on the correction's backspaces are posted: any bail-out
+        // must restore the erased text before converting.
         guard let expectedErasedCaret = expectedErasedCaretLocation(for: correction) else {
-            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            restoreErasedTextThenConvertToHoldBack(correction, reason: "caret unavailable")
             return .stopped
         }
 
         switch currentCaretSettlement(expectedLocation: expectedErasedCaret) {
         case .unavailable:
-            standDownLiveReplacementCorrections(reason: "caret unavailable")
+            restoreErasedTextThenConvertToHoldBack(correction, reason: "caret unavailable")
             return .stopped
         case .mismatched:
             beginDeferredLiveReplacementCorrection(correction, phase: .backspacePosted)
@@ -639,6 +704,7 @@ final class TextInsertionService {
     ) {
         guard !isLiveReplacementCorrectionInFlight else { return }
         isLiveReplacementCorrectionInFlight = true
+        inFlightLiveReplacementCorrectionState = (correction, phase)
         liveReplacementCorrectionTask = Task { @MainActor [weak self] in
             await self?.completeDeferredLiveReplacementCorrection(correction, startingAt: phase)
         }
@@ -656,12 +722,16 @@ final class TextInsertionService {
         var currentPhase = phase
         if currentPhase == .insertedTextPosted {
             guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else {
-                standDownLiveReplacementCorrections(reason: "caret unavailable")
+                convertLiveReplacementCorrectionsToHoldBack(reason: "caret unavailable")
                 finishDeferredLiveReplacementCorrection()
                 return
             }
             guard await waitForLiveReplacementCaret(expectedLocation: expectedInsertedCaret) else {
-                standDownLiveReplacementCorrections(reason: "tracked caret diverged")
+                // The field case (cmux, 2026-07-07): the correction's caret
+                // math never matches a terminal grid. The failed correction's
+                // text is already typed raw and stays raw; all FUTURE text
+                // flows through a fresh hold-back stream.
+                convertLiveReplacementCorrectionsToHoldBack(reason: "tracked caret diverged")
                 finishDeferredLiveReplacementCorrection()
                 return
             }
@@ -671,16 +741,19 @@ final class TextInsertionService {
                 return
             }
             currentPhase = .backspacePosted
+            inFlightLiveReplacementCorrectionState = (correction, .backspacePosted)
         }
 
         if currentPhase == .backspacePosted {
+            // The correction's backspaces are posted: any bail-out must
+            // restore the erased text before converting.
             guard let expectedErasedCaret = expectedErasedCaretLocation(for: correction) else {
-                standDownLiveReplacementCorrections(reason: "caret unavailable")
+                restoreErasedTextThenConvertToHoldBack(correction, reason: "caret unavailable")
                 finishDeferredLiveReplacementCorrection()
                 return
             }
             guard await waitForLiveReplacementCaret(expectedLocation: expectedErasedCaret) else {
-                standDownLiveReplacementCorrections(reason: "tracked caret diverged")
+                restoreErasedTextThenConvertToHoldBack(correction, reason: "tracked caret diverged")
                 finishDeferredLiveReplacementCorrection()
                 return
             }
@@ -721,11 +794,117 @@ final class TextInsertionService {
     private func finishDeferredLiveReplacementCorrection() {
         liveReplacementCorrectionTask = nil
         isLiveReplacementCorrectionInFlight = false
+        inFlightLiveReplacementCorrectionState = nil
         let shouldFlushFinalCorrection = pendingFinalLiveReplacementFlush
         pendingFinalLiveReplacementFlush = false
 
+        if liveHoldBackStream != nil {
+            // The deferred correction converted the session to the hold-back
+            // stream mid-flight. Text queued while the correction was in
+            // flight — and a final flush requested during it — must flow into
+            // the stream exactly once, never back into the guarded path.
+            flushLiveHoldBackStream(releaseRemainder: shouldFlushFinalCorrection)
+            return
+        }
+
         processLiveReplacementCorrections(includeFinalUnboundedWord: shouldFlushFinalCorrection)
         flushPendingRealtimeInsertion()
+    }
+
+    /// Converts a guarded-corrector session to the hold-back stream after a
+    /// caret-related failure, instead of disabling replacements for the rest
+    /// of the session. Field bug (owner's Mac, 2026-07-07): cmux
+    /// (`com.cmuxterm.app`) hosts a terminal but reports a WRITABLE focused
+    /// AX value, so it is honestly classified non-terminal; the guarded
+    /// corrector armed with caret_guard=on, the first correction's caret
+    /// math never matched the terminal grid, and after "stand-down
+    /// reason=tracked caret diverged" replacements were silently dead.
+    /// Undetected terminal-hosts will keep appearing, so a caret-related
+    /// stand-down now converts.
+    ///
+    /// Stand-down reason classification (every call site):
+    /// - "tracked caret diverged", "caret unavailable", "caret guard
+    ///   unavailable": caret VERIFICATION broke, but typing still works —
+    ///   CONVERT. The hold-back stream needs no caret: it applies
+    ///   replacements before typing and never posts backspaces.
+    /// - "keyboard correction failed": Unicode/backspace key events cannot
+    ///   post; the hold-back stream types with the same Unicode events, so
+    ///   conversion cannot help — TRUE STAND-DOWN.
+    /// - "realtime insertion failed": no insertion path works at all — TRUE
+    ///   STAND-DOWN.
+    /// - "realtime insertion did not use the keyboard path": the raw chunk
+    ///   landed via AX replace, so backspace-count math is unsafe. The
+    ///   hold-back stream would technically work (it is insertion-path
+    ///   agnostic), but this is not the field failure mode and mixed
+    ///   AX/keyboard sessions keep the proven stand-down behavior — TRUE
+    ///   STAND-DOWN.
+    /// - "no valid rules" (session start): nothing to convert to — TRUE
+    ///   STAND-DOWN (logged directly, never reaches this path).
+    ///
+    /// The failed correction is abandoned: NO backspaces are ever posted
+    /// after conversion. When the failure happens BEFORE its backspaces were
+    /// posted, its text is already typed raw in the target and stays raw.
+    /// When the failure happens AFTER its backspaces were posted (the
+    /// matched text is erased from the target), callers must go through
+    /// `restoreErasedTextThenConvertToHoldBack` so the erased text is
+    /// retyped raw first — conversion must never eat typed text. The fresh
+    /// stream starts EMPTY — accepted trade-off: a rule match spanning the
+    /// conversion boundary (words typed before + words after) will not
+    /// apply. Newline sanitization stays OFF because the target was not
+    /// terminal-detected.
+    ///
+    /// Deferred-correction state (`isLiveReplacementCorrectionInFlight`,
+    /// `liveReplacementCorrectionTask`, `pendingFinalLiveReplacementFlush`)
+    /// is deliberately NOT touched here: every deferred conversion site runs
+    /// inside the correction task and calls
+    /// `finishDeferredLiveReplacementCorrection()` immediately after, which
+    /// resets that state and routes text queued during the defer into the
+    /// stream exactly once; synchronous sites can only be reached with no
+    /// correction in flight.
+    private func convertLiveReplacementCorrectionsToHoldBack(reason: String) {
+        guard liveReplacementCorrector != nil,
+              let dictionary = liveGuardedSessionDictionary
+        else {
+            // No armed guarded session (or no dictionary to rebuild from):
+            // fall back to the plain stand-down.
+            standDownLiveReplacementCorrections(reason: reason)
+            return
+        }
+
+        // Tear down the guarded machinery so nothing can post backspaces or
+        // re-enter the guarded path for the rest of the session.
+        liveReplacementCorrector = nil
+        liveSessionSpan = nil
+        liveGuardedSessionDictionary = nil
+
+        liveHoldBackStream = LiveHoldBackReplacementStream(
+            dictionary: dictionary,
+            sanitizesNewlines: false
+        )
+        Log.corrector.notice(
+            "corrector convert strategy=holdback reason=\(reason, privacy: .public)"
+        )
+    }
+
+    /// Conversion after the failed correction's backspaces were already
+    /// posted: the matched text has been erased from the target, so it is
+    /// retyped raw BEFORE converting — otherwise conversion would silently
+    /// lose the user's typed text (codex review finding, 2026-07-07). If the
+    /// restore itself cannot post, the keyboard path is broken and the
+    /// session truly stands down instead (same recovery as the existing
+    /// `postReplacementAndRecordLiveReplacementCorrection` failure path).
+    private func restoreErasedTextThenConvertToHoldBack(
+        _ correction: LiveReplacementCorrection,
+        reason: String
+    ) {
+        guard postUnicodeTextEvents(correction.erasedText) else {
+            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
+            return
+        }
+        Log.corrector.notice(
+            "corrector restored erased text before convert chars=\(correction.erasedText.count, privacy: .public)"
+        )
+        convertLiveReplacementCorrectionsToHoldBack(reason: reason)
     }
 
     private func standDownLiveReplacementCorrections(reason: String) {
