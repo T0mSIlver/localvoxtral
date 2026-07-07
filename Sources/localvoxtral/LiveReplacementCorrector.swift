@@ -30,6 +30,19 @@ struct LiveReplacementCorrector {
         rules.count
     }
 
+    /// The corrected text accumulated so far (inserted text with applied
+    /// corrections). `LiveHoldBackReplacementStream` releases stable prefixes
+    /// of this text for typing.
+    var correctedText: String {
+        typedText
+    }
+
+    /// The maximum whitespace-separated word count across all rules — the
+    /// lookback window corrections can reach back into.
+    var maxRuleWordCount: Int {
+        maxKeyWordCount
+    }
+
     static func completedBoundaryCorrectedText(
         _ text: String,
         dictionary: ReplacementDictionary,
@@ -206,7 +219,11 @@ struct LiveReplacementCorrector {
         isWhitespace(character) || isPunctuation(character)
     }
 
-    private static func isWhitespace(_ character: Character) -> Bool {
+    // Internal (not private): `LiveHoldBackReplacementStream` computes its
+    // hold-back window with the exact same word segmentation as
+    // `lookbackStart(before:)` so its released prefix can never be reached by
+    // a future correction.
+    static func isWhitespace(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy {
             CharacterSet.whitespacesAndNewlines.contains($0)
         }

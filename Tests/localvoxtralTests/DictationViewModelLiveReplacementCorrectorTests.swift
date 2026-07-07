@@ -192,7 +192,10 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
     }
 
-    func testCorrectorStillAppliesWhenInitialCaretIsUnavailable() {
+    // Replaces the retired unguarded-correction test: a session without a
+    // readable caret used to post blind backspaces; it now applies
+    // replacements before typing via the hold-back stream instead.
+    func testCaretUnavailableSessionAppliesReplacementBeforeTypingWithoutBackspaces() {
         let harness = makeHarness(
             dictionary: ReplacementDictionary(entries: [
                 ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
@@ -204,11 +207,9 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         XCTAssertEqual(harness.field.value, "localvoxtral ")
         XCTAssertEqual(harness.events.value, [
-            .type("voxtral "),
-            .backspace(8),
             .type("localvoxtral "),
         ])
-        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
+        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveHoldBackStreamIsActive)
     }
 
     func testDeltasArrivingDuringInFlightCorrectionAreBufferedUntilAfterCorrection() async {
