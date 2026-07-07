@@ -4,6 +4,10 @@ import XCTest
 
 @MainActor
 final class TerminalTargetDetectorTests: XCTestCase {
+    // DictationViewModel owns app-lifetime services. Retain test instances for
+    // the process duration so teardown does not race service shutdown.
+    private static var retainedViewModels: [DictationViewModel] = []
+
     override func tearDown() async throws {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
         TerminalTargetDetector.debugFocusedElementProbeOverride = nil
@@ -81,6 +85,16 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertEqual(decision.reason, .axProbeValueSettable)
     }
 
+    func testUnknownBundleWithUnavailableProbeIsNotTerminalLike() {
+        // AX trust missing / transient AX errors must not flip ordinary apps
+        // terminal-like — "couldn't tell" is distinct from "confirmed grid".
+        let decision = TerminalTargetDetector.decision(forBundleID: "com.example.unknown") {
+            .probeUnavailable
+        }
+        XCTAssertFalse(decision.isTerminalLike)
+        XCTAssertEqual(decision.reason, .axProbeUnavailable)
+    }
+
     func testAllowlistedBundleIsTerminalLikeWithoutProbing() {
         let decision = TerminalTargetDetector.decision(forBundleID: "com.mitchellh.ghostty") {
             XCTFail("AX probe must not run for allowlisted bundles")
@@ -101,48 +115,125 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.detectCurrentTarget().isTerminalLike)
     }
 
-    // MARK: - Session-start wiring + Secure Keyboard Entry warning
+    // MARK: - Capture-at-begin / consume-at-audio-start lifecycle
 
-    func testSessionStartStoresTerminalVerdictAndWarnsOnSecureKeyboardEntry() {
+    func testBeginDictationSessionCapturesVerdictBeforeConnect() {
+        // Pins the wiring: the verdict must be sampled inside
+        // beginDictationSession (before the socket opens), like
+        // preResolvedOverlayAnchor. Overlay mode avoids the live-auto-paste
+        // accessibility fail-fast path (no TCC prompt on the runner).
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
-        TerminalTargetDetector.debugFocusedElementProbeOverride = {
-            XCTFail("AX probe must not run for allowlisted bundles")
-            return .valueSettable
-        }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
-        let viewModel = makeViewModel()
-        XCTAssertFalse(viewModel.sessionTargetIsTerminalLike)
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
+        viewModel.isShowingConnectionFailureAlert = true
+        Self.retainedViewModels.append(viewModel)
 
-        viewModel.refreshSessionTargetVerdictAtSessionStart()
+        viewModel.beginDictationSession(outputMode: .overlayBuffer)
+
+        XCTAssertEqual(
+            viewModel.preCapturedSessionTargetVerdict,
+            DictationViewModel.SessionTargetVerdict(
+                decision: .init(isTerminalLike: true, reason: .bundleMatch),
+                secureKeyboardEntryEnabled: true
+            )
+        )
+
+        viewModel.abortConnectingSession()
+    }
+
+    func testApplyConsumesPreCapturedVerdictInsteadOfReprobing() {
+        // Capture with the terminal frontmost and secure input on...
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.mitchellh.ghostty" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.captureSessionTargetVerdict()
+
+        // ...then simulate a focus switch during connect: live state now says
+        // an ordinary writable app with secure input off. The session must
+        // keep the captured values, not reprobe.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.editor" }
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+
+        viewModel.applyPreCapturedSessionTargetVerdict()
 
         XCTAssertTrue(viewModel.sessionTargetIsTerminalLike)
         XCTAssertEqual(
             viewModel.lastError,
             DictationViewModel.secureKeyboardEntryWarningMessage
         )
+        XCTAssertNil(viewModel.preCapturedSessionTargetVerdict, "capture is consumed once")
     }
 
-    func testSessionStartWithoutSecureInputLeavesNoWarningAndRefreshesVerdict() {
+    // MARK: - Secure Keyboard Entry warning lifecycle
+
+    func testSecureWarningDoesNotClobberAccessibilityWarning() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.liveAutoPasteAccessibilityWarningMessage,
+            "the Accessibility-trust warning outranks the secure-input warning"
+        )
+        XCTAssertTrue(viewModel.sessionTargetIsTerminalLike, "verdict still applies")
+    }
+
+    func testStaleSecureWarningClearedAtNextSessionStartWhenSecureInputOff() {
+        // Regression: the warning used to wedge in lastError forever.
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
 
-        let viewModel = makeViewModel()
-        viewModel.refreshSessionTargetVerdictAtSessionStart()
-        XCTAssertTrue(viewModel.sessionTargetIsTerminalLike)
-        XCTAssertNil(viewModel.lastError)
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
 
-        // A later session against an ordinary writable text field resets the verdict.
-        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.editor" }
-        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
-        viewModel.refreshSessionTargetVerdictAtSessionStart()
-        XCTAssertFalse(viewModel.sessionTargetIsTerminalLike)
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertNil(viewModel.lastError, "stale warning cleared once secure input is off")
+        XCTAssertTrue(viewModel.sessionTargetIsTerminalLike)
+    }
+
+    func testSecureWarningClearedAtSessionEnd() {
+        // Regression: session end must release the warning (mirrors the
+        // websocketReceiveFailed clearing), not leave it in the popover.
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
+        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.isDictating = true
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
         XCTAssertNil(viewModel.lastError)
+        XCTAssertEqual(viewModel.statusText, "Ready")
+    }
+
+    func testSessionEndKeepsUnrelatedErrors() {
+        // The session-end clear is token-scoped: other errors must survive.
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.lastError = "mlx-lm failed to start."
+        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.isDictating = true
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
     }
 
     // MARK: - Fixture
 
-    private func makeViewModel() -> DictationViewModel {
+    private func makeViewModel(outputMode: DictationOutputMode) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -150,6 +241,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
         let settings = SettingsStore(defaults: defaults, environment: [:])
+        settings.dictationOutputMode = outputMode
         return DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: TargetDetectorNoopOverlayCoordinator(),
