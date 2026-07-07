@@ -718,7 +718,11 @@ extension DictationViewModel {
         let dictionary = replacementDictionaryForCurrentSession()
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
-            preferredAppPID: overlayBufferCoordinator.commitTargetAppPID
+            preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,
+            // Terminal-target detection (TerminalTargetDetector, built in a
+            // sibling change) is wired here by the orchestrator; until then
+            // every live target takes the non-terminal strategy selection.
+            isTerminalLikeTarget: false
         )
     }
 

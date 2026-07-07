@@ -116,6 +116,17 @@ final class TextInsertionService {
     private let liveReplacementCaretSettleInterval: Duration = .milliseconds(10)
     private let liveReplacementCaretSettleAttemptCount = 15
 
+    // Hold-back strategy for targets where post-typing backspace corrections
+    // cannot be verified (terminals, caret-less targets): replacements are
+    // applied BEFORE typing and no backspaces are ever posted. Mutually
+    // exclusive with `liveReplacementCorrector`.
+    @ObservationIgnored
+    private var liveHoldBackStream: LiveHoldBackReplacementStream?
+    /// Stream-released (already corrected/sanitized) text whose insertion
+    /// failed; retried as-is and never re-ingested into the stream.
+    @ObservationIgnored
+    private var pendingHoldBackReleasedText = ""
+
     private struct LiveSessionSpan: Sendable {
         var startCaretLocation: Int
         var insertedUTF16Length: Int
@@ -151,11 +162,12 @@ final class TextInsertionService {
     static let accessibilityErrorMessage = AccessibilityTrustManager.errorMessage
 
     var hasPendingInsertionText: Bool {
-        !pendingRealtimeInsertionText.isEmpty
+        !pendingRealtimeInsertionText.isEmpty || !pendingHoldBackReleasedText.isEmpty
     }
 
     func drainPendingInsertionText() -> String {
-        let text = pendingRealtimeInsertionText
+        let text = pendingHoldBackReleasedText + pendingRealtimeInsertionText
+        pendingHoldBackReleasedText = ""
         pendingRealtimeInsertionText = ""
         return text
     }
@@ -258,6 +270,11 @@ final class TextInsertionService {
     }
 
     func flushPendingRealtimeInsertion() {
+        if liveHoldBackStream != nil {
+            flushLiveHoldBackStream(releaseRemainder: false)
+            return
+        }
+
         guard !pendingRealtimeInsertionText.isEmpty else { return }
         guard !isLiveReplacementCorrectionInFlight else { return }
 
@@ -288,7 +305,7 @@ final class TextInsertionService {
                 guard !Task.isCancelled else { break }
                 guard let self else { break }
                 guard isDictating() else { continue }
-                guard !self.pendingRealtimeInsertionText.isEmpty else { continue }
+                guard self.hasPendingInsertionText else { continue }
                 self.flushPendingRealtimeInsertion()
             }
         }
@@ -339,6 +356,7 @@ final class TextInsertionService {
 
     func clearPendingText() {
         pendingRealtimeInsertionText = ""
+        pendingHoldBackReleasedText = ""
     }
 
     // MARK: - Live Auto-Paste Replacement Tracking
@@ -349,36 +367,63 @@ final class TextInsertionService {
         isTerminalLikeTarget: Bool = false
     ) {
         didLogLiveReplacementStandDown = false
+        liveReplacementCorrector = nil
+        liveSessionSpan = nil
+        liveHoldBackStream = nil
+        pendingHoldBackReleasedText = ""
+
         let entryCount = dictionary?.entries.count ?? 0
-        liveReplacementCorrector = dictionary.map { LiveReplacementCorrector(dictionary: $0) }
-        let ruleCount = liveReplacementCorrector?.ruleCount ?? 0
-        if liveReplacementCorrector?.hasRules == false {
-            liveReplacementCorrector = nil
+        let corrector = dictionary.map { LiveReplacementCorrector(dictionary: $0) }
+        let ruleCount = corrector?.ruleCount ?? 0
+
+        if isTerminalLikeTarget {
+            // Terminals expose a screen-grid caret over the whole scrollback
+            // buffer, so post-typing backspace corrections can never be
+            // verified there (field bug 2026-07-06: the caret guard armed,
+            // the first correction timed out, and the corrector stood down).
+            // Replacements are applied before typing instead, and newlines
+            // are collapsed so a typed newline can never act as Enter and
+            // submit a prompt mid-dictation.
+            liveHoldBackStream = LiveHoldBackReplacementStream(
+                dictionary: dictionary ?? ReplacementDictionary(entries: []),
+                sanitizesNewlines: true
+            )
+            Log.corrector.notice(
+                "corrector armed strategy=holdback reason=terminal entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) newline_sanitize=on"
+            )
+            return
         }
 
-        guard liveReplacementCorrector != nil else {
+        guard let dictionary, let corrector, corrector.hasRules else {
             if entryCount > 0 {
                 Log.corrector.notice(
                     "corrector stand-down reason=no valid rules entries=\(entryCount, privacy: .public)"
                 )
             }
-            liveSessionSpan = nil
             return
         }
 
         if let caretLocation = readCurrentCaretLocation(preferredAppPID: preferredAppPID) {
+            liveReplacementCorrector = corrector
             liveSessionSpan = LiveSessionSpan(
                 startCaretLocation: caretLocation,
                 insertedUTF16Length: 0,
                 preferredAppPID: preferredAppPID
             )
             Log.corrector.notice(
-                "corrector armed entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=on"
+                "corrector armed strategy=guarded-corrector entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=on"
             )
         } else {
-            liveSessionSpan = nil
+            // No readable caret means backspace corrections cannot be
+            // verified — and unverified backspaces are never posted into a
+            // target whose state we cannot observe. Hold text back and apply
+            // replacements before typing instead.
+            liveHoldBackStream = LiveHoldBackReplacementStream(
+                dictionary: dictionary,
+                sanitizesNewlines: false
+            )
             Log.corrector.notice(
-                "corrector armed entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) caret_guard=off reason=caret unavailable"
+                "corrector armed strategy=holdback reason=caret-unavailable entries=\(entryCount, privacy: .public) rules=\(ruleCount, privacy: .public) newline_sanitize=off"
             )
         }
     }
@@ -397,10 +442,18 @@ final class TextInsertionService {
         pendingFinalLiveReplacementFlush = false
         liveSessionSpan = nil
         liveReplacementCorrector = nil
+        liveHoldBackStream = nil
+        // pendingHoldBackReleasedText intentionally survives: the session
+        // cleanup path reads hasPendingInsertionText to surface lost text
+        // before calling clearPendingText().
         didLogLiveReplacementStandDown = false
     }
 
     func flushFinalLiveReplacementCorrections() {
+        if liveHoldBackStream != nil {
+            flushLiveHoldBackStream(releaseRemainder: true)
+            return
+        }
         if isLiveReplacementCorrectionInFlight {
             pendingFinalLiveReplacementFlush = true
             return
@@ -409,6 +462,43 @@ final class TextInsertionService {
     }
 
     // MARK: - Private
+
+    /// Hold-back flush path: pending raw transcript text is ingested into the
+    /// stream and only what the stream releases (already corrected, already
+    /// sanitized) is typed. Text still held by the stream is neither typed
+    /// nor retried until the stream releases it — the retry task only ever
+    /// retypes `pendingHoldBackReleasedText`, so held text cannot be
+    /// double-inserted.
+    private func flushLiveHoldBackStream(releaseRemainder: Bool) {
+        guard var stream = liveHoldBackStream else { return }
+
+        let rawText = pendingRealtimeInsertionText
+        pendingRealtimeInsertionText.removeAll(keepingCapacity: true)
+        var releasedText = pendingHoldBackReleasedText
+        pendingHoldBackReleasedText = ""
+
+        if !rawText.isEmpty {
+            releasedText += stream.ingest(rawText)
+        }
+        if releaseRemainder {
+            releasedText += stream.flushRemainder()
+        }
+        liveHoldBackStream = stream
+
+        guard !releasedText.isEmpty else { return }
+
+        switch insertTextPrioritizingKeyboard(releasedText) {
+        case .insertedByAccessibility, .insertedByKeyboardFallback:
+            break
+        case .failed:
+            // Keep the released text verbatim for the retry task; it must
+            // never be re-ingested into the stream.
+            pendingHoldBackReleasedText = releasedText
+            Log.corrector.notice(
+                "corrector holdback release failed chars=\(releasedText.count, privacy: .public) queued_for_retry=1"
+            )
+        }
+    }
 
     private func recordSuccessfulLiveInsertion(
         text: String,
@@ -452,7 +542,12 @@ final class TextInsertionService {
     ) -> LiveReplacementCorrectionResult {
         guard liveReplacementCorrector != nil else { return .stopped }
         guard liveSessionSpan != nil else {
-            return postUnguardedLiveReplacementCorrection(correction)
+            // The guarded corrector never runs without an armed caret guard
+            // (caret-less sessions use the hold-back stream instead), so a
+            // missing span mid-session means the session state was torn down.
+            // Never post unverified backspaces.
+            standDownLiveReplacementCorrections(reason: "caret guard unavailable")
+            return .stopped
         }
         guard let expectedInsertedCaret = expectedLiveReplacementCaretLocation() else {
             standDownLiveReplacementCorrections(reason: "caret unavailable")
@@ -469,16 +564,6 @@ final class TextInsertionService {
         case .matched:
             return postBackspaceAndFinishLiveReplacementCorrection(correction)
         }
-    }
-
-    private func postUnguardedLiveReplacementCorrection(
-        _ correction: LiveReplacementCorrection
-    ) -> LiveReplacementCorrectionResult {
-        guard postBackspaceEvents(count: correction.backspaceCount) else {
-            standDownLiveReplacementCorrections(reason: "keyboard correction failed")
-            return .stopped
-        }
-        return postReplacementAndRecordLiveReplacementCorrection(correction)
     }
 
     private func postBackspaceAndFinishLiveReplacementCorrection(
@@ -1101,6 +1186,10 @@ extension TextInsertionService {
 
     var debugLiveReplacementCorrectorIsActive: Bool {
         liveReplacementCorrector?.isStandingDown == false
+    }
+
+    var debugLiveHoldBackStreamIsActive: Bool {
+        liveHoldBackStream != nil
     }
 
     var debugLiveReplacementCorrectionIsInFlight: Bool {
