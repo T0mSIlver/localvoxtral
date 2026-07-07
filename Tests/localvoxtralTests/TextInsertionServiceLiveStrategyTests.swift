@@ -227,6 +227,202 @@ final class TextInsertionServiceLiveStrategyTests: XCTestCase {
         service.endLiveReplacementSession()
     }
 
+    // MARK: - Mid-session conversion (guarded corrector → hold-back stream)
+
+    // Field repro (owner's Mac, 2026-07-07): cmux (com.cmuxterm.app) hosts a
+    // terminal but reports a WRITABLE focused AX value, so it is honestly
+    // classified non-terminal and the guarded corrector arms with
+    // caret_guard=on. The terminal grid caret never matches the tracked
+    // session span, the first correction times out its settle attempts
+    // ("stand-down reason=tracked caret diverged"), and replacements used to
+    // go silently dead for the rest of the session. The session must instead
+    // CONVERT to the hold-back stream and keep applying replacements to all
+    // future text — with zero backspace events after the conversion point.
+    func testCaretDivergenceConvertsToHoldBackAndKeepsApplyingReplacements() async {
+        // Terminal-grid style caret: readable, but pinned to a location that
+        // never matches startCaret + insertedUTF16Length.
+        let harness = makeServiceHarness(caretLocationReader: { _ in 4242 })
+        harness.service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+        XCTAssertTrue(harness.service.debugLiveReplacementCorrectorIsActive)
+        XCTAssertFalse(harness.service.debugLiveHoldBackStreamIsActive)
+
+        // First rule match: typed raw, then the deferred correction exhausts
+        // its settle attempts against the diverged caret.
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        await harness.service.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertTrue(
+            harness.service.debugLiveHoldBackStreamIsActive,
+            "caret divergence must convert the session to the hold-back stream"
+        )
+        XCTAssertFalse(harness.service.debugLiveReplacementCorrectorIsActive)
+        XCTAssertEqual(
+            harness.typed.value, ["voxtral "],
+            "the failed correction's text is already typed raw and stays raw"
+        )
+
+        // Second rule match after conversion: applied BEFORE typing.
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        harness.service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(harness.typed.value.joined(), "voxtral localvoxtral ")
+        XCTAssertEqual(
+            harness.backspaces.value, [],
+            "no backspace events may ever be posted after conversion"
+        )
+        harness.service.endLiveReplacementSession()
+    }
+
+    func testKeyboardFailureStandDownDoesNotConvertToHoldBack() {
+        let typed = Box<[String]>([])
+        let backspaceAttempts = Box<[Int]>([])
+        let field = FakeCaretField()
+        let service = TextInsertionService()
+        service.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                typed.value.append(chunk)
+                field.value.append(chunk)
+                return true
+            },
+            backspacePoster: { count in
+                backspaceAttempts.value.append(count)
+                return false
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            caretLocationReader: { _ in (field.value as NSString).length },
+            liveReplacementSettleSleep: {}
+        )
+        service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        // Caret settles correctly, but the backspace key events cannot post.
+        service.enqueueRealtimeInsertion("voxtral ")
+
+        XCTAssertEqual(backspaceAttempts.value, [8])
+        XCTAssertFalse(
+            service.debugLiveHoldBackStreamIsActive,
+            "keyboard-posting failure must stay a true stand-down: the hold-back stream could not type either"
+        )
+        XCTAssertFalse(service.debugLiveReplacementCorrectorIsActive)
+
+        // Further dictation types raw: no corrections, no stream, no more
+        // backspace attempts.
+        service.enqueueRealtimeInsertion("voxtral ")
+        service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(typed.value.joined(), "voxtral voxtral ")
+        XCTAssertEqual(backspaceAttempts.value, [8])
+        XCTAssertFalse(service.debugLiveHoldBackStreamIsActive)
+        service.endLiveReplacementSession()
+    }
+
+    func testConversionDuringDeferredCorrectionRoutesQueuedTextThroughStreamOnce() async {
+        let harness = makeServiceHarness(caretLocationReader: { _ in 4242 })
+        harness.service.beginLiveReplacementSession(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+                ReplacementEntry(replaceWith: "chai", matches: ["tea"]),
+            ]),
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        XCTAssertTrue(harness.service.debugLiveReplacementCorrectionIsInFlight)
+
+        // Queued while the failing correction is still in flight: must flow
+        // into the converted stream exactly once (no drop, no double-type).
+        harness.service.enqueueRealtimeInsertion("tea")
+        XCTAssertEqual(harness.typed.value, ["voxtral "])
+
+        await harness.service.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertTrue(harness.service.debugLiveHoldBackStreamIsActive)
+        XCTAssertFalse(harness.service.debugLiveReplacementCorrectionIsInFlight)
+        XCTAssertFalse(
+            harness.service.hasPendingInsertionText,
+            "queued text must be ingested into the stream, not left pending"
+        )
+        XCTAssertEqual(
+            harness.typed.value, ["voxtral "],
+            "the trailing partial word stays held by the stream, never typed raw"
+        )
+
+        harness.service.flushFinalLiveReplacementCorrections()
+        XCTAssertEqual(harness.typed.value, ["voxtral ", "chai"])
+        XCTAssertEqual(
+            harness.backspaces.value, [],
+            "no backspaces after conversion, even when the failed correction was mid-defer"
+        )
+        harness.service.endLiveReplacementSession()
+    }
+
+    func testFinalFlushRequestedDuringDeferredCorrectionFlushesConvertedStream() async {
+        let harness = makeServiceHarness(caretLocationReader: { _ in 4242 })
+        harness.service.beginLiveReplacementSession(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+                ReplacementEntry(replaceWith: "chai", matches: ["tea"]),
+            ]),
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        harness.service.enqueueRealtimeInsertion("tea")
+        // Session stop while the failing correction is still in flight.
+        harness.service.flushFinalLiveReplacementCorrections()
+        XCTAssertEqual(harness.typed.value, ["voxtral "])
+
+        await harness.service.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertEqual(
+            harness.typed.value, ["voxtral ", "chai"],
+            "the queued final flush must release the converted stream's remainder"
+        )
+        XCTAssertEqual(harness.backspaces.value, [])
+        harness.service.endLiveReplacementSession()
+    }
+
+    func testCaretBecomingUnavailableMidSessionConvertsToHoldBack() {
+        let caretReads = Box(0)
+        // Caret readable at session start (arms the guarded corrector), then
+        // unreadable for every later verification.
+        let harness = makeServiceHarness(caretLocationReader: { _ in
+            caretReads.value += 1
+            return caretReads.value == 1 ? 0 : nil
+        })
+        harness.service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+        XCTAssertTrue(harness.service.debugLiveReplacementCorrectorIsActive)
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+
+        XCTAssertTrue(
+            harness.service.debugLiveHoldBackStreamIsActive,
+            "a caret that becomes unavailable mid-session must convert, not stand down"
+        )
+        XCTAssertEqual(harness.typed.value, ["voxtral "])
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        harness.service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(harness.typed.value.joined(), "voxtral localvoxtral ")
+        XCTAssertEqual(harness.backspaces.value, [])
+        harness.service.endLiveReplacementSession()
+    }
+
     // MARK: - Harness
 
     private var voxtralDictionary: ReplacementDictionary {
