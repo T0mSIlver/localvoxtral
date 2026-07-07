@@ -12,7 +12,6 @@ public final class HTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let handler: Handler
     private let queue = DispatchQueue(label: "localvoxtral.polishd.http")
-    private let started = Mutex(false)
 
     /// Pass port 0 to bind an ephemeral port (tests); read `boundPort` after
     /// `start()` returns.
@@ -35,25 +34,36 @@ public final class HTTPServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in
             self?.accept(connection)
         }
+        let resumeOnce = ResumeOnce()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            listener.stateUpdateHandler = { [weak self, started] state in
-                let alreadyStarted = started.withLock { value in
-                    let previous = value
-                    value = true
-                    return previous
-                }
+            listener.stateUpdateHandler = { [weak self] state in
                 switch state {
                 case .ready:
-                    if !alreadyStarted { continuation.resume() }
+                    resumeOnce.run { continuation.resume() }
                 case .failed(let error), .waiting(let error):
-                    if !alreadyStarted { continuation.resume(throwing: error) }
+                    resumeOnce.run { continuation.resume(throwing: error) }
                     self?.listener.cancel()
                 default:
-                    // Non-terminal transition before ready; keep waiting.
-                    started.withLock { $0 = alreadyStarted }
+                    break
                 }
             }
             listener.start(queue: queue)
+        }
+    }
+
+    /// A continuation may be resumed exactly once, but the listener can emit
+    /// `.waiting` and later `.ready` (or several failures) — this collapses
+    /// them to the first terminal transition.
+    private final class ResumeOnce: Sendable {
+        private let resumed = Mutex(false)
+
+        func run(_ body: () -> Void) {
+            let first = resumed.withLock { value in
+                let previous = value
+                value = true
+                return !previous
+            }
+            if first { body() }
         }
     }
 
