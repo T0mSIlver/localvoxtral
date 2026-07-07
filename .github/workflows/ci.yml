@@ -99,7 +99,13 @@ jobs:
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             echo "Metal toolchain not active for $(whoami); installing component..."
-            xcodebuild -downloadComponent MetalToolchain
+            # The MobileAsset catalog fetch fails transiently (observed for
+            # both the builder and runner users on 2026-07-07) — retry.
+            for attempt in 1 2 3; do
+              xcodebuild -downloadComponent MetalToolchain && break
+              echo "catalog fetch failed (attempt $attempt); retrying in 10s..."
+              sleep 10
+            done
             xcrun metal --version
           fi
 
