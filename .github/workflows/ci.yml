@@ -81,13 +81,34 @@ jobs:
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
         run: swift test --filter RealtimeAPIVLLMIntegrationTests
 
+      - name: Polishing helper unit tests (PolishHelper package)
+        # Self-hosted only: hosted runners would pay a cold Cmlx C++ compile
+        # every fork PR. These tests are Metal-free (HTTP layer, router,
+        # cache locator, watchdog); the Metal path is covered below.
+        if: runner.environment == 'self-hosted'
+        run: swift test --package-path PolishHelper
+
       - name: Package app bundle
         # The self-hosted runner's keychain holds the stable localvoxtral-dev
         # signing cert, keeping TCC grants valid across builds; anywhere the
         # identity is absent (hosted runners), packaging falls back to ad-hoc.
+        # Hosted runners skip the bundled polishing helper (no MetalToolchain
+        # component + cold MLX C++ build would dominate fork-PR CI); every
+        # self-hosted lane (same-repo PRs, main, releases) builds it.
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_SKIP_POLISHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
         run: ./scripts/package_app.sh release
+
+      - name: Polishing helper integration (live model + eval baseline)
+        # Spawns the helper built by the packaging step with the real pinned
+        # model, drives the production polish request path, and asserts the
+        # shared eval baseline + parent-pid tether.
+        if: runner.environment == 'self-hosted'
+        env:
+          LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
+          LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
+        run: swift test --filter PolishHelperIntegrationTests
 
       - name: Zip app for artifact upload
         # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip

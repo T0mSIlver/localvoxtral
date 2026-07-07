@@ -1,6 +1,31 @@
 # Mac build-host scripts
 
+## Metal toolchain (Xcode 26+) — required for packaging
+
+`package_app.sh` builds the bundled polishing helper (`PolishHelper/`,
+MLX Swift) with xcodebuild, which compiles Metal kernels. On Xcode 26+ the
+Metal compiler is a separate ~700 MB component that is NOT installed with
+Xcode; one-time setup per build host:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+xcodebuild -showComponent MetalToolchain   # expect "Status: installed"
+```
+
+Installed on the build host 2026-07-07. Gotchas: the catalog fetch fails
+transiently sometimes ("Failed fetching catalog for assetType") — just retry;
+and `xcrun --find metal` succeeds even when the component is missing (the
+shim exists), so only an actual invocation (`xcrun metal --version`) proves
+it works. Runs as a normal user, no sudo needed.
+
 ## `com.localvoxtral.mlxlm` — polish-LLM eval service (owner runbook)
+
+> Since the bundled MLX Swift helper replaced the app-managed mlx-lm wheel
+> (2026-07), this service is the *prompt-eval reference endpoint* only — the
+> app no longer installs or runs mlx-lm, and production-engine parity is
+> covered by `./scripts/remote-build.sh integration-polishd` instead. The
+> `--prompt-cache-*` flags below are mlx-lm-specific and no longer mirror
+> app behavior.
 
 The LLM polish prompt eval (`./scripts/remote-build.sh eval-llm`,
 `LLMPolishPromptEvalTests`) needs an mlx-lm chat/completions server that is

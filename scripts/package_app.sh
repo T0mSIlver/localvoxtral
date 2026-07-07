@@ -231,6 +231,15 @@ PLIST
 # kernels (mlx-swift README), producing a binary that fails at runtime with
 # "Failed to load the default metallib". Xcode's build system compiles the
 # kernels into the mlx-swift_Cmlx resource bundle, which we ship alongside.
+#
+# LOCALVOXTRAL_SKIP_POLISHD=1 skips this stage — for GitHub-hosted fork-PR
+# runners only, where the MetalToolchain download + cold Cmlx C++ build would
+# dominate CI time. A bundle built this way has no Managed local polishing.
+if [[ "${LOCALVOXTRAL_SKIP_POLISHD:-0}" == "1" ]]; then
+  echo "WARNING: skipping polishing helper (LOCALVOXTRAL_SKIP_POLISHD=1);"
+  echo "this bundle cannot run Managed local polishing."
+else
+
 # A real invocation, not `xcrun --find`: on Xcode 26+ the metal shim exists
 # even when the toolchain component is missing, and only fails when executed.
 # One-time host provision (owner runbook: scripts/mac/README.md):
@@ -294,6 +303,8 @@ if [[ -d "$HELPER_DSYM_SOURCE" ]]; then
   rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
   cp -R "$HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
 fi
+
+fi # LOCALVOXTRAL_SKIP_POLISHD
 # ---------------------------------------------------------------------------
 
 # Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)

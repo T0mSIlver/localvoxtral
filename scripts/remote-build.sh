@@ -6,10 +6,14 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
+#     integration-polishd
+#                  spawn the bundled polishing helper (built by `package`)
+#                  with the real model and score it against the polish eval
+#                  baseline + parent-pid tether
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
 #                  optional arg = chat/completions endpoint (default
 #                  http://127.0.0.1:8080/v1/chat/completions, the
@@ -104,7 +108,8 @@ case "$CMD" in
     ;;
 esac
 
-UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests)
+UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
+  --skip PolishHelperIntegrationTests)
 
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
@@ -113,6 +118,22 @@ case "$CMD" in
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
+    ;;
+  integration-polishd)
+    # Same marker-through-the-tree pattern as eval-llm (the gate pins env
+    # prefixes per-command). Requires a helper binary from a prior
+    # `./scripts/remote-build.sh package` run — the remote PolishHelper/.build
+    # tree survives rsync (excluded from --delete).
+    if [[ $# -ne 0 ]]; then
+      echo "integration-polishd does not accept extra arguments" >&2
+      exit 1
+    fi
+    POLISHD_MARKER="$ROOT_DIR/.polishd-integration-enable.json"
+    trap 'rm -f "$POLISHD_MARKER"' EXIT
+    printf '{"helperPath": "%s"}\n' \
+      "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+      >"$POLISHD_MARKER"
+    REMOTE_CMD=(swift test --filter PolishHelperIntegrationTests)
     ;;
   eval-llm)
     # Enablement travels as a gitignored marker file inside the synced tree
@@ -139,7 +160,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|integration-polishd|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac

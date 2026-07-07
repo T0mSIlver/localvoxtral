@@ -88,12 +88,12 @@ The shared config directory lives at `~/Library/Application Support/localvoxtral
 
 ## Under the hood
 
-In **Managed local** mode (the default), localvoxtral installs, launches, and supervises two inference engines for you — no terminal required:
+In **Managed local** mode (the default), localvoxtral launches and supervises two inference engines for you — no terminal required:
 
 - **Dictation — [voxmlx](https://github.com/T0mSIlver/voxmlx)** streaming [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit). localvoxtral ships a tuned build that adds a native OpenAI Realtime WebSocket server and memory-management optimizations for long dictation sessions.
-- **Polishing — [mlx-lm](https://github.com/T0mSIlver/mlx-lm)** running [Qwen3.5-0.8B in 8-bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-MLX-8bit), a lightweight model that cleans up transcripts with negligible overhead. The tuned build adds enhanced prompt caching that roughly halves prompt-processing time for each polishing call.
+- **Polishing — a bundled native engine** built on Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), running [Qwen3.5-0.8B in 8-bit](https://huggingface.co/mlx-community/Qwen3.5-0.8B-8bit), a lightweight model that cleans up transcripts with negligible overhead. It ships inside the app — nothing to install — and runs as a supervised helper process, so turning polishing off frees its memory immediately.
 
-Engines install from pinned, checksum-verified releases into `~/Library/Application Support/localvoxtral`, never outlive the app (a watchdog stops them even after a crash), and uninstall by deleting that one folder.
+The dictation engine installs from pinned, checksum-verified releases into `~/Library/Application Support/localvoxtral`; the polishing engine ships inside the app bundle. Neither ever outlives the app (a watchdog stops them even after a crash); uninstalling means deleting the app and that one folder.
 
 Prefer your own hardware? Dictation and polishing each switch independently to **External URL** mode in **Settings → Endpoints** — any OpenAI Realtime-compatible server works for dictation, any chat-completions server for polishing.
 
