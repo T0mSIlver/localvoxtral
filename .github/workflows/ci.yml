@@ -144,7 +144,14 @@ jobs:
           retention-days: 7
 
       - name: Zip dSYM for artifact upload
-        run: ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
+        # Includes the polishing helper's dSYM when present (self-hosted
+        # lanes) — helper crashes (MLX C++/Metal) are the likeliest field
+        # crashes, and a dSYM that never leaves the runner symbolizes nothing.
+        run: |
+          ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
+          if [[ -d dist/localvoxtral-polishd.dSYM ]]; then
+            ditto -c -k --keepParent dist/localvoxtral-polishd.dSYM dist/localvoxtral-polishd-dSYM.zip
+          fi
 
       - name: Upload dSYM artifact
         # Longer retention than the app: field crashes surface days after the
@@ -152,7 +159,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: localvoxtral-dsym
-          path: dist/localvoxtral-dSYM.zip
+          path: |
+            dist/localvoxtral-dSYM.zip
+            dist/localvoxtral-polishd-dSYM.zip
           retention-days: 30
 
       - name: Smoke test packaged app launch

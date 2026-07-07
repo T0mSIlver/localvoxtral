@@ -290,7 +290,10 @@ final class BackendManager: ManagedBackendManaging {
             return
         }
 
-        if installer.needsInstallOrUpdate(spec) {
+        // Structural, not just data-driven: a bundled backend must never enter
+        // the uv install path regardless of what an installer claims (the real
+        // installer preconditionFailures on bundled installs).
+        if case .uvWheel = spec.installKind, installer.needsInstallOrUpdate(spec) {
             setStatus(.installing(progress: .downloading(fraction: nil)), for: spec)
             do {
                 try await installer.install(spec) { [weak self] progress in
@@ -430,18 +433,16 @@ final class BackendManager: ManagedBackendManaging {
         case .uvWheel:
             return layout.toolBin.appendingPathComponent(spec.executableName)
         case .bundledExecutable:
-            #if DEBUG
-            // Integration tests point the manager at a freshly built helper.
-            if let override = ProcessInfo.processInfo
-                .environment["LOCALVOXTRAL_POLISHD_PATH"], !override.isEmpty
-            {
-                return URL(fileURLWithPath: override)
-            }
-            #endif
+            // Packaged app: Contents/MacOS next to the main binary (that is
+            // where package_app.sh copies the helper). Integration tests
+            // spawn the helper binary directly and never route through here.
             if let auxiliary = Bundle.main.url(forAuxiliaryExecutable: spec.executableName) {
                 return auxiliary
             }
             // Dev runs outside a packaged bundle: sibling of the main binary.
+            // (`swift run` has no bundled helper — managed polishing fails at
+            // spawn with a visible supervisor error there; use a packaged
+            // build for hand-testing polishing.)
             return (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
                 .deletingLastPathComponent()
                 .appendingPathComponent(spec.executableName)

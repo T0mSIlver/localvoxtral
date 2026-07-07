@@ -130,6 +130,13 @@ struct PolishdMain {
         let server = try HTTPServer(port: options.port) { request in
             await router.handle(request)
         }
+        // A dead listener in a live process is invisible to the supervisor
+        // (it only watches process exit + /health during startup) — exit so
+        // it restarts us.
+        server.onListenerFailure = { error in
+            PolishdLog.error("listener failed after ready: \(error); exiting for restart")
+            exit(1)
+        }
         try await server.start()
         PolishdLog.info("ready on 127.0.0.1:\(server.boundPort)")
 

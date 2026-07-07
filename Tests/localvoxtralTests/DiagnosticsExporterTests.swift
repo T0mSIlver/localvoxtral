@@ -79,7 +79,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("realtime API key: not set"))
         XCTAssertTrue(report.contains("LLM polishing: <disabled>"))
         XCTAssertTrue(report.contains("voxmlx: not installed"))
-        XCTAssertTrue(report.contains("mlx-lm: not installed"))
+        XCTAssertTrue(report.contains("polishing engine (localvoxtral-polishd): not installed"))
     }
 
     func testReportIncludesSupervisorOutputWhenPresent() {
@@ -94,7 +94,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("-- voxmlx --"))
         XCTAssertTrue(report.contains("[voxmlx stdout] INFO started"))
         XCTAssertTrue(report.contains("[voxmlx stderr] listening"))
-        XCTAssertTrue(report.contains("-- mlx-lm --"))
+        XCTAssertTrue(report.contains("-- localvoxtral-polishd --"))
         XCTAssertTrue(report.contains("[mlx-lm stdout] ready"))
     }
 

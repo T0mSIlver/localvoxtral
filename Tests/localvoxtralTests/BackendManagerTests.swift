@@ -114,6 +114,22 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertFalse(mlxLMConfiguration.executableURL.path.contains("backends"))
     }
 
+    func testBundledPolishingBackendNeverEntersInstallPathEvenIfInstallerClaimsNeed() async throws {
+        // The guard must be structural (installKind), not data-driven: even a
+        // (mis)configured installer that claims the bundled backend needs an
+        // install must never be invoked for it — the real installer traps on
+        // bundled installs.
+        let installer = FakeBackendInstaller(needsInstall: [BackendCatalog.mlxLM.id])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+
+        try await manager.ensureReady(dictation: false, polishing: true)
+
+        XCTAssertTrue(installer.installCalls.isEmpty)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+    }
+
     func testPolishingOnlyEnsureReadyDoesNotTouchVoxmlx() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()

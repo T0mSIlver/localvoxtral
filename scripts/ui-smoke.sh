@@ -130,7 +130,7 @@ quit_app() {
 }
 
 managed_backend_pids() {
-  pgrep -f 'voxmlx-serve|mlx_lm\.server' 2>/dev/null | sort || true
+  pgrep -f 'voxmlx-serve|mlx_lm\.server|localvoxtral-polishd' 2>/dev/null | sort || true
 }
 
 start_backend_sampler() {

@@ -50,7 +50,9 @@ public struct HTTPResponse: Sendable {
 
 public enum HTTPParseError: Error, Equatable {
     case malformedRequestLine
+    case invalidContentLength
     case bodyTooLarge(limit: Int)
+    case headTooLarge(limit: Int)
 }
 
 /// Incremental HTTP/1.1 request parser: feed it chunks as they arrive on the
@@ -58,6 +60,7 @@ public enum HTTPParseError: Error, Equatable {
 /// Pure value type so it is trivially unit-testable without sockets.
 public struct HTTPRequestAccumulator: Sendable {
     public static let maxBodyBytes = 8 << 20
+    public static let maxHeadBytes = 64 << 10
 
     private var buffer = Data()
     private var head: (method: String, path: String, contentLength: Int)?
@@ -69,6 +72,12 @@ public struct HTTPRequestAccumulator: Sendable {
 
         if head == nil {
             guard let headEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+                // Bound what a peer can make us buffer while it withholds the
+                // blank line — real clients send a complete head in one or two
+                // segments.
+                guard buffer.count <= Self.maxHeadBytes else {
+                    throw HTTPParseError.headTooLarge(limit: Self.maxHeadBytes)
+                }
                 return nil
             }
             let headData = buffer.subdata(in: buffer.startIndex ..< headEnd.lowerBound)
@@ -85,7 +94,14 @@ public struct HTTPRequestAccumulator: Sendable {
                 let parts = line.split(separator: ":", maxSplits: 1)
                 guard parts.count == 2 else { continue }
                 if parts[0].trimmingCharacters(in: .whitespaces).lowercased() == "content-length" {
-                    contentLength = Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+                    guard let parsed = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+                        parsed >= 0
+                    else {
+                        // A negative value would trap in prefix(_:) below;
+                        // reject the request instead of crashing the helper.
+                        throw HTTPParseError.invalidContentLength
+                    }
+                    contentLength = parsed
                 }
             }
             guard contentLength <= Self.maxBodyBytes else {

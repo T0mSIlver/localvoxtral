@@ -130,8 +130,9 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 | Tier | What | When | Cost |
 |---|---|---|---|
-| 0 | Unit suite (200+ tests) + packaging + launch smoke | every PR/push, CI | ~1 min |
+| 0 | Unit suite (500+ tests) + PolishHelper unit suite + packaging + launch smoke | every PR/push, CI (helper unit suite: self-hosted lanes only) | ~1 min |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
+| 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | every PR/push on the self-hosted runner (after packaging); locally via `remote-build.sh integration-polishd` | ~15 s warm |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and

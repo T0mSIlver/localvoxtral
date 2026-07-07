@@ -121,7 +121,7 @@ fi
 # --- Process state --------------------------------------------------------
 
 print_header "Process state"
-for proc in localvoxtral voxmlx-serve mlx_lm.server; do
+for proc in localvoxtral voxmlx-serve mlx_lm.server localvoxtral-polishd; do
   # PIDs only — full command lines (pgrep -fl) could leak flags such as API
   # keys from user-run backend invocations.
   pids="$(pgrep -f "$proc" 2>/dev/null | tr '\n' ' ' || true)"
@@ -137,7 +137,7 @@ done
 print_header "Local ports (127.0.0.1)"
 check_port 8000 "user/external realtime"
 check_port 8471 "managed voxmlx"
-check_port 8472 "managed mlx-lm"
+check_port 8472 "managed polishing engine (localvoxtral-polishd)"
 
 # --- launchd --------------------------------------------------------------
 

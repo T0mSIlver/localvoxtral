@@ -49,6 +49,34 @@ final class HTTPMessageTests: XCTestCase {
         }
     }
 
+    func testNegativeContentLengthIsRejectedNotTrapped() {
+        // Regression: Int("-1") parses, and buffer.prefix(-1) traps — a local
+        // peer could crash the helper with one malformed request.
+        var accumulator = HTTPRequestAccumulator()
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: -1\r\n\r\n"
+        XCTAssertThrowsError(try accumulator.append(Data(raw.utf8))) { error in
+            XCTAssertEqual(error as? HTTPParseError, .invalidContentLength)
+        }
+    }
+
+    func testNonNumericContentLengthIsRejected() {
+        var accumulator = HTTPRequestAccumulator()
+        let raw = "POST /x HTTP/1.1\r\nContent-Length: abc\r\n\r\n"
+        XCTAssertThrowsError(try accumulator.append(Data(raw.utf8))) { error in
+            XCTAssertEqual(error as? HTTPParseError, .invalidContentLength)
+        }
+    }
+
+    func testEndlessHeadWithoutBlankLineIsBounded() {
+        // A peer streaming header bytes forever must not grow memory
+        // unboundedly while we wait for \r\n\r\n.
+        var accumulator = HTTPRequestAccumulator()
+        let filler = Data(repeating: UInt8(ascii: "a"), count: HTTPRequestAccumulator.maxHeadBytes + 1)
+        XCTAssertThrowsError(try accumulator.append(filler)) { error in
+            XCTAssertEqual(error as? HTTPParseError, .headTooLarge(limit: HTTPRequestAccumulator.maxHeadBytes))
+        }
+    }
+
     func testResponseSerializationIncludesLengthAndClose() {
         let response = HTTPResponse(status: 200, body: Data("{\"a\":1}".utf8))
         let text = String(decoding: response.serialized(), as: UTF8.self)

@@ -86,10 +86,16 @@ final class PolishHelperIntegrationTests: XCTestCase {
         return (binary, model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel)
     }
 
+    private struct ModelProvisioningError: Error, CustomStringConvertible {
+        let description: String
+    }
+
     /// The helper never downloads (missing model = hard error by design), so
     /// the suite provisions the shared HF cache itself when the model is
     /// absent — the same cache layout + include patterns as the app's
     /// HFModelDownloader, idempotent, ~0.9 GB once per build host/user.
+    /// Provisioning failures are test FAILURES, not skips: this suite only
+    /// runs when explicitly enabled, and a green skip would hide broken infra.
     private func ensureModelCached(_ repoID: String) async throws {
         let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub")
@@ -97,12 +103,18 @@ final class PolishHelperIntegrationTests: XCTestCase {
             "models--" + repoID.replacingOccurrences(of: "/", with: "--")
         )
         let snapshotsDir = repoDir.appendingPathComponent("snapshots")
-        if let snapshots = try? FileManager.default.contentsOfDirectory(atPath: snapshotsDir.path),
-           snapshots.contains(where: { snapshot in
-               FileManager.default.fileExists(
-                   atPath: snapshotsDir.appendingPathComponent("\(snapshot)/config.json").path
-               )
-           })
+
+        // Completeness marker is refs/main, which is written LAST below (and
+        // is what HFCacheModelLocator prefers). Keying on config.json alone
+        // would let a cancelled half-download (config present, weights
+        // missing) poison the cache into a permanently-failing suite.
+        let mainRef = repoDir.appendingPathComponent("refs/main")
+        if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !revision.isEmpty,
+            FileManager.default.fileExists(
+                atPath: snapshotsDir.appendingPathComponent("\(revision)/config.json").path
+            )
         {
             return
         }
@@ -116,7 +128,9 @@ final class PolishHelperIntegrationTests: XCTestCase {
         let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)/revision/main")!
         let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
         guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
-            throw XCTSkip("HF API unreachable for \(repoID); cannot provision model")
+            throw ModelProvisioningError(
+                description: "HF API unreachable for \(repoID): \(infoResponse)"
+            )
         }
         let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
 
@@ -128,7 +142,9 @@ final class PolishHelperIntegrationTests: XCTestCase {
         let wanted = info.siblings.map(\.rfilename).filter { name in
             patterns.contains { fnmatch($0, name, 0) == 0 }
         }
-        XCTAssertFalse(wanted.isEmpty, "HF listing for \(repoID) matched no files")
+        guard !wanted.isEmpty else {
+            throw ModelProvisioningError(description: "HF listing for \(repoID) matched no files")
+        }
 
         let snapshotDir = snapshotsDir.appendingPathComponent(info.sha)
         try FileManager.default.createDirectory(
@@ -145,14 +161,14 @@ final class PolishHelperIntegrationTests: XCTestCase {
             )!
             let (temporary, response) = try await URLSession.shared.download(from: source)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                throw XCTSkip("download failed for \(name): \(response)")
+                throw ModelProvisioningError(description: "download failed for \(name): \(response)")
             }
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
 
         let refsDir = repoDir.appendingPathComponent("refs")
         try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
-        try Data("\(info.sha)\n".utf8).write(to: refsDir.appendingPathComponent("main"))
+        try Data("\(info.sha)\n".utf8).write(to: mainRef)
         print("polishd integration: model provisioned (\(wanted.count) files)")
     }
 
@@ -165,7 +181,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
         binary: URL,
         model: String,
         extraArguments: [String] = []
-    ) throws -> (process: Process, port: UInt16) {
+    ) async throws -> (process: Process, port: UInt16) {
         let process = Process()
         process.executableURL = binary
         process.arguments = ["--model", model, "--port", "0"] + extraArguments
@@ -198,7 +214,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
             }
         }
 
-        wait(for: [readyOrExited], timeout: Self.readyTimeout)
+        await fulfillment(of: [readyOrExited], timeout: Self.readyTimeout)
         guard let port = portBox.get() else {
             let status = process.isRunning
                 ? "still running, no ready line after \(Int(Self.readyTimeout))s"
@@ -257,7 +273,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     func testHelperMatchesPolishEvalBaselineThroughProductionRequestPath() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensureModelCached(model)
-        let (process, port) = try launchHelper(binary: binary, model: model)
+        let (process, port) = try await launchHelper(binary: binary, model: model)
 
         let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
@@ -310,7 +326,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
             }
         }
 
-        let (helper, _) = try launchHelper(
+        let (helper, _) = try await launchHelper(
             binary: binary,
             model: model,
             extraArguments: ["--parent-pid", "\(decoyParent.processIdentifier)"]

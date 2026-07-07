@@ -238,6 +238,9 @@ PLIST
 if [[ "${LOCALVOXTRAL_SKIP_POLISHD:-0}" == "1" ]]; then
   echo "WARNING: skipping polishing helper (LOCALVOXTRAL_SKIP_POLISHD=1);"
   echo "this bundle cannot run Managed local polishing."
+  # A stale helper dSYM from a previous non-skip run would be wrong-UUID
+  # symbolication bait next to this helper-less bundle.
+  rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
 else
 
 # A real invocation, not `xcrun --find`: on Xcode 26+ the metal shim exists
@@ -260,11 +263,15 @@ echo "Building polishing helper (xcodebuild; full log: $HELPER_BUILD_LOG)"
   cd "$ROOT_DIR/PolishHelper"
   # Xcode generates a single aggregate scheme named after the package; the
   # localvoxtral-polishd product binary lands in Build/Products/Release.
+  # -disableAutomaticPackageResolution: the committed Package.resolved is the
+  # contract — if a manifest edit invalidates it, fail loudly instead of
+  # silently re-resolving to floating versions that never get committed.
   xcodebuild \
     -scheme PolishHelper \
     -destination 'platform=macOS,arch=arm64' \
     -configuration Release \
     -derivedDataPath "$HELPER_DERIVED_DATA" \
+    -disableAutomaticPackageResolution \
     build > "$HELPER_BUILD_LOG" 2>&1
 ) || {
   echo "Polishing helper xcodebuild failed; last 40 log lines:"
@@ -297,12 +304,18 @@ if [[ ! -d "$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle" ]]; then
   exit 1
 fi
 
-# Helper dSYM for field crash symbolication, next to the app's own.
+# Helper dSYM for field crash symbolication, next to the app's own. Missing
+# dSYM is a hard error: helper crashes (MLX C++/Metal) are the likeliest
+# field crashes now, and a silent skip would degrade symbolication without
+# any signal.
 HELPER_DSYM_SOURCE="$HELPER_PRODUCTS_DIR/localvoxtral-polishd.dSYM"
-if [[ -d "$HELPER_DSYM_SOURCE" ]]; then
-  rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
-  cp -R "$HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
+if [[ ! -d "$HELPER_DSYM_SOURCE" ]]; then
+  echo "Polishing helper dSYM missing at $HELPER_DSYM_SOURCE — the Release"
+  echo "config should always emit one (DWARF with dSYM)."
+  exit 1
 fi
+rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
+cp -R "$HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
 
 fi # LOCALVOXTRAL_SKIP_POLISHD
 # ---------------------------------------------------------------------------
