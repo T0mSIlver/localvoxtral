@@ -13,6 +13,13 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
     private static var retainedViewModels: [DictationViewModel] = []
 
+    override func tearDown() async throws {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+        TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+        TerminalTargetDetector.debugSecureEventInputOverride = nil
+        try await super.tearDown()
+    }
+
     func testCorrectsWordCompletedAcrossDeltaBoundaries() {
         let harness = makeHarness(
             dictionary: ReplacementDictionary(entries: [
@@ -357,6 +364,71 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         XCTAssertEqual(harness.events.value, [.type("voxtral ")])
     }
 
+    // MARK: - Terminal target wiring (TerminalTargetDetector → hold-back strategy)
+
+    /// End-to-end regression for the field bug (2026-07-06): a terminal with a
+    /// READABLE grid caret armed the guarded corrector, which then diverged and
+    /// stood down — replacements never applied. With the detector wired, the
+    /// terminal verdict must select the hold-back strategy: replacement applied
+    /// before typing, zero backspace events.
+    func testTerminalVerdictSelectsHoldBackAndAppliesReplacementWithoutBackspaces() {
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            caretLocationReader: { _ in 0 },
+            frontmostBundleID: "com.mitchellh.ghostty"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        XCTAssertFalse(harness.events.value.contains {
+            if case .backspace = $0 { return true }
+            return false
+        })
+    }
+
+    func testTerminalVerdictWithDictionaryDisabledStillSanitizesNewlines() {
+        let harness = makeHarness(
+            dictionaryEnabled: false,
+            frontmostBundleID: "com.mitchellh.ghostty"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("ls -la\nnext "))
+        harness.viewModel.isDictating = false
+        harness.viewModel.isFinalizingStop = true
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        XCTAssertEqual(harness.field.value, "ls -la next ")
+        XCTAssertFalse(harness.events.value.contains {
+            if case .backspace = $0 { return true }
+            return false
+        })
+    }
+
+    func testNonTerminalVerdictKeepsGuardedCorrector() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        let harness = makeHarness(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ]),
+            frontmostBundleID: "com.example.editor"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        XCTAssertEqual(harness.events.value, [
+            .type("voxtral "),
+            .backspace(8),
+            .type("localvoxtral "),
+        ])
+    }
+
     private func makeHarness(
         dictionaryEnabled: Bool = true,
         dictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
@@ -366,7 +438,8 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         caretLocationReader: ((pid_t?) -> Int?)? = nil,
         unicodePoster: ((String) -> Bool)? = nil,
         backspacePoster: ((Int) -> Bool)? = nil,
-        liveReplacementSettleSleep: (() async -> Void)? = nil
+        liveReplacementSettleSleep: (() async -> Void)? = nil,
+        frontmostBundleID: String? = nil
     ) -> (
         viewModel: DictationViewModel,
         field: TestField,
@@ -411,6 +484,13 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
             caretLocationReader: caretLocationReader ?? { _ in (field.value as NSString).length },
             liveReplacementSettleSleep: liveReplacementSettleSleep
         )
+
+        if let frontmostBundleID {
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = { frontmostBundleID }
+            TerminalTargetDetector.debugSecureEventInputOverride = { false }
+            viewModel.captureSessionTargetVerdict()
+            viewModel.applyPreCapturedSessionTargetVerdict()
+        }
 
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true

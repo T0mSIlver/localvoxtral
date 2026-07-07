@@ -715,7 +715,10 @@ extension DictationViewModel {
             textInsertion.endLiveReplacementSession()
             return
         }
-        guard settings.replacementDictionaryEnabled else {
+        // Terminal-like targets always begin a live session even with the
+        // dictionary disabled: the hold-back stream's newline/tab sanitization
+        // must protect the terminal regardless of replacements.
+        guard settings.replacementDictionaryEnabled || sessionTargetIsTerminalLike else {
             textInsertion.endLiveReplacementSession()
             return
         }
@@ -725,10 +728,7 @@ extension DictationViewModel {
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
             preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,
-            // Terminal-target detection (TerminalTargetDetector, built in a
-            // sibling change) is wired here by the orchestrator; until then
-            // every live target takes the non-terminal strategy selection.
-            isTerminalLikeTarget: false
+            isTerminalLikeTarget: sessionTargetIsTerminalLike
         )
     }
 
