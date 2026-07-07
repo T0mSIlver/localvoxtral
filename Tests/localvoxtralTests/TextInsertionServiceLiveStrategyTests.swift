@@ -423,6 +423,209 @@ final class TextInsertionServiceLiveStrategyTests: XCTestCase {
         harness.service.endLiveReplacementSession()
     }
 
+    // MARK: - Post-backspace conversion must restore erased text (codex review, 2026-07-07)
+
+    // The caret matches initially, so the correction's backspaces post and
+    // ERASE the matched text — and only then the erased-caret verification
+    // fails. Converting without retyping correction.erasedText loses the
+    // user's typed text from the target app. The erased text must be
+    // restored raw before converting, and a later rule match must still
+    // apply through the converted stream.
+    func testPostBackspaceCaretLossRestoresErasedTextBeforeConverting() {
+        let field = FakeCaretField()
+        // begin → 0 (arms guard), inserted-caret check → 8 (matched, so
+        // backspaces post), erased-caret check → nil (caret lost).
+        let caretScript = Box<[Int?]>([0, 8, nil])
+        let harness = makeServiceHarness(
+            field: field,
+            caretLocationReader: { _ in
+                caretScript.value.isEmpty ? nil : caretScript.value.removeFirst()
+            }
+        )
+        harness.service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+
+        XCTAssertEqual(harness.backspaces.value, [8])
+        XCTAssertEqual(
+            field.value, "voxtral ",
+            "the erased text must be restored before converting"
+        )
+        XCTAssertTrue(harness.service.debugLiveHoldBackStreamIsActive)
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        harness.service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(
+            field.value, "voxtral localvoxtral ",
+            "all dictated text must be present in the target after conversion"
+        )
+        XCTAssertEqual(harness.backspaces.value, [8], "no backspaces after conversion")
+        harness.service.endLiveReplacementSession()
+    }
+
+    func testDeferredPostBackspaceTimeoutRestoresErasedTextBeforeConverting() async {
+        let field = FakeCaretField()
+        // begin → 0, inserted-caret check → 7 (mismatch, defers), settle
+        // wait → 8 (matched, backspaces post), then 5 forever: the
+        // erased-caret wait (expected 0) times out → tracked caret diverged
+        // AFTER the erase.
+        let caretScript = Box<[Int?]>([0, 7, 8])
+        let harness = makeServiceHarness(
+            field: field,
+            caretLocationReader: { _ in
+                caretScript.value.isEmpty ? 5 : caretScript.value.removeFirst()
+            }
+        )
+        harness.service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        XCTAssertTrue(harness.service.debugLiveReplacementCorrectionIsInFlight)
+        await harness.service.debugWaitForLiveReplacementCorrectionTasks()
+
+        XCTAssertEqual(harness.backspaces.value, [8])
+        XCTAssertEqual(
+            field.value, "voxtral ",
+            "the deferred post-backspace timeout must restore the erased text before converting"
+        )
+        XCTAssertTrue(harness.service.debugLiveHoldBackStreamIsActive)
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        harness.service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(field.value, "voxtral localvoxtral ")
+        XCTAssertEqual(harness.backspaces.value, [8])
+        harness.service.endLiveReplacementSession()
+    }
+
+    func testPostBackspaceRestoreFailureStandsDownWithoutConverting() {
+        let typed = Box<[String]>([])
+        let backspaces = Box<[Int]>([])
+        let failNextUnicodePost = Box(false)
+        let caretScript = Box<[Int?]>([0, 8, nil])
+        let service = TextInsertionService()
+        service.debugConfigureInsertionHooks(
+            unicodePoster: { chunk in
+                if failNextUnicodePost.value {
+                    failNextUnicodePost.value = false
+                    return false
+                }
+                typed.value.append(chunk)
+                return true
+            },
+            backspacePoster: { count in
+                backspaces.value.append(count)
+                // The restore attempt right after these backspaces fails:
+                // the keyboard path is broken.
+                failNextUnicodePost.value = true
+                return true
+            },
+            modifierStateReader: { false },
+            accessibilityInserter: { _, _ in false },
+            caretLocationReader: { _ in
+                caretScript.value.isEmpty ? nil : caretScript.value.removeFirst()
+            },
+            liveReplacementSettleSleep: {}
+        )
+        service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        service.enqueueRealtimeInsertion("voxtral ")
+
+        XCTAssertEqual(backspaces.value, [8])
+        XCTAssertFalse(
+            service.debugLiveHoldBackStreamIsActive,
+            "a failed restore means the keyboard path is broken: true stand-down, no conversion"
+        )
+        XCTAssertFalse(service.debugLiveReplacementCorrectorIsActive)
+
+        service.enqueueRealtimeInsertion("next ")
+        service.flushFinalLiveReplacementCorrections()
+        XCTAssertEqual(typed.value, ["voxtral ", "next "])
+        XCTAssertEqual(backspaces.value, [8])
+        service.endLiveReplacementSession()
+    }
+
+    // MARK: - Session stop during an in-flight correction (codex review, 2026-07-07)
+
+    // Production stop ordering: finishStoppedSession calls
+    // flushFinalLiveReplacementCorrections() and then (same MainActor turn)
+    // completeStoppedSessionCleanup() -> endLiveReplacementSession(). When a
+    // deferred correction is in flight, the final flush is queued behind a
+    // task that teardown immediately cancels — pre-existing on the guarded
+    // path: the queued text was dropped and reported as failed pending text.
+    // Teardown must drain it instead, with replacements applied.
+    func testSessionStopDuringInFlightCorrectionDrainsQueuedTextInsteadOfDroppingIt() {
+        let harness = makeServiceHarness(caretLocationReader: { _ in 4242 })
+        harness.service.beginLiveReplacementSession(
+            dictionary: ReplacementDictionary(entries: [
+                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+                ReplacementEntry(replaceWith: "chai", matches: ["tea"]),
+            ]),
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        XCTAssertTrue(harness.service.debugLiveReplacementCorrectionIsInFlight)
+        harness.service.enqueueRealtimeInsertion("tea")
+
+        // Production ordering: both calls in the same turn, the deferred
+        // task never gets to run.
+        harness.service.flushFinalLiveReplacementCorrections()
+        harness.service.endLiveReplacementSession()
+
+        XCTAssertEqual(
+            harness.typed.value, ["voxtral ", "chai"],
+            "text queued behind the cancelled correction must be drained with replacements applied"
+        )
+        XCTAssertFalse(harness.service.hasPendingInsertionText)
+        XCTAssertEqual(harness.backspaces.value, [])
+    }
+
+    func testSessionStopDuringBackspacePostedCorrectionRestoresErasedText() {
+        let field = FakeCaretField()
+        // begin → 0, inserted-caret check → 8 (matched, backspaces post),
+        // erased-caret check → 7 (mismatch, defers at .backspacePosted).
+        let caretScript = Box<[Int?]>([0, 8, 7])
+        let harness = makeServiceHarness(
+            field: field,
+            caretLocationReader: { _ in
+                caretScript.value.isEmpty ? 7 : caretScript.value.removeFirst()
+            }
+        )
+        harness.service.beginLiveReplacementSession(
+            dictionary: voxtralDictionary,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: false
+        )
+
+        harness.service.enqueueRealtimeInsertion("voxtral ")
+        XCTAssertTrue(harness.service.debugLiveReplacementCorrectionIsInFlight)
+        XCTAssertEqual(field.value, "", "the correction's backspaces erased the text")
+
+        // Production stop ordering, same turn.
+        harness.service.flushFinalLiveReplacementCorrections()
+        harness.service.endLiveReplacementSession()
+
+        XCTAssertEqual(
+            field.value, "voxtral ",
+            "teardown must restore text erased by the abandoned correction"
+        )
+        XCTAssertEqual(harness.backspaces.value, [8])
+    }
+
     // MARK: - Harness
 
     private var voxtralDictionary: ReplacementDictionary {
