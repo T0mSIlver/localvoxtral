@@ -91,6 +91,12 @@ final class TextInsertionService {
         set { accessibilityTrust.onTrustChanged = newValue }
     }
 
+    /// Opt-in field diagnostic: when the marker file
+    /// `insertion_scalar_trace` exists in the shared config folder, every
+    /// UTF-16 chunk posted as keyboard events is hex-logged (see
+    /// `postUnicodeTextEvents`). Set once per session at session start.
+    var isScalarTracingEnabled = false
+
     private var pendingRealtimeInsertionText = ""
     private var insertionRetryTask: Task<Void, Never>?
     private var axInsertionSuccessCount = 0
@@ -1227,6 +1233,18 @@ final class TextInsertionService {
         for i in stride(from: 0, to: utf16.count, by: chunkSize) {
             let end = min(i + chunkSize, utf16.count)
             var chunk = Array(utf16[i ..< end])
+
+            if isScalarTracingEnabled {
+                // Opt-in field diagnostic (marker file in the config folder):
+                // logs the exact UTF-16 units handed to keyboardSetUnicodeString,
+                // chunk boundaries included, so pipeline corruption (e.g. a
+                // split surrogate pair) is visible in the unified log. The hex
+                // IS transcript content — hence opt-in and privacy: .public.
+                let hex = chunk.map { String(format: "%04X", $0) }.joined(separator: " ")
+                Log.insertion.notice(
+                    "scalar-trace chunk[\(i, privacy: .public)..<\(end, privacy: .public)]: \(hex, privacy: .public)"
+                )
+            }
 
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)

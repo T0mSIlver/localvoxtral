@@ -163,6 +163,39 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(unconfigured.sessionTargetIsTerminalLike)
     }
 
+    // MARK: - Insertion scalar tracing (marker-file gate)
+
+    func testScalarTracingFollowsMarkerFilePresence() throws {
+        let configDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-scalar-trace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: configDir)
+        }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.appConfigStore = TargetDetectorMockConfigStore(
+            terminalAppBundleIDs: [],
+            configDirectory: configDir
+        )
+
+        viewModel.refreshInsertionScalarTracingForSession()
+        XCTAssertFalse(viewModel.textInsertion.isScalarTracingEnabled)
+
+        FileManager.default.createFile(
+            atPath: configDir.appendingPathComponent("insertion_scalar_trace").path,
+            contents: nil
+        )
+        viewModel.refreshInsertionScalarTracingForSession()
+        XCTAssertTrue(viewModel.textInsertion.isScalarTracingEnabled)
+
+        try FileManager.default.removeItem(
+            at: configDir.appendingPathComponent("insertion_scalar_trace")
+        )
+        viewModel.refreshInsertionScalarTracingForSession()
+        XCTAssertFalse(viewModel.textInsertion.isScalarTracingEnabled, "tracing must disarm when the marker is removed")
+    }
+
     // MARK: - Capture-at-begin / consume-at-audio-start lifecycle
 
     func testBeginDictationSessionCapturesVerdictBeforeConnect() {
@@ -309,13 +342,18 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
 private final class TargetDetectorMockConfigStore: AppConfigServing {
     private let terminalAppBundleIDs: [String]
+    private let configDirectory: URL
 
-    init(terminalAppBundleIDs: [String]) {
+    init(
+        terminalAppBundleIDs: [String],
+        configDirectory: URL = FileManager.default.temporaryDirectory
+    ) {
         self.terminalAppBundleIDs = terminalAppBundleIDs
+        self.configDirectory = configDirectory
     }
 
     func configDirectoryURL() -> URL {
-        FileManager.default.temporaryDirectory
+        configDirectory
     }
 
     func loadReplacementDictionary() -> ReplacementDictionary {

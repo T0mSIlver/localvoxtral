@@ -1382,6 +1382,20 @@ final class DictationViewModel {
     /// Samples the terminal-like verdict and Secure Keyboard Entry state for
     /// the app focused right now. Called from `beginDictationSession` before
     /// the socket opens (see `preCapturedSessionTargetVerdict`).
+    /// Opt-in field diagnostic: scalar tracing of posted keyboard chunks is
+    /// enabled per session by the presence of the `insertion_scalar_trace`
+    /// marker file in the shared config folder (same gate pattern as the
+    /// eval-llm marker). Called at each dictation session start.
+    func refreshInsertionScalarTracingForSession() {
+        let markerURL = appConfigStore.configDirectoryURL()
+            .appendingPathComponent("insertion_scalar_trace", isDirectory: false)
+        let enabled = FileManager.default.fileExists(atPath: markerURL.path)
+        if enabled, !textInsertion.isScalarTracingEnabled {
+            Log.insertion.notice("scalar-trace enabled for this session (marker file present)")
+        }
+        textInsertion.isScalarTracingEnabled = enabled
+    }
+
     func captureSessionTargetVerdict() {
         let userBundleIDs = Set(appConfigStore.loadTerminalAppBundleIDs())
         preCapturedSessionTargetVerdict = SessionTargetVerdict(

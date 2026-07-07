@@ -262,6 +262,7 @@ extension DictationViewModel {
         // verdict and Secure Keyboard Entry state while the app the user
         // started dictation in is still frontmost, not after connect.
         captureSessionTargetVerdict()
+        refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
         livePartialText = ""
