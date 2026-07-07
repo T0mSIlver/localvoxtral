@@ -132,6 +132,13 @@ final class DictationViewModel {
     static let liveAutoPasteAccessibilityWarningMessage =
         "Live Auto-Paste needs Accessibility access to type into other apps. Text won't appear until you enable it in System Settings > Privacy & Security > Accessibility."
 
+    /// Surfaced at dictation start when macOS Secure Keyboard Entry is active
+    /// (e.g. Ghostty around password prompts): it blocks synthetic keyboard
+    /// events, so dictated text may silently land nowhere. Warn only — the
+    /// session still runs. One short sentence (popover copy rule).
+    static let secureKeyboardEntryWarningMessage =
+        "Secure Keyboard Entry is on; dictated text may not appear."
+
     var isDictating = false
     var isFinalizingStop = false
     var isConnectingRealtimeSession = false
@@ -149,6 +156,13 @@ final class DictationViewModel {
     var debugLastConnectFailureTechnicalDetails: String?
     #endif
     var lastFinalSegment = ""
+
+    /// Whether the app focused at the most recent session start behaves like
+    /// a terminal emulator (bundle allowlist, AX-writability heuristic
+    /// fallback). Refreshed at each session start; live replacement strategy
+    /// and future per-app behaviors key off it. See `TerminalTargetDetector`.
+    private(set) var sessionTargetIsTerminalLike = false
+
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
 
@@ -1345,6 +1359,21 @@ final class DictationViewModel {
         let status = currentMicrophoneAuthorizationStatus()
         if microphoneAuthorizationStatus != status {
             microphoneAuthorizationStatus = status
+        }
+    }
+
+    /// Computes and stores the terminal-like verdict for the app focused right
+    /// now, and warns (without blocking) when Secure Keyboard Entry would
+    /// swallow synthetic keystrokes. Called at each dictation session start.
+    /// Lives in this file (not +Session) so the setter stays private(set).
+    func refreshSessionTargetVerdictAtSessionStart() {
+        let decision = TerminalTargetDetector.detectCurrentTarget()
+        sessionTargetIsTerminalLike = decision.isTerminalLike
+        if TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
+            lastError = Self.secureKeyboardEntryWarningMessage
+            Log.target.warning(
+                "Secure Keyboard Entry is enabled at session start; synthetic keyboard events may be blocked."
+            )
         }
     }
 

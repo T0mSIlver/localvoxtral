@@ -24,6 +24,9 @@ enum Log {
     /// privacy trade-off.
     static let deltas = Logger(subsystem: subsystem, category: "Deltas")
     static let escape = Logger(subsystem: subsystem, category: "Escape")
+    /// Session-start target detection: terminal-like verdicts and Secure
+    /// Keyboard Entry warnings (see `TerminalTargetDetector`).
+    static let target = Logger(subsystem: subsystem, category: "Target")
     static let modifierKeys = Logger(subsystem: subsystem, category: "ModifierKeys")
     static let diagnostics = Logger(subsystem: subsystem, category: "Diagnostics")
 }

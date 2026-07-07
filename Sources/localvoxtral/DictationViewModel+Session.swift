@@ -303,6 +303,7 @@ extension DictationViewModel {
             isConnectingRealtimeSession = false
             isDictating = true
             escapeCancelHandler.start()
+            refreshSessionTargetVerdictAtSessionStart()
             statusText = "Listening..."
             restartAudioSendTask()
             restartCommitTask()
