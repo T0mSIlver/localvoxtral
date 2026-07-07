@@ -22,10 +22,17 @@ import Foundation
 /// `lookbackStart(before:)` word segmentation, so a released prefix can
 /// never be reached by a correction the embedded corrector produces later.
 ///
-/// Newline policy (terminal targets): a typed newline can act as Enter and
-/// submit a prompt mid-dictation. When `sanitizesNewlines` is on, released
-/// text collapses each newline run — together with adjacent spaces/tabs —
-/// into a single space, including runs that span release boundaries.
+/// Newline/tab policy (terminal targets): a typed newline can act as Enter
+/// and submit a prompt mid-dictation, and a typed Tab can trigger shell
+/// completion UI — both mutate terminal state. When `sanitizesNewlines` is
+/// on, every whitespace run containing a newline or tab — including all
+/// adjacent spaces/tabs on BOTH sides of it — collapses to exactly one
+/// space, even when the run spans release boundaries or ends in the flushed
+/// remainder. To decide a run's fate, trailing spaces/tabs are buffered
+/// until the next non-whitespace character (or the remainder flush); plain
+/// space runs are then re-emitted verbatim, so no dictated text is ever
+/// dropped. Collapse runs at the very start of the session produce no
+/// leading space.
 struct LiveHoldBackReplacementStream {
     private var corrector: LiveReplacementCorrector
     private let sanitizesNewlines: Bool
@@ -33,11 +40,15 @@ struct LiveHoldBackReplacementStream {
     /// typing. Everything before this offset is immutable by construction.
     private var releasedCharacterCount = 0
 
-    // Newline sanitization state, persisted across releases so whitespace
+    // Newline/tab sanitization state, persisted across releases so whitespace
     // runs spanning chunk boundaries still collapse to a single space.
-    // Starts "as if a space was emitted" so leading newlines are dropped.
+    // Starts "as if a space was emitted" so leading collapse runs are
+    // dropped. `pendingPlainSpaces` buffers spaces whose run fate (verbatim
+    // vs collapsed) is not yet known; `pendingRunNeedsCollapse` marks the
+    // current whitespace run as containing a newline or tab.
     private var lastEmittedCharacterWasSpace = true
-    private var isAbsorbingCollapsedWhitespace = false
+    private var pendingPlainSpaces = ""
+    private var pendingRunNeedsCollapse = false
 
     init(dictionary: ReplacementDictionary, sanitizesNewlines: Bool) {
         corrector = LiveReplacementCorrector(dictionary: dictionary)
@@ -66,7 +77,13 @@ struct LiveHoldBackReplacementStream {
         if let correction = corrector.finalUnboundedCorrection() {
             corrector.apply(correction)
         }
-        return release(upTo: corrector.correctedText.count)
+        var output = release(upTo: corrector.correctedText.count)
+        if sanitizesNewlines {
+            // End of session decides the fate of a still-buffered trailing
+            // whitespace run.
+            emitPendingWhitespaceRun(into: &output)
+        }
+        return output
     }
 
     // MARK: - Private
@@ -122,30 +139,47 @@ struct LiveHoldBackReplacementStream {
         return sanitizesNewlines ? sanitizingNewlines(in: released) : released
     }
 
-    /// Collapses each newline run (with adjacent spaces/tabs) into a single
-    /// space without ever producing double spaces, tracking state across
+    /// Collapses every whitespace run containing a newline or tab — with all
+    /// adjacent spaces/tabs on both sides — into a single space, without ever
+    /// producing double spaces. Trailing spaces are buffered (not emitted)
+    /// until the next non-whitespace character or the remainder flush decides
+    /// whether the run stays verbatim or collapses; state persists across
     /// release boundaries.
     private mutating func sanitizingNewlines(in text: String) -> String {
         var output = ""
         output.reserveCapacity(text.count)
 
         for character in text {
-            if character.isNewline {
-                isAbsorbingCollapsedWhitespace = true
-                if !lastEmittedCharacterWasSpace {
-                    output.append(" ")
-                    lastEmittedCharacterWasSpace = true
+            if character.isNewline || character == "\t" {
+                pendingRunNeedsCollapse = true
+                pendingPlainSpaces = ""
+                continue
+            }
+            if character == " " {
+                if !pendingRunNeedsCollapse {
+                    pendingPlainSpaces.append(" ")
                 }
                 continue
             }
-            if isAbsorbingCollapsedWhitespace, character == " " || character == "\t" {
-                continue
-            }
-            isAbsorbingCollapsedWhitespace = false
+            emitPendingWhitespaceRun(into: &output)
             output.append(character)
-            lastEmittedCharacterWasSpace = character == " " || character == "\t"
+            lastEmittedCharacterWasSpace = false
         }
 
         return output
+    }
+
+    private mutating func emitPendingWhitespaceRun(into output: inout String) {
+        if pendingRunNeedsCollapse {
+            if !lastEmittedCharacterWasSpace {
+                output.append(" ")
+                lastEmittedCharacterWasSpace = true
+            }
+        } else if !pendingPlainSpaces.isEmpty {
+            output.append(pendingPlainSpaces)
+            lastEmittedCharacterWasSpace = true
+        }
+        pendingPlainSpaces = ""
+        pendingRunNeedsCollapse = false
     }
 }

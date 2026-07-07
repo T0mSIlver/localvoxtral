@@ -99,30 +99,83 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
 
     // MARK: - Newline sanitization
 
+    // Trailing spaces are buffered until the next non-whitespace character
+    // (or the remainder flush) decides whether their run collapses, so the
+    // sanitize-ON assertions below check ingest and flush outputs jointly.
+
     func testNewlineIsCollapsedToSingleSpace() {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("hello\nworld "), "hello world ")
+        XCTAssertEqual(stream.ingest("hello\nworld "), "hello world")
+        XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
     func testNewlineRunWithAdjacentSpacesProducesNoDoubleSpace() {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("hello \n\n world "), "hello world ")
+        XCTAssertEqual(stream.ingest("hello \n\n world "), "hello world")
+        XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
     func testNewlineCollapseSpansReleaseBoundaries() {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("hello\n"), "hello ")
-        XCTAssertEqual(stream.ingest("\n world "), "world ")
+        XCTAssertEqual(stream.ingest("hello\n"), "hello")
+        XCTAssertEqual(stream.ingest("\n world "), " world")
+        XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
     func testLeadingNewlinesAreDropped() {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("\n\nhello "), "hello ")
+        XCTAssertEqual(stream.ingest("\n\nhello "), "hello")
+        XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
     func testCarriageReturnsAreSanitized() {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("a\r\nb\rc "), "a b c ")
+        XCTAssertEqual(stream.ingest("a\r\nb\rc "), "a b c")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    func testTabBeforeNewlineCollapsesToSingleSpace() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        // The tab precedes the newline: the whole run (tab + newline) must
+        // still collapse to exactly one space.
+        XCTAssertEqual(stream.ingest("cmd\t\nnext "), "cmd next")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    func testSpacesBeforeNewlineAcrossChunksCollapse() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        // The spaces are buffered at the chunk edge; the newline arriving in
+        // the next chunk retroactively collapses the whole run.
+        XCTAssertEqual(stream.ingest("cmd "), "cmd")
+        XCTAssertEqual(stream.ingest("\nls "), " ls")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    func testStandaloneTabCollapsesToSingleSpace() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        // A synthetic Tab keystroke triggers shell completion UI — same
+        // terminal-state hazard class as Enter.
+        XCTAssertEqual(stream.ingest("a\tb "), "a b")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    func testTabRunCollapsesToSingleSpace() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("a\t\tb "), "a b")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    func testWhitespaceHeldAtChunkEdgeIsReleasedIntactWhenNoNewlineFollows() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("cmd "), "cmd")
+        XCTAssertEqual(stream.ingest("ls "), " ls")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    func testPlainSpaceRunsAreReemittedVerbatim() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("a  b "), "a  b")
+        XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
     func testFlushedRemainderIsSanitized() {
@@ -141,8 +194,14 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.ingest("hello\nworld "), "hello\nworld ")
     }
 
+    func testSanitizationOffPreservesTabs() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: false)
+        XCTAssertEqual(stream.ingest("a\tb "), "a\tb ")
+    }
+
     func testReplacementAndSanitizationCompose() {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
-        XCTAssertEqual(stream.ingest("voxtral\nrocks "), "localvoxtral rocks ")
+        XCTAssertEqual(stream.ingest("voxtral\nrocks "), "localvoxtral rocks")
+        XCTAssertEqual(stream.flushRemainder(), " ")
     }
 }

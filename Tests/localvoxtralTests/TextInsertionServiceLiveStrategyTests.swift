@@ -212,14 +212,18 @@ final class TextInsertionServiceLiveStrategyTests: XCTestCase {
             "failed release must stay pending so the retry task retries it"
         )
 
-        // Simulates the periodic retry task's call.
+        // Simulates the periodic retry task's call. The trailing space is
+        // buffered by the sanitizer until the final flush decides its fate.
         service.flushPendingRealtimeInsertion()
 
         XCTAssertEqual(
-            typed.value, ["localvoxtral "],
+            typed.value, ["localvoxtral"],
             "retried release must be typed exactly once, never re-ingested"
         )
         XCTAssertFalse(service.hasPendingInsertionText)
+
+        service.flushFinalLiveReplacementCorrections()
+        XCTAssertEqual(typed.value.joined(), "localvoxtral ")
         service.endLiveReplacementSession()
     }
 
