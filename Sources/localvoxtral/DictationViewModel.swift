@@ -83,6 +83,7 @@ final class DictationViewModel {
         case hotKeyHandlerRegistrationFailure
         case hotKeyShortcutUnavailable
         case websocketReceiveFailed
+        case secureKeyboardEntryActive
         case other
 
         @MainActor
@@ -91,6 +92,9 @@ final class DictationViewModel {
                 || message == DictationViewModel.liveAutoPasteAccessibilityWarningMessage
             {
                 return .accessibilityPermissionRequired
+            }
+            if message == DictationViewModel.secureKeyboardEntryWarningMessage {
+                return .secureKeyboardEntryActive
             }
             if message == HotKeyManager.handlerRegistrationErrorMessage {
                 return .hotKeyHandlerRegistrationFailure
@@ -132,6 +136,13 @@ final class DictationViewModel {
     static let liveAutoPasteAccessibilityWarningMessage =
         "Live Auto-Paste needs Accessibility access to type into other apps. Text won't appear until you enable it in System Settings > Privacy & Security > Accessibility."
 
+    /// Surfaced at dictation start when macOS Secure Keyboard Entry is active
+    /// (e.g. Ghostty around password prompts): it blocks synthetic keyboard
+    /// events, so dictated text may silently land nowhere. Warn only — the
+    /// session still runs. One short sentence (popover copy rule).
+    static let secureKeyboardEntryWarningMessage =
+        "Secure Keyboard Entry is on; dictated text may not appear."
+
     var isDictating = false
     var isFinalizingStop = false
     var isConnectingRealtimeSession = false
@@ -149,6 +160,13 @@ final class DictationViewModel {
     var debugLastConnectFailureTechnicalDetails: String?
     #endif
     var lastFinalSegment = ""
+
+    /// Whether the app focused at the most recent session start behaves like
+    /// a terminal emulator (bundle allowlist, AX-writability heuristic
+    /// fallback). Refreshed at each session start; live replacement strategy
+    /// and future per-app behaviors key off it. See `TerminalTargetDetector`.
+    private(set) var sessionTargetIsTerminalLike = false
+
     private(set) var availableInputDevices: [MicrophoneInputDevice] = []
     private(set) var selectedInputDeviceID = ""
 
@@ -227,6 +245,19 @@ final class DictationViewModel {
     let overlayBufferCoordinator: OverlayBufferSessionCoordinating
     @ObservationIgnored
     var preResolvedOverlayAnchor: OverlayAnchor?
+
+    /// Terminal-like verdict + Secure Keyboard Entry state sampled in
+    /// `beginDictationSession` BEFORE the socket opens — same reason as
+    /// `preResolvedOverlayAnchor` above: the user may focus another app while
+    /// the backend connects, and the session must record the app dictation
+    /// was started in. Consumed (and cleared) once audio capture starts.
+    @ObservationIgnored
+    var preCapturedSessionTargetVerdict: SessionTargetVerdict?
+
+    struct SessionTargetVerdict: Equatable, Sendable {
+        let decision: TerminalTargetDetector.Decision
+        let secureKeyboardEntryEnabled: Bool
+    }
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -1345,6 +1376,45 @@ final class DictationViewModel {
         let status = currentMicrophoneAuthorizationStatus()
         if microphoneAuthorizationStatus != status {
             microphoneAuthorizationStatus = status
+        }
+    }
+
+    /// Samples the terminal-like verdict and Secure Keyboard Entry state for
+    /// the app focused right now. Called from `beginDictationSession` before
+    /// the socket opens (see `preCapturedSessionTargetVerdict`).
+    func captureSessionTargetVerdict() {
+        preCapturedSessionTargetVerdict = SessionTargetVerdict(
+            decision: TerminalTargetDetector.detectCurrentTarget(),
+            secureKeyboardEntryEnabled: TerminalTargetDetector.isSecureKeyboardEntryEnabled()
+        )
+    }
+
+    /// Consumes the verdict captured at `beginDictationSession` time once
+    /// audio capture starts, and warns (without blocking) when Secure
+    /// Keyboard Entry would swallow synthetic keystrokes. Lives in this file
+    /// (not +Session) so `sessionTargetIsTerminalLike` stays private(set).
+    func applyPreCapturedSessionTargetVerdict() {
+        // Fallback probe covers paths that reach audio start without a
+        // capture (should not happen; keeps the verdict defined regardless).
+        let verdict = preCapturedSessionTargetVerdict ?? SessionTargetVerdict(
+            decision: TerminalTargetDetector.detectCurrentTarget(),
+            secureKeyboardEntryEnabled: TerminalTargetDetector.isSecureKeyboardEntryEnabled()
+        )
+        preCapturedSessionTargetVerdict = nil
+        sessionTargetIsTerminalLike = verdict.decision.isTerminalLike
+
+        if verdict.secureKeyboardEntryEnabled {
+            // Never mask the Accessibility-trust warning — it explains a
+            // total insertion failure, which outranks a secure-input maybe.
+            if currentErrorToken != .accessibilityPermissionRequired {
+                lastError = Self.secureKeyboardEntryWarningMessage
+            }
+            Log.target.warning(
+                "Secure Keyboard Entry is enabled at session start; synthetic keyboard events may be blocked."
+            )
+        } else if currentErrorToken == .secureKeyboardEntryActive {
+            // Stale warning from an earlier session; secure input is off now.
+            lastError = nil
         }
     }
 
