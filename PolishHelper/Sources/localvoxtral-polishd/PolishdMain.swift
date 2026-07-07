@@ -86,12 +86,17 @@ struct PolishdMain {
     }
 
     static func run(options: Options) async throws {
+        // Retained for the whole process lifetime — deinit cancels the kqueue
+        // source, so a discarded watchdog silently never fires (integration
+        // test testHelperExitsWhenParentPIDDies caught exactly that).
+        var watchdog: ParentProcessWatchdog?
         if let parentPID = options.parentPID {
-            _ = ParentProcessWatchdog(parentPID: parentPID) {
+            watchdog = ParentProcessWatchdog(parentPID: parentPID) {
                 PolishdLog.info("parent \(parentPID) exited; shutting down")
                 exit(0)
             }
         }
+        defer { withExtendedLifetime(watchdog) {} }
 
         let modelDirectory: URL
         if let path = options.modelDirectory {

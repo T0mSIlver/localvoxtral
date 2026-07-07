@@ -53,6 +53,10 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
             parameters.temperature = temperature
         }
         parameters.maxTokens = maxTokens ?? defaultMaxTokens
+        // Deterministic sampling: identical requests must produce identical
+        // output, like the previous engine's within-state behavior — the
+        // polish eval baseline and user experience both rely on it.
+        parameters.seed = 0
 
         let chat = try messages.map { message -> Chat.Message in
             switch message.role {

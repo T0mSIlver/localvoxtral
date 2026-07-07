@@ -86,6 +86,76 @@ final class PolishHelperIntegrationTests: XCTestCase {
         return (binary, model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel)
     }
 
+    /// The helper never downloads (missing model = hard error by design), so
+    /// the suite provisions the shared HF cache itself when the model is
+    /// absent — the same cache layout + include patterns as the app's
+    /// HFModelDownloader, idempotent, ~0.9 GB once per build host/user.
+    private func ensureModelCached(_ repoID: String) async throws {
+        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub")
+        let repoDir = cacheRoot.appendingPathComponent(
+            "models--" + repoID.replacingOccurrences(of: "/", with: "--")
+        )
+        let snapshotsDir = repoDir.appendingPathComponent("snapshots")
+        if let snapshots = try? FileManager.default.contentsOfDirectory(atPath: snapshotsDir.path),
+           snapshots.contains(where: { snapshot in
+               FileManager.default.fileExists(
+                   atPath: snapshotsDir.appendingPathComponent("\(snapshot)/config.json").path
+               )
+           })
+        {
+            return
+        }
+
+        print("polishd integration: downloading \(repoID) into \(cacheRoot.path)")
+        struct RepoInfo: Decodable {
+            struct Sibling: Decodable { let rfilename: String }
+            let sha: String
+            let siblings: [Sibling]
+        }
+        let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)/revision/main")!
+        let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
+        guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            throw XCTSkip("HF API unreachable for \(repoID); cannot provision model")
+        }
+        let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
+
+        // Same include patterns as BackendManager.modelPreparationRequest.
+        let patterns = [
+            "*.json", "model*.safetensors", "*.py", "tokenizer.model",
+            "*.tiktoken", "tiktoken.model", "*.txt", "*.jsonl", "*.jinja",
+        ]
+        let wanted = info.siblings.map(\.rfilename).filter { name in
+            patterns.contains { fnmatch($0, name, 0) == 0 }
+        }
+        XCTAssertFalse(wanted.isEmpty, "HF listing for \(repoID) matched no files")
+
+        let snapshotDir = snapshotsDir.appendingPathComponent(info.sha)
+        try FileManager.default.createDirectory(
+            at: snapshotDir, withIntermediateDirectories: true
+        )
+        for name in wanted {
+            let destination = snapshotDir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: destination.path) { continue }
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            let source = URL(
+                string: "https://huggingface.co/\(repoID)/resolve/\(info.sha)/\(name)"
+            )!
+            let (temporary, response) = try await URLSession.shared.download(from: source)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw XCTSkip("download failed for \(name): \(response)")
+            }
+            try FileManager.default.moveItem(at: temporary, to: destination)
+        }
+
+        let refsDir = repoDir.appendingPathComponent("refs")
+        try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+        try Data("\(info.sha)\n".utf8).write(to: refsDir.appendingPathComponent("main"))
+        print("polishd integration: model provisioned (\(wanted.count) files)")
+    }
+
     /// Spawns the helper and waits for its stderr readiness line
     /// ("ready on 127.0.0.1:<port>"), which carries the ephemeral port when
     /// launched with --port 0. Event-driven via the same descriptor-safe
@@ -102,17 +172,23 @@ final class PolishHelperIntegrationTests: XCTestCase {
 
         let stderr = Pipe()
         process.standardError = stderr
-        let ready = expectation(description: "helper reported ready")
+        // Fulfilled on the ready line OR on early exit, so a crashing helper
+        // fails in seconds with its stderr instead of a 300 s silent timeout.
+        let readyOrExited = expectation(description: "helper ready or exited")
+        readyOrExited.assertForOverFulfill = false
         let portBox = PortBox()
+        let stderrLog = LineLog()
         let reader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
+            stderrLog.append(line)
             if let range = line.range(of: "ready on 127.0.0.1:"),
                let port = UInt16(line[range.upperBound...].prefix(while: \.isNumber))
             {
                 if portBox.set(port) {
-                    ready.fulfill()
+                    readyOrExited.fulfill()
                 }
             }
         }
+        process.terminationHandler = { _ in readyOrExited.fulfill() }
 
         try process.run()
         reader.start()
@@ -122,11 +198,37 @@ final class PolishHelperIntegrationTests: XCTestCase {
             }
         }
 
-        wait(for: [ready], timeout: Self.readyTimeout)
+        wait(for: [readyOrExited], timeout: Self.readyTimeout)
         guard let port = portBox.get() else {
-            throw XCTSkip("helper never reported a port")
+            let status = process.isRunning
+                ? "still running, no ready line after \(Int(Self.readyTimeout))s"
+                : "exited with status \(process.terminationStatus)"
+            XCTFail(
+                """
+                Helper failed to become ready (\(status)). stderr tail:
+                \(stderrLog.tail(30))
+                """
+            )
+            throw XCTSkip("helper did not become ready")
         }
         return (process, port)
+    }
+
+    private final class LineLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lines: [String] = []
+
+        func append(_ line: String) {
+            lock.lock()
+            lines.append(line)
+            lock.unlock()
+        }
+
+        func tail(_ count: Int) -> String {
+            lock.lock()
+            defer { lock.unlock() }
+            return lines.suffix(count).joined(separator: "\n")
+        }
     }
 
     private final class PortBox: @unchecked Sendable {
@@ -154,6 +256,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// behavior — investigate before shipping, do not relax the corpus.
     func testHelperMatchesPolishEvalBaselineThroughProductionRequestPath() async throws {
         let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
         let (process, port) = try launchHelper(binary: binary, model: model)
 
         let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
@@ -193,6 +296,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// like the old fork's Python watchdog.
     func testHelperExitsWhenParentPIDDies() async throws {
         let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
 
         // A stand-in "app" process the test fully controls: /bin/cat with an
         // open stdin pipe blocks until terminated.
