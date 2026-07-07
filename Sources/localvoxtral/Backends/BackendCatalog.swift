@@ -45,10 +45,14 @@ enum BackendCatalog {
         // post2 pins transformers <5.13: 5.13.0 broke the string-keyed
         // AutoTokenizer.register call in mlx_lm/tokenizer_utils.py, so fresh
         // installs resolving latest transformers crashed mlx_lm.server at import.
-        version: "0.31.3.post2",
+        // post3 fixes prompt-cache correctness: reuse can no longer serve KV
+        // that doesn't match the request prefix (T0mSIlver/mlx-lm#2), and the
+        // server cache is actually LRU with one-token prefix hits fixed
+        // (T0mSIlver/mlx-lm#3).
+        version: "0.31.3.post3",
         requirementName: "mlx-lm",
-        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post2/mlx_lm-0.31.3.post2-py3-none-any.whl")!,
-        wheelSHA256: "61c49eba2e8651bded681f6d717a78fc635d768e487222530a2e239a58e47cdd",
+        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post3/mlx_lm-0.31.3.post3-py3-none-any.whl")!,
+        wheelSHA256: "13b0fe84eb7bcd92103b45e93a90a82be1cbf10cb089168b91e080c9bacb3177",
         executableName: "mlx_lm.server",
         pythonVersion: "3.12",
         port: 8472

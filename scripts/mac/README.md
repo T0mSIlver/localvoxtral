@@ -18,7 +18,7 @@ Install from a trusted owner session on the Mac. Pins mirror
 # One-time venv with the pinned fork wheel (same wheel the app installs).
 uv venv --python 3.12 ~/.local/share/localvoxtral-eval/mlx-lm
 uv pip install --python ~/.local/share/localvoxtral-eval/mlx-lm/bin/python \
-  'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post2/mlx_lm-0.31.3.post2-py3-none-any.whl'
+  'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post3/mlx_lm-0.31.3.post3-py3-none-any.whl'
 
 # LaunchAgent (adjust $HOME):
 cat > ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist <<'PLIST'
