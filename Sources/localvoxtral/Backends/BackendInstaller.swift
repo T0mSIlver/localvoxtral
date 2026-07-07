@@ -68,31 +68,42 @@ struct BackendInstaller: BackendInstalling {
     }
 
     func needsInstallOrUpdate(_ spec: ManagedBackendSpec) -> Bool {
-        installedVersion(of: spec) != spec.version
+        switch spec.installKind {
+        case .uvWheel:
+            return installedVersion(of: spec) != spec.version
+        case .bundledExecutable:
+            // Ships inside the .app; the app's own update cycle owns it.
+            return false
+        }
     }
 
     func install(
         _ spec: ManagedBackendSpec,
         progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
     ) async throws {
+        guard case .uvWheel(let specWheelURL, let wheelSHA256, let requirementName, let pythonVersion) =
+            spec.installKind
+        else {
+            preconditionFailure("install called for bundled backend '\(spec.id)'.")
+        }
         try createLayoutDirectories()
         let uvURL = try await resolveUVBinary(progress: progress)
-        let wheelURL = try await downloadWheel(for: spec, progress: progress)
+        let wheelURL = try await downloadWheel(from: specWheelURL, progress: progress)
 
         await Self.report(.verifying, progress)
         let actualSHA256 = try sha256Hex(for: wheelURL)
-        guard actualSHA256 == spec.wheelSHA256 else {
+        guard actualSHA256 == wheelSHA256 else {
             try? fileManager.removeItem(at: wheelURL)
             throw BackendInstallError.checksumMismatch(
-                expected: spec.wheelSHA256,
+                expected: wheelSHA256,
                 actual: actualSHA256
             )
         }
 
-        let requirement = "\(spec.requirementName) @ \(wheelURL.absoluteString)"
+        let requirement = "\(requirementName) @ \(wheelURL.absoluteString)"
         let result = try await UVToolProcess.run(
             uvURL: uvURL,
-            arguments: ["tool", "install", "--python", spec.pythonVersion, "--reinstall", requirement],
+            arguments: ["tool", "install", "--python", pythonVersion, "--reinstall", requirement],
             environment: processEnvironment(),
             progress: progress
         )
@@ -230,12 +241,12 @@ struct BackendInstaller: BackendInstalling {
     }
 
     private func downloadWheel(
-        for spec: ManagedBackendSpec,
+        from wheelURL: URL,
         progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
     ) async throws -> URL {
         try await downloadArtifact(
-            from: spec.wheelURL,
-            to: layout.downloads.appendingPathComponent(spec.wheelURL.lastPathComponent),
+            from: wheelURL,
+            to: layout.downloads.appendingPathComponent(wheelURL.lastPathComponent),
             progress: progress
         )
     }

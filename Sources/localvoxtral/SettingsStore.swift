@@ -92,7 +92,7 @@ enum BackendMode: String, CaseIterable, Identifiable {
     var polishingDescription: String {
         switch self {
         case .managedLocal:
-            return "Installs and runs mlx-lm on this Mac."
+            return "Runs the bundled polishing engine on this Mac."
         case .externalURL:
             return "Use an OpenAI-compatible chat completions endpoint you run yourself."
         }

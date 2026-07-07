@@ -93,16 +93,25 @@ final class BackendManagerTests: XCTestCase {
         )
         XCTAssertEqual(manager.mlxLMStatus, .ready)
 
-        let mlxLMArguments = try XCTUnwrap(
+        let mlxLMConfiguration = try XCTUnwrap(
             supervisorFactory.createdConfigurations
-                .first { $0.name == BackendCatalog.mlxLM.displayName }?
-                .arguments
+                .first { $0.name == BackendCatalog.mlxLM.displayName }
         )
-        // The managed server must run with the fork's prompt caching enabled;
-        // the README's polishing-latency claim depends on these flags.
-        XCTAssertTrue(mlxLMArguments.contains("--prompt-cache-size"))
-        XCTAssertTrue(mlxLMArguments.contains("--prompt-cache-bytes"))
-        XCTAssertTrue(mlxLMArguments.contains("--parent-pid"))
+        // The bundled helper owns prompt handling internally; the supervisor
+        // contract is model id + port + parent-pid tethering.
+        XCTAssertTrue(mlxLMConfiguration.arguments.contains("--parent-pid"))
+        XCTAssertEqual(
+            mlxLMConfiguration.arguments.prefix(2),
+            ["--model", SettingsStore.defaultLLMPolishingModel]
+        )
+        XCTAssertFalse(mlxLMConfiguration.arguments.contains("--prompt-cache-size"))
+        // The bundled executable resolves next to the app binary, never from
+        // the uv tools tree.
+        XCTAssertEqual(
+            mlxLMConfiguration.executableURL.lastPathComponent,
+            BackendCatalog.mlxLM.executableName
+        )
+        XCTAssertFalse(mlxLMConfiguration.executableURL.path.contains("backends"))
     }
 
     func testPolishingOnlyEnsureReadyDoesNotTouchVoxmlx() async throws {
@@ -239,7 +248,9 @@ final class BackendManagerTests: XCTestCase {
 
         XCTAssertEqual(
             supervisorFactory.createdConfigurations.map(\.readinessTimeout),
-            [.seconds(1800), .seconds(1800)]
+            // voxmlx still downloads its model inside the server on first run;
+            // the bundled polishing helper only loads pre-downloaded weights.
+            [.seconds(1800), .seconds(300)]
         )
     }
 
@@ -428,8 +439,8 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory.statesByName[BackendCatalog.voxmlx.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [
             .failed(
-                summary: "mlx-lm exited 5 consecutive times.",
-                detail: "stderr: Python traceback \(marker)"
+                summary: "polishd exited 5 consecutive times.",
+                detail: "stderr: traceback \(marker)"
             ),
         ]
         let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
@@ -440,7 +451,7 @@ final class BackendManagerTests: XCTestCase {
         } catch let error as ManagedBackendManagerError {
             XCTAssertEqual(
                 error.localizedDescription,
-                "mlx-lm failed: mlx-lm exited 5 consecutive times."
+                "Polishing engine failed: polishd exited 5 consecutive times."
             )
             XCTAssertFalse(error.localizedDescription.contains(marker))
             XCTAssertTrue(error.technicalDetails?.contains(marker) == true)
@@ -451,8 +462,8 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(
             manager.mlxLMStatus,
             .failed(
-                summary: "mlx-lm exited 5 consecutive times.",
-                detail: "stderr: Python traceback \(marker)"
+                summary: "polishd exited 5 consecutive times.",
+                detail: "stderr: traceback \(marker)"
             )
         )
     }

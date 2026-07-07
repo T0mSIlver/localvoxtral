@@ -1,14 +1,21 @@
 import Foundation
 
+/// How a managed backend's executable gets onto the user's Mac.
+enum BackendInstallKind: Equatable, Sendable {
+    /// Installed at runtime: pinned wheel via a pinned uv into the app-managed
+    /// backends/ tree under Application Support.
+    case uvWheel(wheelURL: URL, wheelSHA256: String, requirementName: String, pythonVersion: String)
+    /// Ships inside the .app bundle (Contents/MacOS); nothing to install or
+    /// update at runtime — the app's own update cycle owns it.
+    case bundledExecutable
+}
+
 struct ManagedBackendSpec: Equatable, Sendable {
     let id: String
     let displayName: String
     let version: String
-    let requirementName: String
-    let wheelURL: URL
-    let wheelSHA256: String
+    let installKind: BackendInstallKind
     let executableName: String
-    let pythonVersion: String
     let port: Int
 }
 
@@ -31,30 +38,28 @@ enum BackendCatalog {
         id: "voxmlx",
         displayName: "voxmlx",
         version: "0.1.0",
-        requirementName: "voxmlx[server]",
-        wheelURL: URL(string: "https://github.com/T0mSIlver/voxmlx/releases/download/v0.1.0/voxmlx-0.1.0-py3-none-any.whl")!,
-        wheelSHA256: "028b39a51e6f5e4126b009fe0a316e68fe9215d500de970ea125a0ba550d8c83",
+        installKind: .uvWheel(
+            wheelURL: URL(string: "https://github.com/T0mSIlver/voxmlx/releases/download/v0.1.0/voxmlx-0.1.0-py3-none-any.whl")!,
+            wheelSHA256: "028b39a51e6f5e4126b009fe0a316e68fe9215d500de970ea125a0ba550d8c83",
+            requirementName: "voxmlx[server]",
+            pythonVersion: "3.12"
+        ),
         executableName: "voxmlx-serve",
-        pythonVersion: "3.12",
         port: 8471
     )
 
+    /// The polishing engine: localvoxtral-polishd (MLX Swift, see PolishHelper/),
+    /// bundled inside the .app. It replaced the uv-installed mlx-lm fork wheel:
+    /// upstream mlx-lm went unmaintained and the fork existed to carry fixes
+    /// (transformers pins, prompt-cache correctness, parent-pid watchdog) that
+    /// the Swift helper now owns directly. Swift symbols keep the historical
+    /// `mlxLM` name to keep that mechanical rename out of the functional diff.
     static let mlxLM = ManagedBackendSpec(
-        id: "mlx-lm",
-        displayName: "mlx-lm",
-        // post2 pins transformers <5.13: 5.13.0 broke the string-keyed
-        // AutoTokenizer.register call in mlx_lm/tokenizer_utils.py, so fresh
-        // installs resolving latest transformers crashed mlx_lm.server at import.
-        // post3 fixes prompt-cache correctness: reuse can no longer serve KV
-        // that doesn't match the request prefix (T0mSIlver/mlx-lm#2), and the
-        // server cache is actually LRU with one-token prefix hits fixed
-        // (T0mSIlver/mlx-lm#3).
-        version: "0.31.3.post3",
-        requirementName: "mlx-lm",
-        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post3/mlx_lm-0.31.3.post3-py3-none-any.whl")!,
-        wheelSHA256: "13b0fe84eb7bcd92103b45e93a90a82be1cbf10cb089168b91e080c9bacb3177",
-        executableName: "mlx_lm.server",
-        pythonVersion: "3.12",
+        id: "polishd",
+        displayName: "Polishing engine",
+        version: "bundled",
+        installKind: .bundledExecutable,
+        executableName: "localvoxtral-polishd",
         port: 8472
     )
 
