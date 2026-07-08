@@ -398,6 +398,70 @@ final class TerminalTargetDetectorTests: XCTestCase {
         )
     }
 
+    // MARK: - Session start under Secure Keyboard Entry (#89 split behavior)
+
+    func testLiveSessionStartRefusedUnderSecureInput() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.beginDictationSession()
+
+        XCTAssertFalse(viewModel.isDictating, "a live session that can only type into the void must not start")
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession, "no socket attempt for a refused start")
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.liveDictationBlockedBySecureInput)
+        XCTAssertEqual(viewModel.lastError, DictationViewModel.secureKeyboardEntryWarningMessage)
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertEqual(soundPlays, 1)
+        // Suite hygiene: nothing here arms the connect timeout, but every test
+        // reaching beginDictationSession sets this flag by convention (PR #66).
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testRefusedStartWarningClearsAtNextSessionStartWithSecureInputOff() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.beginDictationSession()
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        // The password prompt is gone; the stale-warning path at the next
+        // capture/apply clears both the popover line and the icon.
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testOverlaySessionStartProceedsUnderSecureInput() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.beginDictationSession()
+
+        XCTAssertTrue(
+            viewModel.isConnectingRealtimeSession,
+            "overlay sessions proceed: the pipeline still produces text and the commit falls back to the clipboard"
+        )
+        // This path DOES arm the real 10s connect timeout (PR #66 rule).
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+    }
+
     // MARK: - Fixture
 
     private func makeViewModel(

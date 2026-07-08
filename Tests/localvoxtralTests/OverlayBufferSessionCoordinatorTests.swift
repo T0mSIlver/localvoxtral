@@ -4,6 +4,94 @@ import XCTest
 
 @MainActor
 final class OverlayBufferSessionCoordinatorTests: XCTestCase {
+    override func tearDown() async throws {
+        TerminalTargetDetector.debugSecureEventInputOverride = nil
+        try await super.tearDown()
+    }
+
+    // MARK: - Secure Keyboard Entry at commit time (#89)
+
+    func testCommitUnderSecureInputSkipsInsertionAndCopiesToClipboard() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        var copiedTexts: [String] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver,
+            copyToPasteboard: { copiedTexts.append($0) }
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = .insertedByAccessibility
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "secret words",
+            commitBufferText: "secret words"
+        )
+
+        // Auto-copy OFF on purpose: under secure input the clipboard is the
+        // only place the words can survive, so the copy must be unconditional.
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        guard case .failed(let message) = outcome else {
+            return XCTFail("commit must report failure, got \(outcome)")
+        }
+        XCTAssertTrue(message.contains("copied"), "message tells the user where the text went")
+        XCTAssertTrue(
+            committer.insertedTexts.isEmpty && committer.pastedTexts.isEmpty,
+            "synthetic insertion is never attempted — it would be swallowed while reporting success"
+        )
+        XCTAssertEqual(copiedTexts, ["secret words"])
+        XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.phase, .commitFailed)
+    }
+
+    func testCommitProceedsNormallyWhenSecureInputOff() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        let renderer = MockOverlayRenderer()
+        let anchorResolver = MockOverlayAnchorResolver()
+        var copiedTexts: [String] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: anchorResolver,
+            copyToPasteboard: { copiedTexts.append($0) }
+        )
+        let committer = MockOverlayTextCommitter()
+        committer.insertResult = .insertedByAccessibility
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(
+            displayBufferText: "hello",
+            commitBufferText: "hello"
+        )
+
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        XCTAssertEqual(outcome, .succeeded)
+        XCTAssertEqual(committer.insertedTexts, ["hello"])
+        XCTAssertTrue(copiedTexts.isEmpty)
+    }
+
+    func testShowSecureInputWarningRendersInsideTheOverlayWhileBuffering() {
+        let renderer = MockOverlayRenderer()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver()
+        )
+
+        coordinator.startSession()
+        coordinator.showSecureInputWarning()
+
+        XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.phase, .buffering)
+        XCTAssertNotNil(
+            renderer.snapshots.compactMap { $0 }.last?.errorMessage,
+            "the warning must be visible in the overlay panel, not only the closed popover"
+        )
+    }
+
     func testCommitUsesPIDCapturedAtStopTime() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()

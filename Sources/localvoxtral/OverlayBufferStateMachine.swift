@@ -133,6 +133,14 @@ struct OverlayBufferStateMachine {
         self.anchor = anchor
     }
 
+    /// Shows a warning line while buffering, reusing the errorMessage surface
+    /// the overlay view and height measurement already render. startSession
+    /// resets it; commitFailed overwrites it with the commit outcome.
+    mutating func setBufferingWarning(_ message: String) {
+        guard phase == .buffering else { return }
+        errorMessage = message
+    }
+
     mutating func updateBuffer(text: String, anchor: OverlayAnchor?) {
         guard phase == .buffering || phase == .finalizing else { return }
         bufferText = text

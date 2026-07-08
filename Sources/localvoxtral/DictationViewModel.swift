@@ -126,6 +126,7 @@ final class DictationViewModel {
         static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
         static let pasteBlockedByAccessibilityPermission = "Paste blocked by Accessibility permission."
         static let networkLostDictationStopped = "Network lost. Dictation stopped."
+        static let liveDictationBlockedBySecureInput = "Blocked: Secure Keyboard Entry is on."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."

@@ -49,6 +49,13 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// live replacement guard can re-target it even if focus moved.
     func captureLiveCommitTargetAppPID()
     var commitTargetAppPID: pid_t? { get }
+    /// Surfaces the Secure Keyboard Entry warning inside the overlay panel
+    /// while buffering. Defaulted so test doubles stay unchanged.
+    func showSecureInputWarning()
+}
+
+extension OverlayBufferSessionCoordinating {
+    func showSecureInputWarning() {}
 }
 
 @MainActor
@@ -159,6 +166,26 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             return .succeeded
         }
 
+        // Re-check Secure Keyboard Entry AT COMMIT TIME (the session-start
+        // sample can be stale in both directions — a password prompt may have
+        // appeared or been dismissed while dictating). When it is active,
+        // synthetic insertion would be swallowed while REPORTING success
+        // (posting succeeds, delivery doesn't), the overlay would dismiss
+        // happily, and the words would be gone. Skip the doomed attempts,
+        // put the text on the clipboard unconditionally — losing it is the
+        // only alternative — and show the failure state.
+        if TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
+            copyToPasteboard(commitText)
+            let failureMessage = "Secure input blocked auto-paste — text copied, paste it manually."
+            stateMachine.commitFailed(
+                error: failureMessage,
+                anchor: anchorResolver.resolveAnchor()
+            )
+            renderCurrentSnapshot()
+            Log.overlay.notice("overlay commit skipped: Secure Keyboard Entry active; text copied to clipboard")
+            return .failed(message: failureMessage)
+        }
+
         let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
         // Keep overlay commit aligned with live auto-paste behavior: try keyboard
         // Unicode insertion first for web field compatibility, then AX, then Cmd+V.
@@ -199,6 +226,13 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         renderCurrentSnapshot()
         Log.overlay.info("overlay commit failed: \(failureMessage, privacy: .public)")
         return .failed(message: failureMessage)
+    }
+
+    func showSecureInputWarning() {
+        stateMachine.setBufferingWarning(
+            "Secure input is on — auto-paste is blocked; the text will be copied at stop."
+        )
+        renderCurrentSnapshot()
     }
 
     func dismissAfterHold(minimumVisibility: TimeInterval) {

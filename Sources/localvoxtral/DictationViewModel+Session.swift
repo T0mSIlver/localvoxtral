@@ -262,6 +262,26 @@ extension DictationViewModel {
         // verdict and Secure Keyboard Entry state while the app the user
         // started dictation in is still frontmost, not after connect.
         captureSessionTargetVerdict()
+        // Live Auto-Paste under Secure Keyboard Entry: every synthetic
+        // keystroke would be swallowed SILENTLY (posting still reports
+        // success), so a session would capture the mic and type into the
+        // void. Refuse to start instead — the sound, menu bar icon, and
+        // popover line (applied from the captured verdict) explain why, and
+        // they persist until the next session start because no session ran
+        // (#89 field feedback). Overlay Buffer proceeds: its pipeline still
+        // produces text, and its commit re-checks secure input and falls
+        // back to the clipboard.
+        if isLiveAutoPasteModeEnabled,
+           preCapturedSessionTargetVerdict?.secureKeyboardEntryEnabled == true
+        {
+            applyPreCapturedSessionTargetVerdict()
+            statusText = StatusStrings.liveDictationBlockedBySecureInput
+            Log.target.warning(
+                "live dictation start refused: Secure Keyboard Entry is enabled"
+            )
+            clearLatchedSessionMetadata()
+            return
+        }
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
@@ -781,7 +801,9 @@ extension DictationViewModel {
         }
         // The Secure Keyboard Entry warning describes state sampled at session
         // start; a finished session must not leave it wedged in the popover —
-        // nor keep the menu bar warning icon lit.
+        // nor keep the menu bar warning icon lit. (A REFUSED live start never
+        // reaches this teardown, so its warning intentionally persists until
+        // the next session start clears it via the stale-warning path.)
         if currentErrorToken == .secureKeyboardEntryActive {
             lastError = nil
         }
@@ -1215,6 +1237,12 @@ extension DictationViewModel {
         let anchor = preResolvedOverlayAnchor
         preResolvedOverlayAnchor = nil
         overlayBufferCoordinator.startSession(preResolvedAnchor: anchor)
+        if sessionSecureInputActive {
+            // The overlay is the surface the user is actually watching while
+            // buffering — warn there, not just in the (closed) popover. The
+            // commit re-checks secure input and falls back to the clipboard.
+            overlayBufferCoordinator.showSecureInputWarning()
+        }
     }
 
     func beginOverlayFinalization() {

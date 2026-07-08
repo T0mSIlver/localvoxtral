@@ -4,6 +4,32 @@ import XCTest
 
 @MainActor
 final class OverlayBufferStateMachineTests: XCTestCase {
+    func testBufferingWarningShowsOnlyWhileBufferingAndResetsOnNewSession() {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+
+        machine.setBufferingWarning("too early")
+        XCTAssertNil(machine.snapshot, "no session, no warning")
+
+        machine.startSession(anchor: anchor)
+        machine.setBufferingWarning("secure input on")
+        XCTAssertEqual(machine.snapshot?.errorMessage, "secure input on")
+
+        machine.beginFinalizing(anchor: nil)
+        machine.setBufferingWarning("too late")
+        XCTAssertEqual(
+            machine.snapshot?.errorMessage, "secure input on",
+            "finalizing keeps the buffering-time warning; commitFailed owns the surface next"
+        )
+
+        machine.reset()
+        machine.startSession(anchor: anchor)
+        XCTAssertNil(machine.snapshot?.errorMessage, "a new session starts clean")
+    }
+
     func testStateMachine_happyPathTransitionsToIdleAfterReset() {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .windowCenter)
