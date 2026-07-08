@@ -1,9 +1,7 @@
 import Foundation
 
 struct LiveReplacementCorrection: Sendable {
-    let erasedText: String
     let replacementText: String
-    let backspaceCount: Int
 
     fileprivate let startOffset: Int
     fileprivate let endOffset: Int
@@ -14,7 +12,6 @@ struct LiveReplacementCorrector {
     private let maxKeyWordCount: Int
     private var typedText = ""
     private var scanOffset = 0
-    private(set) var isStandingDown = false
 
     init(dictionary: ReplacementDictionary) {
         let rules = dictionary.liveReplacementRules()
@@ -64,16 +61,12 @@ struct LiveReplacementCorrector {
     }
 
     mutating func recordInsertedText(_ text: String) {
-        guard !text.isEmpty, !isStandingDown else { return }
+        guard !text.isEmpty else { return }
         typedText.append(text)
     }
 
-    mutating func standDown() {
-        isStandingDown = true
-    }
-
     mutating func nextCompletedBoundaryCorrection() -> LiveReplacementCorrection? {
-        guard !isStandingDown, !rules.isEmpty, !typedText.isEmpty else { return nil }
+        guard !rules.isEmpty, !typedText.isEmpty else { return nil }
 
         while scanOffset < typedText.count {
             let characters = Array(typedText)
@@ -116,7 +109,7 @@ struct LiveReplacementCorrector {
     }
 
     mutating func finalUnboundedCorrection() -> LiveReplacementCorrection? {
-        guard !isStandingDown, !rules.isEmpty, !typedText.isEmpty else { return nil }
+        guard !rules.isEmpty, !typedText.isEmpty else { return nil }
         let characters = Array(typedText)
         guard let last = characters.last, !Self.isCompletionBoundary(last) else { return nil }
         scanOffset = characters.count
@@ -127,7 +120,6 @@ struct LiveReplacementCorrector {
     }
 
     mutating func apply(_ correction: LiveReplacementCorrection) {
-        guard !isStandingDown else { return }
         let startIndex = typedText.index(typedText.startIndex, offsetBy: correction.startOffset)
         let endIndex = typedText.index(typedText.startIndex, offsetBy: correction.endOffset)
         typedText.replaceSubrange(startIndex ..< endIndex, with: correction.replacementText)
@@ -162,22 +154,10 @@ struct LiveReplacementCorrector {
                 let matchStartOffset = lookbackStartOffset + matchStartDelta
                 let boundaryStart = typedText.index(typedText.startIndex, offsetBy: wordEndOffset)
                 let boundaryEnd = typedText.index(typedText.startIndex, offsetBy: boundaryEndOffset)
-                let erasedStart = typedText.index(
-                    typedText.startIndex,
-                    offsetBy: matchStartOffset
-                )
-                let erasedText = String(typedText[erasedStart ..< boundaryEnd])
                 let boundaryText = String(typedText[boundaryStart ..< boundaryEnd])
 
                 return LiveReplacementCorrection(
-                    erasedText: erasedText,
                     replacementText: rule.replaceWith + boundaryText,
-                    // Keyboard backspace is counted by grapheme so composed
-                    // characters are erased as users expect in native fields.
-                    // Some web/Electron controls delete by UTF-16 unit instead;
-                    // the next caret-guard check catches that mismatch and
-                    // disables further live corrections for the session.
-                    backspaceCount: erasedText.count,
                     startOffset: matchStartOffset,
                     endOffset: boundaryEndOffset
                 )
