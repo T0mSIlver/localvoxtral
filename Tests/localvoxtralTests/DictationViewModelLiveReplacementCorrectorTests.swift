@@ -198,17 +198,18 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
     }
 
     func testUserAllowlistedBundleSelectsHoldBack() {
-        // cmux field case: the app reports a writable AX value, so detection
-        // needs the user's terminal_apps.toml entry to classify it — and the
-        // session must then behave exactly like a built-in terminal.
+        // The original cmux field case (writable AX value, only the user's
+        // terminal_apps.toml entry can classify it) — cmux itself is built-in
+        // now, so an unknown stand-in keeps the user path exercised. The
+        // session must behave exactly like a built-in terminal.
         TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
             dictionary: voxtralDictionary,
             configStore: MockAppConfigStore(
                 replacementDictionary: voxtralDictionary,
-                terminalAppBundleIDs: ["com.cmuxterm.app"]
+                terminalAppBundleIDs: ["com.example.myterminal"]
             ),
-            frontmostBundleID: "com.cmuxterm.app"
+            frontmostBundleID: "com.example.myterminal"
         )
 
         harness.viewModel.handle(event: .partialTranscript("voxtral "))
@@ -216,6 +217,25 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         XCTAssertEqual(harness.field.value, "localvoxtral ")
         XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
+    }
+
+    func testCmuxIsTerminalLikeViaBuiltInAllowlist() {
+        // cmux graduated from the user allowlist to built-in (owner request,
+        // 2026-07-08): terminal behavior with zero config, even though its AX
+        // value reads writable.
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        let harness = makeHarness(
+            dictionary: voxtralDictionary,
+            frontmostBundleID: "com.cmuxterm.app"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral\nls "))
+        stop(harness.viewModel)
+
+        XCTAssertEqual(
+            harness.field.value, "localvoxtral ls ",
+            "replacement applied AND the newline sanitized — full terminal treatment with zero config"
+        )
     }
 
     // MARK: - Harness

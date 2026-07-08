@@ -70,6 +70,9 @@ enum TerminalTargetDetector {
         "co.zeit.hyper",            // Hyper
         "org.tabby",                // Tabby (electron-builder appId)
         "com.raphaelamorim.rio",    // Rio (misc/osx Info.plist)
+        "com.cmuxterm.app",         // cmux (field-verified bundle id, 2026-07-07;
+                                    // its AX value reads writable, so the probe
+                                    // can never identify it — allowlist or bust)
     ]
 
     /// Prefix matches for apps that ship channel-suffixed bundle IDs.

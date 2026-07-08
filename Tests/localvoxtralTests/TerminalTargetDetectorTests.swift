@@ -29,6 +29,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
             "co.zeit.hyper",
             "org.tabby",
             "com.raphaelamorim.rio",
+            "com.cmuxterm.app",
         ]
         for bundleID in knownTerminals {
             XCTAssertTrue(
@@ -118,9 +119,11 @@ final class TerminalTargetDetectorTests: XCTestCase {
     // MARK: - User allowlist (terminal_apps.toml)
 
     func testUserBundleIDIsTerminalLikeWithoutProbing() {
+        // A bundle NOT in the built-in list: cmux graduated to built-in, so it
+        // can no longer exercise the user-allowlist path.
         let decision = TerminalTargetDetector.decision(
-            forBundleID: "com.cmuxterm.app",
-            userBundleIDs: ["com.cmuxterm.app"]
+            forBundleID: "com.example.myterminal",
+            userBundleIDs: ["com.example.myterminal"]
         ) {
             XCTFail("AX probe must not run for user-allowlisted bundles")
             return .valueSettable
@@ -141,16 +144,17 @@ final class TerminalTargetDetectorTests: XCTestCase {
     }
 
     func testCaptureUsesUserTerminalAppsFromConfigStore() {
-        // The field case (2026-07-07): cmux hosts a terminal but reports a
-        // writable AX value, so only the user's terminal_apps.toml entry can
-        // classify it.
-        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.cmuxterm.app" }
+        // The original cmux field case (2026-07-07): a terminal host with a
+        // writable AX value that only the user's terminal_apps.toml entry can
+        // classify. cmux itself is built-in now, so an unknown stand-in keeps
+        // this capture path exercised.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.example.myterminal" }
         TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
 
         let viewModel = makeViewModel(
             outputMode: .liveAutoPaste,
-            terminalAppBundleIDs: ["com.cmuxterm.app"]
+            terminalAppBundleIDs: ["com.example.myterminal"]
         )
         viewModel.captureSessionTargetVerdict()
         viewModel.applyPreCapturedSessionTargetVerdict()

@@ -12,6 +12,6 @@
 #   osascript -e 'id of app "AppName"'
 #
 # Example:
-# bundle_ids = ["com.cmuxterm.app", "com.microsoft.VSCode"]
+# bundle_ids = ["com.microsoft.VSCode", "com.example.myterminal"]
 
 bundle_ids = []
