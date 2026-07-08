@@ -790,14 +790,6 @@ final class DictationViewModel {
     /// push-to-talk semantics latches dictation on with no way to stop it.
     private func handleModifierOnlyTap(mode: DictationOutputMode) {
         toggleDictation(outputMode: mode)
-        // A tap has no release event (see the contract above), so a refused
-        // live start would latch the warning icon forever (Codex finding on
-        // #90). The tap IS the whole attempt gesture: if nothing started,
-        // end the refusal signals now — the sound already fired and the
-        // popover line keeps the explanation.
-        if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
-            clearSecureInputRefusalSignalsIfAttemptEnded()
-        }
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
@@ -811,6 +803,17 @@ final class DictationViewModel {
 
     func toggleDictation(outputMode: DictationOutputMode? = nil) {
         hasActivePushToTalkShortcutSession = false
+        defer {
+            // Toggle starts (modifier tap, popover button) have no release
+            // event, so a refused live start would latch the warning icon
+            // forever (Codex findings on #90, rounds 5-6). The tap/click IS
+            // the whole attempt gesture: if nothing started, end the refusal
+            // signals now — the sound already fired and the popover line
+            // keeps the explanation.
+            if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+                clearSecureInputRefusalSignalsIfAttemptEnded()
+            }
+        }
         if isDictating {
             stopDictation(reason: "manual toggle")
         } else if isConnectingRealtimeSession {
@@ -1261,6 +1264,16 @@ final class DictationViewModel {
         guard networkMonitor.isConnected else {
             statusText = StatusStrings.noNetworkConnection
             lastError = "Connect to a network before starting dictation."
+            return
+        }
+        // Refused BEFORE the microphone-authorization gate: a doomed live
+        // session must not trigger a mic permission prompt — and the mic
+        // gate's per-user TCC state must not decide whether the refusal
+        // fires at all (it did: the refusal lived only past this gate, and
+        // CI vs build-host permission differences flipped the behavior).
+        if refuseLiveStartForSecureInputIfNeeded(
+            outputMode: outputMode ?? settings.dictationOutputMode
+        ) {
             return
         }
         debugLog("startDictation requested")

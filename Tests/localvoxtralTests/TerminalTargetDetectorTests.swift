@@ -566,6 +566,27 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
+    func testRefusedPopoverToggleStartDoesNotLatchTheWarningIcon() {
+        // Codex finding on #90 (round 6): the popover start button goes
+        // through toggleDictation with no release event either — same latch
+        // as the modifier tap.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.toggleDictation()
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(soundPlays, 1)
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertEqual(viewModel.lastError, DictationViewModel.secureKeyboardEntryWarningMessage)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
     func testClipboardFallbackOutcomeDismissesOverlayWithReadableHold() {
         // Owner field feedback on #90: the overlay stayed on after ending the
         // session when text was in the buffer — the clipboard fallback is not

@@ -47,7 +47,7 @@ extension DictationViewModel {
     /// visible, and returns true when the start was refused. Overlay Buffer
     /// sessions are never refused: their pipeline still produces text and the
     /// commit falls back to the clipboard (#89 split behavior).
-    private func refuseLiveStartForSecureInputIfNeeded(
+    func refuseLiveStartForSecureInputIfNeeded(
         outputMode requestedOutputMode: DictationOutputMode
     ) -> Bool {
         guard requestedOutputMode == .liveAutoPaste,
