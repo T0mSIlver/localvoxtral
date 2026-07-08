@@ -14,6 +14,7 @@ set -euo pipefail
 #   applog [minutes]    # integer, clamped to 1..120, default 10
 #   voxlog [lines]      # integer, clamped to 1..500, default 80
 #   svc-status
+#   ensure <voxmlx|mlxlm|all>   # warm an on-demand test server (touch + poll)
 
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
 VOXLOG_FILE="$HOME/Library/Logs/voxmlx.log"
@@ -21,6 +22,16 @@ VOXMLX_SERVICE="com.localvoxtral.voxmlx"
 # The GUI-session uid whose launchd domain hosts the voxmlx service. The gate
 # account is deliberately not that user, so launchctl needs to be told.
 VOXMLX_GUI_UID="$(id -u)"
+
+# On-demand test-server triggers (see scripts/mac/lv-test-servers.sh — keep the
+# paths/ports/probes in sync). The `ensure` verb touches a trigger file, which
+# launchd's KeepAlive PathState turns into a server start, then polls the port
+# until the model is warm. The touch is a bounded, low-risk write into a
+# world-writable run dir; the gate does it INLINE (rather than exec'ing the
+# helper) so this reviewed script stays the whole trust boundary.
+LV_RUN_DIR="/Users/Shared/localvoxtral/run"
+LV_ENSURE_READY_TIMEOUT=180
+LV_ENSURE_PROBE_TIMEOUT=2
 
 # Machine-local overrides (never committed): the gate account is separate
 # from the GUI owner account, so voxmlx's log path and GUI uid differ per
@@ -239,6 +250,105 @@ run_svc_status() {
   show_ports
 }
 
+# Map an on-demand service name to its trigger file, port, and readiness probe.
+# Mirrors scripts/mac/lv-test-servers.sh; changing one means changing both.
+lv_service_trigger() {
+  case "$1" in
+    voxmlx) printf '%s/voxmlx.want\n' "$LV_RUN_DIR" ;;
+    mlxlm)  printf '%s/mlxlm.want\n' "$LV_RUN_DIR" ;;
+    *) return 1 ;;
+  esac
+}
+lv_service_port() {
+  case "$1" in
+    voxmlx) printf '8000\n' ;;
+    mlxlm)  printf '8080\n' ;;
+    *) return 1 ;;
+  esac
+}
+lv_service_healthy() {
+  # voxmlx: TCP accept (uvicorn binds only after model load, no HTTP route).
+  # mlxlm: GET /v1/models returns 200 once weights are resident.
+  local name="$1" port
+  port="$(lv_service_port "$name")" || return 1
+  case "$name" in
+    voxmlx)
+      nc -z -G "$LV_ENSURE_PROBE_TIMEOUT" -w "$LV_ENSURE_PROBE_TIMEOUT" \
+        127.0.0.1 "$port" >/dev/null 2>&1
+      ;;
+    mlxlm)
+      curl -fsS -o /dev/null --max-time "$LV_ENSURE_PROBE_TIMEOUT" \
+        "http://127.0.0.1:${port}/v1/models" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_one_service() {
+  local name="$1" trigger port stamp waited=0
+  trigger="$(lv_service_trigger "$name")" || { printf 'ensure: unknown service %s\n' "$name" >&2; return 2; }
+  port="$(lv_service_port "$name")"
+  stamp="$LV_RUN_DIR/${name}.seen.$(id -u)"
+
+  if [[ ! -d "$LV_RUN_DIR" ]]; then
+    printf 'ensure %s: run dir %s missing — owner must create it (see scripts/mac/README.md)\n' \
+      "$name" "$LV_RUN_DIR" >&2
+    return 1
+  fi
+
+  # Create the shared trigger if absent (launchd PathState starts the server).
+  # Atomic O_EXCL create (`set -C` = noclobber) so a concurrent ensure from
+  # another account can't make us truncate a trigger we don't own (permission
+  # denied in the sticky run dir). If it already exists — whoever created it —
+  # that's success; only a genuinely unwritable run dir fails the post-check.
+  # Then stamp our own activity file to reset the idle window. (Mirrors
+  # scripts/mac/lv-test-servers.sh ensure_one.)
+  if [[ ! -e "$trigger" ]]; then
+    ( set -C; : >"$trigger" ) 2>/dev/null || true
+  fi
+  if [[ ! -e "$trigger" ]]; then
+    printf 'ensure %s: cannot create trigger %s\n' "$name" "$trigger" >&2
+    return 1
+  fi
+  touch "$stamp" 2>/dev/null || {
+    printf 'ensure %s: cannot write activity stamp %s\n' "$name" "$stamp" >&2
+    return 1
+  }
+
+  if lv_service_healthy "$name"; then
+    printf 'ensure %s: already warm (port %s)\n' "$name" "$port"
+    return 0
+  fi
+
+  printf 'ensure %s: cold — waiting up to %ss for port %s...\n' "$name" "$LV_ENSURE_READY_TIMEOUT" "$port"
+  while (( waited < LV_ENSURE_READY_TIMEOUT )); do
+    if lv_service_healthy "$name"; then
+      printf 'ensure %s: ready after %ss (port %s)\n' "$name" "$waited" "$port"
+      return 0
+    fi
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  printf 'ensure %s: NOT ready after %ss (port %s) — is com.localvoxtral.%s bootstrapped?\n' \
+    "$name" "$LV_ENSURE_READY_TIMEOUT" "$port" "$name" >&2
+  return 1
+}
+
+run_ensure_command() {
+  local target="$1"
+  case "$target" in
+    voxmlx|mlxlm) ensure_one_service "$target" ;;
+    all)
+      local rc=0
+      ensure_one_service voxmlx || rc=$?
+      ensure_one_service mlxlm || rc=$?
+      return "$rc"
+      ;;
+    *) deny ;;
+  esac
+}
+
 # Fail-closed metacharacter blocklist. Note the glob subtlety: a `]` inside
 # the bracket expression terminates the set early, so part of this pattern
 # matches as literal text — empirically ALL listed characters still block
@@ -374,6 +484,11 @@ case "$original_command" in
     ;;
   svc-status)
     run_svc_status
+    ;;
+  ensure\ *)
+    arg="${original_command#ensure }"
+    [[ "$arg" != *" "* && -n "$arg" ]] || deny
+    run_ensure_command "$arg"
     ;;
   mkdir\ -p\ work/localvoxtral-*)
     run_mkdir_command "$original_command"

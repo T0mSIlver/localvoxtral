@@ -57,6 +57,27 @@ run_remote() {
   return "$status"
 }
 
+# Bring an on-demand test server up (and warm) before a suite that needs it.
+# The build host's voxmlx (8000) and mlxlm (8080) launchd services are
+# launch-on-demand (scripts/mac/lv-test-servers.sh) so their model weights are
+# not resident 24/7; this asks the SSH build gate's `ensure` verb to touch the
+# trigger and block until the port is healthy. It also resets the idle window,
+# so a burst of runs reuses the warm process.
+#
+# Best-effort: warming is an optimization, not the gate — the test suite itself
+# fails loudly if the server is actually unreachable. During rollout the
+# on-demand infra is a one-time owner install (scripts/mac/README.md); until
+# then the gate's `ensure` errors (run dir absent) but the still-always-on
+# server serves the suite, so a warm failure must NOT abort the run.
+ensure_remote_server() {
+  local name="$1"
+  echo "==> Ensuring on-demand test server '$name' is warm on $HOST"
+  if ! ssh "$HOST" "ensure $name"; then
+    echo "==> WARN: could not warm '$name' on-demand (infra not installed, or gate" \
+         "lacks the ensure verb). Continuing — the suite will fail if it's really down." >&2
+  fi
+}
+
 if [[ -z "$HOST" ]]; then
   cat >&2 <<'MSG'
 No build host configured. Point this script at a Mac with the Swift toolchain
@@ -106,10 +127,17 @@ esac
 
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests)
 
+# On-demand test server to warm before the suite runs (empty = none). The
+# build host's voxmlx/mlxlm launchd services are launch-on-demand to keep their
+# weights out of RAM when idle; the lanes that hit them ask the gate to start
+# and warm them first. See scripts/mac/lv-test-servers.sh + scripts/mac/README.md.
+ENSURE_SERVER=""
+
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
   test)    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@") ;;
   integration)
+    ENSURE_SERVER="voxmlx"
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
@@ -123,6 +151,11 @@ case "$CMD" in
       exit 1
     fi
     EVAL_ENDPOINT="${1:-http://127.0.0.1:8080/v1/chat/completions}"
+    # Only warm the local on-demand mlxlm service when the eval targets it; a
+    # custom endpoint is the caller's own server and we must not touch it.
+    if [[ "$EVAL_ENDPOINT" == *"127.0.0.1:8080"* || "$EVAL_ENDPOINT" == *"localhost:8080"* ]]; then
+      ENSURE_SERVER="mlxlm"
+    fi
     EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind.
@@ -143,6 +176,10 @@ case "$CMD" in
     exit 1
     ;;
 esac
+
+if [[ -n "$ENSURE_SERVER" ]]; then
+  ensure_remote_server "$ENSURE_SERVER"
+fi
 
 echo "==> Syncing working tree to $HOST:$DIR"
 ssh "$HOST" "mkdir -p $(printf '%q' "$DIR")"

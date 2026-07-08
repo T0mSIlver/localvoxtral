@@ -127,13 +127,23 @@ as the launchd service `com.localvoxtral.voxmlx` (logs:
 backend, where the suite self-skips. The mic-capture tests
 (`LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE`) stay off in CI until tier 2.
 
+On-demand test servers: the voxmlx (8000) and mlxlm (8080) launchd services are
+launch-on-demand (a trigger file + idle reaper — `scripts/mac/lv-test-servers.sh`,
+owner runbook `scripts/mac/README.md`), so their weights are not resident 24/7.
+This is hands-free: CI warms voxmlx in a step before the integration suite, and
+`remote-build.sh integration|eval-llm` warm the right server through the gate's
+`ensure` verb first, blocking until the port is healthy. A burst of runs reuses
+one warm process (each `ensure` resets a ~20 min idle window); the reaper frees
+the RAM once the machine goes quiet.
+
 LLM polish prompt eval: `LLMPolishPromptEvalTests` scores the bundled default
 polishing prompt (punctuation-spacing cases, French vs English) against a live
 mlx-lm server through the production request path. Run it with
 `./scripts/remote-build.sh eval-llm [endpoint]` — default endpoint is the
-`com.localvoxtral.mlxlm` launchd service on port 8080 (owner runbook:
-`scripts/mac/README.md`); don't point it at the app-managed instance on 8472,
-which dies whenever the app quits. Enablement is env
+on-demand `com.localvoxtral.mlxlm` launchd service on port 8080, which the lane
+warms first via the gate's `ensure` verb (owner runbook: `scripts/mac/README.md`);
+a custom endpoint is left untouched. Don't point it at the app-managed instance
+on 8472, which dies whenever the app quits. Enablement is env
 (`LLM_POLISH_EVAL_ENABLE=1`) or the marker file the script writes into the
 synced tree (the SSH gate can't pass env vars). Prompt changes MUST re-run
 this eval and paste the scoreboard in the PR's Proof section.
@@ -155,9 +165,14 @@ this eval and paste the scoreboard in the PR's Proof section.
   (build, unit, live integration, packaging, smoke) and only then tags and
   publishes the GitHub release (.zip + .dmg). Never push release tags by
   hand; the pipeline owns them.
-- `scripts/package_app.sh` intentionally patches SwiftPM-generated sources in
-  `.build/` (resource-bundle lookup for packaged .apps); the patches are
-  idempotent.
+- Packaged-app resource lookup: NEVER patch SwiftPM-generated DerivedSources
+  (the toolchain regenerates them clean on every build, silently reverting the
+  patch — shipped launch-broken artifacts, #87). App resources resolve at
+  runtime via `Bundle.localvoxtralResources` (`AppResourceBundle.swift`);
+  dependency checkouts (ShortcutRecorder) are still source-patched by
+  `package_app.sh` because checkouts persist across builds. CI's launch smoke
+  runs the packaged app COPIED outside the workspace with `.build` hidden —
+  same-tree launches mask exactly this class of breakage.
 
 ## Architecture map
 
