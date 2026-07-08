@@ -45,6 +45,7 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 - **Fully local by default** — dictation and polishing run on-device: no audio or text leaves the Mac, no API costs
 - **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option): tap to dictate into a review overlay, hold to type live — or classic per-mode keyboard shortcuts with `Toggle` / `Push to Talk` behavior
 - **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
+- **Terminal & coding-agent aware** — prompt Claude Code or any CLI agent by voice: terminals are detected automatically and live dictation keeps your text prompt-safe ([details](#terminals--coding-agents))
 - **Automatic cleanup** — an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
 - **Guided first launch** — a setup wizard grants permissions and downloads the local engine with live progress; re-run it any time from Settings
 - **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
@@ -73,6 +74,16 @@ The gesture selects the output mode, so both workflows are always one key away. 
 **Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
 
 **Escape** cancels an in-progress dictation.
+
+## Terminals & coding agents
+
+Most dictation tools fall apart in a terminal; localvoxtral treats it as a first-class target. Prompt Claude Code — or any CLI coding agent — by voice, streaming live, with everything running locally. It works in SSH sessions too, since text is typed into your local terminal. Terminal apps (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, and more) are detected automatically — apps that embed a terminal can be added in `terminal_apps.toml` — and live dictation adapts:
+
+- **Prompt-safe output** — newlines and tabs are typed as spaces, so a stray line break never submits a half-finished prompt and a tab never triggers shell completion
+- **Replacements without rewriting** — dictionary replacements are applied before text is typed; localvoxtral never backspaces over what the terminal has already drawn
+- **Secure input detection** — if Secure Keyboard Entry is active (a `sudo` password prompt, say), you're warned up front instead of watching keystrokes vanish
+
+This focus is deepening — smarter secure-input handling is in review, and polishing tuned for coding agents is next on the [roadmap](#roadmap).
 
 ## Settings
 
@@ -150,6 +161,8 @@ open ./dist/localvoxtral.app
 ## Roadmap
 
 - [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
+- [ ] Smarter Secure Keyboard Entry handling — refuse a doomed live session, clipboard fallback on overlay commit (in review)
+- [ ] LLM polishing tuned for coding agents — a polish preset that turns rough speech into a clean agent prompt, plus per-app profiles and custom vocabulary
 - [ ] Documentation website — a visual, end-user guide beyond this README
 - [ ] Model choice in Managed local mode — pick the polishing LLM instead of the pinned default
 - [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
