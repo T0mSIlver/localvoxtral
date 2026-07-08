@@ -49,10 +49,16 @@ enum BackendCatalog {
         // that doesn't match the request prefix (T0mSIlver/mlx-lm#2), and the
         // server cache is actually LRU with one-token prefix hits fixed
         // (T0mSIlver/mlx-lm#3).
-        version: "0.31.3.post3",
+        // post4 corrects post3's slid-cache fix: post3 disabled trimming
+        // globally for a slid chunked cache, which silently corrupted
+        // speculative decoding (the draft-rewind path trims and ignores the
+        // result). post4 refuses arbitrary-prefix reuse in the server cache
+        // only, leaving the trim/rewind contract intact (ml-explore/mlx-lm#1502,
+        // #1503).
+        version: "0.31.3.post4",
         requirementName: "mlx-lm",
-        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post3/mlx_lm-0.31.3.post3-py3-none-any.whl")!,
-        wheelSHA256: "13b0fe84eb7bcd92103b45e93a90a82be1cbf10cb089168b91e080c9bacb3177",
+        wheelURL: URL(string: "https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post4/mlx_lm-0.31.3.post4-py3-none-any.whl")!,
+        wheelSHA256: "d32d58c77b9e3a05b19748fad1ff6c26c67096a95ef88b6be990f9fed0d40bdf",
         executableName: "mlx_lm.server",
         pythonVersion: "3.12",
         port: 8472
