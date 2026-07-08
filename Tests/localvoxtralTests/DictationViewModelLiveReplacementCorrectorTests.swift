@@ -79,6 +79,9 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
     // dropped it at stop; nothing was replaced. The hold-back stream applies it
     // on the stop flush.
     func testFinalWordOnlyReplacementIsAppliedAtStop() {
+        // Writable AX value → deterministically classified non-terminal,
+        // independent of whether the CI host has Accessibility trust.
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
             dictionary: voxtralDictionary,
             frontmostBundleID: "com.example.editor"
@@ -112,6 +115,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
     }
 
     func testWhitespaceBoundaryReleasesCorrectedTextInRegularEditor() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
             dictionary: voxtralDictionary,
             frontmostBundleID: "com.example.editor"
@@ -126,6 +130,7 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
     }
 
     func testNonTerminalSessionUsesHoldBackStream() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
             dictionary: voxtralDictionary,
             frontmostBundleID: "com.example.editor"
