@@ -62,7 +62,7 @@ sudo install -d -m 0755 /Users/Shared/localvoxtral        # log dir, if absent
 #    mirror BackendCatalog.mlxLM — keep them in sync when the catalog moves.
 uv venv --python 3.12 ~/.local/share/localvoxtral-eval/mlx-lm
 uv pip install --python ~/.local/share/localvoxtral-eval/mlx-lm/bin/python \
-  'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post3/mlx_lm-0.31.3.post3-py3-none-any.whl'
+  'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post4/mlx_lm-0.31.3.post4-py3-none-any.whl'
 ```
 
 > This mlxlm service is the *prompt-eval reference endpoint* for
