@@ -127,6 +127,7 @@ final class DictationViewModel {
         static let pasteBlockedByAccessibilityPermission = "Paste blocked by Accessibility permission."
         static let networkLostDictationStopped = "Network lost. Dictation stopped."
         static let liveDictationBlockedBySecureInput = "Blocked: Secure Keyboard Entry is on."
+        static let overlayCopiedToClipboard = "Copied — paste it manually."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
@@ -212,11 +213,13 @@ final class DictationViewModel {
         // Checked before .connected: the warning describes the session that
         // is connected right now — its keystrokes are being swallowed, and
         // the popover (where the text warning lives) is closed mid-dictation.
-        // `sessionSecureInputActive` is tracked separately from `lastError`
-        // because the Accessibility warning deliberately outranks the
-        // secure-input POPOVER line — the icon must not vanish with it
-        // (Codex review finding on #90).
-        if sessionSecureInputActive || currentErrorToken == .secureKeyboardEntryActive {
+        // Gated ONLY on the session-attempt flag, tracked separately from
+        // `lastError`: the Accessibility warning may own the popover line
+        // without hiding the icon (Codex finding), and the popover line may
+        // outlive the icon as the explanation after a refused-start gesture
+        // ends (owner field feedback — the icon must not stay lit after the
+        // modifier is released).
+        if sessionSecureInputActive {
             return .secureInputWarning
         }
         switch realtimeSessionIndicatorState {
@@ -239,6 +242,17 @@ final class DictationViewModel {
     /// popover clear. Internal (not private(set)) because the session-end
     /// clear lives in DictationViewModel+Session.swift.
     var sessionSecureInputActive = false
+
+    /// Ends the refused-start warning when no session is running: the icon
+    /// (and the "Blocked" status line) return to normal, while `lastError`
+    /// keeps the one-line explanation in the popover.
+    func clearSecureInputRefusalSignalsIfAttemptEnded() {
+        guard !isDictating, !isConnectingRealtimeSession, sessionSecureInputActive else { return }
+        sessionSecureInputActive = false
+        if statusText == StatusStrings.liveDictationBlockedBySecureInput {
+            statusText = StatusStrings.ready
+        }
+    }
 
     /// Played once at session start when Secure Keyboard Entry is detected.
     /// The popover is closed while dictating, so an audible cue is the only
@@ -708,6 +722,13 @@ final class DictationViewModel {
     }
 
     private func handleDictationShortcutRelease() {
+        // A REFUSED live start (secure input) resets the hold flags inside
+        // handleModifierOnlyHoldStart, so no branch below fires for it —
+        // this is the moment the user's attempt gesture ends, and the
+        // warning icon must end with it (owner field feedback on #90). The
+        // popover line stays as the explanation until the next start
+        // re-samples.
+        clearSecureInputRefusalSignalsIfAttemptEnded()
         // Modifier-only hold release
         if isModifierOnlyHoldActive {
             isModifierOnlyHoldActive = false

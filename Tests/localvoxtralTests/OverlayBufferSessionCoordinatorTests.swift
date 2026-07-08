@@ -35,8 +35,8 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         // only place the words can survive, so the copy must be unconditional.
         let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
 
-        guard case .failed(let message) = outcome else {
-            return XCTFail("commit must report failure, got \(outcome)")
+        guard case .copiedToClipboard(let message) = outcome else {
+            return XCTFail("commit must report the clipboard fallback, got \(outcome)")
         }
         XCTAssertTrue(message.contains("copied"), "message tells the user where the text went")
         XCTAssertTrue(
@@ -45,6 +45,49 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(copiedTexts, ["secret words"])
         XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.phase, .commitFailed)
+    }
+
+    func testClipboardFallbackPanelDismissesAfterReadableHold() async {
+        // Owner field feedback on #90: the fallback panel used to persist
+        // like a real failure. It must hold the message readable, then hide.
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        let renderer = MockOverlayRenderer()
+        var currentDate = Date(timeIntervalSince1970: 1_000)
+        var requestedSleeps: [Duration] = []
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            now: { currentDate },
+            sleepFor: { requestedSleeps.append($0) },
+            copyToPasteboard: { _ in }
+        )
+        let committer = MockOverlayTextCommitter()
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "words", commitBufferText: "words")
+
+        // The user dictated a while ago; without re-anchoring the hold to the
+        // fallback message render, the elapsed time would swallow the whole
+        // visibility window and the message would flash away unread.
+        currentDate = currentDate.addingTimeInterval(10)
+        _ = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+        XCTAssertEqual(renderer.hideCallCount, 0, "the fallback message is showing")
+
+        coordinator.dismissAfterHold(
+            minimumVisibility: TimingConstants.overlayClipboardFallbackVisibility
+        )
+        guard let dismissTask = coordinator.debugDismissTask else {
+            XCTFail("expected a pending dismiss hold task — the fallback panel must not persist")
+            return
+        }
+        await dismissTask.value
+
+        XCTAssertEqual(
+            requestedSleeps, [.seconds(TimingConstants.overlayClipboardFallbackVisibility)],
+            "the full visibility window, anchored to the message render"
+        )
+        XCTAssertEqual(renderer.hideCallCount, 1, "panel dismisses once the hold elapses")
     }
 
     func testCommitProceedsNormallyWhenSecureInputOff() {

@@ -510,6 +510,75 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
     }
 
+    func testRefusedStartIconClearsWhenTheHoldGestureEnds() {
+        // Owner field feedback on #90: the icon stayed red after releasing
+        // the modifier. The release ends the attempt, so the icon (and the
+        // "Blocked" status) end with it; the popover line stays as the
+        // explanation.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.debugHandleModifierOnlyHoldStartForTesting()
+        XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.secureKeyboardEntryWarningMessage,
+            "the popover keeps the explanation until the next start re-samples"
+        )
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testClipboardFallbackOutcomeDismissesOverlayWithReadableHold() {
+        // Owner field feedback on #90: the overlay stayed on after ending the
+        // session when text was in the buffer — the clipboard fallback is not
+        // a real failure and must not keep its panel like one.
+        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        coordinator.commitOutcome = .copiedToClipboard(message: "copied")
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertEqual(
+            viewModel.statusText,
+            DictationViewModel.StatusStrings.overlayCopiedToClipboard,
+            "honest status instead of 'Insert failed.'"
+        )
+        XCTAssertEqual(
+            coordinator.dismissHoldVisibilities,
+            [TimingConstants.overlayClipboardFallbackVisibility],
+            "the panel dismisses after the readable hold instead of persisting"
+        )
+    }
+
+    func testFailedCommitOutcomeStillKeepsOverlayPanel() {
+        // The generic failure contract is unchanged: the buffered text may
+        // exist nowhere else, so the panel persists.
+        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        coordinator.commitOutcome = .failed(message: "nope")
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertEqual(viewModel.statusText, "Insert failed.")
+        XCTAssertTrue(coordinator.dismissHoldVisibilities.isEmpty)
+    }
+
     // MARK: - Fixture
 
     private func makeViewModel(
@@ -578,13 +647,17 @@ private final class TargetDetectorNoopOverlayCoordinator: OverlayBufferSessionCo
     func startSession(preResolvedAnchor: OverlayAnchor?) {}
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
     func refresh(displayBufferText: String, commitBufferText: String) {}
+    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
     @discardableResult
     func commitIfNeeded(
         using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
     ) -> OverlayBufferCommitOutcome {
-        .succeeded
+        commitOutcome
     }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
+    private(set) var dismissHoldVisibilities: [TimeInterval] = []
+    func dismissAfterHold(minimumVisibility: TimeInterval) {
+        dismissHoldVisibilities.append(minimumVisibility)
+    }
     private(set) var resetCallCount = 0
     func reset() { resetCallCount += 1 }
     func captureLiveCommitTargetAppPID() {}

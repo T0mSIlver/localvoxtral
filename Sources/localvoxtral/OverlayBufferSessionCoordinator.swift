@@ -31,6 +31,11 @@ extension TextInsertionService: OverlayTextCommitting {}
 enum OverlayBufferCommitOutcome: Equatable {
     case succeeded
     case failed(message: String)
+    /// Secure Keyboard Entry blocked synthetic insertion; the text was put on
+    /// the clipboard instead. Unlike `.failed` (whose panel persists so the
+    /// user can see text that may exist nowhere else), this panel is
+    /// dismissed after a readable hold — the words are safe.
+    case copiedToClipboard(message: String)
 }
 
 @MainActor
@@ -176,14 +181,18 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         // only alternative — and show the failure state.
         if TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
             copyToPasteboard(commitText)
-            let failureMessage = "Secure input blocked auto-paste — text copied, paste it manually."
+            let fallbackMessage = "Secure input blocked auto-paste — text copied, paste it manually."
             stateMachine.commitFailed(
-                error: failureMessage,
+                error: fallbackMessage,
                 anchor: anchorResolver.resolveAnchor()
             )
             renderCurrentSnapshot()
+            // The message is a fresh display change: anchor the dismiss hold
+            // to it so the stop flow's dismissAfterHold keeps it readable
+            // instead of measuring from the last buffered word.
+            lastOverlayDisplayTextChangeAt = now()
             Log.overlay.notice("overlay commit skipped: Secure Keyboard Entry active; text copied to clipboard")
-            return .failed(message: failureMessage)
+            return .copiedToClipboard(message: fallbackMessage)
         }
 
         let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID

@@ -791,9 +791,12 @@ extension DictationViewModel {
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingSegmentText = ""
-        if case .failed = overlayCommitOutcome {
+        switch overlayCommitOutcome {
+        case .failed?:
             statusText = "Insert failed."
-        } else {
+        case .copiedToClipboard?:
+            statusText = StatusStrings.overlayCopiedToClipboard
+        default:
             statusText = "Ready"
         }
 
@@ -806,17 +809,26 @@ extension DictationViewModel {
             textInsertion.clearPendingText()
         }
 
-        let didOverlayCommitFail: Bool
-        if case .failed = overlayCommitOutcome {
-            didOverlayCommitFail = true
+        // Dismiss policy: a FAILED commit keeps its panel (the buffered text
+        // may exist nowhere else); the secure-input clipboard fallback shows
+        // its message for a readable hold and then dismisses — the text is
+        // safe on the clipboard, and a panel that outlives the session read
+        // as stuck in the field (owner feedback on #90).
+        let dismissVisibility: TimeInterval?
+        if !shouldCommitOverlay {
+            dismissVisibility = TimingConstants.overlayFinalWordVisibilityMinimum
         } else {
-            didOverlayCommitFail = false
+            switch overlayCommitOutcome {
+            case .failed?:
+                dismissVisibility = nil
+            case .copiedToClipboard?:
+                dismissVisibility = TimingConstants.overlayClipboardFallbackVisibility
+            default:
+                dismissVisibility = TimingConstants.overlayFinalWordVisibilityMinimum
+            }
         }
-
-        if !shouldCommitOverlay || !didOverlayCommitFail {
-            overlayBufferCoordinator.dismissAfterHold(
-                minimumVisibility: TimingConstants.overlayFinalWordVisibilityMinimum
-            )
+        if let dismissVisibility {
+            overlayBufferCoordinator.dismissAfterHold(minimumVisibility: dismissVisibility)
         }
 
         if currentErrorToken == .websocketReceiveFailed {
@@ -825,8 +837,8 @@ extension DictationViewModel {
         // The Secure Keyboard Entry warning describes state sampled at session
         // start; a finished session must not leave it wedged in the popover —
         // nor keep the menu bar warning icon lit. (A REFUSED live start never
-        // reaches this teardown, so its warning intentionally persists until
-        // the next session start clears it via the stale-warning path.)
+        // reaches this teardown; its icon clears when the shortcut release
+        // ends the attempt gesture, and the popover line at the next start.)
         if currentErrorToken == .secureKeyboardEntryActive {
             lastError = nil
         }
