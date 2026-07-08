@@ -144,13 +144,24 @@ jobs:
           path: dist/localvoxtral-dSYM.zip
           retention-days: 30
 
-      - name: Smoke test packaged app launch
+      - name: Smoke test packaged app launch (end-user simulation)
         run: |
-          python3 - <<'PY'
+          # Launch a COPY of the packaged app from outside the workspace with
+          # the workspace .build renamed away. A same-tree launch silently
+          # passes even when the binary's resource lookup depends on the
+          # builder's absolute .build path (SwiftPM's generated Bundle.module
+          # accessor falls back to it) — which crashes at launch on every
+          # OTHER machine. That masking shipped launch-broken artifacts (#87).
+          SMOKE_DIR="$(mktemp -d)"
+          ditto dist/localvoxtral.app "$SMOKE_DIR/localvoxtral.app"
+          mv .build .build.smoke-hidden
+          trap 'mv .build.smoke-hidden .build' EXIT
+          SMOKE_APP="$SMOKE_DIR/localvoxtral.app" python3 - <<'PY'
+          import os
           import subprocess
           import time
 
-          app_binary = "dist/localvoxtral.app/Contents/MacOS/localvoxtral"
+          app_binary = os.environ["SMOKE_APP"] + "/Contents/MacOS/localvoxtral"
           process = subprocess.Popen([app_binary])
           time.sleep(2)
 
