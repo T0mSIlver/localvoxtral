@@ -538,6 +538,34 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
+    func testRefusedModifierTapDoesNotLatchTheWarningIcon() {
+        // Codex finding on #90 (round 5): a modifier-only TAP has no release
+        // event, so a refused live start latched the icon until the next
+        // attempt. The tap is the whole gesture — signals end with it.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.debugHandleModifierOnlyTapForTesting(mode: .liveAutoPaste)
+
+        XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")
+        XCTAssertEqual(soundPlays, 1, "the audible cue fired")
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "no release will ever come — the icon must not latch"
+        )
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.secureKeyboardEntryWarningMessage,
+            "the popover keeps the explanation"
+        )
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
     func testClipboardFallbackOutcomeDismissesOverlayWithReadableHold() {
         // Owner field feedback on #90: the overlay stayed on after ending the
         // session when text was in the buffer — the clipboard fallback is not

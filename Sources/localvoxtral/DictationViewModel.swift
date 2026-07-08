@@ -790,6 +790,14 @@ final class DictationViewModel {
     /// push-to-talk semantics latches dictation on with no way to stop it.
     private func handleModifierOnlyTap(mode: DictationOutputMode) {
         toggleDictation(outputMode: mode)
+        // A tap has no release event (see the contract above), so a refused
+        // live start would latch the warning icon forever (Codex finding on
+        // #90). The tap IS the whole attempt gesture: if nothing started,
+        // end the refusal signals now — the sound already fired and the
+        // popover line keeps the explanation.
+        if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+            clearSecureInputRefusalSignalsIfAttemptEnded()
+        }
     }
 
     func shouldCancelPushToTalkStartAfterConnect() -> Bool {
