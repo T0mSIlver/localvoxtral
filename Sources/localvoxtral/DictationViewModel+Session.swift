@@ -780,10 +780,12 @@ extension DictationViewModel {
             lastError = nil
         }
         // The Secure Keyboard Entry warning describes state sampled at session
-        // start; a finished session must not leave it wedged in the popover.
+        // start; a finished session must not leave it wedged in the popover —
+        // nor keep the menu bar warning icon lit.
         if currentErrorToken == .secureKeyboardEntryActive {
             lastError = nil
         }
+        sessionSecureInputActive = false
         firstChunkPreprocessor.reset()
     }
 

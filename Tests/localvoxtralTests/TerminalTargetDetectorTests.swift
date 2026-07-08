@@ -371,12 +371,21 @@ final class TerminalTargetDetectorTests: XCTestCase {
             DictationViewModel.liveAutoPasteAccessibilityWarningMessage,
             "popover priority unchanged"
         )
+        XCTAssertEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the icon must not vanish just because another warning owns the popover line"
+        )
     }
 
     func testMenuBarSecureWarningClearsAtSessionEnd() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         Self.retainedViewModels.append(viewModel)
-        viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
+        viewModel.secureInputWarningSound = {}
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)

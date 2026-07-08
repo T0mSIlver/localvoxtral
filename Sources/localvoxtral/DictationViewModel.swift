@@ -211,7 +211,11 @@ final class DictationViewModel {
         // Checked before .connected: the warning describes the session that
         // is connected right now — its keystrokes are being swallowed, and
         // the popover (where the text warning lives) is closed mid-dictation.
-        if currentErrorToken == .secureKeyboardEntryActive {
+        // `sessionSecureInputActive` is tracked separately from `lastError`
+        // because the Accessibility warning deliberately outranks the
+        // secure-input POPOVER line — the icon must not vanish with it
+        // (Codex review finding on #90).
+        if sessionSecureInputActive || currentErrorToken == .secureKeyboardEntryActive {
             return .secureInputWarning
         }
         switch realtimeSessionIndicatorState {
@@ -226,6 +230,14 @@ final class DictationViewModel {
 
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
+
+    /// Secure Keyboard Entry state sampled for the CURRENT session — drives
+    /// the menu bar warning icon independently of `lastError` (whose popover
+    /// line a higher-priority warning may own). Set when the session verdict
+    /// is applied; cleared at session end alongside the token-scoped
+    /// popover clear. Internal (not private(set)) because the session-end
+    /// clear lives in DictationViewModel+Session.swift.
+    var sessionSecureInputActive = false
 
     /// Played once at session start when Secure Keyboard Entry is detected.
     /// The popover is closed while dictating, so an audible cue is the only
@@ -1433,6 +1445,7 @@ final class DictationViewModel {
         )
         preCapturedSessionTargetVerdict = nil
         sessionTargetIsTerminalLike = verdict.decision.isTerminalLike
+        sessionSecureInputActive = verdict.secureKeyboardEntryEnabled
 
         if verdict.secureKeyboardEntryEnabled {
             // Never mask the Accessibility-trust warning — it explains a
