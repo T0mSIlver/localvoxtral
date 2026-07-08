@@ -79,8 +79,20 @@ jobs:
         # window, so a burst of CI runs reuses one warm process and the reaper
         # frees the RAM only after the machine goes quiet. Self-hosted only —
         # hosted runners have no backend and the suite self-skips.
+        #
+        # Best-effort during rollout: the on-demand LaunchAgents + run dir are a
+        # one-time owner install (scripts/mac/README.md). Until that's done the
+        # run dir is absent and there is nothing to warm — the still-always-on
+        # voxmlx serves the suite, so skip cleanly instead of failing CI. The
+        # integration step below is the real gate on voxmlx being reachable.
         if: runner.environment == 'self-hosted'
-        run: ./scripts/mac/lv-test-servers.sh ensure voxmlx
+        run: |
+          if [ -d /Users/Shared/localvoxtral/run ]; then
+            ./scripts/mac/lv-test-servers.sh ensure voxmlx
+          else
+            echo "on-demand infra not installed (run dir absent) — relying on the" \
+                 "always-on voxmlx; see scripts/mac/README.md to enable on-demand."
+          fi
 
       - name: Integration tests (live voxmlx)
         # The self-hosted runner has voxmlx serving locally (launchd service

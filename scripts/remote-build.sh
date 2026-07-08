@@ -62,12 +62,20 @@ run_remote() {
 # launch-on-demand (scripts/mac/lv-test-servers.sh) so their model weights are
 # not resident 24/7; this asks the SSH build gate's `ensure` verb to touch the
 # trigger and block until the port is healthy. It also resets the idle window,
-# so a burst of runs reuses the warm process. Fails fast with the gate's
-# message if the server can't be brought up.
+# so a burst of runs reuses the warm process.
+#
+# Best-effort: warming is an optimization, not the gate — the test suite itself
+# fails loudly if the server is actually unreachable. During rollout the
+# on-demand infra is a one-time owner install (scripts/mac/README.md); until
+# then the gate's `ensure` errors (run dir absent) but the still-always-on
+# server serves the suite, so a warm failure must NOT abort the run.
 ensure_remote_server() {
   local name="$1"
   echo "==> Ensuring on-demand test server '$name' is warm on $HOST"
-  ssh "$HOST" "ensure $name"
+  if ! ssh "$HOST" "ensure $name"; then
+    echo "==> WARN: could not warm '$name' on-demand (infra not installed, or gate" \
+         "lacks the ensure verb). Continuing — the suite will fail if it's really down." >&2
+  fi
 }
 
 if [[ -z "$HOST" ]]; then
