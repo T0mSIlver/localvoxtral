@@ -1101,6 +1101,36 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     // MARK: - Helpers
 
+    func testLiveStartUnderSecureInputRefusesBeforeManagedBackendStartup() {
+        // Codex finding on #90 (round 3): the refusal used to run only inside
+        // beginDictationSession, AFTER ensureReady — a cold managed backend
+        // would start a lengthy install/download for a doomed live session.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        addTeardownBlock {
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.beginDictationAfterManagedBackendIfNeeded()
+
+        XCTAssertTrue(
+            backendManager.ensureCalls.isEmpty,
+            "no backend boot for a session that will be refused"
+        )
+        XCTAssertEqual(
+            viewModel.statusText,
+            DictationViewModel.StatusStrings.liveDictationBlockedBySecureInput
+        )
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession)
+    }
+
     private func makeViewModel(
         outputMode: DictationOutputMode,
         backendManager: (any ManagedBackendManaging)? = nil

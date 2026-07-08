@@ -37,8 +37,38 @@ extension DictationViewModel {
         sessionReplacementDictionary = nil
     }
 
+    /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
+    /// whose every synthetic keystroke would be swallowed SILENTLY (posting
+    /// reports success, delivery never happens) must not start — and must be
+    /// refused BEFORE managed-backend startup, or a cold backend would run a
+    /// lengthy install/download for a doomed session. Fires the refuse UX
+    /// (sound + menu bar icon + popover line, from a fresh verdict capture),
+    /// resets any overlay panel a prior failed commit intentionally left
+    /// visible, and returns true when the start was refused. Overlay Buffer
+    /// sessions are never refused: their pipeline still produces text and the
+    /// commit falls back to the clipboard (#89 split behavior).
+    private func refuseLiveStartForSecureInputIfNeeded(
+        outputMode requestedOutputMode: DictationOutputMode
+    ) -> Bool {
+        guard requestedOutputMode == .liveAutoPaste,
+              TerminalTargetDetector.isSecureKeyboardEntryEnabled()
+        else { return false }
+        captureSessionTargetVerdict()
+        applyPreCapturedSessionTargetVerdict()
+        statusText = StatusStrings.liveDictationBlockedBySecureInput
+        overlayBufferCoordinator.reset()
+        Log.target.warning(
+            "live dictation start refused: Secure Keyboard Entry is enabled"
+        )
+        clearLatchedSessionMetadata()
+        return true
+    }
+
     func beginDictationAfterManagedBackendIfNeeded(outputMode: DictationOutputMode? = nil) {
         let requestedOutputMode = outputMode ?? settings.dictationOutputMode
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode) {
+            return
+        }
         let needsManagedDictation = settings.dictationBackendMode == .managedLocal
         let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
 
@@ -268,27 +298,13 @@ extension DictationViewModel {
         // Same timing rationale as the anchor: sample the terminal-like
         // verdict and Secure Keyboard Entry state while the app the user
         // started dictation in is still frontmost, not after connect.
-        captureSessionTargetVerdict()
-        // Live Auto-Paste under Secure Keyboard Entry: every synthetic
-        // keystroke would be swallowed SILENTLY (posting still reports
-        // success), so a session would capture the mic and type into the
-        // void. Refuse to start instead — the sound, menu bar icon, and
-        // popover line (applied from the captured verdict) explain why, and
-        // they persist until the next session attempt re-samples the state
-        // (no session ran, so the session-end clear never fires). Overlay Buffer proceeds: its pipeline still
-        // produces text, and its commit re-checks secure input and falls
-        // back to the clipboard.
-        if isLiveAutoPasteModeEnabled,
-           preCapturedSessionTargetVerdict?.secureKeyboardEntryEnabled == true
-        {
-            applyPreCapturedSessionTargetVerdict()
-            statusText = StatusStrings.liveDictationBlockedBySecureInput
-            Log.target.warning(
-                "live dictation start refused: Secure Keyboard Entry is enabled"
-            )
-            clearLatchedSessionMetadata()
+        // Re-checked here as well as at the managed-backend entry: secure
+        // input may have turned ON while a cold backend was booting, and
+        // direct callers skip that entry point entirely.
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode) {
             return
         }
+        captureSessionTargetVerdict()
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()

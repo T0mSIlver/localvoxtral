@@ -471,6 +471,26 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
+    func testRefusedLiveStartResetsStaleOverlayPanel() {
+        // Codex finding on #90 (round 3): a prior overlay commit failure
+        // intentionally leaves its panel visible until the NEXT session
+        // resets the coordinator — a refused live start must still perform
+        // that reset or the failed panel lingers indefinitely.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, coordinator: coordinator)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.beginDictationSession()
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertGreaterThanOrEqual(coordinator.resetCallCount, 1)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
     func testOverlaySessionStartProceedsUnderSecureInput() {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
@@ -494,7 +514,8 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
     private func makeViewModel(
         outputMode: DictationOutputMode,
-        terminalAppBundleIDs: [String] = []
+        terminalAppBundleIDs: [String] = [],
+        coordinator: TargetDetectorNoopOverlayCoordinator = TargetDetectorNoopOverlayCoordinator()
     ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -506,7 +527,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         settings.dictationOutputMode = outputMode
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: TargetDetectorNoopOverlayCoordinator(),
+            overlayBufferCoordinator: coordinator,
             startRuntimeServices: false
         )
         // Keep tests hermetic: capture reads the terminal-apps config through
@@ -564,6 +585,7 @@ private final class TargetDetectorNoopOverlayCoordinator: OverlayBufferSessionCo
         .succeeded
     }
     func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
+    private(set) var resetCallCount = 0
+    func reset() { resetCallCount += 1 }
     func captureLiveCommitTargetAppPID() {}
 }
