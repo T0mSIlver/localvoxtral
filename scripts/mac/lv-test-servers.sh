@@ -27,7 +27,7 @@ set -euo pipefail
 # touching ITS OWN stamp (always permitted). The reaper runs as the run-dir
 # owner, so the sticky-bit exemption lets it delete any caller's files.
 #
-# Used from three places:
+# Used from four places:
 #   * `ensure <name>`  — a consumer (CI, remote-build's ensure step, or a
 #                        person) calls this BEFORE running tests. It creates the
 #                        trigger (starting the server if down), stamps its own
@@ -41,6 +41,9 @@ set -euo pipefail
 #                        than the idle window it removes the trigger and sends
 #                        the job an explicit SIGTERM, stopping the server and
 #                        releasing its RAM.
+#   * `stop <name>`    — a person unloading NOW, without waiting for the idle
+#                        window (same stop path as reap: trigger removed,
+#                        TERM→KILL, blocks until the port closes).
 #   * `status`         — human/CI readout of trigger + activity + port state.
 #
 # The trigger design is deliberately cross-user: launchd watches an absolute
@@ -218,18 +221,42 @@ cmd_ensure() {
   return "$rc"
 }
 
-cmd_reap() {
-  # If the newest activity stamp is older than the idle window, stop the server
-  # and free its weights. Removing the PathState trigger stops launchd from
-  # RESTARTING the job, but launchd does NOT reliably terminate an
-  # already-running process when a KeepAlive condition flips false — so we also
-  # send an explicit SIGTERM. The reaper LaunchAgent runs in the GUI-owner
-  # domain (its own uid), so `launchctl kill` into gui/$(id -u) is permitted and
-  # this is why the reaper MUST run as the owner (it's also the run-dir owner,
-  # whose sticky-bit exemption lets it delete other accounts' trigger/stamps).
-  local now newest age trigger uid
-  now="$(date +%s)"
+# Stop a running server and free its weights. Shared by `reap` (when idle) and
+# `stop` (manual/immediate). Removing the PathState trigger stops launchd from
+# RESTARTING the job, but launchd does NOT reliably terminate an already-running
+# process when a KeepAlive condition flips false — so we drop the trigger FIRST
+# (so launchd won't relaunch the instant we kill it) then SIGTERM the job, which
+# tears down its whole process tree (the job is a uv/uvx wrapper around the real
+# server child). The MLX server drains gracefully in ~2-3s; block until the port
+# closes, and escalate to SIGKILL — plus, as a last resort, kill whatever still
+# binds the port (only this test service does) — if it's still up after
+# STOP_GRACE. The kill MUST finish here: once the trigger is gone a later reap
+# run skips this service, so a server that ignored SIGTERM would leak forever.
+# Must run as the GUI-owner (the reaper's user): `launchctl kill` into
+# gui/$(id -u) needs the owning domain, and the sticky run-dir owner can delete
+# any account's trigger/stamps. Echoes a short outcome fragment for the caller.
+stop_one() {
+  local name="$1" trigger uid port pids waited=0
+  trigger="$(trigger_for "$name")" || return 2
   uid="$(id -u)"
+  port="$(port_for "$name")"
+  rm -f "$trigger" "$RUN_DIR/${name}.seen."* 2>/dev/null || true
+  launchctl kill SIGTERM "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
+  while (( waited < STOP_GRACE )) && healthy "$name"; do sleep 1; waited=$((waited + 1)); done
+  if healthy "$name"; then
+    launchctl kill SIGKILL "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
+    pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+    [[ -n "$pids" ]] && kill -KILL $pids 2>/dev/null || true
+    echo "stopped (SIGTERM ignored → SIGKILL after ${waited}s)"
+  else
+    echo "stopped (trigger removed + SIGTERM, drained in ${waited}s)"
+  fi
+}
+
+cmd_reap() {
+  # Stop any server idle longer than the window; leave the rest warm.
+  local now newest age trigger
+  now="$(date +%s)"
   for name in "${ALL_SERVICES[@]}"; do
     trigger="$(trigger_for "$name")"
     [[ -e "$trigger" ]] || continue
@@ -237,34 +264,30 @@ cmd_reap() {
     [[ "$newest" =~ ^[0-9]+$ ]] || newest=0
     age=$((now - newest))
     if (( age >= IDLE_SECONDS )); then
-      # Order matters: drop the trigger FIRST so launchd won't relaunch the job
-      # the instant we kill it, then terminate the running process. launchd does
-      # not reliably kill a running job on PathState-false; SIGTERM to the
-      # launchd job tears down its whole process tree (the job is a uv/uvx
-      # wrapper around the real server child) and the MLX server drains
-      # gracefully in ~2-3s. We MUST finish the kill here: once the trigger is
-      # gone a later reap run skips this service (trigger absent), so a server
-      # that ignored SIGTERM would leak forever. Escalate to SIGKILL — and as a
-      # last resort kill whatever still binds the port (only this test service
-      # does) — if the port is still open after the grace window.
-      rm -f "$trigger" "$RUN_DIR/${name}.seen."* 2>/dev/null || true
-      launchctl kill SIGTERM "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
-      local waited=0
-      while (( waited < STOP_GRACE )) && healthy "$name"; do sleep 1; waited=$((waited + 1)); done
-      if healthy "$name"; then
-        local port pids
-        port="$(port_for "$name")"
-        launchctl kill SIGKILL "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
-        pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
-        [[ -n "$pids" ]] && kill -KILL $pids 2>/dev/null || true
-        echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (SIGTERM ignored → SIGKILL after ${waited}s)"
-      else
-        echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (trigger removed + SIGTERM, drained in ${waited}s)"
-      fi
+      printf 'reap %s: idle %ss >= %ss — %s\n' "$name" "$age" "$IDLE_SECONDS" "$(stop_one "$name")"
     else
       echo "reap $name: active (idle ${age}s < ${IDLE_SECONDS}s) — kept warm"
     fi
   done
+}
+
+cmd_stop() {
+  # Manual, immediate unload — stop now regardless of the idle window.
+  local target="${1:-all}"
+  local -a names
+  if [[ "$target" == "all" ]]; then names=("${ALL_SERVICES[@]}"); else names=("$target"); fi
+  local rc=0
+  for name in "${names[@]}"; do
+    if ! trigger_for "$name" >/dev/null 2>&1; then
+      echo "unknown service: $name" >&2; rc=2; continue
+    fi
+    if [[ -e "$(trigger_for "$name")" ]] || healthy "$name"; then
+      printf 'stop %s: %s\n' "$name" "$(stop_one "$name")"
+    else
+      echo "stop $name: already down"
+    fi
+  done
+  return "$rc"
 }
 
 cmd_status() {
@@ -287,9 +310,11 @@ cmd_status() {
 
 usage() {
   cat >&2 <<'MSG'
-usage: lv-test-servers.sh <ensure [voxmlx|mlxlm|all] | reap | status>
+usage: lv-test-servers.sh <ensure [voxmlx|mlxlm|all] | stop [voxmlx|mlxlm|all] | reap | status>
   ensure  start (if down) and block until the named server(s) are warm;
           resets the idle window. Default target: all.
+  stop    unload the named server(s) NOW regardless of the idle window, freeing
+          the weights (block until the port closes; TERM→KILL). Default: all.
   reap    stop any server idle longer than the idle window (reaper LaunchAgent;
           must run as the run-dir owner).
   status  print trigger + activity + port health for both services.
@@ -298,6 +323,7 @@ MSG
 
 case "${1:-}" in
   ensure) shift; cmd_ensure "${1:-all}" ;;
+  stop)   shift; cmd_stop "${1:-all}" ;;
   reap)   cmd_reap ;;
   status) cmd_status ;;
   ""|-h|--help) usage; exit 2 ;;

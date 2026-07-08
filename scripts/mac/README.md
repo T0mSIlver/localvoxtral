@@ -34,6 +34,10 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   in the GUI-owner domain, so the `launchctl kill` is permitted. The
   compromise: warm within a work session / CI burst, RAM freed once the machine
   goes quiet — next use pays one cold model load.
+- **Manual unload:** `lv-test-servers.sh stop [voxmlx|mlxlm|all]` frees the
+  weights NOW without waiting for the idle window — same stop path as reap
+  (trigger removed, `SIGTERM`→`SIGKILL`, blocks until the port closes). Default
+  target is `all`.
 - **Robustness:** an interrupted run or a sleeping Mac just leaves the trigger
   behind; the server stays warm and the reaper collects it later. There is no
   lock to get stuck and no orphan process (launchd owns each server; the reaper
