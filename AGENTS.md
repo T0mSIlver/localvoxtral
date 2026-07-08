@@ -165,9 +165,14 @@ this eval and paste the scoreboard in the PR's Proof section.
   (build, unit, live integration, packaging, smoke) and only then tags and
   publishes the GitHub release (.zip + .dmg). Never push release tags by
   hand; the pipeline owns them.
-- `scripts/package_app.sh` intentionally patches SwiftPM-generated sources in
-  `.build/` (resource-bundle lookup for packaged .apps); the patches are
-  idempotent.
+- Packaged-app resource lookup: NEVER patch SwiftPM-generated DerivedSources
+  (the toolchain regenerates them clean on every build, silently reverting the
+  patch — shipped launch-broken artifacts, #87). App resources resolve at
+  runtime via `Bundle.localvoxtralResources` (`AppResourceBundle.swift`);
+  dependency checkouts (ShortcutRecorder) are still source-patched by
+  `package_app.sh` because checkouts persist across builds. CI's launch smoke
+  runs the packaged app COPIED outside the workspace with `.build` hidden —
+  same-tree launches mask exactly this class of breakage.
 
 ## Architecture map
 
