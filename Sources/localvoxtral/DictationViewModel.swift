@@ -14,6 +14,10 @@ enum MenuBarIndicatorState: Equatable {
     case idle
     case connected
     case failure
+    /// Secure Keyboard Entry is swallowing this session's keystrokes — shown
+    /// with the failure icon because the menu bar is the only surface still
+    /// visible while the popover is closed during dictation (#89).
+    case secureInputWarning
 }
 
 /// A single raw realtime-delta log emission, captured before any
@@ -204,6 +208,12 @@ final class DictationViewModel {
     }
 
     var menuBarIndicatorState: MenuBarIndicatorState {
+        // Checked before .connected: the warning describes the session that
+        // is connected right now — its keystrokes are being swallowed, and
+        // the popover (where the text warning lives) is closed mid-dictation.
+        if currentErrorToken == .secureKeyboardEntryActive {
+            return .secureInputWarning
+        }
         switch realtimeSessionIndicatorState {
         case .connected:
             return .connected
@@ -216,6 +226,12 @@ final class DictationViewModel {
 
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
+
+    /// Played once at session start when Secure Keyboard Entry is detected.
+    /// The popover is closed while dictating, so an audible cue is the only
+    /// immediate signal that keystrokes will be swallowed (#89). Test seam.
+    @ObservationIgnored
+    var secureInputWarningSound: () -> Void = { NSSound(named: "Basso")?.play() }
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
@@ -1424,6 +1440,9 @@ final class DictationViewModel {
             if currentErrorToken != .accessibilityPermissionRequired {
                 lastError = Self.secureKeyboardEntryWarningMessage
             }
+            // Audible regardless of which warning owns the popover line: the
+            // session that just started will type nothing either way.
+            secureInputWarningSound()
             Log.target.warning(
                 "Secure Keyboard Entry is enabled at session start; synthetic keyboard events may be blocked."
             )

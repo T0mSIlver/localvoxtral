@@ -316,6 +316,79 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
     }
 
+    // MARK: - Secure Keyboard Entry signals: sound + menu bar icon (#89)
+
+    func testSecureInputWarningPlaysSoundAndDrivesMenuBarState() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(soundPlays, 1, "one audible cue at session start")
+        XCTAssertEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the menu bar is the only visible surface while the popover is closed"
+        )
+    }
+
+    func testNoSecureInputSignalsWhenSecureInputOff() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(soundPlays, 0)
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+    }
+
+    func testSoundStillPlaysWhenAccessibilityWarningOwnsThePopoverLine() {
+        // The popover line is masked by the higher-priority warning, but the
+        // session still cannot type — the audible cue must not be masked.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(soundPlays, 1)
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.liveAutoPasteAccessibilityWarningMessage,
+            "popover priority unchanged"
+        )
+    }
+
+    func testMenuBarSecureWarningClearsAtSessionEnd() {
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.lastError = DictationViewModel.secureKeyboardEntryWarningMessage
+        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.isDictating = true
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "icon reverts with the token-scoped clear at session end"
+        )
+    }
+
     // MARK: - Fixture
 
     private func makeViewModel(
