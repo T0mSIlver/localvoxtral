@@ -66,6 +66,10 @@ RUN_DIR="${LV_TEST_SERVER_RUN_DIR:-/Users/Shared/localvoxtral/run}"
 IDLE_SECONDS="${LV_TEST_SERVER_IDLE_SECONDS:-1200}"
 # Cold-start budget: model load + (for MLX) first-run Metal JIT can be slow.
 READY_TIMEOUT="${LV_TEST_SERVER_READY_TIMEOUT:-180}"
+# How long reap waits for a SIGTERM'd server to close its port before it
+# escalates to SIGKILL. The MLX server drains gracefully in ~2-3s; this is the
+# ceiling before we stop being polite.
+STOP_GRACE="${LV_TEST_SERVER_STOP_GRACE:-8}"
 PORT_TIMEOUT=2
 
 ALL_SERVICES=(voxmlx mlxlm)
@@ -234,10 +238,29 @@ cmd_reap() {
     age=$((now - newest))
     if (( age >= IDLE_SECONDS )); then
       # Order matters: drop the trigger FIRST so launchd won't relaunch the job
-      # the instant we kill it, then terminate the running process.
+      # the instant we kill it, then terminate the running process. launchd does
+      # not reliably kill a running job on PathState-false; SIGTERM to the
+      # launchd job tears down its whole process tree (the job is a uv/uvx
+      # wrapper around the real server child) and the MLX server drains
+      # gracefully in ~2-3s. We MUST finish the kill here: once the trigger is
+      # gone a later reap run skips this service (trigger absent), so a server
+      # that ignored SIGTERM would leak forever. Escalate to SIGKILL — and as a
+      # last resort kill whatever still binds the port (only this test service
+      # does) — if the port is still open after the grace window.
       rm -f "$trigger" "$RUN_DIR/${name}.seen."* 2>/dev/null || true
       launchctl kill SIGTERM "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
-      echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (trigger removed + SIGTERM)"
+      local waited=0
+      while (( waited < STOP_GRACE )) && healthy "$name"; do sleep 1; waited=$((waited + 1)); done
+      if healthy "$name"; then
+        local port pids
+        port="$(port_for "$name")"
+        launchctl kill SIGKILL "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
+        pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+        [[ -n "$pids" ]] && kill -KILL $pids 2>/dev/null || true
+        echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (SIGTERM ignored → SIGKILL after ${waited}s)"
+      else
+        echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (trigger removed + SIGTERM, drained in ${waited}s)"
+      fi
     else
       echo "reap $name: active (idle ${age}s < ${IDLE_SECONDS}s) — kept warm"
     fi

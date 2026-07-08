@@ -168,8 +168,11 @@ scripts/mac/lv-test-servers.sh ensure voxmlx
 # wait for the reaper agent), and confirm launchd stopped the server / freed
 # RAM. Age both — reap keys off the NEWEST of the trigger + stamps, so a
 # freshly cold-started trigger (recent mtime) would otherwise keep it "warm".
+# reap BLOCKS until the port actually closes (SIGTERM drains the MLX server in
+# ~2-3s; it escalates to SIGKILL after STOP_GRACE), so the status right after
+# reflects the real state — no need to sleep.
 touch -t 202001010000 /Users/Shared/localvoxtral/run/voxmlx.*   # .want + .seen.*
-scripts/mac/lv-test-servers.sh reap                   # removes trigger + stamps + SIGTERM
+scripts/mac/lv-test-servers.sh reap                   # removes trigger + stamps, TERM→KILL
 scripts/mac/lv-test-servers.sh status                 # voxmlx: absent, down
 ```
 
