@@ -258,6 +258,12 @@ extension DictationViewModel {
             ? overlayBufferCoordinator.resolveAnchorNow()
             : nil
 
+        // Same timing rationale as the anchor: sample the terminal-like
+        // verdict and Secure Keyboard Entry state while the app the user
+        // started dictation in is still frontmost, not after connect.
+        captureSessionTargetVerdict()
+        refreshInsertionScalarTracingForSession()
+
         audioChunkBuffer.clear()
         livePartialText = ""
         pendingSegmentText = ""
@@ -303,6 +309,7 @@ extension DictationViewModel {
             isConnectingRealtimeSession = false
             isDictating = true
             escapeCancelHandler.start()
+            applyPreCapturedSessionTargetVerdict()
             statusText = "Listening..."
             restartAudioSendTask()
             restartCommitTask()
@@ -709,7 +716,10 @@ extension DictationViewModel {
             textInsertion.endLiveReplacementSession()
             return
         }
-        guard settings.replacementDictionaryEnabled else {
+        // Terminal-like targets always begin a live session even with the
+        // dictionary disabled: the hold-back stream's newline/tab sanitization
+        // must protect the terminal regardless of replacements.
+        guard settings.replacementDictionaryEnabled || sessionTargetIsTerminalLike else {
             textInsertion.endLiveReplacementSession()
             return
         }
@@ -718,7 +728,8 @@ extension DictationViewModel {
         let dictionary = replacementDictionaryForCurrentSession()
         textInsertion.beginLiveReplacementSession(
             dictionary: dictionary,
-            preferredAppPID: overlayBufferCoordinator.commitTargetAppPID
+            preferredAppPID: overlayBufferCoordinator.commitTargetAppPID,
+            isTerminalLikeTarget: sessionTargetIsTerminalLike
         )
     }
 
@@ -766,6 +777,11 @@ extension DictationViewModel {
         }
 
         if currentErrorToken == .websocketReceiveFailed {
+            lastError = nil
+        }
+        // The Secure Keyboard Entry warning describes state sampled at session
+        // start; a finished session must not leave it wedged in the popover.
+        if currentErrorToken == .secureKeyboardEntryActive {
             lastError = nil
         }
         firstChunkPreprocessor.reset()

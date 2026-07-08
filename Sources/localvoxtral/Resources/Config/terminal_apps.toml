@@ -1,0 +1,17 @@
+# Apps localvoxtral should treat as terminals, in addition to the built-in
+# list (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, Hyper,
+# Tabby, Rio).
+#
+# Terminal targets get terminal-safe live dictation: dictionary replacements
+# apply before text is typed (no backspace corrections), and newlines/tabs
+# are typed as spaces so nothing submits a prompt or triggers completion
+# mid-dictation. Add an app here when it embeds a terminal localvoxtral
+# doesn't detect on its own (agent managers, IDE-like apps).
+#
+# Find an app's bundle ID from any terminal:
+#   osascript -e 'id of app "AppName"'
+#
+# Example:
+# bundle_ids = ["com.microsoft.VSCode", "com.example.myterminal"]
+
+bundle_ids = []
