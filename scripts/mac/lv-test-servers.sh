@@ -38,8 +38,9 @@ set -euo pipefail
 #   * `reap`           — the idle-reaper LaunchAgent
 #                        (com.localvoxtral.testservers-reaper) runs this on a
 #                        StartInterval. If the newest activity stamp is older
-#                        than the idle window it removes the trigger, which
-#                        stops the server and releases its RAM.
+#                        than the idle window it removes the trigger and sends
+#                        the job an explicit SIGTERM, stopping the server and
+#                        releasing its RAM.
 #   * `status`         — human/CI readout of trigger + activity + port state.
 #
 # The trigger design is deliberately cross-user: launchd watches an absolute
@@ -52,8 +53,9 @@ set -euo pipefail
 #
 # Robustness: an interrupted run or a sleeping Mac just leaves the trigger and
 # stamps in place — the server stays warm and the reaper collects it after the
-# idle window. There is no lock to get stuck and no process to orphan (launchd
-# owns every server; removing the trigger is a clean SIGTERM).
+# idle window. There is no lock to get stuck and no process to orphan: launchd
+# owns every server, and the reaper stops an idle one by removing its trigger
+# (so launchd won't relaunch it) and then SIGTERM'ing the running process.
 
 # ---- configuration (keep in sync with the gate's `ensure` verb + plists) ----
 
@@ -149,13 +151,18 @@ MSG
   fi
 
   # Create the shared trigger if absent (launchd PathState then starts the
-  # server). Create-if-absent works for any account in the sticky run dir; we
-  # never modify an existing trigger owned by another user.
+  # server). Use an atomic O_EXCL create (`set -C` = noclobber) so a concurrent
+  # ensure from ANOTHER account can't make us truncate a trigger we don't own —
+  # a plain `>` would try to O_TRUNC the racer's file and hit permission-denied
+  # in the sticky run dir, failing a legitimate build. If the trigger already
+  # exists (whoever created it) that's success; only a genuinely unwritable run
+  # dir is an error, which the post-check catches.
   if [[ ! -e "$trigger" ]]; then
-    : >"$trigger" 2>/dev/null || {
-      echo "lv-test-servers: cannot create trigger $trigger (run dir not writable?)" >&2
-      return 1
-    }
+    ( set -C; : >"$trigger" ) 2>/dev/null || true
+  fi
+  if [[ ! -e "$trigger" ]]; then
+    echo "lv-test-servers: cannot create trigger $trigger (run dir not writable?)" >&2
+    return 1
   fi
   # Stamp our own activity file — always permitted (we own it) — to reset the
   # idle window regardless of who created the trigger.
@@ -208,12 +215,17 @@ cmd_ensure() {
 }
 
 cmd_reap() {
-  # If the newest activity stamp is older than the idle window, remove the
-  # trigger (launchd stops the server, freeing weights) and clean the stamps.
-  # Must run as the run-dir owner so the sticky-bit exemption allows deleting
-  # other accounts' trigger/stamp files.
-  local now newest age trigger
+  # If the newest activity stamp is older than the idle window, stop the server
+  # and free its weights. Removing the PathState trigger stops launchd from
+  # RESTARTING the job, but launchd does NOT reliably terminate an
+  # already-running process when a KeepAlive condition flips false — so we also
+  # send an explicit SIGTERM. The reaper LaunchAgent runs in the GUI-owner
+  # domain (its own uid), so `launchctl kill` into gui/$(id -u) is permitted and
+  # this is why the reaper MUST run as the owner (it's also the run-dir owner,
+  # whose sticky-bit exemption lets it delete other accounts' trigger/stamps).
+  local now newest age trigger uid
   now="$(date +%s)"
+  uid="$(id -u)"
   for name in "${ALL_SERVICES[@]}"; do
     trigger="$(trigger_for "$name")"
     [[ -e "$trigger" ]] || continue
@@ -221,8 +233,11 @@ cmd_reap() {
     [[ "$newest" =~ ^[0-9]+$ ]] || newest=0
     age=$((now - newest))
     if (( age >= IDLE_SECONDS )); then
+      # Order matters: drop the trigger FIRST so launchd won't relaunch the job
+      # the instant we kill it, then terminate the running process.
       rm -f "$trigger" "$RUN_DIR/${name}.seen."* 2>/dev/null || true
-      echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (trigger removed)"
+      launchctl kill SIGTERM "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
+      echo "reap $name: idle ${age}s >= ${IDLE_SECONDS}s — stopped (trigger removed + SIGTERM)"
     else
       echo "reap $name: active (idle ${age}s < ${IDLE_SECONDS}s) — kept warm"
     fi

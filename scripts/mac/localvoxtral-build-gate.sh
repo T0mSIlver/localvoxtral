@@ -296,15 +296,19 @@ ensure_one_service() {
     return 1
   fi
 
-  # Create the shared trigger if absent (launchd PathState starts the server);
-  # never modify another account's trigger in the sticky run dir. Then stamp
-  # our own activity file to reset the idle window. (Mirrors
+  # Create the shared trigger if absent (launchd PathState starts the server).
+  # Atomic O_EXCL create (`set -C` = noclobber) so a concurrent ensure from
+  # another account can't make us truncate a trigger we don't own (permission
+  # denied in the sticky run dir). If it already exists — whoever created it —
+  # that's success; only a genuinely unwritable run dir fails the post-check.
+  # Then stamp our own activity file to reset the idle window. (Mirrors
   # scripts/mac/lv-test-servers.sh ensure_one.)
   if [[ ! -e "$trigger" ]]; then
-    : >"$trigger" 2>/dev/null || {
-      printf 'ensure %s: cannot create trigger %s\n' "$name" "$trigger" >&2
-      return 1
-    }
+    ( set -C; : >"$trigger" ) 2>/dev/null || true
+  fi
+  if [[ ! -e "$trigger" ]]; then
+    printf 'ensure %s: cannot create trigger %s\n' "$name" "$trigger" >&2
+    return 1
   fi
   touch "$stamp" 2>/dev/null || {
     printf 'ensure %s: cannot write activity stamp %s\n' "$name" "$stamp" >&2

@@ -25,15 +25,20 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   server just bumps the trigger mtime, resetting the idle window, so a burst of
   runs reuses one warm process (no cold reload every few seconds).
 - **Reaping:** a third LaunchAgent (`com.localvoxtral.testservers-reaper`) runs
-  `lv-test-servers.sh reap` on a `StartInterval`. It removes any trigger older
-  than the idle window (default 20 min, `LV_TEST_SERVER_IDLE_SECONDS`), which
-  stops the server. The compromise: warm within a work session / CI burst,
-  RAM freed once the machine goes quiet — next use pays one cold model load.
+  `lv-test-servers.sh reap` on a `StartInterval`. For any service idle longer
+  than the window (default 20 min, `LV_TEST_SERVER_IDLE_SECONDS`) it removes the
+  trigger (so launchd won't relaunch it) **and** sends the job an explicit
+  `launchctl kill SIGTERM` — because launchd does not reliably terminate an
+  already-running process when a `KeepAlive` `PathState` condition flips false,
+  removing the trigger alone would leave the weights resident. The reaper runs
+  in the GUI-owner domain, so the `launchctl kill` is permitted. The
+  compromise: warm within a work session / CI burst, RAM freed once the machine
+  goes quiet — next use pays one cold model load.
 - **Robustness:** an interrupted run or a sleeping Mac just leaves the trigger
   behind; the server stays warm and the reaper collects it later. There is no
-  lock to get stuck and no orphan process (launchd owns each server, and
-  removing the trigger is a clean SIGTERM). On wake, the coalesced reaper run
-  reclaims anything stale.
+  lock to get stuck and no orphan process (launchd owns each server; the reaper
+  drops the trigger then SIGTERMs the process). On wake, the coalesced reaper
+  run reclaims anything stale.
 
 ### One-time install (trusted owner session on the Mac)
 
