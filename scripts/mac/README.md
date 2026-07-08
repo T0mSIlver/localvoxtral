@@ -47,6 +47,10 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
 #    sticky (like /tmp) so any account — CI runner, gate account, owner — can
 #    start a server, but OWNED BY THE OWNER (the reaper's user) so the reaper's
 #    sticky-bit exemption lets it delete other accounts' files.
+#    DO THIS FIRST — before (re)bootstrapping the agents below. launchd sets up
+#    the KeepAlive PathState watch on <run dir>/<svc>.want at bootstrap; if the
+#    run dir's parent doesn't exist yet, bootstrap fails with
+#    "Bootstrap failed: 5: Input/output error".
 sudo install -d -m 1777 -o "$(id -un)" /Users/Shared/localvoxtral/run
 sudo install -d -m 0755 /Users/Shared/localvoxtral        # log dir, if absent
 
@@ -160,10 +164,12 @@ scripts/mac/lv-test-servers.sh ensure voxmlx          # cold-starts, blocks to w
 scripts/mac/lv-test-servers.sh status                 # voxmlx: trigger present, up
 # Warm reuse: a second ensure returns instantly ("already warm") and resets idle.
 scripts/mac/lv-test-servers.sh ensure voxmlx
-# Idle reap: age every activity stamp past the window and reap (or just wait
-# for the reaper agent), then confirm launchd stopped the server / freed RAM.
-touch -t 202001010000 /Users/Shared/localvoxtral/run/voxmlx.seen.*
-scripts/mac/lv-test-servers.sh reap                   # removes trigger + stamps
+# Idle reap: age the trigger AND the stamps past the window, then reap (or just
+# wait for the reaper agent), and confirm launchd stopped the server / freed
+# RAM. Age both — reap keys off the NEWEST of the trigger + stamps, so a
+# freshly cold-started trigger (recent mtime) would otherwise keep it "warm".
+touch -t 202001010000 /Users/Shared/localvoxtral/run/voxmlx.*   # .want + .seen.*
+scripts/mac/lv-test-servers.sh reap                   # removes trigger + stamps + SIGTERM
 scripts/mac/lv-test-servers.sh status                 # voxmlx: absent, down
 ```
 
