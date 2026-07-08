@@ -87,6 +87,13 @@ jobs:
         # identity is absent (hosted runners), packaging falls back to ad-hoc.
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          # Self-hosted lanes (same-repo PRs, main) MUST ship an identity-signed
+          # bundle so try-pr.sh leaves the signature untouched and the owner's
+          # Accessibility (TCC) grant survives across builds. Fail the build
+          # loudly rather than silently upload an ad-hoc artifact if the runner
+          # user's keychain has lost the cert. Hosted fork-PR runners have no
+          # cert and are expected to be ad-hoc, so the requirement is off there.
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ runner.environment == 'github-hosted' && '0' || '1' }}
         run: ./scripts/package_app.sh release
 
       - name: Zip app for artifact upload
