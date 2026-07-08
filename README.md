@@ -83,7 +83,7 @@ Most dictation tools fall apart in a terminal; localvoxtral treats it as a first
 - **Replacements without rewriting** — dictionary replacements are applied before text is typed; localvoxtral never backspaces over what the terminal has already drawn
 - **Secure input detection** — if Secure Keyboard Entry is active (a `sudo` password prompt, say), you're warned up front instead of watching keystrokes vanish
 
-This focus is deepening — smarter secure-input handling is in review, and polishing tuned for coding agents is next on the [roadmap](#roadmap).
+This focus is deepening — smarter secure-input handling is in review, and polishing that understands how developers talk is next on the [roadmap](#roadmap).
 
 ## Settings
 
@@ -162,7 +162,7 @@ open ./dist/localvoxtral.app
 
 - [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
 - [ ] Smarter Secure Keyboard Entry handling — refuse a doomed live session, clipboard fallback on overlay commit (in review)
-- [ ] LLM polishing tuned for coding agents — a polish preset that turns rough speech into a clean agent prompt, plus per-app profiles and custom vocabulary
+- [ ] LLM polishing tuned for technical dictation — speak as you would to an experienced colleague and have it land right in writing: markdown formatting, filenames, extensions, and technical terms recognized from speech
 - [ ] Documentation website — a visual, end-user guide beyond this README
 - [ ] Model choice in Managed local mode — pick the polishing LLM instead of the pinned default
 - [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
