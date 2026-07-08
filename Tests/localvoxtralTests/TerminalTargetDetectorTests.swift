@@ -443,6 +443,34 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
+    func testStaleSecureIconDoesNotMaskEarlyExitFailuresOnNextAttempt() {
+        // Codex finding on #90: refused start leaves the icon lit; a next
+        // attempt that exits early (missing mic) BEFORE the verdict capture
+        // must not keep reporting a secure-input warning that is now off.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.beginDictationSession()
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        // Force the invalid-endpoint early exit, which happens BEFORE the
+        // verdict capture: custom backend mode with an empty endpoint URL.
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = ""
+        viewModel.beginDictationSession()
+
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the invalid-endpoint failure must not be masked by a stale secure-input icon"
+        )
+        XCTAssertFalse(viewModel.isDictating)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
     func testOverlaySessionStartProceedsUnderSecureInput() {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }

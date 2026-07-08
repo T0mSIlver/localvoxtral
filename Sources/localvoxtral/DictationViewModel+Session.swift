@@ -198,6 +198,13 @@ extension DictationViewModel {
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        // Every attempt starts with a fresh secure-input sample: a stale
+        // `true` from a previously refused start would keep the warning icon
+        // lit through an attempt that exits early for an unrelated reason
+        // (invalid endpoint, missing mic) and mask that failure (Codex
+        // review finding on #90). The refuse path / verdict apply below
+        // re-set it from the fresh sample.
+        sessionSecureInputActive = false
         let requestedOutputMode = outputMode ?? settings.dictationOutputMode
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
@@ -267,8 +274,8 @@ extension DictationViewModel {
         // success), so a session would capture the mic and type into the
         // void. Refuse to start instead — the sound, menu bar icon, and
         // popover line (applied from the captured verdict) explain why, and
-        // they persist until the next session start because no session ran
-        // (#89 field feedback). Overlay Buffer proceeds: its pipeline still
+        // they persist until the next session attempt re-samples the state
+        // (no session ran, so the session-end clear never fires). Overlay Buffer proceeds: its pipeline still
         // produces text, and its commit re-checks secure input and falls
         // back to the clipboard.
         if isLiveAutoPasteModeEnabled,
