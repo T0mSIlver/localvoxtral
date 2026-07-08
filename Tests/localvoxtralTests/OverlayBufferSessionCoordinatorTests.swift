@@ -20,7 +20,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
             anchorResolver: anchorResolver,
-            copyToPasteboard: { copiedTexts.append($0) }
+            copyToPasteboard: { copiedTexts.append($0); return true }
         )
         let committer = MockOverlayTextCommitter()
         committer.insertResult = .insertedByAccessibility
@@ -60,7 +60,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             anchorResolver: MockOverlayAnchorResolver(),
             now: { currentDate },
             sleepFor: { requestedSleeps.append($0) },
-            copyToPasteboard: { _ in }
+            copyToPasteboard: { _ in true }
         )
         let committer = MockOverlayTextCommitter()
 
@@ -90,6 +90,31 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         XCTAssertEqual(renderer.hideCallCount, 1, "panel dismisses once the hold elapses")
     }
 
+    func testFailedClipboardWriteUnderSecureInputKeepsThePersistentPanel() {
+        // Codex finding on #90 (round 7): a failed pasteboard write must not
+        // claim "copied" and dismiss the transcript's only remaining copy.
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        let renderer = MockOverlayRenderer()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver(),
+            copyToPasteboard: { _ in false }
+        )
+        let committer = MockOverlayTextCommitter()
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "words", commitBufferText: "words")
+        let outcome = coordinator.commitIfNeeded(using: committer, autoCopyEnabled: false)
+
+        guard case .failed(let message) = outcome else {
+            return XCTFail("must report a real failure, got \(outcome)")
+        }
+        XCTAssertFalse(message.contains("paste it manually"), "must not claim the text was copied")
+        XCTAssertTrue(committer.insertedTexts.isEmpty, "still no doomed synthetic attempts")
+        XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.phase, .commitFailed)
+    }
+
     func testCommitProceedsNormallyWhenSecureInputOff() {
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
         let renderer = MockOverlayRenderer()
@@ -99,7 +124,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
             anchorResolver: anchorResolver,
-            copyToPasteboard: { copiedTexts.append($0) }
+            copyToPasteboard: { copiedTexts.append($0); return true }
         )
         let committer = MockOverlayTextCommitter()
         committer.insertResult = .insertedByAccessibility
@@ -174,7 +199,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
             anchorResolver: anchorResolver,
-            copyToPasteboard: { copiedTexts.append($0) }
+            copyToPasteboard: { copiedTexts.append($0); return true }
         )
         let committer = MockOverlayTextCommitter()
         committer.insertResult = .insertedByAccessibility
@@ -200,7 +225,7 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
             stateMachine: OverlayBufferStateMachine(),
             renderer: renderer,
             anchorResolver: anchorResolver,
-            copyToPasteboard: { copiedTexts.append($0) }
+            copyToPasteboard: { copiedTexts.append($0); return true }
         )
         let committer = MockOverlayTextCommitter()
         committer.insertResult = .insertedByAccessibility
