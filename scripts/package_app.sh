@@ -18,21 +18,6 @@ patch_shortcutrecorder_bundle_lookup() {
   perl -0pi -e 's/return SWIFTPM_MODULE_BUNDLE;/\/\/ localvoxtral packaged resources fallback\n    \/\/ Try the app bundle first — this avoids a TCC Desktop-access prompt when\n    \/\/ the .app resides anywhere under ~\/Desktop.\n    NSURL *resourceBundleURL = [[[NSBundle mainBundle] resourceURL]\n        URLByAppendingPathComponent:@"ShortcutRecorder_ShortcutRecorder.bundle"];\n    NSBundle *bundle = [NSBundle bundleWithURL:resourceBundleURL];\n    if (bundle)\n        return bundle;\n\n    \/\/ Fall back to the SPM-generated lookup (development builds).\n    bundle = SWIFTPM_MODULE_BUNDLE;\n    if (bundle)\n        return bundle;\n\n    return nil;/g' "$sr_common"
 }
 
-patch_local_resource_bundle_lookup() {
-  local configuration="$1"
-  local accessor
-  accessor="$(find "$ROOT_DIR/.build" -path "*/${configuration}/localvoxtral.build/DerivedSources/resource_bundle_accessor.swift" -print -quit 2>/dev/null || true)"
-  if [[ -z "$accessor" || ! -f "$accessor" ]]; then
-    return 1
-  fi
-
-  if grep -q "localvoxtral packaged resources fallback" "$accessor"; then
-    return 1
-  fi
-
-  perl -0pi -e 's/let preferredBundle = Bundle\(path: mainPath\)/\/\/ localvoxtral packaged resources fallback\n        let resourcePath = Bundle.main.resourceURL?.appendingPathComponent("localvoxtral_localvoxtral.bundle").path\n        let preferredBundle = resourcePath.flatMap(Bundle.init(path:)) ?? Bundle(path: mainPath)/g' "$accessor"
-}
-
 CONFIGURATION="${1:-release}"
 # Default the version from git so About, crash reports, and diagnostics can
 # identify the exact build — every non-release build used to say "0.3.0".
@@ -127,10 +112,14 @@ patch_shortcutrecorder_bundle_lookup
 # -g keeps DWARF in the object files so dsymutil can produce a dSYM below —
 # without it, field crash reports only symbolicate as well as the stripped
 # binary allows. It does not change optimization (-O still applies in release).
+# The app's OWN resource bundle needs no patching: Bundle.localvoxtralResources
+# (AppResourceBundle.swift) resolves Contents/Resources first at runtime. The
+# old approach — patching the generated resource_bundle_accessor.swift and
+# rebuilding — was silently reverted by the rebuild itself (the toolchain
+# regenerates DerivedSources every build) and shipped launch-broken artifacts
+# for days (#87). Never patch DerivedSources; only dependency checkouts (the
+# ShortcutRecorder patch above) persist across builds.
 swift build -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
-if patch_local_resource_bundle_lookup "$CONFIGURATION"; then
-  swift build -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
-fi
 
 BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
 if [[ -z "$BINARY_PATH" ]]; then

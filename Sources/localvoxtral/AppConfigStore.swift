@@ -352,7 +352,7 @@ struct AppConfigStore: AppConfigServing {
 
     init(
         fileManager: FileManager = .default,
-        bundle: Bundle = .module,
+        bundle: Bundle = .localvoxtralResources,
         configDirectoryOverride: URL? = nil
     ) {
         self.fileManager = fileManager
