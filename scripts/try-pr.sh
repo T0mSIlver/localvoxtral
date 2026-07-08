@@ -40,12 +40,26 @@ ditto -x -k "$DEST/localvoxtral-app.zip" "$DEST/extracted"
 APP="$DEST/extracted/localvoxtral.app"
 xattr -cr "$APP" 2>/dev/null || true
 
-SIGNER="$(codesign -dv "$APP" 2>&1 | grep -m1 '^Authority=' || echo 'Authority=ad-hoc')"
-if [[ "$SIGNER" == "Authority=ad-hoc" ]]; then
+# Detect whether the downloaded bundle is ad-hoc. The reliable marker is the
+# 'Signature=adhoc' line — and it MUST be read at -dvv (verbose>=2): at -dv the
+# Authority/Signature detail lines are not printed at all, so grepping -dv for
+# '^Authority=' ALWAYS misses and misreports every build as ad-hoc. That was the
+# f7d248e regression: it re-signed even correctly identity-signed CI artifacts
+# ad-hoc on every launch, giving each a fresh designated requirement and
+# invalidating the app's Accessibility (TCC) grant each time (the "re-add it in
+# System Settings after every try-pr" symptom).
+if codesign -dvv "$APP" 2>&1 | grep -q '^Signature=adhoc'; then
+  IS_ADHOC=1
+  SIGNER="ad-hoc"
+else
+  IS_ADHOC=0
+  SIGNER="$(codesign -dvv "$APP" 2>&1 | grep -m1 '^Authority=' | sed 's/^Authority=//' || echo 'identity')"
+fi
+if (( IS_ADHOC )); then
   # macOS 26 stalls the first launch of downloaded ad-hoc bundles forever at
   # _dyld_start (Gatekeeper first-exec scan); a LOCAL ad-hoc re-sign is the
-  # field-proven fix. Skipped for identity-signed builds so a stable signing
-  # identity (LOCALVOXTRAL_CODESIGN_IDENTITY) is never downgraded to ad-hoc.
+  # field-proven fix. Only ad-hoc artifacts are re-signed, so an identity-signed
+  # build keeps its stable signature — and its TCC grant — untouched.
   codesign --force --deep --sign - "$APP"
 fi
 
@@ -54,9 +68,18 @@ if pgrep -x localvoxtral >/dev/null 2>&1; then
   echo "      two menu bar icons / hotkey conflicts."
 fi
 echo "Launching build of '$TARGET' (CI run $RUN_ID, ${SIGNER}): $APP"
+# The designated requirement is what TCC keys the Accessibility grant on.
+# Compare this block between two try-pr runs: identical DR => the grant
+# survives; a DR that changes every run (ad-hoc pins the per-build cdhash) is
+# exactly why the app has to be re-added in System Settings each time.
+echo "Designated requirement (compare across try-pr runs — stable == TCC grant survives):"
+codesign -d --requirements - "$APP" 2>&1 | sed 's/^/  /' || true
 if [[ "$SIGNER" == "Authority=ad-hoc" ]]; then
   echo "NOTE: ad-hoc signed build — if text insertion fails, remove and re-add"
   echo "      localvoxtral in System Settings > Privacy & Security > Accessibility"
   echo "      (TCC grants don't survive ad-hoc signature changes)."
+  echo "      For a SAME-REPO PR this is unexpected: CI should identity-sign it."
+  echo "      An ad-hoc same-repo artifact means the self-hosted runner user lost"
+  echo "      the localvoxtral-dev cert (check: security find-identity -v -p codesigning)."
 fi
 open "$APP"

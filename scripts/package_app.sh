@@ -52,8 +52,36 @@ BUILD_NUMBER="${3:-${GIT_BUILD_NUMBER:-1}}"
 CODESIGN_IDENTITY="${LOCALVOXTRAL_CODESIGN_IDENTITY:--}"
 if [[ "$CODESIGN_IDENTITY" != "-" ]] \
   && ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$CODESIGN_IDENTITY"; then
+  # A SILENT ad-hoc fallback here is exactly how the TCC-grant regression
+  # shipped unnoticed: when a same-repo CI build runs as a user whose login
+  # keychain can't see the localvoxtral-dev cert, packaging quietly produced an
+  # ad-hoc artifact, try-pr.sh then re-signed it ad-hoc on every launch, and
+  # macOS invalidated the Accessibility grant each time (ad-hoc signatures carry
+  # a fresh, cdhash-derived designated requirement every build). On lanes that
+  # MUST ship an identity-signed bundle, fail loudly instead of downgrading.
+  if [[ "${LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY:-0}" == "1" ]]; then
+    echo "FATAL: signing identity '$CODESIGN_IDENTITY' is required (LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY=1)" >&2
+    echo "       but is not visible to user '$(id -un)' via 'security find-identity -v -p codesigning'." >&2
+    echo "       Refusing to fall back to ad-hoc: that changes the designated requirement every" >&2
+    echo "       build and invalidates the app's Accessibility (TCC) grant on each rebuild." >&2
+    echo "       Import the cert + private key into this user's login keychain (or unset" >&2
+    echo "       LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY for an intentionally ad-hoc build)." >&2
+    exit 1
+  fi
   echo "Signing identity '$CODESIGN_IDENTITY' not found in keychain; falling back to ad-hoc signing." >&2
   CODESIGN_IDENTITY="-"
+fi
+
+# Defense in depth: the block above only runs when an identity was *named*. A
+# lane that sets REQUIRE=1 but no identity at all (LOCALVOXTRAL_CODESIGN_IDENTITY
+# empty → CODESIGN_IDENTITY="-") would otherwise skip every check and ad-hoc
+# sign silently — the exact silent-downgrade this flag exists to prevent. Fail.
+if [[ "${LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY:-0}" == "1" && "$CODESIGN_IDENTITY" == "-" ]]; then
+  echo "FATAL: LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY=1 but no signing identity is set" >&2
+  echo "       (LOCALVOXTRAL_CODESIGN_IDENTITY is empty or '-'). Refusing to ad-hoc sign:" >&2
+  echo "       that changes the designated requirement every build and invalidates the" >&2
+  echo "       app's Accessibility (TCC) grant. Set LOCALVOXTRAL_CODESIGN_IDENTITY." >&2
+  exit 1
 fi
 
 if [[ "$CONFIGURATION" != "release" && "$CONFIGURATION" != "debug" ]]; then
@@ -242,6 +270,31 @@ if ! codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
   echo "Invalid code signature detected in packaged app bundle."
   exit 1
 fi
+
+# Prove we did not silently downgrade to ad-hoc when a stable identity was
+# requested. TCC keys the Accessibility grant on the designated requirement; an
+# ad-hoc signature's DR pins the per-build cdhash, so an accidental ad-hoc
+# artifact quietly invalidates the grant on the owner's next try-pr launch.
+# The reliable ad-hoc marker is the 'Signature=adhoc' line, and it MUST be read
+# at -dvv: at -dv the Authority/Signature detail lines aren't printed, so a
+# '! grep Authority' test would false-positive on EVERY (even correctly signed)
+# bundle. Check the positive marker instead.
+if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+  if codesign -dvv "$APP_DIR" 2>&1 | grep -q '^Signature=adhoc'; then
+    echo "Identity '$CODESIGN_IDENTITY' was requested but the sealed bundle is ad-hoc." >&2
+    echo "codesign said:" >&2
+    codesign -dvv "$APP_DIR" 2>&1 | sed 's/^/  /' >&2 || true
+    echo "Refusing to ship an artifact that would invalidate the TCC grant on every build." >&2
+    exit 1
+  fi
+fi
+
+# Record the signer and designated requirement so a CI log (or a local run)
+# proves the DR is stable across builds — compare this block between two builds
+# to confirm the Accessibility grant will survive. (-dvv so Authority= prints.)
+echo "Signed as: $(codesign -dvv "$APP_DIR" 2>&1 | grep -m1 '^Authority=' || echo 'ad-hoc')"
+echo "Designated requirement (TCC keys the Accessibility grant on this — must be stable across builds):"
+codesign -d --requirements - "$APP_DIR" 2>&1 | sed 's/^/  /' || true
 
 touch "$APP_DIR"
 
