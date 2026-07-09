@@ -34,23 +34,37 @@ struct PolishModelOption: Equatable, Sendable {
 
 enum PolishModelCatalog {
     static let options: [PolishModelOption] = [
+        // sizeOnDiskGB is DECIMAL GB of the files the downloader actually
+        // fetches (weights + tokenizer + configs; the include patterns skip
+        // optiq_vision/mtp extras), matching the download bar's
+        // ByteCountFormatter units — HF model cards quote GiB, don't copy
+        // them (field finding: picker said 6.6, bar said 7.1).
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-0.8B-8bit",
             displayName: "Qwen3.5 0.8B (fastest, default)",
-            sizeOnDiskGB: 0.9,
-            estimatedRAMGB: 1.0,
+            sizeOnDiskGB: 1.0,
+            estimatedRAMGB: 1.2,
             samplingDefaults: nil,
             chatTemplateArguments: nil,
-            summary: "Cleans up transcripts with negligible overhead"
+            summary: "For any Apple Silicon Mac"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
             displayName: "Qwen3.5 4B (better quality)",
-            sizeOnDiskGB: 3.0,
-            estimatedRAMGB: 3.5,
+            sizeOnDiskGB: 3.3,
+            estimatedRAMGB: 3.8,
             samplingDefaults: nil,
             chatTemplateArguments: ["enable_thinking": false],
-            summary: "Stronger cleanup, slower first load"
+            summary: "For 16 GB+ Macs"
+        ),
+        PolishModelOption(
+            repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+            displayName: "Qwen3.5 9B (best quality)",
+            sizeOnDiskGB: 7.1,
+            estimatedRAMGB: 7.5,
+            samplingDefaults: nil,
+            chatTemplateArguments: ["enable_thinking": false],
+            summary: "For 32 GB+ Macs"
         ),
     ]
 
