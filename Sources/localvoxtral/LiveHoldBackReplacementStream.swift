@@ -23,6 +23,23 @@ import Foundation
 /// the same word segmentation, so a released prefix can never be reached by a
 /// correction the embedded corrector produces later.
 ///
+/// Rule chaining caveat: the viable-prefix judgment is made against the text
+/// as it stands, but applying a rule can rewrite held text INTO rule-key words
+/// (`x y -> bar` feeding `foo bar z -> FOO`), retroactively making released
+/// text part of a longer match. When the rule set has that potential
+/// (`LiveReplacementCorrector.hasChainingPotential`), the stream keeps the
+/// global `maxRuleWordCount - 1` word floor instead — correct by construction
+/// for rule sets whose replacements all keep at least one word, because no
+/// correction can then reach back further than that many complete words.
+///
+/// Deletion rule caveat: a rule that deletes its match outright
+/// (`LiveReplacementCorrector.hasDeletionRule`) breaks BOTH bounds — it
+/// bridges another key's words across the deleted gap (defeating the
+/// viable-prefix scan) and collapses held words out of the floor's post-
+/// deletion word count (defeating the floor). With any deletion rule in the
+/// set, nothing is released until `flushRemainder()`: with no releases before
+/// corrections, no correction can ever precede the release boundary.
+///
 /// Newline/tab policy (terminal targets): a typed newline can act as Enter
 /// and submit a prompt mid-dictation, and a typed Tab can trigger shell
 /// completion UI — both mutate terminal state. When `sanitizesNewlines` is
@@ -35,11 +52,33 @@ import Foundation
 /// dropped. Collapse runs at the very start of the session produce no
 /// leading space.
 struct LiveHoldBackReplacementStream {
+    /// How much text `safeReleaseLimit()` may release mid-session, chosen
+    /// once per rule set (see the type doc's caveats, most conservative
+    /// first): deletion rules hold everything until flush; chaining potential
+    /// holds the global word floor; otherwise the viable-prefix scan applies.
+    private enum HoldBackBound {
+        case untilFlush
+        case wordFloor
+        case viablePrefix
+    }
+
     private var corrector: LiveReplacementCorrector
     private let sanitizesNewlines: Bool
+    private let bound: HoldBackBound
     /// Character offset into `corrector.correctedText` already released for
     /// typing. Everything before this offset is immutable by construction.
     private var releasedCharacterCount = 0
+
+    #if DEBUG
+        /// Test seam: forces the viable-prefix bound even when a stricter
+        /// bound was selected, so tests can exercise the release-boundary
+        /// drop guard that backstops any detection gap.
+        var debugForceViablePrefixBound = false
+        /// Number of corrections dropped by the release-boundary guard. The
+        /// os_log error is invisible to tests; equivalence tests assert this
+        /// stays zero.
+        private(set) var debugDroppedCorrectionCount = 0
+    #endif
 
     // Newline/tab sanitization state, persisted across releases so whitespace
     // runs spanning chunk boundaries still collapse to a single space.
@@ -52,8 +91,25 @@ struct LiveHoldBackReplacementStream {
     private var pendingRunNeedsCollapse = false
 
     init(dictionary: ReplacementDictionary, sanitizesNewlines: Bool) {
-        corrector = LiveReplacementCorrector(dictionary: dictionary)
+        let corrector = LiveReplacementCorrector(dictionary: dictionary)
+        self.corrector = corrector
         self.sanitizesNewlines = sanitizesNewlines
+
+        let ruleCount = corrector.ruleCount
+        if corrector.hasDeletionRule {
+            bound = .untilFlush
+            Log.corrector.notice(
+                "holdback bound=until-flush reason=deletion-rule rules=\(ruleCount, privacy: .public)"
+            )
+        } else if corrector.hasChainingPotential {
+            bound = .wordFloor
+            let heldWords = corrector.maxRuleWordCount - 1
+            Log.corrector.notice(
+                "holdback bound=word-floor reason=rule-chaining-potential rules=\(ruleCount, privacy: .public) held_words=\(heldWords, privacy: .public)"
+            )
+        } else {
+            bound = .viablePrefix
+        }
     }
 
     var ruleCount: Int {
@@ -76,8 +132,7 @@ struct LiveHoldBackReplacementStream {
     mutating func flushRemainder() -> String {
         applyCompletedBoundaryCorrections()
         if let correction = corrector.finalUnboundedCorrection() {
-            assertCannotReachReleasedText(correction)
-            corrector.apply(correction)
+            applyIfInsideHoldBack(correction)
         }
         var output = release(upTo: corrector.correctedText.count)
         if sanitizesNewlines {
@@ -92,26 +147,34 @@ struct LiveHoldBackReplacementStream {
 
     private mutating func applyCompletedBoundaryCorrections() {
         while let correction = corrector.nextCompletedBoundaryCorrection() {
-            assertCannotReachReleasedText(correction)
-            corrector.apply(correction)
+            applyIfInsideHoldBack(correction)
         }
     }
 
-    /// The never-un-type invariant, checked on every correction in debug
+    /// The never-un-type invariant, enforced on every correction in ALL
     /// builds: a correction must never begin inside text already released for
     /// typing, because that text is in the user's app and cannot be recalled.
+    /// A violating correction is dropped with an error log — missing one
+    /// replacement is recoverable, rewriting the user's typed text is not —
+    /// and released text is never touched. This used to be a bare `assert`,
+    /// compiled out of release builds, which guarded production not at all.
     ///
     /// Comparing final output against a batch correction is a weaker oracle — a
     /// correction that rewrites released text can still reproduce it verbatim
     /// and slip through. This catches the violation where it happens.
-    private func assertCannotReachReleasedText(_ correction: LiveReplacementCorrection) {
-        assert(
-            correction.startOffset >= releasedCharacterCount,
-            """
-            hold-back violated: correction starts at \(correction.startOffset) \
-            but \(releasedCharacterCount) characters were already typed
-            """
-        )
+    private mutating func applyIfInsideHoldBack(_ correction: LiveReplacementCorrection) {
+        guard correction.startOffset >= releasedCharacterCount else {
+            let startOffset = correction.startOffset
+            let releasedCount = releasedCharacterCount
+            Log.corrector.error(
+                "holdback invariant violated: correction start=\(startOffset, privacy: .public) released_chars=\(releasedCount, privacy: .public) — correction dropped"
+            )
+            #if DEBUG
+                debugDroppedCorrectionCount += 1
+            #endif
+            return
+        }
+        corrector.apply(correction)
     }
 
     /// The largest character offset into the corrected text that no future
@@ -132,6 +195,12 @@ struct LiveHoldBackReplacementStream {
     /// then nothing is held beyond the trailing partial word — a single long
     /// entry in the dictionary no longer taxes every unrelated word.
     ///
+    /// Bound 2 judges viability against the CURRENT text, so it is only sound
+    /// when no correction can rewrite held text into rule-key words: with
+    /// chaining potential in the rule set, only bound 1 applies, and bound 1
+    /// itself only holds while every correction keeps at least one word —
+    /// deletion rules hold everything until flush instead (see the type doc).
+    ///
     /// The trailing partial word is always held: punctuation does not complete
     /// a word here, so "def" in "abc def." could still grow into "def.x".
     private func safeReleaseLimit() -> Int {
@@ -139,20 +208,35 @@ struct LiveHoldBackReplacementStream {
             return corrector.correctedText.count
         }
 
+        var effectiveBound = bound
+        #if DEBUG
+            if debugForceViablePrefixBound {
+                effectiveBound = .viablePrefix
+            }
+        #endif
+
+        if effectiveBound == .untilFlush {
+            // Release nothing mid-session; `flushRemainder()` releases the
+            // whole corrected text after the final corrections.
+            return releasedCharacterCount
+        }
+
         let characters = Array(corrector.correctedText)
         let partialWordStart = trailingPartialWordStart(in: characters)
         var offset = wordWindowStart(in: characters, before: partialWordStart)
 
-        // Advance to the earliest offset a rule match could still begin at.
-        // Candidate offsets are match starts, not word starts — see
-        // `isCandidateMatchStart`.
-        while offset < partialWordStart {
-            if LiveReplacementCorrector.isCandidateMatchStart(characters, offset),
-               corrector.isViableRulePrefix(String(characters[offset...]))
-            {
-                break
+        if effectiveBound == .viablePrefix {
+            // Advance to the earliest offset a rule match could still begin
+            // at. Candidate offsets are match starts, not word starts — see
+            // `isCandidateMatchStart`.
+            while offset < partialWordStart {
+                if LiveReplacementCorrector.isCandidateMatchStart(characters, offset),
+                   corrector.isViableRulePrefix(String(characters[offset...]))
+                {
+                    break
+                }
+                offset += 1
             }
-            offset += 1
         }
 
         return max(offset, releasedCharacterCount)

@@ -327,6 +327,227 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
+    // MARK: - Rule chaining (a correction rewrites held text into rule-key words)
+
+    /// PR #100 review finding, exact repro: rules `"x y" -> "bar"` and
+    /// `"foo bar z" -> "FOO"`. The viable-prefix bound used to release "foo "
+    /// after chunk 1 (the scan saw only "x ", no live prefix at "foo x"),
+    /// chunk 2 then corrected the held "x y " into "bar ", and chunk 3
+    /// matched "foo bar z" starting inside RELEASED text — a correction that
+    /// would rewrite text already typed into the user's app. The rule set has
+    /// chaining potential, so the stream must hold to the word-count floor:
+    /// nothing is released until the chain resolves, and the final output is
+    /// the fully corrected text with no rewrite of released offsets.
+    func testChainedRuleMatchNeverReachesReleasedText() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "bar", matches: ["x y"]),
+            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+        ])
+        XCTAssertEqual(stream.ingest("foo x "), "")
+        XCTAssertEqual(stream.ingest("y "), "")
+        XCTAssertEqual(stream.ingest("z "), "")
+        XCTAssertEqual(stream.flushRemainder(), "FOO ")
+        #if DEBUG
+            XCTAssertEqual(stream.debugDroppedCorrectionCount, 0)
+        #endif
+    }
+
+    /// A rule can chain with ITSELF when its replacement reproduces an
+    /// interior word of its own key: with `"a b c" -> "b"`, correcting
+    /// "a a b c " turns the held tail into "b " right after the released
+    /// "a ", and the next "c " completes a fresh "a b c" match starting at
+    /// offset 0 — inside released text. Batch semantics for the whole
+    /// transcript "a a b c c " are "b ".
+    func testSelfChainingRuleMatchNeverReachesReleasedText() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "b", matches: ["a b c"]),
+        ])
+        XCTAssertEqual(stream.ingest("a a "), "")
+        XCTAssertEqual(stream.ingest("b c "), "")
+        XCTAssertEqual(stream.ingest("c "), "")
+        XCTAssertEqual(stream.flushRemainder(), "b ")
+        #if DEBUG
+            XCTAssertEqual(stream.debugDroppedCorrectionCount, 0)
+        #endif
+    }
+
+    /// Second review round, finding 1: a DELETION rule (`um -> ""`) has no
+    /// replacement words for chaining detection to compare, but it chains by
+    /// BRIDGING — deleting the word between two key words lets the other
+    /// key's `\s+` separators match across the release boundary. "hello "
+    /// must not be released before the deletion resolves, and the output
+    /// must equal the batch result "HW ".
+    func testDeletionRuleBridgingNeverReachesReleasedText() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "", matches: ["um"]),
+            ReplacementEntry(replaceWith: "HW", matches: ["hello world"]),
+        ])
+        XCTAssertEqual(stream.ingest("hello um"), "")
+        XCTAssertEqual(stream.ingest(" world "), "")
+        XCTAssertEqual(stream.flushRemainder(), "HW ")
+        #if DEBUG
+            XCTAssertEqual(stream.debugDroppedCorrectionCount, 0)
+        #endif
+    }
+
+    /// Second review round, finding 2: the word floor is NOT correct under
+    /// deletion rules — `lookbackStart` counts words in POST-deletion text,
+    /// so deleting held words lets a later lookback cross the release
+    /// boundary even in floor mode. The unrelated `p q -> r2` / `r2 s -> S`
+    /// pair forces floor mode; the deletion rule must escalate the whole set
+    /// to hold-until-flush, and the output must equal the batch result "RK ".
+    func testDeletionRuleDefeatsWordFloorNeverReachesReleasedText() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "", matches: ["aa bb cc"]),
+            ReplacementEntry(replaceWith: "RK", matches: ["r k"]),
+            ReplacementEntry(replaceWith: "r2", matches: ["p q"]),
+            ReplacementEntry(replaceWith: "S", matches: ["r2 s"]),
+        ])
+        XCTAssertEqual(stream.ingest("r aa bb cc"), "")
+        XCTAssertEqual(stream.ingest(" k "), "")
+        XCTAssertEqual(stream.flushRemainder(), "RK ")
+        #if DEBUG
+            XCTAssertEqual(stream.debugDroppedCorrectionCount, 0)
+        #endif
+    }
+
+    func testDeletionRuleSetHoldsEverythingUntilFlush() {
+        // A deletion rule selects hold-until-flush: even text no rule could
+        // ever match stays held mid-session and is released only at flush.
+        var deleting = makeStream(entries: [
+            ReplacementEntry(replaceWith: "", matches: ["um"]),
+        ])
+        XCTAssertEqual(deleting.ingest("hello world "), "")
+        XCTAssertEqual(deleting.flushRemainder(), "hello world ")
+
+        // Same rule shape with a word-bearing replacement keeps the prior
+        // bounds — here the viable-prefix bound, releasing immediately.
+        var keeping = makeStream(entries: [
+            ReplacementEntry(replaceWith: "uh", matches: ["um"]),
+        ])
+        XCTAssertEqual(keeping.ingest("hello world "), "hello world ")
+        XCTAssertEqual(keeping.flushRemainder(), "")
+    }
+
+    func testDeletionRuleDetection() {
+        func hasDeletionRule(_ entries: [ReplacementEntry]) -> Bool {
+            LiveReplacementCorrector(dictionary: ReplacementDictionary(entries: entries))
+                .hasDeletionRule
+        }
+        XCTAssertTrue(hasDeletionRule([
+            ReplacementEntry(replaceWith: "", matches: ["um"]),
+        ]))
+        // Whitespace-only replacements delete their match's words just the same.
+        XCTAssertTrue(hasDeletionRule([
+            ReplacementEntry(replaceWith: "  ", matches: ["um"]),
+        ]))
+        XCTAssertFalse(hasDeletionRule([
+            ReplacementEntry(replaceWith: "uh", matches: ["um"]),
+        ]))
+    }
+
+    private var chainingEntries: [ReplacementEntry] {
+        [
+            ReplacementEntry(replaceWith: "bar", matches: ["x y"]),
+            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+        ]
+    }
+
+    func testChainingRuleSetFallsBackToWordFloor() {
+        var stream = makeStream(entries: chainingEntries)
+        // maxRuleWordCount is 3, so the old global floor holds the last two
+        // complete words of even unrelated text.
+        XCTAssertEqual(stream.ingest("hello there world "), "hello ")
+        XCTAssertEqual(stream.flushRemainder(), "there world ")
+    }
+
+    func testNonChainingRuleSetKeepsViablePrefixBound() {
+        // Same key shapes as `chainingEntries`, but no replacement word feeds
+        // any rule key — unrelated text must keep releasing with no extra hold.
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "QQ", matches: ["x y"]),
+            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+        ])
+        XCTAssertEqual(stream.ingest("hello there world "), "hello there world ")
+        XCTAssertEqual(stream.flushRemainder(), "")
+    }
+
+    // MARK: - Chaining detection
+
+    private func hasChainingPotential(_ entries: [ReplacementEntry]) -> Bool {
+        LiveReplacementCorrector(dictionary: ReplacementDictionary(entries: entries))
+            .hasChainingPotential
+    }
+
+    func testChainingDetectionFlagsReplacementWordInAnotherRulesKey() {
+        XCTAssertTrue(hasChainingPotential(chainingEntries))
+    }
+
+    func testChainingDetectionIgnoresDisjointRuleSets() {
+        XCTAssertFalse(hasChainingPotential([
+            ReplacementEntry(replaceWith: "QQ", matches: ["x y"]),
+            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+        ]))
+        // The suite's shared invariant dictionary must stay on the fast bound,
+        // or the batch-equivalence tests would silently stop covering it.
+        XCTAssertFalse(
+            LiveReplacementCorrector(dictionary: invariantDictionary).hasChainingPotential
+        )
+    }
+
+    func testChainingDetectionComparesWithFullCaseFolding() {
+        // Simple case folding: replacement "BAR" feeds the key word "bar".
+        XCTAssertTrue(hasChainingPotential([
+            ReplacementEntry(replaceWith: "BAR", matches: ["x y"]),
+            ReplacementEntry(replaceWith: "FOO", matches: ["foo bar z"]),
+        ]))
+        // Full case folding: "ßx" and "ssx" are the same folded word, exactly
+        // as the matcher sees them.
+        XCTAssertTrue(hasChainingPotential([
+            ReplacementEntry(replaceWith: "ssx", matches: ["hello"]),
+            ReplacementEntry(replaceWith: "X", matches: ["a ßx b"]),
+        ]))
+    }
+
+    func testChainingDetectionIgnoresOwnKeyEdgeWords() {
+        // Echo-style replacements reproduce their own key's first/last words;
+        // those cannot chain (see `hasChainingPotential`) and must not push
+        // the rule set onto the slow floor.
+        XCTAssertFalse(hasChainingPotential([
+            ReplacementEntry(replaceWith: "big foo", matches: ["foo"]),
+        ]))
+        XCTAssertFalse(hasChainingPotential([
+            ReplacementEntry(replaceWith: "xyz abc def", matches: ["abc def"]),
+        ]))
+    }
+
+    func testChainingDetectionFlagsOwnKeyInteriorWord() {
+        XCTAssertTrue(hasChainingPotential([
+            ReplacementEntry(replaceWith: "b", matches: ["a b c"]),
+        ]))
+    }
+
+    #if DEBUG
+        /// Backstop for any gap in chaining detection: with the viable-prefix
+        /// bound forced back on, the chained "foo bar z" correction reaches
+        /// offset 0 after "foo " was already released. It must be dropped —
+        /// released text is in the user's app and can never be un-typed — so
+        /// the final output keeps the released words verbatim instead of
+        /// rewriting them. (In production this path also logs an error; the
+        /// old `assert` was compiled out of release builds entirely.)
+        func testCorrectionReachingReleasedTextIsDroppedNeverApplied() {
+            var stream = makeStream(entries: chainingEntries)
+            stream.debugForceViablePrefixBound = true
+            XCTAssertEqual(stream.ingest("foo x "), "foo ")
+            XCTAssertEqual(stream.ingest("y "), "")
+            // The chained correction is dropped; the held tail releases
+            // uncorrected — the best end state achievable without un-typing.
+            XCTAssertEqual(stream.ingest("z "), "bar z ")
+            XCTAssertEqual(stream.flushRemainder(), "")
+            XCTAssertEqual(stream.debugDroppedCorrectionCount, 1)
+        }
+    #endif
+
     // MARK: - Never-un-type invariant
 
     /// The dictionary the invariant tests run against.
@@ -388,6 +609,18 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
                 file: file,
                 line: line
             )
+            #if DEBUG
+                // A dropped correction is the invariant guard firing — output
+                // equality alone could mask a violation whose rewrite happens
+                // to reproduce the released text.
+                XCTAssertEqual(
+                    stream.debugDroppedCorrectionCount,
+                    0,
+                    "chunk size \(size) dropped a correction for input \(String(reflecting: text))",
+                    file: file,
+                    line: line
+                )
+            #endif
         }
     }
 

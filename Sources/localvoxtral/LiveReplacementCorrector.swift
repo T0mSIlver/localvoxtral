@@ -17,10 +17,66 @@ struct LiveReplacementCorrector {
     private var typedText = ""
     private var scanOffset = 0
 
+    /// True when applying one rule's replacement can rewrite held text into
+    /// words of a rule KEY, so that a later match reaches back across text the
+    /// viable-prefix bound already judged dead and released. Concrete repro:
+    /// rules `x y -> bar` and `foo bar z -> FOO` with chunks "foo x ", "y ",
+    /// "z " — "foo " is released (nothing viable starts there), the first
+    /// correction turns the held "x y " into "bar ", and "foo bar z" then
+    /// matches starting inside RELEASED text. `LiveHoldBackReplacementStream`
+    /// falls back to the global `maxRuleWordCount - 1` hold floor (correct by
+    /// construction for rule sets without deletion rules — see
+    /// `hasDeletionRule`) when this is true, and only uses the tighter
+    /// viable-prefix bound when it is false.
+    ///
+    /// Detection is deliberately conservative, word-level, and computed once
+    /// at construction: a rule's replacement value contains a word (same
+    /// whitespace segmentation and full case folding as the matcher) that
+    /// appears anywhere in ANOTHER rule's key word list, or in the INTERIOR
+    /// (neither first nor last word) of its OWN key. Own-rule edge words
+    /// cannot chain: a spanning re-match needs its first key word in already-
+    /// released text — text a replacement never produces, since corrections
+    /// start at or after the release boundary and the viable-prefix scan holds
+    /// any replacement suffix that begins a rule — and its last key word must
+    /// end at a word boundary the corrector's scan pointer has not passed,
+    /// which lies beyond the applied replacement. Excluding them keeps common
+    /// echo-style rules (`foo -> big foo`) on the fast bound.
+    ///
+    /// Known limitation: the comparison is WHOLE-TOKEN, but rule matches may
+    /// start mid-token after any non-letter/number character (the regex
+    /// lookbehind), so a replacement word can FUSE with adjacent released
+    /// characters into another rule's key token: with `x y -> bar` and
+    /// `foo-bar z -> T!`, correcting the tail of "foo-x y" produces
+    /// "foo-bar", whose "foo-" half was already released — invisible to
+    /// token-level comparison. Closing this would mean flagging every
+    /// replacement word that appears as a SUBSTRING of any key token, taxing
+    /// ordinary dictionaries with the floor for a contrived hazard; instead
+    /// the stream's runtime release-boundary guard backstops it by dropping
+    /// the violating correction with an error log.
+    let hasChainingPotential: Bool
+
+    /// True when some rule's replacement contains no words at all (empty or
+    /// whitespace-only replaceWith) — a DELETION rule. Deletion rules chain
+    /// without contributing any word `hasChainingPotential` could compare:
+    /// deleting the word between two key words of another rule BRIDGES its
+    /// neighbors (the key regex's `\s+` matches across the leftover
+    /// whitespace), so a later match can span the release boundary. They also
+    /// defeat the `maxRuleWordCount - 1` word floor: `lookbackStart(before:)`
+    /// counts words in POST-deletion text, so deleting held words drags a
+    /// later lookback window across text that was released while the deleted
+    /// words still existed. `LiveHoldBackReplacementStream` therefore
+    /// releases nothing until flush when this is true — with no releases
+    /// before corrections, no correction can precede the release boundary.
+    let hasDeletionRule: Bool
+
     init(dictionary: ReplacementDictionary) {
         let rules = dictionary.liveReplacementRules()
         self.rules = rules
         maxKeyWordCount = max(1, rules.map(\.wordCount).max() ?? 1)
+        hasChainingPotential = Self.detectChainingPotential(in: rules)
+        hasDeletionRule = rules.contains { rule in
+            rule.replaceWith.split(whereSeparator: { Self.isWhitespace($0) }).isEmpty
+        }
     }
 
     var hasRules: Bool {
@@ -252,6 +308,38 @@ struct LiveReplacementCorrector {
             guard !trailingWordIsComplete else { return true }
             return key[words.count - 1].hasPrefix(words[words.count - 1])
         }
+    }
+
+    /// See `hasChainingPotential`. Word-level and folded on both sides:
+    /// replacement values are segmented with the matcher's own whitespace
+    /// predicate and fully case-folded, exactly like `foldedKeyWords`.
+    private static func detectChainingPotential(in rules: [LiveReplacementRule]) -> Bool {
+        guard !rules.isEmpty else { return false }
+
+        for (index, rule) in rules.enumerated() {
+            let replacementWords = Set(
+                rule.replaceWith
+                    .split(whereSeparator: { isWhitespace($0) })
+                    .map { String($0).caseFoldedForMatching }
+            )
+            // Word-free replacements are deletion rules: no words to compare
+            // here, but they chain by bridging — `hasDeletionRule` escalates
+            // them to hold-until-flush regardless of this predicate.
+            guard !replacementWords.isEmpty else { continue }
+
+            for (targetIndex, target) in rules.enumerated() {
+                // Own key: only interior words can chain (see the property
+                // doc); another rule's key: any position, conservatively.
+                let reachableKeyWords = targetIndex == index
+                    ? target.foldedKeyWords.dropFirst().dropLast()
+                    : target.foldedKeyWords[...]
+                if reachableKeyWords.contains(where: replacementWords.contains) {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     private static func isCompletionBoundary(_ character: Character) -> Bool {
