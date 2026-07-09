@@ -127,9 +127,9 @@ enum PolishModelCache {
         if let revision = try? String(contentsOf: mainReference, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            fileManager.fileExists(
-                atPath: snapshotsDirectory.appending(path: revision)
-                    .appending(path: "config.json").path
+            snapshotIsComplete(
+                snapshotsDirectory.appending(path: revision),
+                fileManager: fileManager
             )
         {
             return true
@@ -141,7 +141,39 @@ enum PolishModelCache {
                 includingPropertiesForKeys: nil
             )) ?? []
         return snapshots.contains {
-            fileManager.fileExists(atPath: $0.appending(path: "config.json").path)
+            snapshotIsComplete($0, fileManager: fileManager)
+        }
+    }
+
+    /// True only when the WEIGHTS are complete, not just the metadata:
+    /// config.json lands first in a download, and hf's cache only links a
+    /// snapshot file once its blob finished — so "config.json exists" flips
+    /// to "downloaded" the moment a download STARTS (field finding, PR #99).
+    /// Sharded models are checked against their index's weight_map.
+    private static func snapshotIsComplete(_ snapshot: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.fileExists(atPath: snapshot.appending(path: "config.json").path) else {
+            return false
+        }
+
+        let indexURL = snapshot.appending(path: "model.safetensors.index.json")
+        if let data = try? Data(contentsOf: indexURL),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let weightMap = object["weight_map"] as? [String: String]
+        {
+            let shardNames = Set(weightMap.values)
+            return !shardNames.isEmpty
+                && shardNames.allSatisfy {
+                    // fileExists resolves symlinks: a link to a still-partial
+                    // (unlinked) blob does not count.
+                    fileManager.fileExists(atPath: snapshot.appending(path: $0).path)
+                }
+        }
+
+        let entries =
+            (try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? []
+        return entries.contains {
+            $0.hasSuffix(".safetensors")
+                && fileManager.fileExists(atPath: snapshot.appending(path: $0).path)
         }
     }
 }
