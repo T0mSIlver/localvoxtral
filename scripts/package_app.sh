@@ -183,22 +183,29 @@ while IFS= read -r bundle_path; do
   fi
 done < <(find "$BUILD_PRODUCTS_DIR" -maxdepth 1 -type d -name "*.bundle" -print)
 
-ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
-rm -rf "$ICONSET_DIR"
-mkdir -p "$ICONSET_DIR"
+# The icns is a pure function of the source PNG — cache it keyed on the
+# source hash (hash in the filename, so a changed icon can never reuse a
+# stale cache entry).
+ICNS_CACHE="$ROOT_DIR/.build/AppIcon-$(shasum -a 256 "$APP_ICON_SOURCE" | cut -c1-16).icns"
+if [[ ! -f "$ICNS_CACHE" ]]; then
+  ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
+  rm -rf "$ICONSET_DIR"
+  mkdir -p "$ICONSET_DIR"
 
-sips -z 16 16 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null
-sips -z 32 32 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null
-sips -z 32 32 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null
-sips -z 64 64 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null
-sips -z 128 128 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null
-sips -z 256 256 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null
-sips -z 256 256 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null
-sips -z 512 512 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
-sips -z 512 512 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
-sips -z 1024 1024 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
+  sips -z 16 16 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16.png" >/dev/null
+  sips -z 32 32 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_16x16@2x.png" >/dev/null
+  sips -z 32 32 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32.png" >/dev/null
+  sips -z 64 64 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_32x32@2x.png" >/dev/null
+  sips -z 128 128 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128.png" >/dev/null
+  sips -z 256 256 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_128x128@2x.png" >/dev/null
+  sips -z 256 256 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256.png" >/dev/null
+  sips -z 512 512 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_256x256@2x.png" >/dev/null
+  sips -z 512 512 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512.png" >/dev/null
+  sips -z 1024 1024 "$APP_ICON_SOURCE" --out "$ICONSET_DIR/icon_512x512@2x.png" >/dev/null
 
-iconutil -c icns "$ICONSET_DIR" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
+  iconutil -c icns "$ICONSET_DIR" -o "$ICNS_CACHE"
+fi
+cp "$ICNS_CACHE" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cp "$MENUBAR_ICON_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate.png"
 cp "$MENUBAR_ICON_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x.png"
@@ -260,6 +267,41 @@ if [[ "${LOCALVOXTRAL_SKIP_POLISHD:-0}" == "1" ]]; then
   rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
 else
 
+HELPER_DERIVED_DATA="$ROOT_DIR/PolishHelper/.build/xcode"
+HELPER_BUILD_LOG="$ROOT_DIR/PolishHelper/.build/xcodebuild.log"
+HELPER_PRODUCTS_DIR="$HELPER_DERIVED_DATA/Build/Products/Release"
+HELPER_BINARY="$HELPER_PRODUCTS_DIR/localvoxtral-polishd"
+HELPER_DSYM_SOURCE="$HELPER_PRODUCTS_DIR/localvoxtral-polishd.dSYM"
+HELPER_FINGERPRINT_FILE="$HELPER_DERIVED_DATA/.localvoxtral-helper-fingerprint"
+mkdir -p "$ROOT_DIR/PolishHelper/.build"
+
+# Even a no-op helper xcodebuild costs ~11 s of planning overhead per run, so
+# skip it entirely when nothing that feeds the product changed. Content hash,
+# not git metadata: remote-build rsync trees have no .git. Covers the helper
+# sources, both manifests (Package.resolved pins the MLX deps), and the Xcode
+# version (a toolchain update must rebuild the Metal kernels).
+HELPER_FINGERPRINT="$(
+  {
+    xcodebuild -version
+    find "$ROOT_DIR/PolishHelper/Sources" \
+      "$ROOT_DIR/PolishHelper/Package.swift" \
+      "$ROOT_DIR/PolishHelper/Package.resolved" \
+      -type f -print0 | sort -z | xargs -0 shasum -a 256
+  } | shasum -a 256 | awk '{print $1}'
+)"
+
+if [[ -f "$HELPER_FINGERPRINT_FILE" \
+  && "$(cat "$HELPER_FINGERPRINT_FILE")" == "$HELPER_FINGERPRINT" \
+  && -f "$HELPER_BINARY" \
+  && -d "$HELPER_PRODUCTS_DIR/mlx-swift_Cmlx.bundle" \
+  && -d "$HELPER_DSYM_SOURCE" ]]; then
+  echo "Polishing helper unchanged (fingerprint match) — reusing products in $HELPER_PRODUCTS_DIR"
+else
+
+# Cleared before building so an interrupted build can never leave a stale
+# fingerprint that matches next run's tree.
+rm -f "$HELPER_FINGERPRINT_FILE"
+
 # A real invocation, not `xcrun --find`: on Xcode 26+ the metal shim exists
 # even when the toolchain component is missing, and only fails when executed.
 # One-time host provision (owner runbook: scripts/mac/README.md):
@@ -272,9 +314,6 @@ if ! xcrun metal --version >/dev/null 2>&1; then
   exit 1
 fi
 
-HELPER_DERIVED_DATA="$ROOT_DIR/PolishHelper/.build/xcode"
-HELPER_BUILD_LOG="$ROOT_DIR/PolishHelper/.build/xcodebuild.log"
-mkdir -p "$ROOT_DIR/PolishHelper/.build"
 echo "Building polishing helper (xcodebuild; full log: $HELPER_BUILD_LOG)"
 (
   cd "$ROOT_DIR/PolishHelper"
@@ -296,14 +335,20 @@ echo "Building polishing helper (xcodebuild; full log: $HELPER_BUILD_LOG)"
   exit 1
 }
 
-HELPER_PRODUCTS_DIR="$HELPER_DERIVED_DATA/Build/Products/Release"
-HELPER_BINARY="$HELPER_PRODUCTS_DIR/localvoxtral-polishd"
 if [[ ! -f "$HELPER_BINARY" ]]; then
   echo "Polishing helper build reported success but produced no binary at:"
   echo "  $HELPER_BINARY"
   tail -n 40 "$HELPER_BUILD_LOG"
   exit 1
 fi
+
+# Written only after the build succeeded and the binary exists; the product
+# checks below (Cmlx bundle, dSYM) still hard-fail this run if the build
+# produced an incomplete set, and the skip condition re-verifies all three
+# products next run before trusting the fingerprint.
+printf '%s\n' "$HELPER_FINGERPRINT" > "$HELPER_FINGERPRINT_FILE"
+
+fi # helper fingerprint match
 
 cp "$HELPER_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-polishd"
 chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-polishd"
@@ -325,7 +370,6 @@ fi
 # dSYM is a hard error: helper crashes (MLX C++/Metal) are the likeliest
 # field crashes now, and a silent skip would degrade symbolication without
 # any signal.
-HELPER_DSYM_SOURCE="$HELPER_PRODUCTS_DIR/localvoxtral-polishd.dSYM"
 if [[ ! -d "$HELPER_DSYM_SOURCE" ]]; then
   echo "Polishing helper dSYM missing at $HELPER_DSYM_SOURCE — the Release"
   echo "config should always emit one (DWARF with dSYM)."

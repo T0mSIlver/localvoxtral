@@ -63,9 +63,6 @@ jobs:
           key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: swiftpm-${{ runner.os }}-
 
-      - name: Build
-        run: swift build
-
       - name: Format lint (advisory)
         # Advisory until the one-shot tree reformat lands: swift-format exits 0
         # on findings without --strict. After the reformat, add --strict here
@@ -77,7 +74,10 @@ jobs:
 
       - name: Test (unit suite)
         # The integration suite needs a live inference backend and is exercised
-        # manually; see CLAUDE.md.
+        # manually; see CLAUDE.md. This is also the job's compile gate: the
+        # old standalone `swift build` step built plain-debug products that
+        # nothing downstream consumed (tests rebuild with coverage flags,
+        # packaging builds release), so it was pure duplicate compilation.
         run: |
           swift test \
             --skip RealtimeAPIVLLMIntegrationTests \
@@ -128,7 +128,11 @@ jobs:
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
-        run: swift test --filter RealtimeAPIVLLMIntegrationTests
+        # --enable-code-coverage matches the unit step's build flags exactly:
+        # without it SwiftPM treats the coverage-instrumented products as
+        # stale and recompiles the whole app+test module a second time
+        # (~12 s per run for zero information).
+        run: swift test --filter RealtimeAPIVLLMIntegrationTests --enable-code-coverage
 
       - name: Polishing helper unit tests (PolishHelper package)
         # Self-hosted only: hosted runners would pay a cold Cmlx C++ compile
