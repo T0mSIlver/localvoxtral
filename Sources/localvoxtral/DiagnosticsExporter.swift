@@ -24,9 +24,9 @@ struct DiagnosticsSnapshot: Sendable, Equatable {
     var polishingSummary: String
     var hasPolishingAPIKey: Bool
     var voxmlxStatus: String
-    var mlxLMStatus: String
+    var polishdStatus: String
     var voxmlxRecentOutput: [String]
-    var mlxLMRecentOutput: [String]
+    var polishdRecentOutput: [String]
 }
 
 enum DiagnosticsExporter {
@@ -63,9 +63,9 @@ enum DiagnosticsExporter {
     static func makeSnapshot(
         settings: SettingsStore,
         voxmlxStatus: ManagedBackendStatus,
-        mlxLMStatus: ManagedBackendStatus,
+        polishdStatus: ManagedBackendStatus,
         voxmlxRecentOutput: [String],
-        mlxLMRecentOutput: [String],
+        polishdRecentOutput: [String],
         bundle: Bundle = .main,
         processInfo: ProcessInfo = .processInfo
     ) -> DiagnosticsSnapshot {
@@ -99,9 +99,9 @@ enum DiagnosticsExporter {
             polishingSummary: polishingSummary,
             hasPolishingAPIKey: !settings.llmPolishingAPIKey.trimmed.isEmpty,
             voxmlxStatus: describe(voxmlxStatus),
-            mlxLMStatus: describe(mlxLMStatus),
+            polishdStatus: describe(polishdStatus),
             voxmlxRecentOutput: voxmlxRecentOutput,
-            mlxLMRecentOutput: mlxLMRecentOutput
+            polishdRecentOutput: polishdRecentOutput
         )
     }
 
@@ -139,20 +139,20 @@ enum DiagnosticsExporter {
 
         lines.append("== Managed backend status ==")
         lines.append("voxmlx: \(snapshot.voxmlxStatus)")
-        lines.append("polishing engine (localvoxtral-polishd): \(snapshot.mlxLMStatus)")
+        lines.append("polishing engine (localvoxtral-polishd): \(snapshot.polishdStatus)")
         lines.append("")
 
         lines.append("== Managed backend recent output ==")
-        if snapshot.voxmlxRecentOutput.isEmpty && snapshot.mlxLMRecentOutput.isEmpty {
+        if snapshot.voxmlxRecentOutput.isEmpty && snapshot.polishdRecentOutput.isEmpty {
             lines.append("(no supervisor output captured)")
         } else {
             if !snapshot.voxmlxRecentOutput.isEmpty {
                 lines.append("-- voxmlx --")
                 lines.append(contentsOf: snapshot.voxmlxRecentOutput)
             }
-            if !snapshot.mlxLMRecentOutput.isEmpty {
+            if !snapshot.polishdRecentOutput.isEmpty {
                 lines.append("-- localvoxtral-polishd --")
-                lines.append(contentsOf: snapshot.mlxLMRecentOutput)
+                lines.append(contentsOf: snapshot.polishdRecentOutput)
             }
         }
 

@@ -362,9 +362,9 @@ final class BackendInstallerTests: XCTestCase {
         let installer = BackendInstaller(
             layout: BackendInstallLayout(root: makeTemporaryDirectory())
         )
-        XCTAssertEqual(BackendCatalog.mlxLM.installKind, .bundledExecutable)
-        XCTAssertFalse(installer.needsInstallOrUpdate(BackendCatalog.mlxLM))
-        XCTAssertNil(installer.installedVersion(of: BackendCatalog.mlxLM))
+        XCTAssertEqual(BackendCatalog.polishd.installKind, .bundledExecutable)
+        XCTAssertFalse(installer.needsInstallOrUpdate(BackendCatalog.polishd))
+        XCTAssertNil(installer.installedVersion(of: BackendCatalog.polishd))
     }
 
     private func makeTemporaryDirectory() -> URL {

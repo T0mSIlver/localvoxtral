@@ -214,9 +214,9 @@ private struct ConnectionSettingsPane: View {
                 if newValue, !wasEnabled {
                     viewModel.prepareLLMPolishingPromptAccessIfNeeded()
                 }
-                // Turning polishing off stops the managed mlx-lm process
+                // Turning polishing off stops the managed polishd process
                 // (Managed local mode only). External URL mode owns no local
-                // process, and re-enabling starts managed mlx-lm eagerly.
+                // process, and re-enabling starts managed polishd eagerly.
                 viewModel.llmPolishingEnabledDidChange(newValue)
             }
         )
@@ -365,9 +365,9 @@ private struct ConnectionSettingsPane: View {
 
                         ManagedBackendStatusRow(
                             title: "Status",
-                            spec: BackendCatalog.mlxLM,
+                            spec: BackendCatalog.polishd,
                             endpoint: ManagedBackendEndpoints.polishingURLString,
-                            status: backendManager.mlxLMStatus
+                            status: backendManager.polishdStatus
                         )
                     }
                 }

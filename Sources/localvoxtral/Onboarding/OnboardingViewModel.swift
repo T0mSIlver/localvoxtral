@@ -20,7 +20,7 @@ final class OnboardingViewModel {
 
     private(set) var page: Page = .welcome
 
-    /// Consent to download mlx-lm + the polishing LLM during setup. Default ON;
+    /// Consent to download the polishing LLM during setup. Default ON;
     /// declining skips the polishing download now (it downloads later, the first
     /// time polishing is enabled in Settings).
     var polishingConsent = true
