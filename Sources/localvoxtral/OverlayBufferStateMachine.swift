@@ -138,11 +138,11 @@ struct OverlayBufferStateMachine {
     }
 
     /// Marks the buffering session as running under Secure Keyboard Entry.
-    /// The overlay view folds this into the phase title ("Listening (secure
-    /// input)") rather than a separate warning sentence — a full sentence in
-    /// the panel read as clutter (owner feedback on #90). startSession resets
-    /// it; it persists through finalizing so the marker doesn't blink away
-    /// while the commit is still pending.
+    /// The overlay view folds this into the phase title (an actionable
+    /// "select another field" hint) rather than a separate warning sentence —
+    /// a warning line under the transcript read as clutter (owner feedback
+    /// on #90). startSession resets it; it persists through finalizing so
+    /// the marker doesn't blink away while the commit is still pending.
     mutating func setSecureInputWarning() {
         guard phase == .buffering else { return }
         secureInputActive = true

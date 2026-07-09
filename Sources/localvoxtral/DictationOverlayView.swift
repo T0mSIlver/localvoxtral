@@ -95,7 +95,12 @@ struct DictationOverlayView: View {
     private var phaseTitle: String {
         switch phase {
         case .buffering:
-            return secureInputActive ? "Listening (secure input)" : "Listening"
+            // Actionable, not just descriptive: the commit re-checks Secure
+            // Keyboard Entry at stop, so moving focus to a normal field
+            // before then gets a real insert instead of the clipboard.
+            return secureInputActive
+                ? "Secure input — select another field before finalizing"
+                : "Listening"
         case .finalizing:
             return secureInputActive ? "Finalizing (secure input)" : "Finalizing"
         case .commitFailed:
