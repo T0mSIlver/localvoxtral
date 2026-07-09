@@ -143,6 +143,22 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.ingest("scale "), "TEMP ")
     }
 
+    func testReplacementContainingItsOwnKeyTerminates() {
+        // `apply()` resumes scanning past the inserted replacement text, so a
+        // replacement that reproduces its own key cannot be re-matched forever.
+        // If that ever regresses, the app hangs mid-dictation rather than
+        // failing a test — pin it here.
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "big foo", matches: ["foo"]),
+        ])
+        XCTAssertEqual(stream.ingest("foo bar "), "big foo bar ")
+
+        var nested = makeStream(entries: [
+            ReplacementEntry(replaceWith: "xyz abc def", matches: ["abc def"]),
+        ])
+        XCTAssertEqual(nested.ingest("abc def tail "), "xyz abc def tail ")
+    }
+
     func testSingleWordRuleAmongMultiWordRulesStillReleasesPromptly() {
         var stream = makeStream(entries: [
             ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
