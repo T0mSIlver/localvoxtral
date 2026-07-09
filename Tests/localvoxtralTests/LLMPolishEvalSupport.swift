@@ -177,7 +177,7 @@ enum LLMPolishEvalSupport {
 
     static func runCase(
         _ evalCase: LLMPolishEvalCase,
-        service: LLMPolishingService,
+        service: any LLMPolishingServicing,
         templates: LLMPromptTemplates,
         configuration: LLMPolishingConfiguration
     ) async -> (failures: [String], output: String) {
@@ -241,7 +241,7 @@ enum LLMPolishEvalSupport {
     /// Runs the full corpus and returns the printable scoreboard plus the
     /// required-case failures the caller must assert on.
     static func runScoreboard(
-        service: LLMPolishingService,
+        service: any LLMPolishingServicing,
         templates: LLMPromptTemplates,
         configuration: LLMPolishingConfiguration
     ) async -> ScoreboardResult {

@@ -8,8 +8,7 @@ import MLXLMCommon
 public protocol ChatResponding: Sendable {
     func respond(
         to messages: [ChatCompletionMessage],
-        temperature: Float?,
-        maxTokens: Int?
+        sampling: ChatSamplingParameters
     ) async throws -> String
 }
 
@@ -62,14 +61,25 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
 
     public func respond(
         to messages: [ChatCompletionMessage],
-        temperature: Float?,
-        maxTokens: Int?
+        sampling: ChatSamplingParameters
     ) async throws -> String {
         var parameters = GenerateParameters()
-        if let temperature {
+        if let temperature = sampling.temperature {
             parameters.temperature = temperature
         }
-        parameters.maxTokens = maxTokens ?? defaultMaxTokens
+        if let topP = sampling.topP {
+            parameters.topP = topP
+        }
+        if let topK = sampling.topK {
+            parameters.topK = topK
+        }
+        if let minP = sampling.minP {
+            parameters.minP = minP
+        }
+        if let presencePenalty = sampling.presencePenalty {
+            parameters.presencePenalty = presencePenalty
+        }
+        parameters.maxTokens = sampling.maxTokens ?? defaultMaxTokens
         // Deterministic sampling: identical requests must produce identical
         // output, like the previous engine's within-state behavior — the
         // polish eval baseline and user experience both rely on it. The
