@@ -525,6 +525,23 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopAllCallCount, 0)
     }
 
+    func testManagedPolishingModelChangePersistsAndStopsPolishing() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        retainForTestProcessLifetime(viewModel)
+
+        let externalModelBefore = viewModel.settings.llmPolishingModel
+        viewModel.applyLLMPolishingModelChange("example/new-polishing-model")
+        await viewModel.polishingShutdownTask?.value
+
+        XCTAssertEqual(viewModel.settings.managedLLMPolishingModel, "example/new-polishing-model")
+        // The external-mode model NAME lives in a separate key and must not move.
+        XCTAssertEqual(viewModel.settings.llmPolishingModel, externalModelBefore)
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
     func testDictationModeSwitchToManagedStartsDictationWarmup() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)

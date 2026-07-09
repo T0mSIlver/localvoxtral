@@ -283,7 +283,9 @@ final class SettingsStoreTests: XCTestCase {
     func testLLMPolishingConfiguration_managedLocal_returnsManagedEndpointAndEmptyKey() {
         let store = makeStore()
         store.llmPolishingEnabled = true
-        // User-tuned polishing fields must be ignored in managed mode.
+        // External-mode fields (endpoint, key, and the server-side model NAME)
+        // must never leak into a managed configuration; managed mode has its
+        // own HF-repo selection.
         store.llmPolishingEndpointURL = "https://api.openai.com/v1/chat/completions"
         store.llmPolishingAPIKey = "sk-ignored"
         store.llmPolishingModel = "gpt-4o-mini"
@@ -294,7 +296,19 @@ final class SettingsStoreTests: XCTestCase {
             ManagedBackendEndpoints.polishingURLString
         )
         XCTAssertEqual(configuration?.apiKey, "")
-        XCTAssertEqual(configuration?.model, "mlx-community/Qwen3.5-0.8B-8bit")
+        XCTAssertEqual(configuration?.model, SettingsStore.defaultLLMPolishingModel)
+        XCTAssertNil(configuration?.samplingDefaults)
+    }
+
+    func testLLMPolishingConfiguration_managedLocal_usesManagedModelSelection() {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.managedLLMPolishingModel = "mlx-community/custom-polisher"
+
+        let configuration = store.llmPolishingConfiguration
+        XCTAssertEqual(configuration?.model, "mlx-community/custom-polisher")
+        // A non-catalog repo carries no catalog sampling defaults.
+        XCTAssertNil(configuration?.samplingDefaults)
     }
 
     func testLLMPolishingConfiguration_managedLocal_disabledReturnsNil() {
@@ -319,6 +333,7 @@ final class SettingsStoreTests: XCTestCase {
         )
         XCTAssertEqual(configuration?.apiKey, "sk-test")
         XCTAssertEqual(configuration?.model, "gpt-4o-mini")
+        XCTAssertNil(configuration?.samplingDefaults)
     }
 
     func testBackendResolutionUsesIndependentDictationAndPolishingModes() {

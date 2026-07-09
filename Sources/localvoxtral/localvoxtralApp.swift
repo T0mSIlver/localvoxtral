@@ -126,7 +126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     override init() {
         let settings = SettingsStore()
-        let manager = BackendManager()
+        let manager = BackendManager(
+            polishingModelProvider: { settings.resolvedManagedLLMPolishingModel }
+        )
         settingsStore = settings
         backendManager = manager
         viewModel = DictationViewModel(settings: settings, backendManager: manager)

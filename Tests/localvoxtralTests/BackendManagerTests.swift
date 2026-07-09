@@ -217,6 +217,45 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.voxmlxStatus, .ready)
     }
 
+    func testModelChangeStopsSupervisorAndNextEnsureUsesNewModel() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let settings = SettingsStore(
+            defaults: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            polishingModelProvider: { settings.managedLLMPolishingModel },
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: false, polishing: true)
+        let firstSupervisor = try XCTUnwrap(
+            supervisorFactory.supervisors[BackendCatalog.mlxLM.displayName]
+        )
+
+        settings.managedLLMPolishingModel = "example/new-polishing-model"
+        await manager.stopPolishing()
+        XCTAssertEqual(firstSupervisor.stopCallCount, 1)
+
+        try await manager.ensureReady(dictation: false, polishing: true)
+
+        XCTAssertEqual(
+            modelPreparer.prepareCalls.map(\.repoID),
+            [SettingsStore.defaultLLMPolishingModel, "example/new-polishing-model"]
+        )
+        let relaunchedConfiguration = try XCTUnwrap(
+            supervisorFactory.createdConfigurations.last
+        )
+        XCTAssertEqual(
+            Array(relaunchedConfiguration.arguments.prefix(2)),
+            ["--model", "example/new-polishing-model"]
+        )
+    }
+
     func testStopDictationStopsOnlyVoxmlx() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
@@ -546,12 +585,16 @@ final class BackendManagerTests: XCTestCase {
     private func makeManager(
         installer: FakeBackendInstaller,
         modelPreparer: FakeModelPreparer = FakeModelPreparer(),
+        polishingModelProvider: @escaping BackendManager.PolishingModelProvider = {
+            SettingsStore.defaultLLMPolishingModel
+        },
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
             installer: installer,
             modelPreparer: modelPreparer,
             layout: BackendInstallLayout(root: URL(fileURLWithPath: "/tmp/localvoxtral-backend-manager-tests")),
+            polishingModelProvider: polishingModelProvider,
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }

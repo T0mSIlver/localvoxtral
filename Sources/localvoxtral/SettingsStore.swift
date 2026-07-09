@@ -176,6 +176,7 @@ final class SettingsStore {
         static let llmPolishingEndpointURL = "settings.llm_polishing_endpoint_url"
         static let llmPolishingAPIKey = "settings.llm_polishing_api_key"
         static let llmPolishingModel = "settings.llm_polishing_model"
+        static let managedLLMPolishingModel = "settings.managed_llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
@@ -206,7 +207,7 @@ final class SettingsStore {
     /// Default model for the OpenAI-compatible LLM polishing server. Used as
     /// the external-mode fallback and as the model the managed mlx-lm backend
     /// is expected to serve.
-    static let defaultLLMPolishingModel = "mlx-community/Qwen3.5-0.8B-8bit"
+    static let defaultLLMPolishingModel = PolishModelCatalog.defaultOption.repoID
 
     var realtimeProvider: RealtimeProvider {
         didSet { defaults.set(realtimeProvider.rawValue, forKey: Keys.realtimeProvider) }
@@ -286,6 +287,10 @@ final class SettingsStore {
 
     var llmPolishingModel: String {
         didSet { defaults.set(llmPolishingModel, forKey: Keys.llmPolishingModel) }
+    }
+
+    var managedLLMPolishingModel: String {
+        didSet { defaults.set(managedLLMPolishingModel, forKey: Keys.managedLLMPolishingModel) }
     }
 
     var replacementDictionaryEnabled: Bool {
@@ -467,6 +472,11 @@ final class SettingsStore {
         llmPolishingModel = Self.loadString(
             defaults: defaults, key: Keys.llmPolishingModel,
             envKey: "LLM_POLISHING_MODEL", fallback: Self.defaultLLMPolishingModel,
+            environment: environment
+        )
+        managedLLMPolishingModel = Self.loadString(
+            defaults: defaults, key: Keys.managedLLMPolishingModel,
+            envKey: "MANAGED_LLM_POLISHING_MODEL", fallback: Self.defaultLLMPolishingModel,
             environment: environment
         )
         replacementDictionaryEnabled = Self.loadBool(
@@ -848,10 +858,12 @@ final class SettingsStore {
         if polishingBackendMode == .managedLocal {
             guard let url = URL(string: ManagedBackendEndpoints.polishingURLString)
             else { return nil }
+            let model = resolvedManagedLLMPolishingModel
             return LLMPolishingConfiguration(
                 endpointURL: url,
                 apiKey: "",
-                model: Self.defaultLLMPolishingModel
+                model: model,
+                samplingDefaults: PolishModelCatalog.option(forRepoID: model)?.samplingDefaults
             )
         }
         let trimmedEndpoint = llmPolishingEndpointURL.trimmed
@@ -871,5 +883,14 @@ final class SettingsStore {
                 ? Self.defaultLLMPolishingModel
                 : llmPolishingModel.trimmed
         )
+    }
+
+    /// The managed picker's stored selection, hardened against an empty env
+    /// override. External mode's `llmPolishingModel` is a server-side model
+    /// NAME; this is an HF repo the helper must download — separate keys so a
+    /// leftover external value can never leak into a managed launch.
+    var resolvedManagedLLMPolishingModel: String {
+        let model = managedLLMPolishingModel.trimmed
+        return model.isEmpty ? Self.defaultLLMPolishingModel : model
     }
 }

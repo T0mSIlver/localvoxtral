@@ -452,7 +452,11 @@ final class DictationViewModel {
         startRuntimeServices: Bool = true
     ) {
         self.settings = settings
-        self.backendManager = backendManager ?? BackendManager()
+        self.backendManager =
+            backendManager
+            ?? BackendManager(
+                polishingModelProvider: { settings.resolvedManagedLLMPolishingModel }
+            )
         self.managesRuntimeServices = startRuntimeServices
         if let overlayBufferCoordinator {
             self.overlayBufferCoordinator = overlayBufferCoordinator
@@ -943,6 +947,20 @@ final class DictationViewModel {
                 guard !Task.isCancelled else { return }
                 await backendManager.stopPolishing()
             }
+        }
+    }
+
+    func applyLLMPolishingModelChange(_ model: String) {
+        guard settings.managedLLMPolishingModel != model else { return }
+        settings.managedLLMPolishingModel = model
+        guard settings.polishingBackendMode == .managedLocal else { return }
+
+        Log.backends.info("managed polishing model changed; stopping polishing engine")
+        polishingWarmupTask?.cancel()
+        polishingShutdownTask?.cancel()
+        polishingShutdownTask = Task { @MainActor [backendManager] in
+            guard !Task.isCancelled else { return }
+            await backendManager.stopPolishing()
         }
     }
 

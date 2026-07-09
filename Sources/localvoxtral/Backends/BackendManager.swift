@@ -89,6 +89,7 @@ protocol ManagedBackendManaging: AnyObject {
 @Observable
 final class BackendManager: ManagedBackendManaging {
     typealias SupervisorFactory = @MainActor (BackendProcessConfiguration) -> any ManagedBackendSupervising
+    typealias PolishingModelProvider = @MainActor () -> String
 
     private(set) var voxmlxStatus: ManagedBackendStatus
     private(set) var mlxLMStatus: ManagedBackendStatus
@@ -97,6 +98,7 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let modelPreparer: any ModelPreparing
     @ObservationIgnored private let layout: BackendInstallLayout
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
+    @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
     @ObservationIgnored private var voxmlxSupervisor: (any ManagedBackendSupervising)?
     @ObservationIgnored private var mlxLMSupervisor: (any ManagedBackendSupervising)?
     // Per-backend single-flight slots. A global shared slot (the previous
@@ -117,6 +119,9 @@ final class BackendManager: ManagedBackendManaging {
         installer: any BackendInstalling = BackendInstaller(),
         modelPreparer: (any ModelPreparing)? = nil,
         layout: BackendInstallLayout = BackendInstallLayout(),
+        polishingModelProvider: @escaping PolishingModelProvider = {
+            SettingsStore.defaultLLMPolishingModel
+        },
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
         }
@@ -124,6 +129,7 @@ final class BackendManager: ManagedBackendManaging {
         self.installer = installer
         self.layout = layout
         self.modelPreparer = modelPreparer ?? HFModelDownloader(layout: layout)
+        self.polishingModelProvider = polishingModelProvider
         self.supervisorFactory = supervisorFactory
         self.voxmlxStatus = installer.needsInstallOrUpdate(BackendCatalog.voxmlx)
             ? .notInstalled
@@ -214,8 +220,10 @@ final class BackendManager: ManagedBackendManaging {
     func stopAll() async {
         let cancelledDictationEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
         let cancelledPolishingEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
+        let hadPolishingSupervisor = mlxLMSupervisor != nil
         await voxmlxSupervisor?.stop()
         await mlxLMSupervisor?.stop()
+        mlxLMSupervisor = nil
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
         mlxLMStateMirrorTask?.cancel()
@@ -223,7 +231,7 @@ final class BackendManager: ManagedBackendManaging {
         if cancelledDictationEnsure || voxmlxSupervisor != nil {
             setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
-        if cancelledPolishingEnsure || mlxLMSupervisor != nil {
+        if cancelledPolishingEnsure || hadPolishingSupervisor {
             setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
     }
@@ -243,10 +251,12 @@ final class BackendManager: ManagedBackendManaging {
         // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
         // branch: cancel the mirror task and pin the status to .stopped.
         let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
+        let hadSupervisor = mlxLMSupervisor != nil
         await mlxLMSupervisor?.stop()
+        mlxLMSupervisor = nil
         mlxLMStateMirrorTask?.cancel()
         mlxLMStateMirrorTask = nil
-        if cancelledEnsure || mlxLMSupervisor != nil {
+        if cancelledEnsure || hadSupervisor {
             setStatus(.stopped, for: BackendCatalog.mlxLM)
         }
     }
@@ -464,7 +474,7 @@ final class BackendManager: ManagedBackendManaging {
         case BackendCatalog.mlxLM.id:
             return [
                 "--model",
-                SettingsStore.defaultLLMPolishingModel,
+                polishingModelProvider(),
                 "--port",
                 "\(spec.port)",
                 "--parent-pid",
@@ -502,7 +512,7 @@ final class BackendManager: ManagedBackendManaging {
             return ModelPreparationRequest(
                 backendID: spec.id,
                 displayName: spec.displayName,
-                repoID: SettingsStore.defaultLLMPolishingModel,
+                repoID: polishingModelProvider(),
                 includePatterns: [
                     "*.json",
                     "model*.safetensors",
