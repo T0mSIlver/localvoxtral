@@ -31,7 +31,9 @@ struct ReplacementDictionary: Equatable, Sendable {
                         regex: regex,
                         replaceWith: entry.replaceWith,
                         matchLength: normalized.count,
-                        keyWords: normalized.split(whereSeparator: \.isWhitespace).map(String.init),
+                        foldedKeyWords: normalized
+                            .split(whereSeparator: \.isWhitespace)
+                            .map { String($0).caseFoldedForMatching },
                         originalOrder: originalOrder
                     )
                 )
@@ -158,21 +160,25 @@ struct LiveReplacementRule: Comparable {
     let regex: NSRegularExpression
     let replaceWith: String
     let matchLength: Int
-    /// The literal, whitespace-separated words of the match key, in order.
+    /// The match key's whitespace-separated words, each fully case-folded.
+    ///
     /// `makeRegex` escapes every key with `escapedPattern` and joins the words
     /// with `\s+`, so a rule is a literal word list — no metacharacter ever
-    /// survives. `LiveHoldBackReplacementStream` prefix-matches against these
-    /// words directly to decide how little text it can hold back.
-    let keyWords: [String]
+    /// survives. `LiveHoldBackReplacementStream` prefix-matches these words to
+    /// decide how little text it can hold back. They are stored pre-folded
+    /// because the regex matches case-insensitively with FULL case folding,
+    /// which can change length (`ß` matches `ss`); comparing raw characters
+    /// would miss live prefixes and release text a correction still rewrites.
+    let foldedKeyWords: [String]
     let originalOrder: Int
 
     var wordCount: Int {
-        keyWords.count
+        foldedKeyWords.count
     }
 
     static func == (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
         lhs.matchLength == rhs.matchLength
-            && lhs.keyWords == rhs.keyWords
+            && lhs.foldedKeyWords == rhs.foldedKeyWords
             && lhs.originalOrder == rhs.originalOrder
             && lhs.replaceWith == rhs.replaceWith
             && lhs.regex.pattern == rhs.regex.pattern

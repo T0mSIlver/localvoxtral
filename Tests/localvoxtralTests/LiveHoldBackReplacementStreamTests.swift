@@ -113,6 +113,36 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.ingest("Code "), "Claude Code ")
     }
 
+    func testFullCaseFoldingExpansionIsHeld() {
+        // NSRegularExpression full-case-folds literals, so the rule `foo ßx`
+        // matches the text "foo ssx". A literal prefix check would judge the
+        // tail "foo s" dead ("ßx" does not start with "s") and release it, and
+        // the correction would then rewrite text already typed.
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "X", matches: ["foo ßx"]),
+        ])
+        XCTAssertEqual(stream.ingest("foo s"), "")
+        XCTAssertEqual(stream.ingest("sx "), "X ")
+    }
+
+    func testFullCaseFoldingLigatureIsHeld() {
+        // "ﬁ" folds to "fi", so the rule `fix it` matches the text "ﬁx it".
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "REPAIRED", matches: ["fix it"]),
+        ])
+        XCTAssertEqual(stream.ingest("ﬁx "), "")
+        XCTAssertEqual(stream.ingest("it "), "REPAIRED ")
+    }
+
+    func testKelvinSignFoldsToKAndIsHeld() {
+        // U+212A KELVIN SIGN folds to "k".
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "TEMP", matches: ["kelvin scale"]),
+        ])
+        XCTAssertEqual(stream.ingest("\u{212A}elvin "), "")
+        XCTAssertEqual(stream.ingest("scale "), "TEMP ")
+    }
+
     func testSingleWordRuleAmongMultiWordRulesStillReleasesPromptly() {
         var stream = makeStream(entries: [
             ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
@@ -294,6 +324,12 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
             ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
             ReplacementEntry(replaceWith: "FOX", matches: ["the quick brown fox"]),
             ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            // Full-case-folding expansion: matches the text "gross ssx".
+            ReplacementEntry(replaceWith: "SS", matches: ["gross ßx"]),
+            // A replacement that reproduces its own key's first word. A
+            // correction rewriting released text could still reproduce it
+            // verbatim, so only the in-stream assertion catches that.
+            ReplacementEntry(replaceWith: "foo baz", matches: ["foo bar"]),
         ])
     }
 
@@ -354,6 +390,12 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
             "the quick brown fox",
             "cloud cloud code ",
             "voxtral foo-cloud code ",
+            "gross ssx ",
+            "gross s",
+            "hello gross ssx world ",
+            "foo bar ",
+            "foo bar foo bar ",
+            "ﬁx it ",
         ] {
             assertReleasedTextMatchesBatch(text)
         }
@@ -363,7 +405,7 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         let vocabulary = [
             "cloud", "code", "the", "quick", "brown", "fox", "hello", "world",
             "clouds", "codes", "foo-cloud", "e\u{0301}cloud", "CLOUD", "cloud.",
-            "voxtral", "local",
+            "voxtral", "local", "gross", "ssx", "ßx", "foo", "bar", "baz",
         ]
 
         var generator = SeededGenerator(seed: 0x5EED_1234)

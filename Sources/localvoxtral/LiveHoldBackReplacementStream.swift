@@ -76,6 +76,7 @@ struct LiveHoldBackReplacementStream {
     mutating func flushRemainder() -> String {
         applyCompletedBoundaryCorrections()
         if let correction = corrector.finalUnboundedCorrection() {
+            assertCannotReachReleasedText(correction)
             corrector.apply(correction)
         }
         var output = release(upTo: corrector.correctedText.count)
@@ -91,8 +92,26 @@ struct LiveHoldBackReplacementStream {
 
     private mutating func applyCompletedBoundaryCorrections() {
         while let correction = corrector.nextCompletedBoundaryCorrection() {
+            assertCannotReachReleasedText(correction)
             corrector.apply(correction)
         }
+    }
+
+    /// The never-un-type invariant, checked on every correction in debug
+    /// builds: a correction must never begin inside text already released for
+    /// typing, because that text is in the user's app and cannot be recalled.
+    ///
+    /// Comparing final output against a batch correction is a weaker oracle — a
+    /// correction that rewrites released text can still reproduce it verbatim
+    /// and slip through. This catches the violation where it happens.
+    private func assertCannotReachReleasedText(_ correction: LiveReplacementCorrection) {
+        assert(
+            correction.startOffset >= releasedCharacterCount,
+            """
+            hold-back violated: correction starts at \(correction.startOffset) \
+            but \(releasedCharacterCount) characters were already typed
+            """
+        )
     }
 
     /// The largest character offset into the corrected text that no future

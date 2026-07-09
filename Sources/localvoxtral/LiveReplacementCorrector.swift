@@ -3,7 +3,11 @@ import Foundation
 struct LiveReplacementCorrection: Sendable {
     let replacementText: String
 
-    fileprivate let startOffset: Int
+    /// Where in the corrected text this correction begins rewriting.
+    /// `LiveHoldBackReplacementStream` asserts it never precedes text it has
+    /// already released for typing.
+    let startOffset: Int
+
     fileprivate let endOffset: Int
 }
 
@@ -196,20 +200,29 @@ struct LiveReplacementCorrector {
     }
 
     /// True when `tail` can still grow into a match for some rule — that is,
-    /// when it is a live prefix of that rule's key words. `LiveHoldBackReplacementStream`
-    /// uses this to hold back only text that a future correction could still
-    /// reach, instead of a fixed `maxRuleWordCount` window.
+    /// when more text could complete a match starting at `tail`'s first
+    /// character. `LiveHoldBackReplacementStream` uses this to hold back only
+    /// text a future correction could still reach, instead of a fixed
+    /// `maxRuleWordCount` window.
     ///
-    /// This mirrors `ReplacementDictionary.makeRegex`: keys are literal words
-    /// joined by `\s+` and matched case-insensitively, so word equality plus a
-    /// prefix test on the trailing partial word is exactly the regex's
-    /// semantics. A complete word must match its key word outright; the
-    /// trailing partial word only has to be a prefix of its key word.
+    /// Rules are literal word lists (`makeRegex` escapes every key), so this
+    /// compares words directly. BOTH sides are fully case-folded first, because
+    /// the regex matches with full case folding, which can change length: the
+    /// rule `foo ßx` matches the text "foo ssx". Comparing raw characters would
+    /// judge the tail "foo s" dead (`"ßx"` does not start with `"s"`), release
+    /// it, and let the correction rewrite text already typed into the user's
+    /// app. Folding distributes over concatenation, so a folded prefix stays a
+    /// prefix.
     ///
-    /// Errs toward `true` (hold more): a full-length word run equal to the key
-    /// stays viable even though its correction has, in practice, already been
-    /// applied. Never erring toward `false` is what keeps released text
-    /// immutable.
+    /// Do NOT try to replace this with the regex's own `.hitEnd` matching flag.
+    /// It reports whether ICU read to the end of the input, not whether more
+    /// input could match: for the rule `the quick brown fox` it is set even for
+    /// the tail "world ", which can never begin that rule. It is safe but holds
+    /// nearly everything, which is the latency bug this bound exists to fix.
+    ///
+    /// Errs toward `true` (hold more): a completed match stays viable even
+    /// though its correction has, in practice, already been applied. Never
+    /// erring toward `false` is what keeps released text immutable.
     func isViableRulePrefix(_ tail: String) -> Bool {
         guard let firstCharacter = tail.first,
               let lastCharacter = tail.last,
@@ -218,7 +231,9 @@ struct LiveReplacementCorrector {
             return false
         }
 
-        let words = tail.split(whereSeparator: { Self.isWhitespace($0) }).map(String.init)
+        let words = tail
+            .split(whereSeparator: { Self.isWhitespace($0) })
+            .map { String($0).caseFoldedForMatching }
         guard !words.isEmpty else { return false }
 
         // A trailing whitespace character completes the final word; without it
@@ -227,30 +242,20 @@ struct LiveReplacementCorrector {
         let completeWordCount = trailingWordIsComplete ? words.count : words.count - 1
 
         return rules.contains { rule in
-            let key = rule.keyWords
+            let key = rule.foldedKeyWords
             guard words.count <= key.count else { return false }
 
-            for index in 0 ..< completeWordCount
-                where !Self.equalsIgnoringCase(words[index], key[index])
-            {
+            for index in 0 ..< completeWordCount where words[index] != key[index] {
                 return false
             }
 
             guard !trailingWordIsComplete else { return true }
-            return Self.hasPrefixIgnoringCase(key[words.count - 1], words[words.count - 1])
+            return key[words.count - 1].hasPrefix(words[words.count - 1])
         }
     }
 
     private static func isCompletionBoundary(_ character: Character) -> Bool {
         isWhitespace(character) || isPunctuation(character)
-    }
-
-    private static func equalsIgnoringCase(_ lhs: String, _ rhs: String) -> Bool {
-        lhs.compare(rhs, options: .caseInsensitive) == .orderedSame
-    }
-
-    private static func hasPrefixIgnoringCase(_ text: String, _ prefix: String) -> Bool {
-        text.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
     }
 
     // Internal (not private): `LiveHoldBackReplacementStream` computes its
