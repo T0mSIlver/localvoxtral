@@ -4,7 +4,7 @@ import XCTest
 
 private final class StubResponder: ChatResponding, @unchecked Sendable {
     let result: Result<String, Error>
-    private(set) var received: (messages: [ChatCompletionMessage], temperature: Float?, maxTokens: Int?)?
+    private(set) var received: (messages: [ChatCompletionMessage], sampling: ChatSamplingParameters)?
 
     init(result: Result<String, Error> = .success("polished")) {
         self.result = result
@@ -12,10 +12,9 @@ private final class StubResponder: ChatResponding, @unchecked Sendable {
 
     func respond(
         to messages: [ChatCompletionMessage],
-        temperature: Float?,
-        maxTokens: Int?
+        sampling: ChatSamplingParameters
     ) async throws -> String {
-        received = (messages, temperature, maxTokens)
+        received = (messages, sampling)
         return try result.get()
     }
 }
@@ -52,8 +51,31 @@ final class PolishdRouterTests: XCTestCase {
         XCTAssertEqual(decoded.model, "x")
         XCTAssertEqual(responder.received?.messages.count, 3)
         XCTAssertEqual(responder.received?.messages[1].content, "raw one")
-        XCTAssertEqual(responder.received?.temperature, 0.3)
-        XCTAssertNil(responder.received?.maxTokens)
+        XCTAssertEqual(responder.received?.sampling.temperature, 0.3)
+        XCTAssertNil(responder.received?.sampling.maxTokens)
+    }
+
+    func testChatCompletionRoundTripsSamplingOverrides() async throws {
+        let responder = StubResponder()
+        let router = PolishdRouter(responder: responder, modelName: "test-model")
+        let response = await router.handle(
+            chatRequest(
+                """
+                {"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.05,
+                 "presence_penalty": 2.0, "max_tokens": 64,
+                 "messages": [{"role": "user", "content": "raw"}]}
+                """
+            )
+        )
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(
+            responder.received?.sampling,
+            ChatSamplingParameters(
+                temperature: 1.0, topP: 0.95, topK: 20, minP: 0.05,
+                presencePenalty: 2.0, maxTokens: 64
+            )
+        )
     }
 
     func testStreamingIsRejected() async {

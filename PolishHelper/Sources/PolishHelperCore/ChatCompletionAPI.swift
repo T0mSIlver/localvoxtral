@@ -7,6 +7,10 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public var model: String?
     public var messages: [ChatCompletionMessage]
     public var temperature: Float?
+    public var topP: Float?
+    public var topK: Int?
+    public var minP: Float?
+    public var presencePenalty: Float?
     public var maxTokens: Int?
     public var stream: Bool?
 
@@ -14,6 +18,10 @@ public struct ChatCompletionRequest: Codable, Sendable {
         case model
         case messages
         case temperature
+        case topP = "top_p"
+        case topK = "top_k"
+        case minP = "min_p"
+        case presencePenalty = "presence_penalty"
         case maxTokens = "max_tokens"
         case stream
     }
@@ -22,14 +30,62 @@ public struct ChatCompletionRequest: Codable, Sendable {
         model: String? = nil,
         messages: [ChatCompletionMessage],
         temperature: Float? = nil,
+        topP: Float? = nil,
+        topK: Int? = nil,
+        minP: Float? = nil,
+        presencePenalty: Float? = nil,
         maxTokens: Int? = nil,
         stream: Bool? = nil
     ) {
         self.model = model
         self.messages = messages
         self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+        self.minP = minP
+        self.presencePenalty = presencePenalty
         self.maxTokens = maxTokens
         self.stream = stream
+    }
+
+    public var sampling: ChatSamplingParameters {
+        ChatSamplingParameters(
+            temperature: temperature,
+            topP: topP,
+            topK: topK,
+            minP: minP,
+            presencePenalty: presencePenalty,
+            maxTokens: maxTokens
+        )
+    }
+}
+
+/// The sampling knobs a request may override; nil fields keep the engine
+/// defaults (mlx-swift-lm's `GenerateParameters` — the model card's
+/// recommended values are deliberately NOT applied, matching the old
+/// mlx-lm engine's behavior).
+public struct ChatSamplingParameters: Equatable, Sendable {
+    public var temperature: Float?
+    public var topP: Float?
+    public var topK: Int?
+    public var minP: Float?
+    public var presencePenalty: Float?
+    public var maxTokens: Int?
+
+    public init(
+        temperature: Float? = nil,
+        topP: Float? = nil,
+        topK: Int? = nil,
+        minP: Float? = nil,
+        presencePenalty: Float? = nil,
+        maxTokens: Int? = nil
+    ) {
+        self.temperature = temperature
+        self.topP = topP
+        self.topK = topK
+        self.minP = minP
+        self.presencePenalty = presencePenalty
+        self.maxTokens = maxTokens
     }
 }
 

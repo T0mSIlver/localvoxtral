@@ -332,6 +332,42 @@ final class PolishHelperIntegrationTests: XCTestCase {
         process.terminate()
     }
 
+    /// EXPERIMENT (2026-07-09, print-only — no score assertions): run the
+    /// same corpus with the Qwen3.5 model card's recommended non-thinking
+    /// text sampling (temperature 1.0, top_p 1.0, top_k 20, min_p 0,
+    /// presence_penalty 2.0) instead of the production temperature-0.3
+    /// request, to test the hypothesis that the recommended set — tuned for
+    /// open-ended generation — hurts a copy-editing task where the output
+    /// should mostly repeat the input (presence_penalty penalizes exactly
+    /// that repetition). Compare this scoreboard against the baseline test's.
+    func testEvalScoreboardWithQwenRecommendedSampling() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let (process, port, _) = try await launchHelper(binary: binary, model: model)
+
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
+            apiKey: "",
+            model: model
+        )
+        let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
+        addTeardownBlock { cleanup() }
+
+        let result = await LLMPolishEvalSupport.runScoreboard(
+            service: QwenRecommendedSamplingPolishingService(),
+            templates: templates,
+            configuration: configuration
+        )
+        LLMPolishEvalSupport.printScoreboard(
+            result,
+            configuration: configuration,
+            header: "polishd EXPERIMENT: Qwen recommended non-thinking sampling (temp 1.0, top_k 20, presence 2.0)"
+        )
+
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
     /// The memory-contract proof: when the process that passed --parent-pid
     /// dies, the helper exits on its own (freeing all model memory), exactly
     /// like the old fork's Python watchdog.
@@ -363,5 +399,57 @@ final class PolishHelperIntegrationTests: XCTestCase {
         decoyParent.terminate()
         await fulfillment(of: [helperExited], timeout: 30)
         XCTAssertFalse(helper.isRunning)
+    }
+}
+
+/// The production request with the sampling fields swapped for the Qwen3.5
+/// model card's recommended non-thinking text values. Request/response
+/// handling mirrors `LLMPolishingService.polish`.
+private struct QwenRecommendedSamplingPolishingService: LLMPolishingServicing {
+    func polish(
+        request: LLMPolishingRequest,
+        configuration: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        var urlRequest = URLRequest(url: configuration.endpointURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.timeoutInterval = 60
+
+        let messages = [["role": "system", "content": request.systemPrompt]]
+            + request.userPrompts.map { ["role": "user", "content": $0] }
+        let body: [String: Any] = [
+            "model": configuration.model,
+            "messages": messages,
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 2.0,
+        ]
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        guard let httpResponse = response as? HTTPURLResponse,
+            (200..<300).contains(httpResponse.statusCode)
+        else {
+            throw LLMPolishingError.requestFailed(
+                statusCode: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                body: String(decoding: data.prefix(500), as: UTF8.self)
+            )
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let choices = json["choices"] as? [[String: Any]],
+            let message = choices.first?["message"] as? [String: Any],
+            let content = message["content"] as? String
+        else {
+            throw LLMPolishingError.invalidResponse
+        }
+
+        return LLMPolishingResult(
+            rawText: request.inputText,
+            polishedText: content.trimmingCharacters(in: .whitespacesAndNewlines),
+            durationSeconds: 0
+        )
     }
 }
