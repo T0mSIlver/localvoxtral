@@ -52,9 +52,8 @@ enum BackendCatalog {
     /// bundled inside the .app. It replaced the uv-installed mlx-lm fork wheel:
     /// upstream mlx-lm went unmaintained and the fork existed to carry fixes
     /// (transformers pins, prompt-cache correctness, parent-pid watchdog) that
-    /// the Swift helper now owns directly. Swift symbols keep the historical
-    /// `mlxLM` name to keep that mechanical rename out of the functional diff.
-    static let mlxLM = ManagedBackendSpec(
+    /// the Swift helper now owns directly.
+    static let polishd = ManagedBackendSpec(
         id: "polishd",
         displayName: "Polishing engine",
         version: "bundled",
@@ -63,5 +62,5 @@ enum BackendCatalog {
         port: 8472
     )
 
-    static let all: [ManagedBackendSpec] = [voxmlx, mlxLM]
+    static let all: [ManagedBackendSpec] = [voxmlx, polishd]
 }

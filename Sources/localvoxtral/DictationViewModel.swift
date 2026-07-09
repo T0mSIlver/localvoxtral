@@ -202,7 +202,7 @@ final class DictationViewModel {
             return false
         }
         if isManagedPolishingWarmupWanted,
-           !isReady(backendManager.mlxLMStatus)
+           !isReady(backendManager.polishdStatus)
         {
             return false
         }
@@ -317,7 +317,7 @@ final class DictationViewModel {
     var managedStartupTask: Task<Void, Never>?
     @ObservationIgnored
     var managedStartupTaskID: UUID?
-    // Stops the managed mlx-lm (polishing) process when LLM polishing is turned
+    // Stops the managed polishd (polishing) process when LLM polishing is turned
     // off in Managed local mode. Kept awaitable so tests can await the shutdown.
     // Shutdown tasks are tracked (never fire-and-forget) so a warmup requested
     // right after a stop can cancel a still-queued stop and serialize behind a
@@ -939,7 +939,7 @@ final class DictationViewModel {
         }
 
         if previousMode == .managedLocal, mode == .externalURL {
-            Log.backends.info("polishing backend mode switched to external; stopping managed mlx-lm")
+            Log.backends.info("polishing backend mode switched to external; stopping managed polishd")
             cancelManagedStartupTask()
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
@@ -971,13 +971,13 @@ final class DictationViewModel {
 
     func applyDictationOutputModeChange(_ mode: DictationOutputMode) {
         // The menu-bar output mode is not a reachability input (see
-        // `isOverlayBufferSessionReachable`), so managed mlx-lm is unaffected.
+        // `isOverlayBufferSessionReachable`), so managed polishd is unaffected.
         settings.dictationOutputMode = mode
     }
 
     /// The trigger picker in Settings > Dictation. Switching between the
     /// single-modifier gesture and per-mode shortcuts changes whether an
-    /// Overlay Buffer session is reachable, so managed mlx-lm follows.
+    /// Overlay Buffer session is reachable, so managed polishd follows.
     func applyDictationTriggerModeChange(modifierOnlyEnabled: Bool) {
         guard settings.modifierOnlyHotKeyEnabled != modifierOnlyEnabled else { return }
         let wasReachable = settings.isOverlayBufferSessionReachable
@@ -986,7 +986,7 @@ final class DictationViewModel {
         handleOverlayReachabilityTransition(wasReachable: wasReachable)
     }
 
-    /// Managed mlx-lm follows Overlay Buffer reachability: polishing runs only
+    /// Managed polishd follows Overlay Buffer reachability: polishing runs only
     /// on Overlay Buffer commits, so when no trigger can start one the process
     /// is stopped instead of idling in memory.
     func handleOverlayReachabilityTransition(wasReachable: Bool) {
@@ -999,7 +999,7 @@ final class DictationViewModel {
         if isReachable {
             startPolishingWarmup()
         } else {
-            Log.backends.info("no Overlay Buffer trigger configured; stopping managed mlx-lm")
+            Log.backends.info("no Overlay Buffer trigger configured; stopping managed polishd")
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
@@ -1010,7 +1010,7 @@ final class DictationViewModel {
     }
 
     /// React to the LLM polishing enable toggle. Disabling polishing in Managed
-    /// local polishing mode stops the managed mlx-lm process so it stops holding memory.
+    /// local polishing mode stops the managed polishd process so it stops holding memory.
     /// Enabling in Managed local mode eagerly starts the polishing warmup so
     /// install/model progress is visible in Settings. External URL mode owns
     /// no local process.
@@ -1022,7 +1022,7 @@ final class DictationViewModel {
         if enabled, settings.isOverlayBufferSessionReachable {
             startPolishingWarmup()
         } else {
-            Log.backends.info("polishing disabled; stopping managed mlx-lm")
+            Log.backends.info("polishing disabled; stopping managed polishd")
             polishingWarmupTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
                 guard !Task.isCancelled else { return }
@@ -1093,9 +1093,9 @@ final class DictationViewModel {
         let snapshot = DiagnosticsExporter.makeSnapshot(
             settings: settings,
             voxmlxStatus: backendManager.voxmlxStatus,
-            mlxLMStatus: backendManager.mlxLMStatus,
+            polishdStatus: backendManager.polishdStatus,
             voxmlxRecentOutput: backendManager.recentOutput(for: BackendCatalog.voxmlx),
-            mlxLMRecentOutput: backendManager.recentOutput(for: BackendCatalog.mlxLM)
+            polishdRecentOutput: backendManager.recentOutput(for: BackendCatalog.polishd)
         )
 
         guard let desktop = FileManager.default.urls(
@@ -1678,10 +1678,10 @@ final class DictationViewModel {
 
     /// Warmup-time variant of `isManagedPolishingRequired`: instead of a
     /// session's output mode, gates on whether a keyboard trigger can start
-    /// an Overlay Buffer session at all. When false, managed mlx-lm stays
+    /// an Overlay Buffer session at all. When false, managed polishd stays
     /// stopped — an overlay session started from the menu-bar button still
     /// polishes via the dictation-time `ensureReady` backstop, paying the
-    /// mlx-lm cold start (deliberate: see
+    /// polishd cold start (deliberate: see
     /// `SettingsStore.isOverlayBufferSessionReachable`).
     var isManagedPolishingWarmupWanted: Bool {
         settings.llmPolishingEnabled

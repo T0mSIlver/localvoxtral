@@ -104,7 +104,7 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
     func testStart_seedsItemStatesFromCurrentBackendStatus() {
         let manager = OnboardingTestBackendManager()
         manager.voxmlxStatus = .installing(progress: .downloading(fraction: 0.5))
-        manager.mlxLMStatus = .notInstalled
+        manager.polishdStatus = .notInstalled
         let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
 
         driver.start(dictation: true, polishing: true)
@@ -244,7 +244,7 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
     }
 
     var voxmlxStatus: ManagedBackendStatus = .notInstalled
-    var mlxLMStatus: ManagedBackendStatus = .notInstalled
+    var polishdStatus: ManagedBackendStatus = .notInstalled
     @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
         let id = UUID()
