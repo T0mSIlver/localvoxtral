@@ -52,6 +52,15 @@ enum PolishModelCatalog {
             chatTemplateArguments: ["enable_thinking": false],
             summary: "Stronger cleanup, slower first load"
         ),
+        PolishModelOption(
+            repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+            displayName: "Qwen3.5 9B (best quality)",
+            sizeOnDiskGB: 6.6,
+            estimatedRAMGB: 7.0,
+            samplingDefaults: nil,
+            chatTemplateArguments: ["enable_thinking": false],
+            summary: "Highest quality, needs a Mac with headroom"
+        ),
     ]
 
     static let defaultOption = options[0]
