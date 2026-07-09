@@ -84,6 +84,7 @@ struct DictationOverlayView: View {
     /// Sizing shared with `DictationOverlayController`'s panel measurement —
     /// see `OverlayLayoutMetrics` for why the two must stay in lockstep.
     let metrics: OverlayLayoutMetrics
+    var polished: Bool = false
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -135,6 +136,26 @@ struct DictationOverlayView: View {
         metrics.unclampedBodyTextHeight(for: displayText)
     }
 
+    /// Subtle, trailing "Polished" pill shown while the LLM-polished text is
+    /// held before dismissal. Intentionally quiet — it annotates the panel
+    /// rather than competing with the transcript below it.
+    private var polishedBadge: some View {
+        Label("Polished", systemImage: "wand.and.stars")
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(
+                Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+            )
+            .accessibilityLabel("Polished by the language model")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: OverlayLayoutMetrics.stackSpacing) {
             HStack(alignment: .center, spacing: 6) {
@@ -146,6 +167,9 @@ struct DictationOverlayView: View {
                         .controlSize(.small)
                 }
                 Spacer(minLength: 0)
+                if polished {
+                    polishedBadge
+                }
             }
             .frame(height: metrics.headerHeight)
 

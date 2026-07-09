@@ -103,6 +103,16 @@ struct StatusPopoverView: View {
             }
             .disabled(!hasLatestSegment)
 
+            // Polished commits can't be un-typed into the target app; offer the
+            // pre-polish raw transcript for one-tap copy instead (F6). Appears
+            // only after a polish-changed commit; a one-line action, never the
+            // transcript itself (owner rule: no long text in the popover).
+            if viewModel.canCopyRawTranscript {
+                Button("Copy Raw Transcript") {
+                    viewModel.copyRawTranscript()
+                }
+            }
+
             Divider()
 
             Button("Settings…") {

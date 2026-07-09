@@ -230,6 +230,9 @@ extension DictationViewModel {
 
     func beginDictationSession(outputMode: DictationOutputMode? = nil) {
         lastSocketErrorMessage = nil
+        // A new session starts: retire any prior "Copy raw transcript"
+        // affordance so it never references a stale, unrelated transcript.
+        lastPolishChangedRawTranscript = nil
         polishAndCommitTask?.cancel()
         polishAndCommitTask = nil
         stopFinalizationTask?.cancel()
@@ -896,6 +899,23 @@ extension DictationViewModel {
                             self.currentDictationEventText = self.clipboardPayloadSubstituted(
                                 committedText, payload: clipboardPayload
                             )
+                            // Polish-changed iff the guarded/verified committed
+                            // text differs from the pre-polish working text: a
+                            // `.clean` outcome that left the text identical, a
+                            // `.fallback` to raw, or a placeholder-count revert
+                            // all leave committedText == workingText → not
+                            // changed. Drives the overlay badge (during hold)
+                            // and the "Copy raw transcript" popover affordance.
+                            let polishChanged = committedText != workingText
+                            self.overlayBufferCoordinator.markPolished(polishChanged)
+                            // Retain the RAW (pre-everything) transcript for the
+                            // one-line popover copy affordance — but only when the
+                            // commit visibly changed it, so a no-op polish leaves
+                            // no stale affordance. Persisted `rawText` uses the
+                            // same `originalText`.
+                            self.lastPolishChangedRawTranscript =
+                                (polishChanged && originalText != committedText)
+                                ? originalText : nil
                             self.refreshOverlayBufferSession()
                             Log.polishing.info(
                                 "LLM polishing succeeded in \(String(format: "%.2f", result.durationSeconds))s"

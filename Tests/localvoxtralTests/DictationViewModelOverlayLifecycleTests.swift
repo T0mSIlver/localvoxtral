@@ -462,6 +462,112 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 
+    // MARK: - F6: polished badge flag + raw-transcript copy affordance
+
+    /// Shared completion wait for the F6 tests (poll-with-deadline, matching
+    /// the file's existing pattern). Known debt: the whole file's completion
+    /// waiting is wall-clock polling rather than an injected clock — new tests
+    /// at least share one helper instead of inlining more copies.
+    private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
+        let deadline = ContinuousClock.now + .seconds(1)
+        while viewModel.isCompletingStoppedSession, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testPolishChangedCommitFlagsBadgeAndRetainsRawTranscript() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        let polishingService = CapturingMockLLMPolishingService(resultText: "Hello world.")
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = polishingService
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello world"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(viewModel.currentDictationEventText, "Hello world.")
+        XCTAssertEqual(
+            overlayCoordinator.markPolishedCalls.last, true,
+            "the overlay must be told the polish changed the text so it shows the badge"
+        )
+        XCTAssertEqual(
+            viewModel.lastPolishChangedRawTranscript, "hello world",
+            "the RAW pre-polish transcript is retained for the popover copy affordance"
+        )
+        XCTAssertTrue(viewModel.canCopyRawTranscript)
+    }
+
+    func testUnchangedPolishOffersNoBadgeOrRawCopy() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+
+        let overlayCoordinator = MockOverlayCoordinator()
+        // The model returns the input verbatim — no visible change to annotate.
+        let polishingService = CapturingMockLLMPolishingService(resultText: "hello world")
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = polishingService
+        // Seed a stale affordance to prove the unchanged commit clears it.
+        viewModel.lastPolishChangedRawTranscript = "stale raw"
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "hello world"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(overlayCoordinator.markPolishedCalls.last, false)
+        XCTAssertNil(viewModel.lastPolishChangedRawTranscript)
+        XCTAssertFalse(viewModel.canCopyRawTranscript)
+    }
+
+    func testCopyRawTranscriptWritesRawTextThroughPasteboardSeam() {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        retainForTestProcessLifetime(viewModel)
+
+        var written: [String] = []
+        viewModel.debugPasteboardWriteOverride = { written.append($0) }
+
+        // Nothing retained: the action is a no-op and writes nothing.
+        XCTAssertFalse(viewModel.canCopyRawTranscript)
+        viewModel.copyRawTranscript()
+        XCTAssertTrue(written.isEmpty)
+
+        viewModel.lastPolishChangedRawTranscript = "the raw words"
+        XCTAssertTrue(viewModel.canCopyRawTranscript)
+        viewModel.copyRawTranscript()
+
+        XCTAssertEqual(written, ["the raw words"], "the RAW transcript is what lands on the clipboard")
+        XCTAssertEqual(viewModel.statusText, "Raw transcript copied.")
+    }
+
     func testFinishStoppedSessionSendsReplacementDictionaryInLLMRequest() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.replacementDictionaryEnabled = true
@@ -1127,6 +1233,7 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var resetCallCount = 0
     var captureLiveCommitTargetAppPIDCallCount = 0
     var commitTargetAppPID: pid_t? = nil
+    var markPolishedCalls: [Bool] = []
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
@@ -1170,5 +1277,9 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
     func captureLiveCommitTargetAppPID() {
         captureLiveCommitTargetAppPIDCallCount += 1
+    }
+
+    func markPolished(_ polished: Bool) {
+        markPolishedCalls.append(polished)
     }
 }
