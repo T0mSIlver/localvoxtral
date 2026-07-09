@@ -1131,6 +1131,54 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertFalse(viewModel.isConnectingRealtimeSession)
     }
 
+    func testDelayedSecureInputRefusalAfterManagedStartupDoesNotWedgeTheIcon() async {
+        // Codex finding on #90 (round 8): secure input can turn ON while a
+        // managed backend boots. The refusal then fires from the startup
+        // task — after the initiating tap already ended — and no gesture-end
+        // event remains, so the red icon and "Blocked" status wedged until
+        // the next interaction. The startup path now ends the refusal
+        // signals itself when no gesture is still held.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false } // off at press
+        addTeardownBlock {
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+
+        let backendManager = FakeManagedBackendManager()
+        backendManager.suspendEnsure = true
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.beginDictationAfterManagedBackendIfNeeded()
+        await backendManager.waitUntilEnsureStarted()
+        XCTAssertTrue(viewModel.isConnectingRealtimeSession, "preflight passed; backend boot in flight")
+
+        // The user focuses a password field while the backend boots; the
+        // initiating gesture is long over by the time startup completes.
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        backendManager.resumeEnsure()
+        await viewModel.managedStartupTask?.value
+
+        XCTAssertFalse(viewModel.isDictating, "the doomed live session is still refused")
+        XCTAssertEqual(soundPlays, 1, "the audible refusal cue fired")
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.secureKeyboardEntryWarningMessage,
+            "the popover keeps the explanation"
+        )
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "no gesture-end event will ever come — the icon must not wedge"
+        )
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
     private func makeViewModel(
         outputMode: DictationOutputMode,
         backendManager: (any ManagedBackendManaging)? = nil

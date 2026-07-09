@@ -423,6 +423,14 @@ final class DictationViewModel {
     // Tracks physical key state so repeat key-down events do not retrigger actions.
     @ObservationIgnored
     private var isPushToTalkShortcutHeld = false
+
+    /// True while the user is still physically holding the dictation
+    /// shortcut/modifier — a release event is still coming, and it owns
+    /// ending the attempt's refusal signals. The managed-startup path in
+    /// DictationViewModel+Session.swift consults this: a secure-input
+    /// refusal that fires after backend boot may land with no gesture-end
+    /// event left to clear it.
+    var isDictationAttemptGestureActive: Bool { isPushToTalkShortcutHeld }
     // True only when a start attempt was initiated by push-to-talk and may still need
     // to be cancelled if the user releases before dictation actually begins.
     @ObservationIgnored

@@ -136,6 +136,16 @@ extension DictationViewModel {
                   self.isConnectingRealtimeSession
             else { return }
             self.beginDictationSession(outputMode: outputMode)
+            // beginDictationSession re-checks secure input and may refuse
+            // HERE — long after the initiating gesture ended (a toggle tap
+            // ends immediately; a hold may release while the backend boots).
+            // With no gesture-end event left, the refusal signals would
+            // wedge (Codex finding, round 8). Mirror the refused-tap
+            // contract: the sound fired and the popover line stays; the
+            // icon and "Blocked" status end with the attempt.
+            if !self.isDictationAttemptGestureActive {
+                self.clearSecureInputRefusalSignalsIfAttemptEnded()
+            }
         }
     }
 
