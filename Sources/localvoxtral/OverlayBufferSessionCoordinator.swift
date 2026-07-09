@@ -254,9 +254,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     }
 
     func showSecureInputWarning() {
-        stateMachine.setBufferingWarning(
-            "Secure input is on — auto-paste is blocked; the text will be copied at stop."
-        )
+        stateMachine.setSecureInputWarning()
         renderCurrentSnapshot()
     }
 

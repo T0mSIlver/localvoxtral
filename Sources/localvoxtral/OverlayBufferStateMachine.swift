@@ -103,12 +103,14 @@ struct OverlayBufferStateMachine {
         let phase: OverlayBufferPhase
         let bufferText: String
         let errorMessage: String?
+        let secureInputActive: Bool
         let anchor: OverlayAnchor
     }
 
     private(set) var phase: OverlayBufferPhase = .idle
     private(set) var bufferText = ""
     private(set) var errorMessage: String?
+    private(set) var secureInputActive = false
     private(set) var anchor: OverlayAnchor?
 
     var snapshot: Snapshot? {
@@ -117,6 +119,7 @@ struct OverlayBufferStateMachine {
             phase: phase,
             bufferText: bufferText,
             errorMessage: errorMessage,
+            secureInputActive: secureInputActive,
             anchor: anchor
         )
     }
@@ -130,15 +133,19 @@ struct OverlayBufferStateMachine {
         phase = .buffering
         bufferText = ""
         errorMessage = nil
+        secureInputActive = false
         self.anchor = anchor
     }
 
-    /// Shows a warning line while buffering, reusing the errorMessage surface
-    /// the overlay view and height measurement already render. startSession
-    /// resets it; commitFailed overwrites it with the commit outcome.
-    mutating func setBufferingWarning(_ message: String) {
+    /// Marks the buffering session as running under Secure Keyboard Entry.
+    /// The overlay view folds this into the phase title ("Listening (secure
+    /// input)") rather than a separate warning sentence — a full sentence in
+    /// the panel read as clutter (owner feedback on #90). startSession resets
+    /// it; it persists through finalizing so the marker doesn't blink away
+    /// while the commit is still pending.
+    mutating func setSecureInputWarning() {
         guard phase == .buffering else { return }
-        errorMessage = message
+        secureInputActive = true
     }
 
     mutating func updateBuffer(text: String, anchor: OverlayAnchor?) {
@@ -170,6 +177,7 @@ struct OverlayBufferStateMachine {
         phase = .idle
         bufferText = ""
         errorMessage = nil
+        secureInputActive = false
         anchor = nil
     }
 }

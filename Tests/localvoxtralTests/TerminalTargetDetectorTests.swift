@@ -377,6 +377,41 @@ final class TerminalTargetDetectorTests: XCTestCase {
         )
     }
 
+    func testMenuBarSecureWarningSurvivesStopFinalizationAndPolish() {
+        // Owner field feedback on #90: dismissing a secure-input overlay
+        // session flashed the yellow session icon while LLM polishing ran —
+        // the gesture-end clear fired during stop finalization. The warning
+        // describes text that is still headed for the clipboard fallback;
+        // it must stay red until session teardown clears it.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+        viewModel.sessionOutputMode = .overlayBuffer
+
+        // The exact mid-dismiss state stopDictation leaves behind: dictation
+        // off, finalization (and the polish task) still running, indicator
+        // on the yellow session icon.
+        viewModel.isDictating = false
+        viewModel.isFinalizingStop = true
+        viewModel.setRealtimeIndicatorConnected()
+
+        viewModel.clearSecureInputRefusalSignalsIfAttemptEnded()
+        XCTAssertEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the release-time clear must not drop the warning to the session icon mid-polish"
+        )
+
+        // Once finalization actually ends, the gesture-end clear may act.
+        viewModel.isFinalizingStop = false
+        viewModel.clearSecureInputRefusalSignalsIfAttemptEnded()
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+    }
+
     func testMenuBarSecureWarningClearsAtSessionEnd() {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }

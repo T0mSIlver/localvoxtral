@@ -153,10 +153,15 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         coordinator.startSession()
         coordinator.showSecureInputWarning()
 
-        XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.phase, .buffering)
-        XCTAssertNotNil(
-            renderer.snapshots.compactMap { $0 }.last?.errorMessage,
-            "the warning must be visible in the overlay panel, not only the closed popover"
+        let rendered = renderer.snapshots.compactMap { $0 }.last
+        XCTAssertEqual(rendered?.phase, .buffering)
+        XCTAssertEqual(
+            rendered?.secureInputActive, true,
+            "the marker must be visible in the overlay panel, not only the closed popover"
+        )
+        XCTAssertNil(
+            rendered?.errorMessage,
+            "no separate warning sentence — the phase title carries it (owner feedback on #90)"
         )
     }
 

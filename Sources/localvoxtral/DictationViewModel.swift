@@ -245,9 +245,15 @@ final class DictationViewModel {
 
     /// Ends the refused-start warning when no session is running: the icon
     /// (and the "Blocked" status line) return to normal, while `lastError`
-    /// keeps the one-line explanation in the popover.
+    /// keeps the one-line explanation in the popover. A stopped session that
+    /// is still finalizing/polishing is NOT an ended attempt — its text is
+    /// still headed for the clipboard fallback, and clearing here dropped
+    /// the icon to the yellow session state mid-polish (owner field feedback
+    /// on #90); session teardown owns that clear.
     func clearSecureInputRefusalSignalsIfAttemptEnded() {
-        guard !isDictating, !isConnectingRealtimeSession, sessionSecureInputActive else { return }
+        guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop,
+              sessionSecureInputActive
+        else { return }
         sessionSecureInputActive = false
         if statusText == StatusStrings.liveDictationBlockedBySecureInput {
             statusText = StatusStrings.ready
