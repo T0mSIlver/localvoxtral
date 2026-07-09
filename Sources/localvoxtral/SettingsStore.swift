@@ -206,7 +206,7 @@ final class SettingsStore {
     )
 
     /// Default model for the OpenAI-compatible LLM polishing server. Used as
-    /// the external-mode fallback and as the model the managed mlx-lm backend
+    /// the external-mode fallback and as the model the managed polishd backend
     /// is expected to serve.
     static let defaultLLMPolishingModel = PolishModelCatalog.defaultOption.repoID
 
@@ -745,11 +745,11 @@ final class SettingsStore {
     /// True when a keyboard trigger can start an Overlay Buffer session: the
     /// single-modifier tap gesture, or a dedicated Overlay Buffer shortcut.
     /// LLM polishing runs only on Overlay Buffer commits, so when this is
-    /// false Settings shows polishing as unavailable and managed mlx-lm is
+    /// false Settings shows polishing as unavailable and managed polishd is
     /// kept stopped. The menu-bar Start Dictation button deliberately does
     /// not count (owner call, 2026-07-06): an overlay session started from
     /// the popover still polishes via the session-time ensureReady backstop,
-    /// paying the mlx-lm cold start.
+    /// paying the polishd cold start.
     var isOverlayBufferSessionReachable: Bool {
         modifierOnlyHotKeyEnabled || overlayBufferShortcut != nil
     }

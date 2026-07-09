@@ -47,16 +47,16 @@ final class DiagnosticsExporterTests: XCTestCase {
     private func makeSnapshot(
         settings: SettingsStore,
         voxmlxStatus: ManagedBackendStatus = .notInstalled,
-        mlxLMStatus: ManagedBackendStatus = .notInstalled,
+        polishdStatus: ManagedBackendStatus = .notInstalled,
         voxmlxRecentOutput: [String] = [],
-        mlxLMRecentOutput: [String] = []
+        polishdRecentOutput: [String] = []
     ) -> DiagnosticsSnapshot {
         DiagnosticsExporter.makeSnapshot(
             settings: settings,
             voxmlxStatus: voxmlxStatus,
-            mlxLMStatus: mlxLMStatus,
+            polishdStatus: polishdStatus,
             voxmlxRecentOutput: voxmlxRecentOutput,
-            mlxLMRecentOutput: mlxLMRecentOutput
+            polishdRecentOutput: polishdRecentOutput
         )
     }
 
@@ -87,7 +87,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         let snapshot = makeSnapshot(
             settings: store,
             voxmlxRecentOutput: ["[voxmlx stdout] INFO started", "[voxmlx stderr] listening"],
-            mlxLMRecentOutput: ["[mlx-lm stdout] ready"]
+            polishdRecentOutput: ["[localvoxtral-polishd stdout] ready"]
         )
         let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())
 
@@ -95,7 +95,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("[voxmlx stdout] INFO started"))
         XCTAssertTrue(report.contains("[voxmlx stderr] listening"))
         XCTAssertTrue(report.contains("-- localvoxtral-polishd --"))
-        XCTAssertTrue(report.contains("[mlx-lm stdout] ready"))
+        XCTAssertTrue(report.contains("[localvoxtral-polishd stdout] ready"))
     }
 
     // MARK: - API key redaction (the core privacy property)

@@ -68,16 +68,16 @@ extension BackendProcessSupervisor: ManagedBackendSupervising {}
 @MainActor
 protocol ManagedBackendManaging: AnyObject {
     var voxmlxStatus: ManagedBackendStatus { get }
-    var mlxLMStatus: ManagedBackendStatus { get }
+    var polishdStatus: ManagedBackendStatus { get }
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> { get }
 
     func ensureReady(dictation: Bool, polishing: Bool) async throws
     func stopAll() async
-    /// Stop only the managed voxmlx (dictation) process, leaving mlx-lm
+    /// Stop only the managed voxmlx (dictation) process, leaving polishd
     /// (polishing) untouched. A no-op if voxmlx was never started.
     func stopDictation() async
-    /// Stop only the managed mlx-lm (polishing) process, leaving voxmlx
-    /// (dictation) untouched. A no-op if mlx-lm was never started.
+    /// Stop only the managed polishd (polishing) process, leaving voxmlx
+    /// (dictation) untouched. A no-op if polishd was never started.
     func stopPolishing() async
     /// Recent supervisor output lines for the given backend, or empty if the
     /// supervisor has not been created yet (backend never started). For local
@@ -92,7 +92,7 @@ final class BackendManager: ManagedBackendManaging {
     typealias PolishingModelProvider = @MainActor () -> String
 
     private(set) var voxmlxStatus: ManagedBackendStatus
-    private(set) var mlxLMStatus: ManagedBackendStatus
+    private(set) var polishdStatus: ManagedBackendStatus
 
     @ObservationIgnored private let installer: any BackendInstalling
     @ObservationIgnored private let modelPreparer: any ModelPreparing
@@ -100,7 +100,7 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
     @ObservationIgnored private var voxmlxSupervisor: (any ManagedBackendSupervising)?
-    @ObservationIgnored private var mlxLMSupervisor: (any ManagedBackendSupervising)?
+    @ObservationIgnored private var polishdSupervisor: (any ManagedBackendSupervising)?
     // Per-backend single-flight slots. A global shared slot (the previous
     // design) let a lingering dictation run swallow a polishing request whose
     // flags it never covered — field-hit 2026-07-04: enabling polishing did
@@ -109,7 +109,7 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private var dictationEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var polishingEnsureTask: Task<Void, Error>?
     @ObservationIgnored private var voxmlxStateMirrorTask: Task<Void, Never>?
-    @ObservationIgnored private var mlxLMStateMirrorTask: Task<Void, Never>?
+    @ObservationIgnored private var polishdStateMirrorTask: Task<Void, Never>?
     @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     #if DEBUG
     @ObservationIgnored var debugStatusChangeSink: ((ManagedBackendSpec, ManagedBackendStatus) -> Void)?
@@ -134,7 +134,7 @@ final class BackendManager: ManagedBackendManaging {
         self.voxmlxStatus = installer.needsInstallOrUpdate(BackendCatalog.voxmlx)
             ? .notInstalled
             : .stopped
-        self.mlxLMStatus = installer.needsInstallOrUpdate(BackendCatalog.mlxLM)
+        self.polishdStatus = installer.needsInstallOrUpdate(BackendCatalog.polishd)
             ? .notInstalled
             : .stopped
     }
@@ -161,7 +161,7 @@ final class BackendManager: ManagedBackendManaging {
             tasks.append(singleFlightEnsureTask(for: BackendCatalog.voxmlx))
         }
         if polishing {
-            tasks.append(singleFlightEnsureTask(for: BackendCatalog.mlxLM))
+            tasks.append(singleFlightEnsureTask(for: BackendCatalog.polishd))
         }
         for task in tasks {
             try await awaitEnsureReadyTask(task)
@@ -175,7 +175,7 @@ final class BackendManager: ManagedBackendManaging {
         if spec.id == BackendCatalog.voxmlx.id, let dictationEnsureTask {
             return dictationEnsureTask
         }
-        if spec.id == BackendCatalog.mlxLM.id, let polishingEnsureTask {
+        if spec.id == BackendCatalog.polishd.id, let polishingEnsureTask {
             return polishingEnsureTask
         }
         let task = Task { @MainActor in
@@ -219,20 +219,20 @@ final class BackendManager: ManagedBackendManaging {
 
     func stopAll() async {
         let cancelledDictationEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.voxmlx)
-        let cancelledPolishingEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.mlxLM)
-        let hadPolishingSupervisor = mlxLMSupervisor != nil
+        let cancelledPolishingEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.polishd)
+        let hadPolishingSupervisor = polishdSupervisor != nil
         await voxmlxSupervisor?.stop()
-        await mlxLMSupervisor?.stop()
-        mlxLMSupervisor = nil
+        await polishdSupervisor?.stop()
+        polishdSupervisor = nil
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
-        mlxLMStateMirrorTask?.cancel()
-        mlxLMStateMirrorTask = nil
+        polishdStateMirrorTask?.cancel()
+        polishdStateMirrorTask = nil
         if cancelledDictationEnsure || voxmlxSupervisor != nil {
             setStatus(.stopped, for: BackendCatalog.voxmlx)
         }
         if cancelledPolishingEnsure || hadPolishingSupervisor {
-            setStatus(.stopped, for: BackendCatalog.mlxLM)
+            setStatus(.stopped, for: BackendCatalog.polishd)
         }
     }
 
@@ -248,16 +248,16 @@ final class BackendManager: ManagedBackendManaging {
 
     func stopPolishing() async {
         // Stop only the polishing supervisor. voxmlx (dictation) keeps running
-        // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
+        // and its state mirror is left intact. Modeled on stopAll()'s polishd
         // branch: cancel the mirror task and pin the status to .stopped.
-        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.mlxLM)
-        let hadSupervisor = mlxLMSupervisor != nil
-        await mlxLMSupervisor?.stop()
-        mlxLMSupervisor = nil
-        mlxLMStateMirrorTask?.cancel()
-        mlxLMStateMirrorTask = nil
+        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.polishd)
+        let hadSupervisor = polishdSupervisor != nil
+        await polishdSupervisor?.stop()
+        polishdSupervisor = nil
+        polishdStateMirrorTask?.cancel()
+        polishdStateMirrorTask = nil
         if cancelledEnsure || hadSupervisor {
-            setStatus(.stopped, for: BackendCatalog.mlxLM)
+            setStatus(.stopped, for: BackendCatalog.polishd)
         }
     }
 
@@ -283,8 +283,8 @@ final class BackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.voxmlx.id:
             return voxmlxStatus
-        case BackendCatalog.mlxLM.id:
-            return mlxLMStatus
+        case BackendCatalog.polishd.id:
+            return polishdStatus
         default:
             return .failed(summary: "Unknown managed backend '\(spec.id)'.", detail: nil)
         }
@@ -294,8 +294,8 @@ final class BackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.voxmlx.id:
             return voxmlxSupervisor?.recentOutput ?? []
-        case BackendCatalog.mlxLM.id:
-            return mlxLMSupervisor?.recentOutput ?? []
+        case BackendCatalog.polishd.id:
+            return polishdSupervisor?.recentOutput ?? []
         default:
             return []
         }
@@ -420,13 +420,13 @@ final class BackendManager: ManagedBackendManaging {
             voxmlxSupervisor = supervisor
             startStateMirrorIfNeeded(supervisor: supervisor, spec: spec)
             return supervisor
-        case BackendCatalog.mlxLM.id:
-            if let mlxLMSupervisor {
-                startStateMirrorIfNeeded(supervisor: mlxLMSupervisor, spec: spec)
-                return mlxLMSupervisor
+        case BackendCatalog.polishd.id:
+            if let polishdSupervisor {
+                startStateMirrorIfNeeded(supervisor: polishdSupervisor, spec: spec)
+                return polishdSupervisor
             }
             let supervisor = supervisorFactory(configuration(for: spec))
-            mlxLMSupervisor = supervisor
+            polishdSupervisor = supervisor
             startStateMirrorIfNeeded(supervisor: supervisor, spec: spec)
             return supervisor
         default:
@@ -478,7 +478,7 @@ final class BackendManager: ManagedBackendManaging {
                 "--parent-pid",
                 parentPID,
             ]
-        case BackendCatalog.mlxLM.id:
+        case BackendCatalog.polishd.id:
             return [
                 "--model",
                 polishingModelProvider(),
@@ -515,7 +515,7 @@ final class BackendManager: ManagedBackendManaging {
                     "tekken.json",
                 ]
             )
-        case BackendCatalog.mlxLM.id:
+        case BackendCatalog.polishd.id:
             return ModelPreparationRequest(
                 backendID: spec.id,
                 displayName: spec.displayName,
@@ -558,7 +558,7 @@ final class BackendManager: ManagedBackendManaging {
             // First run downloads the model inside the server before /health
             // responds; 600 s is too tight on slow links.
             return .seconds(1800)
-        case BackendCatalog.mlxLM.id:
+        case BackendCatalog.polishd.id:
             // Model weights are downloaded by prepareModel before the helper
             // spawns; /health waits only on model load + first Metal JIT
             // compile (seconds, not minutes).
@@ -572,8 +572,8 @@ final class BackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.voxmlx.id:
             return voxmlxSupervisor?.state == .running
-        case BackendCatalog.mlxLM.id:
-            return mlxLMSupervisor?.state == .running
+        case BackendCatalog.polishd.id:
+            return polishdSupervisor?.state == .running
         default:
             return false
         }
@@ -587,9 +587,9 @@ final class BackendManager: ManagedBackendManaging {
         case BackendCatalog.voxmlx.id:
             guard voxmlxStateMirrorTask == nil else { return }
             voxmlxStateMirrorTask = makeStateMirrorTask(supervisor: supervisor, spec: spec)
-        case BackendCatalog.mlxLM.id:
-            guard mlxLMStateMirrorTask == nil else { return }
-            mlxLMStateMirrorTask = makeStateMirrorTask(supervisor: supervisor, spec: spec)
+        case BackendCatalog.polishd.id:
+            guard polishdStateMirrorTask == nil else { return }
+            polishdStateMirrorTask = makeStateMirrorTask(supervisor: supervisor, spec: spec)
         default:
             break
         }
@@ -629,8 +629,8 @@ final class BackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.voxmlx.id:
             voxmlxStatus = status
-        case BackendCatalog.mlxLM.id:
-            mlxLMStatus = status
+        case BackendCatalog.polishd.id:
+            polishdStatus = status
         default:
             break
         }

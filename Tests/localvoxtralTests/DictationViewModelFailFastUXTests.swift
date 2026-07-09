@@ -382,7 +382,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         await emitStatusAndAwaitMirror(
             backendManager, viewModel: viewModel,
-            spec: BackendCatalog.mlxLM,
+            spec: BackendCatalog.polishd,
             status: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 1, totalBytes: 4))
         )
 
@@ -591,7 +591,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.applyDictationBackendModeChange(.managedLocal)
         await backendManager.waitUntilEnsureStarted()
 
-        // Turning polishing off must stop mlx-lm only — the voxmlx warmup keeps
+        // Turning polishing off must stop polishd only — the voxmlx warmup keeps
         // its own task slot and must survive (regression: a shared slot let this
         // cancel the in-flight dictation warmup).
         viewModel.llmPolishingEnabledDidChange(false)
@@ -636,7 +636,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     /// Shortcuts mode with no Overlay Buffer shortcut and the menu-bar output
     /// mode on Live Auto-Paste: no trigger can start an Overlay Buffer session,
-    /// so enabling polishing must not start managed mlx-lm.
+    /// so enabling polishing must not start managed polishd.
     func testPolishingEnableSkipsWarmupWhenOverlayBufferUnreachable() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
@@ -673,7 +673,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     /// With the single-modifier gesture active, tap always starts an Overlay
     /// Buffer session, so switching the menu-bar output mode to Live Auto-Paste
-    /// must keep managed mlx-lm running (regression: the old check stopped it).
+    /// must keep managed polishd running (regression: the old check stopped it).
     func testOutputModeSwitchToLiveKeepsPolishingWhenGestureConfigured() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
@@ -691,7 +691,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     /// Exact field repro (2026-07-06): shortcuts mode, menu-bar output mode
     /// still on Overlay Buffer, user clears the Overlay Buffer shortcut —
-    /// polishing must become unavailable and managed mlx-lm must stop. The
+    /// polishing must become unavailable and managed polishd must stop. The
     /// menu-bar output mode does not count as a trigger.
     func testClearingOverlayShortcutStopsManagedPolishing() async {
         let backendManager = FakeManagedBackendManager()
@@ -740,7 +740,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         // Off then immediately on: the queued stop must never run, or it lands
-        // after the warmup and stops the mlx-lm the settings now require.
+        // after the warmup and stops the polishd the settings now require.
         viewModel.llmPolishingEnabledDidChange(false)
         viewModel.llmPolishingEnabledDidChange(true)
         await viewModel.polishingWarmupTask?.value
@@ -780,7 +780,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertNil(viewModel.polishingWarmupTask)
     }
 
-    // MARK: - LLM polishing enable toggle stops managed mlx-lm
+    // MARK: - LLM polishing enable toggle stops managed polishd
 
     func testLLMPolishingDisabledInManagedModeStopsPolishing() async {
         let backendManager = FakeManagedBackendManager()
@@ -864,7 +864,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     }
 
     /// The menu-bar output mode is not a reachability input: switching it in
-    /// either direction must never start or stop managed mlx-lm.
+    /// either direction must never start or stop managed polishd.
     func testDictationOutputModeSwitchesNeverTouchManagedPolishing() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
@@ -1039,7 +1039,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testMenuBarIndicatorShowsIdleWhenRequiredManagedBackendsAreReady() {
         let backendManager = FakeManagedBackendManager()
         backendManager.voxmlxStatus = .ready
-        backendManager.mlxLMStatus = .ready
+        backendManager.polishdStatus = .ready
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
@@ -1054,7 +1054,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testMenuBarIndicatorShowsIdleForExternalModesEvenWhenManagedBackendsAreStopped() {
         let backendManager = FakeManagedBackendManager()
         backendManager.voxmlxStatus = .stopped
-        backendManager.mlxLMStatus = .failed(summary: "mlx-lm failed to start.", detail: "trace")
+        backendManager.polishdStatus = .failed(summary: "mlx-lm failed to start.", detail: "trace")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .externalURL
@@ -1069,7 +1069,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testMenuBarIndicatorShowsFailureWhenRequiredManagedPolishingBackendFailed() {
         let backendManager = FakeManagedBackendManager()
         backendManager.voxmlxStatus = .ready
-        backendManager.mlxLMStatus = .failed(summary: "mlx-lm failed to start.", detail: "trace")
+        backendManager.polishdStatus = .failed(summary: "mlx-lm failed to start.", detail: "trace")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.polishingBackendMode = .managedLocal
@@ -1084,7 +1084,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
     func testMenuBarIndicatorIgnoresManagedBackendReadinessUntilOnboardingCompletes() {
         let backendManager = FakeManagedBackendManager()
         backendManager.voxmlxStatus = .notInstalled
-        backendManager.mlxLMStatus = .notInstalled
+        backendManager.polishdStatus = .notInstalled
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
@@ -1388,7 +1388,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
     }
 
     var voxmlxStatus: ManagedBackendStatus = .notInstalled
-    var mlxLMStatus: ManagedBackendStatus = .notInstalled
+    var polishdStatus: ManagedBackendStatus = .notInstalled
     private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
         let id = UUID()
@@ -1433,7 +1433,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
             emitStatus(spec: BackendCatalog.voxmlx, status: .ready)
         }
         if polishing {
-            emitStatus(spec: BackendCatalog.mlxLM, status: .ready)
+            emitStatus(spec: BackendCatalog.polishd, status: .ready)
         }
     }
 
@@ -1467,8 +1467,8 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.voxmlx.id:
             voxmlxStatus = status
-        case BackendCatalog.mlxLM.id:
-            mlxLMStatus = status
+        case BackendCatalog.polishd.id:
+            polishdStatus = status
         default:
             break
         }
