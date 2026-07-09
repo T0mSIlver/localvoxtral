@@ -256,6 +256,11 @@ enum PolishTokenGuard {
     /// equality: case-insensitive, dash/space-normalized) and that pair's `to`
     /// occurs standalone in `text` — i.e. the model applied a rewrite the
     /// caller explicitly asked for, so the token counts as preserved.
+    ///
+    /// Deletion-masking limitation (accepted): there is no occurrence counting
+    /// here — a sanctioned `to` present ANYWHERE in the polished text lets an
+    /// outright deletion of the `from` occurrence pass without fallback (e.g.
+    /// the token was spoken twice and the model kept the corrected form once).
     private static func isSanctionedRewrite(
         of token: String,
         in text: String,

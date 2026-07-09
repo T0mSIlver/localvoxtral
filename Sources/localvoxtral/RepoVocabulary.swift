@@ -458,6 +458,33 @@ enum RepoGitRunner {
     }
 }
 
+// MARK: - Single-flight gate
+
+/// Single-flight gate for the detached vocabulary pipeline. An abandoned
+/// (deadline-expired) pipeline can stay parked in a blocking syscall, pinning
+/// one cooperative-pool thread; without this gate every subsequent commit
+/// against the same wedged mount would stack another blocked thread until the
+/// pool — and the deadline mechanism itself — starves. A class holding the
+/// `Mutex` (per repo conventions) so the detached pipeline wrapper can release
+/// it from off-main on eventual completion.
+final class RepoVocabularyFlightGate: Sendable {
+    private let inFlight = Mutex(false)
+
+    /// True when the caller acquired the gate; false when a prior pipeline is
+    /// still in flight and the caller must fast-skip.
+    func acquire() -> Bool {
+        inFlight.withLock { alreadyInFlight in
+            if alreadyInFlight { return false }
+            alreadyInFlight = true
+            return true
+        }
+    }
+
+    func release() {
+        inFlight.withLock { $0 = false }
+    }
+}
+
 // MARK: - TTL cache
 
 /// Root-keyed cache of harvested vocabularies. TTL-bounded and invalidated when

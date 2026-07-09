@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -1272,6 +1273,126 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             viewModel.currentDictationEventText,
             "open useAuth.ts and fix the import"
         )
+    }
+
+    /// The deadline race: a vocabulary pipeline that NEVER completes (a stat
+    /// blocked on a stale network mount) must not wedge the commit. With an
+    /// instantly-expiring deadline (injected sleep seam — no wall-clock), the
+    /// polish request is built WITHOUT vocabulary, the commit completes, and
+    /// no vocab provenance is recorded. Abandonment is safe: the pipeline only
+    /// returns a value, never mutates view-model state.
+    func testVocabularyPipelineDeadlineProceedsWithoutVocabulary() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.repoVocabularyEnabled = true
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService()
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        // Pipeline seam (NOT the entries seam, which bypasses the race):
+        // suspends forever, like an uncancelable syscall. Deliberately leaked
+        // for the test process lifetime, mirroring the production abandonment.
+        viewModel.debugRepoVocabularyPipelineOverride = { _ in
+            await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
+            return nil
+        }
+        // Deadline sleep seam: returns immediately — the deadline expires
+        // before the pipeline can ever win.
+        viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        // The commit completed despite the wedged pipeline...
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        // ...the request was built WITHOUT vocabulary...
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertFalse(
+            request.userPrompts.contains { $0.contains("Repository vocabulary") }
+        )
+        // ...and no vocab provenance was recorded for work that never landed.
+        XCTAssertNil(savedRecord?.polishContextSummary)
+    }
+
+    /// Single-flight: an abandoned (deadline-expired) pipeline holds the
+    /// in-flight gate, so the NEXT commit fast-skips vocabulary instead of
+    /// stacking another blocked pool thread — the pipeline seam must run
+    /// exactly once across both calls. Deterministic: the second call's skip
+    /// is decided synchronously by the gate (acquired before the pipeline
+    /// spawns), and the count assertion waits on a start signal from the
+    /// wedged pipeline, never on wall-clock.
+    func testWedgedPipelineSingleFlightSkipsNextCommit() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.repoVocabularyEnabled = true
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        let pipelineCalls = SendableCallCounter()
+        let (pipelineStarted, startSignal) = AsyncStream.makeStream(of: Void.self)
+        // Wedged pipeline: signals that it started, then suspends forever
+        // (deliberately leaked for the test process lifetime, mirroring the
+        // production abandonment).
+        viewModel.debugRepoVocabularyPipelineOverride = { _ in
+            pipelineCalls.increment()
+            startSignal.yield()
+            await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
+            return nil
+        }
+        viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
+
+        let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
+        let first = await viewModel.repoVocabularyEntriesIfEnabled(
+            endpointURL: endpoint, transcript: "open use auth dot t s"
+        )
+        // Deadline expired; the wedged pipeline was abandoned holding the gate.
+        XCTAssertNil(first)
+        var startIterator = pipelineStarted.makeAsyncIterator()
+        _ = await startIterator.next()
+
+        let second = await viewModel.repoVocabularyEntriesIfEnabled(
+            endpointURL: endpoint, transcript: "open use auth dot t s"
+        )
+        XCTAssertNil(second)
+        XCTAssertEqual(pipelineCalls.value, 1)
+    }
+
+    /// Off-main-safe call counter for `@Sendable` seams (the nested main-actor
+    /// counter class can't cross into a detached pipeline).
+    private final class SendableCallCounter: Sendable {
+        private let storage = Mutex(0)
+        func increment() { storage.withLock { $0 += 1 } }
+        var value: Int { storage.withLock { $0 } }
     }
 
     /// Records override calls so the privacy/toggle gates can be asserted by call

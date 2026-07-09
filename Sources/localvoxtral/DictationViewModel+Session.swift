@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Synchronization
 import os
 
 extension DictationViewModel {
@@ -688,6 +689,14 @@ extension DictationViewModel {
                             entries: vocabularyEntries
                         )
                         repoVocabularyCount = vocabularyEntries.count
+                        // Known hole (safe direction; follow-up: substring-
+                        // canonical sanctioning): when a sanctioned alias is a
+                        // multi-word gram whose TAIL is itself a protected
+                        // token ("use auth.ts" containing protected `auth.ts`),
+                        // the guard token canonically equals no alias, so the
+                        // rewrite still falls back — the pre-polish text
+                        // commits and the vocabulary correction is lost, but
+                        // nothing is corrupted.
                         sanctionedVocabularyRewrites = vocabularyEntries.flatMap { entry in
                             entry.matches.map { (from: $0, to: entry.replaceWith) }
                         }
@@ -1194,6 +1203,13 @@ extension DictationViewModel {
         return parts.isEmpty ? nil : parts.joined(separator: "+")
     }
 
+    /// Overall deadline on the detached vocabulary pipeline. The git wait is
+    /// internally bounded, but a `fileExists` stat on a stale network mount in
+    /// the cwd resolution can block indefinitely — and the polish Task awaits
+    /// this, so without a deadline that session's commit would wedge at
+    /// "Polishing…". Vocabulary is best-effort; the commit is not.
+    static let repoVocabularyPipelineDeadline: Duration = .seconds(3)
+
     /// Opt-in repo-vocabulary grounding: harvests file names / path components /
     /// the branch from the git repo in the focused terminal and returns the
     /// transcript-relevant ones as replacement entries — but ONLY when the
@@ -1204,9 +1220,14 @@ extension DictationViewModel {
     /// messaging timeout); everything blocking-ish — FS stats on the title's
     /// path candidates (possibly a stale network mount), the git subprocess
     /// (2 s timeout), and the n-gram match over a possibly-20k-term vocabulary
-    /// — runs in one detached hop so the commit path can never beachball.
+    /// — runs in one detached hop RACED against
+    /// `repoVocabularyPipelineDeadline`, so no blocked syscall can ever wedge
+    /// the commit. A single-flight gate caps the cost of abandonment at one
+    /// blocked pool thread: while an abandoned pipeline is still wedged,
+    /// subsequent commits fast-skip vocabulary instead of stacking more
+    /// blocked threads until the pool (and the deadline itself) starves.
     /// Returns nil (silent skip) when off, remote, no terminal window, no
-    /// repo, or no transcript-relevant match.
+    /// repo, no transcript-relevant match, deadline expiry, or in-flight skip.
     func repoVocabularyEntriesIfEnabled(
         endpointURL: URL,
         transcript: String
@@ -1221,18 +1242,106 @@ extension DictationViewModel {
             return override(transcript)
         }
         #endif
+        guard repoVocabularyPipelineInFlight.acquire() else {
+            Log.polishing.info("Repo vocabulary skipped: a previous pipeline is still in flight")
+            return nil
+        }
+        guard let pipelineTask = makeRepoVocabularyPipelineTask(transcript: transcript) else {
+            repoVocabularyPipelineInFlight.release()
+            return nil
+        }
+
+        let deadlineSleep = resolveRepoVocabularyDeadlineSleep()
+        // Race via a resume-once continuation, NOT a task group: a group
+        // awaits ALL its children before returning, and the pipeline child —
+        // awaiting a possibly-forever-blocked task's value, which is not
+        // cancellation-responsive — would wedge the group (and the commit)
+        // in exactly the case the deadline exists for. The losing side is
+        // abandoned; its late resumeOnce call is a guarded no-op.
+        let raceOutcome = await withCheckedContinuation {
+            (continuation: CheckedContinuation<RepoVocabularyRaceOutcome, Never>) in
+            let resumed = Mutex(false)
+            let resumeOnce: @Sendable (RepoVocabularyRaceOutcome) -> Void = { outcome in
+                let shouldResume = resumed.withLock { alreadyResumed in
+                    if alreadyResumed { return false }
+                    alreadyResumed = true
+                    return true
+                }
+                if shouldResume { continuation.resume(returning: outcome) }
+            }
+            // The continuation propagates no priority to the race children
+            // (unlike the previous direct `await .value`, which escalated the
+            // pipeline to the awaiting task's priority). Deliberate for the
+            // pipeline — vocabulary is best-effort background work — but the
+            // deadline's whole job is timeliness, so it runs `.userInitiated`
+            // to keep its resumption from being starved under CPU pressure.
+            Task.detached(priority: .utility) { [gate = repoVocabularyPipelineInFlight] in
+                let entries = await pipelineTask.value
+                // Release the single-flight gate only when the pipeline truly
+                // finished — on the abandonment path this runs arbitrarily
+                // late, and until then new commits fast-skip vocabulary.
+                gate.release()
+                resumeOnce(.pipeline(entries))
+            }
+            Task.detached(priority: .userInitiated) {
+                await deadlineSleep()
+                resumeOnce(.deadlineExpired)
+            }
+        }
+
+        switch raceOutcome {
+        case .pipeline(let entries):
+            return entries
+        case .deadlineExpired:
+            // Abandonment is safe by construction: the detached pipeline only
+            // ever RETURNS a value — it never mutates view-model state — so
+            // when it eventually completes its result is simply discarded.
+            // (Its only shared side effects are inserting into the
+            // Mutex-guarded RepoVocabularyCache, which only makes a later
+            // session faster, and releasing the single-flight gate.) Until it
+            // completes it holds the gate, so a genuinely wedged pipeline
+            // costs at most ONE blocked pool thread across any number of
+            // subsequent commits.
+            Log.polishing.info("Repo vocabulary skipped: pipeline exceeded deadline")
+            return nil
+        }
+    }
+
+    /// The detached title -> cwd -> index -> match pipeline as a task, or nil
+    /// when there is no window title to start from. Split out so the deadline
+    /// race above stays readable and the DEBUG pipeline seam replaces exactly
+    /// the detached section (keeping the race in play for deadline tests).
+    private func makeRepoVocabularyPipelineTask(
+        transcript: String
+    ) -> Task<[ReplacementEntry]?, Never>? {
+        #if DEBUG
+        if let override = debugRepoVocabularyPipelineOverride {
+            return Task.detached(priority: .utility) { await override(transcript) }
+        }
+        #endif
         guard let title = resolveCommitTargetWindowTitle() else {
             Log.polishing.debug("Repo vocabulary: no terminal window title available")
             return nil
         }
         let cache = repoVocabularyCache
-        return await Task.detached(priority: .utility) {
+        return Task.detached(priority: .utility) {
             await RepoVocabularyService.entries(
                 forWindowTitle: title,
                 transcript: transcript,
                 cache: cache
             )
-        }.value
+        }
+    }
+
+    private func resolveRepoVocabularyDeadlineSleep() -> @Sendable () async -> Void {
+        #if DEBUG
+        if let override = debugRepoVocabularyDeadlineSleepOverride {
+            return override
+        }
+        #endif
+        return {
+            try? await Task.sleep(for: Self.repoVocabularyPipelineDeadline)
+        }
     }
 
     /// The focused/main window title of the app owning the overlay commit PID
@@ -1728,4 +1837,12 @@ extension DictationViewModel {
             commitBufferText: currentOverlayCommitText()
         )
     }
+}
+
+/// Winner of the repo-vocabulary race in `repoVocabularyEntriesIfEnabled`:
+/// either the detached pipeline finished (with or without entries) or the
+/// deadline expired first and the pipeline was abandoned.
+private enum RepoVocabularyRaceOutcome: Sendable {
+    case pipeline([ReplacementEntry]?)
+    case deadlineExpired
 }

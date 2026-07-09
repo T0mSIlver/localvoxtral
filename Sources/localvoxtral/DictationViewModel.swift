@@ -435,13 +435,31 @@ final class DictationViewModel {
     /// a given transcript, so VM tests exercise the setting + loopback gates
     /// without touching live AX or a git subprocess. Consulted only AFTER those
     /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
-    /// `@MainActor` so ordering tests can read main-actor stub state inside it.
+    /// Bypasses the deadline race entirely — to exercise that, use the
+    /// pipeline/deadline-sleep seams below instead. `@MainActor` so ordering
+    /// tests can read main-actor stub state inside it.
     @ObservationIgnored
     var debugRepoVocabularyEntriesOverride: (@MainActor (String) -> [ReplacementEntry]?)?
+    /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title +
+    /// cwd resolve + git index + match) while keeping the deadline race in
+    /// play, so tests can inject a never-completing pipeline and prove the
+    /// commit still proceeds (without vocabulary) when the deadline expires.
+    @ObservationIgnored
+    var debugRepoVocabularyPipelineOverride: (@Sendable (String) async -> [ReplacementEntry]?)?
+    /// Test seam: replaces the deadline sleep of the vocabulary race (repo
+    /// reference pattern: injected clock/sleep seams, no wall-clock in tests).
+    /// An immediately-returning closure makes the deadline expire instantly.
+    @ObservationIgnored
+    var debugRepoVocabularyDeadlineSleepOverride: (@Sendable () async -> Void)?
     /// TTL cache for harvested repo vocabularies, keyed by git root. Held for the
     /// view model's lifetime so a burst of commits reuses one index.
     @ObservationIgnored
     let repoVocabularyCache = RepoVocabularyCache()
+    /// Single-flight gate for the detached vocabulary pipeline (see
+    /// `RepoVocabularyFlightGate`): while a prior pipeline is still in flight,
+    /// commits fast-skip vocabulary instead of stacking more blocked threads.
+    @ObservationIgnored
+    let repoVocabularyPipelineInFlight = RepoVocabularyFlightGate()
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of
