@@ -195,6 +195,99 @@ final class PolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(result.text, "It works. Then we ship.")
     }
 
+    // MARK: - Filename extension allowlist (PR #101 review, finding 1)
+
+    func testProtectedTokensRejectsLowercaseProseGlue() {
+        // Lowercase STT glue fits the stem.ext shape but is prose, not a
+        // filename; protecting it would let the repair path re-glue the
+        // polish's correct sentence split.
+        let negatives = [
+            "it works.then we ship",
+            "ask dr.smith for the plan",
+            "we drove through st.louis today",
+            "bring snacks etc.but no drinks",
+        ]
+
+        for input in negatives {
+            XCTAssertEqual(
+                PolishTokenGuard.protectedTokens(in: input),
+                [],
+                "input should have no protected tokens: \(input)"
+            )
+        }
+    }
+
+    func testVerifyAndRepairAcceptsSentenceSplitOfLowercaseGlue() {
+        // The polish correctly splits "works.then" into "works. Then"; with
+        // no protected token the polish must pass through untouched.
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "It works. Then we ship.",
+            original: "it works.then we ship"
+        )
+        XCTAssertEqual(result.outcome, .clean)
+        XCTAssertEqual(result.text, "It works. Then we ship.")
+    }
+
+    func testProtectedTokensStillRecognizesKnownExtensionFilenames() {
+        let cases: [(input: String, expected: [String])] = [
+            ("open main.swift now", ["main.swift"]),
+            ("check package.json first", ["package.json"]),
+            ("edit src/Auth/useAuth.ts now", ["src/Auth/useAuth.ts"]),
+        ]
+
+        for testCase in cases {
+            XCTAssertEqual(
+                PolishTokenGuard.protectedTokens(in: testCase.input),
+                testCase.expected,
+                "input: \(testCase.input)"
+            )
+        }
+    }
+
+    // MARK: - Per-occurrence verification (PR #101 review, finding 2)
+
+    func testVerifyAndRepairRepairsMangledFirstDuplicateOccurrence() {
+        // Two occurrences dictated; the model mangled the first. The surviving
+        // second occurrence must not satisfy verification for both.
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "run \u{2013} force first, then --force again",
+            original: "run --force first, then --force again"
+        )
+        XCTAssertEqual(result.outcome, .repaired(count: 1))
+        XCTAssertEqual(result.text, "run --force first, then --force again")
+    }
+
+    func testVerifyAndRepairRepairsMangledSecondDuplicateOccurrence() {
+        // The exact first occurrence must not stop the repair scan from
+        // reaching the mangled second occurrence.
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "run --force first, then \u{2013} force again",
+            original: "run --force first, then --force again"
+        )
+        XCTAssertEqual(result.outcome, .repaired(count: 1))
+        XCTAssertEqual(result.text, "run --force first, then --force again")
+    }
+
+    func testVerifyAndRepairFallsBackWhenOneDuplicateOccurrenceDeleted() {
+        // One of two occurrences deleted outright: unrepairable, the whole
+        // polish is discarded — never accepted with a missing occurrence.
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "run --force first, then again",
+            original: "run --force first, then --force again"
+        )
+        XCTAssertEqual(result.outcome, .fallback(missing: ["--force"]))
+        XCTAssertEqual(result.text, "run --force first, then --force again")
+    }
+
+    func testVerifyAndRepairAcceptsBothDuplicateOccurrencesSurviving() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Run --force first, then --force again.",
+            original: "run --force first, then --force again"
+        )
+        XCTAssertEqual(result.outcome, .clean)
+        XCTAssertEqual(result.text, "Run --force first, then --force again.")
+    }
+
     func testVerifyAndRepairIsIdempotentOnRepairedOutput() {
         let original = "run --force on src/App.ts"
         let first = PolishTokenGuard.verifyAndRepair(

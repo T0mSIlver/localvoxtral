@@ -44,12 +44,28 @@ enum PolishTokenGuard {
     // `i.e`), ext is 1–8 all-lowercase alphanumerics (rejects `works.Then` —
     // STT output missing the space after a sentence period; the polish
     // legitimately fixes that, and a protected token here would make the
-    // guard revert the fix). Accepted losses per the conservative-recognition
-    // principle: uppercase-ext files (`Makefile.AM`) and single-letter stems
-    // (`a.txt`) go unprotected.
+    // guard revert the fix). The extension must additionally sit in
+    // `knownFileExtensions` — see that constant's comment. Accepted losses
+    // per the conservative-recognition principle: uppercase-ext files
+    // (`Makefile.AM`), single-letter stems (`a.txt`) and unlisted extensions
+    // go unprotected.
     private static let filename = try! NSRegularExpression(
         pattern: "\\b(?=[A-Za-z0-9_-]*[A-Za-z_])[A-Za-z0-9_-]{2,}\\.[a-z0-9]{1,8}\\b"
     )
+    // Conservative allowlist of real file extensions for the standalone
+    // dotted-filename recognizer. Lowercase STT glue like "works.then" /
+    // "dr.smith" / "st.louis" fits the stem.ext shape; without this gate the
+    // guard "protects" it and the repair path re-glues the polish's correct
+    // "works. Then" back into "works.then". Slash paths (`src/foo.xyz`) are
+    // recognized by `path` and are NOT gated on this list.
+    private static let knownFileExtensions: Set<String> = [
+        "swift", "ts", "tsx", "js", "jsx", "json", "md", "txt", "log", "sh",
+        "py", "rb", "go", "rs", "c", "h", "cpp", "hpp", "m", "mm",
+        "yml", "yaml", "toml", "xml", "html", "css", "plist", "entitlements",
+        "xcconfig", "lock", "csv", "sql", "env", "resolved", "cfg", "ini",
+        "conf", "png", "svg", "pdf", "proto", "java", "kt", "php", "gradle",
+        "zsh", "bash", "ipynb",
+    ]
     // Flags: whitespace/start-preceded; group 1 is the flag itself. Double dash
     // takes an optional =value; single dash is exactly one alphanumeric (so
     // hyphenated prose like "well-known" is never captured).
@@ -103,7 +119,10 @@ enum PolishTokenGuard {
         collect(backtickSpan)
         collect(url, trimTrailing: true)
         collect(path, trimTrailing: true)
-        collect(filename, trimTrailing: true)
+        collect(filename, trimTrailing: true, filter: { token in
+            guard let dotIndex = token.lastIndex(of: ".") else { return false }
+            return knownFileExtensions.contains(String(token[token.index(after: dotIndex)...]))
+        })
         // trimTrailing only ever bites the `=value` tail (`--mode=fast.` at
         // sentence end): the flag charset itself excludes punctuation.
         collect(flag, captureGroup: 1, trimTrailing: true)
@@ -135,8 +154,12 @@ enum PolishTokenGuard {
     // MARK: - Verify & repair
 
     /// Confirms every protected token of `original` survived into `polished`,
-    /// repairing near-misses in place. If any token is neither present nor
-    /// repairable, returns `.fallback` and the caller keeps its pre-polish text.
+    /// repairing near-misses in place. Verification is per-occurrence: a token
+    /// dictated twice must survive (or be repaired) twice — recognition dedup
+    /// must not let one intact occurrence vouch for a mangled duplicate
+    /// (`run --force first, then – force again`). If any occurrence is neither
+    /// present nor repairable, returns `.fallback` and the caller keeps its
+    /// pre-polish text.
     static func verifyAndRepair(polished: String, original: String) -> Repair {
         let tokens = protectedTokens(in: original)
         guard !tokens.isEmpty else { return Repair(text: polished, outcome: .clean) }
@@ -146,12 +169,25 @@ enum PolishTokenGuard {
         var missing: [String] = []
 
         for token in tokens {
-            if containsStandalone(token, in: working) { continue }
-            if let repaired = repairFirstNearMiss(of: token, in: working) {
+            // `max(1, …)` is belt-and-braces: a recognized token always counts
+            // at least once in its own source text.
+            let required = max(1, standaloneOccurrenceCount(of: token, in: original))
+            var surviving = standaloneOccurrenceCount(of: token, in: working)
+            while surviving < required {
+                guard let repaired = repairFirstNearMiss(of: token, in: working) else {
+                    missing.append(token)
+                    break
+                }
                 working = repaired
                 repairedCount += 1
-            } else {
-                missing.append(token)
+                let recounted = standaloneOccurrenceCount(of: token, in: working)
+                // Defensive: a repair that fails to add a standalone
+                // occurrence would loop forever — treat it as unrepairable.
+                guard recounted > surviving else {
+                    missing.append(token)
+                    break
+                }
+                surviving = recounted
             }
         }
 
@@ -182,23 +218,28 @@ enum PolishTokenGuard {
             .replacingOccurrences(of: "\u{00A0}", with: "")   // no-break space
     }
 
-    /// True when `token` occurs in `text` standalone: no letter/digit/`_`/`-`
-    /// glued to either side. An occurrence with a body char appended or
-    /// prepended is a corruption (`--force` inside `--forceful`,
-    /// `src/App.ts` inside `src/App.tsx`), not a survival. Sentence
-    /// punctuation is not a body char, so "src/App.ts." still counts.
-    private static func containsStandalone(_ token: String, in text: String) -> Bool {
+    /// Number of non-overlapping standalone occurrences of `token` in `text`:
+    /// no letter/digit/`_`/`-` glued to either side. An occurrence with a body
+    /// char appended or prepended is a corruption (`--force` inside
+    /// `--forceful`, `src/App.ts` inside `src/App.tsx`), not a survival.
+    /// Sentence punctuation is not a body char, so "src/App.ts." still counts.
+    private static func standaloneOccurrenceCount(of token: String, in text: String) -> Int {
+        var count = 0
         var searchRange = text.startIndex..<text.endIndex
         while let found = text.range(of: token, range: searchRange) {
             let standaloneBefore = found.lowerBound == text.startIndex
                 || !isBodyCharacter(text[text.index(before: found.lowerBound)])
             let standaloneAfter = found.upperBound == text.endIndex
                 || !isBodyCharacter(text[found.upperBound])
-            if standaloneBefore && standaloneAfter { return true }
-            guard found.lowerBound < text.endIndex else { break }
-            searchRange = text.index(after: found.lowerBound)..<text.endIndex
+            if standaloneBefore && standaloneAfter {
+                count += 1
+                searchRange = found.upperBound..<text.endIndex
+            } else {
+                guard found.lowerBound < text.endIndex else { break }
+                searchRange = text.index(after: found.lowerBound)..<text.endIndex
+            }
         }
-        return false
+        return count
     }
 
     private static func isBodyCharacter(_ c: Character) -> Bool {
@@ -239,7 +280,11 @@ enum PolishTokenGuard {
                     // corruption; growing the window past it can only
                     // overshoot the target, so give up on this start.
                     if end < n, isBodyCharacter(chars[end]) { break }
-                    guard window != token else { return nil }
+                    // An exact occurrence is not a near-miss: skip past it and
+                    // keep scanning — with per-occurrence verification an
+                    // intact first occurrence must not block the repair of a
+                    // mangled duplicate later in the text.
+                    if window == token { break }
                     var result = chars
                     result.replaceSubrange(start..<end, with: Array(token))
                     return String(result)
