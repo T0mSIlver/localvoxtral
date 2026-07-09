@@ -525,10 +525,11 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopAllCallCount, 0)
     }
 
-    func testManagedPolishingModelChangePersistsAndStopsPolishing() async {
+    func testManagedPolishingModelChangePersistsAndStopsPolishingWhenDisabled() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = false
         retainForTestProcessLifetime(viewModel)
 
         let externalModelBefore = viewModel.settings.llmPolishingModel
@@ -539,7 +540,26 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         // The external-mode model NAME lives in a separate key and must not move.
         XCTAssertEqual(viewModel.settings.llmPolishingModel, externalModelBefore)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+        // Polishing disabled: stop only, no eager relaunch.
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
+    func testManagedPolishingModelChangeRestartsEngineEagerly() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applyLLMPolishingModelChange("example/new-polishing-model")
+        await viewModel.polishingShutdownTask?.value
+        await viewModel.polishingWarmupTask?.value
+
+        // Field regression (PR #99 hand-test): picking a model must download
+        // and relaunch immediately, not wait for a disable/enable toggle.
+        XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
     }
 
     func testDictationModeSwitchToManagedStartsDictationWarmup() async {
