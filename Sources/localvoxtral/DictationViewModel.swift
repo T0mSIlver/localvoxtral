@@ -410,6 +410,12 @@ final class DictationViewModel {
     var debugManagedStatusMirrorEventSink: (() -> Void)?
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
+    /// Test seam: replaces `microphone.requestAccess` in the session-start
+    /// permission gate so tests can hold and fire the grant continuation
+    /// deterministically (the real call shows a TCC prompt and touches the
+    /// microphone service).
+    @ObservationIgnored
+    var debugMicrophoneRequestAccessOverride: ((@escaping @Sendable (Bool) -> Void) -> Void)?
     @ObservationIgnored
     var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
@@ -1306,7 +1312,7 @@ final class DictationViewModel {
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
             debugLog("microphone permission prompt requested")
-            microphone.requestAccess { [weak self] granted in
+            requestMicrophoneAccessForSessionStart { [weak self] granted in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.isAwaitingMicrophonePermission = false
@@ -1325,6 +1331,15 @@ final class DictationViewModel {
                         return
                     }
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
+                    // The grant may land long after the initiating tap ended
+                    // (toggle taps have no release event). If secure input
+                    // turned on while the dialog was up, the entry point
+                    // above just refused — with no gesture-end event left,
+                    // the signals would wedge (Codex finding, round 9; same
+                    // shape as the managed-startup wedge in round 8).
+                    if !self.isDictationAttemptGestureActive {
+                        self.clearSecureInputRefusalSignalsIfAttemptEnded()
+                    }
                 }
             }
             Task { [weak self] in
@@ -1342,6 +1357,16 @@ final class DictationViewModel {
             lastError = Self.microphoneDeniedMessage
             debugLog("microphone access denied or restricted")
         }
+    }
+
+    private func requestMicrophoneAccessForSessionStart(
+        completion: @escaping @Sendable (Bool) -> Void
+    ) {
+        if let debugMicrophoneRequestAccessOverride {
+            debugMicrophoneRequestAccessOverride(completion)
+            return
+        }
+        microphone.requestAccess(completion: completion)
     }
 
     func currentMicrophoneAuthorizationStatus() -> MicrophoneAuthorizationStatus {

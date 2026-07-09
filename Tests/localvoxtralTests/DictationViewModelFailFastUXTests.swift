@@ -1179,6 +1179,65 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
     }
 
+    func testDelayedSecureInputRefusalAfterMicPermissionGrantDoesNotWedgeTheIcon() async {
+        // Codex finding on #90 (round 9): same wedge as the managed-startup
+        // one (round 8) via the OTHER async continuation — the microphone
+        // permission dialog. A toggle tap starts with permission
+        // undetermined; secure input turns on while the dialog is up; the
+        // grant continuation re-enters the managed-backend entry point,
+        // which refuses with no gesture-end event left to clear the signals.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false } // off at press
+        addTeardownBlock {
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+            TerminalTargetDetector.debugSecureEventInputOverride = nil
+        }
+
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .notDetermined
+        var permissionCompletion: (@Sendable (Bool) -> Void)?
+        viewModel.debugMicrophoneRequestAccessOverride = { permissionCompletion = $0 }
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+        retainForTestProcessLifetime(viewModel)
+
+        // Toggle tap: the secure-input preflight passes, the mic gate parks
+        // the start behind the permission dialog, and the tap gesture ends.
+        viewModel.startDictation()
+        XCTAssertTrue(viewModel.isAwaitingMicrophonePermission)
+        guard let grantPermission = permissionCompletion else {
+            return XCTFail("the permission request must route through the test seam")
+        }
+
+        // Secure input turns on while the dialog is up; then the user grants.
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        grantPermission(true)
+        // The continuation hops to the main actor and runs synchronously to
+        // completion once started; drain the hop without wall-clock waits.
+        var spins = 0
+        while viewModel.isAwaitingMicrophonePermission, spins < 1_000 {
+            spins += 1
+            await Task.yield()
+        }
+
+        XCTAssertFalse(viewModel.isDictating, "the doomed live session is still refused")
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty, "still no backend boot for a refused start")
+        XCTAssertEqual(soundPlays, 1, "the audible refusal cue fired")
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.secureKeyboardEntryWarningMessage,
+            "the popover keeps the explanation"
+        )
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "no gesture-end event will ever come — the icon must not wedge"
+        )
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+    }
+
     private func makeViewModel(
         outputMode: DictationOutputMode,
         backendManager: (any ManagedBackendManaging)? = nil
