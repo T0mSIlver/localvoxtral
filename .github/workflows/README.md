@@ -70,10 +70,3 @@ prints a clear skip message and exits successfully.
 
 It needs the same one-time Accessibility and Screen Recording TCC grants as
 `ui-smoke.yml`.
-
-## `mlx-lm-test.yml`
-
-Manual-dispatch harness that installs `mlx_lm.server` from any ref of the
-T0mSIlver/mlx-lm fork on the self-hosted runner, serves the polishing model,
-and probes chat/completions through the prompt-cache path. Used to verify
-fork changes (MLX needs Apple Silicon).

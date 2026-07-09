@@ -137,6 +137,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The bundled polishd helper replaced the uv-installed mlx-lm tool
+        // (2026-07); sweep the orphaned install off existing user Macs.
+        Task.detached(priority: .utility) {
+            LegacyMLXLMCleanup().run()
+        }
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
     }
