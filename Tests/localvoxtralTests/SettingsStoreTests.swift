@@ -57,8 +57,8 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - Overlay Buffer font size
 
-    func testOverlayBufferFontSize_defaultsToBaseSize() {
-        XCTAssertEqual(makeStore().overlayBufferFontSize, 13)
+    func testOverlayBufferFontSize_defaultsTo14() {
+        XCTAssertEqual(makeStore().overlayBufferFontSize, 14)
     }
 
     func testOverlayBufferFontSize_persistsAcrossStores() {

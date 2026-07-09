@@ -12,7 +12,7 @@ import AppKit
 struct OverlayLayoutMetrics: Equatable {
     /// The body font size the fixed-size overlay historically used; scale 1.0.
     static let baseBodyFontSize: CGFloat = 13
-    static let defaultBodyFontSize: Double = 13
+    static let defaultBodyFontSize: Double = 14
     static let minimumBodyFontSize: Double = 10
     static let maximumBodyFontSize: Double = 24
 
