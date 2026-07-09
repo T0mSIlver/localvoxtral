@@ -48,4 +48,9 @@ enum TimingConstants {
     /// Minimum time to keep the overlay visible after the most recent
     /// visible overlay text update before committing/hiding.
     static let overlayFinalWordVisibilityMinimum: TimeInterval = 0.5
+
+    /// How long the overlay's secure-input clipboard-fallback message stays
+    /// readable before the panel dismisses itself (the text is already safe
+    /// on the clipboard, so the panel must not persist like a real failure).
+    static let overlayClipboardFallbackVisibility: TimeInterval = 4.0
 }

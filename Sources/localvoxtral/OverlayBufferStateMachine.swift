@@ -103,12 +103,14 @@ struct OverlayBufferStateMachine {
         let phase: OverlayBufferPhase
         let bufferText: String
         let errorMessage: String?
+        let secureInputActive: Bool
         let anchor: OverlayAnchor
     }
 
     private(set) var phase: OverlayBufferPhase = .idle
     private(set) var bufferText = ""
     private(set) var errorMessage: String?
+    private(set) var secureInputActive = false
     private(set) var anchor: OverlayAnchor?
 
     var snapshot: Snapshot? {
@@ -117,6 +119,7 @@ struct OverlayBufferStateMachine {
             phase: phase,
             bufferText: bufferText,
             errorMessage: errorMessage,
+            secureInputActive: secureInputActive,
             anchor: anchor
         )
     }
@@ -130,7 +133,19 @@ struct OverlayBufferStateMachine {
         phase = .buffering
         bufferText = ""
         errorMessage = nil
+        secureInputActive = false
         self.anchor = anchor
+    }
+
+    /// Marks the buffering session as running under Secure Keyboard Entry.
+    /// The overlay view folds this into the phase title (an actionable
+    /// "select another field" hint) rather than a separate warning sentence —
+    /// a warning line under the transcript read as clutter (owner feedback
+    /// on #90). startSession resets it; it persists through finalizing so
+    /// the marker doesn't blink away while the commit is still pending.
+    mutating func setSecureInputWarning() {
+        guard phase == .buffering else { return }
+        secureInputActive = true
     }
 
     mutating func updateBuffer(text: String, anchor: OverlayAnchor?) {
@@ -162,6 +177,7 @@ struct OverlayBufferStateMachine {
         phase = .idle
         bufferText = ""
         errorMessage = nil
+        secureInputActive = false
         anchor = nil
     }
 }

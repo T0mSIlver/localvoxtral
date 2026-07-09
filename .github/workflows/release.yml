@@ -96,6 +96,11 @@ jobs:
         run: swift test --filter RealtimeAPIVLLMIntegrationTests
 
       - name: Gate — package app bundle
+        # Releases stay ad-hoc signed on purpose: the runner's localvoxtral-dev
+        # cert is meaningless on end users' machines (install.sh re-signs for
+        # them; Developer ID + notarization is the roadmapped real fix), so we
+        # deliberately do NOT set or require the identity here. The TCC-grant
+        # stability this patch protects is a try-pr / same-repo-CI concern only.
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
       - name: Gate — packaged app launch smoke test

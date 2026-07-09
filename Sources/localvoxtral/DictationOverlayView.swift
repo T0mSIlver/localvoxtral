@@ -80,20 +80,38 @@ struct DictationOverlayView: View {
     let phase: OverlayBufferPhase
     let text: String
     let errorMessage: String?
+    let secureInputActive: Bool
     private let cornerRadius: CGFloat = 12
     private let bodyFontSize: CGFloat = 13
+
+    /// Warning text needs explicit light/dark variants: system `.red` over
+    /// the translucent panel material washes out on light desktops.
+    static let warningColor = Color(nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor(srgbRed: 1.00, green: 0.48, blue: 0.44, alpha: 1.0)
+            : NSColor(srgbRed: 0.63, green: 0.07, blue: 0.05, alpha: 1.0)
+    })
 
     private var phaseTitle: String {
         switch phase {
         case .buffering:
-            return "Listening"
+            // Actionable, not just descriptive: the commit re-checks Secure
+            // Keyboard Entry at stop, so moving focus to a normal field
+            // before then gets a real insert instead of the clipboard.
+            return secureInputActive
+                ? "Secure input — select another field before finalizing"
+                : "Listening"
         case .finalizing:
-            return "Finalizing"
+            return secureInputActive ? "Finalizing (secure input)" : "Finalizing"
         case .commitFailed:
             return "Insert failed"
         case .idle:
             return "Ready"
         }
+    }
+
+    private var isSecureInputTitle: Bool {
+        secureInputActive && (phase == .buffering || phase == .finalizing)
     }
 
     private var displayText: String {
@@ -131,7 +149,7 @@ struct DictationOverlayView: View {
             HStack(alignment: .center, spacing: 6) {
                 Text(phaseTitle)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(isSecureInputTitle ? Self.warningColor : Color.secondary)
                 if phase == .finalizing {
                     ProgressView()
                         .controlSize(.small)
@@ -179,7 +197,7 @@ struct DictationOverlayView: View {
             if let errorMessage, !errorMessage.trimmed.isEmpty {
                 Text(errorMessage)
                     .font(.system(size: 11))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Self.warningColor)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -188,8 +206,10 @@ struct DictationOverlayView: View {
         .frame(minWidth: 400, idealWidth: 420, maxWidth: 540, alignment: .leading)
         .background(RoundedMaterialBackground(cornerRadius: cornerRadius))
         .overlay(
+            // Hairline must survive both appearances: pure white vanished
+            // against light desktops.
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+                .strokeBorder(Color.primary.opacity(0.25), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .compositingGroup()

@@ -36,6 +36,21 @@ struct localvoxtralApp: App {
                             "realtime-connected",
                             "localvoxtral, realtime session active"
                         )
+                    case .secureInputWarning:
+                        if let failureIcon = MenuBarIconAsset.failureIcon {
+                            return (
+                                failureIcon,
+                                .original,
+                                "secure-input-warning",
+                                "localvoxtral, Secure Keyboard Entry is blocking dictation typing"
+                            )
+                        }
+                        return (
+                            idleIcon,
+                            .template,
+                            "secure-input-warning",
+                            "localvoxtral, Secure Keyboard Entry is blocking dictation typing"
+                        )
                     case .failure:
                         if let failureIcon = MenuBarIconAsset.failureIcon {
                             return (
@@ -75,6 +90,9 @@ struct localvoxtralApp: App {
                 case .failure:
                     Label("localvoxtral", systemImage: "xmark.circle.fill")
                         .foregroundStyle(.red)
+                case .secureInputWarning:
+                    Label("localvoxtral", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
                 }
             }
         }

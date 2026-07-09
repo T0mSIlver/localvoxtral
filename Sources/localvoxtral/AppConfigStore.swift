@@ -4,6 +4,7 @@ protocol AppConfigServing {
     func configDirectoryURL() -> URL
     func loadReplacementDictionary() -> ReplacementDictionary
     func loadLLMPromptTemplates() -> LLMPromptTemplates
+    func loadTerminalAppBundleIDs() -> [String]
 }
 
 struct ReplacementEntry: Equatable, Sendable {
@@ -329,6 +330,7 @@ struct AppConfigStore: AppConfigServing {
         case replacementDictionary
         case llmSystemPrompt
         case llmUserPrompt
+        case terminalApps
 
         var fileName: String {
             switch self {
@@ -338,6 +340,8 @@ struct AppConfigStore: AppConfigServing {
                 return "llm_system_prompt.toml"
             case .llmUserPrompt:
                 return "llm_user_prompt.toml"
+            case .terminalApps:
+                return "terminal_apps.toml"
             }
         }
 
@@ -352,7 +356,7 @@ struct AppConfigStore: AppConfigServing {
 
     init(
         fileManager: FileManager = .default,
-        bundle: Bundle = .module,
+        bundle: Bundle = .localvoxtralResources,
         configDirectoryOverride: URL? = nil
     ) {
         self.fileManager = fileManager
@@ -408,6 +412,25 @@ struct AppConfigStore: AppConfigServing {
             userPrompt = defaultTemplates.userContent
         }
         return LLMPromptTemplates(systemContent: systemPrompt, userContent: userPrompt)
+    }
+
+    /// User-listed bundle IDs to treat as terminals, on top of
+    /// `TerminalTargetDetector`'s built-in allowlist. Any read/parse failure
+    /// falls back to an empty list (the built-in detection still applies).
+    func loadTerminalAppBundleIDs() -> [String] {
+        let file = ConfigFile.terminalApps
+        let url = userConfigURL(for: file)
+
+        do {
+            ensureConfigFilesExist(at: resolvedConfigDirectoryURL())
+            let data = try Data(contentsOf: url)
+            return try Self.parseTerminalApps(data: data, fileName: file.fileName)
+        } catch {
+            Log.config.error(
+                "Terminal apps config fallback to empty list: \(error.localizedDescription, privacy: .public)"
+            )
+            return []
+        }
     }
 
     private func loadPromptContent(file: ConfigFile, fallback: String) -> String {
@@ -637,6 +660,62 @@ struct AppConfigStore: AppConfigServing {
 
         try finalizeCurrentEntry()
         return ReplacementDictionary(entries: entries)
+    }
+
+    private static func parseTerminalApps(
+        data: Data,
+        fileName: String
+    ) throws -> [String] {
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw AppConfigError.invalidFile(fileName: fileName, reason: "File is not valid UTF-8.")
+        }
+
+        let normalizedText = text.replacingOccurrences(of: "\r\n", with: "\n")
+        let rawLines = normalizedText.components(separatedBy: "\n")
+
+        var bundleIDs: [String]?
+        var lineIndex = 0
+
+        while lineIndex < rawLines.count {
+            let line = uncommented(rawLines[lineIndex]).trimmed
+            lineIndex += 1
+
+            guard !line.isEmpty else { continue }
+            guard bundleIDs == nil else {
+                throw AppConfigError.invalidFile(
+                    fileName: fileName,
+                    reason: "Only a single bundle_ids assignment is supported."
+                )
+            }
+
+            let components = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard components.count == 2, String(components[0]).trimmed == "bundle_ids" else {
+                throw AppConfigError.invalidFile(
+                    fileName: fileName,
+                    reason: "Expected `bundle_ids = [...]` near `\(line)`."
+                )
+            }
+
+            var value = String(components[1]).trimmed
+            while !hasBalancedSquareBrackets(in: value) {
+                guard lineIndex < rawLines.count else {
+                    throw AppConfigError.invalidFile(
+                        fileName: fileName,
+                        reason: "Unterminated bundle_ids array."
+                    )
+                }
+                value += "\n" + uncommented(rawLines[lineIndex]).trimmed
+                lineIndex += 1
+            }
+
+            bundleIDs = try parseStringArray(
+                value,
+                fileName: fileName,
+                fieldName: "bundle_ids"
+            ).map { $0.trimmed }.filter { !$0.isEmpty }
+        }
+
+        return bundleIDs ?? []
     }
 
     private static func parsePromptTemplate(

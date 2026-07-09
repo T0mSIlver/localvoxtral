@@ -181,8 +181,30 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
             overlayBufferCoordinator: coordinator,
             startRuntimeServices: false
         )
+        // Keep tests hermetic: session start reads config (terminal apps,
+        // replacement dictionary) through the store — never the real
+        // config directory.
+        viewModel.appConfigStore = GestureTestHermeticConfigStore()
         Self.retainedViewModels.append(viewModel)
         return viewModel
+    }
+}
+
+private final class GestureTestHermeticConfigStore: AppConfigServing {
+    func configDirectoryURL() -> URL {
+        FileManager.default.temporaryDirectory
+    }
+
+    func loadReplacementDictionary() -> ReplacementDictionary {
+        ReplacementDictionary(entries: [])
+    }
+
+    func loadLLMPromptTemplates() -> LLMPromptTemplates {
+        LLMPromptTemplates(systemContent: "system", userContent: "{{input_text}}")
+    }
+
+    func loadTerminalAppBundleIDs() -> [String] {
+        []
     }
 }
 

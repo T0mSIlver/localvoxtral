@@ -1097,6 +1097,10 @@ private final class MockAppConfigStore: AppConfigServing {
         loadLLMPromptTemplatesCallCount += 1
         return promptTemplates
     }
+
+    func loadTerminalAppBundleIDs() -> [String] {
+        []
+    }
 }
 
 private struct BufferCall {

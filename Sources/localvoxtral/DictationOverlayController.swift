@@ -83,7 +83,8 @@ final class DictationOverlayController {
         let initialView = DictationOverlayView(
             phase: .idle,
             text: "",
-            errorMessage: nil
+            errorMessage: nil,
+            secureInputActive: false
         )
         hostingView = TransparentHostingView(rootView: initialView)
         // Without this, NSHostingView probes the SwiftUI content at ∞×∞ and
@@ -127,7 +128,8 @@ final class DictationOverlayController {
         hostingView.rootView = DictationOverlayView(
             phase: snapshot.phase,
             text: snapshot.bufferText,
-            errorMessage: snapshot.errorMessage
+            errorMessage: snapshot.errorMessage,
+            secureInputActive: snapshot.secureInputActive
         )
 
         let contentHeight = Self.measureContentHeight(

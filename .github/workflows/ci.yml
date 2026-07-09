@@ -71,10 +71,34 @@ jobs:
           xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
             -ignore-filename-regex '(Tests|\.build)/'
 
+      - name: Warm on-demand voxmlx server
+        # The build host's voxmlx launchd service is launch-on-demand (its
+        # multi-GB weights are not resident 24/7 — scripts/mac/lv-test-servers.sh).
+        # Touch its trigger and block until port 8000 is healthy so the
+        # integration suite below hits warm weights; this also resets the idle
+        # window, so a burst of CI runs reuses one warm process and the reaper
+        # frees the RAM only after the machine goes quiet. Self-hosted only —
+        # hosted runners have no backend and the suite self-skips.
+        #
+        # Best-effort during rollout: the on-demand LaunchAgents + run dir are a
+        # one-time owner install (scripts/mac/README.md). Until that's done the
+        # run dir is absent and there is nothing to warm — the still-always-on
+        # voxmlx serves the suite, so skip cleanly instead of failing CI. The
+        # integration step below is the real gate on voxmlx being reachable.
+        if: runner.environment == 'self-hosted'
+        run: |
+          if [ -d /Users/Shared/localvoxtral/run ]; then
+            ./scripts/mac/lv-test-servers.sh ensure voxmlx
+          else
+            echo "on-demand infra not installed (run dir absent) — relying on the" \
+                 "always-on voxmlx; see scripts/mac/README.md to enable on-demand."
+          fi
+
       - name: Integration tests (live voxmlx)
         # The self-hosted runner has voxmlx serving locally (launchd service
-        # com.localvoxtral.voxmlx). On GitHub-hosted runners there is no
-        # backend and the suite self-skips, so this step is self-hosted only.
+        # com.localvoxtral.voxmlx, warmed on-demand by the step above). On
+        # GitHub-hosted runners there is no backend and the suite self-skips,
+        # so this step is self-hosted only.
         if: runner.environment == 'self-hosted'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
@@ -119,6 +143,13 @@ jobs:
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_SKIP_POLISHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
+          # Self-hosted lanes (same-repo PRs, main) MUST ship an identity-signed
+          # bundle so try-pr.sh leaves the signature untouched and the owner's
+          # Accessibility (TCC) grant survives across builds. Fail the build
+          # loudly rather than silently upload an ad-hoc artifact if the runner
+          # user's keychain has lost the cert. Hosted fork-PR runners have no
+          # cert and are expected to be ad-hoc, so the requirement is off there.
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ runner.environment == 'github-hosted' && '0' || '1' }}
         run: ./scripts/package_app.sh release
 
       - name: Polishing helper integration (live model + eval baseline)
@@ -164,13 +195,24 @@ jobs:
             dist/localvoxtral-polishd-dSYM.zip
           retention-days: 30
 
-      - name: Smoke test packaged app launch
+      - name: Smoke test packaged app launch (end-user simulation)
         run: |
-          python3 - <<'PY'
+          # Launch a COPY of the packaged app from outside the workspace with
+          # the workspace .build renamed away. A same-tree launch silently
+          # passes even when the binary's resource lookup depends on the
+          # builder's absolute .build path (SwiftPM's generated Bundle.module
+          # accessor falls back to it) — which crashes at launch on every
+          # OTHER machine. That masking shipped launch-broken artifacts (#87).
+          SMOKE_DIR="$(mktemp -d)"
+          ditto dist/localvoxtral.app "$SMOKE_DIR/localvoxtral.app"
+          mv .build .build.smoke-hidden
+          trap 'mv .build.smoke-hidden .build' EXIT
+          SMOKE_APP="$SMOKE_DIR/localvoxtral.app" python3 - <<'PY'
+          import os
           import subprocess
           import time
 
-          app_binary = "dist/localvoxtral.app/Contents/MacOS/localvoxtral"
+          app_binary = os.environ["SMOKE_APP"] + "/Contents/MacOS/localvoxtral"
           process = subprocess.Popen([app_binary])
           time.sleep(2)
 

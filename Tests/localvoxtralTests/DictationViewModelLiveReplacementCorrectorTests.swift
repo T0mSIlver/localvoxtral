@@ -4,32 +4,37 @@ import XCTest
 @testable import localvoxtral
 
 #if DEBUG
+/// End-to-end Live Auto-Paste replacement behavior at the view-model level.
+/// Every target applies dictionary replacements BEFORE typing through the
+/// hold-back stream: matched words are released already corrected, no target
+/// ever receives a backspace, and a word held at session stop is flushed with
+/// its replacement applied (the 2026-07-08 field regression — a final-word
+/// replacement was deferred by the old guarded corrector and dropped at stop).
 @MainActor
 final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
-    private enum InsertionEvent: Equatable {
-        case type(String)
-        case backspace(Int)
-    }
-
     private static var retainedViewModels: [DictationViewModel] = []
+
+    override func tearDown() async throws {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+        TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+        TerminalTargetDetector.debugSecureEventInputOverride = nil
+        try await super.tearDown()
+    }
 
     func testCorrectsWordCompletedAcrossDeltaBoundaries() {
         let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ])
+            dictionary: voxtralDictionary
         )
 
         harness.viewModel.handle(event: .partialTranscript("vox"))
+        XCTAssertEqual(harness.typed.value, [], "partial word stays held until a boundary")
         harness.viewModel.handle(event: .partialTranscript("tral "))
 
         XCTAssertEqual(harness.field.value, "localvoxtral ")
-        XCTAssertEqual(harness.events.value, [
-            .type("vox"),
-            .type("tral "),
-            .backspace(8),
-            .type("localvoxtral "),
-        ])
+        XCTAssertEqual(
+            harness.typed.value, ["localvoxtral "],
+            "the corrected word is released once its boundary arrives — no raw type, no backspace"
+        )
         XCTAssertEqual(harness.viewModel.pendingSegmentText, "voxtral ")
     }
 
@@ -42,304 +47,105 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         harness.viewModel.handle(event: .partialTranscript("local "))
         harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        // A two-word rule holds the last complete word back — it could begin
+        // another match — so the corrected text is released on the stop flush.
+        XCTAssertEqual(harness.typed.value, [], "the last complete word stays held for a multi-word rule")
+
+        stop(harness.viewModel)
 
         XCTAssertEqual(harness.field.value, "localvoxtral ")
-        XCTAssertEqual(harness.events.value, [
-            .type("local "),
-            .type("voxtral "),
-            .backspace(14),
-            .type("localvoxtral "),
-        ])
+        XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
     }
 
     func testCorrectsFinalUnboundedWordOnStopFlush() {
         let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ])
+            dictionary: voxtralDictionary
         )
 
         harness.viewModel.handle(event: .partialTranscript("voxtral"))
         harness.viewModel.handle(event: .finalTranscript("voxtral"))
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
-        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        XCTAssertEqual(harness.typed.value, [], "the unbounded final word stays held until stop")
+
+        stop(harness.viewModel)
 
         XCTAssertEqual(harness.field.value, "localvoxtral")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral"),
-            .backspace(7),
-            .type("localvoxtral"),
-        ])
+        XCTAssertEqual(harness.typed.value, ["localvoxtral"])
         XCTAssertEqual(harness.viewModel.currentDictationEventText, "voxtral")
     }
 
-    func testFinalTranscriptSuffixCanCompleteAndCorrectWordBeforeStop() {
+    // The exact field regression (2026-07-08), end to end: a short dictation
+    // whose ONLY replacement is the final word, with no trailing whitespace.
+    // The old guarded corrector deferred it waiting for the caret to settle and
+    // dropped it at stop; nothing was replaced. The hold-back stream applies it
+    // on the stop flush.
+    func testFinalWordOnlyReplacementIsAppliedAtStop() {
+        // Writable AX value → deterministically classified non-terminal,
+        // independent of whether the CI host has Accessibility trust.
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ])
+            dictionary: voxtralDictionary,
+            frontmostBundleID: "com.example.editor"
         )
 
-        harness.viewModel.handle(event: .partialTranscript("voxtral"))
-        harness.viewModel.handle(event: .finalTranscript("voxtral."))
+        harness.viewModel.handle(event: .partialTranscript("vox"))
+        harness.viewModel.handle(event: .finalTranscript("voxtral"))
+        XCTAssertEqual(harness.typed.value, [])
 
-        XCTAssertEqual(harness.field.value, "localvoxtral.")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral"),
-            .type("."),
-            .backspace(8),
-            .type("localvoxtral."),
-        ])
-        XCTAssertEqual(harness.viewModel.currentDictationEventText, "voxtral.")
+        stop(harness.viewModel)
+
+        XCTAssertEqual(
+            harness.field.value, "localvoxtral",
+            "the only replacement in the session — the final word — must not be dropped at stop"
+        )
+        XCTAssertEqual(harness.typed.value, ["localvoxtral"])
     }
 
     func testNoMatchWordsAreUntouched() {
         let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ])
+            dictionary: voxtralDictionary
         )
 
         harness.viewModel.handle(event: .partialTranscript("hello "))
 
         XCTAssertEqual(harness.field.value, "hello ")
-        XCTAssertEqual(harness.events.value, [.type("hello ")])
+        XCTAssertEqual(
+            harness.typed.value, ["hello "],
+            "a completed non-matching word is released promptly, unchanged"
+        )
     }
 
-    func testCorrectorDefersWhenCaretHasNotSettled() async {
-        let field = TestField("")
-        let events = Box<[InsertionEvent]>([])
+    func testWhitespaceBoundaryReleasesCorrectedTextInRegularEditor() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ]),
-            field: field,
-            events: events,
-            caretLocationReader: { _ in
-                if field.value.isEmpty { return 0 }
-                return max(0, (field.value as NSString).length - 1)
-            },
-            liveReplacementSettleSleep: {}
+            dictionary: voxtralDictionary,
+            frontmostBundleID: "com.example.editor"
         )
 
-        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        // A newline is a whitespace boundary: it completes the word and, in a
+        // regular (non-terminal) editor, is preserved verbatim.
+        harness.viewModel.handle(event: .partialTranscript("voxtral\n"))
 
-        XCTAssertEqual(harness.field.value, "voxtral ")
-        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectionIsInFlight)
-
-        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
+        XCTAssertEqual(harness.field.value, "localvoxtral\n")
+        XCTAssertEqual(harness.typed.value, ["localvoxtral\n"])
     }
 
-    func testCorrectorStandsDownAfterCaretSettleTimeout() async {
-        let field = TestField("")
-        let events = Box<[InsertionEvent]>([])
+    func testNonTerminalSessionUsesHoldBackStream() {
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
         let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ]),
-            field: field,
-            events: events,
-            caretLocationReader: { _ in
-                if field.value.isEmpty { return 0 }
-                return max(0, (field.value as NSString).length - 1)
-            },
-            liveReplacementSettleSleep: {}
+            dictionary: voxtralDictionary,
+            frontmostBundleID: "com.example.editor"
         )
-
-        harness.viewModel.handle(event: .partialTranscript("voxtral "))
-        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
-
-        XCTAssertEqual(harness.field.value, "voxtral ")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral "),
-        ])
-        XCTAssertFalse(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
-    }
-
-    func testCorrectorWaitsForLaggedCaretAndThenCorrects() async {
-        let field = TestField("")
-        var staleReadsRemaining = 3
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ]),
-            field: field,
-            caretLocationReader: { _ in
-                let currentLocation = (field.value as NSString).length
-                guard currentLocation > 0, staleReadsRemaining > 0 else {
-                    return currentLocation
-                }
-                staleReadsRemaining -= 1
-                return 0
-            },
-            liveReplacementSettleSleep: {}
-        )
-
-        harness.viewModel.handle(event: .partialTranscript("voxtral "))
-
-        XCTAssertEqual(harness.field.value, "voxtral ")
-        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectionIsInFlight)
-
-        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
-
-        XCTAssertEqual(harness.field.value, "localvoxtral ")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral "),
-            .backspace(8),
-            .type("localvoxtral "),
-        ])
-        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
-    }
-
-    func testCorrectorStillAppliesWhenInitialCaretIsUnavailable() {
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ]),
-            caretLocationReader: { _ in nil }
-        )
+        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveHoldBackStreamIsActive)
 
         harness.viewModel.handle(event: .partialTranscript("voxtral "))
 
         XCTAssertEqual(harness.field.value, "localvoxtral ")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral "),
-            .backspace(8),
-            .type("localvoxtral "),
-        ])
-        XCTAssertTrue(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
-    }
-
-    func testDeltasArrivingDuringInFlightCorrectionAreBufferedUntilAfterCorrection() async {
-        let field = TestField("")
-        var staleReadsRemaining = 3
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ]),
-            field: field,
-            caretLocationReader: { _ in
-                let currentLocation = (field.value as NSString).length
-                guard currentLocation > 0, staleReadsRemaining > 0 else {
-                    return currentLocation
-                }
-                staleReadsRemaining -= 1
-                return 0
-            },
-            liveReplacementSettleSleep: {}
-        )
-
-        harness.viewModel.handle(event: .partialTranscript("voxtral "))
-        harness.viewModel.textInsertion.enqueueRealtimeInsertion("next ")
-
-        XCTAssertEqual(harness.field.value, "voxtral ")
-        XCTAssertEqual(harness.events.value, [.type("voxtral ")])
-
-        await harness.viewModel.textInsertion.debugWaitForLiveReplacementCorrectionTasks()
-
-        XCTAssertEqual(harness.field.value, "localvoxtral next ")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral "),
-            .backspace(8),
-            .type("localvoxtral "),
-            .type("next "),
-        ])
-    }
-
-    func testFailedReplacementRetypesOriginalTextBeforeStandingDown() {
-        let field = TestField("")
-        let events = Box<[InsertionEvent]>([])
-        var replacementFailuresRemaining = 1
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ]),
-            field: field,
-            events: events,
-            unicodePoster: { chunk in
-                if chunk == "localvoxtral ", replacementFailuresRemaining > 0 {
-                    replacementFailuresRemaining -= 1
-                    return false
-                }
-                events.value.append(.type(chunk))
-                field.value.append(chunk)
-                return true
-            }
-        )
-
-        harness.viewModel.handle(event: .partialTranscript("voxtral "))
-
-        XCTAssertEqual(harness.field.value, "voxtral ")
-        XCTAssertEqual(harness.events.value, [
-            .type("voxtral "),
-            .backspace(8),
-            .type("voxtral "),
-        ])
-        XCTAssertFalse(harness.viewModel.textInsertion.debugLiveReplacementCorrectorIsActive)
-        XCTAssertEqual(replacementFailuresRemaining, 0)
-    }
-
-    func testBackspaceCountUsesGraphemeCountForEmojiMatch() {
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "developer", matches: ["👩‍💻"]),
-            ])
-        )
-
-        harness.viewModel.handle(event: .partialTranscript("👩‍💻 "))
-
-        XCTAssertEqual(harness.field.value, "developer ")
-        XCTAssertEqual(harness.events.value, [
-            .type("👩‍💻 "),
-            .backspace(2),
-            .type("developer "),
-        ])
-    }
-
-    func testShorterReplacementPreservesBoundary() {
-        let harness = makeHarness(
-            dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "-", matches: ["dash"]),
-            ])
-        )
-
-        harness.viewModel.handle(event: .partialTranscript("dash,"))
-
-        XCTAssertEqual(harness.field.value, "-,")
-        XCTAssertEqual(harness.events.value, [
-            .type("dash,"),
-            .backspace(5),
-            .type("-,"),
-        ])
-    }
-
-    func testBoundaryCharactersArePreserved() {
-        let cases: [(String, String)] = [
-            ("voxtral,", "localvoxtral,"),
-            ("voxtral.", "localvoxtral."),
-            ("voxtral\n", "localvoxtral\n"),
-        ]
-
-        for (input, expected) in cases {
-            let harness = makeHarness(
-                dictionary: ReplacementDictionary(entries: [
-                    ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-                ])
-            )
-
-            harness.viewModel.handle(event: .partialTranscript(input))
-
-            XCTAssertEqual(harness.field.value, expected)
-            XCTAssertEqual(harness.events.value.last, .type(expected))
-        }
+        XCTAssertEqual(harness.typed.value, ["localvoxtral "])
     }
 
     func testReplacementDictionarySettingOffLeavesLivePathUntouchedAndDoesNotLoadDictionary() {
         let configStore = MockAppConfigStore(
-            replacementDictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
-            ])
+            replacementDictionary: voxtralDictionary
         )
         let harness = makeHarness(
             dictionaryEnabled: false,
@@ -347,13 +153,103 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         )
 
         harness.viewModel.handle(event: .partialTranscript("voxtral "))
-        harness.viewModel.isDictating = false
-        harness.viewModel.isFinalizingStop = true
-        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        stop(harness.viewModel)
 
         XCTAssertEqual(configStore.loadReplacementDictionaryCallCount, 0)
+        XCTAssertFalse(
+            harness.viewModel.textInsertion.debugLiveHoldBackStreamIsActive,
+            "dictionary off in a non-terminal target types directly, no hold-back"
+        )
         XCTAssertEqual(harness.field.value, "voxtral ")
-        XCTAssertEqual(harness.events.value, [.type("voxtral ")])
+        XCTAssertEqual(harness.typed.value, ["voxtral "])
+    }
+
+    // MARK: - Terminal target wiring (TerminalTargetDetector → hold-back strategy)
+
+    /// End-to-end regression for the field bug (2026-07-06): a terminal with a
+    /// READABLE grid caret armed the guarded corrector, which then diverged and
+    /// stood down — replacements never applied. The terminal verdict now selects
+    /// the hold-back stream: replacement applied before typing.
+    func testTerminalVerdictSelectsHoldBackAndAppliesReplacement() {
+        let harness = makeHarness(
+            dictionary: voxtralDictionary,
+            frontmostBundleID: "com.mitchellh.ghostty"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        stop(harness.viewModel)
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        // The terminal sanitizer buffers the trailing space until stop, so the
+        // release may arrive as more than one chunk — assert the joined text.
+        XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
+    }
+
+    func testTerminalVerdictWithDictionaryDisabledStillSanitizesNewlines() {
+        let harness = makeHarness(
+            dictionaryEnabled: false,
+            frontmostBundleID: "com.mitchellh.ghostty"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("ls -la\nnext "))
+        stop(harness.viewModel)
+
+        XCTAssertEqual(harness.field.value, "ls -la next ")
+    }
+
+    func testUserAllowlistedBundleSelectsHoldBack() {
+        // The original cmux field case (writable AX value, only the user's
+        // terminal_apps.toml entry can classify it) — cmux itself is built-in
+        // now, so an unknown stand-in keeps the user path exercised. The
+        // session must behave exactly like a built-in terminal.
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        let harness = makeHarness(
+            dictionary: voxtralDictionary,
+            configStore: MockAppConfigStore(
+                replacementDictionary: voxtralDictionary,
+                terminalAppBundleIDs: ["com.example.myterminal"]
+            ),
+            frontmostBundleID: "com.example.myterminal"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral "))
+        stop(harness.viewModel)
+
+        XCTAssertEqual(harness.field.value, "localvoxtral ")
+        XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
+    }
+
+    func testCmuxIsTerminalLikeViaBuiltInAllowlist() {
+        // cmux graduated from the user allowlist to built-in (owner request,
+        // 2026-07-08): terminal behavior with zero config, even though its AX
+        // value reads writable.
+        TerminalTargetDetector.debugFocusedElementProbeOverride = { .valueSettable }
+        let harness = makeHarness(
+            dictionary: voxtralDictionary,
+            frontmostBundleID: "com.cmuxterm.app"
+        )
+
+        harness.viewModel.handle(event: .partialTranscript("voxtral\nls "))
+        stop(harness.viewModel)
+
+        XCTAssertEqual(
+            harness.field.value, "localvoxtral ls ",
+            "replacement applied AND the newline sanitized — full terminal treatment with zero config"
+        )
+    }
+
+    // MARK: - Harness
+
+    private var voxtralDictionary: ReplacementDictionary {
+        ReplacementDictionary(entries: [
+            ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+        ])
+    }
+
+    private func stop(_ viewModel: DictationViewModel) {
+        viewModel.isDictating = false
+        viewModel.isFinalizingStop = true
+        viewModel.finishStoppedSession(promotePendingSegment: false)
     }
 
     private func makeHarness(
@@ -361,15 +257,13 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         dictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
         configStore: MockAppConfigStore? = nil,
         field: TestField = TestField(""),
-        events: Box<[InsertionEvent]> = Box([]),
-        caretLocationReader: ((pid_t?) -> Int?)? = nil,
+        typed: Box<[String]> = Box([]),
         unicodePoster: ((String) -> Bool)? = nil,
-        backspacePoster: ((Int) -> Bool)? = nil,
-        liveReplacementSettleSleep: (() async -> Void)? = nil
+        frontmostBundleID: String? = nil
     ) -> (
         viewModel: DictationViewModel,
         field: TestField,
-        events: Box<[InsertionEvent]>
+        typed: Box<[String]>
     ) {
         let suiteName = "localvoxtral.DictationViewModelLiveReplacementCorrectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -392,30 +286,26 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
 
         viewModel.textInsertion.debugConfigureInsertionHooks(
             unicodePoster: unicodePoster ?? { chunk in
-                events.value.append(.type(chunk))
+                typed.value.append(chunk)
                 field.value.append(chunk)
                 return true
             },
-            backspacePoster: backspacePoster ?? { count in
-                events.value.append(.backspace(count))
-                for _ in 0 ..< count {
-                    if !field.value.isEmpty {
-                        field.value.removeLast()
-                    }
-                }
-                return true
-            },
             modifierStateReader: { false },
-            accessibilityInserter: { _, _ in false },
-            caretLocationReader: caretLocationReader ?? { _ in (field.value as NSString).length },
-            liveReplacementSettleSleep: liveReplacementSettleSleep
+            accessibilityInserter: { _, _ in false }
         )
+
+        if let frontmostBundleID {
+            TerminalTargetDetector.debugFrontmostBundleIDOverride = { frontmostBundleID }
+            TerminalTargetDetector.debugSecureEventInputOverride = { false }
+            viewModel.captureSessionTargetVerdict()
+            viewModel.applyPreCapturedSessionTargetVerdict()
+        }
 
         viewModel.sessionOutputMode = .liveAutoPaste
         viewModel.isDictating = true
         viewModel.configureLiveAutoPasteReplacementCorrectorForSession()
 
-        return (viewModel, field, events)
+        return (viewModel, field, typed)
     }
 }
 
@@ -460,10 +350,15 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
 
 private final class MockAppConfigStore: AppConfigServing {
     private let replacementDictionary: ReplacementDictionary
+    private let terminalAppBundleIDs: [String]
     private(set) var loadReplacementDictionaryCallCount = 0
 
-    init(replacementDictionary: ReplacementDictionary) {
+    init(
+        replacementDictionary: ReplacementDictionary,
+        terminalAppBundleIDs: [String] = []
+    ) {
         self.replacementDictionary = replacementDictionary
+        self.terminalAppBundleIDs = terminalAppBundleIDs
     }
 
     func configDirectoryURL() -> URL {
@@ -477,6 +372,10 @@ private final class MockAppConfigStore: AppConfigServing {
 
     func loadLLMPromptTemplates() -> LLMPromptTemplates {
         LLMPromptTemplates(systemContent: "{{input_text}}", userContent: "{{input_text}}")
+    }
+
+    func loadTerminalAppBundleIDs() -> [String] {
+        terminalAppBundleIDs
     }
 }
 #endif

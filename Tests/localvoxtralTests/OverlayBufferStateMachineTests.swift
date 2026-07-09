@@ -4,6 +4,42 @@ import XCTest
 
 @MainActor
 final class OverlayBufferStateMachineTests: XCTestCase {
+    func testSecureInputMarkerSetsOnlyWhileBufferingAndResetsOnNewSession() {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+
+        machine.setSecureInputWarning()
+        XCTAssertNil(machine.snapshot, "no session, no marker")
+
+        machine.startSession(anchor: anchor)
+        machine.setSecureInputWarning()
+        XCTAssertEqual(machine.snapshot?.secureInputActive, true)
+        XCTAssertNil(
+            machine.snapshot?.errorMessage,
+            "the marker lives in the phase title, not a warning line (owner feedback on #90)"
+        )
+
+        machine.beginFinalizing(anchor: nil)
+        XCTAssertEqual(
+            machine.snapshot?.secureInputActive, true,
+            "finalizing keeps the marker; commitFailed owns the surface next"
+        )
+
+        machine.reset()
+        machine.startSession(anchor: anchor)
+        XCTAssertEqual(machine.snapshot?.secureInputActive, false, "a new session starts clean")
+
+        machine.beginFinalizing(anchor: nil)
+        machine.setSecureInputWarning()
+        XCTAssertEqual(
+            machine.snapshot?.secureInputActive, false,
+            "too late — the warning is sampled while buffering only"
+        )
+    }
+
     func testStateMachine_happyPathTransitionsToIdleAfterReset() {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .windowCenter)
