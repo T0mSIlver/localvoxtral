@@ -46,7 +46,7 @@ enum PolishModelCatalog {
             estimatedRAMGB: 1.2,
             samplingDefaults: nil,
             chatTemplateArguments: nil,
-            summary: "Cleans up transcripts with negligible overhead"
+            summary: "For any Apple Silicon Mac"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
@@ -55,7 +55,7 @@ enum PolishModelCatalog {
             estimatedRAMGB: 3.8,
             samplingDefaults: nil,
             chatTemplateArguments: ["enable_thinking": false],
-            summary: "Stronger cleanup, slower first load"
+            summary: "For 16 GB+ Macs"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
@@ -64,7 +64,7 @@ enum PolishModelCatalog {
             estimatedRAMGB: 7.5,
             samplingDefaults: nil,
             chatTemplateArguments: ["enable_thinking": false],
-            summary: "Highest quality, needs a Mac with headroom"
+            summary: "For 32 GB+ Macs"
         ),
     ]
 
