@@ -28,6 +28,7 @@ struct PolishModelOption: Equatable, Sendable {
     let sizeOnDiskGB: Double
     let estimatedRAMGB: Double
     let samplingDefaults: PolishSamplingDefaults?
+    let chatTemplateArguments: [String: Bool]?
     let summary: String
 }
 
@@ -39,8 +40,18 @@ enum PolishModelCatalog {
             sizeOnDiskGB: 0.9,
             estimatedRAMGB: 1.0,
             samplingDefaults: nil,
+            chatTemplateArguments: nil,
             summary: "Cleans up transcripts with negligible overhead"
-        )
+        ),
+        PolishModelOption(
+            repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            displayName: "Qwen3.5 4B (better quality)",
+            sizeOnDiskGB: 3.0,
+            estimatedRAMGB: 3.5,
+            samplingDefaults: nil,
+            chatTemplateArguments: ["enable_thinking": false],
+            summary: "Stronger cleanup, slower first load"
+        ),
     ]
 
     static let defaultOption = options[0]
@@ -116,9 +127,9 @@ enum PolishModelCache {
         if let revision = try? String(contentsOf: mainReference, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            fileManager.fileExists(
-                atPath: snapshotsDirectory.appending(path: revision)
-                    .appending(path: "config.json").path
+            snapshotIsComplete(
+                snapshotsDirectory.appending(path: revision),
+                fileManager: fileManager
             )
         {
             return true
@@ -130,7 +141,39 @@ enum PolishModelCache {
                 includingPropertiesForKeys: nil
             )) ?? []
         return snapshots.contains {
-            fileManager.fileExists(atPath: $0.appending(path: "config.json").path)
+            snapshotIsComplete($0, fileManager: fileManager)
+        }
+    }
+
+    /// True only when the WEIGHTS are complete, not just the metadata:
+    /// config.json lands first in a download, and hf's cache only links a
+    /// snapshot file once its blob finished — so "config.json exists" flips
+    /// to "downloaded" the moment a download STARTS (field finding, PR #99).
+    /// Sharded models are checked against their index's weight_map.
+    private static func snapshotIsComplete(_ snapshot: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.fileExists(atPath: snapshot.appending(path: "config.json").path) else {
+            return false
+        }
+
+        let indexURL = snapshot.appending(path: "model.safetensors.index.json")
+        if let data = try? Data(contentsOf: indexURL),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let weightMap = object["weight_map"] as? [String: String]
+        {
+            let shardNames = Set(weightMap.values)
+            return !shardNames.isEmpty
+                && shardNames.allSatisfy {
+                    // fileExists resolves symlinks: a link to a still-partial
+                    // (unlinked) blob does not count.
+                    fileManager.fileExists(atPath: snapshot.appending(path: $0).path)
+                }
+        }
+
+        let entries =
+            (try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? []
+        return entries.contains {
+            $0.hasSuffix(".safetensors")
+                && fileManager.fileExists(atPath: snapshot.appending(path: $0).path)
         }
     }
 }

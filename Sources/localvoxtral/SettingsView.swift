@@ -406,6 +406,10 @@ private struct ManagedBackendStatusLabel: View {
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
 
+            // Determinate progress renders as a 54pt linear bar; the
+            // indeterminate case is a circular spinner, which must NOT get
+            // the bar's fixed width (it centers inside it, reading as a big
+            // blob of horizontal padding next to the caption text).
             if case .installing(let progress) = status {
                 if let fraction = installFraction(from: progress) {
                     ProgressView(value: fraction)
@@ -413,8 +417,7 @@ private struct ManagedBackendStatusLabel: View {
                         .frame(width: 54)
                 } else {
                     ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 54)
+                        .controlSize(.mini)
                 }
             } else if case .preparingModel(let progress) = status {
                 if let fraction = progress.fraction {
@@ -423,8 +426,7 @@ private struct ManagedBackendStatusLabel: View {
                         .frame(width: 54)
                 } else {
                     ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 54)
+                        .controlSize(.mini)
                 }
             }
 
@@ -493,7 +495,10 @@ private struct ManagedBackendStatusLabel: View {
             // the user ever sees, so don't claim a download is happening.
             return "Checking model..."
         }
-        return "Downloading model - \(Self.byteText(progress.downloadedBytes)) of \(Self.byteText(totalBytes))"
+        // Clamp: the downloader's aggregate can transiently disagree with the
+        // dry-run total (retries, resumed partials); never render > 100%.
+        let downloaded = min(progress.downloadedBytes, totalBytes)
+        return "Downloading model - \(Self.byteText(downloaded)) of \(Self.byteText(totalBytes))"
     }
 
     private static func byteText(_ bytes: Int64) -> String {

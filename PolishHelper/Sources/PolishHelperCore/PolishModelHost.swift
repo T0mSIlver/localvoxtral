@@ -8,6 +8,7 @@ import MLXLMCommon
 public protocol ChatResponding: Sendable {
     func respond(
         to messages: [ChatCompletionMessage],
+        chatTemplateArguments: [String: ChatTemplateArgumentValue]?,
         sampling: ChatSamplingParameters
     ) async throws -> String
 }
@@ -42,6 +43,7 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
     /// `container.perform`, which serializes all access.
     private struct PrefixSnapshot {
         let prefixTokens: [Int]
+        let chatTemplateArguments: [String: ChatTemplateArgumentValue]?
         let caches: [KVCache]
     }
     private var prefixSnapshot: PrefixSnapshot?
@@ -61,6 +63,7 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
 
     public func respond(
         to messages: [ChatCompletionMessage],
+        chatTemplateArguments: [String: ChatTemplateArgumentValue]? = nil,
         sampling: ChatSamplingParameters
     ) async throws -> String {
         var parameters = GenerateParameters()
@@ -95,13 +98,21 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
             return ["role": message.role, "content": message.content]
         }
         let prefixMessageCount = PromptPrefixPlan.cacheablePrefix(of: messages)?.count
+        let chatTemplateContext: [String: any Sendable]? = chatTemplateArguments?
+            .mapValues { $0.templateContextValue }
 
         return try await container.perform { context in
-            let fullTokens = try context.tokenizer.applyChatTemplate(messages: templateMessages)
+            let fullTokens = try context.tokenizer.applyChatTemplate(
+                messages: templateMessages,
+                tools: nil,
+                additionalContext: chatTemplateContext
+            )
             let (cache, promptTokens) = try self.promptState(
                 fullTokens: fullTokens,
                 templateMessages: templateMessages,
                 prefixMessageCount: prefixMessageCount,
+                chatTemplateArguments: chatTemplateArguments,
+                chatTemplateContext: chatTemplateContext,
                 context: context,
                 parameters: generateParameters
             )
@@ -126,6 +137,8 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
         fullTokens: [Int],
         templateMessages: [[String: any Sendable]],
         prefixMessageCount: Int?,
+        chatTemplateArguments: [String: ChatTemplateArgumentValue]?,
+        chatTemplateContext: [String: any Sendable]?,
         context: ModelContext,
         parameters: GenerateParameters
     ) throws -> ([KVCache]?, [Int]) {
@@ -136,7 +149,9 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
         }
 
         let prefixTokens = try prefixEncoder.encodeChatPrefix(
-            messages: Array(templateMessages.prefix(prefixMessageCount)))
+            messages: Array(templateMessages.prefix(prefixMessageCount)),
+            additionalContext: chatTemplateContext
+        )
 
         switch PromptPrefixPlan.plan(fullTokens: fullTokens, cachedPrefixTokens: prefixTokens) {
         case .fullPrefill:
@@ -149,7 +164,10 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
             return (nil, fullTokens)
 
         case .reusePrefix(let suffixTokens):
-            if let snapshot = prefixSnapshot, snapshot.prefixTokens == prefixTokens {
+            if let snapshot = prefixSnapshot,
+                snapshot.prefixTokens == prefixTokens,
+                snapshot.chatTemplateArguments == chatTemplateArguments
+            {
                 PolishdLog.info(
                     "prompt cache: hit — reusing \(prefixTokens.count) prefix tokens, "
                         + "prefilling \(suffixTokens.count)")
@@ -157,7 +175,11 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
             }
 
             let caches = try prefill(tokens: prefixTokens, context: context, parameters: parameters)
-            prefixSnapshot = PrefixSnapshot(prefixTokens: prefixTokens, caches: caches)
+            prefixSnapshot = PrefixSnapshot(
+                prefixTokens: prefixTokens,
+                chatTemplateArguments: chatTemplateArguments,
+                caches: caches
+            )
             PolishdLog.info(
                 "prompt cache: checkpointed \(prefixTokens.count) prefix tokens; "
                     + "prefilling \(suffixTokens.count)")

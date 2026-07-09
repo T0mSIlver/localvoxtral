@@ -170,11 +170,16 @@ def should_count_for_download(info):
 # snapshot_download runs one byte-unit tqdm bar per file, on worker threads.
 # Reporting a single bar's n/total made the UI fraction bounce between files
 # and let a per-file total stomp the aggregate from resolve_total, so the bar
-# jumped around. Instead every byte delta from every bar feeds one shared
-# counter, reported against the aggregate total only (total is omitted here;
-# the Swift side keeps the one from the "total" event).
+# jumped around. The aggregate is POSITION-based and keyed per FILE (the
+# bar's desc, which hf_hub sets to the filename): each bar reports its
+# current position (self.n, which includes tqdm's `initial=` for resumed
+# files), and the reported value is the sum of per-file positions. A pure
+# delta counter double-counted whenever hf_hub restarted a file (e.g. a
+# partial blob invalidated by an interrupted earlier run, or an in-run
+# retry), inflating the UI past the total ("6 GB / 3.3 GB" in the field);
+# with per-file keys a restarted file's new bar REPLACES its old position.
 _AGGREGATE_LOCK = threading.Lock()
-_AGGREGATE = {"downloaded": 0, "last_emit_at": 0.0}
+_AGGREGATE = {"positions": {}, "last_emit_at": 0.0}
 
 
 class JSONTqdm(tqdm):
@@ -183,6 +188,11 @@ class JSONTqdm(tqdm):
         self._localvoxtral_emit_interval = self._emit_interval()
         kwargs["file"] = _NullTqdmFile()
         super().__init__(*args, **kwargs)
+        if self._localvoxtral_reports_bytes:
+            # Record silently: a resumed bar starts at initial=resume_size and
+            # a restarted bar resets its file's position to 0 — both must be
+            # reflected in the sum, but only real byte updates emit events.
+            self._localvoxtral_record_position(emit_allowed=False, force_emit=False)
 
     def _emit_interval(self):
         value = os.environ.get("LOCALVOXTRAL_HF_EMIT_INTERVAL")
@@ -201,26 +211,32 @@ class JSONTqdm(tqdm):
 
     def update(self, n=1):
         result = super().update(n)
-        if not self._localvoxtral_reports_bytes or not n or n < 0:
+        if not self._localvoxtral_reports_bytes:
             return result
-        now = time.monotonic()
         total = self.total
         bar_finished = total is not None and self.n >= total
+        self._localvoxtral_record_position(emit_allowed=True, force_emit=bar_finished)
+        return result
+
+    def _localvoxtral_record_position(self, emit_allowed, force_emit):
+        now = time.monotonic()
+        key = getattr(self, "desc", None) or id(self)
         with _AGGREGATE_LOCK:
-            _AGGREGATE["downloaded"] += int(n)
+            _AGGREGATE["positions"][key] = int(self.n or 0)
+            if not emit_allowed:
+                return
             if (
-                self._localvoxtral_emit_interval == 0
+                force_emit
+                or self._localvoxtral_emit_interval == 0
                 or now - _AGGREGATE["last_emit_at"] >= self._localvoxtral_emit_interval
-                or bar_finished
             ):
                 _AGGREGATE["last_emit_at"] = now
                 emit({
                     "event": "progress",
                     "repo": ARGS.repo,
-                    "downloaded": _AGGREGATE["downloaded"],
+                    "downloaded": sum(_AGGREGATE["positions"].values()),
                     "total": None,
                 })
-        return result
 
 
 class _NullTqdmFile:

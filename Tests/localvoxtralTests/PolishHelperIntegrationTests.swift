@@ -285,10 +285,15 @@ final class PolishHelperIntegrationTests: XCTestCase {
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
         XCTAssertEqual((healthResponse as? HTTPURLResponse)?.statusCode, 200)
 
+        // Mirror production: SettingsStore attaches the catalog entry's
+        // sampling defaults and chat-template kwargs for the managed model.
+        let option = PolishModelCatalog.option(forRepoID: model)
         let configuration = LLMPolishingConfiguration(
             endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
             apiKey: "",
-            model: model
+            model: model,
+            samplingDefaults: option?.samplingDefaults,
+            chatTemplateArguments: option?.chatTemplateArguments
         )
         let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
         addTeardownBlock { cleanup() }
@@ -345,10 +350,13 @@ final class PolishHelperIntegrationTests: XCTestCase {
         try await ensureModelCached(model)
         let (process, port, _) = try await launchHelper(binary: binary, model: model)
 
+        // Catalog chat-template kwargs still apply (the experiment varies
+        // sampling only, not templating).
         let configuration = LLMPolishingConfiguration(
             endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
             apiKey: "",
-            model: model
+            model: model,
+            chatTemplateArguments: PolishModelCatalog.option(forRepoID: model)?.chatTemplateArguments
         )
         let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
         addTeardownBlock { cleanup() }
@@ -417,7 +425,7 @@ private struct QwenRecommendedSamplingPolishingService: LLMPolishingServicing {
 
         let messages = [["role": "system", "content": request.systemPrompt]]
             + request.userPrompts.map { ["role": "user", "content": $0] }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": configuration.model,
             "messages": messages,
             "temperature": 1.0,
@@ -426,6 +434,9 @@ private struct QwenRecommendedSamplingPolishingService: LLMPolishingServicing {
             "min_p": 0.0,
             "presence_penalty": 2.0,
         ]
+        if let chatTemplateArguments = configuration.chatTemplateArguments {
+            body["chat_template_kwargs"] = chatTemplateArguments
+        }
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: urlRequest)

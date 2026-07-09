@@ -955,12 +955,17 @@ final class DictationViewModel {
         settings.managedLLMPolishingModel = model
         guard settings.polishingBackendMode == .managedLocal else { return }
 
-        Log.backends.info("managed polishing model changed; stopping polishing engine")
+        Log.backends.info("managed polishing model changed; restarting polishing engine")
         polishingWarmupTask?.cancel()
         polishingShutdownTask?.cancel()
-        polishingShutdownTask = Task { @MainActor [backendManager] in
+        polishingShutdownTask = Task { @MainActor [weak self, backendManager] in
             guard !Task.isCancelled else { return }
             await backendManager.stopPolishing()
+            // Same eager UX as the enable/mode toggles: download + relaunch
+            // now, with progress in the status row — not on the next
+            // dictation (field finding, PR #99 hand-test).
+            guard !Task.isCancelled, let self, self.isManagedPolishingWarmupWanted else { return }
+            self.startPolishingWarmup()
         }
     }
 

@@ -256,6 +256,39 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
+    func testStopPolishingAwaitsCancelledEnsureSoASubsequentEnsureStartsFresh() async throws {
+        // Field regression (PR #99): stop cancelled the in-flight ensure but
+        // returned without awaiting it, so a model switch mid-download started
+        // a second downloader process while the first was still terminating —
+        // both writing the same HF cache blob. Stop must not return until the
+        // cancelled ensure (and its downloader) fully unwound.
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.mlxLM.id])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.mlxLM.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        let firstEnsure = Task { @MainActor in
+            try await manager.ensureReady(dictation: false, polishing: true)
+        }
+        await modelPreparer.waitUntilPrepareStarted()
+
+        await manager.stopPolishing()
+
+        // The cancelled prepare observed its termination BEFORE stop returned…
+        XCTAssertEqual(modelPreparer.terminatedBackendIDs, [BackendCatalog.mlxLM.id])
+        // …so a new ensure starts fresh instead of joining the dead
+        // single-flight task (which would rethrow its CancellationError).
+        try await manager.ensureReady(dictation: false, polishing: true)
+        XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
+        XCTAssertEqual(manager.mlxLMStatus, .ready)
+        _ = await firstEnsure.result
+    }
+
     func testStopDictationStopsOnlyVoxmlx() async throws {
         let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
@@ -610,6 +643,7 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
     private struct State {
         var prepareCalls: [ModelPreparationRequest] = []
         var terminatedBackendIDs: [String] = []
+        var alreadySuspendedBackendIDs: Set<String> = []
         var prepareStartedContinuation: CheckedContinuation<Void, Never>?
         var prepareResumeContinuation: CheckedContinuation<Void, Error>?
     }
@@ -648,7 +682,11 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
             await progress(event)
         }
 
-        if suspendBackendIDs.contains(request.backendID) {
+        // Suspend only the FIRST prepare per backend: retry-after-stop tests
+        // need the follow-up prepare to complete normally.
+        let shouldSuspend = suspendBackendIDs.contains(request.backendID)
+            && state.withLock { $0.alreadySuspendedBackendIDs.insert(request.backendID).inserted }
+        if shouldSuspend {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
                     state.withLock { $0.prepareResumeContinuation = continuation }

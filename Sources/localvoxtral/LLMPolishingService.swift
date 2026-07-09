@@ -21,17 +21,20 @@ struct LLMPolishingConfiguration: Sendable {
     let apiKey: String
     let model: String
     let samplingDefaults: PolishSamplingDefaults?
+    let chatTemplateArguments: [String: Bool]?
 
     init(
         endpointURL: URL,
         apiKey: String,
         model: String,
-        samplingDefaults: PolishSamplingDefaults? = nil
+        samplingDefaults: PolishSamplingDefaults? = nil,
+        chatTemplateArguments: [String: Bool]? = nil
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
         self.model = model
         self.samplingDefaults = samplingDefaults
+        self.chatTemplateArguments = chatTemplateArguments
     }
 }
 
@@ -158,6 +161,9 @@ struct LLMPolishingService: LLMPolishingServicing {
             if let presencePenalty = defaults.presencePenalty {
                 body["presence_penalty"] = presencePenalty
             }
+        }
+        if let chatTemplateArguments = configuration.chatTemplateArguments {
+            body["chat_template_kwargs"] = chatTemplateArguments
         }
         return try JSONSerialization.data(withJSONObject: body)
     }

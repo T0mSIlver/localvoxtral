@@ -152,15 +152,27 @@ case "$CMD" in
     # prefixes per-command). Requires a helper binary from a prior
     # `./scripts/remote-build.sh package` run — the remote PolishHelper/.build
     # tree survives rsync (excluded from --delete).
-    if [[ $# -ne 0 ]]; then
-      echo "integration-polishd does not accept extra arguments" >&2
+    # Optional arg: HF repo to hold to the eval baseline instead of the
+    # default polishing model (the suite self-provisions missing weights into
+    # the build user's HF cache) — the per-model gate for PolishModelCatalog
+    # additions.
+    if [[ $# -gt 1 ]]; then
+      echo "integration-polishd accepts at most one argument (HF model repo)" >&2
       exit 1
     fi
+    POLISHD_MODEL="${1:-}"
     POLISHD_MARKER="$ROOT_DIR/.polishd-integration-enable.json"
     trap 'rm -f "$POLISHD_MARKER"' EXIT
-    printf '{"helperPath": "%s"}\n' \
-      "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-      >"$POLISHD_MARKER"
+    if [[ -n "$POLISHD_MODEL" ]]; then
+      printf '{"helperPath": "%s", "model": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        "$POLISHD_MODEL" \
+        >"$POLISHD_MARKER"
+    else
+      printf '{"helperPath": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        >"$POLISHD_MARKER"
+    fi
     REMOTE_CMD=(swift test --filter PolishHelperIntegrationTests)
     ;;
   eval-llm)

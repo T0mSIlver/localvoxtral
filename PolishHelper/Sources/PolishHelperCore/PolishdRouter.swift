@@ -42,6 +42,7 @@ public struct PolishdRouter: Sendable {
             let start = ContinuousClock.now
             let content = try await responder.respond(
                 to: completion.messages,
+                chatTemplateArguments: completion.chatTemplateArguments,
                 sampling: completion.sampling
             )
             let elapsed = start.duration(to: .now)

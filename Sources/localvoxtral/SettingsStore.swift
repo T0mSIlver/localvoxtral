@@ -859,11 +859,13 @@ final class SettingsStore {
             guard let url = URL(string: ManagedBackendEndpoints.polishingURLString)
             else { return nil }
             let model = resolvedManagedLLMPolishingModel
+            let option = PolishModelCatalog.option(forRepoID: model)
             return LLMPolishingConfiguration(
                 endpointURL: url,
                 apiKey: "",
                 model: model,
-                samplingDefaults: PolishModelCatalog.option(forRepoID: model)?.samplingDefaults
+                samplingDefaults: option?.samplingDefaults,
+                chatTemplateArguments: option?.chatTemplateArguments
             )
         }
         let trimmedEndpoint = llmPolishingEndpointURL.trimmed
