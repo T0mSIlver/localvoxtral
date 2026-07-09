@@ -22,19 +22,24 @@ struct LLMPolishEvalCase {
     let mustContain: [String]
     /// Substrings that must NOT appear in the normalized output.
     let mustNotContain: [String]
+    /// Technical fidelity cases must score identifier and acronym casing.
+    /// Existing punctuation-spacing cases keep case-insensitive scoring.
+    let caseSensitive: Bool
 
     init(
         id: String,
         input: String,
         expectedText: String? = nil,
         mustContain: [String] = [],
-        mustNotContain: [String] = []
+        mustNotContain: [String] = [],
+        caseSensitive: Bool = false
     ) {
         self.id = id
         self.input = input
         self.expectedText = expectedText
         self.mustContain = mustContain
         self.mustNotContain = mustNotContain
+        self.caseSensitive = caseSensitive
     }
 }
 
@@ -176,6 +181,131 @@ enum LLMPolishEvalSupport {
         ),
     ]
 
+    /// Print-only technical-dictation cases for model differentiation.
+    /// These intentionally do NOT gate CI while the default 0.8B model is
+    /// expected to miss many identifier, command, and markdown transforms.
+    static let technicalCases: [LLMPolishEvalCase] = [
+        // Filename + SwiftUI lifecycle identifier spoken as natural words.
+        LLMPolishEvalCase(
+            id: "tech-filename-swift-onappear",
+            input: "open settings view dot swift and check the on appear handler",
+            expectedText: "Open SettingsView.swift and check the onAppear handler.",
+            caseSensitive: true
+        ),
+        // Common package filename plus backend acronyms that should be cased.
+        LLMPolishEvalCase(
+            id: "tech-filename-json-api-url",
+            input: "update package dot json so the api url uses https",
+            expectedText: "Update package.json so the API URL uses HTTPS.",
+            caseSensitive: true
+        ),
+        // camelCase rename target assembled from dictated words.
+        LLMPolishEvalCase(
+            id: "tech-camelcase-rename",
+            input: "rename fetch user profile to fetch user profile async",
+            expectedText: "Rename fetchUserProfile to fetchUserProfileAsync.",
+            caseSensitive: true
+        ),
+        // PascalCase type name from a natural class description.
+        LLMPolishEvalCase(
+            id: "tech-pascalcase-class",
+            input: "create a user session manager class in swift",
+            expectedText: "Create a UserSessionManager class in Swift.",
+            caseSensitive: true
+        ),
+        // snake_case fields from explicit underscore dictation.
+        LLMPolishEvalCase(
+            id: "tech-snake-case-fields",
+            input: "store user underscore id and access token in the json payload",
+            expectedText: "Store user_id and access_token in the JSON payload.",
+            caseSensitive: true
+        ),
+        // Git commit command, short flag, and quoted message.
+        LLMPolishEvalCase(
+            id: "tech-cli-git-commit",
+            input: "run git commit dash m quote fix login race quote",
+            expectedText: "Run `git commit -m \"fix login race\"`.",
+            caseSensitive: true
+        ),
+        // npm long flag with repeated dash dictation.
+        LLMPolishEvalCase(
+            id: "tech-cli-npm-save-dev",
+            input: "run npm install dash dash save dev vitest",
+            expectedText: "Run `npm install --save-dev vitest`.",
+            caseSensitive: true
+        ),
+        // Test command with a long flag and PascalCase test target.
+        LLMPolishEvalCase(
+            id: "tech-cli-filter-target",
+            input: "run pnpm test dash dash filter auth service",
+            expectedText: "Run `pnpm test --filter AuthService`.",
+            caseSensitive: true
+        ),
+        // Markdown heading dictated structurally, not as literal hashes.
+        LLMPolishEvalCase(
+            id: "tech-markdown-heading",
+            input: "write a markdown heading level two known issues",
+            expectedText: "## Known issues",
+            caseSensitive: true
+        ),
+        // Markdown checklist-style bullets from repeated todo words.
+        LLMPolishEvalCase(
+            id: "tech-markdown-todo-bullets",
+            input: "add bullets todo write tests todo update read me",
+            expectedText: "- TODO: Write tests\n- TODO: Update README",
+            caseSensitive: true
+        ),
+        // Inline Swift control-flow terms and a code-ish property name.
+        LLMPolishEvalCase(
+            id: "tech-inline-do-catch",
+            input: "wrap it in a do catch block and log the localized description",
+            expectedText: "Wrap it in a `do`/`catch` block and log the localizedDescription.",
+            caseSensitive: true
+        ),
+        // Inline Swift guard pattern with braces inferred from dictation.
+        LLMPolishEvalCase(
+            id: "tech-inline-guard-self",
+            input: "use guard let self else return before awaiting the task",
+            expectedText: "Use `guard let self else { return }` before awaiting the task.",
+            caseSensitive: true
+        ),
+        // Platform and tooling jargon with mixed casing.
+        LLMPolishEvalCase(
+            id: "tech-acronyms-ios-xcode-github",
+            input: "the ios build fails in xcode when github actions sets the sdk root",
+            expectedText: "The iOS build fails in Xcode when GitHub Actions sets the SDKROOT.",
+            caseSensitive: true
+        ),
+        // Already-correct camelCase must not be expanded or title-cased.
+        LLMPolishEvalCase(
+            id: "tech-preserve-camelcase",
+            input: "Keep fetchUserProfile as fetchUserProfile.",
+            expectedText: "Keep fetchUserProfile as fetchUserProfile.",
+            caseSensitive: true
+        ),
+        // Already-correct mixed-case identifiers must be left untouched.
+        LLMPolishEvalCase(
+            id: "tech-preserve-mixed-identifiers",
+            input: "Do not change URLSessionConfiguration or apiClient.",
+            expectedText: "Do not change URLSessionConfiguration or apiClient.",
+            caseSensitive: true
+        ),
+        // French technical sentence with filename, onAppear, API, and colon typography.
+        LLMPolishEvalCase(
+            id: "tech-fr-swift-api-colon",
+            input: "corrige settings view dot swift: le modifier on appear appelle l api trop tôt",
+            expectedText: "Corrige SettingsView.swift : le modifier onAppear appelle l'API trop tôt.",
+            caseSensitive: true
+        ),
+        // French command sentence with CLI flag, package name, and Xcode casing.
+        LLMPolishEvalCase(
+            id: "tech-fr-cli-xcode",
+            input: "lance npm install dash dash save dev vitest puis relance xcode",
+            expectedText: "Lance `npm install --save-dev vitest`, puis relance Xcode.",
+            caseSensitive: true
+        ),
+    ]
+
     /// The bundled default templates, loaded through the production config
     /// path (a fresh override directory gets seeded with the bundled files).
     /// The caller owns cleanup of the returned directory.
@@ -191,11 +321,15 @@ enum LLMPolishEvalSupport {
     /// (U+202F narrow no-break, U+00A0 no-break) with a plain space,
     /// collapses runs, and lowercases, so assertions accept any of them.
     static func normalized(_ text: String) -> String {
+        normalizedSpacing(text)
+            .lowercased()
+    }
+
+    static func normalizedSpacing(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\u{202F}", with: " ")
             .replacingOccurrences(of: "\u{00A0}", with: " ")
             .replacingOccurrences(of: " +", with: " ", options: .regularExpression)
-            .lowercased()
     }
 
     static func runCase(
@@ -218,20 +352,32 @@ enum LLMPolishEvalSupport {
         do {
             let result = try await service.polish(request: request, configuration: configuration)
             outputForLog = result.polishedText
-            let output = normalized(result.polishedText)
+            let output = evalCase.caseSensitive
+                ? normalizedSpacing(result.polishedText)
+                : normalized(result.polishedText)
 
             if let expectedText = evalCase.expectedText {
                 // Whole-output equality: substring needles would false-pass
                 // outputs with prepended labels ("Corrected: …") or trailing
                 // commentary that the prompt forbids.
-                if output != normalized(expectedText) {
-                    caseFailures.append("expected \"\(expectedText)\"")
+                let expected = evalCase.caseSensitive
+                    ? normalizedSpacing(expectedText)
+                    : normalized(expectedText)
+                if output != expected {
+                    let expectedForLog = expectedText.replacingOccurrences(of: "\n", with: "\\n")
+                    caseFailures.append("expected \"\(expectedForLog)\"")
                 }
             } else {
-                for needle in evalCase.mustContain where !output.contains(normalized(needle)) {
+                for needle in evalCase.mustContain
+                where !output.contains(
+                    evalCase.caseSensitive ? normalizedSpacing(needle) : normalized(needle)
+                ) {
                     caseFailures.append("missing \"\(needle)\"")
                 }
-                for needle in evalCase.mustNotContain where output.contains(normalized(needle)) {
+                for needle in evalCase.mustNotContain
+                where output.contains(
+                    evalCase.caseSensitive ? normalizedSpacing(needle) : normalized(needle)
+                ) {
                     caseFailures.append("still contains \"\(needle)\"")
                 }
 
@@ -259,6 +405,7 @@ enum LLMPolishEvalSupport {
         var lines: [String] = []
         var failedRequiredCases: [String] = []
         var passingHardCases: [String] = []
+        var passingTechnicalCases: [String] = []
     }
 
     /// Runs the full corpus and returns the printable scoreboard plus the
@@ -298,6 +445,18 @@ enum LLMPolishEvalSupport {
             }
         }
 
+        for evalCase in technicalCases {
+            let (failures, output) = await runCase(
+                evalCase, service: service, templates: templates, configuration: configuration
+            )
+            if failures.isEmpty {
+                result.lines.append("PASS \(evalCase.id) (technical)")
+                result.passingTechnicalCases.append(evalCase.id)
+            } else {
+                result.lines.append("XFAIL \(evalCase.id) (technical) — output: \(output)")
+            }
+        }
+
         return result
     }
 
@@ -312,6 +471,7 @@ enum LLMPolishEvalSupport {
             \(result.lines.joined(separator: "\n"))
             == required: \(requiredCases.count - result.failedRequiredCases.count)/\(requiredCases.count), \
             known-hard passing: \(result.passingHardCases.count)/\(knownHardCases.count) ==
+            == technical: \(result.passingTechnicalCases.count)/\(technicalCases.count) ==
             """
         )
     }
