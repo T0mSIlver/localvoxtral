@@ -77,6 +77,11 @@ final class HFModelDownloaderTests: XCTestCase {
                 .progress(repo: "org/model", downloadedBytes: 7, totalBytes: nil),
                 .progress(repo: "org/model", downloadedBytes: 20, totalBytes: nil),
                 .progress(repo: "org/model", downloadedBytes: 25, totalBytes: nil),
+                // Restarted file: the new bar REPLACES the old position…
+                .progress(repo: "org/model", downloadedBytes: 55, totalBytes: nil),
+                .progress(repo: "org/model", downloadedBytes: 35, totalBytes: nil),
+                // …and a resumed bar's initial= bytes count toward the sum.
+                .progress(repo: "org/model", downloadedBytes: 105, totalBytes: nil),
             ]
         )
         XCTAssertFalse(result.stderr.contains("Fetching"), "tqdm rendered to stderr: \(result.stderr)")
@@ -184,7 +189,23 @@ second_byte_bar = namespace["JSONTqdm"](total=50, unit="B")
 second_byte_bar.update(5)
 second_byte_bar.close()
 
-expected_downloaded = [7, 20, 25]
+# A restarted file (same desc, hf_hub names bars by filename) must REPLACE its
+# old position, not add to it — delta counting inflated the aggregate past the
+# total in the field ("6 GB / 3.3 GB") whenever a partial blob was invalidated.
+restart_first = namespace["JSONTqdm"](total=40, unit="B", desc="model.safetensors")
+restart_first.update(30)
+restart_first.close()
+restart_second = namespace["JSONTqdm"](total=40, unit="B", desc="model.safetensors")
+restart_second.update(10)
+restart_second.close()
+
+# A resumed file's bar starts at initial=resume_size; the already-on-disk bytes
+# count toward the aggregate as soon as the bar reports real progress.
+resumed = namespace["JSONTqdm"](total=100, unit="B", initial=60, desc="weights.safetensors")
+resumed.update(10)
+resumed.close()
+
+expected_downloaded = [7, 20, 25, 55, 35, 105]
 actual_downloaded = [event["downloaded"] for event in events]
 if actual_downloaded != expected_downloaded:
     raise AssertionError(f"downloaded counts {actual_downloaded} != {expected_downloaded}")

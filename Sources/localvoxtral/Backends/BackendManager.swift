@@ -218,8 +218,8 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     func stopAll() async {
-        let cancelledDictationEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
-        let cancelledPolishingEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
+        let cancelledDictationEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.voxmlx)
+        let cancelledPolishingEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.mlxLM)
         let hadPolishingSupervisor = mlxLMSupervisor != nil
         await voxmlxSupervisor?.stop()
         await mlxLMSupervisor?.stop()
@@ -237,7 +237,7 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     func stopDictation() async {
-        let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.voxmlx)
+        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.voxmlx)
         await voxmlxSupervisor?.stop()
         voxmlxStateMirrorTask?.cancel()
         voxmlxStateMirrorTask = nil
@@ -250,7 +250,7 @@ final class BackendManager: ManagedBackendManaging {
         // Stop only the polishing supervisor. voxmlx (dictation) keeps running
         // and its state mirror is left intact. Modeled on stopAll()'s mlx-lm
         // branch: cancel the mirror task and pin the status to .stopped.
-        let cancelledEnsure = cancelEnsureTask(for: BackendCatalog.mlxLM)
+        let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.mlxLM)
         let hadSupervisor = mlxLMSupervisor != nil
         await mlxLMSupervisor?.stop()
         mlxLMSupervisor = nil
@@ -261,15 +261,22 @@ final class BackendManager: ManagedBackendManaging {
         }
     }
 
-    private func cancelEnsureTask(for spec: ManagedBackendSpec) -> Bool {
+    /// Cancels the in-flight ensure task AND waits for it to finish unwinding.
+    /// Returning before it completes let a new ensure start while the old
+    /// one's model-download process was still terminating — two downloaders
+    /// writing the same HF cache blob corrupt the partial file and force a
+    /// restart (field finding: inflated "6 GB / 3.3 GB" progress, PR #99).
+    private func cancelEnsureTaskAndAwaitCompletion(for spec: ManagedBackendSpec) async -> Bool {
         let task: Task<Void, Error>?
         if spec.id == BackendCatalog.voxmlx.id {
             task = dictationEnsureTask
         } else {
             task = polishingEnsureTask
         }
-        task?.cancel()
-        return task != nil
+        guard let task else { return false }
+        task.cancel()
+        _ = try? await task.value
+        return true
     }
 
     func status(for spec: ManagedBackendSpec) -> ManagedBackendStatus {
