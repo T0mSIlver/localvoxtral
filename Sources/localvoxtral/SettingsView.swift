@@ -346,6 +346,18 @@ private struct ConnectionSettingsPane: View {
                         }
                     }
 
+                    SettingsFieldRow(title: "Repo vocabulary from terminal") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.repoVocabularyEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
+                            )
+                        }
+                    }
+
                     switch settings.polishingBackendMode {
                     case .externalURL:
                         SettingsFieldRow(title: "Endpoint") {

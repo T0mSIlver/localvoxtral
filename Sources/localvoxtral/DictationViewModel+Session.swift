@@ -626,59 +626,113 @@ extension DictationViewModel {
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
 
-                var userPrompts = promptTemplates.renderedUserPrompts(
-                    inputText: workingText,
-                    replacementDictionary: replacementDictionaryPrompt
-                )
-                // Opt-in clipboard grounding: prepend ONE reference-context
-                // block to the FINAL user message that lets the polish model
-                // fix near-miss spelling of technical terms against whatever
-                // the user just copied. When the setting is off OR the
-                // polishing endpoint is not loopback, the pasteboard is never
-                // read (privacy).
-                let capturedPolishContextSummary: String?
-                // The excerpt is retained for the post-polish leak guard: the
-                // model output must never smuggle clipboard content into the
-                // committed text.
-                let capturedClipboardExcerpt: String?
-                if let endpointURL = polishingConfig?.endpointURL,
-                   let clipboardContext = polishClipboardContextIfEnabled(endpointURL: endpointURL)
-                {
-                    // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
-                    // messages as its single-slot prefix cache, so per-request
-                    // context must ride INSIDE the last message — a separate
-                    // context message between prefix and suffix invalidated
-                    // the checkpoint on every request and a cold 4B re-prefill
-                    // blew the polish client timeout (field, 2026-07-11).
-                    // Prepended, never appended: the working text stays LAST
-                    // in the message (this model family echoes instructions
-                    // placed after the input text).
-                    let lastIndex = userPrompts.count - 1
-                    userPrompts[lastIndex] =
-                        PolishContextClipboardReader.contextMessage(
-                            excerpt: clipboardContext.excerpt
-                        ) + "\n\n" + userPrompts[lastIndex]
-                    capturedPolishContextSummary = clipboardContext.provenanceSummary
-                    capturedClipboardExcerpt = clipboardContext.excerpt
-                    Log.polishing.info(
-                        "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
-                    )
-                } else {
-                    capturedPolishContextSummary = nil
-                    capturedClipboardExcerpt = nil
-                }
-
-                let polishingRequest = LLMPolishingRequest(
-                    inputText: workingText,
-                    systemPrompt: promptTemplates.systemContent,
-                    userPrompts: userPrompts
-                )
-
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")
 
+                // Opt-in clipboard grounding is read HERE, pre-Task, right next
+                // to the payload-macro clipboard read above, so both features
+                // observe the SAME pasteboard state — the repo-vocabulary await
+                // inside the Task can take up to ~2 s, and a copy landing during
+                // that window must not make the context ground against different
+                // text than the payload macro substitutes. When the setting is
+                // off OR the polishing endpoint is not loopback, the pasteboard
+                // is never read (privacy).
+                let capturedClipboardContext: PolishClipboardContext?
+                if let endpointURL = polishingConfig?.endpointURL {
+                    capturedClipboardContext = polishClipboardContextIfEnabled(
+                        endpointURL: endpointURL
+                    )
+                } else {
+                    capturedClipboardContext = nil
+                }
+
+                // Repo vocabulary rides in the `{{replacement_dictionary}}`
+                // slot; a user template without that placeholder (removing it is
+                // explicitly supported) silently drops the section in
+                // renderTemplate, so the whole vocabulary path — AX read, git
+                // subprocess, provenance — is skipped up front when the ACTIVE
+                // template can't carry it.
+                let templateCarriesDictionarySlot =
+                    promptTemplates.supportsReplacementDictionary
+
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
+
+                    // The polish request is assembled HERE, inside the Task, so
+                    // the opt-in repo-vocabulary indexing — whose git subprocess
+                    // runs OFF the main actor with a 2 s timeout — can complete
+                    // before the request is built without stalling the commit. On
+                    // timeout / no repo / feature off it is a fast no-op and the
+                    // request is byte-identical to the no-vocabulary path.
+                    var replacementDictionarySection = replacementDictionaryPrompt
+                    var repoVocabularyCount = 0
+                    // The vocabulary corrections we ASK the model to make must
+                    // also be sanctioned through the token guard, or its
+                    // near-miss repair would deterministically revert them
+                    // (the STT's wrong filename-shaped token is what the guard
+                    // protects). (from: spoken alias, to: exact term) pairs.
+                    var sanctionedVocabularyRewrites: [(from: String, to: String)] = []
+                    if templateCarriesDictionarySlot,
+                       let endpointURL = polishingConfig?.endpointURL,
+                       let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
+                           endpointURL: endpointURL,
+                           transcript: workingText
+                       )
+                    {
+                        // Append to the replacement-dictionary section string so
+                        // the entries land in the `{{replacement_dictionary}}`
+                        // slot both profiles already carry — dynamic-suffix side
+                        // of the prompt-cache split, never the cached prefix.
+                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
+                            base: replacementDictionarySection,
+                            entries: vocabularyEntries
+                        )
+                        repoVocabularyCount = vocabularyEntries.count
+                        sanctionedVocabularyRewrites = vocabularyEntries.flatMap { entry in
+                            entry.matches.map { (from: $0, to: entry.replaceWith) }
+                        }
+                        Log.polishing.info(
+                            "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
+                        )
+                    }
+
+                    guard !Task.isCancelled else { return }
+
+                    var userPrompts = promptTemplates.renderedUserPrompts(
+                        inputText: workingText,
+                        replacementDictionary: replacementDictionarySection
+                    )
+                    // Prepend the pre-captured clipboard reference-context block
+                    // to the FINAL user message (letting the polish model fix
+                    // near-miss spelling of technical terms against what the
+                    // user copied).
+                    var capturedPolishContextSummary: String? = nil
+                    if let clipboardContext = capturedClipboardContext {
+                        // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
+                        // messages as its single-slot prefix cache, so per-request
+                        // context must ride INSIDE the last message — a separate
+                        // context message between prefix and suffix invalidated
+                        // the checkpoint on every request and a cold 4B re-prefill
+                        // blew the polish client timeout (field, 2026-07-11).
+                        // Prepended, never appended: the working text stays LAST
+                        // in the message (this model family echoes instructions
+                        // placed after the input text).
+                        let lastIndex = userPrompts.count - 1
+                        userPrompts[lastIndex] =
+                            PolishContextClipboardReader.contextMessage(
+                                excerpt: clipboardContext.excerpt
+                            ) + "\n\n" + userPrompts[lastIndex]
+                        capturedPolishContextSummary = clipboardContext.provenanceSummary
+                        Log.polishing.info(
+                            "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
+                        )
+                    }
+
+                    let polishingRequest = LLMPolishingRequest(
+                        inputText: workingText,
+                        systemPrompt: promptTemplates.systemContent,
+                        userPrompts: userPrompts
+                    )
 
                     var processedTextForPersistence: String? =
                         workingText != originalText ? workingText : nil
@@ -701,8 +755,14 @@ extension DictationViewModel {
                             // discard the polish and keep the pre-polish text.
                             let guardResult = PolishTokenGuard.verifyAndRepair(
                                 polished: result.polishedText,
-                                original: workingText
+                                original: workingText,
+                                sanctionedReplacements: sanctionedVocabularyRewrites
                             )
+                            if guardResult.sanctionedCount > 0 {
+                                Log.polishing.info(
+                                    "Token guard accepted \(guardResult.sanctionedCount, privacy: .public) sanctioned repo-vocabulary rewrite(s)"
+                                )
+                            }
                             var committedText: String
                             switch guardResult.outcome {
                             case .clean:
@@ -734,12 +794,19 @@ extension DictationViewModel {
                             // (same fallback shape as the token guard).
                             // Counts-only logging — the matched run is
                             // clipboard content.
-                            if let excerpt = capturedClipboardExcerpt,
+                            // Sanctioned rewrites are the one kind of
+                            // clipboard-derived output we ASKED for: their
+                            // `to` values are exempt (masked out before the
+                            // scan), so an intentional exact-entity insertion
+                            // can never trip the leak guard however long the
+                            // entity.
+                            if let excerpt = capturedClipboardContext?.excerpt,
                                committedText != workingText,
                                let leakedLength = PolishContextClipboardReader.detectClipboardLeak(
                                    polished: committedText,
                                    original: workingText,
-                                   excerpt: excerpt
+                                   excerpt: excerpt,
+                                   exemptions: sanctionedVocabularyRewrites.map(\.to)
                                )
                             {
                                 committedText = workingText
@@ -848,7 +915,8 @@ extension DictationViewModel {
                         polishProfile: capturedPolishProfile,
                         polishContextSummary: self.mergedPolishProvenanceSummary(
                             context: capturedPolishContextSummary,
-                            payload: payloadProvenanceSummary
+                            payload: payloadProvenanceSummary,
+                            vocabulary: repoVocabularyCount > 0 ? "vocab:\(repoVocabularyCount)" : nil
                         )
                     )
 
@@ -1114,16 +1182,65 @@ extension DictationViewModel {
         return ClipboardPayloadMacro.substitutePayload(in: text, payload: payload)
     }
 
-    /// Combines the clipboard polish-context and payload-macro provenance notes
-    /// into the single `polishContextSummary` record field (counts only):
-    /// `clipboard:24ch+payload:1532ch`, or either alone, or nil.
-    func mergedPolishProvenanceSummary(context: String?, payload: String?) -> String? {
-        switch (context, payload) {
-        case (nil, nil): return nil
-        case let (context?, nil): return context
-        case let (nil, payload?): return payload
-        case let (context?, payload?): return "\(context)+\(payload)"
+    /// Combines the clipboard polish-context, payload-macro, and repo-vocabulary
+    /// provenance notes into the single `polishContextSummary` record field
+    /// (counts only): `clipboard:24ch+payload:1532ch+vocab:3`, any subset, or nil.
+    func mergedPolishProvenanceSummary(
+        context: String?,
+        payload: String?,
+        vocabulary: String? = nil
+    ) -> String? {
+        let parts = [context, payload, vocabulary].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "+")
+    }
+
+    /// Opt-in repo-vocabulary grounding: harvests file names / path components /
+    /// the branch from the git repo in the focused terminal and returns the
+    /// transcript-relevant ones as replacement entries — but ONLY when the
+    /// setting is on AND the polishing endpoint is loopback (repo file names must
+    /// never ride to a remote endpoint, same privacy stance as clipboard
+    /// context). Both gates short-circuit before any AX read or subprocess.
+    /// Only the AX title read happens on the main actor (with a 0.5 s AX
+    /// messaging timeout); everything blocking-ish — FS stats on the title's
+    /// path candidates (possibly a stale network mount), the git subprocess
+    /// (2 s timeout), and the n-gram match over a possibly-20k-term vocabulary
+    /// — runs in one detached hop so the commit path can never beachball.
+    /// Returns nil (silent skip) when off, remote, no terminal window, no
+    /// repo, or no transcript-relevant match.
+    func repoVocabularyEntriesIfEnabled(
+        endpointURL: URL,
+        transcript: String
+    ) async -> [ReplacementEntry]? {
+        guard settings.repoVocabularyEnabled else { return nil }
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+            Log.polishing.info("Repo vocabulary skipped: polishing endpoint is not local")
+            return nil
         }
+        #if DEBUG
+        if let override = debugRepoVocabularyEntriesOverride {
+            return override(transcript)
+        }
+        #endif
+        guard let title = resolveCommitTargetWindowTitle() else {
+            Log.polishing.debug("Repo vocabulary: no terminal window title available")
+            return nil
+        }
+        let cache = repoVocabularyCache
+        return await Task.detached(priority: .utility) {
+            await RepoVocabularyService.entries(
+                forWindowTitle: title,
+                transcript: transcript,
+                cache: cache
+            )
+        }.value
+    }
+
+    /// The focused/main window title of the app owning the overlay commit PID
+    /// (the same source `resolveTargetAppBundleID` uses). Main-actor AX read;
+    /// nil on any failure.
+    private func resolveCommitTargetWindowTitle() -> String? {
+        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
+        return TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID: pid)
     }
 
     private func resolveClipboardPayloadPasteboardReader() -> any PasteboardReading {

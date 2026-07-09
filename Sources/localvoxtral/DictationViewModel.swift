@@ -430,6 +430,18 @@ final class DictationViewModel {
     /// marker was spoken.
     @ObservationIgnored
     var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
+    /// Test seam: replaces the whole AX-title -> git-index -> match pipeline of
+    /// `repoVocabularyEntriesIfEnabled` with a closure returning the entries for
+    /// a given transcript, so VM tests exercise the setting + loopback gates
+    /// without touching live AX or a git subprocess. Consulted only AFTER those
+    /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
+    /// `@MainActor` so ordering tests can read main-actor stub state inside it.
+    @ObservationIgnored
+    var debugRepoVocabularyEntriesOverride: (@MainActor (String) -> [ReplacementEntry]?)?
+    /// TTL cache for harvested repo vocabularies, keyed by git root. Held for the
+    /// view model's lifetime so a burst of commits reuses one index.
+    @ObservationIgnored
+    let repoVocabularyCache = RepoVocabularyCache()
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of

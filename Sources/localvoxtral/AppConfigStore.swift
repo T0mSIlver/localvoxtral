@@ -220,6 +220,14 @@ struct LLMPromptTemplates: Equatable, Sendable {
     private static let userPromptPlaceholderPattern = #"\{\{[a-zA-Z0-9_]+\}\}"#
     private static let splitPlaceholders = ["{{replacement_dictionary}}", "{{input_text}}"]
 
+    /// True when the user template carries the OPTIONAL dictionary placeholder.
+    /// The placeholder is documented as removable; features that ride in that
+    /// slot (repo vocabulary) must check this BEFORE doing any work, because
+    /// `renderTemplate` silently drops the section when the slot is absent.
+    var supportsReplacementDictionary: Bool {
+        userContent.contains("{{replacement_dictionary}}")
+    }
+
     func renderedUserPrompt(
         inputText: String,
         replacementDictionary: String
