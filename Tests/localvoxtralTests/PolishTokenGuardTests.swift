@@ -771,6 +771,238 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         return (savedRecord, request)
     }
 
+    // MARK: - Clipboard payload macro
+
+    private struct ClipboardMacroSessionResult {
+        let record: DictationSessionRecord?
+        let request: LLMPolishingRequest?
+        let committedText: String
+    }
+
+    /// The polish path: a spoken marker fires the macro. The polish request
+    /// carries the PLACEHOLDER (never the payload), the committed/displayed text
+    /// carries the fenced payload, persistence keeps the placeholder, and the
+    /// record's summary carries the count.
+    func testClipboardPayloadMacroPolishPath() async throws {
+        let payload = "Traceback (most recent call last):\n  File \"app.py\", line 42\nValueError: boom"
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "here is the error paste clipboard end",
+            payloadPasteboard: PasteboardStub(string: payload)
+        )
+
+        let request = try XCTUnwrap(result.request)
+        XCTAssertTrue(request.inputText.contains(ClipboardPayloadMacro.placeholder))
+        XCTAssertFalse(request.inputText.contains("Traceback"))
+        XCTAssertFalse(request.userPrompts.contains { $0.contains("Traceback") })
+
+        XCTAssertTrue(result.committedText.contains("```"))
+        XCTAssertTrue(result.committedText.contains("Traceback"))
+        XCTAssertFalse(result.committedText.contains(ClipboardPayloadMacro.placeholder))
+
+        let record = try XCTUnwrap(result.record)
+        XCTAssertEqual(record.rawText, "here is the error paste clipboard end")
+        XCTAssertEqual(
+            record.polishedText,
+            "here is the error \(ClipboardPayloadMacro.placeholder) end"
+        )
+        XCTAssertEqual(record.polishContextSummary, "payload:\(payload.count)ch")
+    }
+
+    /// The non-polish overlay path (polishing disabled): substitution still
+    /// happens at overlay commit, and persistence keeps the placeholder.
+    func testClipboardPayloadMacroNonPolishPath() async throws {
+        let payload = "def f():\n    return 1"
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "insert clipboard please",
+            polishingEnabled: false,
+            payloadPasteboard: PasteboardStub(string: payload)
+        )
+
+        XCTAssertNil(result.request) // polishing off: the service is never called
+        XCTAssertTrue(result.committedText.contains("```"))
+        XCTAssertTrue(result.committedText.contains("return 1"))
+        XCTAssertFalse(result.committedText.contains(ClipboardPayloadMacro.placeholder))
+
+        let record = try XCTUnwrap(result.record)
+        XCTAssertEqual(
+            record.polishedText,
+            "\(ClipboardPayloadMacro.placeholder) please"
+        )
+        XCTAssertEqual(record.polishContextSummary, "payload:\(payload.count)ch")
+    }
+
+    /// A concealed clipboard yields no payload: the marker is left exactly as
+    /// dictated and nothing is substituted or persisted as provenance.
+    func testConcealedClipboardLeavesMarkerAsDictated() async throws {
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "please paste clipboard now",
+            payloadPasteboard: PasteboardStub(
+                string: "secrettoken",
+                types: [.nsPasteboardConcealed, .string]
+            )
+        )
+
+        let request = try XCTUnwrap(result.request)
+        XCTAssertEqual(request.inputText, "please paste clipboard now")
+        XCTAssertEqual(result.committedText, "please paste clipboard now")
+        XCTAssertFalse(result.committedText.contains(ClipboardPayloadMacro.placeholder))
+        XCTAssertFalse(result.committedText.contains("secrettoken"))
+        XCTAssertNil(result.record?.polishContextSummary)
+    }
+
+    /// The setting off: the pasteboard is never touched (zero reads) and the
+    /// marker passes through as dictated.
+    func testClipboardPayloadMacroDisabledNeverReadsPasteboard() async throws {
+        let stub = PasteboardStub(string: "should not be read")
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "please paste clipboard now",
+            macroEnabled: false,
+            payloadPasteboard: stub
+        )
+
+        XCTAssertEqual(stub.typesCallCount, 0)
+        XCTAssertEqual(stub.stringCallCount, 0)
+        let request = try XCTUnwrap(result.request)
+        XCTAssertEqual(request.inputText, "please paste clipboard now")
+        XCTAssertFalse(result.committedText.contains(ClipboardPayloadMacro.placeholder))
+        XCTAssertNil(result.record?.polishContextSummary)
+    }
+
+    /// F3 clipboard context + the macro in one session: both features fire, each
+    /// reads its clipboard exactly once (≤ 2 reads total), the polish request
+    /// carries the placeholder AND the reference-context message, the committed
+    /// text carries the payload, and the summary carries both counts.
+    func testClipboardContextAndMacroBothFireWithBoundedReads() async throws {
+        let clipboardText = "UserSessionManager.swift error at retry"
+        let payloadStub = PasteboardStub(string: clipboardText)
+        let contextStub = PasteboardStub(string: clipboardText)
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "fix this paste clipboard thanks",
+            contextEnabled: true,
+            payloadPasteboard: payloadStub,
+            contextPasteboard: contextStub
+        )
+
+        let request = try XCTUnwrap(result.request)
+        XCTAssertTrue(request.inputText.contains(ClipboardPayloadMacro.placeholder))
+        XCTAssertTrue(
+            request.userPrompts.contains {
+                $0.contains(PolishContextClipboardReader.contextMessageInstruction)
+            }
+        )
+        XCTAssertTrue(result.committedText.contains(clipboardText))
+
+        XCTAssertEqual(payloadStub.stringCallCount, 1)
+        XCTAssertEqual(contextStub.stringCallCount, 1)
+
+        XCTAssertEqual(
+            result.record?.polishContextSummary,
+            "clipboard:\(clipboardText.count)ch+payload:\(clipboardText.count)ch"
+        )
+    }
+
+    /// The polish DUPLICATED the placeholder (payload would paste twice): the
+    /// token guard passes it (at least one standalone survival), but the
+    /// placeholder-count check discards the polish — the committed text is the
+    /// substituted pre-polish working text with the payload exactly once.
+    func testDuplicatedPlaceholderDiscardsPolishForCommit() async throws {
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "here paste clipboard end",
+            payloadPasteboard: PasteboardStub(string: "err.log"),
+            polishTransform: { $0 + " " + ClipboardPayloadMacro.placeholder }
+        )
+
+        XCTAssertEqual(result.committedText, "here `err.log` end")
+        XCTAssertEqual(
+            result.committedText.components(separatedBy: "err.log").count - 1, 1
+        )
+        // Persistence keeps the placeholder-bearing working text.
+        XCTAssertEqual(
+            result.record?.polishedText,
+            "here \(ClipboardPayloadMacro.placeholder) end"
+        )
+    }
+
+    /// The polish DROPPED one of two placeholders (a requested paste lost): the
+    /// guard still passes (the surviving occurrence satisfies it), but the count
+    /// check falls back to the working text — both payloads are committed.
+    func testDroppedPlaceholderOfTwoDiscardsPolishForCommit() async throws {
+        let placeholder = ClipboardPayloadMacro.placeholder
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "paste clipboard and insert clipboard",
+            payloadPasteboard: PasteboardStub(string: "err.log"),
+            polishTransform: { text in
+                // Drop the LAST placeholder only; the first survives, so the
+                // token guard sees a standalone occurrence and stays clean.
+                guard let range = text.range(of: placeholder, options: .backwards) else {
+                    return text
+                }
+                var mangled = text
+                mangled.removeSubrange(range)
+                return mangled
+            }
+        )
+
+        XCTAssertEqual(result.committedText, "`err.log` and `err.log`")
+        XCTAssertEqual(
+            result.record?.polishedText,
+            "\(placeholder) and \(placeholder)"
+        )
+    }
+
+    /// Drives an overlay stop-commit for the clipboard-paste macro. The payload
+    /// pasteboard is injected via the macro's debug seam; when `contextPasteboard`
+    /// is supplied it is injected via the polish-context seam so the two features
+    /// can be exercised together. Endpoint defaults to loopback (managed polishd)
+    /// so the context feature's local-endpoint gate passes.
+    private func runClipboardPayloadMacroSession(
+        transcript: String,
+        macroEnabled: Bool = true,
+        polishingEnabled: Bool = true,
+        contextEnabled: Bool = false,
+        payloadPasteboard: PasteboardStub,
+        contextPasteboard: PasteboardStub? = nil,
+        endpointURL: String = "http://127.0.0.1:8472/v1/chat/completions",
+        polishTransform: @escaping @Sendable (String) -> String = { $0 }
+    ) async -> ClipboardMacroSessionResult {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.clipboardPayloadMacroEnabled = macroEnabled
+        settings.llmPolishingEnabled = polishingEnabled
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = endpointURL
+        settings.polishClipboardContextEnabled = contextEnabled
+
+        let service = RecordingPolishingService(transform: polishTransform)
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = MockAppConfigStore()
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.acme.notes" }
+        viewModel.debugClipboardPayloadPasteboardReaderOverride = { payloadPasteboard }
+        if let contextPasteboard {
+            viewModel.debugPolishContextPasteboardReaderOverride = { contextPasteboard }
+        }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = transcript
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+        let request = await service.capturedRequest
+        return ClipboardMacroSessionResult(
+            record: savedRecord,
+            request: request,
+            committedText: viewModel.currentDictationEventText
+        )
+    }
+
     // MARK: - Helpers
 
     private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {

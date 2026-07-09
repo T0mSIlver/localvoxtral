@@ -242,7 +242,10 @@ enum PolishTokenGuard {
         return count
     }
 
-    private static func isBodyCharacter(_ c: Character) -> Bool {
+    /// Internal (not private): `ClipboardPayloadMacro` reuses this exact
+    /// boundary rule for its standalone placeholder count, so the guard and the
+    /// macro can never disagree on what "standalone" means.
+    static func isBodyCharacter(_ c: Character) -> Bool {
         c.isLetter || c.isNumber || c == "_" || c == "-"
     }
 

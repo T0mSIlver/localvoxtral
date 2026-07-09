@@ -98,12 +98,16 @@ enum PolishContextClipboardReader {
         return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
-    /// Returns a sanitized, capped excerpt of the pasteboard's string, or nil
-    /// when there is nothing usable or the source marked it sensitive.
+    /// The pasteboard's plain string with the sensitive-type and empty-content
+    /// rules applied and NUL/control scalars stripped (newline/tab kept), or nil
+    /// when the source marked the payload concealed/transient or there is
+    /// nothing usable. Shared "is this clipboard readable" decision for both the
+    /// polish-context excerpt (below) and the spoken clipboard-paste macro
+    /// (`ClipboardPayloadMacro`), so the two features honor identical rules.
     @MainActor
-    static func readClipboardContext(
+    static func readableSanitizedString(
         from pasteboard: any PasteboardReading
-    ) -> PolishClipboardContext? {
+    ) -> String? {
         // Never surface password-manager or transient payloads: a concealed or
         // transient type is the source explicitly asking clipboard tools not to
         // read/retain the contents (nspasteboard.org conventions).
@@ -119,6 +123,16 @@ enum PolishContextClipboardReader {
         guard !sanitized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
+        return sanitized
+    }
+
+    /// Returns a sanitized, capped excerpt of the pasteboard's string, or nil
+    /// when there is nothing usable or the source marked it sensitive.
+    @MainActor
+    static func readClipboardContext(
+        from pasteboard: any PasteboardReading
+    ) -> PolishClipboardContext? {
+        guard let sanitized = readableSanitizedString(from: pasteboard) else { return nil }
 
         let originalCharacterCount = sanitized.count
         let excerpt = originalCharacterCount > excerptCharacterCap
@@ -233,8 +247,9 @@ enum PolishContextClipboardReader {
 
     /// Drops NUL and other control scalars (which can corrupt the request or the
     /// LLM's parsing) while preserving newlines and tabs so multi-line snippets
-    /// and indentation survive as spelling context.
-    private static func sanitizeControlCharacters(_ raw: String) -> String {
+    /// and indentation survive as spelling context. Shared with the clipboard-
+    /// paste macro through `readableSanitizedString`.
+    static func sanitizeControlCharacters(_ raw: String) -> String {
         var scalars = String.UnicodeScalarView()
         for scalar in raw.unicodeScalars {
             if scalar == "\n" || scalar == "\t" {

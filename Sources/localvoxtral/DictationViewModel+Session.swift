@@ -577,10 +577,22 @@ extension DictationViewModel {
             }
             let replacementDictionaryPrompt = replacementDictionary.renderedPromptSection()
             let originalText = currentDictationEventText
-            let workingText =
+            let replacementAppliedText =
                 settings.replacementDictionaryEnabled
                 ? replacementDictionary.apply(to: originalText)
                 : originalText
+            // Spoken clipboard-paste macro (Overlay Buffer only): after the
+            // replacement dictionary and BEFORE the polish request is built,
+            // swap each spoken marker for the env-var-shaped placeholder and
+            // read the clipboard once. The placeholder — not the payload —
+            // flows through polish (PolishTokenGuard already protects its
+            // shape) and persistence; the real payload is substituted back only
+            // at the very end, just before commit. No marker or setting off:
+            // a no-op that never touches the pasteboard.
+            let clipboardMacro = applyClipboardPayloadMacroIfEnabled(to: replacementAppliedText)
+            let workingText = clipboardMacro.placeholderText
+            let clipboardPayload = clipboardMacro.payload
+            let payloadProvenanceSummary = clipboardMacro.summary
             let llmConfigurationFailure: (message: String, technicalDetails: String?)? =
                 settings.llmPolishingEnabled && polishingConfig == nil
                 ? (
@@ -589,8 +601,13 @@ extension DictationViewModel {
                 )
                 : nil
 
-            if currentDictationEventText != workingText {
-                currentDictationEventText = workingText
+            // Display the payload-substituted text (placeholder never shown to
+            // the user); with no macro this is exactly `workingText`.
+            let displayWorkingText = clipboardPayloadSubstituted(
+                workingText, payload: clipboardPayload
+            )
+            if currentDictationEventText != displayWorkingText {
+                currentDictationEventText = displayWorkingText
             }
             refreshOverlayBufferSession()
 
@@ -731,12 +748,44 @@ extension DictationViewModel {
                                 )
                             }
 
+                            // Placeholder-count integrity: the guard dedupes
+                            // tokens and only verifies "at least one standalone
+                            // occurrence", so a model output that DUPLICATED
+                            // the placeholder (payload pasted twice) or dropped
+                            // one of two (a requested paste lost) sails
+                            // through it. Compare standalone counts against
+                            // the pre-polish working text; on mismatch,
+                            // discard the polish and keep the placeholder-
+                            // bearing working text.
+                            if clipboardPayload != nil {
+                                let expectedPlaceholders =
+                                    ClipboardPayloadMacro.standalonePlaceholderCount(
+                                        in: workingText
+                                    )
+                                let actualPlaceholders =
+                                    ClipboardPayloadMacro.standalonePlaceholderCount(
+                                        in: committedText
+                                    )
+                                if actualPlaceholders != expectedPlaceholders {
+                                    committedText = workingText
+                                    Log.polishing.warning(
+                                        "Clipboard payload macro: polish changed placeholder count (\(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public)); polish discarded"
+                                    )
+                                }
+                            }
+
+                            // Persist the PLACEHOLDER-bearing committed text —
+                            // the clipboard payload must never enter the session
+                            // record. Substitution happens only for the display/
+                            // commit copy below.
                             processedTextForPersistence =
                                 committedText != originalText ? committedText : nil
 
                             guard !Task.isCancelled else { return }
 
-                            self.currentDictationEventText = committedText
+                            self.currentDictationEventText = self.clipboardPayloadSubstituted(
+                                committedText, payload: clipboardPayload
+                            )
                             self.refreshOverlayBufferSession()
                             Log.polishing.info(
                                 "LLM polishing succeeded in \(String(format: "%.2f", result.durationSeconds))s"
@@ -797,7 +846,10 @@ extension DictationViewModel {
                         status: sessionStatus,
                         commitSucceeded: commitSucceeded,
                         polishProfile: capturedPolishProfile,
-                        polishContextSummary: capturedPolishContextSummary
+                        polishContextSummary: self.mergedPolishProvenanceSummary(
+                            context: capturedPolishContextSummary,
+                            payload: payloadProvenanceSummary
+                        )
                     )
 
                     if let llmConnectionFailure {
@@ -832,6 +884,8 @@ extension DictationViewModel {
             saveSessionRecord(
                 startedAt: capturedSessionStartedAt,
                 rawText: originalText,
+                // Persist the PLACEHOLDER-bearing working text, never the
+                // payload; the payload lives only in the substituted commit copy.
                 polishedText: workingText != originalText ? workingText : nil,
                 polishingDuration: nil,
                 provider: capturedProvider,
@@ -839,7 +893,8 @@ extension DictationViewModel {
                 outputMode: capturedOutputMode,
                 targetAppBundleID: capturedTargetBundleID,
                 status: llmConfigurationFailure == nil ? .sttCompleted : .llmFailed,
-                commitSucceeded: commitSucceeded
+                commitSucceeded: commitSucceeded,
+                polishContextSummary: payloadProvenanceSummary
             )
 
             if let llmConfigurationFailure {
@@ -1002,6 +1057,78 @@ extension DictationViewModel {
     private func resolvePolishContextPasteboardReader() -> any PasteboardReading {
         #if DEBUG
         if let override = debugPolishContextPasteboardReaderOverride {
+            return override()
+        }
+        #endif
+        return SystemPasteboardReader()
+    }
+
+    /// Result of the spoken clipboard-paste macro over the (replacement-applied)
+    /// working text: `placeholderText` carries the placeholder in place of each
+    /// marker when the macro fired (else it is the input unchanged), `payload`
+    /// is the sanitized clipboard string to substitute back at commit (nil when
+    /// the macro did not fire), and `summary` is the count-only provenance note
+    /// for the session record (nil when the macro did not fire).
+    struct ClipboardPayloadMacroOutcome {
+        let placeholderText: String
+        let payload: String?
+        let summary: String?
+    }
+
+    /// Applies the spoken clipboard-paste macro to `text` when the setting is on
+    /// AND a marker phrase is present. Reads the clipboard exactly ONCE (through
+    /// the shared `PolishContextClipboardReader` readability rules — concealed/
+    /// transient/empty are skipped). An unreadable clipboard leaves the
+    /// transcript unchanged and logs one content-free line. When the setting is
+    /// off or no marker was spoken, the pasteboard is never touched.
+    func applyClipboardPayloadMacroIfEnabled(to text: String) -> ClipboardPayloadMacroOutcome {
+        guard settings.clipboardPayloadMacroEnabled else {
+            return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
+        }
+        guard !ClipboardPayloadMacro.detectMarkers(in: text).isEmpty else {
+            return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
+        }
+        guard let payload = PolishContextClipboardReader.readableSanitizedString(
+            from: resolveClipboardPayloadPasteboardReader()
+        ) else {
+            Log.polishing.info(
+                "Clipboard payload macro: marker spoken but clipboard unreadable; transcript left unchanged"
+            )
+            return ClipboardPayloadMacroOutcome(placeholderText: text, payload: nil, summary: nil)
+        }
+        let replaced = ClipboardPayloadMacro.replaceMarkersWithPlaceholder(in: text)
+        Log.polishing.info(
+            "Clipboard payload macro fired: \(replaced.count, privacy: .public) marker(s), payload:\(payload.count, privacy: .public)ch"
+        )
+        return ClipboardPayloadMacroOutcome(
+            placeholderText: replaced.text,
+            payload: payload,
+            summary: "payload:\(payload.count)ch"
+        )
+    }
+
+    /// Substitutes the clipboard payload back into `text` (replacing the macro
+    /// placeholder). A no-op when the macro did not fire (`payload == nil`).
+    func clipboardPayloadSubstituted(_ text: String, payload: String?) -> String {
+        guard let payload else { return text }
+        return ClipboardPayloadMacro.substitutePayload(in: text, payload: payload)
+    }
+
+    /// Combines the clipboard polish-context and payload-macro provenance notes
+    /// into the single `polishContextSummary` record field (counts only):
+    /// `clipboard:24ch+payload:1532ch`, or either alone, or nil.
+    func mergedPolishProvenanceSummary(context: String?, payload: String?) -> String? {
+        switch (context, payload) {
+        case (nil, nil): return nil
+        case let (context?, nil): return context
+        case let (nil, payload?): return payload
+        case let (context?, payload?): return "\(context)+\(payload)"
+        }
+    }
+
+    private func resolveClipboardPayloadPasteboardReader() -> any PasteboardReading {
+        #if DEBUG
+        if let override = debugClipboardPayloadPasteboardReaderOverride {
             return override()
         }
         #endif

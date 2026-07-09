@@ -508,6 +508,21 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(reloadedStore.agentPolishProfileEnabled)
     }
 
+    // MARK: - clipboardPayloadMacroEnabled
+
+    func testClipboardPayloadMacroEnabled_defaultsToTrue() {
+        let store = makeStore()
+        XCTAssertTrue(store.clipboardPayloadMacroEnabled)
+    }
+
+    func testClipboardPayloadMacroEnabled_persistsAcrossReload() {
+        let store = makeStore()
+        store.clipboardPayloadMacroEnabled = false
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.clipboardPayloadMacroEnabled)
+    }
+
     func testDictationOutputMode_defaultsToOverlayBuffer() {
         let store = makeStore()
         XCTAssertEqual(store.dictationOutputMode, .overlayBuffer)
