@@ -56,9 +56,13 @@ jobs:
         # print those records so the culprit is named. Process names only, no
         # command lines: this log is public.
         if: runner.environment == 'self-hosted'
+        # The Worker log embeds each job's full message JSON, and any PR body
+        # or commit message containing "orphan" floods a bare grep (this PR's
+        # own does). Termination records are plain trace lines with no quote
+        # characters; JSON payload lines always have them — filter on that.
         run: |
           grep -h -i "orphan" "$HOME"/actions-runner/_diag/Worker_*.log 2>/dev/null \
-            | grep -v "Cleaning up orphan processes" | tail -n 60 \
+            | grep -v '"' | tail -n 60 \
             || echo "no orphan-termination records found in Worker logs"
 
       - name: Setup Swift
