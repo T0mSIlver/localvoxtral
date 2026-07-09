@@ -55,6 +55,28 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.isOverlayBufferSessionReachable)
     }
 
+    // MARK: - Overlay Buffer font size
+
+    func testOverlayBufferFontSize_defaultsTo14() {
+        XCTAssertEqual(makeStore().overlayBufferFontSize, 14)
+    }
+
+    func testOverlayBufferFontSize_persistsAcrossStores() {
+        let store = makeStore()
+        store.overlayBufferFontSize = 18
+        XCTAssertEqual(makeStore().overlayBufferFontSize, 18)
+    }
+
+    func testOverlayBufferFontSize_clampsStoredValueOnLoad() {
+        defaults.set(99.0, forKey: "settings.overlay_buffer_font_size")
+        XCTAssertEqual(
+            makeStore().overlayBufferFontSize, OverlayLayoutMetrics.maximumBodyFontSize)
+
+        defaults.set(4.0, forKey: "settings.overlay_buffer_font_size")
+        XCTAssertEqual(
+            makeStore().overlayBufferFontSize, OverlayLayoutMetrics.minimumBodyFontSize)
+    }
+
     // MARK: - resolvedWebSocketURL
 
     func testResolvedURL_wsPassthrough() {

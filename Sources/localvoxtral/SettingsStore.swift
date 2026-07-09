@@ -192,6 +192,7 @@ final class SettingsStore {
         static let overlayBufferShortcutModifiers =
             "settings.overlay_buffer_shortcut_carbon_modifiers"
         static let overlayBufferShortcutEnabled = "settings.overlay_buffer_shortcut_enabled"
+        static let overlayBufferFontSize = "settings.overlay_buffer_font_size"
         static let livePasteShortcutKeyCode = "settings.live_paste_shortcut_key_code"
         static let livePasteShortcutModifiers = "settings.live_paste_shortcut_carbon_modifiers"
         static let livePasteShortcutEnabled = "settings.live_paste_shortcut_enabled"
@@ -346,6 +347,12 @@ final class SettingsStore {
         }
     }
 
+    /// Body font size (points) for the Overlay Buffer panel; the whole panel
+    /// scales proportionally from it (see `OverlayLayoutMetrics`).
+    var overlayBufferFontSize: Double {
+        didSet { defaults.set(overlayBufferFontSize, forKey: Keys.overlayBufferFontSize) }
+    }
+
     var livePasteShortcutEnabled: Bool {
         didSet { defaults.set(livePasteShortcutEnabled, forKey: Keys.livePasteShortcutEnabled) }
     }
@@ -496,6 +503,11 @@ final class SettingsStore {
             ? defaults.double(forKey: Keys.modifierOnlyHoldDelay)
             : 0.35
         modifierOnlyHoldDelay = min(max(storedHoldDelay, 0.1), 0.8)
+
+        let storedOverlayFontSize = defaults.object(forKey: Keys.overlayBufferFontSize) != nil
+            ? defaults.double(forKey: Keys.overlayBufferFontSize)
+            : OverlayLayoutMetrics.defaultBodyFontSize
+        overlayBufferFontSize = OverlayLayoutMetrics.clampedBodyFontSize(storedOverlayFontSize)
 
         // --- Dual shortcut keys ---
         let hasExistingOverlayKeys = defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) != nil

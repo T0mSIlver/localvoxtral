@@ -81,8 +81,10 @@ struct DictationOverlayView: View {
     let text: String
     let errorMessage: String?
     let secureInputActive: Bool
+    /// Sizing shared with `DictationOverlayController`'s panel measurement —
+    /// see `OverlayLayoutMetrics` for why the two must stay in lockstep.
+    let metrics: OverlayLayoutMetrics
     private let cornerRadius: CGFloat = 12
-    private let bodyFontSize: CGFloat = 13
 
     /// Warning text needs explicit light/dark variants: system `.red` over
     /// the translucent panel material washes out on light desktops.
@@ -120,35 +122,24 @@ struct DictationOverlayView: View {
     }
 
     /// Maximum height the text area can grow to before scrolling kicks in.
-    /// ~4 lines of body text at 13pt = roughly 70pt.
     private var maxScrollableHeight: CGFloat {
-        minimumBodyTextHeight * 4 + 8 // 4 lines + some line spacing
+        metrics.maxScrollableBodyHeight
     }
 
     private var minimumBodyTextHeight: CGFloat {
-        let font = NSFont.systemFont(ofSize: bodyFontSize)
-        return ceil(font.ascender - font.descender + font.leading)
+        metrics.bodyLineHeight
     }
 
     /// Estimated height of the current text content.
     private var textHeight: CGFloat {
-        let font = NSFont.systemFont(ofSize: bodyFontSize)
-        let displayStr = displayText
-        guard !displayStr.isEmpty else { return minimumBodyTextHeight }
-        let textWidth: CGFloat = 400
-        let rect = (displayStr as NSString).boundingRect(
-            with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading],
-            attributes: [.font: font]
-        )
-        return max(ceil(rect.height), minimumBodyTextHeight)
+        metrics.unclampedBodyTextHeight(for: displayText)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: OverlayLayoutMetrics.stackSpacing) {
             HStack(alignment: .center, spacing: 6) {
                 Text(phaseTitle)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: metrics.titleFontSize, weight: .semibold))
                     .foregroundStyle(isSecureInputTitle ? Self.warningColor : Color.secondary)
                 if phase == .finalizing {
                     ProgressView()
@@ -156,13 +147,13 @@ struct DictationOverlayView: View {
                 }
                 Spacer(minLength: 0)
             }
-            .frame(height: 16)
+            .frame(height: metrics.headerHeight)
 
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
                     VStack(spacing: 0) {
                         Text(displayText)
-                            .font(.system(size: bodyFontSize))
+                            .font(.system(size: metrics.bodyFontSize))
                             .foregroundStyle(.primary)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(
@@ -196,14 +187,19 @@ struct DictationOverlayView: View {
 
             if let errorMessage, !errorMessage.trimmed.isEmpty {
                 Text(errorMessage)
-                    .font(.system(size: 11))
+                    .font(.system(size: metrics.errorFontSize))
                     .foregroundStyle(Self.warningColor)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(10)
-        .frame(minWidth: 400, idealWidth: 420, maxWidth: 540, alignment: .leading)
+        .padding(OverlayLayoutMetrics.contentPadding)
+        .frame(
+            minWidth: metrics.panelMinWidth,
+            idealWidth: metrics.panelWidth,
+            maxWidth: metrics.panelMaxWidth,
+            alignment: .leading
+        )
         .background(RoundedMaterialBackground(cornerRadius: cornerRadius))
         .overlay(
             // Hairline must survive both appearances: pure white vanished
