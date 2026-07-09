@@ -40,9 +40,10 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
             ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"]),
         ])
         XCTAssertEqual(stream.ingest("local "), "")
-        XCTAssertEqual(stream.ingest("voxtral "), "")
-        XCTAssertEqual(stream.ingest("rocks "), "localvoxtral ")
-        XCTAssertEqual(stream.flushRemainder(), "rocks ")
+        // "localvoxtral" is a prefix of no rule, so it releases at once.
+        XCTAssertEqual(stream.ingest("voxtral "), "localvoxtral ")
+        XCTAssertEqual(stream.ingest("rocks "), "rocks ")
+        XCTAssertEqual(stream.flushRemainder(), "")
     }
 
     func testMultiWordRuleHoldsBackPossiblePrefixWords() {
@@ -52,10 +53,73 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         // "cloud" alone must not be released: it could be the first word of
         // the two-word match that only completes with the next chunk.
         XCTAssertEqual(stream.ingest("use cloud "), "use ")
-        // Once the match applies, everything but the trailing complete word
-        // (a possible prefix of the next two-word match) is released.
-        XCTAssertEqual(stream.ingest("code "), "Claude ")
-        XCTAssertEqual(stream.flushRemainder(), "Code ")
+        // Once the match applies, neither "Claude" nor "Code" can begin a
+        // rule, so both release immediately.
+        XCTAssertEqual(stream.ingest("code "), "Claude Code ")
+        XCTAssertEqual(stream.flushRemainder(), "")
+    }
+
+    // MARK: - Viable-prefix hold-back bound
+
+    func testLongRuleDoesNotDelayUnrelatedWords() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "Claude Code", matches: ["the quick brown fox"]),
+        ])
+        // A four-word rule used to hold three complete words of every
+        // dictation. Text that begins no rule is released with no extra hold.
+        XCTAssertEqual(stream.ingest("hello there wide world "), "hello there wide world ")
+        XCTAssertEqual(stream.flushRemainder(), "")
+    }
+
+    func testOnlyWordsThatCanBeginARuleAreHeld() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "Claude Code", matches: ["the quick brown fox"]),
+        ])
+        // "the quick" is a live prefix of the rule, so it is held; the words
+        // before it are not, so they go out immediately.
+        XCTAssertEqual(stream.ingest("hello world the quick "), "hello world ")
+        // The match fails at "slow" — nothing here begins the rule anymore.
+        XCTAssertEqual(stream.ingest("slow "), "the quick slow ")
+    }
+
+    func testMatchStartAfterPunctuationIsHeldBack() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "VOXTRAL ROCKS", matches: ["voxtral rocks"]),
+        ])
+        // The rule's lookbehind only forbids a preceding letter or digit, so a
+        // match can start inside a whitespace-delimited word: "voxtral" here
+        // begins after the hyphen. Releasing "foo-voxtral " would let the
+        // correction reach back into already-typed text.
+        XCTAssertEqual(stream.ingest("foo-voxtral "), "foo-")
+        XCTAssertEqual(stream.ingest("rocks "), "VOXTRAL ROCKS ")
+    }
+
+    func testMatchStartAfterCombiningMarkIsHeldBack() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "VOXTRAL ROCKS", matches: ["voxtral rocks"]),
+        ])
+        // Decomposed "é" is a letter grapheme, but the code point immediately
+        // before the match is a combining mark (category Mn), which the
+        // lookbehind accepts. The candidate scan must accept it too.
+        XCTAssertEqual(stream.ingest("e\u{0301}voxtral "), "e\u{0301}")
+        XCTAssertEqual(stream.ingest("rocks "), "VOXTRAL ROCKS ")
+    }
+
+    func testCaseInsensitivePrefixIsHeld() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
+        ])
+        XCTAssertEqual(stream.ingest("use CLOUD "), "use ")
+        XCTAssertEqual(stream.ingest("Code "), "Claude Code ")
+    }
+
+    func testSingleWordRuleAmongMultiWordRulesStillReleasesPromptly() {
+        var stream = makeStream(entries: [
+            ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
+        ])
+        // maxRuleWordCount is 2, but "hello" begins neither rule.
+        XCTAssertEqual(stream.ingest("hello voxtral "), "hello localvoxtral ")
     }
 
     func testPunctuationBoundaryCompletesMatchButHoldsUntilWhitespace() {
@@ -180,13 +244,25 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
 
     func testFlushedRemainderIsSanitized() {
         var stream = makeStream(
+            entries: [ReplacementEntry(replaceWith: "X", matches: ["run something"])],
+            sanitizesNewlines: true
+        )
+        // "run so" stays a live prefix of the rule, so everything is held back
+        // and the newline reaches the remainder flush; sanitization must still
+        // apply there.
+        XCTAssertEqual(stream.ingest("run\nso"), "")
+        XCTAssertEqual(stream.flushRemainder(), "run so")
+    }
+
+    func testCollapsedNewlineRunSpansAnEarlyRelease() {
+        var stream = makeStream(
             entries: [ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"])],
             sanitizesNewlines: true
         )
-        // Two-word rule holds everything back so the newline reaches the
-        // remainder flush; sanitization must still apply there.
-        XCTAssertEqual(stream.ingest("run\nit"), "")
-        XCTAssertEqual(stream.flushRemainder(), "run it")
+        // "run" begins no rule, so it is released before the newline's fate is
+        // known. The collapsed space is emitted with the next release.
+        XCTAssertEqual(stream.ingest("run\nit"), "run")
+        XCTAssertEqual(stream.flushRemainder(), " it")
     }
 
     func testSanitizationOffPreservesNewlines() {
@@ -203,5 +279,123 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
         XCTAssertEqual(stream.ingest("voxtral\nrocks "), "localvoxtral rocks")
         XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    // MARK: - Never-un-type invariant
+
+    /// The dictionary the invariant tests run against.
+    ///
+    /// `cloud code` deliberately has no single-word `cloud` rule: a shorter
+    /// rule matching the multi-word rule's first word would fire at that word's
+    /// boundary and rewrite the text, so the multi-word rule could never reach
+    /// back across a release and the hazard would never be generated.
+    private var invariantDictionary: ReplacementDictionary {
+        ReplacementDictionary(entries: [
+            ReplacementEntry(replaceWith: "Claude Code", matches: ["cloud code"]),
+            ReplacementEntry(replaceWith: "FOX", matches: ["the quick brown fox"]),
+            ReplacementEntry(replaceWith: "localvoxtral", matches: ["voxtral"]),
+        ])
+    }
+
+    /// The stream only ever appends released text, so text released early can
+    /// never be taken back. Releasing too early therefore shows up as a final
+    /// output that disagrees with correcting the whole transcript in one pass.
+    /// This is the hold-back bound's core invariant: for ANY chunking, the
+    /// concatenated releases must equal the batch result.
+    private func assertReleasedTextMatchesBatch(
+        _ text: String,
+        chunkSizes: [Int] = [1, 2, 3, 5, 1024],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let dictionary = invariantDictionary
+        let batch = LiveReplacementCorrector.completedBoundaryCorrectedText(
+            text,
+            dictionary: dictionary,
+            includeFinalUnboundedWord: true
+        )
+
+        for size in chunkSizes {
+            var stream = LiveHoldBackReplacementStream(
+                dictionary: dictionary,
+                sanitizesNewlines: false
+            )
+            var released = ""
+            var remaining = Substring(text)
+            while !remaining.isEmpty {
+                let take = min(size, remaining.count)
+                released += stream.ingest(String(remaining.prefix(take)))
+                remaining = remaining.dropFirst(take)
+            }
+            released += stream.flushRemainder()
+
+            XCTAssertEqual(
+                released,
+                batch,
+                "chunk size \(size) diverged for input \(String(reflecting: text))",
+                file: file,
+                line: line
+            )
+        }
+    }
+
+    func testReleasedTextMatchesBatchCorrectionForAdversarialInputs() {
+        // Match starts that are not whitespace-delimited word starts, near
+        // misses, case folding, and a decomposed combining mark.
+        for text in [
+            "foo-cloud code ",
+            "e\u{0301}cloud code ",
+            "hello foo-cloud code world ",
+            "foo-cloud code",
+            "CLOUD Code ",
+            "cloud. code ",
+            "the quick brown fox ",
+            "hello the quick brown slow ",
+            "the quick brown fox",
+            "cloud cloud code ",
+            "voxtral foo-cloud code ",
+        ] {
+            assertReleasedTextMatchesBatch(text)
+        }
+    }
+
+    func testReleasedTextMatchesBatchCorrectionForRandomChunkings() {
+        let vocabulary = [
+            "cloud", "code", "the", "quick", "brown", "fox", "hello", "world",
+            "clouds", "codes", "foo-cloud", "e\u{0301}cloud", "CLOUD", "cloud.",
+            "voxtral", "local",
+        ]
+
+        var generator = SeededGenerator(seed: 0x5EED_1234)
+        for _ in 0 ..< 400 {
+            let wordCount = Int.random(in: 1 ... 9, using: &generator)
+            var text = ""
+            for _ in 0 ..< wordCount {
+                text += vocabulary.randomElement(using: &generator)! + " "
+            }
+            if Bool.random(using: &generator) {
+                text = String(text.dropLast())
+            }
+            let size = Int.random(in: 1 ... 4, using: &generator)
+            assertReleasedTextMatchesBatch(text, chunkSizes: [size])
+        }
+    }
+}
+
+/// Deterministic RNG: the suite forbids wall-clock and other nondeterminism,
+/// and a failing property case must be reproducible from the seed alone.
+private struct SeededGenerator: RandomNumberGenerator {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed
+    }
+
+    mutating func next() -> UInt64 {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        var result = state
+        result = (result ^ (result >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        result = (result ^ (result >> 27)) &* 0x94D0_49BB_1331_11EB
+        return result ^ (result >> 31)
     }
 }

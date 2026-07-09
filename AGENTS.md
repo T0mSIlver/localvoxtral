@@ -211,7 +211,9 @@ Key subsystems:
   (vLLM/voxmlx) over `BaseRealtimeWebSocketClient`
 - Text merge: `TextMergingAlgorithms` (pure functions — overlap merge,
   word-boundary stabilization, punctuation spacing), `FirstChunkPreprocessor`
-- Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V)
+- Insertion: `TextInsertionService` (AX replace → Unicode CGEvents → Cmd+V);
+  Live Auto-Paste replacements run through `LiveHoldBackReplacementStream`
+  before typing — see "Known tradeoffs" below for the latency it costs
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
 - Backends: `BackendManager` lazily bootstraps app-managed local serving on
@@ -230,6 +232,15 @@ Key subsystems:
   MLX Swift inference + a minimal loopback OpenAI server + parent-pid
   watchdog), supervised like any managed backend on port 8472. Replaced the
   uv-installed mlx-lm fork wheel (upstream mlx-lm unmaintained, 2026-07).
+
+## Known tradeoffs — deliberate, not bugs
+
+- **Live Auto-Paste holds back the tail of the transcript.** Replacements are
+  applied before typing (nothing is ever un-typed — there are no backspaces in
+  the insertion path, and terminals can't support them: field bug 2026-07-06),
+  so `LiveHoldBackReplacementStream` withholds the trailing partial word plus
+  any suffix that is still a live prefix of a dictionary rule. Nothing is lost
+  (`flushRemainder()` releases it at stop) but it costs latency of appearance.
 
 ## Conventions
 

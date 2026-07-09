@@ -31,7 +31,7 @@ struct ReplacementDictionary: Equatable, Sendable {
                         regex: regex,
                         replaceWith: entry.replaceWith,
                         matchLength: normalized.count,
-                        wordCount: normalized.split(whereSeparator: \.isWhitespace).count,
+                        keyWords: normalized.split(whereSeparator: \.isWhitespace).map(String.init),
                         originalOrder: originalOrder
                     )
                 )
@@ -158,12 +158,21 @@ struct LiveReplacementRule: Comparable {
     let regex: NSRegularExpression
     let replaceWith: String
     let matchLength: Int
-    let wordCount: Int
+    /// The literal, whitespace-separated words of the match key, in order.
+    /// `makeRegex` escapes every key with `escapedPattern` and joins the words
+    /// with `\s+`, so a rule is a literal word list — no metacharacter ever
+    /// survives. `LiveHoldBackReplacementStream` prefix-matches against these
+    /// words directly to decide how little text it can hold back.
+    let keyWords: [String]
     let originalOrder: Int
+
+    var wordCount: Int {
+        keyWords.count
+    }
 
     static func == (lhs: LiveReplacementRule, rhs: LiveReplacementRule) -> Bool {
         lhs.matchLength == rhs.matchLength
-            && lhs.wordCount == rhs.wordCount
+            && lhs.keyWords == rhs.keyWords
             && lhs.originalOrder == rhs.originalOrder
             && lhs.replaceWith == rhs.replaceWith
             && lhs.regex.pattern == rhs.regex.pattern

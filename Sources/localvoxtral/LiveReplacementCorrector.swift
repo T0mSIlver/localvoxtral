@@ -195,8 +195,62 @@ struct LiveReplacementCorrector {
         return 0
     }
 
+    /// True when `tail` can still grow into a match for some rule — that is,
+    /// when it is a live prefix of that rule's key words. `LiveHoldBackReplacementStream`
+    /// uses this to hold back only text that a future correction could still
+    /// reach, instead of a fixed `maxRuleWordCount` window.
+    ///
+    /// This mirrors `ReplacementDictionary.makeRegex`: keys are literal words
+    /// joined by `\s+` and matched case-insensitively, so word equality plus a
+    /// prefix test on the trailing partial word is exactly the regex's
+    /// semantics. A complete word must match its key word outright; the
+    /// trailing partial word only has to be a prefix of its key word.
+    ///
+    /// Errs toward `true` (hold more): a full-length word run equal to the key
+    /// stays viable even though its correction has, in practice, already been
+    /// applied. Never erring toward `false` is what keeps released text
+    /// immutable.
+    func isViableRulePrefix(_ tail: String) -> Bool {
+        guard let firstCharacter = tail.first,
+              let lastCharacter = tail.last,
+              !Self.isWhitespace(firstCharacter)
+        else {
+            return false
+        }
+
+        let words = tail.split(whereSeparator: { Self.isWhitespace($0) }).map(String.init)
+        guard !words.isEmpty else { return false }
+
+        // A trailing whitespace character completes the final word; without it
+        // the final word is still in flight and only needs to be a prefix.
+        let trailingWordIsComplete = Self.isWhitespace(lastCharacter)
+        let completeWordCount = trailingWordIsComplete ? words.count : words.count - 1
+
+        return rules.contains { rule in
+            let key = rule.keyWords
+            guard words.count <= key.count else { return false }
+
+            for index in 0 ..< completeWordCount
+                where !Self.equalsIgnoringCase(words[index], key[index])
+            {
+                return false
+            }
+
+            guard !trailingWordIsComplete else { return true }
+            return Self.hasPrefixIgnoringCase(key[words.count - 1], words[words.count - 1])
+        }
+    }
+
     private static func isCompletionBoundary(_ character: Character) -> Bool {
         isWhitespace(character) || isPunctuation(character)
+    }
+
+    private static func equalsIgnoringCase(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.compare(rhs, options: .caseInsensitive) == .orderedSame
+    }
+
+    private static func hasPrefixIgnoringCase(_ text: String, _ prefix: String) -> Bool {
+        text.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
     }
 
     // Internal (not private): `LiveHoldBackReplacementStream` computes its
@@ -206,6 +260,40 @@ struct LiveReplacementCorrector {
     static func isWhitespace(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy {
             CharacterSet.whitespacesAndNewlines.contains($0)
+        }
+    }
+
+    /// True when a rule match may begin at `offset`, mirroring the
+    /// `(?<![\p{L}\p{N}])` lookbehind in `ReplacementDictionary.makeRegex`.
+    ///
+    /// Match starts are NOT the same as whitespace-separated word starts: the
+    /// lookbehind only forbids a preceding letter or digit, so `voxtral`
+    /// matches inside `foo-voxtral`. The hold-back scan must treat every such
+    /// offset as a candidate, or it would release text a later correction
+    /// reaches back into.
+    static func isCandidateMatchStart(_ characters: [Character], _ offset: Int) -> Bool {
+        guard offset < characters.count, !isWhitespace(characters[offset]) else { return false }
+        guard offset > 0 else { return true }
+        return !isLetterOrNumber(characters[offset - 1])
+    }
+
+    /// `\p{L}` or `\p{N}` applied to the LAST unicode scalar of `character`.
+    ///
+    /// The regex lookbehind inspects the code point immediately before the
+    /// match, not the grapheme cluster. For a decomposed `e` + U+0301 the
+    /// preceding code point is a combining mark (category Mn), which the
+    /// lookbehind accepts — so the scan must accept it too. Testing the last
+    /// scalar reproduces that exactly, while a whole-grapheme test would
+    /// wrongly reject the offset and release text that can still be corrected.
+    private static func isLetterOrNumber(_ character: Character) -> Bool {
+        guard let scalar = character.unicodeScalars.last else { return false }
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter,
+             .modifierLetter, .otherLetter,
+             .decimalNumber, .letterNumber, .otherNumber:
+            return true
+        default:
+            return false
         }
     }
 

@@ -14,13 +14,14 @@ import Foundation
 /// are applied to the held text, and only corrected text is ever released
 /// for typing — no backspaces, ever.
 ///
-/// Hold-back policy: the trailing partial word (no whitespace after it yet)
-/// plus the last `maxRuleWordCount - 1` complete words stay held, because
-/// they could still be part of a rule match that only completes with future
-/// text. Single-word dictionaries therefore release with zero hold beyond
-/// the trailing partial word. The policy mirrors the corrector's own
-/// `lookbackStart(before:)` word segmentation, so a released prefix can
-/// never be reached by a correction the embedded corrector produces later.
+/// Hold-back policy: the trailing partial word (no whitespace after it yet) is
+/// always held, plus the shortest suffix before it that is still a live prefix
+/// of some rule — text a future match could still grow into. Text that is a
+/// prefix of no rule is released immediately, so an unrelated four-word entry
+/// in the dictionary no longer delays every dictated word by three. The bound
+/// is capped by the corrector's own `lookbackStart(before:)` window, and uses
+/// the same word segmentation, so a released prefix can never be reached by a
+/// correction the embedded corrector produces later.
 ///
 /// Newline/tab policy (terminal targets): a typed newline can act as Enter
 /// and submit a prompt mid-dictation, and a typed Tab can trigger shell
@@ -95,26 +96,62 @@ struct LiveHoldBackReplacementStream {
     }
 
     /// The largest character offset into the corrected text that no future
-    /// correction can modify. Corrections end at a future word boundary and
-    /// reach back at most `maxRuleWordCount` whitespace-separated words from
-    /// it, so the trailing partial word plus the `maxRuleWordCount - 1`
-    /// complete words before it must stay held.
+    /// correction can modify.
+    ///
+    /// Two independent lower bounds on where a future correction can start:
+    ///
+    /// 1. A correction reaches back at most `maxRuleWordCount` whitespace-
+    ///    separated words from a future word boundary, so it can never start
+    ///    before the `maxRuleWordCount - 1` complete words preceding the
+    ///    trailing partial word (`windowStart`).
+    /// 2. A correction starts at a rule match, so it can only start at an
+    ///    offset from which the remaining text is still a live prefix of some
+    ///    rule (`isViableRulePrefix`).
+    ///
+    /// Both bound the same quantity, so the safe limit is the larger. Bound 2
+    /// is usually far tighter: most text is a prefix of no rule at all, and
+    /// then nothing is held beyond the trailing partial word — a single long
+    /// entry in the dictionary no longer taxes every unrelated word.
+    ///
+    /// The trailing partial word is always held: punctuation does not complete
+    /// a word here, so "def" in "abc def." could still grow into "def.x".
     private func safeReleaseLimit() -> Int {
         guard corrector.hasRules else {
             return corrector.correctedText.count
         }
 
         let characters = Array(corrector.correctedText)
-        var offset = characters.count
+        let partialWordStart = trailingPartialWordStart(in: characters)
+        var offset = wordWindowStart(in: characters, before: partialWordStart)
 
-        // Hold the trailing partial word (punctuation does not complete a
-        // word here: "def" in "abc def." could still grow into "def.x").
+        // Advance to the earliest offset a rule match could still begin at.
+        // Candidate offsets are match starts, not word starts — see
+        // `isCandidateMatchStart`.
+        while offset < partialWordStart {
+            if LiveReplacementCorrector.isCandidateMatchStart(characters, offset),
+               corrector.isViableRulePrefix(String(characters[offset...]))
+            {
+                break
+            }
+            offset += 1
+        }
+
+        return max(offset, releasedCharacterCount)
+    }
+
+    /// The offset of the trailing run of non-whitespace characters.
+    private func trailingPartialWordStart(in characters: [Character]) -> Int {
+        var offset = characters.count
         while offset > 0, !LiveReplacementCorrector.isWhitespace(characters[offset - 1]) {
             offset -= 1
         }
+        return offset
+    }
 
-        // Hold the last (maxRuleWordCount - 1) complete words: they may be
-        // the leading words of a multi-word match that completes later.
+    /// The offset `maxRuleWordCount - 1` complete words before `end` — the
+    /// furthest back any correction can reach.
+    private func wordWindowStart(in characters: [Character], before end: Int) -> Int {
+        var offset = end
         var wordsToHold = corrector.maxRuleWordCount - 1
         while wordsToHold > 0, offset > 0 {
             while offset > 0, LiveReplacementCorrector.isWhitespace(characters[offset - 1]) {
@@ -125,8 +162,7 @@ struct LiveHoldBackReplacementStream {
             }
             wordsToHold -= 1
         }
-
-        return max(offset, releasedCharacterCount)
+        return offset
     }
 
     private mutating func release(upTo limit: Int) -> String {

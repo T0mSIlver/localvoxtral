@@ -53,19 +53,20 @@ final class TextInsertionServiceLiveStrategyTests: XCTestCase {
         let service = makeService(capturing: typed)
         service.beginLiveReplacementSession(
             dictionary: ReplacementDictionary(entries: [
-                ReplacementEntry(replaceWith: "localvoxtral", matches: ["local voxtral"]),
+                ReplacementEntry(replaceWith: "X", matches: ["run something"]),
             ]),
             preferredAppPID: nil,
             isTerminalLikeTarget: true
         )
 
-        // The two-word rule holds everything back, so the newline is still
-        // held at session stop and must be sanitized on the remainder flush.
-        service.enqueueRealtimeInsertion("run\nit")
+        // "run so" stays a live prefix of the rule, so everything is held back
+        // and the newline is still held at session stop — it must be sanitized
+        // on the remainder flush.
+        service.enqueueRealtimeInsertion("run\nso")
         XCTAssertEqual(typed.value, [])
         service.flushFinalLiveReplacementCorrections()
 
-        XCTAssertEqual(typed.value.joined(), "run it")
+        XCTAssertEqual(typed.value.joined(), "run so")
     }
 
     func testTerminalLikeSessionWithoutDictionaryStillSanitizesNewlines() {
