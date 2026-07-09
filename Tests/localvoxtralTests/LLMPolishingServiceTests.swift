@@ -38,6 +38,7 @@ final class LLMPolishingServiceTests: XCTestCase {
                 ["role": "user", "content": "second"],
             ]
         )
+        XCTAssertNil(json["chat_template_kwargs"])
     }
 
     func testSamplingDefaultsEmitExactOpenAIFieldNames() throws {
@@ -71,5 +72,26 @@ final class LLMPolishingServiceTests: XCTestCase {
         XCTAssertNil(json["topK"])
         XCTAssertNil(json["minP"])
         XCTAssertNil(json["presencePenalty"])
+    }
+
+    func testChatTemplateArgumentsEmitMlxLmFieldName() throws {
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1/chat")!,
+            apiKey: "",
+            model: "model",
+            chatTemplateArguments: ["enable_thinking": false]
+        )
+
+        let data = try LLMPolishingService.requestBody(
+            request: request,
+            configuration: configuration
+        )
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let kwargs = try XCTUnwrap(json["chat_template_kwargs"] as? [String: Bool])
+
+        XCTAssertEqual(kwargs, ["enable_thinking": false])
+        XCTAssertNil(json["chatTemplateArguments"])
     }
 }

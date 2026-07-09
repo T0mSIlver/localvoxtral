@@ -19,7 +19,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh integration     # realtime pipeline vs live voxmlx
 ./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
 ./scripts/remote-build.sh package         # build the .app bundle (also builds the polishing helper)
-./scripts/remote-build.sh integration-polishd  # bundled polish helper vs real model + eval baseline (run package first)
+./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first); optional repo = per-model gate for PolishModelCatalog additions (self-provisions weights)
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
 ```

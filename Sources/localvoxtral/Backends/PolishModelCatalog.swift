@@ -28,6 +28,7 @@ struct PolishModelOption: Equatable, Sendable {
     let sizeOnDiskGB: Double
     let estimatedRAMGB: Double
     let samplingDefaults: PolishSamplingDefaults?
+    let chatTemplateArguments: [String: Bool]?
     let summary: String
 }
 
@@ -39,6 +40,7 @@ enum PolishModelCatalog {
             sizeOnDiskGB: 0.9,
             estimatedRAMGB: 1.0,
             samplingDefaults: nil,
+            chatTemplateArguments: nil,
             summary: "Cleans up transcripts with negligible overhead"
         ),
         PolishModelOption(
@@ -47,6 +49,7 @@ enum PolishModelCatalog {
             sizeOnDiskGB: 3.0,
             estimatedRAMGB: 3.5,
             samplingDefaults: nil,
+            chatTemplateArguments: ["enable_thinking": false],
             summary: "Stronger cleanup, slower first load"
         ),
     ]

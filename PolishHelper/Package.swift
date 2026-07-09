@@ -32,7 +32,11 @@ let package = Package(
         ),
         .testTarget(
             name: "PolishHelperCoreTests",
-            dependencies: ["PolishHelperCore"]
+            dependencies: [
+                "PolishHelperCore",
+                .product(name: "Hub", package: "swift-transformers"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ]
         ),
     ]
 )

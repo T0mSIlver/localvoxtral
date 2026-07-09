@@ -4,7 +4,12 @@ import XCTest
 
 private final class StubResponder: ChatResponding, @unchecked Sendable {
     let result: Result<String, Error>
-    private(set) var received: (messages: [ChatCompletionMessage], sampling: ChatSamplingParameters)?
+    private(set) var received:
+        (
+            messages: [ChatCompletionMessage],
+            chatTemplateArguments: [String: ChatTemplateArgumentValue]?,
+            sampling: ChatSamplingParameters
+        )?
 
     init(result: Result<String, Error> = .success("polished")) {
         self.result = result
@@ -12,9 +17,10 @@ private final class StubResponder: ChatResponding, @unchecked Sendable {
 
     func respond(
         to messages: [ChatCompletionMessage],
+        chatTemplateArguments: [String: ChatTemplateArgumentValue]?,
         sampling: ChatSamplingParameters
     ) async throws -> String {
-        received = (messages, sampling)
+        received = (messages, chatTemplateArguments, sampling)
         return try result.get()
     }
 }
@@ -51,8 +57,38 @@ final class PolishdRouterTests: XCTestCase {
         XCTAssertEqual(decoded.model, "x")
         XCTAssertEqual(responder.received?.messages.count, 3)
         XCTAssertEqual(responder.received?.messages[1].content, "raw one")
+        XCTAssertNil(responder.received?.chatTemplateArguments)
         XCTAssertEqual(responder.received?.sampling.temperature, 0.3)
         XCTAssertNil(responder.received?.sampling.maxTokens)
+    }
+
+    func testChatCompletionDecodesChatTemplateKwargs() async throws {
+        let responder = StubResponder()
+        let router = PolishdRouter(responder: responder, modelName: "test-model")
+        let response = await router.handle(
+            chatRequest(
+                """
+                {"chat_template_kwargs": {
+                    "enable_thinking": false,
+                    "mode": "polish",
+                    "budget": 4,
+                    "scale": 1.5
+                 },
+                 "messages": [{"role": "user", "content": "raw"}]}
+                """
+            )
+        )
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(
+            responder.received?.chatTemplateArguments,
+            [
+                "enable_thinking": .bool(false),
+                "mode": .string("polish"),
+                "budget": .int(4),
+                "scale": .double(1.5),
+            ]
+        )
     }
 
     func testChatCompletionRoundTripsSamplingOverrides() async throws {

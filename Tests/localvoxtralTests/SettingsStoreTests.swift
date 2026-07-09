@@ -298,6 +298,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.apiKey, "")
         XCTAssertEqual(configuration?.model, SettingsStore.defaultLLMPolishingModel)
         XCTAssertNil(configuration?.samplingDefaults)
+        XCTAssertNil(configuration?.chatTemplateArguments)
     }
 
     func testLLMPolishingConfiguration_managedLocal_usesManagedModelSelection() {
@@ -309,6 +310,16 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.model, "mlx-community/custom-polisher")
         // A non-catalog repo carries no catalog sampling defaults.
         XCTAssertNil(configuration?.samplingDefaults)
+        XCTAssertNil(configuration?.chatTemplateArguments)
+    }
+
+    func testLLMPolishingConfiguration_managedLocal_usesCatalogChatTemplateArguments() {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.managedLLMPolishingModel = "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+
+        let configuration = store.llmPolishingConfiguration
+        XCTAssertEqual(configuration?.chatTemplateArguments, ["enable_thinking": false])
     }
 
     func testLLMPolishingConfiguration_managedLocal_disabledReturnsNil() {
@@ -334,6 +345,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.apiKey, "sk-test")
         XCTAssertEqual(configuration?.model, "gpt-4o-mini")
         XCTAssertNil(configuration?.samplingDefaults)
+        XCTAssertNil(configuration?.chatTemplateArguments)
     }
 
     func testBackendResolutionUsesIndependentDictationAndPolishingModes() {

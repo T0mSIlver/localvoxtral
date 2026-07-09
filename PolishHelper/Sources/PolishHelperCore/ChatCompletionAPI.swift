@@ -6,6 +6,7 @@ import Foundation
 public struct ChatCompletionRequest: Codable, Sendable {
     public var model: String?
     public var messages: [ChatCompletionMessage]
+    public var chatTemplateArguments: [String: ChatTemplateArgumentValue]?
     public var temperature: Float?
     public var topP: Float?
     public var topK: Int?
@@ -17,6 +18,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case model
         case messages
+        case chatTemplateArguments = "chat_template_kwargs"
         case temperature
         case topP = "top_p"
         case topK = "top_k"
@@ -29,6 +31,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public init(
         model: String? = nil,
         messages: [ChatCompletionMessage],
+        chatTemplateArguments: [String: ChatTemplateArgumentValue]? = nil,
         temperature: Float? = nil,
         topP: Float? = nil,
         topK: Int? = nil,
@@ -39,6 +42,7 @@ public struct ChatCompletionRequest: Codable, Sendable {
     ) {
         self.model = model
         self.messages = messages
+        self.chatTemplateArguments = chatTemplateArguments
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
@@ -57,6 +61,61 @@ public struct ChatCompletionRequest: Codable, Sendable {
             presencePenalty: presencePenalty,
             maxTokens: maxTokens
         )
+    }
+}
+
+public enum ChatTemplateArgumentValue: Codable, Equatable, Hashable, Sendable {
+    case bool(Bool)
+    case string(String)
+    case int(Int)
+    case double(Double)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode(Int.self) {
+            self = .int(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .double(value)
+        } else {
+            throw DecodingError.typeMismatch(
+                ChatTemplateArgumentValue.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "chat_template_kwargs values must be Bool, String, Int, or Double"
+                )
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .bool(let value):
+            try container.encode(value)
+        case .string(let value):
+            try container.encode(value)
+        case .int(let value):
+            try container.encode(value)
+        case .double(let value):
+            try container.encode(value)
+        }
+    }
+
+    var templateContextValue: any Sendable {
+        switch self {
+        case .bool(let value):
+            value
+        case .string(let value):
+            value
+        case .int(let value):
+            value
+        case .double(let value):
+            value
+        }
     }
 }
 

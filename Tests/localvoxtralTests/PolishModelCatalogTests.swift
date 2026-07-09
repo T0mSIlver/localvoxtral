@@ -10,6 +10,13 @@ final class PolishModelCatalogTests: XCTestCase {
         XCTAssertEqual(PolishModelCatalog.option(forRepoID: defaultOption.repoID), defaultOption)
         XCTAssertNil(PolishModelCatalog.option(forRepoID: "unknown/model"))
         XCTAssertNil(defaultOption.samplingDefaults)
+        XCTAssertNil(defaultOption.chatTemplateArguments)
+        XCTAssertEqual(
+            PolishModelCatalog.option(
+                forRepoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+            )?.chatTemplateArguments,
+            ["enable_thinking": false]
+        )
     }
 
     func testPickerEntriesAppendCustomStoredModelWithoutRewritingIt() {
