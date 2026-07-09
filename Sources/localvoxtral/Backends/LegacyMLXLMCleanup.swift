@@ -47,7 +47,10 @@ struct LegacyMLXLMCleanup {
         }
 
         if !removed.isEmpty {
-            Log.backends.info(
+            // notice, not info: info-level messages aren't reliably persisted,
+            // so a `log show` after the fact would miss the only trace of a
+            // launch-time deletion of user files.
+            Log.backends.notice(
                 "Removed orphaned mlx-lm install: \(removed.map(\.lastPathComponent).joined(separator: ", "), privacy: .public)"
             )
         }
