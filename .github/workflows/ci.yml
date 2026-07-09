@@ -23,6 +23,31 @@ jobs:
           # Full history + tags so package_app.sh can git-describe the
           # artifact version (shallow clones can't, and fall back to 0.0.0-dev).
           fetch-depth: 0
+          # Keep gitignored build state between runs on the persistent
+          # self-hosted runner. The default `git clean -ffdx` wiped .build/ and
+          # PolishHelper/.build/ (including the helper's xcodebuild
+          # DerivedData) at the start of EVERY run, forcing a cold MLX C++ +
+          # Metal rebuild twice per run — ~4.5 min of a ~7.5 min job. Releases
+          # keep the pristine-tree guarantee (release.yml checks out with the
+          # default clean), and hosted fork-PR runners are ephemeral, so this
+          # only affects same-repo CI. If the runner's incremental state ever
+          # corrupts (e.g. a stale SwiftPM lock from a killed run), one-time
+          # fix: `git clean -ffdx` in the runner's _work/localvoxtral tree.
+          clean: false
+
+      - name: Clean stale outputs (keep build caches)
+        # clean: false above skips git clean entirely, so outputs a previous
+        # run generated must be removed by hand — but NOT the build caches.
+        # Also repair the smoke test's .build rename if a cancelled run died
+        # mid-smoke (its EXIT trap doesn't run on SIGKILL): a leftover
+        # .build.smoke-hidden would make the next run's `mv` nest one dir
+        # inside the other and silently corrupt the cache.
+        run: |
+          if [[ -d .build.smoke-hidden ]]; then
+            rm -rf .build
+            mv .build.smoke-hidden .build
+          fi
+          rm -rf dist format-lint.txt default.profraw
 
       - name: Setup Swift
         if: runner.environment == 'github-hosted'
