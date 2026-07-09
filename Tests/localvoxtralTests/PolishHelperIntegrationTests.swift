@@ -181,7 +181,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
         binary: URL,
         model: String,
         extraArguments: [String] = []
-    ) async throws -> (process: Process, port: UInt16) {
+    ) async throws -> (process: Process, port: UInt16, stderrLog: LineLog) {
         let process = Process()
         process.executableURL = binary
         process.arguments = ["--model", model, "--port", "0"] + extraArguments
@@ -227,7 +227,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
             )
             throw XCTSkip("helper did not become ready")
         }
-        return (process, port)
+        return (process, port, stderrLog)
     }
 
     private final class LineLog: @unchecked Sendable {
@@ -244,6 +244,12 @@ final class PolishHelperIntegrationTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return lines.suffix(count).joined(separator: "\n")
+        }
+
+        func countOfLines(containing substring: String) -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return lines.count { $0.contains(substring) }
         }
     }
 
@@ -273,7 +279,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
     func testHelperMatchesPolishEvalBaselineThroughProductionRequestPath() async throws {
         let (binary, model) = try helperConfiguration()
         try await ensureModelCached(model)
-        let (process, port) = try await launchHelper(binary: binary, model: model)
+        let (process, port, stderrLog) = try await launchHelper(binary: binary, model: model)
 
         let healthURL = URL(string: "http://127.0.0.1:\(port)/health")!
         let (_, healthResponse) = try await URLSession.shared.data(from: healthURL)
@@ -303,6 +309,25 @@ final class PolishHelperIntegrationTests: XCTestCase {
             "Bundled helper regressed required polish cases vs the mlx-lm baseline: \(result.failedRequiredCases.joined(separator: ", "))"
         )
 
+        // The prompt-prefix cache must actually engage: every eval request
+        // shares [system, instructions] and varies only the transcript
+        // message, so the first request checkpoints the prefix and the rest
+        // reuse it. A "full prefill" fallback line would mean the template
+        // boundary math broke and the cache silently turned itself off —
+        // fail loudly instead of shipping the perf regression.
+        XCTAssertEqual(
+            stderrLog.countOfLines(containing: "prompt cache: checkpointed"), 1,
+            "expected exactly one prefix checkpoint across the eval corpus"
+        )
+        XCTAssertGreaterThan(
+            stderrLog.countOfLines(containing: "prompt cache: hit"), 0,
+            "no request reused the prefix checkpoint"
+        )
+        XCTAssertEqual(
+            stderrLog.countOfLines(containing: "full prefill"), 0,
+            "prefix cache fell back to full prefill — templated prefix no longer a token prefix"
+        )
+
         XCTAssertTrue(process.isRunning)
         process.terminate()
     }
@@ -326,7 +351,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
             }
         }
 
-        let (helper, _) = try await launchHelper(
+        let (helper, _, _) = try await launchHelper(
             binary: binary,
             model: model,
             extraArguments: ["--parent-pid", "\(decoyParent.processIdentifier)"]
