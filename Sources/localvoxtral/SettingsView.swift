@@ -222,6 +222,17 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
+    private var managedPolishingModelBinding: Binding<String> {
+        Binding(
+            get: { settings.resolvedManagedLLMPolishingModel },
+            set: { viewModel.applyLLMPolishingModelChange($0) }
+        )
+    }
+
+    private var managedPolishingModelEntries: [PolishModelPickerEntry] {
+        PolishModelPickerSupport.entries(storedRepoID: settings.resolvedManagedLLMPolishingModel)
+    }
+
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Dictation") {
@@ -327,6 +338,31 @@ private struct ConnectionSettingsPane: View {
                             .textFieldStyle(.roundedBorder)
                         }
                     case .managedLocal:
+                        SettingsFieldRow(title: "Model") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Picker("", selection: managedPolishingModelBinding) {
+                                    ForEach(managedPolishingModelEntries) { entry in
+                                        Text(entry.label).tag(entry.repoID)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .labelsHidden()
+
+                                if let selectedEntry = managedPolishingModelEntries.first(
+                                    where: { $0.repoID == settings.resolvedManagedLLMPolishingModel }
+                                ) {
+                                    SettingsHelpText(
+                                        PolishModelPickerSupport.helpText(
+                                            for: selectedEntry,
+                                            isDownloaded: PolishModelCache.isDownloaded(
+                                                repoID: selectedEntry.repoID
+                                            )
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
                         ManagedBackendStatusRow(
                             title: "Status",
                             spec: BackendCatalog.mlxLM,
@@ -922,4 +958,3 @@ private struct SettingsInlineMessage: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 }
-

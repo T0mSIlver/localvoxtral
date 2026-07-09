@@ -20,6 +20,19 @@ struct LLMPolishingConfiguration: Sendable {
     let endpointURL: URL
     let apiKey: String
     let model: String
+    let samplingDefaults: PolishSamplingDefaults?
+
+    init(
+        endpointURL: URL,
+        apiKey: String,
+        model: String,
+        samplingDefaults: PolishSamplingDefaults? = nil
+    ) {
+        self.endpointURL = endpointURL
+        self.apiKey = apiKey
+        self.model = model
+        self.samplingDefaults = samplingDefaults
+    }
 }
 
 struct LLMPolishingResult: Sendable {
@@ -70,14 +83,10 @@ struct LLMPolishingService: LLMPolishingServicing {
         }
         urlRequest.timeoutInterval = Self.timeoutInterval
 
-        let messages = [["role": "system", "content": request.systemPrompt]]
-            + request.userPrompts.map { ["role": "user", "content": $0] }
-        let body: [String: Any] = [
-            "model": configuration.model,
-            "messages": messages,
-            "temperature": 0.3,
-        ]
-        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
+        urlRequest.httpBody = try Self.requestBody(
+            request: request,
+            configuration: configuration
+        )
 
         let data: Data
         let response: URLResponse
@@ -120,5 +129,36 @@ struct LLMPolishingService: LLMPolishingServicing {
             polishedText: polished,
             durationSeconds: duration
         )
+    }
+
+    static func requestBody(
+        request: LLMPolishingRequest,
+        configuration: LLMPolishingConfiguration
+    ) throws -> Data {
+        let messages = [["role": "system", "content": request.systemPrompt]]
+            + request.userPrompts.map { ["role": "user", "content": $0] }
+        var body: [String: Any] = [
+            "model": configuration.model,
+            "messages": messages,
+            "temperature": 0.3,
+        ]
+        if let defaults = configuration.samplingDefaults {
+            if let temperature = defaults.temperature {
+                body["temperature"] = temperature
+            }
+            if let topP = defaults.topP {
+                body["top_p"] = topP
+            }
+            if let topK = defaults.topK {
+                body["top_k"] = topK
+            }
+            if let minP = defaults.minP {
+                body["min_p"] = minP
+            }
+            if let presencePenalty = defaults.presencePenalty {
+                body["presence_penalty"] = presencePenalty
+            }
+        }
+        return try JSONSerialization.data(withJSONObject: body)
     }
 }
