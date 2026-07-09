@@ -14,6 +14,10 @@ enum MenuBarIndicatorState: Equatable {
     case idle
     case connected
     case failure
+    /// Secure Keyboard Entry is swallowing this session's keystrokes — shown
+    /// with the failure icon because the menu bar is the only surface still
+    /// visible while the popover is closed during dictation (#89).
+    case secureInputWarning
 }
 
 /// A single raw realtime-delta log emission, captured before any
@@ -122,6 +126,8 @@ final class DictationViewModel {
         static let waitingForAccessibilityPermission = "Waiting for Accessibility permission."
         static let pasteBlockedByAccessibilityPermission = "Paste blocked by Accessibility permission."
         static let networkLostDictationStopped = "Network lost. Dictation stopped."
+        static let liveDictationBlockedBySecureInput = "Blocked: Secure Keyboard Entry is on."
+        static let overlayCopiedToClipboard = "Copied — paste it manually."
         static let noNetworkConnection = "No network connection."
         static let microphoneAccessDenied = "Microphone access denied."
         static let finalizing = "Finalizing..."
@@ -204,6 +210,18 @@ final class DictationViewModel {
     }
 
     var menuBarIndicatorState: MenuBarIndicatorState {
+        // Checked before .connected: the warning describes the session that
+        // is connected right now — its keystrokes are being swallowed, and
+        // the popover (where the text warning lives) is closed mid-dictation.
+        // Gated ONLY on the session-attempt flag, tracked separately from
+        // `lastError`: the Accessibility warning may own the popover line
+        // without hiding the icon (Codex finding), and the popover line may
+        // outlive the icon as the explanation after a refused-start gesture
+        // ends (owner field feedback — the icon must not stay lit after the
+        // modifier is released).
+        if sessionSecureInputActive {
+            return .secureInputWarning
+        }
         switch realtimeSessionIndicatorState {
         case .connected:
             return .connected
@@ -216,6 +234,37 @@ final class DictationViewModel {
 
     let settings: SettingsStore
     let textInsertion = TextInsertionService()
+
+    /// Secure Keyboard Entry state sampled for the CURRENT session — drives
+    /// the menu bar warning icon independently of `lastError` (whose popover
+    /// line a higher-priority warning may own). Set when the session verdict
+    /// is applied; cleared at session end alongside the token-scoped
+    /// popover clear. Internal (not private(set)) because the session-end
+    /// clear lives in DictationViewModel+Session.swift.
+    var sessionSecureInputActive = false
+
+    /// Ends the refused-start warning when no session is running: the icon
+    /// (and the "Blocked" status line) return to normal, while `lastError`
+    /// keeps the one-line explanation in the popover. A stopped session that
+    /// is still finalizing/polishing is NOT an ended attempt — its text is
+    /// still headed for the clipboard fallback, and clearing here dropped
+    /// the icon to the yellow session state mid-polish (owner field feedback
+    /// on #90); session teardown owns that clear.
+    func clearSecureInputRefusalSignalsIfAttemptEnded() {
+        guard !isDictating, !isConnectingRealtimeSession, !isFinalizingStop,
+              sessionSecureInputActive
+        else { return }
+        sessionSecureInputActive = false
+        if statusText == StatusStrings.liveDictationBlockedBySecureInput {
+            statusText = StatusStrings.ready
+        }
+    }
+
+    /// Played once at session start when Secure Keyboard Entry is detected.
+    /// The popover is closed while dictating, so an audible cue is the only
+    /// immediate signal that keystrokes will be swallowed (#89). Test seam.
+    @ObservationIgnored
+    var secureInputWarningSound: () -> Void = { NSSound(named: "Basso")?.play() }
 
     // Services — internal so extension files can access them.
     @ObservationIgnored
@@ -361,6 +410,12 @@ final class DictationViewModel {
     var debugManagedStatusMirrorEventSink: (() -> Void)?
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
+    /// Test seam: replaces `microphone.requestAccess` in the session-start
+    /// permission gate so tests can hold and fire the grant continuation
+    /// deterministically (the real call shows a TCC prompt and touches the
+    /// microphone service).
+    @ObservationIgnored
+    var debugMicrophoneRequestAccessOverride: ((@escaping @Sendable (Bool) -> Void) -> Void)?
     @ObservationIgnored
     var debugHasRequestedStartupPermissions: Bool { hasRequestedStartupPermissions }
 
@@ -374,6 +429,14 @@ final class DictationViewModel {
     // Tracks physical key state so repeat key-down events do not retrigger actions.
     @ObservationIgnored
     private var isPushToTalkShortcutHeld = false
+
+    /// True while the user is still physically holding the dictation
+    /// shortcut/modifier — a release event is still coming, and it owns
+    /// ending the attempt's refusal signals. The managed-startup path in
+    /// DictationViewModel+Session.swift consults this: a secure-input
+    /// refusal that fires after backend boot may land with no gesture-end
+    /// event left to clear it.
+    var isDictationAttemptGestureActive: Bool { isPushToTalkShortcutHeld }
     // True only when a start attempt was initiated by push-to-talk and may still need
     // to be cancelled if the user releases before dictation actually begins.
     @ObservationIgnored
@@ -679,6 +742,13 @@ final class DictationViewModel {
     }
 
     private func handleDictationShortcutRelease() {
+        // A REFUSED live start (secure input) resets the hold flags inside
+        // handleModifierOnlyHoldStart, so no branch below fires for it —
+        // this is the moment the user's attempt gesture ends, and the
+        // warning icon must end with it (owner field feedback on #90). The
+        // popover line stays as the explanation until the next start
+        // re-samples.
+        clearSecureInputRefusalSignalsIfAttemptEnded()
         // Modifier-only hold release
         if isModifierOnlyHoldActive {
             isModifierOnlyHoldActive = false
@@ -753,6 +823,17 @@ final class DictationViewModel {
 
     func toggleDictation(outputMode: DictationOutputMode? = nil) {
         hasActivePushToTalkShortcutSession = false
+        defer {
+            // Toggle starts (modifier tap, popover button) have no release
+            // event, so a refused live start would latch the warning icon
+            // forever (Codex findings on #90, rounds 5-6). The tap/click IS
+            // the whole attempt gesture: if nothing started, end the refusal
+            // signals now — the sound already fired and the popover line
+            // keeps the explanation.
+            if !isDictating, !isConnectingRealtimeSession, !isAwaitingMicrophonePermission {
+                clearSecureInputRefusalSignalsIfAttemptEnded()
+            }
+        }
         if isDictating {
             stopDictation(reason: "manual toggle")
         } else if isConnectingRealtimeSession {
@@ -1205,6 +1286,16 @@ final class DictationViewModel {
             lastError = "Connect to a network before starting dictation."
             return
         }
+        // Refused BEFORE the microphone-authorization gate: a doomed live
+        // session must not trigger a mic permission prompt — and the mic
+        // gate's per-user TCC state must not decide whether the refusal
+        // fires at all (it did: the refusal lived only past this gate, and
+        // CI vs build-host permission differences flipped the behavior).
+        if refuseLiveStartForSecureInputIfNeeded(
+            outputMode: outputMode ?? settings.dictationOutputMode
+        ) {
+            return
+        }
         debugLog("startDictation requested")
         refreshMicrophoneInputs()
         if debugLoggingEnabled {
@@ -1221,7 +1312,7 @@ final class DictationViewModel {
             isAwaitingMicrophonePermission = true
             statusText = StatusStrings.requestingMicrophonePermission
             debugLog("microphone permission prompt requested")
-            microphone.requestAccess { [weak self] granted in
+            requestMicrophoneAccessForSessionStart { [weak self] granted in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.isAwaitingMicrophonePermission = false
@@ -1240,6 +1331,15 @@ final class DictationViewModel {
                         return
                     }
                     self.beginDictationAfterManagedBackendIfNeeded(outputMode: outputMode)
+                    // The grant may land long after the initiating tap ended
+                    // (toggle taps have no release event). If secure input
+                    // turned on while the dialog was up, the entry point
+                    // above just refused — with no gesture-end event left,
+                    // the signals would wedge (Codex finding, round 9; same
+                    // shape as the managed-startup wedge in round 8).
+                    if !self.isDictationAttemptGestureActive {
+                        self.clearSecureInputRefusalSignalsIfAttemptEnded()
+                    }
                 }
             }
             Task { [weak self] in
@@ -1257,6 +1357,16 @@ final class DictationViewModel {
             lastError = Self.microphoneDeniedMessage
             debugLog("microphone access denied or restricted")
         }
+    }
+
+    private func requestMicrophoneAccessForSessionStart(
+        completion: @escaping @Sendable (Bool) -> Void
+    ) {
+        if let debugMicrophoneRequestAccessOverride {
+            debugMicrophoneRequestAccessOverride(completion)
+            return
+        }
+        microphone.requestAccess(completion: completion)
     }
 
     func currentMicrophoneAuthorizationStatus() -> MicrophoneAuthorizationStatus {
@@ -1417,6 +1527,7 @@ final class DictationViewModel {
         )
         preCapturedSessionTargetVerdict = nil
         sessionTargetIsTerminalLike = verdict.decision.isTerminalLike
+        sessionSecureInputActive = verdict.secureKeyboardEntryEnabled
 
         if verdict.secureKeyboardEntryEnabled {
             // Never mask the Accessibility-trust warning — it explains a
@@ -1424,6 +1535,9 @@ final class DictationViewModel {
             if currentErrorToken != .accessibilityPermissionRequired {
                 lastError = Self.secureKeyboardEntryWarningMessage
             }
+            // Audible regardless of which warning owns the popover line: the
+            // session that just started will type nothing either way.
+            secureInputWarningSound()
             Log.target.warning(
                 "Secure Keyboard Entry is enabled at session start; synthetic keyboard events may be blocked."
             )

@@ -316,11 +316,359 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertEqual(viewModel.lastError, "mlx-lm failed to start.")
     }
 
+    // MARK: - Secure Keyboard Entry signals: sound + menu bar icon (#89)
+
+    func testSecureInputWarningPlaysSoundAndDrivesMenuBarState() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(soundPlays, 1, "one audible cue at session start")
+        XCTAssertEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the menu bar is the only visible surface while the popover is closed"
+        )
+    }
+
+    func testNoSecureInputSignalsWhenSecureInputOff() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(soundPlays, 0)
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+    }
+
+    func testSoundStillPlaysWhenAccessibilityWarningOwnsThePopoverLine() {
+        // The popover line is masked by the higher-priority warning, but the
+        // session still cannot type — the audible cue must not be masked.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        viewModel.lastError = DictationViewModel.liveAutoPasteAccessibilityWarningMessage
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertEqual(soundPlays, 1)
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.liveAutoPasteAccessibilityWarningMessage,
+            "popover priority unchanged"
+        )
+        XCTAssertEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the icon must not vanish just because another warning owns the popover line"
+        )
+    }
+
+    func testMenuBarSecureWarningSurvivesStopFinalizationAndPolish() {
+        // Owner field feedback on #90: dismissing a secure-input overlay
+        // session flashed the yellow session icon while LLM polishing ran —
+        // the gesture-end clear fired during stop finalization. The warning
+        // describes text that is still headed for the clipboard fallback;
+        // it must stay red until session teardown clears it.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+        viewModel.sessionOutputMode = .overlayBuffer
+
+        // The exact mid-dismiss state stopDictation leaves behind: dictation
+        // off, finalization (and the polish task) still running, indicator
+        // on the yellow session icon.
+        viewModel.isDictating = false
+        viewModel.isFinalizingStop = true
+        viewModel.setRealtimeIndicatorConnected()
+
+        viewModel.clearSecureInputRefusalSignalsIfAttemptEnded()
+        XCTAssertEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the release-time clear must not drop the warning to the session icon mid-polish"
+        )
+
+        // Once finalization actually ends, the gesture-end clear may act.
+        viewModel.isFinalizingStop = false
+        viewModel.clearSecureInputRefusalSignalsIfAttemptEnded()
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+    }
+
+    func testMenuBarSecureWarningClearsAtSessionEnd() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+        viewModel.sessionOutputMode = .liveAutoPaste
+        viewModel.isDictating = true
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "icon reverts with the token-scoped clear at session end"
+        )
+    }
+
+    // MARK: - Session start under Secure Keyboard Entry (#89 split behavior)
+
+    func testLiveSessionStartRefusedUnderSecureInput() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.beginDictationSession()
+
+        XCTAssertFalse(viewModel.isDictating, "a live session that can only type into the void must not start")
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession, "no socket attempt for a refused start")
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.liveDictationBlockedBySecureInput)
+        XCTAssertEqual(viewModel.lastError, DictationViewModel.secureKeyboardEntryWarningMessage)
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertEqual(soundPlays, 1)
+        // Suite hygiene: nothing here arms the connect timeout, but every test
+        // reaching beginDictationSession sets this flag by convention (PR #66).
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testRefusedStartWarningClearsAtNextSessionStartWithSecureInputOff() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.beginDictationSession()
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        // The password prompt is gone; the stale-warning path at the next
+        // capture/apply clears both the popover line and the icon.
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        viewModel.captureSessionTargetVerdict()
+        viewModel.applyPreCapturedSessionTargetVerdict()
+
+        XCTAssertNil(viewModel.lastError)
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testStaleSecureIconDoesNotMaskEarlyExitFailuresOnNextAttempt() {
+        // Codex finding on #90: refused start leaves the icon lit; a next
+        // attempt that exits early (missing mic) BEFORE the verdict capture
+        // must not keep reporting a secure-input warning that is now off.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+        viewModel.beginDictationSession()
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        TerminalTargetDetector.debugSecureEventInputOverride = { false }
+        // Force the invalid-endpoint early exit, which happens BEFORE the
+        // verdict capture: custom backend mode with an empty endpoint URL.
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = ""
+        viewModel.beginDictationSession()
+
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "the invalid-endpoint failure must not be masked by a stale secure-input icon"
+        )
+        XCTAssertFalse(viewModel.isDictating)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testRefusedLiveStartResetsStaleOverlayPanel() {
+        // Codex finding on #90 (round 3): a prior overlay commit failure
+        // intentionally leaves its panel visible until the NEXT session
+        // resets the coordinator — a refused live start must still perform
+        // that reset or the failed panel lingers indefinitely.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste, coordinator: coordinator)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.beginDictationSession()
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertGreaterThanOrEqual(coordinator.resetCallCount, 1)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testOverlaySessionStartProceedsUnderSecureInput() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.beginDictationSession()
+
+        XCTAssertTrue(
+            viewModel.isConnectingRealtimeSession,
+            "overlay sessions proceed: the pipeline still produces text and the commit falls back to the clipboard"
+        )
+        // This path DOES arm the real 10s connect timeout (PR #66 rule).
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+    }
+
+    func testRefusedStartIconClearsWhenTheHoldGestureEnds() {
+        // Owner field feedback on #90: the icon stayed red after releasing
+        // the modifier. The release ends the attempt, so the icon (and the
+        // "Blocked" status) end with it; the popover line stays as the
+        // explanation.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.secureInputWarningSound = {}
+
+        viewModel.debugHandleModifierOnlyHoldStartForTesting()
+        XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")
+        XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+
+        viewModel.debugHandleDictationShortcutReleaseForTesting()
+
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.secureKeyboardEntryWarningMessage,
+            "the popover keeps the explanation until the next start re-samples"
+        )
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testRefusedModifierTapDoesNotLatchTheWarningIcon() {
+        // Codex finding on #90 (round 5): a modifier-only TAP has no release
+        // event, so a refused live start latched the icon until the next
+        // attempt. The tap is the whole gesture — signals end with it.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.debugHandleModifierOnlyTapForTesting(mode: .liveAutoPaste)
+
+        XCTAssertFalse(viewModel.isDictating, "start is refused under secure input")
+        XCTAssertEqual(soundPlays, 1, "the audible cue fired")
+        XCTAssertNotEqual(
+            viewModel.menuBarIndicatorState, .secureInputWarning,
+            "no release will ever come — the icon must not latch"
+        )
+        XCTAssertEqual(
+            viewModel.lastError,
+            DictationViewModel.secureKeyboardEntryWarningMessage,
+            "the popover keeps the explanation"
+        )
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testRefusedPopoverToggleStartDoesNotLatchTheWarningIcon() {
+        // Codex finding on #90 (round 6): the popover start button goes
+        // through toggleDictation with no release event either — same latch
+        // as the modifier tap.
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+
+        let viewModel = makeViewModel(outputMode: .liveAutoPaste)
+        Self.retainedViewModels.append(viewModel)
+        var soundPlays = 0
+        viewModel.secureInputWarningSound = { soundPlays += 1 }
+
+        viewModel.toggleDictation()
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertEqual(soundPlays, 1)
+        XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        XCTAssertEqual(viewModel.lastError, DictationViewModel.secureKeyboardEntryWarningMessage)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testClipboardFallbackOutcomeDismissesOverlayWithReadableHold() {
+        // Owner field feedback on #90: the overlay stayed on after ending the
+        // session when text was in the buffer — the clipboard fallback is not
+        // a real failure and must not keep its panel like one.
+        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        coordinator.commitOutcome = .copiedToClipboard(message: "copied")
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertEqual(
+            viewModel.statusText,
+            DictationViewModel.StatusStrings.overlayCopiedToClipboard,
+            "honest status instead of 'Insert failed.'"
+        )
+        XCTAssertEqual(
+            coordinator.dismissHoldVisibilities,
+            [TimingConstants.overlayClipboardFallbackVisibility],
+            "the panel dismisses after the readable hold instead of persisting"
+        )
+    }
+
+    func testFailedCommitOutcomeStillKeepsOverlayPanel() {
+        // The generic failure contract is unchanged: the buffered text may
+        // exist nowhere else, so the panel persists.
+        let coordinator = TargetDetectorNoopOverlayCoordinator()
+        coordinator.commitOutcome = .failed(message: "nope")
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, coordinator: coordinator)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isDictating = true
+
+        viewModel.stopDictation(reason: "test", finalizeRemainingAudio: false)
+
+        XCTAssertEqual(viewModel.statusText, "Insert failed.")
+        XCTAssertTrue(coordinator.dismissHoldVisibilities.isEmpty)
+    }
+
     // MARK: - Fixture
 
     private func makeViewModel(
         outputMode: DictationOutputMode,
-        terminalAppBundleIDs: [String] = []
+        terminalAppBundleIDs: [String] = [],
+        coordinator: TargetDetectorNoopOverlayCoordinator = TargetDetectorNoopOverlayCoordinator()
     ) -> DictationViewModel {
         let suiteName = "localvoxtral.TerminalTargetDetectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -332,7 +680,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         settings.dictationOutputMode = outputMode
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: TargetDetectorNoopOverlayCoordinator(),
+            overlayBufferCoordinator: coordinator,
             startRuntimeServices: false
         )
         // Keep tests hermetic: capture reads the terminal-apps config through
@@ -383,13 +731,18 @@ private final class TargetDetectorNoopOverlayCoordinator: OverlayBufferSessionCo
     func startSession(preResolvedAnchor: OverlayAnchor?) {}
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
     func refresh(displayBufferText: String, commitBufferText: String) {}
+    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
     @discardableResult
     func commitIfNeeded(
         using textCommitter: OverlayTextCommitting, autoCopyEnabled: Bool
     ) -> OverlayBufferCommitOutcome {
-        .succeeded
+        commitOutcome
     }
-    func dismissAfterHold(minimumVisibility: TimeInterval) {}
-    func reset() {}
+    private(set) var dismissHoldVisibilities: [TimeInterval] = []
+    func dismissAfterHold(minimumVisibility: TimeInterval) {
+        dismissHoldVisibilities.append(minimumVisibility)
+    }
+    private(set) var resetCallCount = 0
+    func reset() { resetCallCount += 1 }
     func captureLiveCommitTargetAppPID() {}
 }

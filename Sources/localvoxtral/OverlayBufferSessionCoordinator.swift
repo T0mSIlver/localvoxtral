@@ -31,6 +31,11 @@ extension TextInsertionService: OverlayTextCommitting {}
 enum OverlayBufferCommitOutcome: Equatable {
     case succeeded
     case failed(message: String)
+    /// Secure Keyboard Entry blocked synthetic insertion; the text was put on
+    /// the clipboard instead. Unlike `.failed` (whose panel persists so the
+    /// user can see text that may exist nowhere else), this panel is
+    /// dismissed after a readable hold — the words are safe.
+    case copiedToClipboard(message: String)
 }
 
 @MainActor
@@ -49,13 +54,22 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// live replacement guard can re-target it even if focus moved.
     func captureLiveCommitTargetAppPID()
     var commitTargetAppPID: pid_t? { get }
+    /// Surfaces the Secure Keyboard Entry warning inside the overlay panel
+    /// while buffering. Defaulted so test doubles stay unchanged.
+    func showSecureInputWarning()
+}
+
+extension OverlayBufferSessionCoordinating {
+    func showSecureInputWarning() {}
 }
 
 @MainActor
 final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
     typealias DateProvider = () -> Date
     typealias SleepClosure = (Duration) async -> Void
-    typealias PasteboardWriter = (String) -> Void
+    /// Returns whether the write landed — under secure input the clipboard
+    /// is the only preservation path, so a failed write must keep the panel.
+    typealias PasteboardWriter = (String) -> Bool
 
     private var stateMachine: OverlayBufferStateMachine
     private let renderer: OverlayBufferRendering
@@ -85,7 +99,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         copyToPasteboard: @escaping PasteboardWriter = { text in
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
+            return pasteboard.setString(text, forType: .string)
         }
     ) {
         self.stateMachine = stateMachine
@@ -159,6 +173,44 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
             return .succeeded
         }
 
+        // Re-check Secure Keyboard Entry AT COMMIT TIME (the session-start
+        // sample can be stale in both directions — a password prompt may have
+        // appeared or been dismissed while dictating). When it is active,
+        // synthetic insertion would be swallowed while REPORTING success
+        // (posting succeeds, delivery doesn't), the overlay would dismiss
+        // happily, and the words would be gone. Skip the doomed attempts,
+        // put the text on the clipboard unconditionally — losing it is the
+        // only alternative — and show the failure state.
+        if TerminalTargetDetector.isSecureKeyboardEntryEnabled() {
+            // The clipboard is the ONLY preservation path here: if the write
+            // fails, claiming "copied" and dismissing the panel would lose
+            // the transcript's last remaining copy — fall back to the
+            // persistent failure panel, which keeps the text visible.
+            guard copyToPasteboard(commitText) else {
+                let failureMessage =
+                    "Secure input blocked auto-paste and the clipboard copy failed — the text stays visible here."
+                stateMachine.commitFailed(
+                    error: failureMessage,
+                    anchor: anchorResolver.resolveAnchor()
+                )
+                renderCurrentSnapshot()
+                Log.overlay.error("overlay commit skipped: secure input active AND clipboard write failed")
+                return .failed(message: failureMessage)
+            }
+            let fallbackMessage = "Secure input blocked auto-paste — text copied, paste it manually."
+            stateMachine.commitFailed(
+                error: fallbackMessage,
+                anchor: anchorResolver.resolveAnchor()
+            )
+            renderCurrentSnapshot()
+            // The message is a fresh display change: anchor the dismiss hold
+            // to it so the stop flow's dismissAfterHold keeps it readable
+            // instead of measuring from the last buffered word.
+            lastOverlayDisplayTextChangeAt = now()
+            Log.overlay.notice("overlay commit skipped: Secure Keyboard Entry active; text copied to clipboard")
+            return .copiedToClipboard(message: fallbackMessage)
+        }
+
         let preferredPID = finalizationCommitTargetAppPID ?? liveCommitTargetAppPID
         // Keep overlay commit aligned with live auto-paste behavior: try keyboard
         // Unicode insertion first for web field compatibility, then AX, then Cmd+V.
@@ -175,7 +227,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
         if inserted {
             if autoCopyEnabled {
-                copyToPasteboard(commitText)
+                _ = copyToPasteboard(commitText)
             }
             Log.overlay.info("overlay commit succeeded")
             return .succeeded
@@ -189,7 +241,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         }
 
         if autoCopyEnabled {
-            copyToPasteboard(commitText)
+            _ = copyToPasteboard(commitText)
         }
 
         stateMachine.commitFailed(
@@ -199,6 +251,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         renderCurrentSnapshot()
         Log.overlay.info("overlay commit failed: \(failureMessage, privacy: .public)")
         return .failed(message: failureMessage)
+    }
+
+    func showSecureInputWarning() {
+        stateMachine.setSecureInputWarning()
+        renderCurrentSnapshot()
     }
 
     func dismissAfterHold(minimumVisibility: TimeInterval) {

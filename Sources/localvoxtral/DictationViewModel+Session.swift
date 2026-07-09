@@ -37,8 +37,38 @@ extension DictationViewModel {
         sessionReplacementDictionary = nil
     }
 
+    /// Live Auto-Paste preflight for Secure Keyboard Entry: a live session
+    /// whose every synthetic keystroke would be swallowed SILENTLY (posting
+    /// reports success, delivery never happens) must not start — and must be
+    /// refused BEFORE managed-backend startup, or a cold backend would run a
+    /// lengthy install/download for a doomed session. Fires the refuse UX
+    /// (sound + menu bar icon + popover line, from a fresh verdict capture),
+    /// resets any overlay panel a prior failed commit intentionally left
+    /// visible, and returns true when the start was refused. Overlay Buffer
+    /// sessions are never refused: their pipeline still produces text and the
+    /// commit falls back to the clipboard (#89 split behavior).
+    func refuseLiveStartForSecureInputIfNeeded(
+        outputMode requestedOutputMode: DictationOutputMode
+    ) -> Bool {
+        guard requestedOutputMode == .liveAutoPaste,
+              TerminalTargetDetector.isSecureKeyboardEntryEnabled()
+        else { return false }
+        captureSessionTargetVerdict()
+        applyPreCapturedSessionTargetVerdict()
+        statusText = StatusStrings.liveDictationBlockedBySecureInput
+        overlayBufferCoordinator.reset()
+        Log.target.warning(
+            "live dictation start refused: Secure Keyboard Entry is enabled"
+        )
+        clearLatchedSessionMetadata()
+        return true
+    }
+
     func beginDictationAfterManagedBackendIfNeeded(outputMode: DictationOutputMode? = nil) {
         let requestedOutputMode = outputMode ?? settings.dictationOutputMode
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode) {
+            return
+        }
         let needsManagedDictation = settings.dictationBackendMode == .managedLocal
         let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
 
@@ -106,6 +136,16 @@ extension DictationViewModel {
                   self.isConnectingRealtimeSession
             else { return }
             self.beginDictationSession(outputMode: outputMode)
+            // beginDictationSession re-checks secure input and may refuse
+            // HERE — long after the initiating gesture ended (a toggle tap
+            // ends immediately; a hold may release while the backend boots).
+            // With no gesture-end event left, the refusal signals would
+            // wedge (Codex finding, round 8). Mirror the refused-tap
+            // contract: the sound fired and the popover line stays; the
+            // icon and "Blocked" status end with the attempt.
+            if !self.isDictationAttemptGestureActive {
+                self.clearSecureInputRefusalSignalsIfAttemptEnded()
+            }
         }
     }
 
@@ -198,6 +238,13 @@ extension DictationViewModel {
         cancelConnectTimeout()
         isFinalizingStop = false
         isConnectingRealtimeSession = false
+        // Every attempt starts with a fresh secure-input sample: a stale
+        // `true` from a previously refused start would keep the warning icon
+        // lit through an attempt that exits early for an unrelated reason
+        // (invalid endpoint, missing mic) and mask that failure (Codex
+        // review finding on #90). The refuse path / verdict apply below
+        // re-set it from the fresh sample.
+        sessionSecureInputActive = false
         let requestedOutputMode = outputMode ?? settings.dictationOutputMode
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
@@ -261,6 +308,12 @@ extension DictationViewModel {
         // Same timing rationale as the anchor: sample the terminal-like
         // verdict and Secure Keyboard Entry state while the app the user
         // started dictation in is still frontmost, not after connect.
+        // Re-checked here as well as at the managed-backend entry: secure
+        // input may have turned ON while a cold backend was booting, and
+        // direct callers skip that entry point entirely.
+        if refuseLiveStartForSecureInputIfNeeded(outputMode: requestedOutputMode) {
+            return
+        }
         captureSessionTargetVerdict()
         refreshInsertionScalarTracingForSession()
 
@@ -748,9 +801,12 @@ extension DictationViewModel {
         setRealtimeIndicatorIdle()
         livePartialText = ""
         pendingSegmentText = ""
-        if case .failed = overlayCommitOutcome {
+        switch overlayCommitOutcome {
+        case .failed?:
             statusText = "Insert failed."
-        } else {
+        case .copiedToClipboard?:
+            statusText = StatusStrings.overlayCopiedToClipboard
+        default:
             statusText = "Ready"
         }
 
@@ -763,27 +819,40 @@ extension DictationViewModel {
             textInsertion.clearPendingText()
         }
 
-        let didOverlayCommitFail: Bool
-        if case .failed = overlayCommitOutcome {
-            didOverlayCommitFail = true
+        // Dismiss policy: a FAILED commit keeps its panel (the buffered text
+        // may exist nowhere else); the secure-input clipboard fallback shows
+        // its message for a readable hold and then dismisses — the text is
+        // safe on the clipboard, and a panel that outlives the session read
+        // as stuck in the field (owner feedback on #90).
+        let dismissVisibility: TimeInterval?
+        if !shouldCommitOverlay {
+            dismissVisibility = TimingConstants.overlayFinalWordVisibilityMinimum
         } else {
-            didOverlayCommitFail = false
+            switch overlayCommitOutcome {
+            case .failed?:
+                dismissVisibility = nil
+            case .copiedToClipboard?:
+                dismissVisibility = TimingConstants.overlayClipboardFallbackVisibility
+            default:
+                dismissVisibility = TimingConstants.overlayFinalWordVisibilityMinimum
+            }
         }
-
-        if !shouldCommitOverlay || !didOverlayCommitFail {
-            overlayBufferCoordinator.dismissAfterHold(
-                minimumVisibility: TimingConstants.overlayFinalWordVisibilityMinimum
-            )
+        if let dismissVisibility {
+            overlayBufferCoordinator.dismissAfterHold(minimumVisibility: dismissVisibility)
         }
 
         if currentErrorToken == .websocketReceiveFailed {
             lastError = nil
         }
         // The Secure Keyboard Entry warning describes state sampled at session
-        // start; a finished session must not leave it wedged in the popover.
+        // start; a finished session must not leave it wedged in the popover —
+        // nor keep the menu bar warning icon lit. (A REFUSED live start never
+        // reaches this teardown; its icon clears when the shortcut release
+        // ends the attempt gesture, and the popover line at the next start.)
         if currentErrorToken == .secureKeyboardEntryActive {
             lastError = nil
         }
+        sessionSecureInputActive = false
         firstChunkPreprocessor.reset()
     }
 
@@ -1213,6 +1282,12 @@ extension DictationViewModel {
         let anchor = preResolvedOverlayAnchor
         preResolvedOverlayAnchor = nil
         overlayBufferCoordinator.startSession(preResolvedAnchor: anchor)
+        if sessionSecureInputActive {
+            // The overlay is the surface the user is actually watching while
+            // buffering — warn there, not just in the (closed) popover. The
+            // commit re-checks secure input and falls back to the clipboard.
+            overlayBufferCoordinator.showSecureInputWarning()
+        }
     }
 
     func beginOverlayFinalization() {
