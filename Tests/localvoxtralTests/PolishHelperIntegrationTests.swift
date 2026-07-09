@@ -209,8 +209,23 @@ final class PolishHelperIntegrationTests: XCTestCase {
         try process.run()
         reader.start()
         addTeardownBlock {
+            // Reap, don't just signal: SIGTERM is asynchronous, so a teardown
+            // that only calls terminate() lets the test process exit while the
+            // helper is still dying — the CI runner then spends ~105 s per run
+            // reaping the orphan ("Cleaning up orphan processes"). Wait for the
+            // exit (bounded), and escalate to SIGKILL if it never comes.
             if process.isRunning {
                 process.terminate()
+            }
+            let reaped = XCTestExpectation(description: "helper exited after SIGTERM")
+            DispatchQueue.global().async {
+                process.waitUntilExit()  // returns immediately if already exited
+                reaped.fulfill()
+            }
+            _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
             }
         }
 

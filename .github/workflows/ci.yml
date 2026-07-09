@@ -252,3 +252,22 @@ jobs:
             process.kill()
             process.wait(timeout=5)
           PY
+
+      - name: Process leak check (informational)
+        # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up
+        # orphan processes" phase, and the Worker logs don't name what it
+        # reaps. Snapshot candidate survivors at job end so any future
+        # occurrence identifies itself. Short process names only (ucomm, no
+        # paths or arguments): this log is public. Informational — never
+        # fails the job.
+        if: ${{ always() && runner.environment == 'self-hosted' }}
+        run: |
+          survivors="$(ps -axo pid,etime,ucomm \
+            | grep -iE 'localvoxtral|polishd|xctest|swiftpm-testing|XCBBuildService' \
+            | grep -v grep || true)"
+          if [[ -n "$survivors" ]]; then
+            echo "candidate processes still alive at job end:"
+            echo "$survivors"
+          else
+            echo "no candidate processes alive at job end"
+          fi
