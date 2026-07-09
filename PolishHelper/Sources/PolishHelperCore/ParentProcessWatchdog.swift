@@ -2,7 +2,7 @@ import Foundation
 import Synchronization
 
 /// Exits the helper when the supervising app dies, so a crashed or killed app
-/// can never leave an orphaned model holding memory. This reproduces the
+/// can never leave an orphaned model holding memory. Reproduces the
 /// `--parent-pid` watchdog the mlx-lm fork implemented on the Python side.
 public final class ParentProcessWatchdog: @unchecked Sendable {
     private let source: DispatchSourceProcess
