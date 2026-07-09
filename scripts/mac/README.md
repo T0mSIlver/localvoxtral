@@ -1,5 +1,25 @@
 # Mac build-host scripts
 
+## Metal toolchain (Xcode 26+) — required for packaging
+
+`package_app.sh` builds the bundled polishing helper (`PolishHelper/`,
+MLX Swift) with xcodebuild, which compiles Metal kernels. On Xcode 26+ the
+Metal compiler is a separate ~700 MB component that is NOT installed with
+Xcode; one-time setup per build host:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+xcodebuild -showComponent MetalToolchain   # expect "Status: installed"
+```
+
+Installed on the build host 2026-07-07 (builder user; ci.yml self-provisions
+it for the runner user, since activation is PER-USER even though the asset
+lands system-wide). Gotchas: the catalog fetch fails transiently sometimes
+("Failed fetching catalog for assetType") — just retry; and `xcrun --find
+metal` succeeds even when the component is missing (the shim exists), so
+only an actual invocation (`xcrun metal --version`) proves it works. Runs
+as a normal user, no sudo needed.
+
 ## On-demand test servers (voxmlx + mlxlm) — owner runbook
 
 The two build-host model servers used by the integration/eval suites —
@@ -58,17 +78,22 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
 sudo install -d -m 1777 -o "$(id -un)" /Users/Shared/localvoxtral/run
 sudo install -d -m 0755 /Users/Shared/localvoxtral        # log dir, if absent
 
-# 2. mlxlm venv with the pinned fork wheel (same wheel the app installs). Pins
-#    mirror BackendCatalog.mlxLM — keep them in sync when the catalog moves.
+# 2. mlxlm venv with the pinned fork wheel. Since the bundled MLX Swift helper
+#    replaced the app-managed mlx-lm wheel (2026-07), the app no longer
+#    installs mlx-lm — this pin exists only for the eval reference endpoint.
 uv venv --python 3.12 ~/.local/share/localvoxtral-eval/mlx-lm
 uv pip install --python ~/.local/share/localvoxtral-eval/mlx-lm/bin/python \
   'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post4/mlx_lm-0.31.3.post4-py3-none-any.whl'
 ```
 
 > This mlxlm service is the *prompt-eval reference endpoint* for
-> `LLMPolishPromptEvalTests` / `remote-build.sh eval-llm`. Don't point evals at
-> the app-managed server on 8472 — it only exists while the app is running with
-> polishing enabled, so it vanishes whenever the app quits.
+> `LLMPolishPromptEvalTests` / `remote-build.sh eval-llm` — the app itself no
+> longer installs or runs mlx-lm; production-engine parity is covered by
+> `./scripts/remote-build.sh integration-polishd` instead, and the
+> `--prompt-cache-*` flags below are mlx-lm-specific and don't mirror app
+> behavior. Don't point evals at the app-managed server on 8472 — it only
+> exists while the app is running with polishing enabled, so it vanishes
+> whenever the app quits.
 
 ### mlxlm LaunchAgent (on-demand)
 

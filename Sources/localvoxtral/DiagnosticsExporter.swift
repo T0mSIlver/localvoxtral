@@ -139,7 +139,7 @@ enum DiagnosticsExporter {
 
         lines.append("== Managed backend status ==")
         lines.append("voxmlx: \(snapshot.voxmlxStatus)")
-        lines.append("mlx-lm: \(snapshot.mlxLMStatus)")
+        lines.append("polishing engine (localvoxtral-polishd): \(snapshot.mlxLMStatus)")
         lines.append("")
 
         lines.append("== Managed backend recent output ==")
@@ -151,7 +151,7 @@ enum DiagnosticsExporter {
                 lines.append(contentsOf: snapshot.voxmlxRecentOutput)
             }
             if !snapshot.mlxLMRecentOutput.isEmpty {
-                lines.append("-- mlx-lm --")
+                lines.append("-- localvoxtral-polishd --")
                 lines.append(contentsOf: snapshot.mlxLMRecentOutput)
             }
         }

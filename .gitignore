@@ -1,5 +1,6 @@
 .DS_Store
 /.build
+/PolishHelper/.build
 /Packages
 xcuserdata/
 DerivedData/
@@ -15,5 +16,7 @@ DerivedData/
 .agent-runs/
 .opencode/
 
-# Transient enable marker written by remote-build.sh eval-llm
+# Transient enable markers written by remote-build.sh eval-llm /
+# integration-polishd
 /.llm-polish-eval-enable.json
+/.polishd-integration-enable.json

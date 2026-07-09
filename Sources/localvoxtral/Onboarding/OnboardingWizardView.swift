@@ -198,7 +198,7 @@ private struct DownloadsPage: View {
                     Text("Also set up LLM polishing")
                         .font(.system(size: 13, weight: .medium))
                     Text(
-                        "Downloads mlx-lm + a small polishing model. You can decline and turn it on later in Settings."
+                        "Downloads a small polishing model for the built-in engine. You can decline and turn it on later in Settings."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)

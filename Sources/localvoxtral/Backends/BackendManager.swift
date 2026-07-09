@@ -290,7 +290,10 @@ final class BackendManager: ManagedBackendManaging {
             return
         }
 
-        if installer.needsInstallOrUpdate(spec) {
+        // Structural, not just data-driven: a bundled backend must never enter
+        // the uv install path regardless of what an installer claims (the real
+        // installer preconditionFailures on bundled installs).
+        if case .uvWheel = spec.installKind, installer.needsInstallOrUpdate(spec) {
             setStatus(.installing(progress: .downloading(fraction: nil)), for: spec)
             do {
                 try await installer.install(spec) { [weak self] progress in
@@ -417,12 +420,33 @@ final class BackendManager: ManagedBackendManaging {
     private func configuration(for spec: ManagedBackendSpec) -> BackendProcessConfiguration {
         BackendProcessConfiguration(
             name: spec.displayName,
-            executableURL: layout.toolBin.appendingPathComponent(spec.executableName),
+            executableURL: executableURL(for: spec),
             arguments: arguments(for: spec),
             environment: processEnvironment(),
             readinessURL: URL(string: "http://127.0.0.1:\(spec.port)/health")!,
             readinessTimeout: readinessTimeout(for: spec)
         )
+    }
+
+    private func executableURL(for spec: ManagedBackendSpec) -> URL {
+        switch spec.installKind {
+        case .uvWheel:
+            return layout.toolBin.appendingPathComponent(spec.executableName)
+        case .bundledExecutable:
+            // Packaged app: Contents/MacOS next to the main binary (that is
+            // where package_app.sh copies the helper). Integration tests
+            // spawn the helper binary directly and never route through here.
+            if let auxiliary = Bundle.main.url(forAuxiliaryExecutable: spec.executableName) {
+                return auxiliary
+            }
+            // Dev runs outside a packaged bundle: sibling of the main binary.
+            // (`swift run` has no bundled helper — managed polishing fails at
+            // spawn with a visible supervisor error there; use a packaged
+            // build for hand-testing polishing.)
+            return (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
+                .deletingLastPathComponent()
+                .appendingPathComponent(spec.executableName)
+        }
     }
 
     private func arguments(for spec: ManagedBackendSpec) -> [String] {
@@ -438,9 +462,6 @@ final class BackendManager: ManagedBackendManaging {
                 parentPID,
             ]
         case BackendCatalog.mlxLM.id:
-            // Prompt caching avoids reprocessing the full polishing prompt on
-            // every request — the mlx-lm fork's main optimization (~50% faster
-            // prompt processing on M1 Pro with the default prompts).
             return [
                 "--model",
                 SettingsStore.defaultLLMPolishingModel,
@@ -448,10 +469,6 @@ final class BackendManager: ManagedBackendManaging {
                 "\(spec.port)",
                 "--parent-pid",
                 parentPID,
-                "--prompt-cache-size",
-                "1",
-                "--prompt-cache-bytes",
-                "1GB",
             ]
         default:
             return []
@@ -461,7 +478,11 @@ final class BackendManager: ManagedBackendManaging {
     private func modelPreparationRequest(for spec: ManagedBackendSpec) -> ModelPreparationRequest {
         // Keep these include patterns in sync with:
         // - /home/dev/work/voxmlx/voxmlx/weights.py download_model
-        // - /home/dev/work/mlx-lm/mlx_lm/utils.py _download
+        // - PolishHelper's loader (MLXLLM loadContainer + AutoTokenizer):
+        //   config.json, generation_config.json, model*.safetensors,
+        //   tokenizer.json/tokenizer_config.json, chat template *.jinja —
+        //   the list below is a superset kept identical to the old mlx-lm
+        //   one so existing HF snapshots stay valid.
         switch spec.id {
         case BackendCatalog.voxmlx.id:
             return ModelPreparationRequest(
@@ -521,9 +542,10 @@ final class BackendManager: ManagedBackendManaging {
             // responds; 600 s is too tight on slow links.
             return .seconds(1800)
         case BackendCatalog.mlxLM.id:
-            // First run downloads the polishing model inside the server before
-            // /health responds; 600 s is too tight on slow links.
-            return .seconds(1800)
+            // Model weights are downloaded by prepareModel before the helper
+            // spawns; /health waits only on model load + first Metal JIT
+            // compile (seconds, not minutes).
+            return .seconds(300)
         default:
             return .seconds(600)
         }

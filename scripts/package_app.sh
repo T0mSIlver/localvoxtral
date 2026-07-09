@@ -243,6 +243,100 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# --- Bundled polishing helper (localvoxtral-polishd, PolishHelper/) --------
+# MUST build with xcodebuild: SwiftPM CLI cannot compile mlx-swift's Metal
+# kernels (mlx-swift README), producing a binary that fails at runtime with
+# "Failed to load the default metallib". Xcode's build system compiles the
+# kernels into the mlx-swift_Cmlx resource bundle, which we ship alongside.
+#
+# LOCALVOXTRAL_SKIP_POLISHD=1 skips this stage — for GitHub-hosted fork-PR
+# runners only, where the MetalToolchain download + cold Cmlx C++ build would
+# dominate CI time. A bundle built this way has no Managed local polishing.
+if [[ "${LOCALVOXTRAL_SKIP_POLISHD:-0}" == "1" ]]; then
+  echo "WARNING: skipping polishing helper (LOCALVOXTRAL_SKIP_POLISHD=1);"
+  echo "this bundle cannot run Managed local polishing."
+  # A stale helper dSYM from a previous non-skip run would be wrong-UUID
+  # symbolication bait next to this helper-less bundle.
+  rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
+else
+
+# A real invocation, not `xcrun --find`: on Xcode 26+ the metal shim exists
+# even when the toolchain component is missing, and only fails when executed.
+# One-time host provision (owner runbook: scripts/mac/README.md):
+#   xcodebuild -downloadComponent MetalToolchain
+# The catalog fetch can fail transiently — retry before concluding.
+if ! xcrun metal --version >/dev/null 2>&1; then
+  echo "Metal toolchain not available. On Xcode 26+ it is a separate component:"
+  echo "  xcodebuild -downloadComponent MetalToolchain"
+  echo "(catalog fetch can fail transiently; retry once before debugging)"
+  exit 1
+fi
+
+HELPER_DERIVED_DATA="$ROOT_DIR/PolishHelper/.build/xcode"
+HELPER_BUILD_LOG="$ROOT_DIR/PolishHelper/.build/xcodebuild.log"
+mkdir -p "$ROOT_DIR/PolishHelper/.build"
+echo "Building polishing helper (xcodebuild; full log: $HELPER_BUILD_LOG)"
+(
+  cd "$ROOT_DIR/PolishHelper"
+  # Xcode generates a single aggregate scheme named after the package; the
+  # localvoxtral-polishd product binary lands in Build/Products/Release.
+  # -disableAutomaticPackageResolution: the committed Package.resolved is the
+  # contract — if a manifest edit invalidates it, fail loudly instead of
+  # silently re-resolving to floating versions that never get committed.
+  xcodebuild \
+    -scheme PolishHelper \
+    -destination 'platform=macOS,arch=arm64' \
+    -configuration Release \
+    -derivedDataPath "$HELPER_DERIVED_DATA" \
+    -disableAutomaticPackageResolution \
+    build > "$HELPER_BUILD_LOG" 2>&1
+) || {
+  echo "Polishing helper xcodebuild failed; last 40 log lines:"
+  tail -n 40 "$HELPER_BUILD_LOG"
+  exit 1
+}
+
+HELPER_PRODUCTS_DIR="$HELPER_DERIVED_DATA/Build/Products/Release"
+HELPER_BINARY="$HELPER_PRODUCTS_DIR/localvoxtral-polishd"
+if [[ ! -f "$HELPER_BINARY" ]]; then
+  echo "Polishing helper build reported success but produced no binary at:"
+  echo "  $HELPER_BINARY"
+  tail -n 40 "$HELPER_BUILD_LOG"
+  exit 1
+fi
+
+cp "$HELPER_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-polishd"
+chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-polishd"
+
+# The helper's resource bundles (Metal kernels + tokenizer resources) must be
+# reachable from the app bundle's Resources; the Cmlx C++ lookup resolves
+# mlx-swift_Cmlx.bundle relative to the running process's main bundle.
+while IFS= read -r helper_bundle; do
+  cp -R "$helper_bundle" "$APP_DIR/Contents/Resources/$(basename "$helper_bundle")"
+done < <(find "$HELPER_PRODUCTS_DIR" -maxdepth 1 -type d -name "*.bundle" -print)
+
+if [[ ! -d "$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle" ]]; then
+  echo "mlx-swift_Cmlx.bundle missing from helper build products; the helper"
+  echo "would abort at runtime loading Metal kernels."
+  exit 1
+fi
+
+# Helper dSYM for field crash symbolication, next to the app's own. Missing
+# dSYM is a hard error: helper crashes (MLX C++/Metal) are the likeliest
+# field crashes now, and a silent skip would degrade symbolication without
+# any signal.
+HELPER_DSYM_SOURCE="$HELPER_PRODUCTS_DIR/localvoxtral-polishd.dSYM"
+if [[ ! -d "$HELPER_DSYM_SOURCE" ]]; then
+  echo "Polishing helper dSYM missing at $HELPER_DSYM_SOURCE — the Release"
+  echo "config should always emit one (DWARF with dSYM)."
+  exit 1
+fi
+rm -rf "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
+cp -R "$HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
+
+fi # LOCALVOXTRAL_SKIP_POLISHD
+# ---------------------------------------------------------------------------
+
 # Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)
 # because codesign rejects bundles containing that detritus.
 chmod -R u+w "$APP_DIR"

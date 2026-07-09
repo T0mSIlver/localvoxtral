@@ -238,7 +238,7 @@ final class BackendInstallerTests: XCTestCase {
             try await installer.install(spec) { _ in }
             XCTFail("Expected checksum mismatch")
         } catch BackendInstallError.checksumMismatch(let expected, let actual) {
-            XCTAssertEqual(expected, spec.wheelSHA256)
+            XCTAssertEqual(expected, String(repeating: "0", count: 64))
             XCTAssertEqual(actual, try sha256Hex(for: wheel))
         } catch {
             XCTFail("Unexpected error: \(error)")
@@ -353,6 +353,18 @@ final class BackendInstallerTests: XCTestCase {
             executableName: "voxmlx-serve"
         )
         XCTAssertTrue(installer.needsInstallOrUpdate(newerSpec))
+    }
+
+    func testBundledBackendNeverNeedsInstallOrUpdate() {
+        // The polishing helper ships inside the .app: even with no
+        // installed.json marker at all, ensureReady must never route it
+        // through the uv install path.
+        let installer = BackendInstaller(
+            layout: BackendInstallLayout(root: makeTemporaryDirectory())
+        )
+        XCTAssertEqual(BackendCatalog.mlxLM.installKind, .bundledExecutable)
+        XCTAssertFalse(installer.needsInstallOrUpdate(BackendCatalog.mlxLM))
+        XCTAssertNil(installer.installedVersion(of: BackendCatalog.mlxLM))
     }
 
     private func makeTemporaryDirectory() -> URL {
@@ -481,11 +493,13 @@ final class BackendInstallerTests: XCTestCase {
             id: "voxmlx",
             displayName: "voxmlx",
             version: version,
-            requirementName: "voxmlx[server]",
-            wheelURL: wheelURL,
-            wheelSHA256: wheelSHA256,
+            installKind: .uvWheel(
+                wheelURL: wheelURL,
+                wheelSHA256: wheelSHA256,
+                requirementName: "voxmlx[server]",
+                pythonVersion: "3.12"
+            ),
             executableName: executableName,
-            pythonVersion: "3.12",
             port: 8471
         )
     }

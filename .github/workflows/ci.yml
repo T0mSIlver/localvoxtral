@@ -105,12 +105,44 @@ jobs:
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
         run: swift test --filter RealtimeAPIVLLMIntegrationTests
 
+      - name: Polishing helper unit tests (PolishHelper package)
+        # Self-hosted only: hosted runners would pay a cold Cmlx C++ compile
+        # every fork PR. These tests are Metal-free (HTTP layer, router,
+        # cache locator, watchdog); the Metal path is covered below.
+        if: runner.environment == 'self-hosted'
+        run: swift test --package-path PolishHelper
+
+      - name: Ensure Metal toolchain
+        # Xcode 26 ships the Metal compiler as a separate component, and its
+        # activation is per-user — installing it for the SSH build user does
+        # not activate it for the runner user. Probe with a real invocation
+        # (`xcrun --find metal` succeeds even when the component is missing)
+        # and self-provision loudly; the asset is cached system-wide, so a
+        # re-activation here is quick.
+        if: runner.environment == 'self-hosted'
+        run: |
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            echo "Metal toolchain not active for $(whoami); installing component..."
+            # The MobileAsset catalog fetch fails transiently (observed for
+            # both the builder and runner users on 2026-07-07) — retry.
+            for attempt in 1 2 3; do
+              xcodebuild -downloadComponent MetalToolchain && break
+              echo "catalog fetch failed (attempt $attempt); retrying in 10s..."
+              sleep 10
+            done
+            xcrun metal --version
+          fi
+
       - name: Package app bundle
         # The self-hosted runner's keychain holds the stable localvoxtral-dev
         # signing cert, keeping TCC grants valid across builds; anywhere the
         # identity is absent (hosted runners), packaging falls back to ad-hoc.
+        # Hosted runners skip the bundled polishing helper (no MetalToolchain
+        # component + cold MLX C++ build would dominate fork-PR CI); every
+        # self-hosted lane (same-repo PRs, main, releases) builds it.
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_SKIP_POLISHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
           # Self-hosted lanes (same-repo PRs, main) MUST ship an identity-signed
           # bundle so try-pr.sh leaves the signature untouched and the owner's
           # Accessibility (TCC) grant survives across builds. Fail the build
@@ -119,6 +151,16 @@ jobs:
           # cert and are expected to be ad-hoc, so the requirement is off there.
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ runner.environment == 'github-hosted' && '0' || '1' }}
         run: ./scripts/package_app.sh release
+
+      - name: Polishing helper integration (live model + eval baseline)
+        # Spawns the helper built by the packaging step with the real pinned
+        # model, drives the production polish request path, and asserts the
+        # shared eval baseline + parent-pid tether.
+        if: runner.environment == 'self-hosted'
+        env:
+          LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
+          LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
+        run: swift test --filter PolishHelperIntegrationTests
 
       - name: Zip app for artifact upload
         # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip
@@ -133,7 +175,14 @@ jobs:
           retention-days: 7
 
       - name: Zip dSYM for artifact upload
-        run: ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
+        # Includes the polishing helper's dSYM when present (self-hosted
+        # lanes) — helper crashes (MLX C++/Metal) are the likeliest field
+        # crashes, and a dSYM that never leaves the runner symbolizes nothing.
+        run: |
+          ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
+          if [[ -d dist/localvoxtral-polishd.dSYM ]]; then
+            ditto -c -k --keepParent dist/localvoxtral-polishd.dSYM dist/localvoxtral-polishd-dSYM.zip
+          fi
 
       - name: Upload dSYM artifact
         # Longer retention than the app: field crashes surface days after the
@@ -141,7 +190,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: localvoxtral-dsym
-          path: dist/localvoxtral-dSYM.zip
+          path: |
+            dist/localvoxtral-dSYM.zip
+            dist/localvoxtral-polishd-dSYM.zip
           retention-days: 30
 
       - name: Smoke test packaged app launch (end-user simulation)

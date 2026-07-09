@@ -5,7 +5,7 @@ import Foundation
 enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
     /// voxmlx + the Voxtral realtime dictation model.
     case dictation
-    /// mlx-lm + the LLM polishing model.
+    /// The bundled polishing engine's LLM model.
     case polishing
 
     var id: String { rawValue }
@@ -25,7 +25,7 @@ enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
         case .dictation:
             return "voxmlx + the Voxtral realtime model"
         case .polishing:
-            return "mlx-lm + the polishing LLM"
+            return "the polishing LLM (bundled engine)"
         }
     }
 }

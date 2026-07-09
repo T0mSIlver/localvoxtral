@@ -32,7 +32,7 @@ jobs:
             defaults read com.localvoxtral.app "$key" 2>/dev/null || echo "<absent>"
           done
           echo "--- backend processes:"
-          pgrep -fl 'voxmlx-serve|mlx_lm' | sed "s|$HOME|~|g" || echo "none"
+          pgrep -fl 'voxmlx-serve|mlx_lm|localvoxtral-polishd' | sed "s|$HOME|~|g" || echo "none"
 
       - name: Recent localvoxtral app log (redacted)
         env:

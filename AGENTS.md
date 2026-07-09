@@ -17,9 +17,23 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh                 # build + unit tests
 ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
 ./scripts/remote-build.sh integration     # realtime pipeline vs live voxmlx
-./scripts/remote-build.sh eval-llm        # default polish prompt eval vs live mlx-lm
-./scripts/remote-build.sh package         # build the .app bundle
+./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
+./scripts/remote-build.sh package         # build the .app bundle (also builds the polishing helper)
+./scripts/remote-build.sh integration-polishd  # bundled polish helper vs real model + eval baseline (run package first)
+./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
+./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
 ```
+
+The polishing helper (`PolishHelper/`, product `localvoxtral-polishd`) is a
+SEPARATE SwiftPM package so the root build never compiles the MLX C++ core.
+Two hard rules learned setting it up: (1) `swift build` of the helper
+compiles but CANNOT produce working Metal kernels — only the xcodebuild lane
+in `package_app.sh` can (aggregate scheme `PolishHelper`); a swift-build
+binary fails at runtime loading the metallib. (2) On Xcode 26+ the Metal
+compiler is a separate ~700 MB component — one-time host setup is
+`xcodebuild -downloadComponent MetalToolchain` (the catalog fetch fails
+transiently sometimes; retry). `xcrun --find metal` succeeding does NOT mean
+the toolchain is installed; only invoking `metal` proves it.
 
 On a Mac, just `swift build` / `swift test`.
 
@@ -116,8 +130,9 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 | Tier | What | When | Cost |
 |---|---|---|---|
-| 0 | Unit suite (200+ tests) + packaging + launch smoke | every PR/push, CI | ~1 min |
+| 0 | Unit suite (500+ tests) + PolishHelper unit suite + packaging + launch smoke | every PR/push, CI (helper unit suite: self-hosted lanes only) | ~1 min |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
+| 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | every PR/push on the self-hosted runner (after packaging); locally via `remote-build.sh integration-polishd` | ~15 s warm |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
@@ -138,7 +153,7 @@ the RAM once the machine goes quiet.
 
 LLM polish prompt eval: `LLMPolishPromptEvalTests` scores the bundled default
 polishing prompt (punctuation-spacing cases, French vs English) against a live
-mlx-lm server through the production request path. Run it with
+chat/completions server through the production request path. Run it with
 `./scripts/remote-build.sh eval-llm [endpoint]` — default endpoint is the
 on-demand `com.localvoxtral.mlxlm` launchd service on port 8080, which the lane
 warms first via the gate's `ensure` verb (owner runbook: `scripts/mac/README.md`);
@@ -146,7 +161,11 @@ a custom endpoint is left untouched. Don't point it at the app-managed instance
 on 8472, which dies whenever the app quits. Enablement is env
 (`LLM_POLISH_EVAL_ENABLE=1`) or the marker file the script writes into the
 synced tree (the SSH gate can't pass env vars). Prompt changes MUST re-run
-this eval and paste the scoreboard in the PR's Proof section.
+this eval and paste the scoreboard in the PR's Proof section. The corpus +
+scorer live in `LLMPolishEvalSupport`, shared with
+`PolishHelperIntegrationTests` (`remote-build.sh integration-polishd`), which
+holds the bundled MLX Swift polishing helper to the same baseline — engine or
+model-pin changes MUST run that one too.
 
 ## CI / shipping
 
@@ -206,7 +225,11 @@ Key subsystems:
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
-- LLM polish: `LLMPolishingService` (chat/completions)
+- LLM polish: `LLMPolishingService` (chat/completions client) → in managed
+  mode, the bundled `localvoxtral-polishd` helper (`PolishHelper/` package:
+  MLX Swift inference + a minimal loopback OpenAI server + parent-pid
+  watchdog), supervised like any managed backend on port 8472. Replaced the
+  uv-installed mlx-lm fork wheel (upstream mlx-lm unmaintained, 2026-07).
 
 ## Conventions
 
