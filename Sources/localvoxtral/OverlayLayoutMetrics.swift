@@ -43,6 +43,10 @@ struct OverlayLayoutMetrics: Equatable {
     // weight; only referenced here because the height math needs them.
     static let contentPadding: CGFloat = 10
     static let stackSpacing: CGFloat = 8
+    /// Slack added to the 4-line scroll cap. Same value as `stackSpacing`
+    /// today, but a distinct knob: tuning the VStack gap must not silently
+    /// change when scrolling kicks in.
+    static let bodyScrollSlack: CGFloat = 8
 
     /// Width available to text: panel width minus horizontal padding.
     var textMeasurementWidth: CGFloat { panelWidth - Self.contentPadding * 2 }
@@ -55,7 +59,7 @@ struct OverlayLayoutMetrics: Equatable {
     /// Maximum height the body text area can grow to before scrolling kicks
     /// in: ~4 lines of body text plus some line spacing.
     var maxScrollableBodyHeight: CGFloat {
-        bodyLineHeight * 4 + Self.stackSpacing
+        bodyLineHeight * 4 + Self.bodyScrollSlack
     }
 
     /// Height of the body text as rendered at `textMeasurementWidth`, floored
@@ -102,5 +106,32 @@ struct OverlayLayoutMetrics: Equatable {
         }
 
         return total
+    }
+}
+
+/// Locks the overlay's metrics for the duration of one overlay session.
+///
+/// `DictationOverlayController` locks the panel's X origin and top edge on the
+/// first render of a session (so the panel grows downward from a stable
+/// position) — that lock assumes the panel WIDTH is constant for the session.
+/// A font-size change mid-dictation would violate it: the next render would
+/// keep the stale locked X while the panel widens, pushing the right edge
+/// off-screen. So the metrics are locked alongside: the first render of a
+/// session snapshots the font size, and a settings change applies to the next
+/// session (`unlock()` on hide).
+struct OverlaySessionMetricsLock {
+    private var locked: OverlayLayoutMetrics?
+
+    /// The session's metrics, locking `currentFontSize` on first call.
+    mutating func metrics(currentFontSize: Double) -> OverlayLayoutMetrics {
+        if let locked { return locked }
+        let metrics = OverlayLayoutMetrics(bodyFontSize: currentFontSize)
+        locked = metrics
+        return metrics
+    }
+
+    /// Ends the session: the next `metrics(currentFontSize:)` re-reads the size.
+    mutating func unlock() {
+        locked = nil
     }
 }

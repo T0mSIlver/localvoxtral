@@ -46,9 +46,12 @@ final class DictationOverlayController {
     private let panel: NonActivatingPanel
     private let hostingView: TransparentHostingView<DictationOverlayView>
     private let cornerRadius: CGFloat = 12
-    /// Reads the user's overlay font size on every render so setting changes
-    /// apply to the next dictation without restarting the app.
+    /// Reads the user's overlay font size at the start of each overlay
+    /// session; the value is then locked until `hide()` (see
+    /// `OverlaySessionMetricsLock` — the panel's locked X origin assumes a
+    /// constant width), so setting changes apply to the next dictation.
     private let fontSizeProvider: @MainActor () -> Double
+    private var metricsLock = OverlaySessionMetricsLock()
 
     /// Locked placement state for the current session. Set on first render,
     /// cleared on hide. Prevents the panel from flipping between above/below
@@ -90,7 +93,8 @@ final class DictationOverlayController {
             phase: .idle,
             text: "",
             errorMessage: nil,
-            secureInputActive: false
+            secureInputActive: false,
+            metrics: OverlayLayoutMetrics(bodyFontSize: fontSizeProvider())
         )
         hostingView = TransparentHostingView(rootView: initialView)
         // Without this, NSHostingView probes the SwiftUI content at ∞×∞ and
@@ -131,7 +135,7 @@ final class DictationOverlayController {
             return
         }
 
-        let metrics = OverlayLayoutMetrics(bodyFontSize: fontSizeProvider())
+        let metrics = metricsLock.metrics(currentFontSize: fontSizeProvider())
         hostingView.rootView = DictationOverlayView(
             phase: snapshot.phase,
             text: snapshot.bufferText,
@@ -162,6 +166,7 @@ final class DictationOverlayController {
     func hide() {
         lockedPlacement = nil
         lockedOriginX = nil
+        metricsLock.unlock()
         panel.orderOut(nil)
     }
 

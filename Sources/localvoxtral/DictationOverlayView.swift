@@ -83,7 +83,7 @@ struct DictationOverlayView: View {
     let secureInputActive: Bool
     /// Sizing shared with `DictationOverlayController`'s panel measurement —
     /// see `OverlayLayoutMetrics` for why the two must stay in lockstep.
-    var metrics = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.defaultBodyFontSize)
+    let metrics: OverlayLayoutMetrics
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over

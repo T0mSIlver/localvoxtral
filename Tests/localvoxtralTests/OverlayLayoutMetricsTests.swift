@@ -78,6 +78,29 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         }
     }
 
+    // MARK: - Session lock (opencode review finding, PR #104)
+
+    /// The controller locks the panel's X origin for a session assuming a
+    /// constant width, so a mid-session slider change must NOT change the
+    /// metrics until the overlay hides — otherwise the panel widens past its
+    /// locked origin and can run off-screen.
+    func testSessionLockFreezesFontSizeUntilUnlocked() {
+        var lock = OverlaySessionMetricsLock()
+        let first = lock.metrics(currentFontSize: 14)
+        XCTAssertEqual(first.bodyFontSize, 14)
+
+        // Mid-session setting change: locked metrics keep the session's size.
+        let midSession = lock.metrics(currentFontSize: 24)
+        XCTAssertEqual(midSession, first)
+        XCTAssertEqual(midSession.panelWidth, first.panelWidth)
+
+        // After the session ends the new size applies.
+        lock.unlock()
+        let nextSession = lock.metrics(currentFontSize: 24)
+        XCTAssertEqual(nextSession.bodyFontSize, 24)
+        XCTAssertGreaterThan(nextSession.panelWidth, first.panelWidth)
+    }
+
     func testErrorMessageAddsHeight() {
         let without = baseMetrics.contentHeight(text: "hello", errorMessage: nil)
         let with = baseMetrics.contentHeight(text: "hello", errorMessage: "Insert failed")
