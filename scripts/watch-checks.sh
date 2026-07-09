@@ -22,6 +22,7 @@ set -uo pipefail
 #   1  checks/run concluded with failures
 #   2  usage or gh query error
 #   3  fail-fast: build host unreachable while work is pending
+#   4  PR head advanced while watching
 
 usage() {
   echo "usage: $0 <pr-number> | --run <run-id>" >&2
@@ -44,6 +45,7 @@ esac
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="${LV_BUILD_HOST:-$(git -C "$ROOT_DIR" config --get localvoxtral.buildhost || true)}"
 INTERVAL="${LV_WATCH_INTERVAL:-15}"
+ZERO_CHECK_GRACE="${LV_ZERO_CHECK_GRACE:-90}"
 
 # Reachable means SSH answered at all: 0 = gate v2 ran `diag`, 126 = gate
 # denied the command (v1) — both prove the Mac is awake. 255 (connection
@@ -59,10 +61,17 @@ if [[ "$MODE" == run ]]; then
   echo "== watching run $TARGET (build host: ${HOST:-none}) =="
 else
   echo "== watching PR #$TARGET checks (build host: ${HOST:-none}) =="
+  if ! TARGET_SHA="$(gh pr view "$TARGET" --json headRefOid --jq '.headRefOid' 2>&1)"; then
+    echo "FAIL: could not query PR #$TARGET via gh:" >&2
+    echo "  $TARGET_SHA" >&2
+    exit 2
+  fi
 fi
 
 misses=0
 pending_since=$SECONDS
+zero_checks_since=""
+query_failures=0
 warned_runner_down=0
 while :; do
   status_desc=""
@@ -85,20 +94,85 @@ while :; do
     esac
     status_desc="run is $line"
   else
-    checks_out="$(gh pr checks "$TARGET" 2>&1)"
-    rc=$?
-    if [[ $rc -eq 0 ]]; then
-      echo "$checks_out"
+    if ! pr_status="$(gh pr view "$TARGET" --json headRefOid,statusCheckRollup --jq '
+      def check_status:
+        if .__typename == "CheckRun" then
+          {
+            pending: ((.status // "" | ascii_upcase) != "COMPLETED"),
+            failing: (
+              ((.status // "" | ascii_upcase) == "COMPLETED") and
+              ((.conclusion // "" | ascii_upcase) as $c |
+                ($c != "SUCCESS" and $c != "NEUTRAL" and $c != "SKIPPED"))
+            )
+          }
+        elif .__typename == "StatusContext" then
+          {
+            pending: ((.state // "" | ascii_upcase) == "PENDING" or (.state // "" | ascii_upcase) == "EXPECTED"),
+            failing: ((.state // "" | ascii_upcase) != "SUCCESS" and (.state // "" | ascii_upcase) != "PENDING" and (.state // "" | ascii_upcase) != "EXPECTED")
+          }
+        else
+          {pending: true, failing: false}
+        end;
+      .headRefOid as $sha |
+      (.statusCheckRollup // []) as $checks |
+      ($checks | map(check_status)) as $states |
+      [
+        $sha,
+        ($checks | length),
+        ($states | map(select(.pending)) | length),
+        ($states | map(select(.failing)) | length)
+      ] | @tsv
+    ' 2>&1)"; then
+      # GitHub's GraphQL throws transient 5xx-style errors (observed killing
+      # a watch mid-run); only give up after several consecutive failures.
+      query_failures=$((query_failures + 1))
+      if [[ $query_failures -ge 4 ]]; then
+        echo "FAIL: could not query PR #$TARGET via gh ($query_failures consecutive failures):" >&2
+        echo "  $pr_status" >&2
+        exit 2
+      fi
+      echo "gh query failed (attempt $query_failures/3, retrying): ${pr_status%%$'\n'*}"
+      sleep "$INTERVAL"
+      continue
+    fi
+    query_failures=0
+    IFS=$'\t' read -r current_sha check_count pending_count failing_count <<<"$pr_status"
+
+    if [[ "$current_sha" != "$TARGET_SHA" ]]; then
+      echo "STALE: PR #$TARGET head advanced from ${TARGET_SHA:0:12} to ${current_sha:0:12}; re-run watch-checks.sh" >&2
+      exit 4
+    fi
+
+    if [[ "$check_count" == 0 ]]; then
+      if [[ -z "$zero_checks_since" ]]; then
+        zero_checks_since=$SECONDS
+      fi
+      elapsed_zero=$((SECONDS - zero_checks_since))
+      if [[ $elapsed_zero -lt $ZERO_CHECK_GRACE ]]; then
+        echo "no checks registered yet -- waiting for GitHub... (${elapsed_zero}s/${ZERO_CHECK_GRACE}s)"
+        status_desc="no checks are registered yet"
+      else
+        echo "FAIL: no checks reported" >&2
+        exit 1
+      fi
+    elif [[ "$pending_count" == 0 && "$failing_count" == 0 ]]; then
+      gh pr checks "$TARGET"
       echo "OK: all checks passed"
       exit 0
-    elif [[ $rc -ne 8 ]]; then
-      # gh exits 8 while checks are pending; anything else is a conclusion
-      # (or a query error, which the output makes obvious).
-      echo "$checks_out" >&2
+    elif [[ "$pending_count" == 0 ]]; then
+      gh pr checks "$TARGET" >&2
       echo "FAIL: checks concluded with failures" >&2
       exit 1
+    else
+      zero_checks_since=""
+      gh pr checks "$TARGET"
+      status_desc="checks are pending"
     fi
-    status_desc="checks are pending"
+  fi
+
+  if [[ "$status_desc" == "no checks are registered yet" ]]; then
+    sleep "$INTERVAL"
+    continue
   fi
 
   if probe_host; then

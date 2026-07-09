@@ -628,13 +628,42 @@ extension DictationViewModel {
                                 request: polishingRequest,
                                 configuration: config
                             )
-                            processedTextForPersistence =
-                                result.polishedText != originalText ? result.polishedText : nil
                             polishingDuration = result.durationSeconds
+
+                            // Token protection: a small polish model can mangle
+                            // code-like tokens (CLI flags, paths, URLs, backtick
+                            // spans). Repair byte-exact where possible; if a
+                            // protected token is neither present nor repairable,
+                            // discard the polish and keep the pre-polish text.
+                            let guardResult = PolishTokenGuard.verifyAndRepair(
+                                polished: result.polishedText,
+                                original: workingText
+                            )
+                            let committedText: String
+                            switch guardResult.outcome {
+                            case .clean:
+                                committedText = guardResult.text
+                            case .repaired(let count):
+                                committedText = guardResult.text
+                                Log.polishing.info(
+                                    "Token guard repaired \(count) protected token(s) after polishing"
+                                )
+                            case .fallback(let missing):
+                                committedText = workingText
+                                // Count is public; the token list is dictated
+                                // content (URLs, paths, env vars) and keeps the
+                                // default private redaction in unified logs.
+                                Log.polishing.warning(
+                                    "Token guard discarded polish; \(missing.count, privacy: .public) protected token(s) not preserved: \(missing.joined(separator: ", "))"
+                                )
+                            }
+
+                            processedTextForPersistence =
+                                committedText != originalText ? committedText : nil
 
                             guard !Task.isCancelled else { return }
 
-                            self.currentDictationEventText = result.polishedText
+                            self.currentDictationEventText = committedText
                             self.refreshOverlayBufferSession()
                             Log.polishing.info(
                                 "LLM polishing succeeded in \(String(format: "%.2f", result.durationSeconds))s"

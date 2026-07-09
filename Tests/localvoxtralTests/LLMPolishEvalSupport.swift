@@ -156,6 +156,29 @@ enum LLMPolishEvalSupport {
             mustContain: ["plan:"],
             mustNotContain: ["plan :"]
         ),
+        // Token protection: a CLI flag must survive the punctuation cleanup
+        // byte-exact — the model must not fold "--force" into an en/single dash
+        // (needles are normalized/lowercased, matching the scorer).
+        LLMPolishEvalCase(
+            id: "en-flag-survives-cleanup",
+            input: "run the deploy script with --force , then check the logs .",
+            mustContain: ["--force"],
+            mustNotContain: ["– force", "- force"]
+        ),
+        // A filesystem path must keep its slashes and case-fold-sensitive
+        // segments (compared against the lowercased output, so the needle is
+        // the lowercased path).
+        LLMPolishEvalCase(
+            id: "en-path-survives-cleanup",
+            input: "open the file src/auth/useAuth.ts and fix the the import .",
+            mustContain: ["src/auth/useauth.ts"]
+        ),
+        // A backtick-delimited command must survive with its backticks intact.
+        LLMPolishEvalCase(
+            id: "en-backtick-command-survives",
+            input: "then run `git rebase -i` to squash the commits .",
+            mustContain: ["`git rebase -i`"]
+        ),
     ]
 
     /// Print-only technical-dictation cases for model differentiation.

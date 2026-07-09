@@ -670,6 +670,27 @@ private struct DictationSettingsPane: View {
                 }
             }
 
+            SettingsGroup(title: "Overlay Buffer") {
+                SettingsFieldRow(title: "Font size") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Slider(
+                                value: $settings.overlayBufferFontSize,
+                                in: OverlayLayoutMetrics.minimumBodyFontSize
+                                    ... OverlayLayoutMetrics.maximumBodyFontSize,
+                                step: 1
+                            )
+                            Text("\(Int(settings.overlayBufferFontSize))pt")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 44, alignment: .trailing)
+                        }
+
+                        SettingsHelpText("Scales the whole dictation overlay panel.")
+                    }
+                }
+            }
+
             SettingsGroup(title: "Menu bar") {
                 SettingsFieldRow(title: "Output mode") {
                     VStack(alignment: .leading, spacing: 6) {
