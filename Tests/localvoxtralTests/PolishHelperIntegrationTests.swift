@@ -467,6 +467,82 @@ final class PolishHelperIntegrationTests: XCTestCase {
         warmed.process.terminate()
     }
 
+    /// Agent-profile parity: the bundled helper runs the AGENT prompt corpus
+    /// (spoken-symbol normalization, backticking, filler/self-correction
+    /// cleanup, no prompt expansion) and must clear the required agent cases.
+    /// Separate helper launch from the baseline test so its prompt-cache
+    /// assertions are not perturbed by a second corpus on the same process.
+    func testHelperAgentProfileScoreboard() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let (process, port, _) = try await launchHelper(binary: binary, model: model)
+
+        // Catalog-aware configuration, exactly like the baseline scoreboard:
+        // production's managed configuration carries the model's catalog
+        // sampling defaults AND chat-template kwargs. A bare configuration
+        // left the 4B default's thinking mode ON (`enable_thinking: false`
+        // missing), so EVERY agent request burned its generation window
+        // inside a think block and timed out — the whole scoreboard read
+        // "<no output>" (first seen on CI, 2026-07-11).
+        let configuration = LLMPolishEvalSupport.configuration(
+            endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
+            apiKey: "",
+            model: model
+        )
+        let (templates, cleanup) = try LLMPolishEvalSupport.agentPromptTemplates()
+        addTeardownBlock { cleanup() }
+
+        // The agent profile's system prompt differs from the standard
+        // profile's, so the FIRST agent-corpus request pays a full
+        // single-slot prompt-cache miss (a ~2k+ token prefill on the 4B
+        // default). On a loaded runner that exceeded the production request
+        // timeout and failed the scoreboard with "request timed out" — a
+        // latency artifact, not a quality regression (CI, 2026-07-11). Pay
+        // the profile's prefill up front with the production warmup request
+        // shape, result ignored — exactly what the planned profile-aware
+        // warmup will do in production (TODO in `PolishPromptWarmup
+        // .request`). Bounded: an attempt that times out client-side still
+        // leaves the helper prefilling, so the next attempt (and the
+        // scoreboard) hits the warm checkpoint.
+        let service = LLMPolishingService()
+        let warmupRequest = PolishPromptWarmup.request(templates: templates)
+        for _ in 0..<3 {
+            do {
+                _ = try await service.polish(
+                    request: warmupRequest,
+                    configuration: configuration
+                )
+                break
+            } catch LLMPolishingError.networkError {
+                continue  // client-side timeout; the helper keeps prefilling
+            } catch {
+                break  // request completed (e.g. 1-token trim): prefix is warm
+            }
+        }
+
+        let result = await LLMPolishEvalSupport.runScoreboard(
+            service: service,
+            templates: templates,
+            configuration: configuration,
+            requiredCases: LLMPolishEvalSupport.agentRequiredCases,
+            knownHardCases: LLMPolishEvalSupport.agentKnownHardCases,
+            technicalCases: []
+        )
+        LLMPolishEvalSupport.printScoreboard(
+            result,
+            configuration: configuration,
+            header: "polishd (bundled MLX Swift helper) AGENT-profile eval"
+        )
+
+        XCTAssertTrue(
+            result.failedRequiredCases.isEmpty,
+            "Bundled helper regressed required agent polish cases: \(result.failedRequiredCases.joined(separator: ", "))"
+        )
+
+        XCTAssertTrue(process.isRunning)
+        process.terminate()
+    }
+
     /// EXPERIMENT (2026-07-09, print-only — no score assertions): run the
     /// same corpus with the Qwen3.5 model card's recommended non-thinking
     /// text sampling (temperature 1.0, top_p 1.0, top_k 20, min_p 0,

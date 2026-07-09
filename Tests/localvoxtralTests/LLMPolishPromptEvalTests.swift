@@ -132,4 +132,34 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             "Default polish prompt regressed on required punctuation-spacing cases: \(result.failedRequiredCases.joined(separator: ", "))"
         )
     }
+
+    /// Scores the bundled AGENT-profile prompt against the same live server:
+    /// spoken-symbol normalization, backticking, filler/self-correction
+    /// cleanup — while never expanding the dictated prompt. Required agent
+    /// cases are asserted; the rest are tracked as known-hard.
+    func testAgentPromptProfileScoreboard() async throws {
+        let configuration = try evalConfiguration()
+        let (templates, cleanup) = try LLMPolishEvalSupport.agentPromptTemplates()
+        addTeardownBlock { cleanup() }
+        let service = LLMPolishingService()
+
+        let result = await LLMPolishEvalSupport.runScoreboard(
+            service: service,
+            templates: templates,
+            configuration: configuration,
+            requiredCases: LLMPolishEvalSupport.agentRequiredCases,
+            knownHardCases: LLMPolishEvalSupport.agentKnownHardCases,
+            technicalCases: []
+        )
+        LLMPolishEvalSupport.printScoreboard(
+            result,
+            configuration: configuration,
+            header: "LLM polish AGENT-profile eval"
+        )
+
+        XCTAssertTrue(
+            result.failedRequiredCases.isEmpty,
+            "Agent polish prompt regressed on required agent cases: \(result.failedRequiredCases.joined(separator: ", "))"
+        )
+    }
 }
