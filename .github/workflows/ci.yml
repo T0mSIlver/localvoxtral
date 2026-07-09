@@ -49,24 +49,6 @@ jobs:
           fi
           rm -rf dist format-lint.txt default.profraw
 
-      - name: TEMP diagnostic — name past orphan-process kills (remove before merge)
-        # 4 of the last 25 runs spent ~105 s in the post-job "Cleaning up
-        # orphan processes" phase. The runner's own Worker logs record which
-        # processes it reaped ("Terminate orphan process: pid (N) (name)") —
-        # print those records so the culprit is named. Process names only, no
-        # command lines: this log is public.
-        if: runner.environment == 'self-hosted'
-        # v3: v2 proved the Worker logs contain NO 'Terminate orphan process'
-        # records — the ~105 s is spent inside the cleanup phase itself, not
-        # killing a named process. Print the timestamped trace context around
-        # the phase so the slow operation is visible. Quote-filter drops job
-        # message JSON (PR bodies mentioning 'orphan' flooded v1).
-        run: |
-          grep -h -A 20 "Cleaning up orphan processes" \
-            "$HOME"/actions-runner/_diag/Worker_*.log 2>/dev/null \
-            | grep -v '"' | tail -n 120 \
-            || echo "phase marker not found in Worker logs"
-
       - name: Setup Swift
         if: runner.environment == 'github-hosted'
         uses: swift-actions/setup-swift@v2
