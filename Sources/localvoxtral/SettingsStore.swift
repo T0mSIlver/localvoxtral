@@ -178,6 +178,7 @@ final class SettingsStore {
         static let llmPolishingModel = "settings.llm_polishing_model"
         static let managedLLMPolishingModel = "settings.managed_llm_polishing_model"
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
+        static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -296,6 +297,17 @@ final class SettingsStore {
     var replacementDictionaryEnabled: Bool {
         didSet {
             defaults.set(replacementDictionaryEnabled, forKey: Keys.replacementDictionaryEnabled)
+        }
+    }
+
+    /// When true (default), LLM polishing switches to the agent-prompt profile
+    /// whenever the dictation target is a terminal-like app — extra cleanup
+    /// duties for prompts dictated to coding agents (spoken-symbol
+    /// normalization, backticking, self-correction resolution) without ever
+    /// answering or expanding the dictated prompt.
+    var agentPolishProfileEnabled: Bool {
+        didSet {
+            defaults.set(agentPolishProfileEnabled, forKey: Keys.agentPolishProfileEnabled)
         }
     }
 
@@ -481,6 +493,8 @@ final class SettingsStore {
         )
         replacementDictionaryEnabled = Self.loadBool(
             defaults: defaults, key: Keys.replacementDictionaryEnabled, fallback: false)
+        agentPolishProfileEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
         modifierOnlyHotKeyEnabled = Self.loadBool(

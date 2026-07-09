@@ -176,6 +176,93 @@ enum LLMPolishEvalSupport {
         ),
     ]
 
+    // MARK: - Agent-profile corpus
+
+    /// Required agent-profile cases — asserted in BOTH eval suites, so kept
+    /// minimal and safe. The most important agent guarantee is a FIDELITY one:
+    /// the dictated text is a prompt for another AI and the small model must
+    /// NEVER answer, expand, or restyle it. `agent-flag-spoken` started here
+    /// too but was DEMOTED to `agentKnownHardCases` (2026-07-09): the pinned
+    /// 0.8B echoes the input verbatim on the agent prompt and does not
+    /// normalize the spoken flag (`--force`), so spoken-symbol normalization
+    /// is aspirational at this model size — see the demotion note below.
+    static let agentRequiredCases: [LLMPolishEvalCase] = [
+        // The model must leave a terse instruction untouched — never answer or
+        // expand it, and no gratuitous backticking of prose words (whole-string
+        // equality rejects "`auth`" and any prepended/appended commentary).
+        LLMPolishEvalCase(
+            id: "agent-no-expansion",
+            input: "fix the bug in the auth module",
+            expectedText: "fix the bug in the auth module"
+        ),
+    ]
+
+    /// Agent-profile duties the pinned 0.8B does not do reliably: tracked and
+    /// printed, never asserted (same contract as `knownHardCases`). Inputs are
+    /// sized so a CORRECT answer clears the `requiredWordAccuracy` floor
+    /// (spoken->written normalization changes token counts, so several were
+    /// lengthened with shared context vs the terse originals).
+    static let agentKnownHardCases: [LLMPolishEvalCase] = [
+        // DEMOTED from agentRequiredCases (2026-07-09): the pinned 0.8B leaves
+        // "dash dash force" verbatim on the agent prompt instead of writing
+        // "--force". Spoken-flag normalization is a known-hard aspiration at
+        // this model size; promote back to required only after a model-pin bump
+        // does it reliably across server restarts.
+        LLMPolishEvalCase(
+            id: "agent-flag-spoken",
+            input: "run it with dash dash force please",
+            mustContain: ["--force"],
+            mustNotContain: ["dash dash"]
+        ),
+        // "dot <word>" as a file reference -> ".<word>".
+        LLMPolishEvalCase(
+            id: "agent-dotfile-spoken",
+            input: "add that to the dot env file",
+            mustContain: [".env"]
+        ),
+        // Spoken port number -> digits.
+        LLMPolishEvalCase(
+            id: "agent-port-number",
+            input: "start the dev server on port eighty eighty please",
+            mustContain: ["8080"]
+        ),
+        // "slash" between path words -> "/". Shortened vs a fully spelled-out
+        // filename so a correct collapse still clears the word-accuracy floor.
+        LLMPolishEvalCase(
+            id: "agent-path-spoken",
+            input: "look in src slash auth for the bug",
+            mustContain: ["src/auth"]
+        ),
+        // Filler removal ("um"), keeping the discourse "so".
+        LLMPolishEvalCase(
+            id: "agent-filler-removal",
+            input: "um so we need to retry the connection now",
+            mustContain: ["retry the connection"],
+            mustNotContain: ["um "]
+        ),
+        // Self-correction resolved to the final intent. Lengthened with shared
+        // context so removing "three retries actually no" stays above the floor.
+        LLMPolishEvalCase(
+            id: "agent-self-correction",
+            input: "when you set up the retry logic use three retries actually no five retries for the connection",
+            mustContain: ["five retries"],
+            mustNotContain: ["three retries"]
+        ),
+        // Explicit enumeration -> markdown numbered list (loose: list style
+        // varies, so only content needles plus one structure needle).
+        LLMPolishEvalCase(
+            id: "agent-list-structuring",
+            input: "first fix the failing test second update the docs third ship it",
+            mustContain: ["fix the failing test", "update the docs", "2."]
+        ),
+        // French prompt, spoken flag -> written flag.
+        LLMPolishEvalCase(
+            id: "agent-fr-flag",
+            input: "lance le script avec dash dash verbose",
+            mustContain: ["--verbose"]
+        ),
+    ]
+
     /// The bundled default templates, loaded through the production config
     /// path (a fresh override directory gets seeded with the bundled files).
     /// The caller owns cleanup of the returned directory.
@@ -184,6 +271,18 @@ enum LLMPolishEvalSupport {
             .appendingPathComponent("lv-polish-eval-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let templates = AppConfigStore(configDirectoryOverride: directory).loadLLMPromptTemplates()
+        return (templates, { try? FileManager.default.removeItem(at: directory) })
+    }
+
+    /// The bundled AGENT-profile templates, loaded through the production
+    /// config path (fresh override directory seeded with the bundled files,
+    /// then `loadLLMPromptTemplates(profile: .agent)`). Caller owns cleanup.
+    static func agentPromptTemplates() throws -> (LLMPromptTemplates, cleanup: () -> Void) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-polish-eval-agent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let templates = AppConfigStore(configDirectoryOverride: directory)
+            .loadLLMPromptTemplates(profile: .agent)
         return (templates, { try? FileManager.default.removeItem(at: directory) })
     }
 
@@ -259,16 +358,24 @@ enum LLMPolishEvalSupport {
         var lines: [String] = []
         var failedRequiredCases: [String] = []
         var passingHardCases: [String] = []
+        var requiredCaseCount = 0
+        var knownHardCaseCount = 0
     }
 
-    /// Runs the full corpus and returns the printable scoreboard plus the
-    /// required-case failures the caller must assert on.
+    /// Runs a corpus and returns the printable scoreboard plus the
+    /// required-case failures the caller must assert on. Defaults to the
+    /// standard corpus; pass `requiredCases:`/`knownHardCases:` (e.g. the
+    /// `agent*` arrays) to score the agent-profile corpus instead.
     static func runScoreboard(
         service: any LLMPolishingServicing,
         templates: LLMPromptTemplates,
-        configuration: LLMPolishingConfiguration
+        configuration: LLMPolishingConfiguration,
+        requiredCases: [LLMPolishEvalCase] = LLMPolishEvalSupport.requiredCases,
+        knownHardCases: [LLMPolishEvalCase] = LLMPolishEvalSupport.knownHardCases
     ) async -> ScoreboardResult {
         var result = ScoreboardResult()
+        result.requiredCaseCount = requiredCases.count
+        result.knownHardCaseCount = knownHardCases.count
 
         for evalCase in requiredCases {
             let (failures, output) = await runCase(
@@ -310,8 +417,8 @@ enum LLMPolishEvalSupport {
             """
             == \(header) (model: \(configuration.model), endpoint: \(configuration.endpointURL)) ==
             \(result.lines.joined(separator: "\n"))
-            == required: \(requiredCases.count - result.failedRequiredCases.count)/\(requiredCases.count), \
-            known-hard passing: \(result.passingHardCases.count)/\(knownHardCases.count) ==
+            == required: \(result.requiredCaseCount - result.failedRequiredCases.count)/\(result.requiredCaseCount), \
+            known-hard passing: \(result.passingHardCases.count)/\(result.knownHardCaseCount) ==
             """
         )
     }

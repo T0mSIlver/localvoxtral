@@ -1,10 +1,29 @@
 import Foundation
 
+/// Which polishing prompt profile to load. `standard` is the general STT
+/// cleanup prompt used everywhere; `agent` is the terminal/coding-agent
+/// dictation profile that additionally normalizes spoken symbols, backticks
+/// paths/flags, etc. — while never answering or expanding the dictated prompt.
+enum PolishPromptProfile: String, Sendable {
+    case standard
+    case agent
+}
+
 protocol AppConfigServing {
     func configDirectoryURL() -> URL
     func loadReplacementDictionary() -> ReplacementDictionary
     func loadLLMPromptTemplates() -> LLMPromptTemplates
+    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates
     func loadTerminalAppBundleIDs() -> [String]
+}
+
+extension AppConfigServing {
+    /// Default conformance so existing callers/mocks that only implement the
+    /// zero-arg loader keep the standard behavior for every profile. The real
+    /// `AppConfigStore` overrides this to load the agent files for `.agent`.
+    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+        loadLLMPromptTemplates()
+    }
 }
 
 struct ReplacementEntry: Equatable, Sendable {
@@ -330,6 +349,8 @@ struct AppConfigStore: AppConfigServing {
         case replacementDictionary
         case llmSystemPrompt
         case llmUserPrompt
+        case llmSystemPromptAgent
+        case llmUserPromptAgent
         case terminalApps
 
         var fileName: String {
@@ -340,6 +361,10 @@ struct AppConfigStore: AppConfigServing {
                 return "llm_system_prompt.toml"
             case .llmUserPrompt:
                 return "llm_user_prompt.toml"
+            case .llmSystemPromptAgent:
+                return "llm_system_prompt_agent.toml"
+            case .llmUserPromptAgent:
+                return "llm_user_prompt_agent.toml"
             case .terminalApps:
                 return "terminal_apps.toml"
             }
@@ -412,6 +437,49 @@ struct AppConfigStore: AppConfigServing {
             userPrompt = defaultTemplates.userContent
         }
         return LLMPromptTemplates(systemContent: systemPrompt, userContent: userPrompt)
+    }
+
+    /// Profile-aware prompt loader. `.standard` is byte-for-byte the existing
+    /// loader; `.agent` reads the agent files through the same load/validate
+    /// chain and falls back to the STANDARD templates on ANY failure, so a
+    /// corrupt, missing, or placeholder-invalid agent file never leaves polish
+    /// promptless.
+    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+        switch profile {
+        case .standard:
+            return loadLLMPromptTemplates()
+        case .agent:
+            return loadAgentPromptTemplates()
+        }
+    }
+
+    private func loadAgentPromptTemplates() -> LLMPromptTemplates {
+        let standardTemplates = loadLLMPromptTemplates()
+        do {
+            let systemPrompt = try loadAgentPromptContentStrict(file: .llmSystemPromptAgent)
+            let userPrompt = try loadAgentPromptContentStrict(file: .llmUserPromptAgent)
+            let candidate = LLMPromptTemplates(
+                systemContent: systemPrompt,
+                userContent: userPrompt
+            )
+            try candidate.validateUserTemplate(fileName: ConfigFile.llmUserPromptAgent.fileName)
+            return candidate
+        } catch {
+            Log.config.error(
+                "Agent prompt config fallback to standard templates: \(error.localizedDescription, privacy: .public)"
+            )
+            return standardTemplates
+        }
+    }
+
+    /// Reads an agent prompt file strictly: seeds the config dir from the
+    /// bundle if absent, then reads/parses the user file, throwing on any
+    /// failure (no silent bundled fallback) so `loadAgentPromptTemplates` can
+    /// fall back to the standard templates as the design requires.
+    private func loadAgentPromptContentStrict(file: ConfigFile) throws -> String {
+        ensureConfigFilesExist(at: resolvedConfigDirectoryURL())
+        let data = try Data(contentsOf: userConfigURL(for: file))
+        return try Self.parsePromptTemplate(data: data, fileName: file.fileName)
     }
 
     /// User-listed bundle IDs to treat as terminals, on top of

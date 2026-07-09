@@ -296,6 +296,98 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
     }
 
+    // MARK: - Polish profile selection
+
+    /// A terminal-like captured target with the agent profile enabled requests
+    /// the AGENT prompt templates and records the profile on the session.
+    func testAgentProfileSelectedForTerminalTarget() async {
+        let mockConfig = MockAppConfigStore()
+        let savedRecord = await runProfileSelectionSession(
+            appConfigStore: mockConfig,
+            agentProfileEnabled: true,
+            capturedBundleID: "com.apple.Terminal"
+        )
+
+        XCTAssertEqual(mockConfig.requestedProfiles, [.agent])
+        XCTAssertEqual(savedRecord?.polishProfile, "agent")
+    }
+
+    /// A user-listed terminal bundle (via terminal_apps.toml) also selects the
+    /// agent profile even though it is not on the built-in allowlist.
+    func testAgentProfileSelectedForUserListedTerminalBundle() async {
+        let mockConfig = MockAppConfigStore(terminalAppBundleIDs: ["com.acme.ide"])
+        let savedRecord = await runProfileSelectionSession(
+            appConfigStore: mockConfig,
+            agentProfileEnabled: true,
+            capturedBundleID: "com.acme.ide"
+        )
+
+        XCTAssertEqual(mockConfig.requestedProfiles, [.agent])
+        XCTAssertEqual(savedRecord?.polishProfile, "agent")
+    }
+
+    /// A non-terminal captured target keeps the standard profile.
+    func testStandardProfileForNonTerminalTarget() async {
+        let mockConfig = MockAppConfigStore()
+        let savedRecord = await runProfileSelectionSession(
+            appConfigStore: mockConfig,
+            agentProfileEnabled: true,
+            capturedBundleID: "com.acme.notes"
+        )
+
+        XCTAssertEqual(mockConfig.requestedProfiles, [.standard])
+        XCTAssertEqual(savedRecord?.polishProfile, "standard")
+    }
+
+    /// The agent profile toggle off keeps the standard profile even in a
+    /// terminal target.
+    func testAgentProfileDisabledKeepsStandardEvenInTerminal() async {
+        let mockConfig = MockAppConfigStore()
+        let savedRecord = await runProfileSelectionSession(
+            appConfigStore: mockConfig,
+            agentProfileEnabled: false,
+            capturedBundleID: "com.apple.Terminal"
+        )
+
+        XCTAssertEqual(mockConfig.requestedProfiles, [.standard])
+        XCTAssertEqual(savedRecord?.polishProfile, "standard")
+    }
+
+    /// Drives an overlay stop-commit with polishing enabled through
+    /// `finishStoppedSession` (never `beginDictationSession`, so no real
+    /// connect-timeout is armed — mirrors the token-guard suite) and returns
+    /// the persisted record.
+    private func runProfileSelectionSession(
+        appConfigStore: MockAppConfigStore,
+        agentProfileEnabled: Bool,
+        capturedBundleID: String?
+    ) async -> DictationSessionRecord? {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+        settings.agentPolishProfileEnabled = agentProfileEnabled
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = appConfigStore
+        viewModel.llmPolishingService = IdentityPolishingService()
+        viewModel.debugResolveTargetAppBundleIDOverride = { capturedBundleID }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "fix the bug in the auth module"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+        return savedRecord
+    }
+
     // MARK: - Helpers
 
     private func waitUntilStoppedSessionCompletes(_ viewModel: DictationViewModel) async {
@@ -345,6 +437,21 @@ private actor MangleFlagPolishingService: LLMPolishingServicing {
     }
 }
 
+/// Returns the input unchanged — a no-op polish for profile-selection tests
+/// that only care which prompt profile the session requested.
+private actor IdentityPolishingService: LLMPolishingServicing {
+    func polish(
+        request: LLMPolishingRequest,
+        configuration _: LLMPolishingConfiguration
+    ) async throws -> LLMPolishingResult {
+        LLMPolishingResult(
+            rawText: request.inputText,
+            polishedText: request.inputText,
+            durationSeconds: 0.01
+        )
+    }
+}
+
 /// Drops `--force` from the input entirely, exercising the unrepairable
 /// fallback path.
 private actor DeleteFlagPolishingService: LLMPolishingServicing {
@@ -364,16 +471,28 @@ private actor DeleteFlagPolishingService: LLMPolishingServicing {
 private final class MockAppConfigStore: AppConfigServing {
     private let replacementDictionary: ReplacementDictionary
     private let promptTemplates: LLMPromptTemplates
+    private let agentPromptTemplates: LLMPromptTemplates
+    private let terminalAppBundleIDs: [String]
+    /// Records every profile passed to `loadLLMPromptTemplates(profile:)`, so
+    /// profile-selection tests can assert which prompt the session requested.
+    private(set) var requestedProfiles: [PolishPromptProfile] = []
 
     init(
         replacementDictionary: ReplacementDictionary = ReplacementDictionary(entries: []),
         promptTemplates: LLMPromptTemplates = LLMPromptTemplates(
             systemContent: "system",
             userContent: "{{input_text}}"
-        )
+        ),
+        agentPromptTemplates: LLMPromptTemplates = LLMPromptTemplates(
+            systemContent: "agent-system",
+            userContent: "{{input_text}}"
+        ),
+        terminalAppBundleIDs: [String] = []
     ) {
         self.replacementDictionary = replacementDictionary
         self.promptTemplates = promptTemplates
+        self.agentPromptTemplates = agentPromptTemplates
+        self.terminalAppBundleIDs = terminalAppBundleIDs
     }
 
     func configDirectoryURL() -> URL {
@@ -388,8 +507,18 @@ private final class MockAppConfigStore: AppConfigServing {
         promptTemplates
     }
 
+    func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+        requestedProfiles.append(profile)
+        switch profile {
+        case .standard:
+            return promptTemplates
+        case .agent:
+            return agentPromptTemplates
+        }
+    }
+
     func loadTerminalAppBundleIDs() -> [String] {
-        []
+        terminalAppBundleIDs
     }
 }
 

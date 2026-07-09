@@ -402,6 +402,13 @@ final class DictationViewModel {
     var debugDeltaLogSink: ((DebugRealtimeDeltaLogRecord) -> Void)?
     @ObservationIgnored
     var debugSavedSessionRecordSink: ((DictationSessionRecord) -> Void)?
+    /// Test seam: overrides the commit-time target bundle ID resolution
+    /// (`resolveTargetAppBundleID`), which otherwise reads a live
+    /// `NSRunningApplication` from the overlay commit PID — unreachable in unit
+    /// tests. Lets profile-selection tests drive a terminal vs non-terminal
+    /// captured target deterministically.
+    @ObservationIgnored
+    var debugResolveTargetAppBundleIDOverride: (() -> String?)?
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of
