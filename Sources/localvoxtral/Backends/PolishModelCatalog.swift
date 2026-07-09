@@ -40,7 +40,15 @@ enum PolishModelCatalog {
             estimatedRAMGB: 1.0,
             samplingDefaults: nil,
             summary: "Cleans up transcripts with negligible overhead"
-        )
+        ),
+        PolishModelOption(
+            repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            displayName: "Qwen3.5 4B (better quality)",
+            sizeOnDiskGB: 3.0,
+            estimatedRAMGB: 3.5,
+            samplingDefaults: nil,
+            summary: "Stronger cleanup, slower first load"
+        ),
     ]
 
     static let defaultOption = options[0]
