@@ -608,13 +608,53 @@ extension DictationViewModel {
                 )
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
+
+                var userPrompts = promptTemplates.renderedUserPrompts(
+                    inputText: workingText,
+                    replacementDictionary: replacementDictionaryPrompt
+                )
+                // Opt-in clipboard grounding: prepend ONE reference-context
+                // block to the FINAL user message that lets the polish model
+                // fix near-miss spelling of technical terms against whatever
+                // the user just copied. When the setting is off OR the
+                // polishing endpoint is not loopback, the pasteboard is never
+                // read (privacy).
+                let capturedPolishContextSummary: String?
+                // The excerpt is retained for the post-polish leak guard: the
+                // model output must never smuggle clipboard content into the
+                // committed text.
+                let capturedClipboardExcerpt: String?
+                if let endpointURL = polishingConfig?.endpointURL,
+                   let clipboardContext = polishClipboardContextIfEnabled(endpointURL: endpointURL)
+                {
+                    // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
+                    // messages as its single-slot prefix cache, so per-request
+                    // context must ride INSIDE the last message — a separate
+                    // context message between prefix and suffix invalidated
+                    // the checkpoint on every request and a cold 4B re-prefill
+                    // blew the polish client timeout (field, 2026-07-11).
+                    // Prepended, never appended: the working text stays LAST
+                    // in the message (this model family echoes instructions
+                    // placed after the input text).
+                    let lastIndex = userPrompts.count - 1
+                    userPrompts[lastIndex] =
+                        PolishContextClipboardReader.contextMessage(
+                            excerpt: clipboardContext.excerpt
+                        ) + "\n\n" + userPrompts[lastIndex]
+                    capturedPolishContextSummary = clipboardContext.provenanceSummary
+                    capturedClipboardExcerpt = clipboardContext.excerpt
+                    Log.polishing.info(
+                        "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
+                    )
+                } else {
+                    capturedPolishContextSummary = nil
+                    capturedClipboardExcerpt = nil
+                }
+
                 let polishingRequest = LLMPolishingRequest(
                     inputText: workingText,
                     systemPrompt: promptTemplates.systemContent,
-                    userPrompts: promptTemplates.renderedUserPrompts(
-                        inputText: workingText,
-                        replacementDictionary: replacementDictionaryPrompt
-                    )
+                    userPrompts: userPrompts
                 )
 
                 statusText = StatusStrings.polishing
@@ -646,7 +686,7 @@ extension DictationViewModel {
                                 polished: result.polishedText,
                                 original: workingText
                             )
-                            let committedText: String
+                            var committedText: String
                             switch guardResult.outcome {
                             case .clean:
                                 committedText = guardResult.text
@@ -662,6 +702,32 @@ extension DictationViewModel {
                                 // default private redaction in unified logs.
                                 Log.polishing.warning(
                                     "Token guard discarded polish; \(missing.count, privacy: .public) protected token(s) not preserved: \(missing.joined(separator: ", "))"
+                                )
+                            }
+
+                            // Clipboard leak guard: the context excerpt is
+                            // reference material, but a small model can echo
+                            // prompt text or follow instructions embedded in
+                            // the clipboard — and the token guard above only
+                            // verifies tokens from the working text, so it
+                            // would accept clipboard-only output. A long
+                            // contiguous excerpt substring in the output that
+                            // the pre-polish text never contained is a leak:
+                            // discard the polish, keep the pre-polish text
+                            // (same fallback shape as the token guard).
+                            // Counts-only logging — the matched run is
+                            // clipboard content.
+                            if let excerpt = capturedClipboardExcerpt,
+                               committedText != workingText,
+                               let leakedLength = PolishContextClipboardReader.detectClipboardLeak(
+                                   polished: committedText,
+                                   original: workingText,
+                                   excerpt: excerpt
+                               )
+                            {
+                                committedText = workingText
+                                Log.polishing.warning(
+                                    "Clipboard leak guard discarded polish: match:\(leakedLength, privacy: .public)ch"
                                 )
                             }
 
@@ -730,7 +796,8 @@ extension DictationViewModel {
                         targetAppBundleID: capturedTargetBundleID,
                         status: sessionStatus,
                         commitSucceeded: commitSucceeded,
-                        polishProfile: capturedPolishProfile
+                        polishProfile: capturedPolishProfile,
+                        polishContextSummary: capturedPolishContextSummary
                     )
 
                     if let llmConnectionFailure {
@@ -912,6 +979,35 @@ extension DictationViewModel {
         return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
     }
 
+    /// Reads a capped clipboard excerpt for polish grounding, but ONLY when the
+    /// opt-in setting is on AND the polishing endpoint is loopback. Both guards
+    /// short-circuit BEFORE the reader resolves, so a disabled toggle or a
+    /// remote endpoint means the pasteboard is never touched at all (privacy:
+    /// no read). The endpoint gate keeps the Settings promise honest: the
+    /// polishing endpoint is user-configurable and may point at a cloud
+    /// provider, which must never receive clipboard content.
+    func polishClipboardContextIfEnabled(endpointURL: URL) -> PolishClipboardContext? {
+        guard settings.polishClipboardContextEnabled else { return nil }
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+            Log.polishing.info(
+                "Polish clipboard context skipped: polishing endpoint is not local"
+            )
+            return nil
+        }
+        return PolishContextClipboardReader.readClipboardContext(
+            from: resolvePolishContextPasteboardReader()
+        )
+    }
+
+    private func resolvePolishContextPasteboardReader() -> any PasteboardReading {
+        #if DEBUG
+        if let override = debugPolishContextPasteboardReaderOverride {
+            return override()
+        }
+        #endif
+        return SystemPasteboardReader()
+    }
+
     /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
     /// agent profile enabled AND the captured target bundle ID is terminal-like
     /// (built-in terminal allowlist, or the user's `terminal_apps.toml` list).
@@ -937,7 +1033,8 @@ extension DictationViewModel {
         targetAppBundleID: String?,
         status: DictationSessionStatus,
         commitSucceeded: Bool,
-        polishProfile: String? = nil
+        polishProfile: String? = nil,
+        polishContextSummary: String? = nil
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -957,7 +1054,8 @@ extension DictationViewModel {
             targetAppBundleID: targetAppBundleID,
             status: status,
             commitSucceeded: commitSucceeded,
-            polishProfile: polishProfile
+            polishProfile: polishProfile,
+            polishContextSummary: polishContextSummary
         )
         debugSavedSessionRecordSink?(record)
         sessionStore?.save(record)

@@ -415,6 +415,14 @@ final class DictationViewModel {
     /// captured target deterministically.
     @ObservationIgnored
     var debugResolveTargetAppBundleIDOverride: (() -> String?)?
+    /// Test seam: injects the pasteboard the polish-context reader consults,
+    /// replacing `SystemPasteboardReader` over `NSPasteboard.general` (global /
+    /// unavailable in unit tests). Only resolved when the clipboard-context
+    /// setting is on AND the polishing endpoint is loopback, so a stub whose
+    /// read methods were never called proves the no-read privacy guarantee for
+    /// both the disabled toggle and a remote endpoint.
+    @ObservationIgnored
+    var debugPolishContextPasteboardReaderOverride: (() -> any PasteboardReading)?
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of
