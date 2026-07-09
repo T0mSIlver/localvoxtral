@@ -46,10 +46,13 @@ final class DictationViewModelLiveReplacementCorrectorTests: XCTestCase {
         )
 
         harness.viewModel.handle(event: .partialTranscript("local "))
+        // "local" could begin the two-word match, so it stays held.
+        XCTAssertEqual(harness.typed.value, [], "a possible first match word stays held")
+
         harness.viewModel.handle(event: .partialTranscript("voxtral "))
-        // A two-word rule holds the last complete word back — it could begin
-        // another match — so the corrected text is released on the stop flush.
-        XCTAssertEqual(harness.typed.value, [], "the last complete word stays held for a multi-word rule")
+        // Once the match applies, "localvoxtral" begins no rule, so it is
+        // released immediately rather than waiting for the stop flush.
+        XCTAssertEqual(harness.typed.value.joined(), "localvoxtral ")
 
         stop(harness.viewModel)
 
