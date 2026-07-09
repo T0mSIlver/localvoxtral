@@ -322,6 +322,18 @@ private struct ConnectionSettingsPane: View {
                         }
                     }
 
+                    SettingsFieldRow(title: "Use clipboard as polish context") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.polishClipboardContextEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Grounds technical terms against your clipboard. Applies only with a local polishing endpoint — your clipboard never leaves this Mac."
+                            )
+                        }
+                    }
+
                     switch settings.polishingBackendMode {
                     case .externalURL:
                         SettingsFieldRow(title: "Endpoint") {

@@ -24,6 +24,7 @@ final class DictationSessionRecordTests: XCTestCase {
         )
 
         XCTAssertNil(record.polishProfile)
+        XCTAssertNil(record.polishContextSummary)
     }
 
     func testPolishProfileRoundTripsWhenProvided() {
@@ -41,5 +42,23 @@ final class DictationSessionRecordTests: XCTestCase {
         )
 
         XCTAssertEqual(record.polishProfile, "agent")
+    }
+
+    func testPolishContextSummaryRoundTripsWhenProvided() {
+        let record = DictationSessionRecord(
+            startedAt: Date(),
+            finishedAt: Date(),
+            rawText: "fix the user session manager",
+            polishedText: "Fix the UserSessionManager.swift.",
+            provider: "vllm",
+            model: "voxtral",
+            outputMode: "overlay_buffer",
+            status: .completed,
+            commitSucceeded: true,
+            polishProfile: PolishPromptProfile.agent.rawValue,
+            polishContextSummary: "clipboard:24ch"
+        )
+
+        XCTAssertEqual(record.polishContextSummary, "clipboard:24ch")
     }
 }
