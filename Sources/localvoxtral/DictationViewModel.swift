@@ -464,7 +464,9 @@ final class DictationViewModel {
             let anchorResolver = OverlayAnchorResolver()
             self.overlayBufferCoordinator = OverlayBufferSessionCoordinator(
                 stateMachine: OverlayBufferStateMachine(),
-                renderer: DictationOverlayController(),
+                renderer: DictationOverlayController(
+                    fontSizeProvider: { settings.overlayBufferFontSize }
+                ),
                 anchorResolver: anchorResolver
             )
         }
