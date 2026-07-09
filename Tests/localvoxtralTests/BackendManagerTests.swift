@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -83,14 +84,18 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.voxmlx.id])
 
         try await manager.ensureReady(dictation: true, polishing: true)
+        // Set + count, not positional (concurrent ensure tasks): exactly one
+        // creation/prepare per backend, voxmlx not re-done by the second call.
         XCTAssertEqual(
-            supervisorFactory.createdConfigurations.map(\.name),
+            Set(supervisorFactory.createdConfigurations.map(\.name)),
             [BackendCatalog.voxmlx.displayName, BackendCatalog.mlxLM.displayName]
         )
+        XCTAssertEqual(supervisorFactory.createdConfigurations.count, 2)
         XCTAssertEqual(
-            modelPreparer.prepareCalls.map(\.backendID),
+            Set(modelPreparer.prepareCalls.map(\.backendID)),
             [BackendCatalog.voxmlx.id, BackendCatalog.mlxLM.id]
         )
+        XCTAssertEqual(modelPreparer.prepareCalls.count, 2)
         XCTAssertEqual(manager.mlxLMStatus, .ready)
 
         let mlxLMConfiguration = try XCTUnwrap(
@@ -262,11 +267,20 @@ final class BackendManagerTests: XCTestCase {
 
         try await manager.ensureReady(dictation: true, polishing: true)
 
+        // Keyed by backend, not positional: the two ensure tasks run
+        // concurrently, so their creation order is not a contract.
         XCTAssertEqual(
-            supervisorFactory.createdConfigurations.map(\.readinessTimeout),
-            // voxmlx still downloads its model inside the server on first run;
-            // the bundled polishing helper only loads pre-downloaded weights.
-            [.seconds(1800), .seconds(300)]
+            Dictionary(
+                uniqueKeysWithValues: supervisorFactory.createdConfigurations
+                    .map { ($0.name, $0.readinessTimeout) }
+            ),
+            [
+                // voxmlx still downloads its model inside the server on first
+                // run; the bundled polishing helper only loads pre-downloaded
+                // weights.
+                BackendCatalog.voxmlx.displayName: .seconds(1800),
+                BackendCatalog.mlxLM.displayName: .seconds(300),
+            ]
         )
     }
 
@@ -322,15 +336,16 @@ final class BackendManagerTests: XCTestCase {
 
         try await manager.ensureReady(dictation: true, polishing: true)
 
+        // Keyed by backend, not positional (concurrent ensure tasks), which
+        // also pins each backend to ITS model rather than just the order.
         XCTAssertEqual(
-            modelPreparer.prepareCalls.map(\.backendID),
-            [BackendCatalog.voxmlx.id, BackendCatalog.mlxLM.id]
-        )
-        XCTAssertEqual(
-            modelPreparer.prepareCalls.map(\.repoID),
+            Dictionary(
+                uniqueKeysWithValues: modelPreparer.prepareCalls
+                    .map { ($0.backendID, $0.repoID) }
+            ),
             [
-                SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName,
-                SettingsStore.defaultLLMPolishingModel,
+                BackendCatalog.voxmlx.id: SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName,
+                BackendCatalog.mlxLM.id: SettingsStore.defaultLLMPolishingModel,
             ]
         )
     }
@@ -544,15 +559,25 @@ final class BackendManagerTests: XCTestCase {
     }
 }
 
+// `prepare` is nonisolated async, so ensureReady's concurrent per-backend
+// tasks call it off the main actor simultaneously — the recorded state must
+// be lock-protected or appends race and can be lost (flaked on the runner
+// under dogfooding load, PR #94).
 private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
+    private struct State {
+        var prepareCalls: [ModelPreparationRequest] = []
+        var terminatedBackendIDs: [String] = []
+        var prepareStartedContinuation: CheckedContinuation<Void, Never>?
+        var prepareResumeContinuation: CheckedContinuation<Void, Error>?
+    }
+
     private let scriptedProgress: [String: [ModelDownloadProgress]]
     private let failures: [String: Error]
     private let suspendBackendIDs: Set<String>
-    private var prepareStartedContinuation: CheckedContinuation<Void, Never>?
-    private var prepareResumeContinuation: CheckedContinuation<Void, Error>?
+    private let state = Mutex(State())
 
-    private(set) var prepareCalls: [ModelPreparationRequest] = []
-    private(set) var terminatedBackendIDs: [String] = []
+    var prepareCalls: [ModelPreparationRequest] { state.withLock { $0.prepareCalls } }
+    var terminatedBackendIDs: [String] { state.withLock { $0.terminatedBackendIDs } }
 
     init(
         scriptedProgress: [String: [ModelDownloadProgress]] = [:],
@@ -568,9 +593,13 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
     ) async throws {
-        prepareCalls.append(request)
-        prepareStartedContinuation?.resume()
-        prepareStartedContinuation = nil
+        let started: CheckedContinuation<Void, Never>? = state.withLock {
+            $0.prepareCalls.append(request)
+            let continuation = $0.prepareStartedContinuation
+            $0.prepareStartedContinuation = nil
+            return continuation
+        }
+        started?.resume()
 
         for event in scriptedProgress[request.backendID] ?? [] {
             await progress(event)
@@ -579,14 +608,16 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
         if suspendBackendIDs.contains(request.backendID) {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { continuation in
-                    prepareResumeContinuation = continuation
+                    state.withLock { $0.prepareResumeContinuation = continuation }
                 }
             } onCancel: {
-                Task { @MainActor [weak self] in
-                    self?.terminatedBackendIDs.append(request.backendID)
-                    self?.prepareResumeContinuation?.resume(throwing: CancellationError())
-                    self?.prepareResumeContinuation = nil
+                let continuation: CheckedContinuation<Void, Error>? = self.state.withLock {
+                    $0.terminatedBackendIDs.append(request.backendID)
+                    let continuation = $0.prepareResumeContinuation
+                    $0.prepareResumeContinuation = nil
+                    return continuation
                 }
+                continuation?.resume(throwing: CancellationError())
             }
         }
 
@@ -596,47 +627,66 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
     }
 
     func waitUntilPrepareStarted() async {
-        guard prepareCalls.isEmpty else { return }
         await withCheckedContinuation { continuation in
-            prepareStartedContinuation = continuation
+            let alreadyStarted: Bool = state.withLock {
+                if $0.prepareCalls.isEmpty {
+                    $0.prepareStartedContinuation = continuation
+                    return false
+                }
+                return true
+            }
+            if alreadyStarted {
+                continuation.resume()
+            }
         }
     }
 }
 
+// Same concurrent-callers shape as FakeModelPreparer: `install` runs off the
+// main actor, so all mutable state sits behind a Mutex.
 private final class FakeBackendInstaller: BackendInstalling, @unchecked Sendable {
-    private var needsInstall: Set<String>
+    private struct State {
+        var needsInstall: Set<String>
+        var installCalls: [ManagedBackendSpec] = []
+        var installStartedContinuation: CheckedContinuation<Void, Never>?
+        var installResumeContinuation: CheckedContinuation<Void, Never>?
+    }
+
     private let installFailures: [String: Error]
     private let suspendInstalls: Bool
-    private var installStartedContinuation: CheckedContinuation<Void, Never>?
-    private var installResumeContinuation: CheckedContinuation<Void, Never>?
+    private let state: Mutex<State>
 
-    private(set) var installCalls: [ManagedBackendSpec] = []
+    var installCalls: [ManagedBackendSpec] { state.withLock { $0.installCalls } }
 
     init(
         needsInstall: Set<String>,
         installFailures: [String: Error] = [:],
         suspendInstalls: Bool = false
     ) {
-        self.needsInstall = needsInstall
         self.installFailures = installFailures
         self.suspendInstalls = suspendInstalls
+        self.state = Mutex(State(needsInstall: needsInstall))
     }
 
     func needsInstallOrUpdate(_ spec: ManagedBackendSpec) -> Bool {
-        needsInstall.contains(spec.id)
+        state.withLock { $0.needsInstall.contains(spec.id) }
     }
 
     func install(
         _ spec: ManagedBackendSpec,
         progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
     ) async throws {
-        installCalls.append(spec)
-        installStartedContinuation?.resume()
-        installStartedContinuation = nil
+        let started: CheckedContinuation<Void, Never>? = state.withLock {
+            $0.installCalls.append(spec)
+            let continuation = $0.installStartedContinuation
+            $0.installStartedContinuation = nil
+            return continuation
+        }
+        started?.resume()
 
         if suspendInstalls {
             await withCheckedContinuation { continuation in
-                installResumeContinuation = continuation
+                state.withLock { $0.installResumeContinuation = continuation }
             }
         }
 
@@ -647,19 +697,31 @@ private final class FakeBackendInstaller: BackendInstalling, @unchecked Sendable
         await progress(.verifying)
         await progress(.installing(logLine: "installed \(spec.displayName)"))
         await progress(.finished)
-        needsInstall.remove(spec.id)
+        state.withLock { _ = $0.needsInstall.remove(spec.id) }
     }
 
     func waitUntilInstallStarted() async {
-        guard installCalls.isEmpty else { return }
         await withCheckedContinuation { continuation in
-            installStartedContinuation = continuation
+            let alreadyStarted: Bool = state.withLock {
+                if $0.installCalls.isEmpty {
+                    $0.installStartedContinuation = continuation
+                    return false
+                }
+                return true
+            }
+            if alreadyStarted {
+                continuation.resume()
+            }
         }
     }
 
     func resumeInstall() {
-        installResumeContinuation?.resume()
-        installResumeContinuation = nil
+        let continuation: CheckedContinuation<Void, Never>? = state.withLock {
+            let continuation = $0.installResumeContinuation
+            $0.installResumeContinuation = nil
+            return continuation
+        }
+        continuation?.resume()
     }
 }
 

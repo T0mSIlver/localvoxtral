@@ -15,6 +15,15 @@ public struct TransformersTokenizerLoader: TokenizerLoader {
     }
 }
 
+/// Templating a chat *prefix* — the messages before the varying final one —
+/// WITHOUT the generation prompt, so the result is a true token prefix of the
+/// full templated prompt and its KV state can be checkpointed for reuse.
+/// MLXLMCommon's `Tokenizer` protocol always adds the generation prompt, so
+/// this is a separate seam the prefix cache downcasts to.
+public protocol ChatPrefixEncoding {
+    func encodeChatPrefix(messages: [[String: any Sendable]]) throws -> [Int]
+}
+
 private struct TokenizerBridge: MLXLMCommon.Tokenizer {
     private let upstream: any Tokenizers.Tokenizer
 
@@ -51,6 +60,25 @@ private struct TokenizerBridge: MLXLMCommon.Tokenizer {
         do {
             return try upstream.applyChatTemplate(
                 messages: messages, tools: tools, additionalContext: additionalContext)
+        } catch Tokenizers.TokenizerError.missingChatTemplate {
+            throw MLXLMCommon.TokenizerError.missingChatTemplate
+        }
+    }
+}
+
+extension TokenizerBridge: ChatPrefixEncoding {
+    func encodeChatPrefix(messages: [[String: any Sendable]]) throws -> [Int] {
+        do {
+            // The full-control protocol requirement: the convenience
+            // overloads with defaulted addGenerationPrompt live on concrete
+            // tokenizers, not the existential.
+            return try upstream.applyChatTemplate(
+                messages: messages,
+                chatTemplate: nil,
+                addGenerationPrompt: false,
+                truncation: false,
+                maxLength: nil,
+                tools: nil)
         } catch Tokenizers.TokenizerError.missingChatTemplate {
             throw MLXLMCommon.TokenizerError.missingChatTemplate
         }
