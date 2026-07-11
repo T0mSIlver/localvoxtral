@@ -219,6 +219,97 @@ final class AgentDictationEvalCorpusTests: XCTestCase {
         }
     }
 
+    /// Per-stratum feature contracts: a clipboard-context case without a
+    /// payload, or a macro case without an explicit macro flag + payload,
+    /// would silently degrade into a plain polish case in Phase 2.
+    func testStrataEnforceFeatureContracts() throws {
+        for loaded in try loadedStrata() {
+            switch loaded.stratum.stratum {
+            case "clipboard-context":
+                for evalCase in loaded.stratum.cases {
+                    XCTAssertFalse(
+                        (evalCase.features?.clipboard ?? "").isEmpty,
+                        "\(evalCase.id): clipboard-context cases must carry a non-empty clipboard payload"
+                    )
+                }
+            case "paste-clipboard-macro":
+                for evalCase in loaded.stratum.cases {
+                    XCTAssertNotNil(
+                        evalCase.features?.macro,
+                        "\(evalCase.id): paste-clipboard-macro cases must set macro true/false explicitly"
+                    )
+                    XCTAssertFalse(
+                        (evalCase.features?.clipboard ?? "").isEmpty,
+                        "\(evalCase.id): paste-clipboard-macro cases must carry a clipboard payload"
+                    )
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    // MARK: - Loader hardening regressions
+
+    /// JSONDecoder silently drops unknown keys, so a typo'd optional field
+    /// would pass decode and lose its fixture. The loader must reject
+    /// unknown keys at every object level.
+    func testDecodingRejectsUnknownKeys() {
+        let stratumJSON = Data("""
+        {"schemaVersion": 1, "stratum": "x", "description": "d", "cases": [], "surpriseKey": true}
+        """.utf8)
+        assertThrowsUnknownKeyError(decoding: stratumJSON, key: "surpriseKey")
+
+        let caseJSON = Data("""
+        {"schemaVersion": 1, "stratum": "x", "description": "d", "cases": [
+            {"id": "a-en-x", "lang": "en", "spokenForm": "s", "intendedText": "s",
+             "requiredTokens": ["s"], "status": {"tokens": "known-hard"},
+             "notes": "n", "intendedTxt": "typo"}
+        ]}
+        """.utf8)
+        assertThrowsUnknownKeyError(decoding: caseJSON, key: "intendedTxt")
+
+        let featuresJSON = Data("""
+        {"schemaVersion": 1, "stratum": "x", "description": "d", "cases": [
+            {"id": "a-en-x", "lang": "en", "spokenForm": "s", "intendedText": "s",
+             "requiredTokens": ["s"], "status": {"tokens": "known-hard"}, "notes": "n",
+             "features": {"clipboardPayload": "misspelled"}}
+        ]}
+        """.utf8)
+        assertThrowsUnknownKeyError(decoding: featuresJSON, key: "clipboardPayload")
+    }
+
+    private func assertThrowsUnknownKeyError(decoding data: Data, key: String) {
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(AgentDictationEvalCorpus.Stratum.self, from: data),
+            "unknown key '\(key)' must be rejected"
+        ) { error in
+            guard case DecodingError.dataCorrupted(let context) = error else {
+                XCTFail("expected dataCorrupted for '\(key)', got \(error)")
+                return
+            }
+            XCTAssertTrue(
+                context.debugDescription.contains(key),
+                "error must name the offending key '\(key)': \(context.debugDescription)"
+            )
+        }
+    }
+
+    /// Duplicate fixture names must surface as a readable thrown error, not
+    /// a Dictionary(uniqueKeysWithValues:) trap that kills the suite.
+    func testDuplicateRepoFixtureNamesAreAReadableFailure() {
+        let fixture = AgentDictationEvalCorpus.RepoFixture(name: "twin", branch: "main", files: ["a.txt"])
+        XCTAssertThrowsError(
+            try AgentDictationEvalCorpus.indexRepoFixtures([fixture, fixture])
+        ) { error in
+            guard case AgentDictationEvalCorpus.LoadError.duplicateRepoFixtureName(let name) = error else {
+                XCTFail("expected duplicateRepoFixtureName, got \(error)")
+                return
+            }
+            XCTAssertEqual(name, "twin")
+        }
+    }
+
     func testRepoVocabularyCasesReferenceFixtureFiles() throws {
         let fixtures = try AgentDictationEvalCorpus.loadRepoFixtures()
         XCTAssertFalse(fixtures.isEmpty, "no repo fixtures found under fixtures/")

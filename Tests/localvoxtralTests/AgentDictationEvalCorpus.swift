@@ -66,11 +66,63 @@ enum AgentDictationEvalCorpus {
         case polishOnly = "polish-only"
     }
 
+    /// CodingKey that accepts any string key — used to enumerate a JSON
+    /// object's ACTUAL keys so schema drift is rejected instead of silently
+    /// dropped by JSONDecoder. Without this, a typo'd optional field (e.g.
+    /// `features.clipboardPayload`) decodes fine, the fixture is lost, and
+    /// Phase 2 would run the case without its intended setup.
+    private struct AnyCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue: Int) {
+            return nil
+        }
+    }
+
+    fileprivate static func rejectUnknownKeys(
+        in decoder: Decoder,
+        allowed: Set<String>,
+        describing objectName: String
+    ) throws {
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        let unknown = container.allKeys.map(\.stringValue).filter { !allowed.contains($0) }
+        guard unknown.isEmpty else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription:
+                        "\(objectName) has unknown key(s): \(unknown.sorted().joined(separator: ", ")) "
+                        + "— schema drift is rejected; fix the corpus file or extend the schema deliberately"
+                )
+            )
+        }
+    }
+
     struct RepoFeature: Codable, Equatable {
         /// Name of a fixture spec in `fixtures/repo-<fixture>.json`.
         let fixture: String
         /// The fixture files this case depends on (validated ⊆ fixture spec).
         let files: [String]
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case fixture, files
+        }
+
+        init(from decoder: Decoder) throws {
+            try AgentDictationEvalCorpus.rejectUnknownKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+                describing: "features.repo"
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            fixture = try container.decode(String.self, forKey: .fixture)
+            files = try container.decode([String].self, forKey: .files)
+        }
     }
 
     struct Features: Codable, Equatable {
@@ -89,6 +141,22 @@ enum AgentDictationEvalCorpus {
             self.repo = repo
             self.macro = macro
         }
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case clipboard, repo, macro
+        }
+
+        init(from decoder: Decoder) throws {
+            try AgentDictationEvalCorpus.rejectUnknownKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+                describing: "features"
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            clipboard = try container.decodeIfPresent(String.self, forKey: .clipboard)
+            repo = try container.decodeIfPresent(RepoFeature.self, forKey: .repo)
+            macro = try container.decodeIfPresent(Bool.self, forKey: .macro)
+        }
     }
 
     struct Source: Codable, Equatable {
@@ -105,6 +173,22 @@ enum AgentDictationEvalCorpus {
             self.migratedFrom = migratedFrom
             self.originalId = originalId
             self.seed = seed
+        }
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case migratedFrom, originalId, seed
+        }
+
+        init(from decoder: Decoder) throws {
+            try AgentDictationEvalCorpus.rejectUnknownKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+                describing: "source"
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            migratedFrom = try container.decodeIfPresent(String.self, forKey: .migratedFrom)
+            originalId = try container.decodeIfPresent(String.self, forKey: .originalId)
+            seed = try container.decodeIfPresent(String.self, forKey: .seed)
         }
     }
 
@@ -135,6 +219,31 @@ enum AgentDictationEvalCorpus {
 
         var forbidden: [String] { forbiddenSubstrings ?? [] }
         var isCaseInsensitive: Bool { caseInsensitive ?? false }
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case id, lang, spokenForm, intendedText, requiredTokens
+            case forbiddenSubstrings, caseInsensitive, features, status, notes, source
+        }
+
+        init(from decoder: Decoder) throws {
+            try AgentDictationEvalCorpus.rejectUnknownKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+                describing: "case"
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(String.self, forKey: .id)
+            lang = try container.decode(Language.self, forKey: .lang)
+            spokenForm = try container.decode(String.self, forKey: .spokenForm)
+            intendedText = try container.decode(String.self, forKey: .intendedText)
+            requiredTokens = try container.decode([String].self, forKey: .requiredTokens)
+            forbiddenSubstrings = try container.decodeIfPresent([String].self, forKey: .forbiddenSubstrings)
+            caseInsensitive = try container.decodeIfPresent(Bool.self, forKey: .caseInsensitive)
+            features = try container.decodeIfPresent(Features.self, forKey: .features)
+            status = try container.decode([String: Status].self, forKey: .status)
+            notes = try container.decode(String.self, forKey: .notes)
+            source = try container.decodeIfPresent(Source.self, forKey: .source)
+        }
     }
 
     struct Stratum: Codable {
@@ -145,6 +254,24 @@ enum AgentDictationEvalCorpus {
         let cases: [Case]
 
         var resolvedPipeline: Pipeline { pipeline ?? .full }
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case schemaVersion, stratum, description, pipeline, cases
+        }
+
+        init(from decoder: Decoder) throws {
+            try AgentDictationEvalCorpus.rejectUnknownKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+                describing: "stratum file"
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+            stratum = try container.decode(String.self, forKey: .stratum)
+            description = try container.decode(String.self, forKey: .description)
+            pipeline = try container.decodeIfPresent(Pipeline.self, forKey: .pipeline)
+            cases = try container.decode([Case].self, forKey: .cases)
+        }
     }
 
     struct RepoFixture: Codable {
@@ -153,6 +280,28 @@ enum AgentDictationEvalCorpus {
         /// Paths the Phase 2 harness will `git init` + commit (content is
         /// irrelevant to the vocabulary index; paths are the vocabulary).
         let files: [String]
+
+        init(name: String, branch: String, files: [String]) {
+            self.name = name
+            self.branch = branch
+            self.files = files
+        }
+
+        private enum CodingKeys: String, CodingKey, CaseIterable {
+            case name, branch, files
+        }
+
+        init(from decoder: Decoder) throws {
+            try AgentDictationEvalCorpus.rejectUnknownKeys(
+                in: decoder,
+                allowed: Set(CodingKeys.allCases.map(\.rawValue)),
+                describing: "repo fixture"
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            name = try container.decode(String.self, forKey: .name)
+            branch = try container.decode(String.self, forKey: .branch)
+            files = try container.decode([String].self, forKey: .files)
+        }
     }
 
     struct LoadedStratum {
@@ -163,6 +312,7 @@ enum AgentDictationEvalCorpus {
     enum LoadError: Error, CustomStringConvertible {
         case corpusDirectoryMissing(String)
         case decodeFailed(file: String, underlying: Error)
+        case duplicateRepoFixtureName(String)
 
         var description: String {
             switch self {
@@ -170,6 +320,8 @@ enum AgentDictationEvalCorpus {
                 return "corpus directory not found at \(path)"
             case .decodeFailed(let file, let underlying):
                 return "failed to decode \(file): \(underlying)"
+            case .duplicateRepoFixtureName(let name):
+                return "duplicate repo fixture name '\(name)' — fixture names must be unique across fixtures/"
             }
         }
     }
@@ -205,7 +357,20 @@ enum AgentDictationEvalCorpus {
         let fixtures = try decodeJSONFiles(in: fixturesDirectory) { fileName, data in
             try decode(RepoFixture.self, from: data, file: fileName)
         }
-        return Dictionary(uniqueKeysWithValues: fixtures.map { ($0.name, $0) })
+        return try indexRepoFixtures(fixtures)
+    }
+
+    /// Keys fixtures by name, throwing a readable error on duplicates
+    /// (Dictionary(uniqueKeysWithValues:) would trap and crash the suite
+    /// instead of producing an XCTest failure).
+    static func indexRepoFixtures(_ fixtures: [RepoFixture]) throws -> [String: RepoFixture] {
+        var indexed: [String: RepoFixture] = [:]
+        for fixture in fixtures {
+            guard indexed.updateValue(fixture, forKey: fixture.name) == nil else {
+                throw LoadError.duplicateRepoFixtureName(fixture.name)
+            }
+        }
+        return indexed
     }
 
     static func allCases() throws -> [Case] {
