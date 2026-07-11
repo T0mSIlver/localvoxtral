@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "stratum": "paste-clipboard-macro",
+  "description": "Spoken 'paste clipboard' / 'colle le presse-papier' macro. macro:true → the payload MUST be embedded (payload substring of intendedText) and the marker phrase + $LV_CLIPBOARD_PAYLOAD placeholder must not leak. macro:false → explicit negatives: ordinary sentences about clipboards must NOT fire (payload in forbiddenSubstrings).",
+  "cases": [
+    {
+      "id": "h-en-field-fix-error",
+      "lang": "en",
+      "spokenForm": "fix this error paste clipboard in dictation view model dot swift dash dash verbose",
+      "intendedText": "Fix this error: Fatal error: Unexpectedly found nil while unwrapping an Optional value in DictationViewModel.swift --verbose",
+      "requiredTokens": ["Fatal error: Unexpectedly found nil", "DictationViewModel.swift", "--verbose"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD", "dash dash"],
+      "features": {"clipboard": "Fatal error: Unexpectedly found nil while unwrapping an Optional value", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "Field-observed verbatim: macro + filename + flag in one utterance.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "h-en-macro-stack-trace",
+      "lang": "en",
+      "spokenForm": "explain this stack trace paste clipboard",
+      "intendedText": "Explain this stack trace: Thread 1: EXC_BAD_ACCESS (code=1, address=0x0)",
+      "requiredTokens": ["EXC_BAD_ACCESS"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "Thread 1: EXC_BAD_ACCESS (code=1, address=0x0)", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "Macro at utterance end."
+    },
+    {
+      "id": "h-en-macro-mid-command",
+      "lang": "en",
+      "spokenForm": "the command paste clipboard fails with exit code one on my machine",
+      "intendedText": "The command swift test --filter OverlayBuffer fails with exit code 1 on my machine.",
+      "requiredTokens": ["swift test --filter OverlayBuffer"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "swift test --filter OverlayBuffer", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "Macro mid-sentence; surrounding grammar must survive the splice."
+    },
+    {
+      "id": "h-en-macro-diff",
+      "lang": "en",
+      "spokenForm": "review this diff paste clipboard",
+      "intendedText": "Review this diff: - let timeout = 10\n+ let timeout = 40",
+      "requiredTokens": ["+ let timeout = 40"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "- let timeout = 10\n+ let timeout = 40", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "Multi-line payload must embed verbatim, newline intact."
+    },
+    {
+      "id": "h-en-macro-url",
+      "lang": "en",
+      "spokenForm": "summarize the discussion at paste clipboard",
+      "intendedText": "Summarize the discussion at https://github.com/T0mSIlver/localvoxtral/pull/118",
+      "requiredTokens": ["https://github.com/T0mSIlver/localvoxtral/pull/118"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "https://github.com/T0mSIlver/localvoxtral/pull/118", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "URL payload — one polish-mangled character breaks the link."
+    },
+    {
+      "id": "h-en-macro-json",
+      "lang": "en",
+      "spokenForm": "validate this config paste clipboard against the schema",
+      "intendedText": "Validate this config {\"port\": 8472, \"model\": \"qwen\"} against the schema.",
+      "requiredTokens": ["{\"port\": 8472, \"model\": \"qwen\"}"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "{\"port\": 8472, \"model\": \"qwen\"}", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "JSON payload with quotes and braces must survive byte-exact."
+    },
+    {
+      "id": "h-en-macro-start",
+      "lang": "en",
+      "spokenForm": "paste clipboard and then explain why this test is flaky",
+      "intendedText": "func testReconnectAfterDrop() async throws\nExplain why this test is flaky.",
+      "requiredTokens": ["func testReconnectAfterDrop()"],
+      "forbiddenSubstrings": ["paste clipboard", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "func testReconnectAfterDrop() async throws", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "Macro at utterance start."
+    },
+    {
+      "id": "h-en-negative-history",
+      "lang": "en",
+      "spokenForm": "the clipboard history is broken on my machine can you check the paste logic",
+      "intendedText": "The clipboard history is broken on my machine; can you check the paste logic?",
+      "requiredTokens": ["clipboard history", "paste logic"],
+      "forbiddenSubstrings": ["TODO: rotate the API keys", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "TODO: rotate the API keys", "macro": false},
+      "status": {"tokens": "known-hard"},
+      "notes": "Task-specified negative: talking about the clipboard must not fire the macro or leak the payload.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "h-en-negative-verb",
+      "lang": "en",
+      "spokenForm": "users paste the clipboard contents into the terminal all the time",
+      "intendedText": "Users paste the clipboard contents into the terminal all the time.",
+      "requiredTokens": ["paste the clipboard contents"],
+      "forbiddenSubstrings": ["TODO: rotate the API keys", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "TODO: rotate the API keys", "macro": false},
+      "status": {"tokens": "known-hard"},
+      "notes": "Near-marker word order ('paste the clipboard') must not fire."
+    },
+    {
+      "id": "h-en-negative-manager",
+      "lang": "en",
+      "spokenForm": "copy the error and paste it into the clipboard manager",
+      "intendedText": "Copy the error and paste it into the clipboard manager.",
+      "requiredTokens": ["clipboard manager"],
+      "forbiddenSubstrings": ["TODO: rotate the API keys", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "TODO: rotate the API keys", "macro": false},
+      "status": {"tokens": "known-hard"},
+      "notes": "'paste' and 'clipboard' both present but separated — must not fire."
+    },
+    {
+      "id": "h-fr-macro-erreur",
+      "lang": "fr",
+      "spokenForm": "explique cette erreur colle le presse-papier",
+      "intendedText": "Explique cette erreur : Fatal error: Index out of range",
+      "requiredTokens": ["Fatal error: Index out of range"],
+      "forbiddenSubstrings": ["colle le presse-papier", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "Fatal error: Index out of range", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "French macro phrase at utterance end (task-specified spoken form)."
+    },
+    {
+      "id": "h-fr-macro-commande",
+      "lang": "fr",
+      "spokenForm": "la commande colle le presse-papier échoue sur ma machine",
+      "intendedText": "La commande swift build -c release échoue sur ma machine.",
+      "requiredTokens": ["swift build -c release"],
+      "forbiddenSubstrings": ["colle le presse-papier", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "swift build -c release", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "French macro mid-sentence."
+    },
+    {
+      "id": "h-fr-macro-diff",
+      "lang": "fr",
+      "spokenForm": "relis ce diff colle le presse-papier avant de valider",
+      "intendedText": "Relis ce diff + retryCount = 5 avant de valider.",
+      "requiredTokens": ["+ retryCount = 5"],
+      "forbiddenSubstrings": ["colle le presse-papier", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "+ retryCount = 5", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "French macro with a diff-line payload."
+    },
+    {
+      "id": "h-fr-macro-url",
+      "lang": "fr",
+      "spokenForm": "résume la discussion sur colle le presse-papier",
+      "intendedText": "Résume la discussion sur https://github.com/T0mSIlver/localvoxtral/pull/116",
+      "requiredTokens": ["https://github.com/T0mSIlver/localvoxtral/pull/116"],
+      "forbiddenSubstrings": ["colle le presse-papier", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "https://github.com/T0mSIlver/localvoxtral/pull/116", "macro": true},
+      "status": {"tokens": "known-hard"},
+      "notes": "French macro with a URL payload."
+    },
+    {
+      "id": "h-fr-negative-histoire",
+      "lang": "fr",
+      "spokenForm": "l'historique du presse-papier est cassé sur ma machine",
+      "intendedText": "L'historique du presse-papier est cassé sur ma machine.",
+      "requiredTokens": ["presse-papier"],
+      "forbiddenSubstrings": ["TODO: régénérer les clés d'API", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "TODO: régénérer les clés d'API", "macro": false},
+      "status": {"tokens": "known-hard"},
+      "notes": "French negative: mentioning the clipboard must not fire."
+    },
+    {
+      "id": "h-fr-negative-verbe",
+      "lang": "fr",
+      "spokenForm": "colle le résultat dans le terminal et relance",
+      "intendedText": "Colle le résultat dans le terminal et relance.",
+      "requiredTokens": ["terminal"],
+      "forbiddenSubstrings": ["TODO: régénérer les clés d'API", "$LV_CLIPBOARD_PAYLOAD"],
+      "features": {"clipboard": "TODO: régénérer les clés d'API", "macro": false},
+      "status": {"tokens": "known-hard"},
+      "notes": "French near-marker ('colle le …') with a different object — must not fire."
+    }
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "stratum": "clipboard-context",
+  "description": "Clipboard-as-context grounding (opt-in feature): the clipboard carries the exact spelling of an identifier/branch/hash the user speaks loosely; polish must adopt the clipboard spelling. macro is NOT set — the payload is context, not content to embed.",
+  "cases": [
+    {
+      "id": "g-en-field-user-session",
+      "lang": "en",
+      "spokenForm": "look at user session manager dot swift",
+      "intendedText": "Look at UserSessionManager.swift.",
+      "requiredTokens": ["UserSessionManager.swift"],
+      "forbiddenSubstrings": ["dot swift"],
+      "features": {"clipboard": "UserSessionManager.swift"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Field-observed verbatim: clipboard carries the exact filename.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "g-en-ts-error",
+      "lang": "en",
+      "spokenForm": "the use auth import is missing in the test file",
+      "intendedText": "The useAuth import is missing in the test file.",
+      "requiredTokens": ["useAuth"],
+      "features": {"clipboard": "error TS2304: Cannot find name 'useAuth'."},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Compiler error on the clipboard grounds camelCase spelling."
+    },
+    {
+      "id": "g-en-identifier",
+      "lang": "en",
+      "spokenForm": "the overlay buffer session coordinator holds the timing logic",
+      "intendedText": "The OverlayBufferSessionCoordinator holds the timing logic.",
+      "requiredTokens": ["OverlayBufferSessionCoordinator"],
+      "features": {"clipboard": "OverlayBufferSessionCoordinator"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Long PascalCase type name grounded by the clipboard."
+    },
+    {
+      "id": "g-en-branch-name",
+      "lang": "en",
+      "spokenForm": "rebase my branch onto feat slash polish helper m l x swift",
+      "intendedText": "Rebase my branch onto feat/polish-helper-mlx-swift.",
+      "requiredTokens": ["feat/polish-helper-mlx-swift"],
+      "features": {"clipboard": "feat/polish-helper-mlx-swift"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Hyphenated branch name — unrecoverable from speech without the clipboard."
+    },
+    {
+      "id": "g-en-hash",
+      "lang": "en",
+      "spokenForm": "cherry pick the commit eight three d f three e five",
+      "intendedText": "Cherry-pick the commit 83df3e5.",
+      "requiredTokens": ["83df3e5"],
+      "features": {"clipboard": "83df3e5"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Hex short hash spoken digit-by-letter, grounded by the clipboard."
+    },
+    {
+      "id": "g-en-pr-number",
+      "lang": "en",
+      "spokenForm": "open the pull request page for number one one eight",
+      "intendedText": "Open the pull request page for #118.",
+      "requiredTokens": ["118"],
+      "features": {"clipboard": "https://github.com/T0mSIlver/localvoxtral/pull/118"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "PR URL on the clipboard confirms the spoken number."
+    },
+    {
+      "id": "g-en-env-var",
+      "lang": "en",
+      "spokenForm": "why is localvoxtral codesign identity not picked up by the runner",
+      "intendedText": "Why is LOCALVOXTRAL_CODESIGN_IDENTITY not picked up by the runner?",
+      "requiredTokens": ["LOCALVOXTRAL_CODESIGN_IDENTITY"],
+      "features": {"clipboard": "LOCALVOXTRAL_CODESIGN_IDENTITY"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "SCREAMING_SNAKE env var grounded by the clipboard."
+    },
+    {
+      "id": "g-en-stack-frame",
+      "lang": "en",
+      "spokenForm": "the crash is in posix pipe read next chunk",
+      "intendedText": "The crash is in POSIXPipeRead.nextChunk(fromDescriptor:).",
+      "requiredTokens": ["POSIXPipeRead.nextChunk"],
+      "features": {"clipboard": "POSIXPipeRead.nextChunk(fromDescriptor:)"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Full Swift symbol with argument label from the clipboard."
+    },
+    {
+      "id": "g-en-package-name",
+      "lang": "en",
+      "spokenForm": "bump shortcut recorder to the latest tag",
+      "intendedText": "Bump ShortcutRecorder to the latest tag.",
+      "requiredTokens": ["ShortcutRecorder"],
+      "features": {"clipboard": "ShortcutRecorder"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Package name casing from the clipboard."
+    },
+    {
+      "id": "g-fr-field-user-session",
+      "lang": "fr",
+      "spokenForm": "regarde user session manager point swift",
+      "intendedText": "Regarde UserSessionManager.swift.",
+      "requiredTokens": ["UserSessionManager.swift"],
+      "forbiddenSubstrings": ["point swift"],
+      "features": {"clipboard": "UserSessionManager.swift"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French mirror of the field-observed clipboard-grounding case.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "g-fr-identifier",
+      "lang": "fr",
+      "spokenForm": "le coordinateur overlay buffer session coordinator gère le timing",
+      "intendedText": "Le coordinateur OverlayBufferSessionCoordinator gère le timing.",
+      "requiredTokens": ["OverlayBufferSessionCoordinator"],
+      "features": {"clipboard": "OverlayBufferSessionCoordinator"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence around a clipboard-grounded type name."
+    },
+    {
+      "id": "g-fr-branch",
+      "lang": "fr",
+      "spokenForm": "rebase ma branche sur feat slash polish helper m l x swift",
+      "intendedText": "Rebase ma branche sur feat/polish-helper-mlx-swift.",
+      "requiredTokens": ["feat/polish-helper-mlx-swift"],
+      "features": {"clipboard": "feat/polish-helper-mlx-swift"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French dictation of a hyphenated branch name."
+    },
+    {
+      "id": "g-fr-env-var",
+      "lang": "fr",
+      "spokenForm": "pourquoi la variable localvoxtral codesign identity est ignorée",
+      "intendedText": "Pourquoi la variable LOCALVOXTRAL_CODESIGN_IDENTITY est-elle ignorée ?",
+      "requiredTokens": ["LOCALVOXTRAL_CODESIGN_IDENTITY"],
+      "features": {"clipboard": "LOCALVOXTRAL_CODESIGN_IDENTITY"},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French question around a clipboard-grounded env var."
+    }
+  ]
+}

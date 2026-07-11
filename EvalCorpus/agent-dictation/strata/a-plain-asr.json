@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "stratum": "plain-asr-baseline",
+  "description": "Plain technical sentences scored on the raw ASR transcript (no polish). requiredTokens are ASR-stable content words only; casing is not asserted. Establishes the recognition floor the polish strata build on.",
+  "pipeline": "asr-only",
+  "cases": [
+    {
+      "id": "a-en-websocket-timeout",
+      "lang": "en",
+      "spokenForm": "the integration tests fail on main since yesterday. the websocket client times out after ten seconds. look at the reconnect logic and add a regression test before changing anything else.",
+      "intendedText": "The integration tests fail on main since yesterday. The websocket client times out after ten seconds. Look at the reconnect logic and add a regression test before changing anything else.",
+      "requiredTokens": ["integration", "websocket", "reconnect", "regression"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Multi-sentence Claude Code prompt shape: context + symptom + request + constraint.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    },
+    {
+      "id": "a-en-refactor-view-model",
+      "lang": "en",
+      "spokenForm": "the view model file is getting too large. split the session lifecycle into its own file but keep the public interface unchanged.",
+      "intendedText": "The view model file is getting too large. Split the session lifecycle into its own file but keep the public interface unchanged.",
+      "requiredTokens": ["view model", "session", "lifecycle", "public interface"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Refactor request with a hard constraint; all tokens are dictionary words.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    },
+    {
+      "id": "a-en-memory-leak",
+      "lang": "en",
+      "spokenForm": "profile the app for memory leaks during long dictation sessions and summarize what allocations grow over time.",
+      "intendedText": "Profile the app for memory leaks during long dictation sessions and summarize what allocations grow over time.",
+      "requiredTokens": ["memory", "dictation", "allocations"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Investigation ask with domain nouns the ASR must not mangle."
+    },
+    {
+      "id": "a-en-explain-merge",
+      "lang": "en",
+      "spokenForm": "explain how the overlap merge algorithm decides which words from the previous transcript survive into the merged result.",
+      "intendedText": "Explain how the overlap merge algorithm decides which words from the previous transcript survive into the merged result.",
+      "requiredTokens": ["overlap", "merge", "transcript"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Question about this repo's own text-merge subsystem."
+    },
+    {
+      "id": "a-en-ci-flaky",
+      "lang": "en",
+      "spokenForm": "the continuous integration job was flaky twice this week. find the flaky test, explain the race, and propose a deterministic fix.",
+      "intendedText": "The continuous integration job was flaky twice this week. Find the flaky test, explain the race, and propose a deterministic fix.",
+      "requiredTokens": ["flaky", "race", "deterministic"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "CI-debugging vocabulary; 'flaky' and 'deterministic' are common ASR casualties.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    },
+    {
+      "id": "a-en-code-review",
+      "lang": "en",
+      "spokenForm": "review the last three commits for concurrency issues and tell me if any shared state is mutated without a lock.",
+      "intendedText": "Review the last three commits for concurrency issues and tell me if any shared state is mutated without a lock.",
+      "requiredTokens": ["concurrency", "shared state", "lock"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Review ask with concurrency jargon."
+    },
+    {
+      "id": "a-en-error-context",
+      "lang": "en",
+      "spokenForm": "when the backend crashes on startup we lose the error message. capture standard error and surface the last line in the alert.",
+      "intendedText": "When the backend crashes on startup we lose the error message. Capture standard error and surface the last line in the alert.",
+      "requiredTokens": ["backend", "standard error", "alert"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Bug report + fix request across two sentences."
+    },
+    {
+      "id": "a-en-perf-audio",
+      "lang": "en",
+      "spokenForm": "measure the latency between the microphone chunk arriving and the text appearing, then break it down by pipeline stage.",
+      "intendedText": "Measure the latency between the microphone chunk arriving and the text appearing, then break it down by pipeline stage.",
+      "requiredTokens": ["latency", "microphone", "pipeline"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Performance investigation phrasing."
+    },
+    {
+      "id": "a-en-docs-readme",
+      "lang": "en",
+      "spokenForm": "update the readme section about installation and mention that the first launch downloads the model weights.",
+      "intendedText": "Update the readme section about installation and mention that the first launch downloads the model weights.",
+      "requiredTokens": ["installation", "first launch", "model weights"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Docs ask; 'readme' itself is excluded from tokens because ASR may split it."
+    },
+    {
+      "id": "a-en-simple-question",
+      "lang": "en",
+      "spokenForm": "what does the health monitor do when the audio device disappears in the middle of a session",
+      "intendedText": "What does the health monitor do when the audio device disappears in the middle of a session?",
+      "requiredTokens": ["health monitor", "audio device", "session"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Bare question with no dictated punctuation at all."
+    },
+    {
+      "id": "a-en-constraint-prompt",
+      "lang": "en",
+      "spokenForm": "add retry logic to the download step. do not touch the settings code. keep the diff small and add a unit test.",
+      "intendedText": "Add retry logic to the download step. Do not touch the settings code. Keep the diff small and add a unit test.",
+      "requiredTokens": ["retry", "download", "unit test"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Terse imperative style with negative constraints — common agent-prompt shape.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    },
+    {
+      "id": "a-en-bug-report",
+      "lang": "en",
+      "spokenForm": "steps to reproduce. start dictation, switch to another window, stop dictation. the overlay stays on screen forever.",
+      "intendedText": "Steps to reproduce. Start dictation, switch to another window, stop dictation. The overlay stays on screen forever.",
+      "requiredTokens": ["reproduce", "dictation", "overlay"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "Dictated bug-report structure."
+    },
+    {
+      "id": "a-fr-tests-integration",
+      "lang": "fr",
+      "spokenForm": "les tests d'intégration échouent depuis hier matin. regarde la logique de reconnexion et ajoute un test de régression.",
+      "intendedText": "Les tests d'intégration échouent depuis hier matin. Regarde la logique de reconnexion et ajoute un test de régression.",
+      "requiredTokens": ["intégration", "reconnexion", "régression"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French mirror of the multi-sentence prompt shape; accented tokens stress ASR."
+    },
+    {
+      "id": "a-fr-fuite-memoire",
+      "lang": "fr",
+      "spokenForm": "profile l'application pour trouver la fuite mémoire pendant les longues sessions de dictée.",
+      "intendedText": "Profile l'application pour trouver la fuite mémoire pendant les longues sessions de dictée.",
+      "requiredTokens": ["fuite", "mémoire", "dictée"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French investigation ask with accented domain nouns."
+    },
+    {
+      "id": "a-fr-explique-fusion",
+      "lang": "fr",
+      "spokenForm": "explique comment l'algorithme de fusion décide quels mots de la transcription précédente survivent.",
+      "intendedText": "Explique comment l'algorithme de fusion décide quels mots de la transcription précédente survivent.",
+      "requiredTokens": ["fusion", "transcription"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French question about the merge algorithm."
+    },
+    {
+      "id": "a-fr-revue-code",
+      "lang": "fr",
+      "spokenForm": "relis les trois derniers commits et dis-moi si un état partagé est modifié sans verrou.",
+      "intendedText": "Relis les trois derniers commits et dis-moi si un état partagé est modifié sans verrou.",
+      "requiredTokens": ["commits", "état partagé", "verrou"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French review ask mixing an English loanword (commits) with French jargon."
+    },
+    {
+      "id": "a-fr-latence",
+      "lang": "fr",
+      "spokenForm": "mesure la latence entre l'arrivée du son du micro et l'affichage du texte à l'écran.",
+      "intendedText": "Mesure la latence entre l'arrivée du son du micro et l'affichage du texte à l'écran.",
+      "requiredTokens": ["latence", "micro", "texte"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French performance phrasing."
+    },
+    {
+      "id": "a-fr-contrainte",
+      "lang": "fr",
+      "spokenForm": "ajoute une logique de nouvelle tentative au téléchargement. ne touche pas au code des réglages.",
+      "intendedText": "Ajoute une logique de nouvelle tentative au téléchargement. Ne touche pas au code des réglages.",
+      "requiredTokens": ["téléchargement", "réglages"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French imperative with a negative constraint."
+    },
+    {
+      "id": "a-fr-question-simple",
+      "lang": "fr",
+      "spokenForm": "que fait le moniteur de santé audio quand le périphérique disparaît au milieu d'une session",
+      "intendedText": "Que fait le moniteur de santé audio quand le périphérique disparaît au milieu d'une session ?",
+      "requiredTokens": ["moniteur", "périphérique", "session"],
+      "caseInsensitive": true,
+      "status": {"tokens": "known-hard"},
+      "notes": "French bare question, no dictated punctuation."
+    }
+  ]
+}

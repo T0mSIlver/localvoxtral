@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "stratum": "symbol-forms",
+  "description": "Spoken symbol forms that must become written symbols: flags (dash dash), paths (slash, dot), versions, ports, globs, assignments. Full pipeline; the polish stage owns the transform.",
+  "cases": [
+    {
+      "id": "b-en-flag-force",
+      "lang": "en",
+      "spokenForm": "run the deploy script with dash dash force and tell me if it complains",
+      "intendedText": "Run the deploy script with --force and tell me if it complains.",
+      "requiredTokens": ["--force"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Canonical long-flag dictation.",
+      "source": {"seed": "serenade-grammar"}
+    },
+    {
+      "id": "b-en-flag-save-dev",
+      "lang": "en",
+      "spokenForm": "run npm install dash dash save dev vitest",
+      "intendedText": "Run `npm install --save-dev vitest`.",
+      "requiredTokens": ["--save-dev", "vitest"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Hyphenated long flag inside a backticked command.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "b-en-short-flags-ls",
+      "lang": "en",
+      "spokenForm": "list the directory with l s dash l a",
+      "intendedText": "List the directory with `ls -la`.",
+      "requiredTokens": ["ls -la"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Letter-spelled command plus bundled short flags.",
+      "source": {"seed": "idiolect"}
+    },
+    {
+      "id": "b-en-short-flag-verbose",
+      "lang": "en",
+      "spokenForm": "rerun it with dash v for verbose output",
+      "intendedText": "Rerun it with -v for verbose output.",
+      "requiredTokens": ["-v"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Single-letter short flag; must not be absorbed into the next word."
+    },
+    {
+      "id": "b-en-version-pin",
+      "lang": "en",
+      "spokenForm": "pin node to version twenty two point three point one in the engines field",
+      "intendedText": "Pin Node to version 22.3.1 in the engines field.",
+      "requiredTokens": ["22.3.1"],
+      "forbiddenSubstrings": ["twenty two"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Spoken semver → dotted digits."
+    },
+    {
+      "id": "b-en-ports-contrast",
+      "lang": "en",
+      "spokenForm": "the local server listens on port eight thousand eighty not eight thousand",
+      "intendedText": "The local server listens on port 8080, not 8000.",
+      "requiredTokens": ["8080", "8000"],
+      "forbiddenSubstrings": ["eight thousand"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Two near-identical port numbers in one sentence."
+    },
+    {
+      "id": "b-en-port-health-url",
+      "lang": "en",
+      "spokenForm": "curl the health endpoint at localhost colon eight four seven two slash health",
+      "intendedText": "Curl the health endpoint at localhost:8472/health.",
+      "requiredTokens": ["8472", "/health"],
+      "forbiddenSubstrings": ["colon"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Digit-by-digit port (the polishd port) plus a path segment."
+    },
+    {
+      "id": "b-en-path-usr-local",
+      "lang": "en",
+      "spokenForm": "check whether uv is installed under slash u s r slash local slash bin",
+      "intendedText": "Check whether uv is installed under /usr/local/bin.",
+      "requiredTokens": ["/usr/local/bin"],
+      "forbiddenSubstrings": ["slash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Absolute path with a letter-spelled segment.",
+      "source": {"seed": "serenade-grammar"}
+    },
+    {
+      "id": "b-en-tilde-config",
+      "lang": "en",
+      "spokenForm": "the config lives in tilde slash dot config slash localvoxtral",
+      "intendedText": "The config lives in ~/.config/localvoxtral.",
+      "requiredTokens": ["~/.config/localvoxtral"],
+      "forbiddenSubstrings": ["tilde"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Tilde expansion plus a dotted directory."
+    },
+    {
+      "id": "b-en-dot-env-copy",
+      "lang": "en",
+      "spokenForm": "copy dot env dot example to dot env and fill in the token",
+      "intendedText": "Copy .env.example to .env and fill in the token.",
+      "requiredTokens": [".env.example", ".env"],
+      "forbiddenSubstrings": ["dot env"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Two dotfiles, one a prefix of the other.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "b-en-equals-assignment",
+      "lang": "en",
+      "spokenForm": "set log level equals debug in the environment",
+      "intendedText": "Set LOG_LEVEL=debug in the environment.",
+      "requiredTokens": ["LOG_LEVEL=debug"],
+      "forbiddenSubstrings": ["equals"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Spoken 'equals' → '=' plus SCREAMING_SNAKE env var inference."
+    },
+    {
+      "id": "b-en-semver-caret",
+      "lang": "en",
+      "spokenForm": "bump the dependency to caret one point five",
+      "intendedText": "Bump the dependency to ^1.5.",
+      "requiredTokens": ["^1.5"],
+      "forbiddenSubstrings": ["caret"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Spoken caret range operator."
+    },
+    {
+      "id": "b-en-glob-tmp",
+      "lang": "en",
+      "spokenForm": "delete every star dot tmp file under the build directory",
+      "intendedText": "Delete every *.tmp file under the build directory.",
+      "requiredTokens": ["*.tmp"],
+      "forbiddenSubstrings": ["star"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Glob pattern dictated with 'star'."
+    },
+    {
+      "id": "b-en-pipe-grep",
+      "lang": "en",
+      "spokenForm": "run the script and pipe the output into grep dash i error",
+      "intendedText": "Run the script and pipe the output into `grep -i error`.",
+      "requiredTokens": ["grep -i error"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Short flag inside a grep invocation; 'pipe' here is the verb, not '|'.",
+      "source": {"seed": "idiolect"}
+    },
+    {
+      "id": "b-en-swift-test-filter",
+      "lang": "en",
+      "spokenForm": "run swift test dash dash filter text merging",
+      "intendedText": "Run `swift test --filter TextMerging`.",
+      "requiredTokens": ["--filter", "TextMerging"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "The repo's own test-filter idiom; PascalCase target from two spoken words.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "b-fr-flag-force",
+      "lang": "fr",
+      "spokenForm": "lance le script de déploiement avec tiret tiret force",
+      "intendedText": "Lance le script de déploiement avec --force.",
+      "requiredTokens": ["--force"],
+      "forbiddenSubstrings": ["tiret"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French long-flag dictation ('tiret tiret')."
+    },
+    {
+      "id": "b-fr-version",
+      "lang": "fr",
+      "spokenForm": "épingle node à la version vingt-deux point trois",
+      "intendedText": "Épingle Node à la version 22.3.",
+      "requiredTokens": ["22.3"],
+      "forbiddenSubstrings": ["vingt-deux"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French spoken version number."
+    },
+    {
+      "id": "b-fr-port",
+      "lang": "fr",
+      "spokenForm": "le serveur local écoute sur le port huit mille quatre-vingts",
+      "intendedText": "Le serveur local écoute sur le port 8080.",
+      "requiredTokens": ["8080"],
+      "forbiddenSubstrings": ["huit mille"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French number words → port digits."
+    },
+    {
+      "id": "b-fr-path",
+      "lang": "fr",
+      "spokenForm": "vérifie que uv est installé sous slash u s r slash local slash bin",
+      "intendedText": "Vérifie que uv est installé sous /usr/local/bin.",
+      "requiredTokens": ["/usr/local/bin"],
+      "forbiddenSubstrings": ["slash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence around an English-spelled path."
+    },
+    {
+      "id": "b-fr-dot-env",
+      "lang": "fr",
+      "spokenForm": "copie point env point example vers point env",
+      "intendedText": "Copie .env.example vers .env.",
+      "requiredTokens": [".env.example", ".env"],
+      "forbiddenSubstrings": ["point env"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French 'point' as the dot word for dotfiles."
+    },
+    {
+      "id": "b-fr-short-flag",
+      "lang": "fr",
+      "spokenForm": "relance la commande avec tiret v pour le mode verbeux",
+      "intendedText": "Relance la commande avec -v pour le mode verbeux.",
+      "requiredTokens": ["-v"],
+      "forbiddenSubstrings": ["tiret"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French short flag."
+    },
+    {
+      "id": "b-fr-glob",
+      "lang": "fr",
+      "spokenForm": "supprime tous les fichiers étoile point tmp du dossier de build",
+      "intendedText": "Supprime tous les fichiers *.tmp du dossier de build.",
+      "requiredTokens": ["*.tmp"],
+      "forbiddenSubstrings": ["étoile"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French glob dictation ('étoile' = star)."
+    }
+  ]
+}

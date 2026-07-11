@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "stratum": "enumerations",
+  "description": "Spoken enumerations ('first… second… third…', 'un… deux… trois…') that must become numbered/bulleted Markdown lists. Structural output — token needles anchor the list markers and key content.",
+  "cases": [
+    {
+      "id": "f-en-three-steps",
+      "lang": "en",
+      "spokenForm": "first check the logs second restart the server third rerun the failing test",
+      "intendedText": "1. Check the logs\n2. Restart the server\n3. Rerun the failing test",
+      "requiredTokens": ["1.", "2.", "3.", "Restart the server"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Ordinal words → numbered list.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    },
+    {
+      "id": "f-en-numbered-explicit",
+      "lang": "en",
+      "spokenForm": "make a numbered list one install dependencies two run the build three run the tests",
+      "intendedText": "1. Install dependencies\n2. Run the build\n3. Run the tests",
+      "requiredTokens": ["1. Install", "2. Run", "3. Run the tests"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Explicit meta-instruction plus bare number words."
+    },
+    {
+      "id": "f-en-two-options",
+      "lang": "en",
+      "spokenForm": "give me two options option one keep the current api option two break it cleanly",
+      "intendedText": "Option 1: keep the current API\nOption 2: break it cleanly",
+      "requiredTokens": ["Option 1", "Option 2", "API"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Option enumeration rather than steps."
+    },
+    {
+      "id": "f-en-bullets-todo",
+      "lang": "en",
+      "spokenForm": "add bullets todo write tests todo update read me",
+      "intendedText": "- TODO: Write tests\n- TODO: Update README",
+      "requiredTokens": ["- TODO", "README"],
+      "forbiddenSubstrings": ["read me"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Repeated marker word → bullet list.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "f-en-steps-with-commands",
+      "lang": "en",
+      "spokenForm": "step one run git fetch step two run git rebase step three force push",
+      "intendedText": "1. Run `git fetch`\n2. Run `git rebase`\n3. Force push",
+      "requiredTokens": ["1.", "2.", "3.", "git fetch"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Steps containing commands that should also be backticked."
+    },
+    {
+      "id": "f-en-checklist",
+      "lang": "en",
+      "spokenForm": "make a checklist verify the signature check the entitlements launch the app",
+      "intendedText": "- [ ] Verify the signature\n- [ ] Check the entitlements\n- [ ] Launch the app",
+      "requiredTokens": ["- [ ]", "entitlements"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Checkbox list from a meta-instruction."
+    },
+    {
+      "id": "f-en-inline-to-list",
+      "lang": "en",
+      "spokenForm": "the three failure modes are timeout disconnect and empty transcript put them in a list",
+      "intendedText": "Failure modes:\n1. Timeout\n2. Disconnect\n3. Empty transcript",
+      "requiredTokens": ["1.", "2.", "3.", "transcript"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Trailing meta-instruction restructures the preceding clause."
+    },
+    {
+      "id": "f-en-heading-plus-list",
+      "lang": "en",
+      "spokenForm": "write a markdown heading level two known issues then list stale cache and race condition",
+      "intendedText": "## Known issues\n- Stale cache\n- Race condition",
+      "requiredTokens": ["## Known issues", "Stale cache"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Structural heading dictation plus bullets.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "f-fr-trois-etapes",
+      "lang": "fr",
+      "spokenForm": "premièrement vérifie les logs deuxièmement redémarre le serveur troisièmement relance le test",
+      "intendedText": "1. Vérifie les logs\n2. Redémarre le serveur\n3. Relance le test",
+      "requiredTokens": ["1.", "2.", "3.", "serveur"],
+      "forbiddenSubstrings": ["premièrement"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French ordinal adverbs → numbered list."
+    },
+    {
+      "id": "f-fr-liste-numerotee",
+      "lang": "fr",
+      "spokenForm": "fais une liste numérotée un installer les dépendances deux lancer le build trois lancer les tests",
+      "intendedText": "1. Installer les dépendances\n2. Lancer le build\n3. Lancer les tests",
+      "requiredTokens": ["1. Installer", "2. Lancer", "3. Lancer les tests"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French explicit numbered-list instruction."
+    },
+    {
+      "id": "f-fr-puces",
+      "lang": "fr",
+      "spokenForm": "ajoute des puces vérifier la signature vérifier les droits lancer l'application",
+      "intendedText": "- Vérifier la signature\n- Vérifier les droits\n- Lancer l'application",
+      "requiredTokens": ["- Vérifier la signature", "- Lancer"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French bullet dictation ('puces')."
+    },
+    {
+      "id": "f-fr-titre-liste",
+      "lang": "fr",
+      "spokenForm": "écris un titre markdown niveau deux problèmes connus puis liste cache obsolète et condition de course",
+      "intendedText": "## Problèmes connus\n- Cache obsolète\n- Condition de course",
+      "requiredTokens": ["## Problèmes connus", "Cache obsolète"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French heading + bullets."
+    }
+  ]
+}

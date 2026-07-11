@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "stratum": "guard-stress",
+  "description": "Deterministic token-guard stress: prompts dense in flags, URLs, hashes, env vars, and quoted strings. Every technical token must survive polish byte-exact; the guard exists precisely for these.",
+  "cases": [
+    {
+      "id": "j-en-deploy-dense",
+      "lang": "en",
+      "spokenForm": "deploy with dash dash env production dash dash region e u dash west dash one and read a p i underscore key from dot env",
+      "intendedText": "Deploy with --env production --region eu-west-1 and read API_KEY from .env.",
+      "requiredTokens": ["--env production", "--region eu-west-1", "API_KEY", ".env"],
+      "forbiddenSubstrings": ["dash dash", "underscore"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Two long flags, a hyphenated region, an env var, and a dotfile in one breath."
+    },
+    {
+      "id": "j-en-git-dense",
+      "lang": "en",
+      "spokenForm": "git log dash dash oneline shows the bad commit a b one two three f then revert it with dash dash no dash edit",
+      "intendedText": "git log --oneline shows the bad commit ab123f; then revert it with --no-edit.",
+      "requiredTokens": ["--oneline", "ab123f", "--no-edit"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Hex short hash spoken character-wise plus two long flags."
+    },
+    {
+      "id": "j-en-url-dense",
+      "lang": "en",
+      "spokenForm": "fetch h t t p s colon slash slash api dot example dot com slash v two slash users with curl dash capital h authorization",
+      "intendedText": "Fetch https://api.example.com/v2/users with curl -H Authorization.",
+      "requiredTokens": ["https://api.example.com/v2/users", "-H"],
+      "forbiddenSubstrings": ["h t t p"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Fully-spelled URL plus a capitalized short flag."
+    },
+    {
+      "id": "j-en-env-dense",
+      "lang": "en",
+      "spokenForm": "set node underscore env to production and log underscore level to debug before running the server",
+      "intendedText": "Set NODE_ENV to production and LOG_LEVEL to debug before running the server.",
+      "requiredTokens": ["NODE_ENV", "LOG_LEVEL"],
+      "forbiddenSubstrings": ["underscore"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Two SCREAMING_SNAKE env vars in one sentence."
+    },
+    {
+      "id": "j-en-packaging-multi",
+      "lang": "en",
+      "spokenForm": "the packaging job fails on the runner. the log says codesign exited with one. rerun with dash dash verbose and check localvoxtral underscore codesign underscore identity is set. do not re-sign with the ad hoc key",
+      "intendedText": "The packaging job fails on the runner. The log says codesign exited with 1. Rerun with --verbose and check LOCALVOXTRAL_CODESIGN_IDENTITY is set. Do not re-sign with the ad hoc key.",
+      "requiredTokens": ["--verbose", "LOCALVOXTRAL_CODESIGN_IDENTITY", "codesign"],
+      "forbiddenSubstrings": ["dash dash", "underscore"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Realistic four-sentence agent prompt: context, evidence, request, constraint.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    },
+    {
+      "id": "j-en-docker-dense",
+      "lang": "en",
+      "spokenForm": "docker run dash p eight thousand eighty colon eighty dash dash rm dash dash name web nginx",
+      "intendedText": "docker run -p 8080:80 --rm --name web nginx",
+      "requiredTokens": ["-p 8080:80", "--rm", "--name web"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Port mapping with a colon plus three flags — pure command dictation."
+    },
+    {
+      "id": "j-en-tag-hash",
+      "lang": "en",
+      "spokenForm": "tag v one point two point three at commit deadbeef and push with dash dash tags",
+      "intendedText": "Tag v1.2.3 at commit deadbeef and push with --tags.",
+      "requiredTokens": ["v1.2.3", "deadbeef", "--tags"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Version tag, pronounceable hex hash, and a flag together."
+    },
+    {
+      "id": "j-en-regex",
+      "lang": "en",
+      "spokenForm": "grep dash capital e for the pattern caret error colon dot star in the log file",
+      "intendedText": "Grep -E for the pattern ^error:.* in the log file.",
+      "requiredTokens": ["-E", "^error:.*"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Regex metacharacters dictated word-by-word."
+    },
+    {
+      "id": "j-en-quoted-commit",
+      "lang": "en",
+      "spokenForm": "run git commit dash m quote fix login race quote then push",
+      "intendedText": "Run `git commit -m \"fix login race\"` then push.",
+      "requiredTokens": ["git commit -m \"fix login race\""],
+      "forbiddenSubstrings": ["quote"],
+      "status": {"tokens": "known-hard"},
+      "notes": "Spoken quote delimiters around a commit message.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "j-fr-deploy-dense",
+      "lang": "fr",
+      "spokenForm": "déploie avec tiret tiret env production tiret tiret region e u tiret west tiret one et lis a p i underscore key depuis point env",
+      "intendedText": "Déploie avec --env production --region eu-west-1 et lis API_KEY depuis .env.",
+      "requiredTokens": ["--env production", "--region eu-west-1", "API_KEY", ".env"],
+      "forbiddenSubstrings": ["tiret", "underscore"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French mirror of the dense deploy command."
+    },
+    {
+      "id": "j-fr-git-dense",
+      "lang": "fr",
+      "spokenForm": "git log tiret tiret oneline montre le commit fautif puis annule-le avec git revert tiret tiret no edit",
+      "intendedText": "git log --oneline montre le commit fautif. Annule-le avec git revert --no-edit.",
+      "requiredTokens": ["--oneline", "--no-edit"],
+      "forbiddenSubstrings": ["tiret"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French sentence around two git long flags."
+    },
+    {
+      "id": "j-fr-url",
+      "lang": "fr",
+      "spokenForm": "récupère h t t p s deux points slash slash api point example point com slash v deux slash users",
+      "intendedText": "Récupère https://api.example.com/v2/users.",
+      "requiredTokens": ["https://api.example.com/v2/users"],
+      "forbiddenSubstrings": ["deux points"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French URL dictation ('deux points' for the colon)."
+    },
+    {
+      "id": "j-fr-env",
+      "lang": "fr",
+      "spokenForm": "mets node underscore env à production et log underscore level à debug avant de lancer le serveur",
+      "intendedText": "Mets NODE_ENV à production et LOG_LEVEL à debug avant de lancer le serveur.",
+      "requiredTokens": ["NODE_ENV", "LOG_LEVEL"],
+      "forbiddenSubstrings": ["underscore"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French sentence with two env vars."
+    },
+    {
+      "id": "j-fr-packaging-multi",
+      "lang": "fr",
+      "spokenForm": "le job de packaging échoue sur le runner. relance avec tiret tiret verbose et vérifie que la variable d'identité est définie. ne signe pas avec la clé ad hoc",
+      "intendedText": "Le job de packaging échoue sur le runner. Relance avec --verbose et vérifie que la variable d'identité est définie. Ne signe pas avec la clé ad hoc.",
+      "requiredTokens": ["--verbose", "runner"],
+      "forbiddenSubstrings": ["tiret"],
+      "status": {"tokens": "known-hard"},
+      "notes": "French multi-sentence agent prompt with constraint.",
+      "source": {"seed": "claude-code-prompt-patterns"}
+    }
+  ]
+}
