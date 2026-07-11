@@ -79,4 +79,7 @@ while IFS= read -r file; do
 done <"$CHANGED_FILES_FILE"
 
 echo "run=false"
-echo "reason=no LLM-relevant changes; add $MARKER to the PR body or head commit to opt in"
+# "and push": the marker is only read from the event payload at run-creation
+# time — editing the PR body after a skipped run creates no new run, and
+# reruns reuse the original payload, so a late-added marker needs a push.
+echo "reason=no LLM-relevant changes; add $MARKER to the PR body or commit message and push to opt in"

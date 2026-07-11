@@ -173,7 +173,11 @@ CI does not run LLM inference on every push (owner decision, 2026-07-11):
 the polishd live-model integration step in `ci.yml` runs only when the diff
 touches LLM-relevant paths, or when the PR body / head commit message
 contains the literal marker `[run-llm-eval]` (the explicit opt-in for
-judgment calls). The exact path list lives in
+judgment calls). The marker must be present when the run is CREATED: editing
+the PR body after a skipped run does not retrigger CI, and rerunning a run
+reuses its original event payload — after adding the marker, push (an empty
+commit works, or put the marker in the commit message). The exact path list
+lives in
 `scripts/ci/llm-lane-filter.sh` — PolishHelper/**, the bundled
 `llm_*.toml` prompts, model catalog/pins, the polish client, token guard,
 prompt warmup, clipboard context/macro, repo vocabulary, the polish-commit
