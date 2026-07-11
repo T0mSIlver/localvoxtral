@@ -15,6 +15,10 @@ struct PolishdMain {
         var parentPID: pid_t?
         var defaultMaxTokens = 2048
         var cacheLimitMB = 64
+        /// LRU prompt-prefix checkpoint slots (see PromptPrefixSlotStore).
+        /// Default 2 = one per prompt profile (standard/agent); 1 reproduces
+        /// the original single-slot behavior for tests.
+        var promptCacheSlots = 2
     }
 
     static func main() async {
@@ -59,6 +63,11 @@ struct PolishdMain {
                     throw OptionError.invalidValue(flag)
                 }
                 options.cacheLimitMB = limit
+            case "--prompt-cache-slots":
+                guard let slots = Int(try value(for: flag)), slots >= 1 else {
+                    throw OptionError.invalidValue(flag)
+                }
+                options.promptCacheSlots = slots
             default:
                 throw OptionError.unknownFlag(flag)
             }
@@ -119,9 +128,12 @@ struct PolishdMain {
         let loadStart = ContinuousClock.now
         let model = try await MLXPolishModel.load(
             directory: modelDirectory,
-            defaultMaxTokens: options.defaultMaxTokens
+            defaultMaxTokens: options.defaultMaxTokens,
+            promptCacheSlots: options.promptCacheSlots
         )
-        PolishdLog.info("model loaded in \(loadStart.duration(to: .now)); \(memorySummary())")
+        PolishdLog.info(
+            "model loaded in \(loadStart.duration(to: .now)); \(memorySummary()); "
+                + "prompt cache slots: \(options.promptCacheSlots)")
 
         let router = PolishdRouter(
             responder: model,
