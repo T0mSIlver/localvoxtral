@@ -93,7 +93,8 @@ final class PolishHelperIntegrationTests: XCTestCase {
     /// The helper never downloads (missing model = hard error by design), so
     /// the suite provisions the shared HF cache itself when the model is
     /// absent — the same cache layout + include patterns as the app's
-    /// HFModelDownloader, idempotent, ~0.9 GB once per build host/user.
+    /// HFModelDownloader, idempotent, ~3.3 GB for the default 4B (once per
+    /// build host/user).
     /// Provisioning failures are test FAILURES, not skips: this suite only
     /// runs when explicitly enabled, and a green skip would hide broken infra.
     private func ensureModelCached(_ repoID: String) async throws {

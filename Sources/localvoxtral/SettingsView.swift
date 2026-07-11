@@ -332,7 +332,7 @@ private struct ConnectionSettingsPane: View {
 
                         SettingsFieldRow(title: "Model") {
                             TextField(
-                                "mlx-community/Qwen3.5-0.8B-8bit",
+                                "mlx-community/Qwen3.5-4B-OptiQ-4bit",
                                 text: $settings.llmPolishingModel
                             )
                             .textFieldStyle(.roundedBorder)

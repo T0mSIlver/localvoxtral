@@ -41,21 +41,21 @@ enum PolishModelCatalog {
         // them (field finding: picker said 6.6, bar said 7.1).
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-0.8B-8bit",
-            displayName: "Qwen3.5 0.8B (fastest, default)",
+            displayName: "Qwen3.5 0.8B (fastest)",
             sizeOnDiskGB: 1.0,
             estimatedRAMGB: 1.2,
             samplingDefaults: nil,
             chatTemplateArguments: nil,
-            summary: "For any Apple Silicon Mac"
+            summary: "Lightest option, for constrained Macs"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
-            displayName: "Qwen3.5 4B (better quality)",
+            displayName: "Qwen3.5 4B (better quality, default)",
             sizeOnDiskGB: 3.3,
             estimatedRAMGB: 3.8,
             samplingDefaults: nil,
             chatTemplateArguments: ["enable_thinking": false],
-            summary: "For 16 GB+ Macs"
+            summary: "For any Apple Silicon Mac"
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
@@ -68,7 +68,15 @@ enum PolishModelCatalog {
         ),
     ]
 
-    static let defaultOption = options[0]
+    /// Owner decision 2026-07-11: the 4B is the default for ALL users (14/14
+    /// on the punctuation eval vs the 0.8B's 10/14) — no RAM-based fallback;
+    /// the 0.8B stays selectable in the picker for constrained Macs.
+    static let defaultOption: PolishModelOption = {
+        guard let option = option(forRepoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit") else {
+            preconditionFailure("Default polishing model missing from the catalog.")
+        }
+        return option
+    }()
 
     static func option(forRepoID repoID: String) -> PolishModelOption? {
         options.first { $0.repoID == repoID }

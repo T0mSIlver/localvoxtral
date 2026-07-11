@@ -103,7 +103,9 @@ enum LLMPolishEvalSupport {
         ),
     ]
 
-    /// Cases the pinned 0.8B model cannot do reliably. Two flavors:
+    /// Cases the original 0.8B default could not do reliably (the 4B default
+    /// since 2026-07-11 passes many of them — promotion still requires
+    /// stability across TWO server states, see below). Two flavors:
     /// never-pass cases (a probe battery showed the model cannot even
     /// perceive the error — it answers "the spacing is correct" when asked
     /// yes/no with the rule stated in the question) and state-dependent
@@ -182,8 +184,9 @@ enum LLMPolishEvalSupport {
     ]
 
     /// Print-only technical-dictation cases for model differentiation.
-    /// These intentionally do NOT gate CI while the default 0.8B model is
-    /// expected to miss many identifier, command, and markdown transforms.
+    /// These intentionally do NOT gate CI while the pinned small default
+    /// models are expected to miss identifier, command, and markdown
+    /// transforms; the same two-server-state rule gates any promotion.
     static let technicalCases: [LLMPolishEvalCase] = [
         // Filename + SwiftUI lifecycle identifier spoken as natural words.
         LLMPolishEvalCase(
@@ -305,6 +308,28 @@ enum LLMPolishEvalSupport {
             caseSensitive: true
         ),
     ]
+
+    /// Eval-lane configuration builder: mirrors how production builds the
+    /// managed configuration for a model (`SettingsStore
+    /// .llmPolishingConfiguration`) — a catalog model carries its catalog
+    /// sampling defaults AND chat-template kwargs. Without this the 4B
+    /// default would be evaluated with its template's thinking mode ON while
+    /// the shipped request disables it (`enable_thinking: false`), so the
+    /// eval would score a request shape production never sends.
+    static func configuration(
+        endpointURL: URL,
+        apiKey: String,
+        model: String
+    ) -> LLMPolishingConfiguration {
+        let option = PolishModelCatalog.option(forRepoID: model)
+        return LLMPolishingConfiguration(
+            endpointURL: endpointURL,
+            apiKey: apiKey,
+            model: model,
+            samplingDefaults: option?.samplingDefaults,
+            chatTemplateArguments: option?.chatTemplateArguments
+        )
+    }
 
     /// The bundled default templates, loaded through the production config
     /// path (a fresh override directory gets seeded with the bundled files).

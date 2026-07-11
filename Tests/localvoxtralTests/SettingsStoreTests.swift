@@ -320,7 +320,9 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(configuration?.apiKey, "")
         XCTAssertEqual(configuration?.model, SettingsStore.defaultLLMPolishingModel)
         XCTAssertNil(configuration?.samplingDefaults)
-        XCTAssertNil(configuration?.chatTemplateArguments)
+        // The default 4B rides the catalog's enable_thinking=false kwargs
+        // (default flipped from the kwarg-less 0.8B on 2026-07-11).
+        XCTAssertEqual(configuration?.chatTemplateArguments, ["enable_thinking": false])
     }
 
     func testLLMPolishingConfiguration_managedLocal_usesManagedModelSelection() {

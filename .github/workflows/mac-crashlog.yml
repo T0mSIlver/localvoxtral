@@ -62,7 +62,7 @@ jobs:
             UV_TOOL_DIR="$UV_TOOL_DIR" UV_TOOL_BIN_DIR="$UV_TOOL_BIN_DIR" \
             "$UV" run --python 3.12 \
             --with 'huggingface_hub<2' --with 'tqdm<5' \
-            python -u "$SCRIPT" mlx-community/Qwen3.5-0.8B-8bit \
+            python -u "$SCRIPT" mlx-community/Qwen3.5-4B-OptiQ-4bit \
             --include '*.json' --include 'model*.safetensors' --include '*.py' \
             --include 'tokenizer.model' --include '*.tiktoken' --include 'tiktoken.model' \
             --include '*.txt' --include '*.jsonl' --include '*.jinja' \
