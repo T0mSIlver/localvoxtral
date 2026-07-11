@@ -607,6 +607,12 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.replacementDictionaryEnabled = true
         settings.llmPolishingEnabled = true
         settings.llmPolishingEndpointURL = "https://example.com/v1/chat/completions"
+        // Pin external mode so the configured endpoint above is the one the
+        // request is sent to (and therefore the one the failure names). Under
+        // managed mode this test used to pass only because the failure message
+        // wrongly named the unused external-URL setting — the exact field bug
+        // DictationViewModelPolishFailureDiagnosticsTests now covers.
+        settings.polishingBackendMode = .externalURL
 
         let overlayCoordinator = MockOverlayCoordinator()
         let polishingService = NetworkFailingMockLLMPolishingService()
