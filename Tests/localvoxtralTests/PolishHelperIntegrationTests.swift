@@ -209,24 +209,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
         try process.run()
         reader.start()
         addTeardownBlock {
-            // Reap, don't just signal: SIGTERM is asynchronous, so a teardown
-            // that only calls terminate() lets the test process exit while the
-            // helper is still dying — the CI runner then spends ~105 s per run
-            // reaping the orphan ("Cleaning up orphan processes"). Wait for the
-            // exit (bounded), and escalate to SIGKILL if it never comes.
-            if process.isRunning {
-                process.terminate()
-            }
-            let reaped = XCTestExpectation(description: "helper exited after SIGTERM")
-            DispatchQueue.global().async {
-                process.waitUntilExit()  // returns immediately if already exited
-                reaped.fulfill()
-            }
-            _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
-            }
+            await Self.reap(process)
         }
 
         await fulfillment(of: [readyOrExited], timeout: Self.readyTimeout)
@@ -243,6 +226,29 @@ final class PolishHelperIntegrationTests: XCTestCase {
             throw XCTSkip("helper did not become ready")
         }
         return (process, port, stderrLog)
+    }
+
+    /// Reap, don't just signal: SIGTERM is asynchronous, so `terminate()`
+    /// alone lets the caller move on while the helper is still dying — in
+    /// teardown that costs the CI runner ~105 s of orphan cleanup (#111),
+    /// and between back-to-back launches it would briefly keep TWO copies
+    /// of the model in memory on the shared runner. Wait for the exit
+    /// (bounded), and escalate to SIGKILL if it never comes. Idempotent for
+    /// an already-exited process.
+    private static func reap(_ process: Process) async {
+        if process.isRunning {
+            process.terminate()
+        }
+        let reaped = XCTestExpectation(description: "helper exited after SIGTERM")
+        DispatchQueue.global().async {
+            process.waitUntilExit()  // returns immediately if already exited
+            reaped.fulfill()
+        }
+        _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
     }
 
     private final class LineLog: @unchecked Sendable {
@@ -398,7 +404,11 @@ final class PolishHelperIntegrationTests: XCTestCase {
             request: realPolishRequest,
             configuration: configuration(port: cold.port)
         )
-        cold.process.terminate()
+        // Reap the cold helper BEFORE launching the second one: terminate()
+        // is only an asynchronous SIGTERM, and overlapping two helpers would
+        // briefly double the model's memory on the shared runner (~2x 4 GB
+        // with the 4B) — same reap-don't-signal rule as teardown (#111).
+        await Self.reap(cold.process)
 
         // Warmed: cold helper again, the app's warmup request lands first.
         let warmed = try await launchHelper(binary: binary, model: model)
