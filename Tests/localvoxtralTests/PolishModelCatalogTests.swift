@@ -6,16 +6,19 @@ final class PolishModelCatalogTests: XCTestCase {
     func testCatalogLookupAndDefaultOption() {
         let defaultOption = PolishModelCatalog.defaultOption
 
-        XCTAssertEqual(defaultOption.repoID, "mlx-community/Qwen3.5-0.8B-8bit")
+        // Owner decision 2026-07-11: the 4B is the default for ALL users.
+        XCTAssertEqual(defaultOption.repoID, "mlx-community/Qwen3.5-4B-OptiQ-4bit")
         XCTAssertEqual(PolishModelCatalog.option(forRepoID: defaultOption.repoID), defaultOption)
         XCTAssertNil(PolishModelCatalog.option(forRepoID: "unknown/model"))
+        // nil sampling defaults = the engine's deterministic temp-0.3 default
+        // (proven better than Qwen's recommended sampling on the eval, #97).
         XCTAssertNil(defaultOption.samplingDefaults)
-        XCTAssertNil(defaultOption.chatTemplateArguments)
-        XCTAssertEqual(
+        XCTAssertEqual(defaultOption.chatTemplateArguments, ["enable_thinking": false])
+        // The 0.8B stays selectable with its legacy request shape (nil kwargs).
+        XCTAssertNil(
             PolishModelCatalog.option(
-                forRepoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit"
-            )?.chatTemplateArguments,
-            ["enable_thinking": false]
+                forRepoID: "mlx-community/Qwen3.5-0.8B-8bit"
+            )?.chatTemplateArguments
         )
     }
 

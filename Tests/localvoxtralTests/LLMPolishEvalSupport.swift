@@ -103,7 +103,9 @@ enum LLMPolishEvalSupport {
         ),
     ]
 
-    /// Cases the pinned 0.8B model cannot do reliably. Two flavors:
+    /// Cases the original 0.8B default could not do reliably (the 4B default
+    /// since 2026-07-11 passes many of them — promotion still requires
+    /// stability across TWO server states, see below). Two flavors:
     /// never-pass cases (a probe battery showed the model cannot even
     /// perceive the error — it answers "the spacing is correct" when asked
     /// yes/no with the rule stated in the question) and state-dependent
@@ -182,8 +184,9 @@ enum LLMPolishEvalSupport {
     ]
 
     /// Print-only technical-dictation cases for model differentiation.
-    /// These intentionally do NOT gate CI while the default 0.8B model is
-    /// expected to miss many identifier, command, and markdown transforms.
+    /// These intentionally do NOT gate CI while the pinned small default
+    /// models are expected to miss identifier, command, and markdown
+    /// transforms; the same two-server-state rule gates any promotion.
     static let technicalCases: [LLMPolishEvalCase] = [
         // Filename + SwiftUI lifecycle identifier spoken as natural words.
         LLMPolishEvalCase(
