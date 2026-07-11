@@ -9,6 +9,27 @@ final class LLMPolishingServiceTests: XCTestCase {
         userPrompts: ["first", "second"]
     )
 
+    /// The polish request timeout must accommodate the managed worst case: a
+    /// 4B model with an invalidated polishd prefix cache re-prefills ~2.3k
+    /// tokens and took 23.6 s on a real request — the previous 15 s timeout
+    /// abandoned it and the user lost the polish (field, 2026-07-11). Polish
+    /// is async behind the overlay, so slow beats discarded. Pinned through
+    /// the request-construction seam — no networking, no wall-clock.
+    func testPolishRequestTimeoutAccommodatesManagedWorstCase() throws {
+        XCTAssertEqual(LLMPolishingService.requestTimeoutInterval, 40)
+
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
+            apiKey: "",
+            model: "model"
+        )
+        let urlRequest = try LLMPolishingService.makeURLRequest(
+            request: request,
+            configuration: configuration
+        )
+        XCTAssertEqual(urlRequest.timeoutInterval, 40)
+    }
+
     func testNilSamplingDefaultsKeepLegacyRequestBytesIdentical() throws {
         let configuration = LLMPolishingConfiguration(
             endpointURL: URL(string: "http://127.0.0.1/chat")!,

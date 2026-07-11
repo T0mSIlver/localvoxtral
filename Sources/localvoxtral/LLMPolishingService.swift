@@ -65,7 +65,12 @@ enum LLMPolishingError: Error, LocalizedError, Sendable {
 }
 
 struct LLMPolishingService: LLMPolishingServicing {
-    private static let timeoutInterval: TimeInterval = 15
+    /// Polish request timeout. Sized for the managed worst case, not the warm
+    /// path: a 4B model whose polishd prefix-cache checkpoint was invalidated
+    /// re-prefills ~2.3k tokens before generating — a real request took 23.6 s
+    /// and the previous 15 s timeout abandoned it (field, 2026-07-11). Polish
+    /// is async behind the overlay: a slow polish beats a discarded one.
+    static let requestTimeoutInterval: TimeInterval = 40
 
     func polish(
         request: LLMPolishingRequest,
@@ -78,15 +83,7 @@ struct LLMPolishingService: LLMPolishingServicing {
 
         let startTime = CFAbsoluteTimeGetCurrent()
 
-        var urlRequest = URLRequest(url: configuration.endpointURL)
-        urlRequest.httpMethod = "POST"
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !configuration.apiKey.isEmpty {
-            urlRequest.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        urlRequest.timeoutInterval = Self.timeoutInterval
-
-        urlRequest.httpBody = try Self.requestBody(
+        let urlRequest = try Self.makeURLRequest(
             request: request,
             configuration: configuration
         )
@@ -132,6 +129,26 @@ struct LLMPolishingService: LLMPolishingServicing {
             polishedText: polished,
             durationSeconds: duration
         )
+    }
+
+    /// The full URLRequest for one polish call — the single construction path
+    /// (and the test seam pinning the timeout without networking).
+    static func makeURLRequest(
+        request: LLMPolishingRequest,
+        configuration: LLMPolishingConfiguration
+    ) throws -> URLRequest {
+        var urlRequest = URLRequest(url: configuration.endpointURL)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !configuration.apiKey.isEmpty {
+            urlRequest.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+        }
+        urlRequest.timeoutInterval = Self.requestTimeoutInterval
+        urlRequest.httpBody = try requestBody(
+            request: request,
+            configuration: configuration
+        )
+        return urlRequest
     }
 
     static func requestBody(

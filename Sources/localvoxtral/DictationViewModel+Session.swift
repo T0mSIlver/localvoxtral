@@ -674,7 +674,16 @@ extension DictationViewModel {
                             if case .networkError(let details) = error as? LLMPolishingError {
                                 llmConnectionFailure = (
                                     "Unable to connect to the configured LLM polishing endpoint.",
-                                    self.llmPolishingConnectionTechnicalDetails(details)
+                                    // Name the endpoint the request was ACTUALLY
+                                    // sent to — in managed mode the external-URL
+                                    // setting (its untouched placeholder default,
+                                    // typically :8080) was never used, and naming
+                                    // it sent field debugging to the wrong
+                                    // process (2026-07-11).
+                                    self.llmPolishingConnectionTechnicalDetails(
+                                        details,
+                                        endpointURL: config.endpointURL
+                                    )
                                 )
                             }
                             Log.polishing.error(
@@ -1253,7 +1262,15 @@ extension DictationViewModel {
         sanitizedRealtimeEndpointForLogging()
     }
 
+    /// The endpoint the ACTIVE polishing configuration resolves to — in
+    /// managed mode that is the managed polishd URL, never the external-URL
+    /// setting (whose untouched placeholder default used to be reported here
+    /// and misdirected field debugging, 2026-07-11). Falls back to the raw
+    /// setting text only when no configuration resolves at all.
     private func sanitizedLLMPolishingEndpointForLogging() -> String {
+        if let configured = settings.llmPolishingConfiguration?.endpointURL {
+            return sanitizedURLForLogging(configured)
+        }
         let endpointText = settings.llmPolishingEndpointURL.trimmed
         guard !endpointText.isEmpty,
               let endpoint = URL(string: endpointText)
@@ -1269,8 +1286,14 @@ extension DictationViewModel {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func llmPolishingConnectionTechnicalDetails(_ details: String) -> String {
-        let endpoint = sanitizedLLMPolishingEndpointForLogging()
+    /// Failure details for the alert/`lastError`, naming `endpointURL` — the
+    /// endpoint the failing request was actually sent to, captured from the
+    /// request's own configuration (Settings may have changed since).
+    func llmPolishingConnectionTechnicalDetails(
+        _ details: String,
+        endpointURL: URL
+    ) -> String {
+        let endpoint = sanitizedURLForLogging(endpointURL)
         let normalizedDetails = details.trimmed
         if normalizedDetails.isEmpty {
             return "Unable to connect to endpoint \(endpoint)."
