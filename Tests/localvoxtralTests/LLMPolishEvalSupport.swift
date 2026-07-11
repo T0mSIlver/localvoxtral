@@ -309,6 +309,28 @@ enum LLMPolishEvalSupport {
         ),
     ]
 
+    /// Eval-lane configuration builder: mirrors how production builds the
+    /// managed configuration for a model (`SettingsStore
+    /// .llmPolishingConfiguration`) — a catalog model carries its catalog
+    /// sampling defaults AND chat-template kwargs. Without this the 4B
+    /// default would be evaluated with its template's thinking mode ON while
+    /// the shipped request disables it (`enable_thinking: false`), so the
+    /// eval would score a request shape production never sends.
+    static func configuration(
+        endpointURL: URL,
+        apiKey: String,
+        model: String
+    ) -> LLMPolishingConfiguration {
+        let option = PolishModelCatalog.option(forRepoID: model)
+        return LLMPolishingConfiguration(
+            endpointURL: endpointURL,
+            apiKey: apiKey,
+            model: model,
+            samplingDefaults: option?.samplingDefaults,
+            chatTemplateArguments: option?.chatTemplateArguments
+        )
+    }
+
     /// The bundled default templates, loaded through the production config
     /// path (a fresh override directory gets seeded with the bundled files).
     /// The caller owns cleanup of the returned directory.

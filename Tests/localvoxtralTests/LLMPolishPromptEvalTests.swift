@@ -75,7 +75,11 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             throw XCTSkip("Invalid eval endpoint: \(resolvedEndpoint)")
         }
 
-        return LLMPolishingConfiguration(
+        // Catalog-aware: the resolved model's catalog sampling defaults and
+        // chat-template kwargs ride along, exactly like the managed
+        // production configuration (pinned by
+        // `LLMPolishEvalSupportTests.testEvalConfigurationCarriesCatalogRequestShape`).
+        return LLMPolishEvalSupport.configuration(
             endpointURL: endpointURL,
             apiKey: apiKey ?? "",
             model: model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel
