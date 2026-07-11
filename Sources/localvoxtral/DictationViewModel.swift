@@ -286,6 +286,12 @@ final class DictationViewModel {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
+    /// Warms the managed polishing helper's prompt-prefix cache on every
+    /// helper launch (see `PolishPromptWarmupCoordinator`). Created only when
+    /// runtime services run — trigger logic is unit-tested on the coordinator
+    /// directly.
+    @ObservationIgnored
+    private(set) var polishPromptWarmupCoordinator: PolishPromptWarmupCoordinator?
     @ObservationIgnored
     let backendManager: any ManagedBackendManaging
     @ObservationIgnored
@@ -549,6 +555,22 @@ final class DictationViewModel {
             refreshMicrophoneInputs()
             registerLifecycleObservers()
             requestStartupPermissionsIfNeeded()
+            // Subscribe BEFORE the launch warmup below so the very first
+            // polishd ready edge is observed and prompt-prefix-warmed.
+            let promptWarmup = PolishPromptWarmupCoordinator(
+                serviceProvider: { [weak self] in
+                    self?.llmPolishingService ?? LLMPolishingService()
+                },
+                planProvider: { [weak self] in
+                    guard let self else { return nil }
+                    return PolishPromptWarmup.plan(
+                        settings: self.settings,
+                        appConfigStore: self.appConfigStore
+                    )
+                }
+            )
+            polishPromptWarmupCoordinator = promptWarmup
+            promptWarmup.observe(self.backendManager.statusUpdates)
             warmUpManagedBackendsAtLaunchIfNeeded()
         }
     }
@@ -573,6 +595,7 @@ final class DictationViewModel {
         finalizationWatchdogTask?.cancel()
         startupPermissionTask?.cancel()
         polishAndCommitTask?.cancel()
+        polishPromptWarmupCoordinator?.cancelTasks()
         textInsertion.stopAllTasks()
         overlayBufferCoordinator.reset()
         healthMonitor.cancelTasks()

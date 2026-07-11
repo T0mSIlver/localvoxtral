@@ -319,8 +319,19 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(manager.voxmlxStatus, .ready)
         XCTAssertEqual(supervisor.startCallCount, 1)
 
+        // Deterministic happens-before edge for the mirror's async consumption
+        // task: subscribe BEFORE emitting, then drain the stream until the
+        // failure lands. The previous single `Task.yield()` is not a
+        // synchronization point — under scheduler load the mirror was still
+        // `.ready` when asserted (pre-existing flake on main, surfaced by CI
+        // load on 2026-07-11). Assertions unchanged.
+        let statusUpdates = manager.statusUpdates
         supervisor.emit(.failed(summary: "process crashed after readiness", detail: nil))
-        await Task.yield()
+        for await update in statusUpdates {
+            if update.spec.id == BackendCatalog.voxmlx.id, case .failed = update.status {
+                break
+            }
+        }
 
         XCTAssertEqual(manager.voxmlxStatus, .failed(summary: "process crashed after readiness", detail: nil))
 

@@ -210,24 +210,7 @@ final class PolishHelperIntegrationTests: XCTestCase {
         try process.run()
         reader.start()
         addTeardownBlock {
-            // Reap, don't just signal: SIGTERM is asynchronous, so a teardown
-            // that only calls terminate() lets the test process exit while the
-            // helper is still dying — the CI runner then spends ~105 s per run
-            // reaping the orphan ("Cleaning up orphan processes"). Wait for the
-            // exit (bounded), and escalate to SIGKILL if it never comes.
-            if process.isRunning {
-                process.terminate()
-            }
-            let reaped = XCTestExpectation(description: "helper exited after SIGTERM")
-            DispatchQueue.global().async {
-                process.waitUntilExit()  // returns immediately if already exited
-                reaped.fulfill()
-            }
-            _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
-            }
+            await Self.reap(process)
         }
 
         await fulfillment(of: [readyOrExited], timeout: Self.readyTimeout)
@@ -244,6 +227,29 @@ final class PolishHelperIntegrationTests: XCTestCase {
             throw XCTSkip("helper did not become ready")
         }
         return (process, port, stderrLog)
+    }
+
+    /// Reap, don't just signal: SIGTERM is asynchronous, so `terminate()`
+    /// alone lets the caller move on while the helper is still dying — in
+    /// teardown that costs the CI runner ~105 s of orphan cleanup (#111),
+    /// and between back-to-back launches it would briefly keep TWO copies
+    /// of the model in memory on the shared runner. Wait for the exit
+    /// (bounded), and escalate to SIGKILL if it never comes. Idempotent for
+    /// an already-exited process.
+    private static func reap(_ process: Process) async {
+        if process.isRunning {
+            process.terminate()
+        }
+        let reaped = XCTestExpectation(description: "helper exited after SIGTERM")
+        DispatchQueue.global().async {
+            process.waitUntilExit()  // returns immediately if already exited
+            reaped.fulfill()
+        }
+        _ = await XCTWaiter.fulfillment(of: [reaped], timeout: 10)
+        if process.isRunning {
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
     }
 
     private final class LineLog: @unchecked Sendable {
@@ -351,6 +357,114 @@ final class PolishHelperIntegrationTests: XCTestCase {
 
         XCTAssertTrue(process.isRunning)
         process.terminate()
+    }
+
+    /// Regression-style demonstration for the app-side prompt-prefix warmup:
+    /// two cold helper launches — one where the first real polish pays the
+    /// full static-prefix prefill, one where the app's exact warmup request
+    /// (`PolishPromptWarmup.request`, max_tokens=1) lands first. Asserts the
+    /// BEHAVIOR (the warmup checkpoints the prefix; the first real polish is
+    /// then a cache hit, zero full-prefill fallbacks, identical output) and
+    /// prints the measured latencies informationally — no timing assertions
+    /// (no-wall-clock rule).
+    func testAppWarmupRequestPrimesPromptCacheForFirstRealPolish() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let option = PolishModelCatalog.option(forRepoID: model)
+        let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
+        addTeardownBlock { cleanup() }
+        let service = LLMPolishingService()
+
+        // A required eval case: its polished output is deterministic and
+        // stable, so the cold and warmed runs must agree on it.
+        let transcript = "Are you coming to the meeting tomorrow ?"
+        let expectedNormalized = LLMPolishEvalSupport.normalized(
+            "Are you coming to the meeting tomorrow?"
+        )
+        func configuration(port: UInt16) -> LLMPolishingConfiguration {
+            LLMPolishingConfiguration(
+                endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
+                apiKey: "",
+                model: model,
+                samplingDefaults: option?.samplingDefaults,
+                chatTemplateArguments: option?.chatTemplateArguments
+            )
+        }
+        let realPolishRequest = LLMPolishingRequest(
+            inputText: transcript,
+            systemPrompt: templates.systemContent,
+            userPrompts: templates.renderedUserPrompts(
+                inputText: transcript,
+                replacementDictionary: ""
+            )
+        )
+
+        // Baseline: cold helper, the first real polish pays the full prefill.
+        let cold = try await launchHelper(binary: binary, model: model)
+        let coldResult = try await service.polish(
+            request: realPolishRequest,
+            configuration: configuration(port: cold.port)
+        )
+        // Reap the cold helper BEFORE launching the second one: terminate()
+        // is only an asynchronous SIGTERM, and overlapping two helpers would
+        // briefly double the model's memory on the shared runner (~2x 4 GB
+        // with the 4B) — same reap-don't-signal rule as teardown (#111).
+        await Self.reap(cold.process)
+
+        // Warmed: cold helper again, the app's warmup request lands first.
+        let warmed = try await launchHelper(binary: binary, model: model)
+        let warmupRequest = PolishPromptWarmup.request(templates: templates)
+        var warmupDuration = Double.nan
+        do {
+            warmupDuration = try await service.polish(
+                request: warmupRequest,
+                configuration: configuration(port: warmed.port)
+            ).durationSeconds
+        } catch LLMPolishingError.invalidResponse {
+            // A 1-token generation can trim to an empty response; the
+            // checkpoint exists server-side either way and the assertions
+            // below prove it (the production warmup is log-only too).
+        }
+        let warmResult = try await service.polish(
+            request: realPolishRequest,
+            configuration: configuration(port: warmed.port)
+        )
+        // Worst-case serialization cost for a real polish that lands behind
+        // an in-flight warmup: the warmup's post-checkpoint work, measured
+        // here as a second warmup request against the warm cache.
+        let queuedWarmupDuration = try? await service.polish(
+            request: warmupRequest,
+            configuration: configuration(port: warmed.port)
+        ).durationSeconds
+
+        // Warmup checkpointed the prefix once; the first real polish reused
+        // it instead of re-checkpointing, and nothing fell back to a full
+        // prefill in either launch.
+        XCTAssertEqual(
+            warmed.stderrLog.countOfLines(containing: "prompt cache: checkpointed"), 1,
+            "expected exactly one checkpoint (the warmup's) across the warmed launch"
+        )
+        XCTAssertGreaterThan(
+            warmed.stderrLog.countOfLines(containing: "prompt cache: hit"), 0,
+            "the first real polish after warmup did not reuse the warmed prefix"
+        )
+        XCTAssertEqual(warmed.stderrLog.countOfLines(containing: "full prefill"), 0)
+        XCTAssertEqual(cold.stderrLog.countOfLines(containing: "full prefill"), 0)
+
+        // Cache reuse must not change polish output.
+        XCTAssertEqual(LLMPolishEvalSupport.normalized(coldResult.polishedText), expectedNormalized)
+        XCTAssertEqual(LLMPolishEvalSupport.normalized(warmResult.polishedText), expectedNormalized)
+
+        print(
+            """
+            == polishd prompt-prefix warmup: first-polish latency (model: \(model)) ==
+            without warmup (cold cache):            \(String(format: "%.3f", coldResult.durationSeconds))s
+            warmup request itself (cold cache):     \(String(format: "%.3f", warmupDuration))s
+            first real polish after warmup:         \(String(format: "%.3f", warmResult.durationSeconds))s
+            worst-case queue-behind-warmup (proxy): \(String(format: "%.3f", queuedWarmupDuration ?? .nan))s
+            """
+        )
+        warmed.process.terminate()
     }
 
     /// EXPERIMENT (2026-07-09, print-only — no score assertions): run the

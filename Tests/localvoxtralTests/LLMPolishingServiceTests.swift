@@ -95,6 +95,43 @@ final class LLMPolishingServiceTests: XCTestCase {
         XCTAssertNil(json["presencePenalty"])
     }
 
+    func testMaxTokensEmitsOpenAIFieldNameOnlyWhenSet() throws {
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: URL(string: "http://127.0.0.1/chat")!,
+            apiKey: "",
+            model: "model"
+        )
+        let warmupRequest = LLMPolishingRequest(
+            inputText: "hello",
+            systemPrompt: "system",
+            userPrompts: ["first", "second"],
+            maxTokens: 1
+        )
+
+        let warmupJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: LLMPolishingService.requestBody(
+                    request: warmupRequest,
+                    configuration: configuration
+                )
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(warmupJSON["max_tokens"] as? Int, 1)
+
+        // The production polish request (nil maxTokens) keeps its legacy wire
+        // shape: no max_tokens key at all, the helper applies its default.
+        let productionJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: LLMPolishingService.requestBody(
+                    request: request,
+                    configuration: configuration
+                )
+            ) as? [String: Any]
+        )
+        XCTAssertNil(productionJSON["max_tokens"])
+        XCTAssertNil(productionJSON["maxTokens"])
+    }
+
     func testChatTemplateArgumentsEmitMlxLmFieldName() throws {
         let configuration = LLMPolishingConfiguration(
             endpointURL: URL(string: "http://127.0.0.1/chat")!,
