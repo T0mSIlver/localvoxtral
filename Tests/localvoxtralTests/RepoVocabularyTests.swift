@@ -74,6 +74,7 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
         )
         XCTAssertNil(resolved)
     }
+
 }
 
 // MARK: - Git-root walk + HEAD/branch parsing (fixture dirs, no git binary)
@@ -432,6 +433,61 @@ final class RepoVocabularyMatcherTests: XCTestCase {
 }
 
 // MARK: - Service orchestration (injected subprocess + fixture .git)
+
+final class ClipboardVocabularyTests: XCTestCase {
+    // MARK: - Entity extraction (reuses the guard's recognizer)
+
+    func testEntitiesRecognizeCodeLikeTokensAndDedupe() {
+        let excerpt = """
+        Fix UserSessionManager.swift and rerun with --force.
+        See src/auth/useAuth.ts and $HOME_DIR, then UserSessionManager.swift again.
+        """
+        XCTAssertEqual(
+            ClipboardVocabulary.entities(inExcerpt: excerpt),
+            ["UserSessionManager.swift", "--force", "src/auth/useAuth.ts", "$HOME_DIR"]
+        )
+    }
+
+    func testEntitiesUnwrapBacktickSpans() {
+        XCTAssertEqual(
+            ClipboardVocabulary.entities(inExcerpt: "call `resolveWorkingDirectory` here"),
+            ["resolveWorkingDirectory"]
+        )
+    }
+
+    func testProseExcerptYieldsNoEntities() {
+        XCTAssertTrue(
+            ClipboardVocabulary.entities(
+                inExcerpt: "just a plain sentence with no code tokens at all"
+            ).isEmpty
+        )
+    }
+
+    // MARK: - Transcript matching (same matcher as repo vocabulary)
+
+    /// The T5 field case (2026-07-11): clipboard holds the exact identifier,
+    /// the STT glued the dictated tail into `manager.swift`. The transcript
+    /// n-gram must match the clipboard entity and yield the hint entry whose
+    /// (spoken, exact) pair the session sanctions through the guard.
+    func testT5TranscriptGramMatchesClipboardEntity() {
+        let result = ClipboardVocabulary.candidateEntries(
+            transcript: "look at user session manager.swift",
+            excerpt: "UserSessionManager.swift"
+        )
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result.first?.replaceWith, "UserSessionManager.swift")
+        XCTAssertEqual(result.first?.matches, ["user session manager.swift"])
+    }
+
+    func testUnrelatedTranscriptYieldsNoEntries() {
+        XCTAssertTrue(
+            ClipboardVocabulary.candidateEntries(
+                transcript: "completely unrelated dictation about lunch",
+                excerpt: "UserSessionManager.swift"
+            ).isEmpty
+        )
+    }
+}
 
 final class RepoVocabularyServiceTests: XCTestCase {
     private func makeFixtureRepo() -> URL {

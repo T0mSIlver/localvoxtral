@@ -357,7 +357,7 @@ enum RepoGitRunner {
     private static func runBlocking(root: String, timeoutSeconds: TimeInterval, maxBytes: Int) -> Output? {
         let gitURL = URL(fileURLWithPath: "/usr/bin/git")
         guard FileManager.default.isExecutableFile(atPath: gitURL.path) else {
-            Log.polishing.debug("Repo vocabulary: /usr/bin/git not executable")
+            Log.polishing.info("Repo vocabulary: /usr/bin/git not executable")
             return nil
         }
 
@@ -382,7 +382,7 @@ enum RepoGitRunner {
         do {
             try process.run()
         } catch {
-            Log.polishing.debug("Repo vocabulary: git ls-files failed to launch")
+            Log.polishing.info("Repo vocabulary: git ls-files failed to launch")
             return nil
         }
 
@@ -442,7 +442,7 @@ enum RepoGitRunner {
         // the kernel eventually reaps the child — vocabulary is best-effort,
         // the commit is not.
         guard exited.wait(timeout: .now() + 2.0) != .timedOut else {
-            Log.polishing.debug(
+            Log.polishing.info(
                 "Repo vocabulary: git ls-files did not exit after kill; abandoning"
             )
             return nil
@@ -553,19 +553,22 @@ enum RepoVocabularyService {
 
         let branch = RepoIndexing.branch(root: root, fileManager: fileManager)
         guard let output = await runLsFiles(root) else {
-            Log.polishing.debug("Repo vocabulary: git ls-files unavailable")
+            Log.polishing.info("Repo vocabulary: git ls-files unavailable")
             return nil
         }
         // A clean non-zero exit (not a repo, git error) with no cap/timeout is a
         // real failure: skip. On timeout/cap we keep whatever was cleanly read.
         if !output.timedOut, !output.capped, output.exitCode != 0 {
-            Log.polishing.debug("Repo vocabulary: git ls-files exited non-zero")
+            Log.polishing.info("Repo vocabulary: git ls-files exited non-zero")
             return nil
         }
 
         let paths = RepoIndexing.parseNullDelimitedPaths(output.data)
         let vocabulary = RepoIndexing.buildVocabulary(paths: paths, branch: branch)
-        guard !vocabulary.terms.isEmpty else { return nil }
+        guard !vocabulary.terms.isEmpty else {
+            Log.polishing.info("Repo vocabulary: repo yielded no technical terms")
+            return nil
+        }
         cache.insert(
             root: root,
             vocabulary: vocabulary,
@@ -588,7 +591,7 @@ enum RepoVocabularyService {
         guard let workingDirectory = TerminalWorkingDirectoryResolver
             .resolveWorkingDirectory(fromWindowTitle: title)
         else {
-            Log.polishing.debug("Repo vocabulary: no working directory resolved from window title")
+            Log.polishing.info("Repo vocabulary: no working directory resolved from window title")
             return nil
         }
         guard let vocabulary = await vocabulary(
@@ -599,7 +602,15 @@ enum RepoVocabularyService {
         let entries = RepoVocabularyMatcher.candidateEntries(
             transcript: transcript, vocabulary: vocabulary
         )
-        return entries.isEmpty ? nil : entries
+        if entries.isEmpty {
+            // Static string + no content: the LAST silent skip on this path.
+            // Every skip reason is .info — .debug is not persisted by the
+            // unified log store, which made a field no-attach undiagnosable
+            // (2026-07-11, Ghostty).
+            Log.polishing.info("Repo vocabulary: no transcript-relevant matches")
+            return nil
+        }
+        return entries
     }
 }
 
@@ -810,12 +821,28 @@ enum RepoVocabularyMatcher {
         !term.isEmpty && !term.allSatisfy { $0 == "-" }
     }
 
+    /// Header for entries harvested from the focused terminal's git repo.
+    static let repositoryVocabularyHeader =
+        "Repository vocabulary (exact file names and identifiers from the project the "
+        + "speaker is working in; use them to correct near-miss spellings of the terms "
+        + "below, never to add new content):"
+
+    /// Header for entries harvested from the user's clipboard excerpt (the
+    /// clipboard polish-context feature): same rendering, honest provenance.
+    static let clipboardVocabularyHeader =
+        "Clipboard vocabulary (exact file names and identifiers from text the user "
+        + "recently copied; use them to correct near-miss spellings of the terms "
+        + "below, never to add new content):"
+
     /// Renders matched entries as a prompt section mirroring
     /// `ReplacementDictionary.renderedPromptSection`'s `- key: aliases` shape,
-    /// under a repo-specific header. Every key/alias is sanitized first; an
-    /// entry whose key or every alias becomes unrenderable is dropped. Empty
-    /// entries render nothing.
-    static func promptSection(entries: [ReplacementEntry]) -> String {
+    /// under the given header. Every key/alias is sanitized first; an entry
+    /// whose key or every alias becomes unrenderable is dropped. Empty entries
+    /// render nothing.
+    static func promptSection(
+        entries: [ReplacementEntry],
+        header: String = repositoryVocabularyHeader
+    ) -> String {
         let lines: [String] = entries.compactMap { entry in
             let key = sanitizedTerm(entry.replaceWith)
             guard isRenderableTerm(key) else { return nil }
@@ -824,18 +851,74 @@ enum RepoVocabularyMatcher {
             return "- \(key): \(aliases.joined(separator: ", "))"
         }
         guard !lines.isEmpty else { return "" }
-        return "Repository vocabulary (exact file names and identifiers from the project the "
-            + "speaker is working in; use them to correct near-miss spellings of the terms "
-            + "below, never to add new content):\n\(lines.joined(separator: "\n"))"
+        return "\(header)\n\(lines.joined(separator: "\n"))"
     }
 
     /// Appends the vocabulary section to an existing replacement-dictionary
     /// prompt string. When the base is empty (dictionary disabled) the section
     /// stands alone; when there are no entries the base is returned unchanged.
-    static func appendedPromptSection(base: String, entries: [ReplacementEntry]) -> String {
-        let section = promptSection(entries: entries)
+    static func appendedPromptSection(
+        base: String,
+        entries: [ReplacementEntry],
+        header: String = repositoryVocabularyHeader
+    ) -> String {
+        let section = promptSection(entries: entries, header: header)
         guard !section.isEmpty else { return base }
         guard !base.isEmpty else { return section }
         return base + "\n\n" + section
+    }
+}
+
+// MARK: - Clipboard vocabulary
+
+/// Clipboard entities join the sanctioned-rewrite pipeline (field regression,
+/// 2026-07-11): the clipboard polish-context excerpt already tells the model
+/// the exact spelling of a copied identifier, but when the STT's misheard form
+/// was itself a protected token (`manager.swift` for a dictated
+/// "user session manager dot swift", clipboard holding
+/// `UserSessionManager.swift`), the token guard deterministically DISCARDED
+/// the model's correct rewrite. Extracting the excerpt's code-like entities
+/// (the guard's OWN recognizer — never a second grammar), matching transcript
+/// n-grams against them exactly like repo vocabulary, and registering the
+/// matches as sanctioned pairs makes that correction survive the guard.
+///
+/// Pure functions; all privacy gating (feature toggle, loopback endpoint,
+/// concealed/transient pasteboard) already happened when the excerpt was
+/// captured — this type never touches the pasteboard.
+enum ClipboardVocabulary {
+    /// Ordered, de-duplicated code-like entities in `excerpt`, recognized by
+    /// `PolishTokenGuard.protectedTokens` (backtick spans, dotted filenames,
+    /// paths, flags, env vars, URLs, hashes, versions). Backtick spans are
+    /// unwrapped to their inner text: the vocabulary term is the identifier,
+    /// not its markdown decoration.
+    static func entities(inExcerpt excerpt: String) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for token in PolishTokenGuard.protectedTokens(in: excerpt) {
+            var term = token
+            if term.hasPrefix("`"), term.hasSuffix("`"), term.count > 2 {
+                term = String(term.dropFirst().dropLast())
+            }
+            guard !term.isEmpty, seen.insert(term).inserted else { continue }
+            result.append(term)
+        }
+        return result
+    }
+
+    /// The transcript-relevant clipboard entities as replacement entries, via
+    /// the exact matcher repo vocabulary uses (same n-gram windows, same
+    /// normalization, same fuzzy tier, same cap). Empty when the excerpt holds
+    /// no code-like entities or none matches the transcript.
+    static func candidateEntries(
+        transcript: String,
+        excerpt: String
+    ) -> [ReplacementEntry] {
+        let terms = entities(inExcerpt: excerpt)
+        guard !terms.isEmpty else { return [] }
+        let vocabulary = RepoVocabulary(terms: terms, branch: nil)
+        return RepoVocabularyMatcher.candidateEntries(
+            transcript: transcript,
+            vocabulary: vocabulary
+        )
     }
 }

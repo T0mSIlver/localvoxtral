@@ -366,6 +366,41 @@ final class PolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(result.text, "open useauth.ts now")
         XCTAssertEqual(result.sanctionedCount, 0)
     }
+
+    /// Substring-canonical sanctioning (field regression, 2026-07-11): the
+    /// sanctioned alias is a multi-word gram whose TAIL is the protected token
+    /// — the STT glued "user session manager dot swift" into `manager.swift`,
+    /// the caller asked for `UserSessionManager.swift`, the model complied.
+    /// The protected `manager.swift` canonically equals no alias, but it IS
+    /// canonically contained in one whose `to` the model produced: sanctioned,
+    /// never a fallback.
+    func testSanctionedAliasContainingProtectedTokenDoesNotFallBack() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Look at UserSessionManager.swift.",
+            original: "look at user session manager.swift",
+            sanctionedReplacements: [
+                (from: "user session manager.swift", to: "UserSessionManager.swift")
+            ]
+        )
+        XCTAssertEqual(result.outcome, .clean)
+        XCTAssertEqual(result.text, "Look at UserSessionManager.swift.")
+        XCTAssertEqual(result.sanctionedCount, 1)
+    }
+
+    /// Containment is no blanket license: a protected token that is NOT part
+    /// of any sanctioned alias still falls back when the model deletes it,
+    /// even while an unrelated sanctioned rewrite happened in the same text.
+    func testUnrelatedProtectedTokenStillGuardedUnderContainment() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Look at UserSessionManager.swift now.",
+            original: "look at user session manager.swift and run --force",
+            sanctionedReplacements: [
+                (from: "user session manager.swift", to: "UserSessionManager.swift")
+            ]
+        )
+        XCTAssertEqual(result.outcome, .fallback(missing: ["--force"]))
+        XCTAssertEqual(result.text, "look at user session manager.swift and run --force")
+    }
 }
 
 // MARK: - View-model integration
@@ -1272,6 +1307,139 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(
             viewModel.currentDictationEventText,
             "open useAuth.ts and fix the import"
+        )
+    }
+
+    /// THE T5 field regression (2026-07-11) end to end: clipboard context ON,
+    /// clipboard holding `UserSessionManager.swift`, the user dictated "look at
+    /// user session manager dot swift" and the STT glued the tail into the
+    /// guard-protected `manager.swift`. The model (stubbed) applies exactly the
+    /// correction the clipboard grounds. Clipboard entities must join the
+    /// sanctioned-rewrite pipeline so the guard does NOT discard the polish —
+    /// pre-fix it deterministically fell back to the misheard text.
+    func testClipboardEntityCorrectionSurvivesTokenGuard() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.polishClipboardContextEnabled = true
+        settings.repoVocabularyEnabled = false
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        // The model applies exactly the clipboard-grounded correction.
+        let service = RecordingPolishingService(transform: {
+            $0.replacingOccurrences(
+                of: "user session manager.swift",
+                with: "UserSessionManager.swift"
+            )
+        })
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugPolishContextPasteboardReaderOverride = {
+            PasteboardStub(string: "UserSessionManager.swift")
+        }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "look at user session manager.swift"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        // The guard must sanction, not discard: the correction commits.
+        XCTAssertEqual(
+            viewModel.currentDictationEventText,
+            "look at UserSessionManager.swift"
+        )
+        // The matched entity also rode the dictionary slot as a hint entry.
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertTrue(
+            request.userPrompts.contains {
+                $0.contains(RepoVocabularyMatcher.clipboardVocabularyHeader)
+                    && $0.contains("- UserSessionManager.swift: user session manager.swift")
+            }
+        )
+        // Counts-only provenance.
+        XCTAssertEqual(
+            savedRecord?.polishContextSummary,
+            "clipboard:24ch+clipboard-vocab:1"
+        )
+    }
+
+    /// Sanctioning must not depend on the dictionary slot: a user template
+    /// without `{{replacement_dictionary}}` gets no hint entries, but the
+    /// model still corrects from the context excerpt alone and the guard must
+    /// still sanction that correction instead of discarding it.
+    func testClipboardEntitySanctioningWorksWithoutDictionarySlot() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.polishClipboardContextEnabled = true
+        settings.repoVocabularyEnabled = false
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService(transform: {
+            $0.replacingOccurrences(
+                of: "user session manager.swift",
+                with: "UserSessionManager.swift"
+            )
+        })
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugPolishContextPasteboardReaderOverride = {
+            PasteboardStub(string: "UserSessionManager.swift")
+        }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "look at user session manager.swift"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(
+            viewModel.currentDictationEventText,
+            "look at UserSessionManager.swift"
+        )
+        // No dictionary slot: the hint section must not appear anywhere.
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertFalse(
+            request.userPrompts.contains {
+                $0.contains(RepoVocabularyMatcher.clipboardVocabularyHeader)
+            }
         )
     }
 

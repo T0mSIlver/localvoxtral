@@ -253,9 +253,19 @@ enum PolishTokenGuard {
     }
 
     /// True when `token` matches a sanctioned pair's `from` (canonical-form
-    /// equality: case-insensitive, dash/space-normalized) and that pair's `to`
-    /// occurs standalone in `text` — i.e. the model applied a rewrite the
+    /// CONTAINMENT: case-insensitive, dash/space-normalized) and that pair's
+    /// `to` occurs standalone in `text` — i.e. the model applied a rewrite the
     /// caller explicitly asked for, so the token counts as preserved.
+    ///
+    /// Containment, not equality (field regression, 2026-07-11): a sanctioned
+    /// alias is often a multi-word transcript gram whose TAIL is itself the
+    /// protected token — "user session manager.swift" containing protected
+    /// `manager.swift`, corrected to `UserSessionManager.swift`. Under
+    /// equality the guard token canonically equals no alias, so the very
+    /// correction the caller requested was reverted (or the whole polish
+    /// discarded). When the alias gram subsumes the protected token's
+    /// occurrence and the model produced the requested `to`, the token's
+    /// disappearance is explained and sanctioned.
     ///
     /// Deletion-masking limitation (accepted): there is no occurrence counting
     /// here — a sanctioned `to` present ANYWHERE in the polished text lets an
@@ -268,8 +278,9 @@ enum PolishTokenGuard {
     ) -> Bool {
         guard !sanctionedReplacements.isEmpty else { return false }
         let canonicalToken = canonical(token)
+        guard !canonicalToken.isEmpty else { return false }
         for (from, to) in sanctionedReplacements {
-            guard canonical(from) == canonicalToken else { continue }
+            guard canonical(from).contains(canonicalToken) else { continue }
             if standaloneOccurrenceCount(of: to, in: text) > 0 { return true }
         }
         return false

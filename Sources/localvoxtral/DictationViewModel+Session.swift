@@ -689,20 +689,54 @@ extension DictationViewModel {
                             entries: vocabularyEntries
                         )
                         repoVocabularyCount = vocabularyEntries.count
-                        // Known hole (safe direction; follow-up: substring-
-                        // canonical sanctioning): when a sanctioned alias is a
-                        // multi-word gram whose TAIL is itself a protected
-                        // token ("use auth.ts" containing protected `auth.ts`),
-                        // the guard token canonically equals no alias, so the
-                        // rewrite still falls back — the pre-polish text
-                        // commits and the vocabulary correction is lost, but
-                        // nothing is corrupted.
+                        // A multi-word alias whose tail is itself a protected
+                        // token ("user session manager.swift" containing
+                        // `manager.swift`) is covered by the guard's
+                        // substring-canonical sanctioning.
                         sanctionedVocabularyRewrites = vocabularyEntries.flatMap { entry in
                             entry.matches.map { (from: $0, to: entry.replaceWith) }
                         }
                         Log.polishing.info(
                             "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
                         )
+                    }
+
+                    // Clipboard vocabulary: the SAME sanctioned-rewrite pipeline,
+                    // grounded in the already privacy-gated clipboard excerpt
+                    // (feature toggle ON + loopback endpoint + never concealed/
+                    // transient — all enforced when the excerpt was captured;
+                    // nil context means none of it runs). Without this, the
+                    // context excerpt lets the model produce the exact copied
+                    // spelling and the token guard then DISCARDS that very
+                    // correction whenever the misheard form was filename-shaped
+                    // (field, 2026-07-11: `manager.swift` glued into
+                    // `UserSessionManager.swift`). Hint entries need the
+                    // dictionary slot; sanctioning must apply even without it —
+                    // the model corrects from the context excerpt alone.
+                    var clipboardVocabularyCount = 0
+                    if let clipboardContext = capturedClipboardContext {
+                        let clipboardEntries = ClipboardVocabulary.candidateEntries(
+                            transcript: workingText,
+                            excerpt: clipboardContext.excerpt
+                        )
+                        if !clipboardEntries.isEmpty {
+                            if templateCarriesDictionarySlot {
+                                replacementDictionarySection =
+                                    RepoVocabularyMatcher.appendedPromptSection(
+                                        base: replacementDictionarySection,
+                                        entries: clipboardEntries,
+                                        header: RepoVocabularyMatcher.clipboardVocabularyHeader
+                                    )
+                            }
+                            sanctionedVocabularyRewrites += clipboardEntries.flatMap { entry in
+                                entry.matches.map { (from: $0, to: entry.replaceWith) }
+                            }
+                            clipboardVocabularyCount = clipboardEntries.count
+                            // Counts only — entity content is clipboard content.
+                            Log.polishing.info(
+                                "Clipboard vocabulary attached: clipboard-vocab:\(clipboardEntries.count, privacy: .public)"
+                            )
+                        }
                     }
 
                     guard !Task.isCancelled else { return }
@@ -925,7 +959,15 @@ extension DictationViewModel {
                         polishContextSummary: self.mergedPolishProvenanceSummary(
                             context: capturedPolishContextSummary,
                             payload: payloadProvenanceSummary,
-                            vocabulary: repoVocabularyCount > 0 ? "vocab:\(repoVocabularyCount)" : nil
+                            vocabulary: {
+                                let parts = [
+                                    repoVocabularyCount > 0
+                                        ? "vocab:\(repoVocabularyCount)" : nil,
+                                    clipboardVocabularyCount > 0
+                                        ? "clipboard-vocab:\(clipboardVocabularyCount)" : nil,
+                                ].compactMap { $0 }
+                                return parts.isEmpty ? nil : parts.joined(separator: "+")
+                            }()
                         )
                     )
 
@@ -1320,7 +1362,7 @@ extension DictationViewModel {
         }
         #endif
         guard let title = resolveCommitTargetWindowTitle() else {
-            Log.polishing.debug("Repo vocabulary: no terminal window title available")
+            Log.polishing.info("Repo vocabulary: no terminal window title available")
             return nil
         }
         let cache = repoVocabularyCache
