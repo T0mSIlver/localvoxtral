@@ -75,6 +75,159 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
+    // MARK: - Ghostty-abbreviated titles (leading components elided as `..`)
+
+    /// The T6 field case (2026-07-11): Ghostty's tab title is exactly
+    /// "../Desktop/projects/supervoxtral". The extracted absolute run
+    /// "/Desktop/projects/supervoxtral" does not exist; the home-anchored
+    /// expansion does and must resolve.
+    func testGhosttyAbbreviatedTitleResolvesHomeAnchored() {
+        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+            fromWindowTitle: "../Desktop/projects/supervoxtral",
+            homeDirectory: "/Users/x",
+            isDirectory: { $0 == "/Users/x/Desktop/projects/supervoxtral" }
+        )
+        XCTAssertEqual(resolved, "/Users/x/Desktop/projects/supervoxtral")
+    }
+
+    /// A genuinely absolute path that exists must never be shadowed by its
+    /// home-anchored twin, even when both exist.
+    func testExistingAbsolutePathWinsOverHomeAnchoredTwin() {
+        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+            fromWindowTitle: "/opt/work/repo",
+            homeDirectory: home,
+            isDirectory: { $0 == "/opt/work/repo" || $0 == "\(self.home)/opt/work/repo" }
+        )
+        XCTAssertEqual(resolved, "/opt/work/repo")
+    }
+
+    /// A genuinely absolute path that does not exist locally (an SSH or
+    /// container path, an unmounted volume) must resolve to NIL — never be
+    /// re-anchored under home, which would index a same-named local repo and
+    /// inject wrong-repo vocabulary. Only `../`-prefixed (explicitly elided)
+    /// titles get home-anchoring.
+    func testNonExistentAbsolutePathDoesNotFallBackToHome() {
+        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+            fromWindowTitle: "/work/repo — zsh",
+            homeDirectory: home,
+            isDirectory: { $0 == "\(self.home)/work/repo" }
+        )
+        XCTAssertNil(resolved)
+    }
+
+    /// THE T6 field failure, canonical case (owner-confirmed 2026-07-11):
+    /// Ghostty's tab title elides with a Unicode HORIZONTAL ELLIPSIS, not
+    /// ASCII dots — the real title was "…/Desktop/projects/supervoxtral"
+    /// (reported by typing, which loses the distinction from "../"). The
+    /// ellipsis-elided title must home-anchor exactly like the ASCII form.
+    func testT6GhosttyEllipsisElidedTitleResolvesHomeAnchored() {
+        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+            fromWindowTitle: "…/Desktop/projects/supervoxtral",
+            homeDirectory: "/Users/owner",
+            isDirectory: { $0 == "/Users/owner/Desktop/projects/supervoxtral" }
+        )
+        XCTAssertEqual(resolved, "/Users/owner/Desktop/projects/supervoxtral")
+    }
+
+    /// The same canonical T6 case through the PRODUCTION existence check (no
+    /// injected predicate — the default real-filesystem one), against a real
+    /// temp directory tree, so hermetic test defaults can never mask a broken
+    /// production wiring again.
+    func testT6GhosttyEllipsisElidedTitleResolvesWithRealFilesystemCheck() throws {
+        let tempHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("t6-home-\(UUID().uuidString)").path
+        let repo = tempHome + "/Desktop/projects/supervoxtral"
+        try FileManager.default.createDirectory(
+            atPath: repo, withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: tempHome) }
+
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+                fromWindowTitle: "…/Desktop/projects/supervoxtral",
+                homeDirectory: tempHome
+            ),
+            repo
+        )
+    }
+
+    /// U+2025 TWO DOT LEADER is accepted as an elision mark too.
+    func testTwoDotLeaderElidedTitleResolvesHomeAnchored() {
+        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+            fromWindowTitle: "‥/dev/proj — zsh",
+            homeDirectory: home,
+            isDirectory: { $0 == "\(self.home)/dev/proj" }
+        )
+        XCTAssertEqual(resolved, "/Users/tester/dev/proj")
+    }
+
+    func testEllipsisFallbackCandidateShape() {
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
+                fromWindowTitle: "…/Desktop/proj — zsh",
+                homeDirectory: home
+            ),
+            ["/Users/tester/Desktop/proj"]
+        )
+    }
+
+    // MARK: - Redacted title-shape diagnostic
+
+    /// Letters map to "a", digits to "9", separators/elision marks and spaces
+    /// survive, everything else is "?" — never raw content.
+    func testTitleShapeClassMapsContent() {
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.titleShape("…/Desktop/projects2 — zsh"),
+            "…/aaaaaaa/aaaaaaaa9 ? aaa"
+        )
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.titleShape("~/dev.proj"),
+            "~/aaa.aaaa"
+        )
+    }
+
+    func testTitleShapeCapsLength() {
+        let shape = TerminalWorkingDirectoryResolver.titleShape(
+            String(repeating: "secret", count: 30)
+        )
+        XCTAssertEqual(shape.count, 60)
+        XCTAssertEqual(shape, String(repeating: "a", count: 60))
+    }
+
+    func testAbbreviatedTitleWithNothingExistingResolvesNil() {
+        let resolved = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+            fromWindowTitle: "../foo",
+            homeDirectory: home,
+            isDirectory: { _ in false }
+        )
+        XCTAssertNil(resolved)
+    }
+
+    func testHomeAnchoredFallbackCandidateShapes() {
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
+                fromWindowTitle: "../Desktop/proj — zsh",
+                homeDirectory: home
+            ),
+            ["/Users/tester/Desktop/proj"]
+        )
+        // A tilde run is already home-anchored: no fallback is generated.
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
+                fromWindowTitle: "~/dev/proj",
+                homeDirectory: home
+            ),
+            []
+        )
+        // An absolute run generates NO fallback: only `../` signals elision.
+        XCTAssertEqual(
+            TerminalWorkingDirectoryResolver.homeAnchoredFallbackCandidates(
+                fromWindowTitle: "/work/repo — zsh",
+                homeDirectory: home
+            ),
+            []
+        )
+    }
 }
 
 // MARK: - Git-root walk + HEAD/branch parsing (fixture dirs, no git binary)

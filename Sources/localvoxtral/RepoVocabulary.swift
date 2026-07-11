@@ -56,8 +56,53 @@ enum TerminalWorkingDirectoryResolver {
         return result
     }
 
-    /// The first candidate that verifies as an existing directory. The FS check
-    /// is injectable so parser tests never hit the disk.
+    /// Home-anchored fallback candidates for ABBREVIATED titles, in order of
+    /// appearance. Ghostty elides leading path components in tab titles as
+    /// `..` ("../Desktop/projects/proj" for `$HOME/Desktop/projects/proj`),
+    /// which is never statable as-is — its only meaningful resolution is
+    /// re-anchoring at home (field, 2026-07-11: the whole vocabulary feature
+    /// silently no-oped in Ghostty). ONLY `../`-prefixed runs are re-anchored:
+    /// the title itself must signal elision. A genuinely absolute path that
+    /// happens not to exist locally (an SSH/container path like `/work/repo`,
+    /// an unmounted volume) must NEVER be re-anchored — that would index a
+    /// same-named repo under home and inject wrong-repo vocabulary.
+    /// These are FALLBACKS: `resolveWorkingDirectory` tries every exact
+    /// candidate first.
+    static func homeAnchoredFallbackCandidates(
+        fromWindowTitle title: String,
+        homeDirectory: String = NSHomeDirectory()
+    ) -> [String] {
+        var result: [String] = []
+        var seen = Set<String>()
+        let matches = abbreviatedRunRegex.matches(
+            in: title,
+            range: NSRange(title.startIndex..., in: title)
+        )
+        for match in matches {
+            guard let range = Range(match.range, in: title) else { continue }
+            let trimmed = trimDecorations(String(title[range]))
+            // "../X" (or an ellipsis-elided variant) -> "$HOME/X".
+            guard let prefix = elidedPrefixes.first(where: { trimmed.hasPrefix($0) }),
+                  trimmed.count > prefix.count
+            else { continue }
+            let anchored = homeDirectory + "/" + String(trimmed.dropFirst(prefix.count))
+            if seen.insert(anchored).inserted { result.append(anchored) }
+        }
+        return result
+    }
+
+    /// Elided-title prefixes accepted for home-anchoring: ASCII "../" plus
+    /// the Unicode ellipses terminals actually render — U+2026 HORIZONTAL
+    /// ELLIPSIS ("…/", Ghostty's real output; the T6 field title was
+    /// "…/Desktop/projects/supervoxtral", owner-confirmed 2026-07-11 — a
+    /// typed report loses the distinction from "../") and U+2025 TWO DOT
+    /// LEADER ("‥/").
+    private static let elidedPrefixes = ["../", "…/", "‥/"]
+
+    /// The first candidate that verifies as an existing directory — every
+    /// exact candidate first, then the home-anchored fallbacks for
+    /// abbreviated titles. The FS check is injectable so parser tests never
+    /// hit the disk.
     static func resolveWorkingDirectory(
         fromWindowTitle title: String,
         homeDirectory: String = NSHomeDirectory(),
@@ -68,6 +113,11 @@ enum TerminalWorkingDirectoryResolver {
     ) -> String? {
         for candidate in workingDirectoryCandidates(fromWindowTitle: title, homeDirectory: homeDirectory) {
             if isDirectory(candidate) { return candidate }
+        }
+        for fallback in homeAnchoredFallbackCandidates(
+            fromWindowTitle: title, homeDirectory: homeDirectory
+        ) {
+            if isDirectory(fallback) { return fallback }
         }
         return nil
     }
@@ -108,9 +158,40 @@ enum TerminalWorkingDirectoryResolver {
         return nil
     }
 
+    /// Redacted SHAPE of a window title for field diagnostics (the T6 failure
+    /// was undiagnosable because the log line carried no hint of what the
+    /// title looked like): letters map to "a", digits to "9", path separators
+    /// and elision marks (`/`, `.`, `~`, `…`, `‥`) and spaces survive,
+    /// anything else becomes "?", capped at 60 characters. Class-mapped shape
+    /// only — never raw content.
+    static func titleShape(_ title: String, cap: Int = 60) -> String {
+        var shape = ""
+        for character in title.prefix(cap) {
+            if character.isLetter {
+                shape.append("a")
+            } else if character.isNumber {
+                shape.append("9")
+            } else if character == "/" || character == "." || character == "~"
+                || character == "…" || character == "‥" || character == " "
+            {
+                shape.append(character)
+            } else {
+                shape.append("?")
+            }
+        }
+        return shape
+    }
+
     // Static literal: a bad pattern is a coding error to crash on immediately
     // (same rationale as TextMergingAlgorithms / PolishTokenGuard).
     private static let pathRunRegex = try! NSRegularExpression(pattern: "[~/][^\\s]*")
+
+    /// A Ghostty-elided run: "../", "…/" (U+2026) or "‥/" (U+2025), then
+    /// non-whitespace. Prose "..." or a bare ".."/"…" never matches (the
+    /// character after the elision mark must be `/`).
+    private static let abbreviatedRunRegex = try! NSRegularExpression(
+        pattern: "(?:\\.\\.|…|‥)/[^\\s]*"
+    )
 
     /// Trailing sentence/decoration punctuation trimmed off an extracted run.
     private static let trailingDecorations: Set<Character> =
@@ -591,7 +672,12 @@ enum RepoVocabularyService {
         guard let workingDirectory = TerminalWorkingDirectoryResolver
             .resolveWorkingDirectory(fromWindowTitle: title)
         else {
-            Log.polishing.info("Repo vocabulary: no working directory resolved from window title")
+            // Shape is class-mapped (letters->a, digits->9), never content —
+            // safe as .public, and makes the NEXT field failure of this kind
+            // self-diagnosing (T6 was invisible without it).
+            Log.polishing.info(
+                "Repo vocabulary: no working directory resolved from window title (shape: \(TerminalWorkingDirectoryResolver.titleShape(title), privacy: .public))"
+            )
             return nil
         }
         guard let vocabulary = await vocabulary(
