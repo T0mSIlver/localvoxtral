@@ -14,6 +14,23 @@ struct LLMPolishingRequest: Sendable {
     let inputText: String
     let systemPrompt: String
     let userPrompts: [String]
+    /// Optional generation cap forwarded as `max_tokens`. Production polish
+    /// requests leave it nil (the helper applies its own default); the
+    /// prompt-prefix warmup sets 1 so the throwaway generation costs a
+    /// single token.
+    let maxTokens: Int?
+
+    init(
+        inputText: String,
+        systemPrompt: String,
+        userPrompts: [String],
+        maxTokens: Int? = nil
+    ) {
+        self.inputText = inputText
+        self.systemPrompt = systemPrompt
+        self.userPrompts = userPrompts
+        self.maxTokens = maxTokens
+    }
 }
 
 struct LLMPolishingConfiguration: Sendable {
@@ -161,6 +178,9 @@ struct LLMPolishingService: LLMPolishingServicing {
             if let presencePenalty = defaults.presencePenalty {
                 body["presence_penalty"] = presencePenalty
             }
+        }
+        if let maxTokens = request.maxTokens {
+            body["max_tokens"] = maxTokens
         }
         if let chatTemplateArguments = configuration.chatTemplateArguments {
             body["chat_template_kwargs"] = chatTemplateArguments

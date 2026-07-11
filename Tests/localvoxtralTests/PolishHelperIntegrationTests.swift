@@ -352,6 +352,110 @@ final class PolishHelperIntegrationTests: XCTestCase {
         process.terminate()
     }
 
+    /// Regression-style demonstration for the app-side prompt-prefix warmup:
+    /// two cold helper launches — one where the first real polish pays the
+    /// full static-prefix prefill, one where the app's exact warmup request
+    /// (`PolishPromptWarmup.request`, max_tokens=1) lands first. Asserts the
+    /// BEHAVIOR (the warmup checkpoints the prefix; the first real polish is
+    /// then a cache hit, zero full-prefill fallbacks, identical output) and
+    /// prints the measured latencies informationally — no timing assertions
+    /// (no-wall-clock rule).
+    func testAppWarmupRequestPrimesPromptCacheForFirstRealPolish() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let option = PolishModelCatalog.option(forRepoID: model)
+        let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
+        addTeardownBlock { cleanup() }
+        let service = LLMPolishingService()
+
+        // A required eval case: its polished output is deterministic and
+        // stable, so the cold and warmed runs must agree on it.
+        let transcript = "Are you coming to the meeting tomorrow ?"
+        let expectedNormalized = LLMPolishEvalSupport.normalized(
+            "Are you coming to the meeting tomorrow?"
+        )
+        func configuration(port: UInt16) -> LLMPolishingConfiguration {
+            LLMPolishingConfiguration(
+                endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
+                apiKey: "",
+                model: model,
+                samplingDefaults: option?.samplingDefaults,
+                chatTemplateArguments: option?.chatTemplateArguments
+            )
+        }
+        let realPolishRequest = LLMPolishingRequest(
+            inputText: transcript,
+            systemPrompt: templates.systemContent,
+            userPrompts: templates.renderedUserPrompts(
+                inputText: transcript,
+                replacementDictionary: ""
+            )
+        )
+
+        // Baseline: cold helper, the first real polish pays the full prefill.
+        let cold = try await launchHelper(binary: binary, model: model)
+        let coldResult = try await service.polish(
+            request: realPolishRequest,
+            configuration: configuration(port: cold.port)
+        )
+        cold.process.terminate()
+
+        // Warmed: cold helper again, the app's warmup request lands first.
+        let warmed = try await launchHelper(binary: binary, model: model)
+        let warmupRequest = PolishPromptWarmup.request(templates: templates)
+        var warmupDuration = Double.nan
+        do {
+            warmupDuration = try await service.polish(
+                request: warmupRequest,
+                configuration: configuration(port: warmed.port)
+            ).durationSeconds
+        } catch LLMPolishingError.invalidResponse {
+            // A 1-token generation can trim to an empty response; the
+            // checkpoint exists server-side either way and the assertions
+            // below prove it (the production warmup is log-only too).
+        }
+        let warmResult = try await service.polish(
+            request: realPolishRequest,
+            configuration: configuration(port: warmed.port)
+        )
+        // Worst-case serialization cost for a real polish that lands behind
+        // an in-flight warmup: the warmup's post-checkpoint work, measured
+        // here as a second warmup request against the warm cache.
+        let queuedWarmupDuration = try? await service.polish(
+            request: warmupRequest,
+            configuration: configuration(port: warmed.port)
+        ).durationSeconds
+
+        // Warmup checkpointed the prefix once; the first real polish reused
+        // it instead of re-checkpointing, and nothing fell back to a full
+        // prefill in either launch.
+        XCTAssertEqual(
+            warmed.stderrLog.countOfLines(containing: "prompt cache: checkpointed"), 1,
+            "expected exactly one checkpoint (the warmup's) across the warmed launch"
+        )
+        XCTAssertGreaterThan(
+            warmed.stderrLog.countOfLines(containing: "prompt cache: hit"), 0,
+            "the first real polish after warmup did not reuse the warmed prefix"
+        )
+        XCTAssertEqual(warmed.stderrLog.countOfLines(containing: "full prefill"), 0)
+        XCTAssertEqual(cold.stderrLog.countOfLines(containing: "full prefill"), 0)
+
+        // Cache reuse must not change polish output.
+        XCTAssertEqual(LLMPolishEvalSupport.normalized(coldResult.polishedText), expectedNormalized)
+        XCTAssertEqual(LLMPolishEvalSupport.normalized(warmResult.polishedText), expectedNormalized)
+
+        print(
+            """
+            == polishd prompt-prefix warmup: first-polish latency (model: \(model)) ==
+            without warmup (cold cache):            \(String(format: "%.3f", coldResult.durationSeconds))s
+            warmup request itself (cold cache):     \(String(format: "%.3f", warmupDuration))s
+            first real polish after warmup:         \(String(format: "%.3f", warmResult.durationSeconds))s
+            worst-case queue-behind-warmup (proxy): \(String(format: "%.3f", queuedWarmupDuration ?? .nan))s
+            """
+        )
+        warmed.process.terminate()
+    }
+
     /// EXPERIMENT (2026-07-09, print-only — no score assertions): run the
     /// same corpus with the Qwen3.5 model card's recommended non-thinking
     /// text sampling (temperature 1.0, top_p 1.0, top_k 20, min_p 0,
