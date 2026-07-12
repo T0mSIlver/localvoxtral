@@ -1,3 +1,4 @@
+import Carbon
 import Foundation
 import XCTest
 @testable import localvoxtral
@@ -13,6 +14,54 @@ final class TerminalTargetDetectorTests: XCTestCase {
         TerminalTargetDetector.debugFocusedElementProbeOverride = nil
         TerminalTargetDetector.debugSecureEventInputOverride = nil
         try await super.tearDown()
+    }
+
+    // MARK: - Live host state must never leak into unpinned tests
+
+    // Regression for the overnight CI failures (runs 29160724070,
+    // 29159948228/455/578): loginwindow holds Secure Keyboard Entry while the
+    // screen is locked, and every test that reached a commit/session-start
+    // path without pinning debugSecureEventInputOverride sampled it. Here the
+    // test process itself turns secure input on (Carbon refcounts it
+    // per-process, and the flag reads back system-wide), which reproduces the
+    // locked-screen host deterministically.
+    func testUnpinnedSecureInputReadIsFalseUnderXCTestEvenWhileLiveStateIsOn() {
+        TerminalTargetDetector.debugSecureEventInputOverride = nil
+        // In a GUI session (the CI runner) this genuinely flips the
+        // system-wide flag, reproducing the locked-screen host; in a non-GUI
+        // SSH session (remote-build.sh) the call no-ops with noErr and the
+        // live flag stays off, so the assertion below is trivially true
+        // there instead of exercising the flip.
+        let enableStatus = EnableSecureEventInput()
+        defer {
+            if enableStatus == noErr { DisableSecureEventInput() }
+        }
+        if !IsSecureEventInputEnabled() {
+            print("note: live secure-input flip unavailable in this session; asserting the pinned default only")
+        }
+        XCTAssertFalse(
+            TerminalTargetDetector.isSecureKeyboardEntryEnabled(),
+            "unpinned tests must never sample the host's live Secure Keyboard Entry state"
+        )
+    }
+
+    func testPinnedSecureInputOverrideStillWinsUnderXCTest() {
+        TerminalTargetDetector.debugSecureEventInputOverride = { true }
+        XCTAssertTrue(TerminalTargetDetector.isSecureKeyboardEntryEnabled())
+    }
+
+    // The frontmost-app and AX-focus reads leak the same way (a terminal
+    // frontmost on the host while the suite runs would flip the verdict), so
+    // unpinned they must resolve to the fixed unknown-target default.
+    func testUnpinnedCurrentTargetDetectionIsDeterministicUnderXCTest() {
+        TerminalTargetDetector.debugFrontmostBundleIDOverride = nil
+        TerminalTargetDetector.debugFocusedElementProbeOverride = nil
+        let verdict = TerminalTargetDetector.detectCurrentTarget()
+        XCTAssertEqual(
+            verdict,
+            TerminalTargetDetector.Decision(isTerminalLike: false, reason: .axProbeUnavailable),
+            "unpinned tests must never sample the host's frontmost app or AX focus"
+        )
     }
 
     // MARK: - Bundle allowlist (pure)
