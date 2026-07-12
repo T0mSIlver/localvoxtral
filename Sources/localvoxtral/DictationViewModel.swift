@@ -423,6 +423,13 @@ final class DictationViewModel {
     /// both the disabled toggle and a remote endpoint.
     @ObservationIgnored
     var debugPolishContextPasteboardReaderOverride: (() -> any PasteboardReading)?
+    /// Test seam: injects the pasteboard the spoken clipboard-paste macro reads,
+    /// replacing `SystemPasteboardReader`. Only resolved when the macro setting
+    /// is on AND a marker phrase is present, so a stub whose read methods were
+    /// never called proves the no-read guarantee when the setting is off or no
+    /// marker was spoken.
+    @ObservationIgnored
+    var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of

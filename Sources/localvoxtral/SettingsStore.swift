@@ -180,6 +180,7 @@ final class SettingsStore {
         static let replacementDictionaryEnabled = "settings.replacement_dictionary_enabled"
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
+        static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -324,6 +325,18 @@ final class SettingsStore {
     var polishClipboardContextEnabled: Bool {
         didSet {
             defaults.set(polishClipboardContextEnabled, forKey: Keys.polishClipboardContextEnabled)
+        }
+    }
+
+    /// When true (default), an Overlay Buffer dictation that carries a spoken
+    /// marker phrase ("paste clipboard", "colle le presse-papiers", …) has that
+    /// marker replaced at commit with the actual clipboard contents, formatted
+    /// as inline code or a fenced code block. Default on: it only ever fires on
+    /// an explicit spoken marker, and the clipboard is read only then (once).
+    /// See `ClipboardPayloadMacro`.
+    var clipboardPayloadMacroEnabled: Bool {
+        didSet {
+            defaults.set(clipboardPayloadMacroEnabled, forKey: Keys.clipboardPayloadMacroEnabled)
         }
     }
 
@@ -519,6 +532,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.agentPolishProfileEnabled, fallback: true)
         polishClipboardContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
+        clipboardPayloadMacroEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.clipboardPayloadMacroEnabled, fallback: true)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
         modifierOnlyHotKeyEnabled = Self.loadBool(

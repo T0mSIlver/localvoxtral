@@ -334,6 +334,18 @@ private struct ConnectionSettingsPane: View {
                         }
                     }
 
+                    SettingsFieldRow(title: "Spoken clipboard paste") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Say “paste clipboard” to insert your clipboard as a code block on commit."
+                            )
+                        }
+                    }
+
                     switch settings.polishingBackendMode {
                     case .externalURL:
                         SettingsFieldRow(title: "Endpoint") {
