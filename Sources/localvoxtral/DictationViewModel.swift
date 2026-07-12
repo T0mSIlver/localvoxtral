@@ -167,6 +167,20 @@ final class DictationViewModel {
     #endif
     var lastFinalSegment = ""
 
+    /// Raw (pre-polish) transcript of the most recent stop-commit whose LLM
+    /// polishing visibly changed the text. Drives the "Copy raw transcript"
+    /// popover affordance (F6): terminals can't un-type, so the raw text a
+    /// polish replaced is offered for one-tap copy instead. `nil` when the last
+    /// commit wasn't polish-changed; cleared on every new session start.
+    /// Observable (not `@ObservationIgnored`) so the popover re-renders when it
+    /// appears/disappears.
+    var lastPolishChangedRawTranscript: String?
+
+    /// Whether the "Copy raw transcript" popover row should be offered.
+    var canCopyRawTranscript: Bool {
+        lastPolishChangedRawTranscript?.trimmed.isEmpty == false
+    }
+
     /// Whether the app focused at the most recent session start behaves like
     /// a terminal emulator (bundle allowlist, AX-writability heuristic
     /// fallback). Refreshed at each session start; live replacement strategy
@@ -466,6 +480,13 @@ final class DictationViewModel {
     /// guessing with `Task.yield()`.
     @ObservationIgnored
     var debugManagedStatusMirrorEventSink: (() -> Void)?
+    /// Test seam: replaces the `NSPasteboard.general` write used by the copy
+    /// actions (`copyLatestSegment`, `copyRawTranscript`) so tests assert what
+    /// gets copied without a pasteboard server or clobbering the host clipboard.
+    #if DEBUG
+    @ObservationIgnored
+    var debugPasteboardWriteOverride: ((String) -> Void)?
+    #endif
     @ObservationIgnored
     var debugMicrophoneAuthorizationStatusOverride: MicrophoneAuthorizationStatus?
     /// Test seam: replaces `microphone.requestAccess` in the session-start
@@ -1560,13 +1581,34 @@ final class DictationViewModel {
         let segment = lastFinalSegment.trimmed
         guard !segment.isEmpty else { return }
 
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(segment, forType: .string)
+        writeToPasteboard(segment)
 
         if updateStatus {
             statusText = "Latest segment copied."
         }
+    }
+
+    /// Copies the RAW (pre-polish) transcript of the last polish-changed commit
+    /// to the clipboard (F6). No-op when there is nothing to offer.
+    func copyRawTranscript() {
+        guard let raw = lastPolishChangedRawTranscript?.trimmed, !raw.isEmpty else { return }
+        writeToPasteboard(raw)
+        statusText = "Raw transcript copied."
+    }
+
+    /// Single pasteboard-write seam. In DEBUG a test can substitute the write to
+    /// avoid touching (and clobbering) `NSPasteboard.general` — headless CI has
+    /// no pasteboard server, and clobbering the host clipboard is antisocial.
+    private func writeToPasteboard(_ text: String) {
+        #if DEBUG
+        if let override = debugPasteboardWriteOverride {
+            override(text)
+            return
+        }
+        #endif
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     func requestAccessibilityPermission() {

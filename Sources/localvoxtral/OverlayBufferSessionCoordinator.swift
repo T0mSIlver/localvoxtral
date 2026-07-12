@@ -57,10 +57,15 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// Surfaces the Secure Keyboard Entry warning inside the overlay panel
     /// while buffering. Defaulted so test doubles stay unchanged.
     func showSecureInputWarning()
+    /// Flags that LLM polishing changed the committed text vs the raw
+    /// transcript, so the overlay shows the "Polished" badge while the polished
+    /// text is held before dismissal. Defaulted so test doubles stay unchanged.
+    func markPolished(_ polished: Bool)
 }
 
 extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
+    func markPolished(_ polished: Bool) {}
 }
 
 @MainActor
@@ -255,6 +260,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func showSecureInputWarning() {
         stateMachine.setSecureInputWarning()
+        renderCurrentSnapshot()
+    }
+
+    func markPolished(_ polished: Bool) {
+        stateMachine.setPolished(polished)
         renderCurrentSnapshot()
     }
 

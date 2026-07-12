@@ -89,6 +89,38 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         XCTAssertNil(machine.anchor)
     }
 
+    func testPolishedFlagSetsInFinalizingAndResetsOnNewSession() {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+
+        machine.setPolished(true)
+        XCTAssertNil(machine.snapshot, "no session, no flag")
+
+        machine.startSession(anchor: anchor)
+        XCTAssertEqual(machine.snapshot?.polished, false, "a fresh session is unpolished")
+
+        machine.beginFinalizing(anchor: nil)
+        machine.setPolished(true)
+        XCTAssertEqual(
+            machine.snapshot?.polished, true,
+            "the badge rides the finalizing snapshot while the polished text is held"
+        )
+
+        machine.setPolished(false)
+        XCTAssertEqual(machine.snapshot?.polished, false, "a no-op polish clears the flag")
+
+        machine.setPolished(true)
+        machine.reset()
+        machine.startSession(anchor: anchor)
+        XCTAssertEqual(
+            machine.snapshot?.polished, false,
+            "reset + a new session must not carry a stale badge"
+        )
+    }
+
     func testOverlayAssembler_partialAndFinalMergeWithoutDuplication() {
         let merged = OverlayBufferTextAssembler.displayText(
             committedText: "hello world",

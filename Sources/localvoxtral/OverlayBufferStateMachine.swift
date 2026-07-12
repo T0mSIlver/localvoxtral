@@ -104,6 +104,11 @@ struct OverlayBufferStateMachine {
         let bufferText: String
         let errorMessage: String?
         let secureInputActive: Bool
+        /// True once LLM polishing has changed the displayed text vs the raw
+        /// transcript for this session. Drives the subtle "Polished" badge shown
+        /// while the polished text is held before dismissal. Set only by the
+        /// stop-commit polish path; cleared on every new session.
+        let polished: Bool
         let anchor: OverlayAnchor
     }
 
@@ -111,6 +116,7 @@ struct OverlayBufferStateMachine {
     private(set) var bufferText = ""
     private(set) var errorMessage: String?
     private(set) var secureInputActive = false
+    private(set) var polished = false
     private(set) var anchor: OverlayAnchor?
 
     var snapshot: Snapshot? {
@@ -120,6 +126,7 @@ struct OverlayBufferStateMachine {
             bufferText: bufferText,
             errorMessage: errorMessage,
             secureInputActive: secureInputActive,
+            polished: polished,
             anchor: anchor
         )
     }
@@ -134,7 +141,17 @@ struct OverlayBufferStateMachine {
         bufferText = ""
         errorMessage = nil
         secureInputActive = false
+        polished = false
         self.anchor = anchor
+    }
+
+    /// Marks that LLM polishing changed the displayed text vs the raw
+    /// transcript. Set from the stop-commit polish path once the polished text
+    /// is on screen; the badge then rides the finalizing/hold snapshot. Ignored
+    /// when idle (no session to annotate); a new session clears it.
+    mutating func setPolished(_ value: Bool) {
+        guard phase != .idle else { return }
+        polished = value
     }
 
     /// Marks the buffering session as running under Secure Keyboard Entry.
@@ -178,6 +195,7 @@ struct OverlayBufferStateMachine {
         bufferText = ""
         errorMessage = nil
         secureInputActive = false
+        polished = false
         anchor = nil
     }
 }

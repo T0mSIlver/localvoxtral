@@ -165,6 +165,40 @@ final class OverlayBufferSessionCoordinatorTests: XCTestCase {
         )
     }
 
+    func testMarkPolishedRendersBadgeIntoSnapshotAndResetClearsIt() {
+        let renderer = MockOverlayRenderer()
+        let coordinator = OverlayBufferSessionCoordinator(
+            stateMachine: OverlayBufferStateMachine(),
+            renderer: renderer,
+            anchorResolver: MockOverlayAnchorResolver()
+        )
+
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "Hello world.", commitBufferText: "Hello world.")
+        coordinator.markPolished(true)
+
+        let rendered = renderer.snapshots.compactMap { $0 }.last
+        XCTAssertEqual(rendered?.phase, .finalizing)
+        XCTAssertEqual(
+            rendered?.polished, true,
+            "the badge must reach the rendered snapshot, not just the state machine"
+        )
+
+        // Clearing the flag re-renders without the badge (no lingering annotation).
+        coordinator.markPolished(false)
+        XCTAssertEqual(renderer.snapshots.compactMap { $0 }.last?.polished, false)
+
+        // A fresh session (reset precedes startSession in the real flow) is clean.
+        coordinator.markPolished(true)
+        coordinator.reset()
+        coordinator.startSession()
+        coordinator.beginFinalizing(displayBufferText: "next", commitBufferText: "next")
+        XCTAssertEqual(
+            renderer.snapshots.compactMap { $0 }.last?.polished, false,
+            "a new session must not carry a stale badge"
+        )
+    }
+
     func testCommitUsesPIDCapturedAtStopTime() {
         let renderer = MockOverlayRenderer()
         let anchorResolver = MockOverlayAnchorResolver()
