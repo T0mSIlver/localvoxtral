@@ -551,6 +551,8 @@ assert_tab "General" "Permissions"
 assert_tab "Endpoints" "Dictation"
 assert_tab "Dictation" "Start dictation with"
 assert_tab "Text Processing" "Replacements"
+# The polish feature toggles live on Text Processing (moved from Endpoints).
+assert_tab "Text Processing" "LLM Polishing"
 assert_tab "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns
