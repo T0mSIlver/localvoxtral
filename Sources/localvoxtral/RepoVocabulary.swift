@@ -13,7 +13,8 @@ import Synchronization
 // exact local bytes do not depend on a generative model reproducing them.
 // Three separable,
 // independently testable pieces + a TTL cache do the amortizing:
-//   1. `TerminalWorkingDirectoryResolver` — terminal window title -> cwd
+//   1. `TerminalWorkingDirectoryResolver` / `TerminalDescendantProcessResolver`
+//      — focused title first, then an unambiguous descendant-process cwd
 //   2. `RepoIndexing` / `RepoGitRunner` / `RepoVocabularyService` — cwd -> vocab
 //   3. `RepoVocabularyMatcher` — transcript + vocab -> replacement entries
 
@@ -213,6 +214,135 @@ enum TerminalWorkingDirectoryResolver {
             return homeDirectory + String(path.dropFirst(1))
         }
         return path
+    }
+}
+
+/// Title-independent fallback for terminal tabs whose foreground program has
+/// replaced the window title (coding agents, editors, multiplexers, and other
+/// TUIs commonly emit OSC 0). A terminal app owns every tab/window, so its PID
+/// alone cannot identify which descendant process belongs to the focused tab.
+/// Consequently this resolver returns a root ONLY when every descendant CWD
+/// maps to the same canonical git root. A different repo, a non-repo CWD, or
+/// an unreadable CWD is ambiguity, never a ranking problem: injecting no hints
+/// is safer than hints from the wrong repo.
+enum TerminalDescendantProcessResolver {
+    struct ProcessRecord: Sendable, Equatable {
+        let pid: pid_t
+        let parentPID: pid_t
+    }
+
+    enum GitRootResolution: Sendable, Equatable {
+        case none
+        case unique(String)
+        case ambiguous
+        case indeterminate
+    }
+
+    /// Resolves repo roots from recursively descended process CWDs. Both live
+    /// process operations are injected so unit tests never inspect real PIDs.
+    static func resolveGitRoot(
+        terminalApplicationPID: pid_t,
+        fileManager: FileManager = .default,
+        processSnapshot: @Sendable () -> [ProcessRecord] = { liveProcessSnapshot() },
+        workingDirectoryForPID: @Sendable (pid_t) -> String? = { liveWorkingDirectory(forPID: $0) }
+    ) -> GitRootResolution {
+        let records = processSnapshot()
+        var descendants = Set<pid_t>()
+        descendants.insert(terminalApplicationPID)
+
+        // A process snapshot is finite. Repeated passes handle arbitrary tree
+        // depth without relying on record ordering; the set also breaks cycles
+        // in malformed/injected snapshots.
+        var changed = true
+        while changed {
+            changed = false
+            for record in records where descendants.contains(record.parentPID) {
+                if descendants.insert(record.pid).inserted { changed = true }
+            }
+        }
+        descendants.remove(terminalApplicationPID)
+
+        var roots = Set<String>()
+        for pid in descendants.sorted() {
+            // Omitting an unreadable descendant could hide a second tab's repo
+            // and turn genuine ambiguity into a false unique result. Fail
+            // closed for this commit instead. Exited-process races therefore
+            // cost one best-effort hint attempt, never correctness.
+            guard let cwd = workingDirectoryForPID(pid) else { return .indeterminate }
+            guard let root = RepoIndexing.findGitRoot(
+                startingAt: cwd, fileManager: fileManager
+            ) else {
+                // A non-repo descendant may be the focused plain-shell tab,
+                // while the one repo we can see belongs to a background tab.
+                // It therefore makes the focused repo unknowable, not absent.
+                return .indeterminate
+            }
+            // `/var` and `/private/var` (and user-created symlink paths) can
+            // name the same repo. Canonicalize so aliases cause a safe match,
+            // not a false ambiguity.
+            let canonicalRoot = URL(fileURLWithPath: root)
+                .resolvingSymlinksInPath().standardizedFileURL.path
+            roots.insert(canonicalRoot)
+            if roots.count > 1 { return .ambiguous }
+        }
+        guard let root = roots.first else { return .none }
+        return .unique(root)
+    }
+
+    /// One coherent parent/PID snapshot of the whole process table. This is
+    /// deliberately a `sysctl(KERN_PROC_ALL)` snapshot rather than repeated
+    /// child queries, which could splice different process generations into a
+    /// tree while tabs are rapidly starting/exiting commands.
+    static func liveProcessSnapshot() -> [ProcessRecord] {
+        var mib = [Int32(CTL_KERN), Int32(KERN_PROC), Int32(KERN_PROC_ALL)]
+        var byteCount = 0
+        guard sysctl(&mib, u_int(mib.count), nil, &byteCount, nil, 0) == 0,
+              byteCount > 0
+        else { return [] }
+
+        let stride = MemoryLayout<kinfo_proc>.stride
+        // Leave growth room between the sizing and fetch calls. If the table
+        // still outgrows it, fail closed for this commit; the feature is
+        // best-effort and a later TTL miss/commit will retry.
+        let capacity = byteCount + max(byteCount / 8, stride * 16)
+        var processes = [kinfo_proc](
+            repeating: kinfo_proc(), count: (capacity + stride - 1) / stride
+        )
+        var fetchedBytes = processes.count * stride
+        let status = processes.withUnsafeMutableBytes { buffer in
+            sysctl(&mib, u_int(mib.count), buffer.baseAddress, &fetchedBytes, nil, 0)
+        }
+        guard status == 0 else { return [] }
+
+        return processes.prefix(fetchedBytes / stride).map {
+            ProcessRecord(pid: $0.kp_proc.p_pid, parentPID: $0.kp_eproc.e_ppid)
+        }
+    }
+
+    /// Reads another process's current directory through libproc. Same-UID
+    /// access is available to this unsandboxed app; failures (exited process,
+    /// protected/different-UID child, kernel denial) simply omit that process.
+    static func liveWorkingDirectory(forPID pid: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let expectedBytes = MemoryLayout<proc_vnodepathinfo>.size
+        let bytes = proc_pidinfo(
+            pid,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &info,
+            Int32(expectedBytes)
+        )
+        guard bytes == Int32(expectedBytes) else { return nil }
+        let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) { path in
+            path.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) {
+                String(cString: $0)
+            }
+        }
+        // libproc reported a full structure, but an empty/non-absolute path is
+        // still not a usable CWD. Treat it exactly like an unavailable lookup;
+        // passing `""` to URL(fileURLWithPath:) would incorrectly mean our own
+        // process directory.
+        return path.hasPrefix("/") ? path : nil
     }
 }
 
@@ -688,29 +818,76 @@ enum RepoVocabularyService {
         return vocabulary
     }
 
-    /// The full title -> cwd -> vocabulary -> matched-entries pipeline for one
-    /// commit. Everything here may block (FS stats on the title's path
-    /// candidates — possibly a stale network mount —, the git subprocess, the
-    /// n-gram match over a large vocabulary), so the view model runs this
-    /// inside a detached task; only the AX title read stays on the main actor.
+    /// The full focused-title/terminal-PID -> git root -> vocabulary -> matched
+    /// entries pipeline for one commit. The focused title remains tier 1: it
+    /// can soundly distinguish a focused tab even when other tabs use other
+    /// repos. When it contains no usable repo path, tier 2 walks terminal
+    /// descendants and proceeds only if every process CWD maps to one root.
+    /// Everything here may block, so the view model runs it inside a
+    /// detached task; only the AX title read stays on the main actor.
     static func entries(
-        forWindowTitle title: String,
+        forWindowTitle title: String?,
+        terminalApplicationPID: pid_t? = nil,
         transcript: String,
-        cache: RepoVocabularyCache
+        cache: RepoVocabularyCache,
+        fileManager: FileManager = .default,
+        processSnapshot: @Sendable () -> [TerminalDescendantProcessResolver.ProcessRecord] = {
+            TerminalDescendantProcessResolver.liveProcessSnapshot()
+        },
+        workingDirectoryForPID: @Sendable (pid_t) -> String? = {
+            TerminalDescendantProcessResolver.liveWorkingDirectory(forPID: $0)
+        }
     ) async -> [ReplacementEntry]? {
-        guard let workingDirectory = TerminalWorkingDirectoryResolver
-            .resolveWorkingDirectory(fromWindowTitle: title)
-        else {
+        var gitRoot: String?
+        if let title,
+           let titleDirectory = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
+               fromWindowTitle: title,
+               isDirectory: { path in
+                   var isDirectory: ObjCBool = false
+                   return fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+                       && isDirectory.boolValue
+               }
+           )
+        {
+            gitRoot = RepoIndexing.findGitRoot(startingAt: titleDirectory, fileManager: fileManager)
+        }
+
+        if gitRoot == nil, let terminalApplicationPID {
+            switch TerminalDescendantProcessResolver.resolveGitRoot(
+                terminalApplicationPID: terminalApplicationPID,
+                fileManager: fileManager,
+                processSnapshot: processSnapshot,
+                workingDirectoryForPID: workingDirectoryForPID
+            ) {
+            case .unique(let root):
+                gitRoot = root
+                Log.polishing.info("Repo vocabulary: resolved git root from terminal descendants")
+            case .ambiguous:
+                Log.polishing.info("Repo vocabulary skipped: terminal descendants span multiple repos")
+                return nil
+            case .indeterminate:
+                Log.polishing.info("Repo vocabulary skipped: terminal descendant cwds do not establish one repo")
+                return nil
+            case .none:
+                break
+            }
+        }
+
+        guard let gitRoot else {
             // Shape is class-mapped (letters->a, digits->9), never content —
             // safe as .public, and makes the NEXT field failure of this kind
             // self-diagnosing (T6 was invisible without it).
-            Log.polishing.info(
-                "Repo vocabulary: no working directory resolved from window title (shape: \(TerminalWorkingDirectoryResolver.titleShape(title), privacy: .public))"
-            )
+            if let title {
+                Log.polishing.info(
+                    "Repo vocabulary: no git root resolved from title or terminal descendants (title shape: \(TerminalWorkingDirectoryResolver.titleShape(title), privacy: .public))"
+                )
+            } else {
+                Log.polishing.info("Repo vocabulary: no git root resolved from terminal descendants")
+            }
             return nil
         }
         guard let vocabulary = await vocabulary(
-            forWorkingDirectory: workingDirectory, cache: cache
+            forWorkingDirectory: gitRoot, cache: cache, fileManager: fileManager
         ) else {
             return nil
         }
