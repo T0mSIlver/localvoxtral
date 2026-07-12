@@ -17,8 +17,12 @@ set -euo pipefail
 #           terminal prompt while speaking (the differentiator; no stray
 #           newline ever submits the prompt)
 #   Beat 2  tap Right Command  -> overlay buffer -> speak a line with spoken
-#           symbol forms -> tap -> the agent-profile LLM polish writes
-#           `--flags` / `file.ts` and the commit lands in the terminal
+#           symbol forms + a real repo filename -> tap -> the agent-profile
+#           LLM polish (grounded by the repo vocabulary of the staged repo)
+#           writes `--flags` / `useAuth.ts` and the commit lands in the
+#           terminal; in claude mode the polished prompt is then genuinely
+#           SUBMITTED and the real response is recorded (one small request
+#           against the owner's Claude usage — DEMO_SUBMIT_PROMPT=0 disables)
 #
 # The voice is either YOU (default) or macOS text-to-speech through a loopback
 # audio device (hands-free mode — how the CI runner records it, see
@@ -54,6 +58,9 @@ set -euo pipefail
 #   DEMO_CAPTURE_AUDIO            1 = record default-input audio into the video
 #                                 (default: 1 for a human take, 0 hands-free)
 #   DEMO_LINE_LIVE / _OVERLAY     the lines shown in the prompts / spoken by TTS
+#   DEMO_SUBMIT_PROMPT            1 (default) = in claude mode, submit the
+#                                 polished beat-2 prompt and record the response
+#   DEMO_RESPONSE_SECONDS         how long to record the response (default 14)
 #   DEMO_TERMINAL_AGENT           auto (default) | claude | shell — what runs in
 #                                 the staged Terminal window. auto uses a real
 #                                 Claude Code session when `claude` is on the
@@ -90,8 +97,16 @@ DEMO_TERMINAL_AGENT="${DEMO_TERMINAL_AGENT:-auto}"
 # to a coding agent; streamed raw, so no spoken symbol forms here.
 DEMO_LINE_LIVE="${DEMO_LINE_LIVE:-Refactor the retry logic in the websocket client, and add a unit test for the reconnect path.}"
 # Beat 2 (tap -> overlay + agent-profile polish): spoken symbol forms the
-# polish profile turns into written forms (index.ts, --no-verify).
-DEMO_LINE_OVERLAY="${DEMO_LINE_OVERLAY:-Open index dot t s and run the tests again, then commit with dash dash no verify.}"
+# polish profile turns into written forms (useAuth.ts — grounded by the repo
+# vocabulary indexed from the staged repo — and --filter). Phrased as a
+# read-only question so submitting it to a real Claude Code session yields a
+# fast text answer instead of a tool-permission prompt.
+DEMO_LINE_OVERLAY="${DEMO_LINE_OVERLAY:-Look at use auth dot t s and tell me which tests dash dash filter auth would run.}"
+# In claude mode the polished beat-2 prompt is genuinely SUBMITTED (one small
+# request against the owner's Claude usage) and the response is recorded for
+# DEMO_RESPONSE_SECONDS. DEMO_SUBMIT_PROMPT=0 turns the ending off.
+DEMO_SUBMIT_PROMPT="${DEMO_SUBMIT_PROMPT:-1}"
+DEMO_RESPONSE_SECONDS="${DEMO_RESPONSE_SECONDS:-14}"
 DEMO_HANDS_FREE="${DEMO_HANDS_FREE:-0}"
 DEMO_SAY_DEVICE="${DEMO_SAY_DEVICE:-}"
 DEMO_SAY_INPUT_UID="${DEMO_SAY_INPUT_UID:-}"
@@ -404,6 +419,11 @@ defaults write "$BUNDLE_ID" "settings.managed_llm_polishing_model" -string "mlx-
 # Overlay body font scaled up to match the 21 pt terminal font so the overlay
 # beat reads at README width (clamped to OverlayLayoutMetrics.maximum, 24).
 defaults write "$BUNDLE_ID" "settings.overlay_buffer_font_size" -float 22
+# Repo vocabulary grounds beat 2's spoken filename ("use auth dot t s" ->
+# useAuth.ts, exactly as spelled in the staged repo). Resolution reads the
+# terminal window title, which must contain a /-prefixed path — the staging
+# AppleScript pins the tab's custom title to the staged repo path for that.
+defaults write "$BUNDLE_ID" "settings.repo_vocabulary_enabled" -bool true
 if [[ -n "$DEMO_SAY_INPUT_UID" ]]; then
   defaults write "$BUNDLE_ID" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
 fi
@@ -469,10 +489,14 @@ REGION_Y=$(( MAIN_Y + (MAIN_H - DEMO_HEIGHT) / 2 ))
 (( REGION_Y < MAIN_Y + 30 )) && REGION_Y=$(( MAIN_Y + 30 )) # keep clear of the menu bar
 
 # --- stage the demo repo + Terminal window inside the capture region --------------
-DEMO_STAGE="$(mktemp -d -t lv-demo-stage)"
+# Fixed short path (not mktemp): the tab's custom title is set to this path so
+# RepoVocabulary can resolve the repo from the window title, and a short path
+# keeps that title readable on camera. Wiped before use and on cleanup.
+DEMO_STAGE="/tmp/lv-demo"
+rm -rf "$DEMO_STAGE"
 REPO_DIR="$DEMO_STAGE/webapp"
 ZDOT_DIR="$DEMO_STAGE/zdot"
-mkdir -p "$REPO_DIR/src" "$ZDOT_DIR"
+mkdir -p "$REPO_DIR/src/auth" "$REPO_DIR/tests/auth" "$ZDOT_DIR"
 
 cat > "$REPO_DIR/package.json" <<'JSON'
 {
@@ -483,14 +507,6 @@ cat > "$REPO_DIR/package.json" <<'JSON'
   }
 }
 JSON
-cat > "$REPO_DIR/src/index.ts" <<'TS'
-import { createClient } from "./client";
-
-export function main(): void {
-  const client = createClient();
-  client.connect();
-}
-TS
 cat > "$REPO_DIR/src/client.ts" <<'TS'
 export function createClient() {
   return {
@@ -500,10 +516,20 @@ export function createClient() {
   };
 }
 TS
-cat > "$REPO_DIR/src/client.test.ts" <<'TS'
-import { test } from "vitest";
+cat > "$REPO_DIR/src/auth/useAuth.ts" <<'TS'
+import { useState } from "react";
 
-test.todo("reconnects after a dropped connection");
+export function useAuth() {
+  const [token, setToken] = useState<string | null>(null);
+  return { token, isAuthenticated: token !== null, setToken };
+}
+TS
+cat > "$REPO_DIR/tests/auth/useAuth.test.ts" <<'TS'
+import { test, expect } from "vitest";
+import { useAuth } from "../../src/auth/useAuth";
+
+test.todo("starts unauthenticated");
+test.todo("exposes the token after setToken");
 TS
 git -C "$REPO_DIR" init -q -b main
 git -C "$REPO_DIR" add -A
@@ -533,6 +559,13 @@ on run argv
         delay 1
         set windowID to id of front window
         set ttyName to tty of demoTab
+        -- Pin the tab title to the absolute repo path: RepoVocabulary only
+        -- resolves a cwd from a /-prefixed path run in the window title
+        -- (Terminal's bare "webapp" basename is explicitly not resolvable).
+        try
+            set custom title of demoTab to (item 2 of argv)
+            set title displays custom title of demoTab to true
+        end try
         -- Explicit OPAQUE colors + big font so terminal text is legible at
         -- README width. Never the "Pro" profile: it is translucent and the
         -- recording shows the desktop (and whatever is on it) through the
@@ -552,7 +585,7 @@ on run argv
     end tell
 end run
 OSA
-TERMINAL_INFO="$(osascript "$STAGE_OSA" "$SHELL_CMD")"
+TERMINAL_INFO="$(osascript "$STAGE_OSA" "$SHELL_CMD" "$REPO_DIR")"
 TERMINAL_WINDOW_ID="${TERMINAL_INFO%% *}"
 TERMINAL_TTY="${TERMINAL_INFO##* }"
 if [[ -z "$TERMINAL_WINDOW_ID" || -z "$TERMINAL_TTY" || "$TERMINAL_TTY" != /dev/* ]]; then
@@ -692,6 +725,16 @@ tap_hotkey
 echo "Committing (agent-profile polish + insert)..."
 sleep "$DEMO_COMMIT_SECONDS"
 sleep 3 # let the committed text sit on screen
+
+# Ending (claude mode) — genuinely submit the polished prompt and record the
+# real response. This is the ONE deliberate Return on dictated text, owner-
+# approved: one small read-only request against the owner's Claude usage.
+if [[ "$TERMINAL_AGENT" == "claude" && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
+  echo "Submitting the polished prompt to claude (recording the response for ${DEMO_RESPONSE_SECONDS}s)..."
+  osascript -e 'tell application "Terminal" to activate' >/dev/null
+  osascript -e 'tell application "System Events" to key code 36' >/dev/null
+  sleep "$DEMO_RESPONSE_SECONDS"
+fi
 
 kill -INT "$RECORDER_PID"
 wait "$RECORDER_PID" 2>/dev/null || true
