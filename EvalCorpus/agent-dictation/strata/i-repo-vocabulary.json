@@ -1,0 +1,180 @@
+{
+  "schemaVersion": 1,
+  "stratum": "repo-vocabulary",
+  "description": "Repo-vocabulary hinting: the harness git-inits the referenced fixture (fixtures/repo-<name>.json), fronts a terminal in it, and the pipeline's git ls-files index must let polish resolve loosely-spoken names to exact repo paths/filenames.",
+  "cases": [
+    {
+      "id": "i-en-useauth",
+      "lang": "en",
+      "spokenForm": "open use auth dot t s and add a null check",
+      "intendedText": "Open useAuth.ts and add a null check.",
+      "requiredTokens": ["useAuth.ts"],
+      "forbiddenSubstrings": ["dot t s"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["src/auth/useAuth.ts"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Task-specified: 'use auth dot t s' → useAuth.ts via the vocabulary index.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "i-en-dictation-view-model",
+      "lang": "en",
+      "spokenForm": "look at dictation view model",
+      "intendedText": "Look at DictationViewModel.swift.",
+      "requiredTokens": ["DictationViewModel.swift"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["Sources/App/DictationViewModel.swift"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Task-specified: bare spoken name resolves to the full repo filename.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "i-en-auth-service",
+      "lang": "en",
+      "spokenForm": "move the token refresh into auth service dot t s",
+      "intendedText": "Move the token refresh into AuthService.ts.",
+      "requiredTokens": ["AuthService.ts"],
+      "forbiddenSubstrings": ["dot t s"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["src/auth/AuthService.ts"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "PascalCase .ts file, distinct from the camelCase hook next to it."
+    },
+    {
+      "id": "i-en-full-path",
+      "lang": "en",
+      "spokenForm": "the deploy script is in scripts slash deploy dot s h",
+      "intendedText": "The deploy script is in scripts/deploy.sh.",
+      "requiredTokens": ["scripts/deploy.sh"],
+      "forbiddenSubstrings": ["slash"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["scripts/deploy.sh"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Spoken path matches an actual repo path."
+    },
+    {
+      "id": "i-en-test-file",
+      "lang": "en",
+      "spokenForm": "add a case to use auth dot test dot t s",
+      "intendedText": "Add a case to useAuth.test.ts.",
+      "requiredTokens": ["useAuth.test.ts"],
+      "forbiddenSubstrings": ["dot t s"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["tests/auth/useAuth.test.ts"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Double-dotted test filename."
+    },
+    {
+      "id": "i-en-overlay-state-machine",
+      "lang": "en",
+      "spokenForm": "the overlay buffer state machine handles the stop event",
+      "intendedText": "The OverlayBufferStateMachine handles the stop event.",
+      "requiredTokens": ["OverlayBufferStateMachine"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["Sources/App/OverlayBufferStateMachine.swift"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Type name inferred from a repo filename without its extension."
+    },
+    {
+      "id": "i-en-posix-pipe",
+      "lang": "en",
+      "spokenForm": "posix pipe read wraps the raw descriptor",
+      "intendedText": "POSIXPipeRead wraps the raw descriptor.",
+      "requiredTokens": ["POSIXPipeRead"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["src/utils/POSIXPipeRead.swift"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "All-caps acronym prefix inside an identifier — vocabulary must beat phonetics."
+    },
+    {
+      "id": "i-en-known-issues",
+      "lang": "en",
+      "spokenForm": "document it in known issues dot m d",
+      "intendedText": "Document it in known-issues.md.",
+      "requiredTokens": ["known-issues.md"],
+      "forbiddenSubstrings": ["dot m d"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["docs/known-issues.md"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Hyphenation is only knowable from the repo listing."
+    },
+    {
+      "id": "i-en-ci-workflow",
+      "lang": "en",
+      "spokenForm": "the ci workflow lives in dot github slash workflows slash ci dot y m l",
+      "intendedText": "The CI workflow lives in .github/workflows/ci.yml.",
+      "requiredTokens": [".github/workflows/ci.yml"],
+      "forbiddenSubstrings": ["slash"],
+      "features": {"repo": {"fixture": "smallapp", "files": [".github/workflows/ci.yml"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Hidden directory + nested path from the fixture."
+    },
+    {
+      "id": "i-en-env-example",
+      "lang": "en",
+      "spokenForm": "copy the values from dot env dot example",
+      "intendedText": "Copy the values from .env.example.",
+      "requiredTokens": [".env.example"],
+      "forbiddenSubstrings": ["dot env"],
+      "features": {"repo": {"fixture": "smallapp", "files": [".env.example"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Dotfile present in the fixture listing."
+    },
+    {
+      "id": "i-en-fetch-user-profile",
+      "lang": "en",
+      "spokenForm": "fetch user profile dot t s should reuse the session token",
+      "intendedText": "fetchUserProfile.ts should reuse the session token.",
+      "requiredTokens": ["fetchUserProfile.ts"],
+      "forbiddenSubstrings": ["dot t s"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["src/api/fetchUserProfile.ts"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Sentence-initial camelCase filename must not be capitalized."
+    },
+    {
+      "id": "i-fr-useauth",
+      "lang": "fr",
+      "spokenForm": "ouvre use auth point t s et ajoute une vérification",
+      "intendedText": "Ouvre useAuth.ts et ajoute une vérification.",
+      "requiredTokens": ["useAuth.ts"],
+      "forbiddenSubstrings": ["point t s"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["src/auth/useAuth.ts"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French mirror of the task-specified useAuth case."
+    },
+    {
+      "id": "i-fr-dictation-view-model",
+      "lang": "fr",
+      "spokenForm": "regarde dictation view model",
+      "intendedText": "Regarde DictationViewModel.swift.",
+      "requiredTokens": ["DictationViewModel.swift"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["Sources/App/DictationViewModel.swift"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French bare-name resolution via the vocabulary index."
+    },
+    {
+      "id": "i-fr-deploy",
+      "lang": "fr",
+      "spokenForm": "le script de déploiement est dans scripts slash deploy point s h",
+      "intendedText": "Le script de déploiement est dans scripts/deploy.sh.",
+      "requiredTokens": ["scripts/deploy.sh"],
+      "forbiddenSubstrings": ["slash"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["scripts/deploy.sh"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence around a fixture path."
+    },
+    {
+      "id": "i-fr-settings-view",
+      "lang": "fr",
+      "spokenForm": "corrige la vue settings view point swift",
+      "intendedText": "Corrige la vue SettingsView.swift.",
+      "requiredTokens": ["SettingsView.swift"],
+      "forbiddenSubstrings": ["point swift"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["src/components/SettingsView.swift"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French dictation resolving to a fixture filename."
+    },
+    {
+      "id": "i-fr-makefile",
+      "lang": "fr",
+      "spokenForm": "ajoute une cible lint au makefile",
+      "intendedText": "Ajoute une cible lint au Makefile.",
+      "requiredTokens": ["Makefile"],
+      "features": {"repo": {"fixture": "smallapp", "files": ["Makefile"]}},
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Conventional casing confirmed by the fixture listing."
+    }
+  ]
+}

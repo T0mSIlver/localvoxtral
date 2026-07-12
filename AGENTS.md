@@ -132,7 +132,7 @@ This is a real app with daily users. Nothing ships on "it compiles".
 |---|---|---|---|
 | 0 | Unit suite (500+ tests) + PolishHelper unit suite + packaging + launch smoke | every PR/push, CI (helper unit suite: self-hosted lanes only) | ~1 min |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
-| 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | every PR/push on the self-hosted runner (after packaging); locally via `remote-build.sh integration-polishd` | ~15 s warm |
+| 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
@@ -167,12 +167,47 @@ scorer live in `LLMPolishEvalSupport`, shared with
 holds the bundled MLX Swift polishing helper to the same baseline — engine or
 model-pin changes MUST run that one too.
 
+### When must the LLM lanes run?
+
+CI does not run LLM inference on every push (owner decision, 2026-07-11):
+the polishd live-model integration step in `ci.yml` runs only when the diff
+touches LLM-relevant paths, or when the PR body / head commit message
+contains the literal marker `[run-llm-eval]` (the explicit opt-in for
+judgment calls). The marker must be present when the run is CREATED: editing
+the PR body after a skipped run does not retrigger CI, and rerunning a run
+reuses its original event payload — after adding the marker, push (an empty
+commit works, or put the marker in the commit message). The exact path list
+lives in
+`scripts/ci/llm-lane-filter.sh` — PolishHelper/**, the bundled
+`llm_*.toml` prompts, model catalog/pins, the polish client, token guard,
+prompt warmup, clipboard context/macro, repo vocabulary, the polish-commit
+path (`DictationViewModel+Session.swift`), and the eval support/corpus. The
+decide step writes "LLM eval lane: RUNNING (…)" or "SKIPPED (…)" to the
+run's step summary so a skipped run is self-explanatory. The PolishHelper
+UNIT suite (Metal-free) and the tier-1 voxmlx realtime integration stay
+per-push.
+
+The rule behind the list — the LLM lanes are REQUIRED for changes to:
+prompts, model pins/catalog, sampling/template kwargs, the polish request
+shape or anything that alters what reaches the model (context attachment,
+dictionary/vocabulary hints, macro placeholders, token guard repair
+semantics), the helper engine, or the eval corpus/scorer. NOT required for
+UI, insertion, audio, backend-supervision, or test-only changes elsewhere.
+Either way, the PR's Proof section states one of the two: the lane's
+scoreboard, or a one-line justification for skipping. If the path filter
+misses a change that belongs above, add `[run-llm-eval]` AND extend the
+filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
+remains the local equivalent. There is no nightly eval — a lane skipped by
+the filter runs again only when a matching change (or the marker) triggers
+it.
+
 ## CI / shipping
 
-- `ci.yml` runs tiers 0–1 on every PR and push to main. Same-repo branches run
-  on the self-hosted Mac runner (fast, warm cache); fork PRs run on
-  GitHub-hosted macOS. Never move fork-PR jobs to the self-hosted runner — it
-  is a personal machine.
+- `ci.yml` runs tiers 0–1 on every PR and push to main (the polishd
+  live-model lane conditionally — see "When must the LLM lanes run?").
+  Same-repo branches run on the self-hosted Mac runner (fast, warm cache);
+  fork PRs run on GitHub-hosted macOS. Never move fork-PR jobs to the
+  self-hosted runner — it is a personal machine.
 - Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
   <run-id>` for a push/rerun). It polls like `gh pr checks --watch` but also
   probes the build host over SSH and fail-fasts in ~30 s with a wake-the-Mac

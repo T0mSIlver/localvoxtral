@@ -21,6 +21,11 @@ final class DictationSessionRecord {
     var targetAppBundleID: String?
     var status: String
     var commitSucceeded: Bool
+    /// Polishing prompt profile that ran for this session (`standard`/`agent`
+    /// rawValue), or nil when polishing did not run. Additive optional field:
+    /// SwiftData lightweight-migrates existing stores, and old records decode
+    /// with this as nil.
+    var polishProfile: String?
 
     init(
         id: UUID = UUID(),
@@ -34,7 +39,8 @@ final class DictationSessionRecord {
         outputMode: String,
         targetAppBundleID: String? = nil,
         status: DictationSessionStatus,
-        commitSucceeded: Bool
+        commitSucceeded: Bool,
+        polishProfile: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -48,5 +54,6 @@ final class DictationSessionRecord {
         self.targetAppBundleID = targetAppBundleID
         self.status = status.rawValue
         self.commitSucceeded = commitSucceeded
+        self.polishProfile = polishProfile
     }
 }

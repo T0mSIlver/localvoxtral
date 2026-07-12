@@ -493,6 +493,21 @@ final class SettingsStoreTests: XCTestCase {
 
     // MARK: - dictationOutputMode
 
+    // MARK: - agentPolishProfileEnabled
+
+    func testAgentPolishProfileEnabled_defaultsToTrue() {
+        let store = makeStore()
+        XCTAssertTrue(store.agentPolishProfileEnabled)
+    }
+
+    func testAgentPolishProfileEnabled_persistsAcrossReload() {
+        let store = makeStore()
+        store.agentPolishProfileEnabled = false
+
+        let reloadedStore = makeStore()
+        XCTAssertFalse(reloadedStore.agentPolishProfileEnabled)
+    }
+
     func testDictationOutputMode_defaultsToOverlayBuffer() {
         let store = makeStore()
         XCTAssertEqual(store.dictationOutputMode, .overlayBuffer)

@@ -312,6 +312,16 @@ private struct ConnectionSettingsPane: View {
                         }
                     }
 
+                    SettingsFieldRow(title: "Agent prompt profile in terminals") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.agentPolishProfileEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText("Extra cleanup for prompts dictated to coding agents.")
+                        }
+                    }
+
                     switch settings.polishingBackendMode {
                     case .externalURL:
                         SettingsFieldRow(title: "Endpoint") {
