@@ -8,15 +8,6 @@ import XCTest
 /// edited, and only with the user's consent (`adoptBundledDefaults` /
 /// `recordKeptCustomizedDefaults`) when it was.
 final class AppConfigDefaultsReconcileTests: XCTestCase {
-    private static let allConfigFileNames = [
-        "replacement_dictionary.toml",
-        "llm_system_prompt.toml",
-        "llm_user_prompt.toml",
-        "llm_system_prompt_agent.toml",
-        "llm_user_prompt_agent.toml",
-        "terminal_apps.toml",
-    ]
-
     private var temporaryDirectories: [URL] = []
 
     override func tearDown() {
@@ -33,7 +24,7 @@ final class AppConfigDefaultsReconcileTests: XCTestCase {
     /// refreshing. If this fails, append the printed hash for that file to
     /// `BundledConfigDefaultHistory.knownDefaultHashes` (keep the old ones).
     func testCurrentBundledDefaultsAreRegisteredInHistory() throws {
-        for fileName in Self.allConfigFileNames {
+        for fileName in AppConfigStore.debugAllConfigFileNames {
             let data = try bundledData(for: fileName)
             let hash = AppConfigStore.sha256Hex(data)
             XCTAssertTrue(
@@ -64,6 +55,38 @@ final class AppConfigDefaultsReconcileTests: XCTestCase {
         let refreshed = try Data(
             contentsOf: directory.appendingPathComponent("llm_system_prompt.toml"))
         XCTAssertEqual(refreshed, try bundledData(for: "llm_system_prompt.toml"))
+    }
+
+    /// A silent refresh happens at most once per bundled version: a user who
+    /// deliberately restores an OLD shipped default afterwards must not be
+    /// re-refreshed on every launch (their restore sticks).
+    func testDeliberateRestoreOfOldDefaultSticksAfterOneRefresh() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let oldDefault = "content = \"an older shipped default\""
+        try write(oldDefault, named: "llm_system_prompt.toml", in: directory)
+
+        var hashes = BundledConfigDefaultHistory.knownDefaultHashes
+        hashes["llm_system_prompt.toml", default: []]
+            .insert(AppConfigStore.sha256Hex(Data(oldDefault.utf8)))
+        let store = AppConfigStore(
+            configDirectoryOverride: directory,
+            knownDefaultHashes: hashes
+        )
+
+        XCTAssertEqual(
+            store.reconcileBundledDefaults().refreshedFileNames,
+            ["llm_system_prompt.toml"]
+        )
+
+        // The user restores the old default by hand.
+        try write(oldDefault, named: "llm_system_prompt.toml", in: directory)
+
+        XCTAssertEqual(store.reconcileBundledDefaults(), BundledDefaultsReconciliation())
+        let untouched = try String(
+            contentsOf: directory.appendingPathComponent("llm_system_prompt.toml"),
+            encoding: .utf8
+        )
+        XCTAssertEqual(untouched, oldDefault)
     }
 
     func testReconcileReportsCustomizedFileWithoutTouchingIt() throws {

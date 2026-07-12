@@ -123,6 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsNavigator = SettingsNavigator()
 
     private var onboardingController: OnboardingWindowController?
+    private let appConfigStore = AppConfigStore()
+    /// Customized-but-outdated config files awaiting the user's
+    /// update-or-keep decision; held here while onboarding is on screen.
+    private var pendingConfigDefaultsPromptFileNames: [String]?
 
     override init() {
         let settings = SettingsStore()
@@ -151,24 +155,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Brings existing installs up to date with this build's bundled config
     /// defaults: unedited stale seeds are refreshed silently; customized files
-    /// are never touched without asking. Fresh installs are always in sync, so
-    /// the alert can never stack on top of first-launch onboarding.
+    /// are never touched without asking. When onboarding is still due (a
+    /// pre-onboarding install upgrading, or a wizard never finished), the
+    /// prompt is held until the wizard closes so the modal never stacks on
+    /// top of it.
     private func reconcileBundledConfigDefaults() {
-        let store = AppConfigStore()
-        let outcome = store.reconcileBundledDefaults()
+        let outcome = appConfigStore.reconcileBundledDefaults()
         guard !outcome.customizedOutdatedFileNames.isEmpty else { return }
+        pendingConfigDefaultsPromptFileNames = outcome.customizedOutdatedFileNames
+        guard settingsStore.onboardingCompleted else { return }
 
         // Defer past launch so the alert never blocks
         // applicationDidFinishLaunching.
         Task { @MainActor in
-            self.promptToUpdateCustomizedConfigFiles(
-                store: store,
-                fileNames: outcome.customizedOutdatedFileNames
-            )
+            self.presentPendingConfigDefaultsPromptIfNeeded()
         }
     }
 
-    private func promptToUpdateCustomizedConfigFiles(store: AppConfigStore, fileNames: [String]) {
+    private func presentPendingConfigDefaultsPromptIfNeeded() {
+        guard let fileNames = pendingConfigDefaultsPromptFileNames else { return }
+        pendingConfigDefaultsPromptFileNames = nil
+        promptToUpdateCustomizedConfigFiles(fileNames: fileNames)
+    }
+
+    private func promptToUpdateCustomizedConfigFiles(fileNames: [String]) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .informational
@@ -190,12 +200,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            let backups = store.adoptBundledDefaults(fileNames: fileNames)
+            let backups = appConfigStore.adoptBundledDefaults(fileNames: fileNames)
             Log.config.notice(
                 "User adopted new bundled defaults for \(fileNames.joined(separator: ", "), privacy: .public); backups: \(backups.joined(separator: ", "), privacy: .public)"
             )
         case .alertSecondButtonReturn:
-            store.recordKeptCustomizedDefaults(fileNames: fileNames)
+            appConfigStore.recordKeptCustomizedDefaults(fileNames: fileNames)
             Log.config.notice(
                 "User kept customized config files \(fileNames.joined(separator: ", "), privacy: .public)"
             )
@@ -203,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Show Files: reveal the config folder and leave the decision
             // open — the prompt returns on the next launch.
             NSWorkspace.shared.activateFileViewerSelecting(
-                fileNames.map { store.configDirectoryURL().appendingPathComponent($0) }
+                fileNames.map { appConfigStore.configDirectoryURL().appendingPathComponent($0) }
             )
         }
     }
@@ -225,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // once the wizard is done — finished or skipped — start whatever
             // required managed backends it didn't already start.
             self?.viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
+            self?.presentPendingConfigDefaultsPromptIfNeeded()
         }
         onboardingController = controller
         controller.present()

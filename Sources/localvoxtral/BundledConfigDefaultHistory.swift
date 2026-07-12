@@ -12,7 +12,7 @@ import Foundation
 /// When you change a TOML under `Sources/localvoxtral/Resources/Config`, ADD
 /// the new content's hash here and KEEP the old ones — the old entries are
 /// what lets existing installs adopt your change.
-/// `AppConfigStoreTests.testCurrentBundledDefaultsAreRegisteredInHistory`
+/// `AppConfigDefaultsReconcileTests.testCurrentBundledDefaultsAreRegisteredInHistory`
 /// fails with the exact hash to paste if you forget.
 enum BundledConfigDefaultHistory {
     static let knownDefaultHashes: [String: Set<String>] = [

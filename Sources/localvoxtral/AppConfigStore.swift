@@ -927,9 +927,13 @@ extension AppConfigStore {
     private static let defaultsStateFileName = ".bundled-defaults-state.json"
 
     private struct BundledDefaultsState: Codable {
-        /// fileName → bundled-default hash the user has already resolved
-        /// (adopted or declined). A prompt is due only when the current
-        /// bundled hash differs from this entry.
+        /// fileName → bundled-default hash that has already been handled for
+        /// that file (seen in sync, silently refreshed to, adopted, or
+        /// declined). A file is reconsidered only when the current bundled
+        /// hash differs from this entry — which is also what lets a user
+        /// deliberately restore an OLD shipped default: the restore happens
+        /// after the current default was recorded as handled, so it sticks
+        /// instead of being silently re-refreshed on every launch.
         var resolvedBundledHashes: [String: String] = [:]
     }
 
@@ -941,18 +945,22 @@ extension AppConfigStore {
         var state = readBundledDefaultsState(in: directory)
         var stateChanged = false
 
+        func markResolved(_ file: ConfigFile, hash: String) {
+            if state.resolvedBundledHashes[file.fileName] != hash {
+                state.resolvedBundledHashes[file.fileName] = hash
+                stateChanged = true
+            }
+        }
+
         for file in ConfigFile.allCases {
             guard let bundled = bundledConfigData(for: file) else { continue }
+            if state.resolvedBundledHashes[file.fileName] == bundled.hash { continue }
             let userURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
             guard let userData = try? Data(contentsOf: userURL) else { continue }
 
             let userHash = Self.sha256Hex(userData)
             if userHash == bundled.hash {
-                // In sync — drop any stale decision so a future default
-                // change prompts again.
-                if state.resolvedBundledHashes.removeValue(forKey: file.fileName) != nil {
-                    stateChanged = true
-                }
+                markResolved(file, hash: bundled.hash)
                 continue
             }
 
@@ -960,9 +968,7 @@ extension AppConfigStore {
                 do {
                     try bundled.data.write(to: userURL, options: .atomic)
                     result.refreshedFileNames.append(file.fileName)
-                    if state.resolvedBundledHashes.removeValue(forKey: file.fileName) != nil {
-                        stateChanged = true
-                    }
+                    markResolved(file, hash: bundled.hash)
                     Log.config.notice(
                         "Refreshed unedited default \(file.fileName, privacy: .public) to the current bundled version"
                     )
@@ -974,7 +980,6 @@ extension AppConfigStore {
                 continue
             }
 
-            if state.resolvedBundledHashes[file.fileName] == bundled.hash { continue }
             result.customizedOutdatedFileNames.append(file.fileName)
         }
 
@@ -999,15 +1004,21 @@ extension AppConfigStore {
             let userURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
 
             do {
+                var backupName: String?
                 if fileManager.fileExists(atPath: userURL.path) {
-                    let backupName = "\(file.fileName).backup-\(suffix)"
-                    let backupURL = directory.appendingPathComponent(backupName, isDirectory: false)
-                    try? fileManager.removeItem(at: backupURL)
-                    try fileManager.copyItem(at: userURL, to: backupURL)
-                    backupNames.append(backupName)
+                    let name = availableBackupName(for: file.fileName, suffix: suffix, in: directory)
+                    try fileManager.copyItem(
+                        at: userURL,
+                        to: directory.appendingPathComponent(name, isDirectory: false)
+                    )
+                    backupName = name
                 }
                 try bundled.data.write(to: userURL, options: .atomic)
-                if state.resolvedBundledHashes.removeValue(forKey: file.fileName) != nil {
+                if let backupName {
+                    backupNames.append(backupName)
+                }
+                if state.resolvedBundledHashes[file.fileName] != bundled.hash {
+                    state.resolvedBundledHashes[file.fileName] = bundled.hash
                     stateChanged = true
                 }
                 Log.config.notice(
@@ -1045,6 +1056,26 @@ extension AppConfigStore {
         if stateChanged {
             writeBundledDefaultsState(state, in: directory)
         }
+    }
+
+    /// First `<fileName>.backup-<suffix>` name (with a `.2`, `.3`, … tiebreak)
+    /// that doesn't already exist, so repeated adoptions never destroy an
+    /// earlier backup.
+    private func availableBackupName(
+        for fileName: String,
+        suffix: String,
+        in directory: URL
+    ) -> String {
+        let base = "\(fileName).backup-\(suffix)"
+        var candidate = base
+        var counter = 2
+        while fileManager.fileExists(
+            atPath: directory.appendingPathComponent(candidate, isDirectory: false).path
+        ) {
+            candidate = "\(base).\(counter)"
+            counter += 1
+        }
+        return candidate
     }
 
     private func bundledConfigData(for file: ConfigFile) -> (data: Data, hash: String)? {
@@ -1094,6 +1125,15 @@ extension AppConfigStore {
     static func sha256Hex(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
+
+    #if DEBUG
+    /// Test seam: the canonical config file list, so the
+    /// `BundledConfigDefaultHistory` guard-rail test can't drift from the
+    /// private `ConfigFile` enum when a new config file is added.
+    static var debugAllConfigFileNames: [String] {
+        ConfigFile.allCases.map(\.fileName)
+    }
+    #endif
 }
 
 private func uncommented(_ line: String) -> String {
