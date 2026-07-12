@@ -18,6 +18,7 @@ final class DictationSessionStore {
         let status: DictationSessionStatus
         let commitSucceeded: Bool
         let polishProfile: String?
+        let polishContextSummary: String?
     }
 
     private let modelContainer: ModelContainer
@@ -50,7 +51,8 @@ final class DictationSessionStore {
             targetAppBundleID: record.targetAppBundleID,
             status: DictationSessionStatus(rawValue: record.status) ?? .completed,
             commitSucceeded: record.commitSucceeded,
-            polishProfile: record.polishProfile
+            polishProfile: record.polishProfile,
+            polishContextSummary: record.polishContextSummary
         )
         let container = modelContainer
         Task.detached {
@@ -68,7 +70,8 @@ final class DictationSessionStore {
                 targetAppBundleID: snapshot.targetAppBundleID,
                 status: snapshot.status,
                 commitSucceeded: snapshot.commitSucceeded,
-                polishProfile: snapshot.polishProfile
+                polishProfile: snapshot.polishProfile,
+                polishContextSummary: snapshot.polishContextSummary
             )
             context.insert(detachedRecord)
             do {
