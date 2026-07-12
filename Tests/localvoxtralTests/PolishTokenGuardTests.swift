@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -300,6 +301,105 @@ final class PolishTokenGuardTests: XCTestCase {
         let second = PolishTokenGuard.verifyAndRepair(polished: first.text, original: original)
         XCTAssertEqual(second.outcome, .clean)
         XCTAssertEqual(second.text, first.text)
+    }
+
+    // MARK: - Sanctioned rewrites (repo vocabulary)
+
+    /// The flagship repo-vocabulary case: the STT misheard `useAuth.ts` as
+    /// `useauth.ts` (a protected filename token), the prompt asked the model to
+    /// fix it, and the model did. The sanctioned pair must stop the near-miss
+    /// repair from case-reverting the correction.
+    func testSanctionedRewriteIsNotRevertedByCaseRepair() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Open useAuth.ts now.",
+            original: "open useauth.ts now",
+            sanctionedReplacements: [(from: "useauth.ts", to: "useAuth.ts")]
+        )
+        XCTAssertEqual(result.outcome, .clean)
+        XCTAssertEqual(result.text, "Open useAuth.ts now.")
+        XCTAssertEqual(result.sanctionedCount, 1)
+    }
+
+    /// The fuzzy (edit-distance-1) vocabulary fix: `usenauth.ts` -> `useAuth.ts`
+    /// is beyond the guard's canonical form, so without sanctioning the whole
+    /// polish would be discarded as `.fallback`.
+    func testSanctionedFuzzyRewriteDoesNotFallBack() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Open useAuth.ts now.",
+            original: "open usenauth.ts now",
+            sanctionedReplacements: [(from: "usenauth.ts", to: "useAuth.ts")]
+        )
+        XCTAssertEqual(result.outcome, .clean)
+        XCTAssertEqual(result.text, "Open useAuth.ts now.")
+        XCTAssertEqual(result.sanctionedCount, 1)
+    }
+
+    /// Without sanctioned pairs the pre-existing behavior holds byte-identically:
+    /// the case-only change is reverted as a repair, and the fuzzy change
+    /// triggers the fallback.
+    func testWithoutSanctionedPairsOldGuardBehaviorHolds() {
+        let reverted = PolishTokenGuard.verifyAndRepair(
+            polished: "Open useAuth.ts now.",
+            original: "open useauth.ts now"
+        )
+        XCTAssertEqual(reverted.outcome, .repaired(count: 1))
+        XCTAssertEqual(reverted.text, "Open useauth.ts now.")
+        XCTAssertEqual(reverted.sanctionedCount, 0)
+
+        let fallback = PolishTokenGuard.verifyAndRepair(
+            polished: "Open useAuth.ts now.",
+            original: "open usenauth.ts now"
+        )
+        XCTAssertEqual(fallback.outcome, .fallback(missing: ["usenauth.ts"]))
+        XCTAssertEqual(fallback.text, "open usenauth.ts now")
+    }
+
+    /// A sanctioned pair whose `to` is absent from the polished text is no
+    /// license at all: the token really is gone, and the normal fallback fires.
+    func testSanctionedToAbsentFallsBackNormally() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Open the file now.",
+            original: "open useauth.ts now",
+            sanctionedReplacements: [(from: "useauth.ts", to: "useAuth.ts")]
+        )
+        XCTAssertEqual(result.outcome, .fallback(missing: ["useauth.ts"]))
+        XCTAssertEqual(result.text, "open useauth.ts now")
+        XCTAssertEqual(result.sanctionedCount, 0)
+    }
+
+    /// Substring-canonical sanctioning (field regression, 2026-07-11): the
+    /// sanctioned alias is a multi-word gram whose TAIL is the protected token
+    /// — the STT glued "user session manager dot swift" into `manager.swift`,
+    /// the caller asked for `UserSessionManager.swift`, the model complied.
+    /// The protected `manager.swift` canonically equals no alias, but it IS
+    /// canonically contained in one whose `to` the model produced: sanctioned,
+    /// never a fallback.
+    func testSanctionedAliasContainingProtectedTokenDoesNotFallBack() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Look at UserSessionManager.swift.",
+            original: "look at user session manager.swift",
+            sanctionedReplacements: [
+                (from: "user session manager.swift", to: "UserSessionManager.swift")
+            ]
+        )
+        XCTAssertEqual(result.outcome, .clean)
+        XCTAssertEqual(result.text, "Look at UserSessionManager.swift.")
+        XCTAssertEqual(result.sanctionedCount, 1)
+    }
+
+    /// Containment is no blanket license: a protected token that is NOT part
+    /// of any sanctioned alias still falls back when the model deletes it,
+    /// even while an unrelated sanctioned rewrite happened in the same text.
+    func testUnrelatedProtectedTokenStillGuardedUnderContainment() {
+        let result = PolishTokenGuard.verifyAndRepair(
+            polished: "Look at UserSessionManager.swift now.",
+            original: "look at user session manager.swift and run --force",
+            sanctionedReplacements: [
+                (from: "user session manager.swift", to: "UserSessionManager.swift")
+            ]
+        )
+        XCTAssertEqual(result.outcome, .fallback(missing: ["--force"]))
+        XCTAssertEqual(result.text, "look at user session manager.swift and run --force")
     }
 }
 
@@ -1001,6 +1101,529 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             request: request,
             committedText: viewModel.currentDictationEventText
         )
+    }
+
+    // MARK: - Repo vocabulary
+
+    /// Setting ON + loopback endpoint: the stubbed vocabulary entries are
+    /// appended to the request's replacement-dictionary section (the
+    /// `{{replacement_dictionary}}` slot), and the record's provenance carries
+    /// `vocab:<n>`.
+    func testRepoVocabularyInjectedIntoDictionarySection() async throws {
+        let counter = RepoVocabularyOverrideCounter()
+        let (record, request) = await runRepoVocabularySession(
+            repoVocabularyEnabled: true,
+            vocabularyEntries: [
+                ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"]),
+            ],
+            overrideCounter: counter
+        )
+
+        XCTAssertEqual(counter.count, 1)
+        let prompts = try XCTUnwrap(request?.userPrompts)
+        let joined = prompts.joined(separator: "\n")
+        XCTAssertTrue(joined.contains("Repository vocabulary"))
+        XCTAssertTrue(joined.contains("useAuth.ts"))
+        XCTAssertTrue(joined.contains("use auth dot t s"))
+        XCTAssertEqual(record?.polishContextSummary, "vocab:1")
+    }
+
+    /// Setting OFF: the override is never consulted, the request carries no
+    /// vocabulary, and the provenance summary is nil.
+    func testRepoVocabularyDisabledLeavesRequestUntouched() async throws {
+        let counter = RepoVocabularyOverrideCounter()
+        let (record, request) = await runRepoVocabularySession(
+            repoVocabularyEnabled: false,
+            vocabularyEntries: [
+                ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"]),
+            ],
+            overrideCounter: counter
+        )
+
+        XCTAssertEqual(counter.count, 0)
+        let prompts = try XCTUnwrap(request?.userPrompts)
+        XCTAssertFalse(prompts.contains { $0.contains("Repository vocabulary") })
+        XCTAssertFalse(prompts.contains { $0.contains("useAuth.ts") })
+        XCTAssertNil(record?.polishContextSummary)
+    }
+
+    /// The privacy gate: setting ON but a REMOTE polishing endpoint. The
+    /// loopback gate short-circuits before the resolver/indexer seam, so the
+    /// override is never consulted (repo file names never ride off-Mac) and the
+    /// request is untouched.
+    func testRepoVocabularyRemoteEndpointSkipsInjection() async throws {
+        let counter = RepoVocabularyOverrideCounter()
+        let (record, request) = await runRepoVocabularySession(
+            repoVocabularyEnabled: true,
+            endpointURL: "https://example.com/v1/chat/completions",
+            vocabularyEntries: [
+                ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"]),
+            ],
+            overrideCounter: counter
+        )
+
+        XCTAssertEqual(counter.count, 0)
+        let prompts = try XCTUnwrap(request?.userPrompts)
+        XCTAssertFalse(prompts.contains { $0.contains("Repository vocabulary") })
+        XCTAssertNil(record?.polishContextSummary)
+    }
+
+    /// The user removed `{{replacement_dictionary}}` from their template
+    /// (explicitly supported): the vocabulary path must be skipped ENTIRELY —
+    /// the seam is never consulted (so no AX read / git subprocess would run),
+    /// the request carries no vocabulary, and no `vocab:` provenance is
+    /// recorded for work that could not land in the prompt.
+    func testRepoVocabularySkippedWhenTemplateLacksDictionarySlot() async throws {
+        let counter = RepoVocabularyOverrideCounter()
+        let (record, request) = await runRepoVocabularySession(
+            repoVocabularyEnabled: true,
+            templateUserContent: "Clean this up.\nWorking text:\n{{input_text}}",
+            vocabularyEntries: [
+                ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"]),
+            ],
+            overrideCounter: counter
+        )
+
+        XCTAssertEqual(counter.count, 0)
+        let prompts = try XCTUnwrap(request?.userPrompts)
+        XCTAssertFalse(prompts.contains { $0.contains("Repository vocabulary") })
+        XCTAssertFalse(prompts.contains { $0.contains("useAuth.ts") })
+        XCTAssertNil(record?.polishContextSummary)
+    }
+
+    /// Pins clipboard-read ordering vs the vocabulary await: the payload-macro
+    /// and polish-context pasteboard reads BOTH happen pre-Task, so when the
+    /// vocabulary seam (which stands in for the up-to-2s git index inside the
+    /// Task) runs, each stub has already been read exactly once. A copy landing
+    /// during the index can therefore never split the two features across
+    /// different pasteboard states.
+    func testClipboardReadsHappenBeforeVocabularyIndexing() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.polishClipboardContextEnabled = true
+        settings.clipboardPayloadMacroEnabled = true
+        settings.repoVocabularyEnabled = true
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService()
+        let contextStub = PasteboardStub(string: "UserSessionManager.swift")
+        let payloadStub = PasteboardStub(string: "err.log payload")
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.acme.notes" }
+        viewModel.debugPolishContextPasteboardReaderOverride = { contextStub }
+        viewModel.debugClipboardPayloadPasteboardReaderOverride = { payloadStub }
+        var contextReadsWhenVocabRan = -1
+        var payloadReadsWhenVocabRan = -1
+        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+            contextReadsWhenVocabRan = contextStub.stringCallCount
+            payloadReadsWhenVocabRan = payloadStub.stringCallCount
+            return nil
+        }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "fix this paste clipboard thanks"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        // The vocab seam ran, and by then BOTH clipboard reads had happened.
+        XCTAssertEqual(contextReadsWhenVocabRan, 1)
+        XCTAssertEqual(payloadReadsWhenVocabRan, 1)
+        // Both features still landed in the request/record as usual.
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertTrue(request.inputText.contains(ClipboardPayloadMacro.placeholder))
+        XCTAssertTrue(
+            request.userPrompts.contains {
+                $0.contains(PolishContextClipboardReader.contextMessageInstruction)
+            }
+        )
+        XCTAssertNotNil(savedRecord?.polishContextSummary)
+    }
+
+    /// The full sanctioned-rewrite path end to end: the vocabulary entry asks
+    /// the model to fix the misheard `useauth.ts` to the repo's `useAuth.ts`,
+    /// the model complies, and the token guard must NOT case-revert the
+    /// correction (its pre-sanctioning behavior for protected filenames).
+    func testSanctionedVocabularyRewriteSurvivesTokenGuard() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.repoVocabularyEnabled = true
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        // The model applies exactly the injected vocabulary correction.
+        let service = RecordingPolishingService(transform: {
+            $0.replacingOccurrences(of: "useauth.ts", with: "useAuth.ts")
+        })
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+            [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
+        }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "open useauth.ts and fix the import"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(
+            viewModel.currentDictationEventText,
+            "open useAuth.ts and fix the import"
+        )
+    }
+
+    /// THE T5 field regression (2026-07-11) end to end: clipboard context ON,
+    /// clipboard holding `UserSessionManager.swift`, the user dictated "look at
+    /// user session manager dot swift" and the STT glued the tail into the
+    /// guard-protected `manager.swift`. The model (stubbed) applies exactly the
+    /// correction the clipboard grounds. Clipboard entities must join the
+    /// sanctioned-rewrite pipeline so the guard does NOT discard the polish —
+    /// pre-fix it deterministically fell back to the misheard text.
+    func testClipboardEntityCorrectionSurvivesTokenGuard() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.polishClipboardContextEnabled = true
+        settings.repoVocabularyEnabled = false
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        // The model applies exactly the clipboard-grounded correction.
+        let service = RecordingPolishingService(transform: {
+            $0.replacingOccurrences(
+                of: "user session manager.swift",
+                with: "UserSessionManager.swift"
+            )
+        })
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugPolishContextPasteboardReaderOverride = {
+            PasteboardStub(string: "UserSessionManager.swift")
+        }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "look at user session manager.swift"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        // The guard must sanction, not discard: the correction commits.
+        XCTAssertEqual(
+            viewModel.currentDictationEventText,
+            "look at UserSessionManager.swift"
+        )
+        // The matched entity also rode the dictionary slot as a hint entry.
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertTrue(
+            request.userPrompts.contains {
+                $0.contains(RepoVocabularyMatcher.clipboardVocabularyHeader)
+                    && $0.contains("- UserSessionManager.swift: user session manager.swift")
+            }
+        )
+        // Counts-only provenance.
+        XCTAssertEqual(
+            savedRecord?.polishContextSummary,
+            "clipboard:24ch+clipboard-vocab:1"
+        )
+    }
+
+    /// Sanctioning must not depend on the dictionary slot: a user template
+    /// without `{{replacement_dictionary}}` gets no hint entries, but the
+    /// model still corrects from the context excerpt alone and the guard must
+    /// still sanction that correction instead of discarding it.
+    func testClipboardEntitySanctioningWorksWithoutDictionarySlot() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.polishClipboardContextEnabled = true
+        settings.repoVocabularyEnabled = false
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService(transform: {
+            $0.replacingOccurrences(
+                of: "user session manager.swift",
+                with: "UserSessionManager.swift"
+            )
+        })
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugPolishContextPasteboardReaderOverride = {
+            PasteboardStub(string: "UserSessionManager.swift")
+        }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "look at user session manager.swift"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        XCTAssertEqual(
+            viewModel.currentDictationEventText,
+            "look at UserSessionManager.swift"
+        )
+        // No dictionary slot: the hint section must not appear anywhere.
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertFalse(
+            request.userPrompts.contains {
+                $0.contains(RepoVocabularyMatcher.clipboardVocabularyHeader)
+            }
+        )
+    }
+
+    /// The deadline race: a vocabulary pipeline that NEVER completes (a stat
+    /// blocked on a stale network mount) must not wedge the commit. With an
+    /// instantly-expiring deadline (injected sleep seam — no wall-clock), the
+    /// polish request is built WITHOUT vocabulary, the commit completes, and
+    /// no vocab provenance is recorded. Abandonment is safe: the pipeline only
+    /// returns a value, never mutates view-model state.
+    func testVocabularyPipelineDeadlineProceedsWithoutVocabulary() async throws {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.repoVocabularyEnabled = true
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService()
+        let overlayCoordinator = MockOverlayCoordinator()
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: overlayCoordinator,
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        // Pipeline seam (NOT the entries seam, which bypasses the race):
+        // suspends forever, like an uncancelable syscall. Deliberately leaked
+        // for the test process lifetime, mirroring the production abandonment.
+        viewModel.debugRepoVocabularyPipelineOverride = { _ in
+            await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
+            return nil
+        }
+        // Deadline sleep seam: returns immediately — the deadline expires
+        // before the pipeline can ever win.
+        viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+
+        // The commit completed despite the wedged pipeline...
+        XCTAssertEqual(overlayCoordinator.commitCallCount, 1)
+        // ...the request was built WITHOUT vocabulary...
+        let capturedRequest = await service.capturedRequest
+        let request = try XCTUnwrap(capturedRequest)
+        XCTAssertFalse(
+            request.userPrompts.contains { $0.contains("Repository vocabulary") }
+        )
+        // ...and no vocab provenance was recorded for work that never landed.
+        XCTAssertNil(savedRecord?.polishContextSummary)
+    }
+
+    /// Single-flight: an abandoned (deadline-expired) pipeline holds the
+    /// in-flight gate, so the NEXT commit fast-skips vocabulary instead of
+    /// stacking another blocked pool thread — the pipeline seam must run
+    /// exactly once across both calls. Deterministic: the second call's skip
+    /// is decided synchronously by the gate (acquired before the pipeline
+    /// spawns), and the count assertion waits on a start signal from the
+    /// wedged pipeline, never on wall-clock.
+    func testWedgedPipelineSingleFlightSkipsNextCommit() async {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.repoVocabularyEnabled = true
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        let pipelineCalls = SendableCallCounter()
+        let (pipelineStarted, startSignal) = AsyncStream.makeStream(of: Void.self)
+        // Wedged pipeline: signals that it started, then suspends forever
+        // (deliberately leaked for the test process lifetime, mirroring the
+        // production abandonment).
+        viewModel.debugRepoVocabularyPipelineOverride = { _ in
+            pipelineCalls.increment()
+            startSignal.yield()
+            await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
+            return nil
+        }
+        viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
+
+        let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
+        let first = await viewModel.repoVocabularyEntriesIfEnabled(
+            endpointURL: endpoint, transcript: "open use auth dot t s"
+        )
+        // Deadline expired; the wedged pipeline was abandoned holding the gate.
+        XCTAssertNil(first)
+        var startIterator = pipelineStarted.makeAsyncIterator()
+        _ = await startIterator.next()
+
+        let second = await viewModel.repoVocabularyEntriesIfEnabled(
+            endpointURL: endpoint, transcript: "open use auth dot t s"
+        )
+        XCTAssertNil(second)
+        XCTAssertEqual(pipelineCalls.value, 1)
+    }
+
+    /// Off-main-safe call counter for `@Sendable` seams (the nested main-actor
+    /// counter class can't cross into a detached pipeline).
+    private final class SendableCallCounter: Sendable {
+        private let storage = Mutex(0)
+        func increment() { storage.withLock { $0 += 1 } }
+        var value: Int { storage.withLock { $0 } }
+    }
+
+    /// Records override calls so the privacy/toggle gates can be asserted by call
+    /// count (0 = the resolver/indexer seam was never reached).
+    private final class RepoVocabularyOverrideCounter {
+        var count = 0
+    }
+
+    /// Drives an overlay stop-commit with polishing enabled and a template that
+    /// carries `{{replacement_dictionary}}` (overridable, to prove the
+    /// missing-slot skip), injecting the repo-vocabulary resolver/indexer seam
+    /// directly so no AX read or git subprocess runs. Endpoint defaults to
+    /// loopback so the local-endpoint gate passes.
+    private func runRepoVocabularySession(
+        repoVocabularyEnabled: Bool,
+        endpointURL: String = "http://127.0.0.1:8472/v1/chat/completions",
+        templateUserContent: String =
+            "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}",
+        vocabularyEntries: [ReplacementEntry]?,
+        overrideCounter: RepoVocabularyOverrideCounter
+    ) async -> (record: DictationSessionRecord?, request: LLMPolishingRequest?) {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = endpointURL
+        settings.repoVocabularyEnabled = repoVocabularyEnabled
+
+        // Both profiles use the same template so the injected section (or its
+        // absence) is observable regardless of the agent/standard switch.
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: templateUserContent
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService()
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugRepoVocabularyEntriesOverride = { _ in
+            overrideCounter.count += 1
+            return vocabularyEntries
+        }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = "open use auth dot t s and fix the import"
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+        let request = await service.capturedRequest
+        return (savedRecord, request)
     }
 
     // MARK: - Helpers

@@ -523,6 +523,21 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(reloadedStore.clipboardPayloadMacroEnabled)
     }
 
+    // MARK: - repoVocabularyEnabled
+
+    func testRepoVocabularyEnabled_defaultsToFalse() {
+        let store = makeStore()
+        XCTAssertFalse(store.repoVocabularyEnabled)
+    }
+
+    func testRepoVocabularyEnabled_persistsAcrossReload() {
+        let store = makeStore()
+        store.repoVocabularyEnabled = true
+
+        let reloadedStore = makeStore()
+        XCTAssertTrue(reloadedStore.repoVocabularyEnabled)
+    }
+
     func testDictationOutputMode_defaultsToOverlayBuffer() {
         let store = makeStore()
         XCTAssertEqual(store.dictationOutputMode, .overlayBuffer)

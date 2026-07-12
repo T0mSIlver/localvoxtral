@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Synchronization
 import os
 
 extension DictationViewModel {
@@ -626,59 +627,155 @@ extension DictationViewModel {
                 let capturedPolishProfile = polishProfile.rawValue
                 let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
 
-                var userPrompts = promptTemplates.renderedUserPrompts(
-                    inputText: workingText,
-                    replacementDictionary: replacementDictionaryPrompt
-                )
-                // Opt-in clipboard grounding: prepend ONE reference-context
-                // block to the FINAL user message that lets the polish model
-                // fix near-miss spelling of technical terms against whatever
-                // the user just copied. When the setting is off OR the
-                // polishing endpoint is not loopback, the pasteboard is never
-                // read (privacy).
-                let capturedPolishContextSummary: String?
-                // The excerpt is retained for the post-polish leak guard: the
-                // model output must never smuggle clipboard content into the
-                // committed text.
-                let capturedClipboardExcerpt: String?
-                if let endpointURL = polishingConfig?.endpointURL,
-                   let clipboardContext = polishClipboardContextIfEnabled(endpointURL: endpointURL)
-                {
-                    // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
-                    // messages as its single-slot prefix cache, so per-request
-                    // context must ride INSIDE the last message — a separate
-                    // context message between prefix and suffix invalidated
-                    // the checkpoint on every request and a cold 4B re-prefill
-                    // blew the polish client timeout (field, 2026-07-11).
-                    // Prepended, never appended: the working text stays LAST
-                    // in the message (this model family echoes instructions
-                    // placed after the input text).
-                    let lastIndex = userPrompts.count - 1
-                    userPrompts[lastIndex] =
-                        PolishContextClipboardReader.contextMessage(
-                            excerpt: clipboardContext.excerpt
-                        ) + "\n\n" + userPrompts[lastIndex]
-                    capturedPolishContextSummary = clipboardContext.provenanceSummary
-                    capturedClipboardExcerpt = clipboardContext.excerpt
-                    Log.polishing.info(
-                        "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
-                    )
-                } else {
-                    capturedPolishContextSummary = nil
-                    capturedClipboardExcerpt = nil
-                }
-
-                let polishingRequest = LLMPolishingRequest(
-                    inputText: workingText,
-                    systemPrompt: promptTemplates.systemContent,
-                    userPrompts: userPrompts
-                )
-
                 statusText = StatusStrings.polishing
                 debugLog("LLM polishing started for \(workingText.count) chars")
 
+                // Opt-in clipboard grounding is read HERE, pre-Task, right next
+                // to the payload-macro clipboard read above, so both features
+                // observe the SAME pasteboard state — the repo-vocabulary await
+                // inside the Task can take up to ~2 s, and a copy landing during
+                // that window must not make the context ground against different
+                // text than the payload macro substitutes. When the setting is
+                // off OR the polishing endpoint is not loopback, the pasteboard
+                // is never read (privacy).
+                let capturedClipboardContext: PolishClipboardContext?
+                if let endpointURL = polishingConfig?.endpointURL {
+                    capturedClipboardContext = polishClipboardContextIfEnabled(
+                        endpointURL: endpointURL
+                    )
+                } else {
+                    capturedClipboardContext = nil
+                }
+
+                // Repo vocabulary rides in the `{{replacement_dictionary}}`
+                // slot; a user template without that placeholder (removing it is
+                // explicitly supported) silently drops the section in
+                // renderTemplate, so the whole vocabulary path — AX read, git
+                // subprocess, provenance — is skipped up front when the ACTIVE
+                // template can't carry it.
+                let templateCarriesDictionarySlot =
+                    promptTemplates.supportsReplacementDictionary
+
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
+
+                    // The polish request is assembled HERE, inside the Task, so
+                    // the opt-in repo-vocabulary indexing — whose git subprocess
+                    // runs OFF the main actor with a 2 s timeout — can complete
+                    // before the request is built without stalling the commit. On
+                    // timeout / no repo / feature off it is a fast no-op and the
+                    // request is byte-identical to the no-vocabulary path.
+                    var replacementDictionarySection = replacementDictionaryPrompt
+                    var repoVocabularyCount = 0
+                    // The vocabulary corrections we ASK the model to make must
+                    // also be sanctioned through the token guard, or its
+                    // near-miss repair would deterministically revert them
+                    // (the STT's wrong filename-shaped token is what the guard
+                    // protects). (from: spoken alias, to: exact term) pairs.
+                    var sanctionedVocabularyRewrites: [(from: String, to: String)] = []
+                    if templateCarriesDictionarySlot,
+                       let endpointURL = polishingConfig?.endpointURL,
+                       let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
+                           endpointURL: endpointURL,
+                           transcript: workingText
+                       )
+                    {
+                        // Append to the replacement-dictionary section string so
+                        // the entries land in the `{{replacement_dictionary}}`
+                        // slot both profiles already carry — dynamic-suffix side
+                        // of the prompt-cache split, never the cached prefix.
+                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
+                            base: replacementDictionarySection,
+                            entries: vocabularyEntries
+                        )
+                        repoVocabularyCount = vocabularyEntries.count
+                        // A multi-word alias whose tail is itself a protected
+                        // token ("user session manager.swift" containing
+                        // `manager.swift`) is covered by the guard's
+                        // substring-canonical sanctioning.
+                        sanctionedVocabularyRewrites = vocabularyEntries.flatMap { entry in
+                            entry.matches.map { (from: $0, to: entry.replaceWith) }
+                        }
+                        Log.polishing.info(
+                            "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
+                        )
+                    }
+
+                    // Clipboard vocabulary: the SAME sanctioned-rewrite pipeline,
+                    // grounded in the already privacy-gated clipboard excerpt
+                    // (feature toggle ON + loopback endpoint + never concealed/
+                    // transient — all enforced when the excerpt was captured;
+                    // nil context means none of it runs). Without this, the
+                    // context excerpt lets the model produce the exact copied
+                    // spelling and the token guard then DISCARDS that very
+                    // correction whenever the misheard form was filename-shaped
+                    // (field, 2026-07-11: `manager.swift` glued into
+                    // `UserSessionManager.swift`). Hint entries need the
+                    // dictionary slot; sanctioning must apply even without it —
+                    // the model corrects from the context excerpt alone.
+                    var clipboardVocabularyCount = 0
+                    if let clipboardContext = capturedClipboardContext {
+                        let clipboardEntries = ClipboardVocabulary.candidateEntries(
+                            transcript: workingText,
+                            excerpt: clipboardContext.excerpt
+                        )
+                        if !clipboardEntries.isEmpty {
+                            if templateCarriesDictionarySlot {
+                                replacementDictionarySection =
+                                    RepoVocabularyMatcher.appendedPromptSection(
+                                        base: replacementDictionarySection,
+                                        entries: clipboardEntries,
+                                        header: RepoVocabularyMatcher.clipboardVocabularyHeader
+                                    )
+                            }
+                            sanctionedVocabularyRewrites += clipboardEntries.flatMap { entry in
+                                entry.matches.map { (from: $0, to: entry.replaceWith) }
+                            }
+                            clipboardVocabularyCount = clipboardEntries.count
+                            // Counts only — entity content is clipboard content.
+                            Log.polishing.info(
+                                "Clipboard vocabulary attached: clipboard-vocab:\(clipboardEntries.count, privacy: .public)"
+                            )
+                        }
+                    }
+
+                    guard !Task.isCancelled else { return }
+
+                    var userPrompts = promptTemplates.renderedUserPrompts(
+                        inputText: workingText,
+                        replacementDictionary: replacementDictionarySection
+                    )
+                    // Prepend the pre-captured clipboard reference-context block
+                    // to the FINAL user message (letting the polish model fix
+                    // near-miss spelling of technical terms against what the
+                    // user copied).
+                    var capturedPolishContextSummary: String? = nil
+                    if let clipboardContext = capturedClipboardContext {
+                        // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
+                        // messages as its single-slot prefix cache, so per-request
+                        // context must ride INSIDE the last message — a separate
+                        // context message between prefix and suffix invalidated
+                        // the checkpoint on every request and a cold 4B re-prefill
+                        // blew the polish client timeout (field, 2026-07-11).
+                        // Prepended, never appended: the working text stays LAST
+                        // in the message (this model family echoes instructions
+                        // placed after the input text).
+                        let lastIndex = userPrompts.count - 1
+                        userPrompts[lastIndex] =
+                            PolishContextClipboardReader.contextMessage(
+                                excerpt: clipboardContext.excerpt
+                            ) + "\n\n" + userPrompts[lastIndex]
+                        capturedPolishContextSummary = clipboardContext.provenanceSummary
+                        Log.polishing.info(
+                            "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
+                        )
+                    }
+
+                    let polishingRequest = LLMPolishingRequest(
+                        inputText: workingText,
+                        systemPrompt: promptTemplates.systemContent,
+                        userPrompts: userPrompts
+                    )
 
                     var processedTextForPersistence: String? =
                         workingText != originalText ? workingText : nil
@@ -701,8 +798,14 @@ extension DictationViewModel {
                             // discard the polish and keep the pre-polish text.
                             let guardResult = PolishTokenGuard.verifyAndRepair(
                                 polished: result.polishedText,
-                                original: workingText
+                                original: workingText,
+                                sanctionedReplacements: sanctionedVocabularyRewrites
                             )
+                            if guardResult.sanctionedCount > 0 {
+                                Log.polishing.info(
+                                    "Token guard accepted \(guardResult.sanctionedCount, privacy: .public) sanctioned repo-vocabulary rewrite(s)"
+                                )
+                            }
                             var committedText: String
                             switch guardResult.outcome {
                             case .clean:
@@ -734,12 +837,19 @@ extension DictationViewModel {
                             // (same fallback shape as the token guard).
                             // Counts-only logging — the matched run is
                             // clipboard content.
-                            if let excerpt = capturedClipboardExcerpt,
+                            // Sanctioned rewrites are the one kind of
+                            // clipboard-derived output we ASKED for: their
+                            // `to` values are exempt (masked out before the
+                            // scan), so an intentional exact-entity insertion
+                            // can never trip the leak guard however long the
+                            // entity.
+                            if let excerpt = capturedClipboardContext?.excerpt,
                                committedText != workingText,
                                let leakedLength = PolishContextClipboardReader.detectClipboardLeak(
                                    polished: committedText,
                                    original: workingText,
-                                   excerpt: excerpt
+                                   excerpt: excerpt,
+                                   exemptions: sanctionedVocabularyRewrites.map(\.to)
                                )
                             {
                                 committedText = workingText
@@ -848,7 +958,16 @@ extension DictationViewModel {
                         polishProfile: capturedPolishProfile,
                         polishContextSummary: self.mergedPolishProvenanceSummary(
                             context: capturedPolishContextSummary,
-                            payload: payloadProvenanceSummary
+                            payload: payloadProvenanceSummary,
+                            vocabulary: {
+                                let parts = [
+                                    repoVocabularyCount > 0
+                                        ? "vocab:\(repoVocabularyCount)" : nil,
+                                    clipboardVocabularyCount > 0
+                                        ? "clipboard-vocab:\(clipboardVocabularyCount)" : nil,
+                                ].compactMap { $0 }
+                                return parts.isEmpty ? nil : parts.joined(separator: "+")
+                            }()
                         )
                     )
 
@@ -1114,16 +1233,165 @@ extension DictationViewModel {
         return ClipboardPayloadMacro.substitutePayload(in: text, payload: payload)
     }
 
-    /// Combines the clipboard polish-context and payload-macro provenance notes
-    /// into the single `polishContextSummary` record field (counts only):
-    /// `clipboard:24ch+payload:1532ch`, or either alone, or nil.
-    func mergedPolishProvenanceSummary(context: String?, payload: String?) -> String? {
-        switch (context, payload) {
-        case (nil, nil): return nil
-        case let (context?, nil): return context
-        case let (nil, payload?): return payload
-        case let (context?, payload?): return "\(context)+\(payload)"
+    /// Combines the clipboard polish-context, payload-macro, and repo-vocabulary
+    /// provenance notes into the single `polishContextSummary` record field
+    /// (counts only): `clipboard:24ch+payload:1532ch+vocab:3`, any subset, or nil.
+    func mergedPolishProvenanceSummary(
+        context: String?,
+        payload: String?,
+        vocabulary: String? = nil
+    ) -> String? {
+        let parts = [context, payload, vocabulary].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: "+")
+    }
+
+    /// Overall deadline on the detached vocabulary pipeline. The git wait is
+    /// internally bounded, but a `fileExists` stat on a stale network mount in
+    /// the cwd resolution can block indefinitely — and the polish Task awaits
+    /// this, so without a deadline that session's commit would wedge at
+    /// "Polishing…". Vocabulary is best-effort; the commit is not.
+    static let repoVocabularyPipelineDeadline: Duration = .seconds(3)
+
+    /// Opt-in repo-vocabulary grounding: harvests file names / path components /
+    /// the branch from the git repo in the focused terminal and returns the
+    /// transcript-relevant ones as replacement entries — but ONLY when the
+    /// setting is on AND the polishing endpoint is loopback (repo file names must
+    /// never ride to a remote endpoint, same privacy stance as clipboard
+    /// context). Both gates short-circuit before any AX read or subprocess.
+    /// Only the AX title read happens on the main actor (with a 0.5 s AX
+    /// messaging timeout); everything blocking-ish — FS stats on the title's
+    /// path candidates (possibly a stale network mount), the git subprocess
+    /// (2 s timeout), and the n-gram match over a possibly-20k-term vocabulary
+    /// — runs in one detached hop RACED against
+    /// `repoVocabularyPipelineDeadline`, so no blocked syscall can ever wedge
+    /// the commit. A single-flight gate caps the cost of abandonment at one
+    /// blocked pool thread: while an abandoned pipeline is still wedged,
+    /// subsequent commits fast-skip vocabulary instead of stacking more
+    /// blocked threads until the pool (and the deadline itself) starves.
+    /// Returns nil (silent skip) when off, remote, no terminal window, no
+    /// repo, no transcript-relevant match, deadline expiry, or in-flight skip.
+    func repoVocabularyEntriesIfEnabled(
+        endpointURL: URL,
+        transcript: String
+    ) async -> [ReplacementEntry]? {
+        guard settings.repoVocabularyEnabled else { return nil }
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+            Log.polishing.info("Repo vocabulary skipped: polishing endpoint is not local")
+            return nil
         }
+        #if DEBUG
+        if let override = debugRepoVocabularyEntriesOverride {
+            return override(transcript)
+        }
+        #endif
+        guard repoVocabularyPipelineInFlight.acquire() else {
+            Log.polishing.info("Repo vocabulary skipped: a previous pipeline is still in flight")
+            return nil
+        }
+        guard let pipelineTask = makeRepoVocabularyPipelineTask(transcript: transcript) else {
+            repoVocabularyPipelineInFlight.release()
+            return nil
+        }
+
+        let deadlineSleep = resolveRepoVocabularyDeadlineSleep()
+        // Race via a resume-once continuation, NOT a task group: a group
+        // awaits ALL its children before returning, and the pipeline child —
+        // awaiting a possibly-forever-blocked task's value, which is not
+        // cancellation-responsive — would wedge the group (and the commit)
+        // in exactly the case the deadline exists for. The losing side is
+        // abandoned; its late resumeOnce call is a guarded no-op.
+        let raceOutcome = await withCheckedContinuation {
+            (continuation: CheckedContinuation<RepoVocabularyRaceOutcome, Never>) in
+            let resumed = Mutex(false)
+            let resumeOnce: @Sendable (RepoVocabularyRaceOutcome) -> Void = { outcome in
+                let shouldResume = resumed.withLock { alreadyResumed in
+                    if alreadyResumed { return false }
+                    alreadyResumed = true
+                    return true
+                }
+                if shouldResume { continuation.resume(returning: outcome) }
+            }
+            // The continuation propagates no priority to the race children
+            // (unlike the previous direct `await .value`, which escalated the
+            // pipeline to the awaiting task's priority). Deliberate for the
+            // pipeline — vocabulary is best-effort background work — but the
+            // deadline's whole job is timeliness, so it runs `.userInitiated`
+            // to keep its resumption from being starved under CPU pressure.
+            Task.detached(priority: .utility) { [gate = repoVocabularyPipelineInFlight] in
+                let entries = await pipelineTask.value
+                // Release the single-flight gate only when the pipeline truly
+                // finished — on the abandonment path this runs arbitrarily
+                // late, and until then new commits fast-skip vocabulary.
+                gate.release()
+                resumeOnce(.pipeline(entries))
+            }
+            Task.detached(priority: .userInitiated) {
+                await deadlineSleep()
+                resumeOnce(.deadlineExpired)
+            }
+        }
+
+        switch raceOutcome {
+        case .pipeline(let entries):
+            return entries
+        case .deadlineExpired:
+            // Abandonment is safe by construction: the detached pipeline only
+            // ever RETURNS a value — it never mutates view-model state — so
+            // when it eventually completes its result is simply discarded.
+            // (Its only shared side effects are inserting into the
+            // Mutex-guarded RepoVocabularyCache, which only makes a later
+            // session faster, and releasing the single-flight gate.) Until it
+            // completes it holds the gate, so a genuinely wedged pipeline
+            // costs at most ONE blocked pool thread across any number of
+            // subsequent commits.
+            Log.polishing.info("Repo vocabulary skipped: pipeline exceeded deadline")
+            return nil
+        }
+    }
+
+    /// The detached title -> cwd -> index -> match pipeline as a task, or nil
+    /// when there is no window title to start from. Split out so the deadline
+    /// race above stays readable and the DEBUG pipeline seam replaces exactly
+    /// the detached section (keeping the race in play for deadline tests).
+    private func makeRepoVocabularyPipelineTask(
+        transcript: String
+    ) -> Task<[ReplacementEntry]?, Never>? {
+        #if DEBUG
+        if let override = debugRepoVocabularyPipelineOverride {
+            return Task.detached(priority: .utility) { await override(transcript) }
+        }
+        #endif
+        guard let title = resolveCommitTargetWindowTitle() else {
+            Log.polishing.info("Repo vocabulary: no terminal window title available")
+            return nil
+        }
+        let cache = repoVocabularyCache
+        return Task.detached(priority: .utility) {
+            await RepoVocabularyService.entries(
+                forWindowTitle: title,
+                transcript: transcript,
+                cache: cache
+            )
+        }
+    }
+
+    private func resolveRepoVocabularyDeadlineSleep() -> @Sendable () async -> Void {
+        #if DEBUG
+        if let override = debugRepoVocabularyDeadlineSleepOverride {
+            return override
+        }
+        #endif
+        return {
+            try? await Task.sleep(for: Self.repoVocabularyPipelineDeadline)
+        }
+    }
+
+    /// The focused/main window title of the app owning the overlay commit PID
+    /// (the same source `resolveTargetAppBundleID` uses). Main-actor AX read;
+    /// nil on any failure.
+    private func resolveCommitTargetWindowTitle() -> String? {
+        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
+        return TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID: pid)
     }
 
     private func resolveClipboardPayloadPasteboardReader() -> any PasteboardReading {
@@ -1611,4 +1879,12 @@ extension DictationViewModel {
             commitBufferText: currentOverlayCommitText()
         )
     }
+}
+
+/// Winner of the repo-vocabulary race in `repoVocabularyEntriesIfEnabled`:
+/// either the detached pipeline finished (with or without entries) or the
+/// deadline expired first and the pipeline was abandoned.
+private enum RepoVocabularyRaceOutcome: Sendable {
+    case pipeline([ReplacementEntry]?)
+    case deadlineExpired
 }

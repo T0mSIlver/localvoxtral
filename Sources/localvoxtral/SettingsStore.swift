@@ -181,6 +181,7 @@ final class SettingsStore {
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
+        static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -337,6 +338,20 @@ final class SettingsStore {
     var clipboardPayloadMacroEnabled: Bool {
         didSet {
             defaults.set(clipboardPayloadMacroEnabled, forKey: Keys.clipboardPayloadMacroEnabled)
+        }
+    }
+
+    /// When true, and the polishing endpoint is loopback
+    /// (`PolishContextClipboardReader.isLoopbackEndpoint`), file names / path
+    /// components / the branch name from the git repo in the focused terminal
+    /// are harvested and the transcript-relevant ones injected into the polish
+    /// prompt's replacement-dictionary section, so the model spells technical
+    /// terms exactly. Opt-in (default false), prompt-context only (no
+    /// deterministic replacement), local endpoints only — repo file names must
+    /// never ride to a remote endpoint. See `RepoVocabulary`.
+    var repoVocabularyEnabled: Bool {
+        didSet {
+            defaults.set(repoVocabularyEnabled, forKey: Keys.repoVocabularyEnabled)
         }
     }
 
@@ -534,6 +549,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
         clipboardPayloadMacroEnabled = Self.loadBool(
             defaults: defaults, key: Keys.clipboardPayloadMacroEnabled, fallback: true)
+        repoVocabularyEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
         modifierOnlyHotKeyEnabled = Self.loadBool(

@@ -19,6 +19,18 @@ enum PolishTokenGuard {
         /// what to keep by switching on `outcome`.
         let text: String
         let outcome: Outcome
+        /// How many protected tokens were accepted as SANCTIONED rewrites (see
+        /// `verifyAndRepair(polished:original:sanctionedReplacements:)`) rather
+        /// than found verbatim. Callers log this so field logs show when the
+        /// repo-vocabulary path changed a protected token on purpose. Defaulted
+        /// so every pre-existing construction/comparison stays byte-identical.
+        let sanctionedCount: Int
+
+        init(text: String, outcome: Outcome, sanctionedCount: Int = 0) {
+            self.text = text
+            self.outcome = outcome
+            self.sanctionedCount = sanctionedCount
+        }
 
         enum Outcome: Equatable {
             case clean
@@ -160,12 +172,31 @@ enum PolishTokenGuard {
     /// (`run --force first, then – force again`). If any occurrence is neither
     /// present nor repairable, returns `.fallback` and the caller keeps its
     /// pre-polish text.
-    static func verifyAndRepair(polished: String, original: String) -> Repair {
+    ///
+    /// `sanctionedReplacements` teaches the guard about rewrites the CALLER
+    /// requested from the model (repo vocabulary: the prompt asks it to fix a
+    /// misheard `useauth.ts` to the repo's exact `useAuth.ts`). Without this,
+    /// the guard protects the STT's WRONG filename-shaped token and its
+    /// near-miss repair deterministically REVERTS the very correction the
+    /// vocabulary injected (or, for a fuzzy fix the canonical form can't
+    /// bridge, discards the whole polish). A protected token missing from
+    /// `polished` is treated as preserved — no repair, no fallback — when it
+    /// canonically equals a pair's `from` AND that pair's `to` occurs
+    /// standalone in `polished`. Comparison is the guard's own `canonical`
+    /// form (case-insensitive, dash/space-normalized) so the guard stays
+    /// self-contained. The default `[]` keeps all pre-existing behavior
+    /// byte-identical.
+    static func verifyAndRepair(
+        polished: String,
+        original: String,
+        sanctionedReplacements: [(from: String, to: String)] = []
+    ) -> Repair {
         let tokens = protectedTokens(in: original)
         guard !tokens.isEmpty else { return Repair(text: polished, outcome: .clean) }
 
         var working = polished
         var repairedCount = 0
+        var sanctionedCount = 0
         var missing: [String] = []
 
         for token in tokens {
@@ -173,6 +204,19 @@ enum PolishTokenGuard {
             // at least once in its own source text.
             let required = max(1, standaloneOccurrenceCount(of: token, in: original))
             var surviving = standaloneOccurrenceCount(of: token, in: working)
+            // Sanctioned rewrites are consulted BEFORE near-miss repair: the
+            // repair path is exactly what would revert a case-only vocabulary
+            // correction back to the misheard spelling. A sanctioned token is
+            // treated as preserved for ALL its occurrences (the caller asked
+            // the model to rewrite it wherever it appears).
+            if surviving < required,
+                isSanctionedRewrite(
+                    of: token, in: working, sanctionedReplacements: sanctionedReplacements
+                )
+            {
+                sanctionedCount += 1
+                continue
+            }
             while surviving < required {
                 guard let repaired = repairFirstNearMiss(of: token, in: working) else {
                     missing.append(token)
@@ -192,12 +236,54 @@ enum PolishTokenGuard {
         }
 
         if !missing.isEmpty {
-            return Repair(text: original, outcome: .fallback(missing: missing))
+            return Repair(
+                text: original,
+                outcome: .fallback(missing: missing),
+                sanctionedCount: sanctionedCount
+            )
         }
         if repairedCount > 0 {
-            return Repair(text: working, outcome: .repaired(count: repairedCount))
+            return Repair(
+                text: working,
+                outcome: .repaired(count: repairedCount),
+                sanctionedCount: sanctionedCount
+            )
         }
-        return Repair(text: working, outcome: .clean)
+        return Repair(text: working, outcome: .clean, sanctionedCount: sanctionedCount)
+    }
+
+    /// True when `token` matches a sanctioned pair's `from` (canonical-form
+    /// CONTAINMENT: case-insensitive, dash/space-normalized) and that pair's
+    /// `to` occurs standalone in `text` — i.e. the model applied a rewrite the
+    /// caller explicitly asked for, so the token counts as preserved.
+    ///
+    /// Containment, not equality (field regression, 2026-07-11): a sanctioned
+    /// alias is often a multi-word transcript gram whose TAIL is itself the
+    /// protected token — "user session manager.swift" containing protected
+    /// `manager.swift`, corrected to `UserSessionManager.swift`. Under
+    /// equality the guard token canonically equals no alias, so the very
+    /// correction the caller requested was reverted (or the whole polish
+    /// discarded). When the alias gram subsumes the protected token's
+    /// occurrence and the model produced the requested `to`, the token's
+    /// disappearance is explained and sanctioned.
+    ///
+    /// Deletion-masking limitation (accepted): there is no occurrence counting
+    /// here — a sanctioned `to` present ANYWHERE in the polished text lets an
+    /// outright deletion of the `from` occurrence pass without fallback (e.g.
+    /// the token was spoken twice and the model kept the corrected form once).
+    private static func isSanctionedRewrite(
+        of token: String,
+        in text: String,
+        sanctionedReplacements: [(from: String, to: String)]
+    ) -> Bool {
+        guard !sanctionedReplacements.isEmpty else { return false }
+        let canonicalToken = canonical(token)
+        guard !canonicalToken.isEmpty else { return false }
+        for (from, to) in sanctionedReplacements {
+            guard canonical(from).contains(canonicalToken) else { continue }
+            if standaloneOccurrenceCount(of: to, in: text) > 0 { return true }
+        }
+        return false
     }
 
     /// Canonical form for near-miss comparison: lowercase, dash variants unified
