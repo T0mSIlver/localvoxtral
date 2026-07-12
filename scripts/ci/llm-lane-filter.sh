@@ -41,6 +41,8 @@ PATTERNS=(
   '*DictationViewModel+Session.swift'                # polish-and-commit path
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
+  '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)
+  '*AgentDictationEvalCorpus*'                       # the E2E corpus loader/schema
   '*EvalCorpus/*'                                    # standalone eval corpora
 )
 

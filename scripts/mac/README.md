@@ -205,10 +205,18 @@ scripts/mac/lv-test-servers.sh reap                   # removes trigger + stamps
 scripts/mac/lv-test-servers.sh status                 # voxmlx: absent, down
 ```
 
-If the SSH build gate is installed, `remote-build.sh integration|eval-llm`
+If the SSH build gate is installed, `remote-build.sh integration|eval-llm|eval-e2e`
 warm the right server through the gate's `ensure` verb automatically; CI warms
-voxmlx in its own step before the integration suite. The
+voxmlx in its own step before the integration suite (and `eval-e2e.yml` before
+the nightly agent-dictation eval). The
 `svc-status`/`diag`/`voxlog` verbs still probe ports 8000/8080.
+
+No gate change is needed for the `eval-e2e` lane: its payload is a plain
+`swift test --filter AgentDictationE2EEvalTests` (already allowlisted by the
+`swift test` prefix rule) and its enablement rides the rsynced tree as the
+gitignored marker `.agent-eval-e2e-enable.json`. The lane also caches
+synthesized TTS WAVs under `~/Library/Caches/localvoxtral-eval/wav` in the
+build/runner account — safe to delete any time; the next run regenerates them.
 
 ## `localvoxtral-build-gate.sh` — SSH build gate (v2)
 

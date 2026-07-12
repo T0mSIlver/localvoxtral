@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
@@ -18,6 +18,10 @@ set -euo pipefail
 #                  optional arg = chat/completions endpoint (default
 #                  http://127.0.0.1:8080/v1/chat/completions, the
 #                  com.localvoxtral.mlxlm service — runbook scripts/mac/README.md)
+#     eval-e2e     agent-dictation end-to-end eval: TTS -> live voxmlx ASR ->
+#                  bundled polishd via the production stop-commit path, scored
+#                  against EvalCorpus/agent-dictation (run `package` first;
+#                  takes many minutes — live TTS/ASR/polish over ~150 cases)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -130,7 +134,7 @@ case "$CMD" in
 esac
 
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
-  --skip PolishHelperIntegrationTests)
+  --skip PolishHelperIntegrationTests --skip AgentDictationE2EEvalTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's voxmlx/mlxlm launchd services are launch-on-demand to keep their
@@ -175,6 +179,30 @@ case "$CMD" in
     fi
     REMOTE_CMD=(swift test --filter PolishHelperIntegrationTests)
     ;;
+  eval-e2e)
+    # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
+    # TTS -> live voxmlx ASR -> bundled polishd helper through the production
+    # stop-commit path, scored against EvalCorpus/agent-dictation. Requires a
+    # helper binary from a prior `./scripts/remote-build.sh package` run.
+    # Marker-through-the-tree, same as eval-llm/integration-polishd (the gate
+    # pins env prefixes per-command). Expect many minutes: ~150 TTS+ASR cases
+    # plus live 4B polish inference (synthesized WAVs are cached on the host
+    # under ~/Library/Caches/localvoxtral-eval/wav, so reruns skip TTS).
+    if [[ $# -ne 0 ]]; then
+      echo "eval-e2e does not accept extra arguments" >&2
+      exit 1
+    fi
+    ENSURE_SERVER="voxmlx"
+    E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
+    # Trap registered before the marker exists, so no kill window leaves a
+    # stale marker behind.
+    trap 'rm -f "$E2E_MARKER"' EXIT
+    printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
+      "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+      "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+      >"$E2E_MARKER"
+    REMOTE_CMD=(swift test --filter AgentDictationE2EEvalTests)
+    ;;
   eval-llm)
     # Enablement travels as a gitignored marker file inside the synced tree
     # (removed again on exit): the build gate only allowlists exact
@@ -205,7 +233,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|integration-polishd|eval-llm|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|integration-polishd|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
