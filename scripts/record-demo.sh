@@ -282,6 +282,7 @@ ORIGINAL_DARK_MODE=""
 ANNOUNCED_TAKEOVER=0
 DEMO_COMPLETED=0
 cleanup() {
+  set +e # cleanup is best-effort: one failing teardown step must not abort the rest
   if [[ -f "$GESTURE" ]]; then
     swift "$GESTURE" up >/dev/null 2>&1 || true # never leave Right Command stuck down
   fi
@@ -310,7 +311,9 @@ cleanup() {
     osascript -e 'tell application "Terminal" to quit' >/dev/null 2>&1 || true
   fi
   if [[ -n "$DEMO_STAGE" ]]; then
-    rm -rf "$DEMO_STAGE"
+    # The staged zsh writes .zsh_sessions into ZDOTDIR while exiting (we just
+    # killed its tty) — one rm can race that write (take 3 died here); retry.
+    rm -rf "$DEMO_STAGE" 2>/dev/null || { sleep 1; rm -rf "$DEMO_STAGE" 2>/dev/null || true; }
   fi
   if ! restore_domain "$BUNDLE_ID" "$DEFAULTS_BACKUP" "$DEFAULTS_BACKUP_HAD_DOMAIN"; then
     echo "WARNING: failed to restore $BUNDLE_ID defaults; backup left at $DEFAULTS_BACKUP" >&2
