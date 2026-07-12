@@ -140,6 +140,7 @@ enum TerminalTargetDetector {
         if let override = debugSecureEventInputOverride {
             return override()
         }
+        if isRunningUnderXCTest { return false }
         #endif
         return IsSecureEventInputEnabled()
     }
@@ -149,6 +150,7 @@ enum TerminalTargetDetector {
         if let override = debugFrontmostBundleIDOverride {
             return override()
         }
+        if isRunningUnderXCTest { return nil }
         #endif
         return NSWorkspace.shared.frontmostApplication?.bundleIdentifier
     }
@@ -161,6 +163,7 @@ enum TerminalTargetDetector {
         if let override = debugFocusedElementProbeOverride {
             return override()
         }
+        if isRunningUnderXCTest { return .probeUnavailable }
         #endif
         // Without Accessibility trust every AX read fails; that says nothing
         // about the target.
@@ -206,5 +209,17 @@ enum TerminalTargetDetector {
     static var debugFrontmostBundleIDOverride: (() -> String?)?
     static var debugFocusedElementProbeOverride: (() -> FocusedElementProbe)?
     static var debugSecureEventInputOverride: (() -> Bool)?
+
+    // When XCTest is in the process and a test did not pin an override, the
+    // live reads above return whatever the HOST happens to be doing — and
+    // loginwindow holds Secure Keyboard Entry the entire time the screen is
+    // locked, so every unpinned test on a commit/session-start path failed
+    // whenever CI ran unattended (runs 29160724070, 29159948228/455/578).
+    // The frontmost-app and AX-focus reads flake the same way (a terminal
+    // frontmost while the suite runs flips the session verdict), so all
+    // three seams resolve to fixed defaults under XCTest: secure input off,
+    // no frontmost bundle, probe unavailable. Tests that exercise the live
+    // behaviors pin the overrides explicitly.
+    static let isRunningUnderXCTest = NSClassFromString("XCTestCase") != nil
     #endif
 }

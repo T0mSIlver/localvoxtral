@@ -49,6 +49,71 @@ jobs:
           fi
           rm -rf dist format-lint.txt default.profraw
 
+      - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
+        # CI must not pay ~8 min of 4B weight-loading + live inference on
+        # every push: the polishd live-model integration step below runs only
+        # when the diff touches LLM-relevant paths, or when the PR body /
+        # head commit message contains the literal marker [run-llm-eval].
+        # The path list and the matching logic live in
+        # scripts/ci/llm-lane-filter.sh (kept out of the workflow so it is
+        # testable locally); the human-judgment rule is AGENTS.md
+        # "When must the LLM lanes run?". The PolishHelper UNIT suite and the
+        # tier-1 voxmlx realtime integration stay per-push.
+        id: llm_lane
+        if: runner.environment == 'self-hosted'
+        env:
+          # env indirection, not inline ${{ }} in the script body: PR bodies
+          # and commit messages are attacker-shaped strings.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          FILES="$RUNNER_TEMP/llm-lane-changed-files.txt"
+          MARKER_TEXT="$RUNNER_TEMP/llm-lane-marker-text.txt"
+
+          # Changed files against the merge base. fetch-depth: 0 above means
+          # full history is present; clean: false does not affect refs.
+          BASE=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            BASE="$(git merge-base "origin/$BASE_REF" HEAD || true)"
+          else
+            # push to main: the previous tip, unless history was rewritten
+            # or this is the first push (all-zero sha / unknown object).
+            if git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+              BASE="$PUSH_BEFORE_SHA"
+            fi
+          fi
+          if [[ -z "$BASE" ]]; then
+            # Fail open: an uncomputable diff must never skip a gate.
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "LLM eval lane: RUNNING (diff unavailable — failing open)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git diff --name-only "$BASE" HEAD > "$FILES"
+
+          # Marker sources: PR body + PR head commit message, or (on push)
+          # the head commit message. On PRs HEAD is the synthetic merge
+          # commit, so read the message from the real head sha.
+          printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git log -1 --format=%B "$PR_HEAD_SHA" >> "$MARKER_TEXT" || true
+          else
+            printf '%s\n' "$PUSH_HEAD_MESSAGE" >> "$MARKER_TEXT"
+          fi
+
+          DECISION="$(./scripts/ci/llm-lane-filter.sh "$FILES" "$MARKER_TEXT")"
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+            echo "LLM eval lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "LLM eval lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Setup Swift
         if: runner.environment == 'github-hosted'
         uses: swift-actions/setup-swift@v2
@@ -184,8 +249,12 @@ jobs:
       - name: Polishing helper integration (live model + eval baseline)
         # Spawns the helper built by the packaging step with the real pinned
         # model, drives the production polish request path, and asserts the
-        # shared eval baseline + parent-pid tether.
-        if: runner.environment == 'self-hosted'
+        # shared eval baseline + parent-pid tether. Conditional — this is the
+        # step that loads 4B weights and runs live inference; the decide step
+        # above (path filter + [run-llm-eval] marker) says whether this
+        # change can affect what the lane measures. Local equivalent:
+        # ./scripts/remote-build.sh integration-polishd
+        if: runner.environment == 'self-hosted' && steps.llm_lane.outputs.run == 'true'
         env:
           LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
           LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
