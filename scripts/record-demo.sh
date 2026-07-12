@@ -514,7 +514,12 @@ ZSHRC
 
 pgrep -xq Terminal || LAUNCHED_TERMINAL_APP=1
 SHELL_CMD="cd $(printf %q "$REPO_DIR") && exec /usr/bin/env ZDOTDIR=$(printf %q "$ZDOT_DIR") /bin/zsh -i"
-TERMINAL_INFO="$(osascript - "$SHELL_CMD" <<'OSA'
+# AppleScript lives in a temp FILE, never in a heredoc inside $(...): the
+# runner executes this with /bin/bash 3.2, whose command-substitution parser
+# naively scans heredoc bodies and chokes on their quotes/parens — the first
+# hands-free take died exactly there, with a bogus exit 0 on top.
+STAGE_OSA="$DEMO_STAGE/stage-terminal.applescript"
+cat > "$STAGE_OSA" <<'OSA'
 on run argv
     tell application "Terminal"
         activate
@@ -522,9 +527,8 @@ on run argv
         delay 1
         set windowID to id of front window
         set ttyName to tty of demoTab
-        -- Dark "Pro" profile + big font so terminal text is legible at
-        -- README width. Per-tab only: nothing is persisted to the user's
-        -- Terminal preferences. Best-effort — the take review catches it.
+        -- Dark Pro profile + big font so terminal text is legible at README
+        -- width. Per-tab only: nothing is persisted to Terminal preferences.
         try
             set current settings of demoTab to settings set "Pro"
         end try
@@ -536,7 +540,7 @@ on run argv
     end tell
 end run
 OSA
-)"
+TERMINAL_INFO="$(osascript "$STAGE_OSA" "$SHELL_CMD")"
 TERMINAL_WINDOW_ID="${TERMINAL_INFO%% *}"
 TERMINAL_TTY="${TERMINAL_INFO##* }"
 if [[ -z "$TERMINAL_WINDOW_ID" || -z "$TERMINAL_TTY" || "$TERMINAL_TTY" != /dev/* ]]; then
@@ -570,13 +574,15 @@ sleep 1
 # ever submits it.
 if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   echo "Launching claude ($CLAUDE_BIN) in the demo window..."
-  osascript - "$CLAUDE_BIN" "$TERMINAL_WINDOW_ID" >/dev/null <<'OSA'
+  LAUNCH_OSA="$DEMO_STAGE/launch-claude.applescript"
+  cat > "$LAUNCH_OSA" <<'OSA'
 on run argv
     tell application "Terminal"
         do script (item 1 of argv) in selected tab of window id ((item 2 of argv) as integer)
     end tell
 end run
 OSA
+  osascript "$LAUNCH_OSA" "$CLAUDE_BIN" "$TERMINAL_WINDOW_ID" >/dev/null
   sleep 10
   osascript -e 'tell application "Terminal" to activate' >/dev/null
   osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true

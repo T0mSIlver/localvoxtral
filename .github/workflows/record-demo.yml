@@ -66,6 +66,9 @@ jobs:
           DEMO_TERMINAL_AGENT: ${{ inputs.terminal_agent || 'auto' }}
         run: |
           bash scripts/record-demo.sh dist/localvoxtral.app
+          # The runner's /bin/bash 3.2 has returned exit 0 on a PARSE ERROR
+          # before — never trust the exit code alone, require the artifact.
+          test -s dist/demo/demo.mp4 || { echo "demo.mp4 was not produced"; exit 1; }
           echo "ran=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload demo video
