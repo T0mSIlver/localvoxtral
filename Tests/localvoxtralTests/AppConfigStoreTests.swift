@@ -202,6 +202,78 @@ final class AppConfigStoreTests: XCTestCase {
         XCTAssertEqual(templates.userContent, "User override:\n{{input_text}}\n")
     }
 
+    // MARK: - Agent-profile prompt templates
+
+    func testAgentProfileSeedsAndLoadsAgentTemplatesFromBundle() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        let agentTemplates = store.loadLLMPromptTemplates(profile: .agent)
+        let standardTemplates = store.loadLLMPromptTemplates()
+
+        // Bootstrapped the agent files alongside the standard ones.
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("llm_system_prompt_agent.toml").path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("llm_user_prompt_agent.toml").path
+            )
+        )
+
+        // Agent templates are distinct from standard and carry agent duties.
+        XCTAssertNotEqual(agentTemplates.systemContent, standardTemplates.systemContent)
+        XCTAssertNotEqual(agentTemplates.userContent, standardTemplates.userContent)
+        XCTAssertTrue(agentTemplates.systemContent.contains("--"))
+        XCTAssertTrue(agentTemplates.userContent.contains("{{input_text}}"))
+    }
+
+    func testStandardProfileReturnsStandardTemplates() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        XCTAssertEqual(
+            store.loadLLMPromptTemplates(profile: .standard),
+            store.loadLLMPromptTemplates()
+        )
+    }
+
+    func testCorruptAgentUserPromptFallsBackToStandardTemplates() throws {
+        let fallbackStore = AppConfigStore(configDirectoryOverride: makeTemporaryConfigDirectory())
+        let standardTemplates = fallbackStore.loadLLMPromptTemplates()
+
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            #"content = "unterminated"#,
+            named: "llm_user_prompt_agent.toml",
+            in: directory
+        )
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        XCTAssertEqual(store.loadLLMPromptTemplates(profile: .agent), standardTemplates)
+    }
+
+    func testAgentUserPromptMissingInputTextFallsBackToStandardTemplates() throws {
+        let fallbackStore = AppConfigStore(configDirectoryOverride: makeTemporaryConfigDirectory())
+        let standardTemplates = fallbackStore.loadLLMPromptTemplates()
+
+        let directory = makeTemporaryConfigDirectory()
+        try write(
+            """
+            content = "Agent rules only: {{replacement_dictionary}}"
+            """,
+            named: "llm_user_prompt_agent.toml",
+            in: directory
+        )
+        let store = AppConfigStore(configDirectoryOverride: directory)
+
+        // Placeholder validation fails -> the whole agent profile falls back to
+        // standard (never leaves polish promptless).
+        XCTAssertEqual(store.loadLLMPromptTemplates(profile: .agent), standardTemplates)
+    }
+
     func testReplacementDictionary_singleWordReplacement() throws {
         let store = try makeStore(
             replacementDictionary: """

@@ -600,7 +600,14 @@ extension DictationViewModel {
             let capturedOutputMode = sessionMode.rawValue
             let capturedTargetBundleID = resolveTargetAppBundleID()
             if polishingConfig != nil {
-                let promptTemplates = appConfigStore.loadLLMPromptTemplates()
+                let polishProfile = selectedPolishProfile(
+                    forTargetBundleID: capturedTargetBundleID
+                )
+                Log.polishing.info(
+                    "Polish profile: \(polishProfile.rawValue, privacy: .public)"
+                )
+                let capturedPolishProfile = polishProfile.rawValue
+                let promptTemplates = appConfigStore.loadLLMPromptTemplates(profile: polishProfile)
                 let polishingRequest = LLMPolishingRequest(
                     inputText: workingText,
                     systemPrompt: promptTemplates.systemContent,
@@ -722,7 +729,8 @@ extension DictationViewModel {
                         outputMode: capturedOutputMode,
                         targetAppBundleID: capturedTargetBundleID,
                         status: sessionStatus,
-                        commitSucceeded: commitSucceeded
+                        commitSucceeded: commitSucceeded,
+                        polishProfile: capturedPolishProfile
                     )
 
                     if let llmConnectionFailure {
@@ -895,8 +903,27 @@ extension DictationViewModel {
     }
 
     func resolveTargetAppBundleID() -> String? {
+        #if DEBUG
+        if let override = debugResolveTargetAppBundleIDOverride {
+            return override()
+        }
+        #endif
         guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
         return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+    }
+
+    /// Polishing prompt profile for a stop-commit: `.agent` iff the user has the
+    /// agent profile enabled AND the captured target bundle ID is terminal-like
+    /// (built-in terminal allowlist, or the user's `terminal_apps.toml` list).
+    /// Mirrors the live-mode target combination (allowlist + user bundle IDs);
+    /// the AX-probe verdict is deliberately not consulted here — the polish
+    /// switch keys off the app identity, not the focused field's writability.
+    func selectedPolishProfile(forTargetBundleID bundleID: String?) -> PolishPromptProfile {
+        guard settings.agentPolishProfileEnabled else { return .standard }
+        guard let bundleID, !bundleID.isEmpty else { return .standard }
+        if TerminalTargetDetector.isTerminalLikeBundleID(bundleID) { return .agent }
+        if appConfigStore.loadTerminalAppBundleIDs().contains(bundleID) { return .agent }
+        return .standard
     }
 
     private func saveSessionRecord(
@@ -909,7 +936,8 @@ extension DictationViewModel {
         outputMode: String,
         targetAppBundleID: String?,
         status: DictationSessionStatus,
-        commitSucceeded: Bool
+        commitSucceeded: Bool,
+        polishProfile: String? = nil
     ) {
         let trimmedRawText = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRawText.isEmpty else {
@@ -928,7 +956,8 @@ extension DictationViewModel {
             outputMode: outputMode,
             targetAppBundleID: targetAppBundleID,
             status: status,
-            commitSucceeded: commitSucceeded
+            commitSucceeded: commitSucceeded,
+            polishProfile: polishProfile
         )
         debugSavedSessionRecordSink?(record)
         sessionStore?.save(record)
