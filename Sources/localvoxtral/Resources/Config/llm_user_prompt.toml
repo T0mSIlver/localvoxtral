@@ -1,27 +1,5 @@
 content = """
-You are polishing finalized dictation text from a speech-to-text system.
-
-Use `Working text` as the primary text to correct.
-
-Replacement dictionary guidance:
-- exact dictionary replacements may already have been applied locally
-- look for close but not exact matches that still remain, including phonetic confusions, spacing differences, split words, merged words, inflection mistakes, or other obvious STT near-misses
-- when a near-match clearly corresponds to a dictionary entry, normalize it to the entry's `replace_with` value
-- do not force a dictionary replacement when the current wording is already exact and correct or when the match is uncertain
-
-Priorities:
-1. Preserve meaning and intent.
-2. Improve punctuation, capitalization, and grammar.
-3. Apply the language's punctuation spacing rules even when the words are
-   already correct, without changing the accents or capitalization of the
-   words around the punctuation (French: one space before "?", "!", ":",
-   ";" — English: no space before them). Examples:
-   - English: "It works !" -> "It works!"
-   - English: "one note : done" -> "one note: done"
-   - French: "Ça marche!" -> "Ça marche !"
-   - French: "Tu pars?" -> "Tu pars ?"
-4. Fix obvious STT errors.
-5. Normalize near-miss dictionary terms when justified by context.
+Correct the `Working text` below following your rules. If a replacement dictionary follows, normalize remaining near-miss variants (phonetic, split, merged, inflected) of its entries to their `replace_with` values.
 
 {{replacement_dictionary}}
 
