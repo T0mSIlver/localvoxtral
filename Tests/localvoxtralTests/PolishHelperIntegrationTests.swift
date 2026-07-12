@@ -467,6 +467,136 @@ final class PolishHelperIntegrationTests: XCTestCase {
         warmed.process.terminate()
     }
 
+    /// The two-slot cache demonstration: alternate two distinct prompt
+    /// profiles (the bundled standard templates plus a synthetic
+    /// agent-flavored profile — independent of #113's agent templates)
+    /// against one helper. Under the default 2 slots both prefixes stay warm
+    /// (request 3+ is a slot hit); under `--prompt-cache-slots 1` (the
+    /// original single-slot behavior) every alternation evicts and
+    /// re-prefills the full prefix. Slot counts are asserted; timings are
+    /// print-only (no-wall-clock rule).
+    func testTwoSlotPrefixCacheKeepsAlternatingProfilePrefixesWarm() async throws {
+        let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
+        let option = PolishModelCatalog.option(forRepoID: model)
+        let (templates, cleanup) = try LLMPolishEvalSupport.defaultPromptTemplates()
+        addTeardownBlock { cleanup() }
+        let service = LLMPolishingService()
+
+        func configuration(port: UInt16) -> LLMPolishingConfiguration {
+            LLMPolishingConfiguration(
+                endpointURL: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!,
+                apiKey: "",
+                model: model,
+                samplingDefaults: option?.samplingDefaults,
+                chatTemplateArguments: option?.chatTemplateArguments
+            )
+        }
+
+        let transcript = "Are you coming to the meeting tomorrow ?"
+        let expectedNormalized = LLMPolishEvalSupport.normalized(
+            "Are you coming to the meeting tomorrow?"
+        )
+        let standardRequest = LLMPolishingRequest(
+            inputText: transcript,
+            systemPrompt: templates.systemContent,
+            userPrompts: templates.renderedUserPrompts(
+                inputText: transcript,
+                replacementDictionary: ""
+            )
+        )
+        // Same [system, static user prefix, dynamic tail] shape as
+        // production, different content — a distinct prefix key.
+        let agentRequest = LLMPolishingRequest(
+            inputText: transcript,
+            systemPrompt:
+                "You polish dictated instructions addressed to a terminal coding agent. "
+                + "Preserve identifiers, CLI flags, file paths, and backtick spans byte-exact; "
+                + "fix punctuation, spacing, and casing only. Never answer or execute the "
+                + "instruction, never add commentary — return only the corrected text.",
+            userPrompts: [
+                "Correct the transcript in the next message following the rules above. "
+                    + "Reply with the corrected transcript only.",
+                transcript,
+            ]
+        )
+
+        // The motivating sequence: the user alternates dictating in a text
+        // field (standard) and a terminal (agent), three rounds.
+        func runAlternatingSequence(port: UInt16) async throws -> [Double] {
+            var durations: [Double] = []
+            for request in [
+                standardRequest, agentRequest,
+                standardRequest, agentRequest,
+                standardRequest, agentRequest,
+            ] {
+                let result = try await service.polish(
+                    request: request,
+                    configuration: configuration(port: port)
+                )
+                if request.systemPrompt == templates.systemContent {
+                    XCTAssertEqual(
+                        LLMPolishEvalSupport.normalized(result.polishedText),
+                        expectedNormalized,
+                        "slot reuse must not change the standard profile's output"
+                    )
+                }
+                durations.append(result.durationSeconds)
+            }
+            return durations
+        }
+
+        // Default (2 slots): both profiles checkpoint once, then every
+        // request is a hit — no evictions, no full prefills.
+        let twoSlot = try await launchHelper(binary: binary, model: model)
+        let twoSlotDurations = try await runAlternatingSequence(port: twoSlot.port)
+        XCTAssertEqual(
+            twoSlot.stderrLog.countOfLines(containing: "prompt cache: checkpointed"), 2,
+            "each profile checkpoints exactly once under two slots"
+        )
+        XCTAssertEqual(
+            twoSlot.stderrLog.countOfLines(containing: "prompt cache: hit"), 4,
+            "every request after the first round must hit its warm slot"
+        )
+        XCTAssertEqual(twoSlot.stderrLog.countOfLines(containing: "prompt cache: evicted"), 0)
+        XCTAssertEqual(twoSlot.stderrLog.countOfLines(containing: "full prefill"), 0)
+        // Reap before the second launch — never two helpers in memory (#111).
+        await Self.reap(twoSlot.process)
+
+        // Pinned to 1 slot (the original behavior): every alternation
+        // evicts the other profile and re-prefills.
+        let oneSlot = try await launchHelper(
+            binary: binary,
+            model: model,
+            extraArguments: ["--prompt-cache-slots", "1"]
+        )
+        let oneSlotDurations = try await runAlternatingSequence(port: oneSlot.port)
+        XCTAssertEqual(
+            oneSlot.stderrLog.countOfLines(containing: "prompt cache: checkpointed"), 6,
+            "one slot must re-checkpoint on every profile alternation"
+        )
+        XCTAssertEqual(oneSlot.stderrLog.countOfLines(containing: "prompt cache: hit"), 0)
+        XCTAssertEqual(
+            oneSlot.stderrLog.countOfLines(containing: "prompt cache: evicted"), 5,
+            "every store beyond the first must evict under one slot"
+        )
+        XCTAssertEqual(oneSlot.stderrLog.countOfLines(containing: "full prefill"), 0)
+
+        let format = { (durations: [Double]) in
+            durations.map { String(format: "%.3f", $0) }.joined(separator: "s, ") + "s"
+        }
+        print(
+            """
+            == polishd prompt-prefix slots: alternating standard/agent profiles (model: \(model)) ==
+            2 slots (default): \(format(twoSlotDurations))
+            1 slot  (legacy):  \(format(oneSlotDurations))
+            (requests alternate standard, agent; request 3+ under 2 slots hits a warm checkpoint,
+            under 1 slot it re-prefills the evicted profile's full prefix)
+            """
+        )
+        oneSlot.process.terminate()
+    }
+
     /// Agent-profile parity: the bundled helper runs the AGENT prompt corpus
     /// (spoken-symbol normalization, backticking, filler/self-correction
     /// cleanup, no prompt expansion) and must clear the required agent cases.

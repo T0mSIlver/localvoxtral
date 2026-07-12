@@ -24,8 +24,8 @@ public enum ChatRespondingError: Error, CustomStringConvertible {
     }
 }
 
-/// Loads the MLX model once and answers chat requests against it, reusing a
-/// KV-state checkpoint of the stable prompt prefix across requests.
+/// Loads the MLX model once and answers chat requests against it, reusing
+/// KV-state checkpoints of the stable prompt prefixes across requests.
 ///
 /// Every polish request shares [system prompt, instructions user message] and
 /// varies only in the final transcript message, so the prefix's prefill work
@@ -34,31 +34,41 @@ public enum ChatRespondingError: Error, CustomStringConvertible {
 /// hybrid linear-attention and its `MambaCache` layers cannot be trimmed, the
 /// same reason the previous mlx-lm engine only reused stored true prefixes
 /// for this model. The `ModelContainer` serializes concurrent requests.
+///
+/// Checkpoints live in a small LRU slot store (`PromptPrefixSlotStore`,
+/// default 2 slots) so two alternating prompt profiles (standard vs agent
+/// dictation) both stay warm instead of invalidating each other on every
+/// switch — with one slot, each alternation re-prefilled the full prefix.
 public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
     private let container: ModelContainer
     private let defaultMaxTokens: Int
 
-    /// KV state for the templated stable prefix. `caches` is never mutated
-    /// after creation — each request extends a `copy()`. Only touched inside
+    /// KV states for the templated stable prefixes, keyed by exact prefix
+    /// tokens + chat-template kwargs. Stored caches are never mutated after
+    /// creation — each request extends a `copy()`. Only touched inside
     /// `container.perform`, which serializes all access.
-    private struct PrefixSnapshot {
-        let prefixTokens: [Int]
-        let chatTemplateArguments: [String: ChatTemplateArgumentValue]?
-        let caches: [KVCache]
-    }
-    private var prefixSnapshot: PrefixSnapshot?
+    private var prefixSlots: PromptPrefixSlotStore<[KVCache]>
 
-    private init(container: ModelContainer, defaultMaxTokens: Int) {
+    private init(container: ModelContainer, defaultMaxTokens: Int, promptCacheSlots: Int) {
         self.container = container
         self.defaultMaxTokens = defaultMaxTokens
+        self.prefixSlots = PromptPrefixSlotStore(capacity: promptCacheSlots)
     }
 
-    public static func load(directory: URL, defaultMaxTokens: Int) async throws -> MLXPolishModel {
+    public static func load(
+        directory: URL,
+        defaultMaxTokens: Int,
+        promptCacheSlots: Int = 2
+    ) async throws -> MLXPolishModel {
         let container = try await LLMModelFactory.shared.loadContainer(
             from: directory,
             using: TransformersTokenizerLoader()
         )
-        return MLXPolishModel(container: container, defaultMaxTokens: defaultMaxTokens)
+        return MLXPolishModel(
+            container: container,
+            defaultMaxTokens: defaultMaxTokens,
+            promptCacheSlots: promptCacheSlots
+        )
     }
 
     public func respond(
@@ -164,27 +174,36 @@ public final class MLXPolishModel: ChatResponding, @unchecked Sendable {
             return (nil, fullTokens)
 
         case .reusePrefix(let suffixTokens):
-            if let snapshot = prefixSnapshot,
-                snapshot.prefixTokens == prefixTokens,
-                snapshot.chatTemplateArguments == chatTemplateArguments
-            {
+            let key = PromptPrefixSlotStore<[KVCache]>.Key(
+                prefixTokens: prefixTokens,
+                chatTemplateArguments: chatTemplateArguments
+            )
+            if let caches = prefixSlots.lookup(key) {
                 PolishdLog.info(
                     "prompt cache: hit — reusing \(prefixTokens.count) prefix tokens, "
-                        + "prefilling \(suffixTokens.count)")
-                return (snapshot.caches.map { $0.copy() }, suffixTokens)
+                        + "prefilling \(suffixTokens.count) (\(slotSummary()))")
+                return (caches.map { $0.copy() }, suffixTokens)
             }
 
             let caches = try prefill(tokens: prefixTokens, context: context, parameters: parameters)
-            prefixSnapshot = PrefixSnapshot(
-                prefixTokens: prefixTokens,
-                chatTemplateArguments: chatTemplateArguments,
-                caches: caches
-            )
+            if prefixSlots.store(key, state: caches) {
+                PolishdLog.info(
+                    "prompt cache: evicted least-recently-used slot "
+                        + "(capacity \(prefixSlots.capacity))")
+            }
             PolishdLog.info(
                 "prompt cache: checkpointed \(prefixTokens.count) prefix tokens; "
-                    + "prefilling \(suffixTokens.count)")
+                    + "prefilling \(suffixTokens.count) (\(slotSummary()))")
             return (caches.map { $0.copy() }, suffixTokens)
         }
+    }
+
+    /// Count-only slot telemetry appended to the existing cache log lines
+    /// (whose prefixes the integration suite greps — keep them stable).
+    private func slotSummary() -> String {
+        let counters = prefixSlots.counters
+        return "slots \(prefixSlots.count)/\(prefixSlots.capacity), "
+            + "hits \(counters.hits), misses \(counters.misses), evictions \(counters.evictions)"
     }
 
     /// Prefill `tokens` into a fresh cache WITHOUT sampling: `prepare`
