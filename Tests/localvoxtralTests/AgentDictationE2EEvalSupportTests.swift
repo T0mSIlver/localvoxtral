@@ -455,6 +455,39 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(board.text.contains("skipped 1, errors 1"))
     }
 
+    /// Review finding (2026-07-12): a REQUIRED case that never ran
+    /// (environmental skip, e.g. a missing TTS voice after Phase-3 promotes a
+    /// TTS-dependent case) must count as a required failure — a required
+    /// metric demands a measurement, and silence must never read as a pass.
+    /// Known-hard skips stay non-fatal.
+    func testScoreboardSkippedRequiredCaseCountsAsRequiredFailure() {
+        var requiredSkipped = makeResult(
+            caseID: "e-en-question",
+            stratum: "punctuation-spacing-migration",
+            status: ["tokens": .required, "exactText": .required]
+        )
+        requiredSkipped.skipReason = "no French TTS voice installed"
+        var knownHardSkipped = makeResult(caseID: "b-fr-glob")
+        knownHardSkipped.skipReason = "no French TTS voice installed"
+
+        let board = Support.renderScoreboard(
+            results: [requiredSkipped, knownHardSkipped], header: "h"
+        )
+        XCTAssertEqual(board.requiredFailures.count, 1)
+        XCTAssertTrue(board.requiredFailures[0].contains("e-en-question"))
+        XCTAssertTrue(board.requiredFailures[0].contains("skipped without running"))
+        XCTAssertTrue(
+            board.text.contains(
+                "SKIP e-en-question — no French TTS voice installed "
+                    + "[required case — skip counts as failure]"
+            )
+        )
+        // The known-hard skip stays a plain, non-fatal SKIP line.
+        XCTAssertTrue(board.text.contains("SKIP b-fr-glob — no French TTS voice installed"))
+        XCTAssertFalse(board.text.contains("b-fr-glob — no French TTS voice installed [required"))
+        XCTAssertTrue(board.text.contains("skipped 2"))
+    }
+
     func testScoreboardWrapsInExtractionMarkers() {
         let board = Support.renderScoreboard(results: [makeResult(caseID: "x")], header: "h")
         XCTAssertTrue(board.text.hasPrefix(Support.scoreboardBeginMarker))

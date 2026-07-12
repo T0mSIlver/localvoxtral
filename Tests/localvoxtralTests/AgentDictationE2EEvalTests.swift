@@ -223,20 +223,28 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 )
                 finalOutput = polish.committedText
 
-                // Guard-off diagnostic column: the SAME run's raw model output
-                // (exactly what PolishTokenGuard saw), scored on the tokens
-                // metric — measures raw model damage at zero extra inference.
-                if var raw = polish.rawModelOutput {
+                // Guard-off diagnostic column: what the commit would look
+                // like WITHOUT PolishTokenGuard, at zero extra inference.
+                // Precisely: the SAME run's pre-guard model output, and for
+                // macro-positive cases with the commit-time payload
+                // substitution applied on top — the guard itself saw the
+                // PLACEHOLDER form, but a no-guard commit would still
+                // substitute the payload, and scoring the placeholder form
+                // against payload-bearing required tokens would count every
+                // macro case as a guard save it never made.
+                if var guardOffOutput = polish.rawModelOutput {
                     if evalCase.features?.macro == true,
                         let clipboard = evalCase.features?.clipboard,
                         let payload = PolishContextClipboardReader.readableSanitizedString(
                             from: PasteboardStub(string: clipboard)
                         )
                     {
-                        raw = ClipboardPayloadMacro.substitutePayload(in: raw, payload: payload)
+                        guardOffOutput = ClipboardPayloadMacro.substitutePayload(
+                            in: guardOffOutput, payload: payload
+                        )
                     }
                     result.guardOffTokensFailures = Support.tokensFailures(
-                        output: raw.trimmingCharacters(in: .whitespacesAndNewlines),
+                        output: guardOffOutput.trimmingCharacters(in: .whitespacesAndNewlines),
                         evalCase: evalCase
                     )
                 }
@@ -269,7 +277,10 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private struct PolishStageOutcome {
         let committedText: String
-        /// The raw model output as PolishTokenGuard saw it (pre-guard).
+        /// The raw model output exactly as PolishTokenGuard saw it (pre-guard,
+        /// pre-substitution — for macro cases this still carries the
+        /// placeholder). The guard-off column applies the commit-time payload
+        /// substitution before scoring; see the call site.
         let rawModelOutput: String?
     }
 

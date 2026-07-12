@@ -48,6 +48,11 @@ jobs:
             mv .build.smoke-hidden .build
           fi
           rm -rf dist format-lint.txt default.profraw
+          # Transient eval enable markers (gitignored, marker-through-the-tree
+          # pattern): clean: false preserves them across runs, and a stray one
+          # would flip a marker-gated live suite ON in the plain unit step.
+          rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
+            .polishd-integration-enable.json
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
@@ -144,8 +149,14 @@ jobs:
         # nothing downstream consumed (tests rebuild with coverage flags,
         # packaging builds release), so it was pure duplicate compilation.
         run: |
+          # AgentDictationE2EEvalTests is skipped explicitly (belt) on top of
+          # the marker cleanup above (suspenders): it is the nightly
+          # eval-e2e.yml lane, never tier 0, and a leftover enable marker in
+          # this persistent workspace must not turn the unit step into a
+          # many-minute live-inference run.
           swift test \
             --skip RealtimeAPIVLLMIntegrationTests \
+            --skip AgentDictationE2EEvalTests \
             --enable-code-coverage
 
       - name: Coverage summary

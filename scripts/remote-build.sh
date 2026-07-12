@@ -86,6 +86,28 @@ ensure_remote_server() {
   fi
 }
 
+# Transient enable markers ride the rsynced tree because the gate can't pass
+# env vars per-run. Their EXIT trap must clean BOTH sides: removing only the
+# local copy leaves the marker in the remote work dir, where any later direct
+# `swift test` (or an interrupted run reusing the dir before a fresh sync)
+# would silently enable the marker-gated live suite. The gate allowlists no
+# `rm`, so remote cleanup is a second rsync of the now-marker-free tree —
+# byte-identical client invocation to the main sync, so the gate's pinned
+# server-argument check still passes and --delete drops the marker. Skipped
+# when the main sync never ran (nothing was uploaded); best-effort (|| true)
+# because a host that died mid-run must not wedge the exit path — the next
+# real sync deletes the marker anyway.
+TREE_SYNCED=0
+cleanup_transient_marker() {
+  local marker="$1"
+  rm -f "$marker"
+  if [[ "$TREE_SYNCED" == "1" ]]; then
+    rsync -az --delete \
+      --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
+      "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
+  fi
+}
+
 if [[ -z "$HOST" ]]; then
   cat >&2 <<'MSG'
 No build host configured. Point this script at a Mac with the Swift toolchain
@@ -166,7 +188,7 @@ case "$CMD" in
     fi
     POLISHD_MODEL="${1:-}"
     POLISHD_MARKER="$ROOT_DIR/.polishd-integration-enable.json"
-    trap 'rm -f "$POLISHD_MARKER"' EXIT
+    trap 'cleanup_transient_marker "$POLISHD_MARKER"' EXIT
     if [[ -n "$POLISHD_MODEL" ]]; then
       printf '{"helperPath": "%s", "model": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
@@ -195,8 +217,8 @@ case "$CMD" in
     ENSURE_SERVER="voxmlx"
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
-    # stale marker behind.
-    trap 'rm -f "$E2E_MARKER"' EXIT
+    # stale marker behind (locally or in the remote work dir).
+    trap 'cleanup_transient_marker "$E2E_MARKER"' EXIT
     printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
       "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
       "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
@@ -219,8 +241,8 @@ case "$CMD" in
     fi
     EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
-    # stale marker behind.
-    trap 'rm -f "$EVAL_MARKER"' EXIT
+    # stale marker behind (locally or in the remote work dir).
+    trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
     printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
     REMOTE_CMD=(swift test --filter LLMPolishPromptEvalTests)
     ;;
@@ -249,5 +271,8 @@ ssh "$HOST" "mkdir -p $(printf '%q' "$DIR")"
 rsync -az --delete \
   --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
   "$ROOT_DIR/" "$HOST:$DIR/"
+# From here on the marker (if any) exists remotely too; the EXIT trap's
+# cleanup rsync now has something to delete.
+TREE_SYNCED=1
 
 run_remote "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")"

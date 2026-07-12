@@ -283,11 +283,13 @@ enum AgentDictationE2EEvalSupport {
     /// The outcome of one corpus case, one row of the scoreboard. Columns:
     /// `tokensFailures`/`exactTextFailures` score the BASELINE run (the
     /// production path, token guard on); `guardOffTokensFailures` is the
-    /// diagnostic guard-off column — the same run's RAW model output scored on
-    /// the tokens metric, measuring what the token guard saved (how often #101
-    /// earns its keep) at zero extra inference cost. More ablation columns
-    /// (feature-off runs) slot in as additional optional fields + a line
-    /// suffix in `renderLine` (Phase 3).
+    /// diagnostic guard-off column — the same run's PRE-GUARD model output
+    /// (for macro cases: after the commit-time payload substitution the
+    /// no-guard commit would still perform — the guard itself saw the
+    /// placeholder form) scored on the tokens metric, measuring what the
+    /// token guard saved (how often #101 earns its keep) at zero extra
+    /// inference cost. More ablation columns (feature-off runs) slot in as
+    /// additional optional fields + a line suffix in `renderLine` (Phase 3).
     struct CaseResult {
         let caseID: String
         let stratum: String
@@ -295,7 +297,10 @@ enum AgentDictationE2EEvalSupport {
         let lang: AgentDictationEvalCorpus.Language
         let statusByMetric: [String: AgentDictationEvalCorpus.Status]
         /// Environmental skip (e.g. no French TTS voice installed): printed
-        /// and counted, never a failure.
+        /// and counted; non-fatal for known-hard rows, but a skip on a row
+        /// carrying a REQUIRED metric is counted as a required failure by
+        /// `renderScoreboard` — a required case must be measured, not
+        /// silently passed over.
         var skipReason: String?
         /// Pipeline infrastructure error (say failed, ASR connect/timeout,
         /// polish request failed): fails the suite — infra rot must redden
@@ -417,7 +422,21 @@ enum AgentDictationE2EEvalSupport {
 
             for row in rows {
                 if let reason = row.skipReason {
-                    lines.append("SKIP \(row.caseID) — \(reason)")
+                    // A required case that never RAN must not pass silently:
+                    // environmental skips are tolerable for known-hard rows,
+                    // but a required metric demands a measurement. (No
+                    // required case is TTS-dependent today — all 7 are
+                    // polish-only — but Phase-3 promotion may change that.)
+                    if row.carriesRequiredMetric {
+                        lines.append(
+                            "SKIP \(row.caseID) — \(reason) [required case — skip counts as failure]"
+                        )
+                        requiredFailures.append(
+                            "required case \(row.caseID) was skipped without running: \(reason)"
+                        )
+                    } else {
+                        lines.append("SKIP \(row.caseID) — \(reason)")
+                    }
                     skipped += 1
                     continue
                 }
