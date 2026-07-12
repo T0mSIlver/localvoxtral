@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Talk to your coding agents. Keep every word on your Mac.</strong><br />
-  Realtime, fully local dictation for the menu bar. Press a key and speak. Your words appear while you're still talking.
+  Realtime, fully local dictation for the menu bar. Press a key and speak — your words appear while you're still talking.
 </p>
 
 <p align="center">
@@ -19,7 +19,7 @@
 
 https://github.com/user-attachments/assets/d1c42aaf-6180-440a-bce4-3b90306ef3e2
 
-Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. It is built first for [prompting coding agents by voice](#terminals--coding-agents), and it stays a solid general dictation app everywhere else. Everything runs on-device, with no account and no subscription (see [Privacy](#privacy)).
+Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. It is built first for [prompting coding agents by voice](#terminals--coding-agents), and it stays a solid general dictation app everywhere else. Everything runs on-device — no account, no subscription, nothing leaving your Mac (see [Privacy](#privacy)).
 
 ## Install
 
@@ -42,12 +42,12 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 
 ## Features
 
-- **Built for coding agents:** terminals are first-class targets and polishing understands developer speech ([details](#terminals--coding-agents))
-- **One-key dictation:** a single modifier key (Fn/Globe, Right Command, or Right Option) drives both modes, or use classic per-mode keyboard shortcuts ([details](#shortcuts))
-- **Two output modes:** Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
-- **Automatic cleanup:** an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
-- **Bring your own server:** dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
-- **Menu bar native:** instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit
+- **Built for coding agents** — terminals are first-class targets and polishing understands developer speech ([details](#terminals--coding-agents))
+- **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option) drives both modes, or use classic per-mode keyboard shortcuts ([details](#shortcuts))
+- **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
+- **Automatic cleanup** — an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
+- **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
+- **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit
 
 > [!TIP]
 > If localvoxtral is useful to you, a ⭐ on this repo helps others find it.
@@ -60,34 +60,34 @@ In the default Managed local mode, nothing you say or write is sent anywhere. Au
 
 Two ways to trigger dictation, configured in **Settings → Dictation**:
 
-**Single modifier key** (Fn/Globe, Right Command, or Right Option). One key, two gestures:
+**Single modifier key** — Fn/Globe, Right Command, or Right Option. One key, two gestures:
 
 | Gesture | Behavior |
 |---|---|
 | Tap | Toggle Overlay Buffer dictation on/off |
-| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk: dictates while held, stops on release |
+| Hold (past the hold delay, default 350 ms) | Live Auto-Paste push-to-talk — dictates while held, stops on release |
 
 The gesture selects the output mode, so both workflows are always one key away. A tap commits through optional LLM polishing, while a hold streams words in real time (the replacement dictionary applies in both). Pressing any other key while the modifier is down cancels the gesture, so regular keyboard combos involving the modifier are unaffected. Requires Accessibility permission.
 
-**Per-mode keyboard shortcuts:** separate shortcuts for Overlay Buffer and Live Auto-Paste, with `Toggle` / `Push to Talk` behavior.
+**Per-mode keyboard shortcuts** — separate shortcuts for Overlay Buffer and Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
 
 **Escape** cancels an in-progress dictation.
 
 ## Terminals & coding agents
 
-Most dictation tools fall apart in a terminal. localvoxtral treats it as its primary target: prompt Claude Code, or any CLI coding agent, by voice and watch the words stream in live. SSH sessions work too, since text is typed into your local terminal. Terminal apps are detected automatically (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, cmux, and more), and apps that embed a terminal can be added in `terminal_apps.toml`. Live dictation adapts:
+Most dictation tools fall apart in a terminal. localvoxtral treats it as its primary target: prompt Claude Code — or any CLI coding agent — by voice and watch the words stream in live. SSH sessions work too, since text is typed into your local terminal. Terminal apps are detected automatically (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, cmux, and more), and apps that embed a terminal can be added in `terminal_apps.toml`. Live dictation adapts:
 
-- **Prompt-safe output:** newlines and tabs are typed as spaces, so a stray line break never submits a half-finished prompt and a tab never triggers shell completion
-- **Replacements without rewriting:** dictionary replacements are applied before text is typed. localvoxtral never backspaces over what the terminal has already drawn
-- **Secure input handling:** if Secure Keyboard Entry is active (a `sudo` password prompt, say), a live session refuses to start instead of typing into the void, and an overlay commit falls back to copying the text to the clipboard
+- **Prompt-safe output** — newlines and tabs are typed as spaces, so a stray line break never submits a half-finished prompt and a tab never triggers shell completion
+- **Replacements without rewriting** — dictionary replacements are applied before text is typed; localvoxtral never backspaces over what the terminal has already drawn
+- **Secure input handling** — if Secure Keyboard Entry is active (a `sudo` password prompt, say), a live session refuses to start instead of typing into the void, and an overlay commit falls back to copying the text to the clipboard
 
 When an Overlay Buffer dictation commits, optional LLM polishing understands how developers talk:
 
-- **Agent prompt profile** (on by default): when the target is a terminal, polishing switches to an agent-tuned prompt. Spoken symbol forms become written ones ("dash dash force" → `--force`, "src slash auth" → `src/auth`, "the dot env file" → `.env`), code-like tokens (and only those) get backticks, filler words are stripped, self-corrections resolve to the final intent, and explicit enumerations become lists
-- **Token guard:** flags, paths, URLs, hashes, and version numbers in your transcript are checked byte for byte after polishing. If the model altered one, localvoxtral puts the original back, or keeps your unpolished text when it can't
-- **Repo vocabulary** (opt-in): when the terminal sits in a git repo, localvoxtral indexes the repo's file list (a single sandboxed `git ls-files`, cached briefly) and passes up to 12 relevant terms as hints to the polisher, so "use auth dot t s" comes out as `useAuth.ts`. Hints only, never automatic replacement
-- **Clipboard as context** (opt-in): the polisher sees a sanitized excerpt of your clipboard to ground technical spellings
-- **"Paste clipboard" macro** (on by default): say it mid-dictation and the clipboard content is embedded as a code block when the text commits
+- **Agent prompt profile** (on by default) — when the target is a terminal, polishing switches to an agent-tuned prompt. Spoken symbol forms become written ones ("dash dash force" → `--force`, "src slash auth" → `src/auth`, "the dot env file" → `.env`), code-like tokens (and only those) get backticks, filler words are stripped, self-corrections resolve to the final intent, and explicit enumerations become lists
+- **Token guard** — flags, paths, URLs, hashes, and version numbers in your transcript are checked byte for byte after polishing. If the model altered one, localvoxtral puts the original back, or keeps your unpolished text when it can't
+- **Repo vocabulary** (opt-in) — when the terminal sits in a git repo, localvoxtral indexes the repo's file list (a single sandboxed `git ls-files`, cached briefly) and passes up to 12 relevant terms as hints to the polisher, so "use auth dot t s" comes out as `useAuth.ts`. Hints only, never automatic replacement
+- **Clipboard as context** (opt-in) — the polisher sees a sanitized excerpt of your clipboard to ground technical spellings
+- **"Paste clipboard" macro** (on by default) — say it mid-dictation and the clipboard content is embedded as a code block when the text commits
 
 The overlay shows a **Polished** badge whenever the LLM touched your text, and the raw transcript stays one click away in the menu bar popover.
 
@@ -95,22 +95,22 @@ The overlay shows a **Polished** badge whenever the LLM touched your text, and t
 
 Open **Settings** from the menu bar popover:
 
-- **General:** permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
-- **Endpoints:** Dictation and Polishing each switch independently between `Managed local` (a model picker for polishing, plus a status light) and `External URL` (endpoint URL, model name, API key)
-- **Dictation:** the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts) and the menu-bar output mode
-- **Text Processing:** exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste)
-- **About:** version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
+- **General** — permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
+- **Endpoints** — Dictation and Polishing each switch independently between `Managed local` (a model picker for polishing, plus a status light) and `External URL` (endpoint URL, model name, API key)
+- **Dictation** — the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts) and the menu-bar output mode
+- **Text Processing** — exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste)
+- **About** — version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
 
 The shared config folder at `~/Library/Application Support/localvoxtral/config` holds `replacement_dictionary.toml`, the LLM prompt TOMLs (including the agent variants), and `terminal_apps.toml`.
 
 ## Under the hood
 
-In **Managed local** mode (the default), localvoxtral launches and supervises two inference engines for you, no terminal required:
+In **Managed local** mode (the default), localvoxtral launches and supervises two inference engines for you — no terminal required:
 
-- **Dictation: [voxmlx](https://github.com/T0mSIlver/voxmlx)** streaming [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit). localvoxtral ships a tuned build that adds a native OpenAI Realtime WebSocket server and memory-management optimizations for long dictation sessions.
-- **Polishing: a bundled native engine** built on Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), running [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) by default (a lighter 0.8B and a larger 9B are one click away in Settings). A warm prompt cache keeps polish latency low, and the engine runs as a supervised helper process, so turning polishing off frees its memory immediately.
+- **Dictation — [voxmlx](https://github.com/T0mSIlver/voxmlx)** streaming [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit). localvoxtral ships a tuned build that adds a native OpenAI Realtime WebSocket server and memory-management optimizations for long dictation sessions.
+- **Polishing — a bundled native engine** built on Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), running [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) by default (a lighter 0.8B and a larger 9B are one click away in Settings). A warm prompt cache keeps polish latency low, and the engine runs as a supervised helper process, so turning polishing off frees its memory immediately.
 
-The dictation engine installs from pinned, checksum-verified releases into `~/Library/Application Support/localvoxtral`, and the polishing engine ships inside the app bundle. Neither ever outlives the app (a watchdog stops them even after a crash). Uninstalling means deleting the app and that one folder.
+The dictation engine installs from pinned, checksum-verified releases into `~/Library/Application Support/localvoxtral`; the polishing engine ships inside the app bundle. Neither ever outlives the app (a watchdog stops them even after a crash), and uninstalling means deleting the app and that one folder.
 
 Prefer your own hardware? Switch Dictation or Polishing to **External URL** in **Settings → Endpoints**: any OpenAI Realtime-compatible server works for dictation, any chat-completions server for polishing.
 
@@ -166,10 +166,10 @@ open ./dist/localvoxtral.app
 
 ## Roadmap
 
-- [ ] Developer ID signing + notarization, so installs need no Gatekeeper workarounds
-- [ ] End-to-end quality evals: realistic audio → transcription → polish benchmarks driving technical-dictation quality (in progress)
-- [ ] Documentation website: a visual, end-user guide beyond this README
-- [ ] More streaming ASR models beyond Voxtral Realtime, e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
+- [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
+- [ ] End-to-end quality evals — realistic audio → transcription → polish benchmarks driving technical-dictation quality (in progress)
+- [ ] Documentation website — a visual, end-user guide beyond this README
+- [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
 
 ## License
 
