@@ -692,6 +692,20 @@ screencapture "${CAPTURE_FLAGS[@]}" -R "${REGION_X},${REGION_Y},${DEMO_WIDTH},${
 RECORDER_PID=$!
 sleep 2
 
+# The capture can be stopped from OUTSIDE at any time via the menu-bar
+# recording indicator — exactly what happens when the owner is actively using
+# the Mac (take 5 died that way and its 2-frame capture showed the owner's
+# browser). A dead recorder means a partial capture of whoever is really at
+# the machine: throw it away and fail loudly instead of uploading it.
+recorder_alive_or_abort() {
+  kill -0 "$RECORDER_PID" 2>/dev/null && return 0
+  RECORDER_PID=""
+  rm -f "$RAW_MOV" "$OUT_MP4"
+  echo "The screen recorder stopped before the scene finished — the GUI session is likely IN USE by its human (the capture can be stopped from the menu-bar recording indicator). Re-run when the Mac is free." >&2
+  exit 1
+}
+recorder_alive_or_abort
+
 osascript -e 'tell application "Terminal" to activate' >/dev/null
 sleep 1
 
@@ -736,6 +750,7 @@ if [[ "$TERMINAL_AGENT" == "claude" && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
   sleep "$DEMO_RESPONSE_SECONDS"
 fi
 
+recorder_alive_or_abort
 kill -INT "$RECORDER_PID"
 wait "$RECORDER_PID" 2>/dev/null || true
 RECORDER_PID=""
