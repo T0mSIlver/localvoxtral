@@ -398,6 +398,9 @@ defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_modifier" -string "ri
 defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
 defaults write "$BUNDLE_ID" "settings.agent_polish_profile_enabled" -bool true
 defaults write "$BUNDLE_ID" "settings.managed_llm_polishing_model" -string "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+# Overlay body font scaled up to match the 21 pt terminal font so the overlay
+# beat reads at README width (clamped to OverlayLayoutMetrics.maximum, 24).
+defaults write "$BUNDLE_ID" "settings.overlay_buffer_font_size" -float 22
 if [[ -n "$DEMO_SAY_INPUT_UID" ]]; then
   defaults write "$BUNDLE_ID" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
 fi
@@ -527,10 +530,16 @@ on run argv
         delay 1
         set windowID to id of front window
         set ttyName to tty of demoTab
-        -- Dark Pro profile + big font so terminal text is legible at README
-        -- width. Per-tab only: nothing is persisted to Terminal preferences.
+        -- Explicit OPAQUE colors + big font so terminal text is legible at
+        -- README width. Never the "Pro" profile: it is translucent and the
+        -- recording shows the desktop (and whatever is on it) through the
+        -- window — take 2 leaked real Finder windows that way. Per-tab
+        -- only: nothing is persisted to Terminal preferences.
         try
-            set current settings of demoTab to settings set "Pro"
+            set background color of demoTab to {0, 0, 0}
+            set normal text color of demoTab to {59000, 59000, 59000}
+            set bold text color of demoTab to {65535, 65535, 65535}
+            set cursor color of demoTab to {45000, 45000, 45000}
         end try
         try
             set font name of demoTab to "Menlo"
@@ -589,15 +598,6 @@ OSA
   sleep 3
 fi
 
-# --- record ----------------------------------------------------------------------
-mkdir -p "$OUT_DIR"
-rm -f "$RAW_MOV" "$OUT_MP4"
-CAPTURE_FLAGS=(-v -x)
-[[ "$DEMO_CAPTURE_AUDIO" == 1 ]] && CAPTURE_FLAGS+=(-g)
-screencapture "${CAPTURE_FLAGS[@]}" -R "${REGION_X},${REGION_Y},${DEMO_WIDTH},${DEMO_HEIGHT}" "$RAW_MOV" &
-RECORDER_PID=$!
-sleep 2
-
 cue() { # <beat-label> <sentence>
   echo
   echo "==================================================================="
@@ -615,6 +615,46 @@ speak_or_wait() { # <sentence>
     sleep "$DEMO_SPEAK_SECONDS"
   fi
 }
+
+# --- warm the AGENT-profile polish prompt cache off-camera ------------------------
+# The app's own launch warmup (PolishPromptWarmup) primes the STANDARD
+# profile's prefix slot; dictating into a terminal selects the AGENT profile,
+# whose first polish would pay the full static-prefix prefill ON CAMERA
+# (~2.6 s cold vs ~0.4 s warm). One throwaway overlay dictation with the
+# staged terminal focused runs the real agent-profile request end to end and
+# checkpoints the exact prefix the on-camera beat reuses; its residue is then
+# cleared off-camera.
+echo "Warming the agent-profile polish prompt cache off-camera..."
+osascript -e 'tell application "Terminal" to activate' >/dev/null
+sleep 1
+cue "WARMUP (off-camera, not recorded). Speak after the beep." "Ready to record the demo."
+tap_hotkey
+sleep 1
+speak_or_wait "Ready to record the demo."
+tap_hotkey
+sleep $(( DEMO_COMMIT_SECONDS + 4 )) # cold polish — wait it out fully before clearing
+if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+  # Ctrl+C clears the composer text the warmup committed.
+  osascript -e 'tell application "System Events" to keystroke "c" using control down' >/dev/null
+else
+  # Kill the committed line, then run a literal `clear` — the ONLY Return
+  # this script ever sends to a shell, and only for that exact staged text.
+  osascript -e 'tell application "System Events" to keystroke "u" using control down' >/dev/null
+  sleep 0.5
+  osascript -e 'tell application "System Events" to keystroke "clear"' >/dev/null
+  sleep 0.5
+  osascript -e 'tell application "System Events" to key code 36' >/dev/null
+fi
+sleep 1.5
+
+# --- record ----------------------------------------------------------------------
+mkdir -p "$OUT_DIR"
+rm -f "$RAW_MOV" "$OUT_MP4"
+CAPTURE_FLAGS=(-v -x)
+[[ "$DEMO_CAPTURE_AUDIO" == 1 ]] && CAPTURE_FLAGS+=(-g)
+screencapture "${CAPTURE_FLAGS[@]}" -R "${REGION_X},${REGION_Y},${DEMO_WIDTH},${DEMO_HEIGHT}" "$RAW_MOV" &
+RECORDER_PID=$!
+sleep 2
 
 osascript -e 'tell application "Terminal" to activate' >/dev/null
 sleep 1
