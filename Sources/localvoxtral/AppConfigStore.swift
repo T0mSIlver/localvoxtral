@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Which polishing prompt profile to load. `standard` is the general STT
@@ -401,15 +402,24 @@ struct AppConfigStore: AppConfigServing {
     private let fileManager: FileManager
     private let bundle: Bundle
     private let configDirectoryOverride: URL?
+    /// Seams for `reconcileBundledDefaults()`: tests inject a fixed clock for
+    /// deterministic backup names and a custom hash table to simulate old
+    /// shipped defaults without carrying their full content.
+    private let knownDefaultHashes: [String: Set<String>]
+    private let now: @Sendable () -> Date
 
     init(
         fileManager: FileManager = .default,
         bundle: Bundle = .localvoxtralResources,
-        configDirectoryOverride: URL? = nil
+        configDirectoryOverride: URL? = nil,
+        knownDefaultHashes: [String: Set<String>] = BundledConfigDefaultHistory.knownDefaultHashes,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.fileManager = fileManager
         self.bundle = bundle
         self.configDirectoryOverride = configDirectoryOverride
+        self.knownDefaultHashes = knownDefaultHashes
+        self.now = now
     }
 
     func configDirectoryURL() -> URL {
@@ -899,6 +909,190 @@ struct AppConfigStore: AppConfigServing {
         }
 
         return content
+    }
+}
+
+// MARK: - Bundled defaults reconciliation
+
+/// `ensureConfigFilesExist` seeds bundled config files only when absent, so an
+/// existing install never picks up improved bundled defaults on its own. This
+/// extension closes that gap at launch: a user file whose content matches ANY
+/// default ever shipped (`BundledConfigDefaultHistory`) is an unedited stale
+/// seed and is refreshed in place; anything else is a customization and is
+/// only ever replaced through `adoptBundledDefaults` after the user agrees.
+/// A hidden sidecar in the config directory remembers which bundled version a
+/// "keep mine" decision applied to, so the user is asked once per default
+/// change, not once per launch.
+extension AppConfigStore {
+    private static let defaultsStateFileName = ".bundled-defaults-state.json"
+
+    private struct BundledDefaultsState: Codable {
+        /// fileName → bundled-default hash the user has already resolved
+        /// (adopted or declined). A prompt is due only when the current
+        /// bundled hash differs from this entry.
+        var resolvedBundledHashes: [String: String] = [:]
+    }
+
+    func reconcileBundledDefaults() -> BundledDefaultsReconciliation {
+        let directory = resolvedConfigDirectoryURL()
+        ensureConfigFilesExist(at: directory)
+
+        var result = BundledDefaultsReconciliation()
+        var state = readBundledDefaultsState(in: directory)
+        var stateChanged = false
+
+        for file in ConfigFile.allCases {
+            guard let bundled = bundledConfigData(for: file) else { continue }
+            let userURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
+            guard let userData = try? Data(contentsOf: userURL) else { continue }
+
+            let userHash = Self.sha256Hex(userData)
+            if userHash == bundled.hash {
+                // In sync — drop any stale decision so a future default
+                // change prompts again.
+                if state.resolvedBundledHashes.removeValue(forKey: file.fileName) != nil {
+                    stateChanged = true
+                }
+                continue
+            }
+
+            if knownDefaultHashes[file.fileName, default: []].contains(userHash) {
+                do {
+                    try bundled.data.write(to: userURL, options: .atomic)
+                    result.refreshedFileNames.append(file.fileName)
+                    if state.resolvedBundledHashes.removeValue(forKey: file.fileName) != nil {
+                        stateChanged = true
+                    }
+                    Log.config.notice(
+                        "Refreshed unedited default \(file.fileName, privacy: .public) to the current bundled version"
+                    )
+                } catch {
+                    Log.config.error(
+                        "Failed to refresh stale default \(file.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+                continue
+            }
+
+            if state.resolvedBundledHashes[file.fileName] == bundled.hash { continue }
+            result.customizedOutdatedFileNames.append(file.fileName)
+        }
+
+        if stateChanged {
+            writeBundledDefaultsState(state, in: directory)
+        }
+        return result
+    }
+
+    /// Replaces the named user config files with the current bundled defaults,
+    /// saving each existing file alongside as `<name>.backup-<timestamp>`.
+    /// Returns the backup file names that were created.
+    func adoptBundledDefaults(fileNames: [String]) -> [String] {
+        let directory = resolvedConfigDirectoryURL()
+        var state = readBundledDefaultsState(in: directory)
+        var stateChanged = false
+        var backupNames: [String] = []
+        let suffix = backupSuffix()
+
+        for file in ConfigFile.allCases where fileNames.contains(file.fileName) {
+            guard let bundled = bundledConfigData(for: file) else { continue }
+            let userURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
+
+            do {
+                if fileManager.fileExists(atPath: userURL.path) {
+                    let backupName = "\(file.fileName).backup-\(suffix)"
+                    let backupURL = directory.appendingPathComponent(backupName, isDirectory: false)
+                    try? fileManager.removeItem(at: backupURL)
+                    try fileManager.copyItem(at: userURL, to: backupURL)
+                    backupNames.append(backupName)
+                }
+                try bundled.data.write(to: userURL, options: .atomic)
+                if state.resolvedBundledHashes.removeValue(forKey: file.fileName) != nil {
+                    stateChanged = true
+                }
+                Log.config.notice(
+                    "Adopted new bundled default for \(file.fileName, privacy: .public)"
+                )
+            } catch {
+                Log.config.error(
+                    "Failed to adopt bundled default for \(file.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+
+        if stateChanged {
+            writeBundledDefaultsState(state, in: directory)
+        }
+        return backupNames
+    }
+
+    /// Records that the user chose to keep their customized versions of the
+    /// named files for the CURRENTLY bundled defaults — no further prompt
+    /// until the bundled defaults change again.
+    func recordKeptCustomizedDefaults(fileNames: [String]) {
+        let directory = resolvedConfigDirectoryURL()
+        var state = readBundledDefaultsState(in: directory)
+        var stateChanged = false
+
+        for file in ConfigFile.allCases where fileNames.contains(file.fileName) {
+            guard let bundled = bundledConfigData(for: file) else { continue }
+            if state.resolvedBundledHashes[file.fileName] != bundled.hash {
+                state.resolvedBundledHashes[file.fileName] = bundled.hash
+                stateChanged = true
+            }
+        }
+
+        if stateChanged {
+            writeBundledDefaultsState(state, in: directory)
+        }
+    }
+
+    private func bundledConfigData(for file: ConfigFile) -> (data: Data, hash: String)? {
+        guard let url = bundledResourceURL(for: file),
+              let data = try? Data(contentsOf: url)
+        else { return nil }
+        return (data, Self.sha256Hex(data))
+    }
+
+    private func readBundledDefaultsState(in directory: URL) -> BundledDefaultsState {
+        let url = directory.appendingPathComponent(Self.defaultsStateFileName, isDirectory: false)
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONDecoder().decode(BundledDefaultsState.self, from: data)
+        else {
+            return BundledDefaultsState()
+        }
+        return state
+    }
+
+    private func writeBundledDefaultsState(_ state: BundledDefaultsState, in directory: URL) {
+        let url = directory.appendingPathComponent(Self.defaultsStateFileName, isDirectory: false)
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(state).write(to: url, options: .atomic)
+        } catch {
+            Log.config.error(
+                "Failed to persist bundled-defaults state: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func backupSuffix() -> String {
+        let components = Calendar(identifier: .gregorian)
+            .dateComponents(in: TimeZone.current, from: now())
+        return String(
+            format: "%04d%02d%02d-%02d%02d%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0,
+            components.hour ?? 0,
+            components.minute ?? 0,
+            components.second ?? 0
+        )
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
 

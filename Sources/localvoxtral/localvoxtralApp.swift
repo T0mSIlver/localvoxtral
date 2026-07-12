@@ -144,8 +144,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) {
             LegacyMLXLMCleanup().run()
         }
+        reconcileBundledConfigDefaults()
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
+    }
+
+    /// Brings existing installs up to date with this build's bundled config
+    /// defaults: unedited stale seeds are refreshed silently; customized files
+    /// are never touched without asking. Fresh installs are always in sync, so
+    /// the alert can never stack on top of first-launch onboarding.
+    private func reconcileBundledConfigDefaults() {
+        let store = AppConfigStore()
+        let outcome = store.reconcileBundledDefaults()
+        guard !outcome.customizedOutdatedFileNames.isEmpty else { return }
+
+        // Defer past launch so the alert never blocks
+        // applicationDidFinishLaunching.
+        Task { @MainActor in
+            self.promptToUpdateCustomizedConfigFiles(
+                store: store,
+                fileNames: outcome.customizedOutdatedFileNames
+            )
+        }
+    }
+
+    private func promptToUpdateCustomizedConfigFiles(store: AppConfigStore, fileNames: [String]) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Updated default config files"
+        let fileList = fileNames.map { "•  \($0)" }.joined(separator: "\n")
+        let single = fileNames.count == 1
+        alert.informativeText = """
+        This version of localvoxtral improves the default content of:
+
+        \(fileList)
+
+        You've edited \(single ? "this file" : "these files"), so \(single ? "it was" : "they were") left untouched.
+
+        Update replaces \(single ? "it" : "them") with the new defaults and saves your \(single ? "version" : "versions") alongside as .backup files. Keep Mine won't ask again until the defaults next change.
+        """
+        alert.addButton(withTitle: "Update (Keep Backups)")
+        alert.addButton(withTitle: "Keep Mine")
+        alert.addButton(withTitle: "Show Files…")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let backups = store.adoptBundledDefaults(fileNames: fileNames)
+            Log.config.notice(
+                "User adopted new bundled defaults for \(fileNames.joined(separator: ", "), privacy: .public); backups: \(backups.joined(separator: ", "), privacy: .public)"
+            )
+        case .alertSecondButtonReturn:
+            store.recordKeptCustomizedDefaults(fileNames: fileNames)
+            Log.config.notice(
+                "User kept customized config files \(fileNames.joined(separator: ", "), privacy: .public)"
+            )
+        default:
+            // Show Files: reveal the config folder and leave the decision
+            // open — the prompt returns on the next launch.
+            NSWorkspace.shared.activateFileViewerSelecting(
+                fileNames.map { store.configDirectoryURL().appendingPathComponent($0) }
+            )
+        }
     }
 
     private func presentOnboarding() {
