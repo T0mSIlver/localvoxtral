@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "stratum": "filenames-backticks",
+  "description": "Filenames spoken as natural words ('settings view dot swift'), dotted files, inline code that should be backticked, and identifier casing (camelCase/PascalCase). Full pipeline, no fixtures — pure polish-profile behavior.",
+  "cases": [
+    {
+      "id": "c-en-settings-view",
+      "lang": "en",
+      "spokenForm": "open settings view dot swift and check the on appear handler",
+      "intendedText": "Open SettingsView.swift and check the onAppear handler.",
+      "requiredTokens": ["SettingsView.swift", "onAppear"],
+      "forbiddenSubstrings": ["dot swift"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "PascalCase filename plus camelCase lifecycle identifier from natural words.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "c-en-package-json",
+      "lang": "en",
+      "spokenForm": "update package dot json so the api url uses https",
+      "intendedText": "Update package.json so the API URL uses HTTPS.",
+      "requiredTokens": ["package.json", "API URL", "HTTPS"],
+      "forbiddenSubstrings": ["dot json"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Lowercase dotted filename plus acronym casing.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "c-en-use-auth-line",
+      "lang": "en",
+      "spokenForm": "the bug is in use auth dot t s on line forty two",
+      "intendedText": "The bug is in useAuth.ts on line 42.",
+      "requiredTokens": ["useAuth.ts", "42"],
+      "forbiddenSubstrings": ["dot t s"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "camelCase filename with letter-spelled extension plus a line number."
+    },
+    {
+      "id": "c-en-backtick-git-pull",
+      "lang": "en",
+      "spokenForm": "tell the user to run git pull dash dash rebase first",
+      "intendedText": "Tell the user to run `git pull --rebase` first.",
+      "requiredTokens": ["`git pull --rebase`"],
+      "forbiddenSubstrings": ["dash dash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Inline command must be backticked, not left bare."
+    },
+    {
+      "id": "c-en-makefile-lint",
+      "lang": "en",
+      "spokenForm": "add a lint target to the makefile that runs swift lint",
+      "intendedText": "Add a lint target to the Makefile that runs SwiftLint.",
+      "requiredTokens": ["Makefile", "SwiftLint"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Conventional-case filename plus a fused tool name."
+    },
+    {
+      "id": "c-en-gitignore",
+      "lang": "en",
+      "spokenForm": "append dist slash to the git ignore file",
+      "intendedText": "Append dist/ to the .gitignore file.",
+      "requiredTokens": [".gitignore", "dist/"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Dotfile spoken as two words plus a trailing-slash directory."
+    },
+    {
+      "id": "c-en-readme-md",
+      "lang": "en",
+      "spokenForm": "add a troubleshooting section to read me dot m d",
+      "intendedText": "Add a troubleshooting section to README.md.",
+      "requiredTokens": ["README.md"],
+      "forbiddenSubstrings": ["read me"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "'read me dot m d' must fuse and upcase."
+    },
+    {
+      "id": "c-en-test-filename",
+      "lang": "en",
+      "spokenForm": "create dictation view model tests dot swift next to the other tests",
+      "intendedText": "Create DictationViewModelTests.swift next to the other tests.",
+      "requiredTokens": ["DictationViewModelTests.swift"],
+      "forbiddenSubstrings": ["dot swift"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Four spoken words fuse into one PascalCase test filename."
+    },
+    {
+      "id": "c-en-ci-yml",
+      "lang": "en",
+      "spokenForm": "the workflow file c i dot y m l needs a timeout",
+      "intendedText": "The workflow file ci.yml needs a timeout.",
+      "requiredTokens": ["ci.yml"],
+      "forbiddenSubstrings": ["y m l"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Letter-spelled name and extension."
+    },
+    {
+      "id": "c-en-camelcase-call",
+      "lang": "en",
+      "spokenForm": "call fetch user profile async inside the task group",
+      "intendedText": "Call fetchUserProfileAsync inside the task group.",
+      "requiredTokens": ["fetchUserProfileAsync"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "camelCase function assembled from dictated words.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "c-en-backtick-guard",
+      "lang": "en",
+      "spokenForm": "mention that guard let self else return is required in escaping closures",
+      "intendedText": "Mention that `guard let self else { return }` is required in escaping closures.",
+      "requiredTokens": ["`guard let self else { return }`"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Inline Swift pattern with inferred braces and backticks.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "c-en-nested-path-file",
+      "lang": "en",
+      "spokenForm": "move the helper into sources slash app slash utils slash pipe reader dot swift",
+      "intendedText": "Move the helper into Sources/App/Utils/PipeReader.swift.",
+      "requiredTokens": ["Sources/App/Utils/PipeReader.swift"],
+      "forbiddenSubstrings": ["slash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Multi-segment path with per-segment casing."
+    },
+    {
+      "id": "c-fr-settings-view",
+      "lang": "fr",
+      "spokenForm": "corrige settings view point swift le modifier on appear appelle l'api trop tôt",
+      "intendedText": "Corrige SettingsView.swift : le modifier onAppear appelle l'API trop tôt.",
+      "requiredTokens": ["SettingsView.swift", "onAppear"],
+      "forbiddenSubstrings": ["point swift"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence with filename, identifier, and French colon typography.",
+      "source": {"seed": "llm-polish-eval-technical"}
+    },
+    {
+      "id": "c-fr-package-json",
+      "lang": "fr",
+      "spokenForm": "mets à jour package point json pour que l'url de l'api utilise https",
+      "intendedText": "Mets à jour package.json pour que l'URL de l'API utilise HTTPS.",
+      "requiredTokens": ["package.json", "HTTPS"],
+      "forbiddenSubstrings": ["point json"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French 'point' extension dictation plus acronyms."
+    },
+    {
+      "id": "c-fr-readme",
+      "lang": "fr",
+      "spokenForm": "ajoute une section dépannage au read me point m d",
+      "intendedText": "Ajoute une section dépannage au README.md.",
+      "requiredTokens": ["README.md"],
+      "forbiddenSubstrings": ["read me"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence, English filename convention."
+    },
+    {
+      "id": "c-fr-backtick",
+      "lang": "fr",
+      "spokenForm": "dis-lui de lancer git pull tiret tiret rebase d'abord",
+      "intendedText": "Dis-lui de lancer `git pull --rebase` d'abord.",
+      "requiredTokens": ["`git pull --rebase`"],
+      "forbiddenSubstrings": ["tiret"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French dictation of a backtickable command."
+    },
+    {
+      "id": "c-fr-test-file",
+      "lang": "fr",
+      "spokenForm": "crée le fichier overlay buffer tests point swift à côté des autres tests",
+      "intendedText": "Crée le fichier OverlayBufferTests.swift à côté des autres tests.",
+      "requiredTokens": ["OverlayBufferTests.swift"],
+      "forbiddenSubstrings": ["point swift"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence fusing a PascalCase test filename."
+    },
+    {
+      "id": "c-fr-camelcase",
+      "lang": "fr",
+      "spokenForm": "appelle fetch user profile async dans le groupe de tâches",
+      "intendedText": "Appelle fetchUserProfileAsync dans le groupe de tâches.",
+      "requiredTokens": ["fetchUserProfileAsync"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence, camelCase identifier."
+    }
+  ]
+}

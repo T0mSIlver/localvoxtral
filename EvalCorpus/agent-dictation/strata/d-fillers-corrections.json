@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "stratum": "fillers-self-corrections",
+  "description": "Disfluencies the polish profile must remove: fillers (um, uh, like, euh, bah), self-corrections ('three retries no wait five' → five), repeated words, and abandoned clauses. forbiddenSubstrings carry the disfluency; requiredTokens the surviving content.",
+  "cases": [
+    {
+      "id": "d-en-field-filter-um",
+      "lang": "en",
+      "spokenForm": "run the tests with dash dash filter um equals auth",
+      "intendedText": "Run the tests with `--filter=auth`.",
+      "requiredTokens": ["--filter", "auth"],
+      "forbiddenSubstrings": ["um", "equal on", "dash dash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Field-observed verbatim; ASR once heard 'equal on' for 'equals'.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "d-en-retries-correction",
+      "lang": "en",
+      "spokenForm": "set it to three retries no wait five",
+      "intendedText": "Set it to five retries.",
+      "requiredTokens": ["five retries"],
+      "forbiddenSubstrings": ["three"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Numeric self-correction: the last value wins.",
+      "source": {"seed": "field-2026-07"}
+    },
+    {
+      "id": "d-en-uh-start",
+      "lang": "en",
+      "spokenForm": "uh can you check why the build cache is stale",
+      "intendedText": "Can you check why the build cache is stale?",
+      "requiredTokens": ["build cache", "stale"],
+      "forbiddenSubstrings": ["uh "],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Sentence-initial filler."
+    },
+    {
+      "id": "d-en-like-filler",
+      "lang": "en",
+      "spokenForm": "the parser is like dropping the last token sometimes",
+      "intendedText": "The parser is dropping the last token sometimes.",
+      "requiredTokens": ["parser", "last token"],
+      "forbiddenSubstrings": ["like"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Hedge filler 'like' mid-clause."
+    },
+    {
+      "id": "d-en-you-know",
+      "lang": "en",
+      "spokenForm": "the overlay you know flickers when the session ends",
+      "intendedText": "The overlay flickers when the session ends.",
+      "requiredTokens": ["overlay", "flickers"],
+      "forbiddenSubstrings": ["you know"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Two-word filler splitting subject and verb."
+    },
+    {
+      "id": "d-en-correction-filename",
+      "lang": "en",
+      "spokenForm": "open user manager no sorry user session manager dot swift",
+      "intendedText": "Open UserSessionManager.swift.",
+      "requiredTokens": ["UserSessionManager.swift"],
+      "forbiddenSubstrings": ["sorry", "user manager"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Self-corrected filename; the abandoned name must not survive."
+    },
+    {
+      "id": "d-en-correction-port",
+      "lang": "en",
+      "spokenForm": "point it at port eight thousand actually eight thousand eighty",
+      "intendedText": "Point it at port 8080.",
+      "requiredTokens": ["8080"],
+      "forbiddenSubstrings": ["actually", "8000"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Corrected port: symbol transform AND correction must compose."
+    },
+    {
+      "id": "d-en-correction-branch",
+      "lang": "en",
+      "spokenForm": "rename the branch to fix slash overlay i mean feature slash overlay",
+      "intendedText": "Rename the branch to feature/overlay.",
+      "requiredTokens": ["feature/overlay"],
+      "forbiddenSubstrings": ["i mean", "fix/overlay"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Corrected branch name with slash dictation."
+    },
+    {
+      "id": "d-en-um-mid-flag",
+      "lang": "en",
+      "spokenForm": "add the dash dash um verbose flag to the command",
+      "intendedText": "Add the --verbose flag to the command.",
+      "requiredTokens": ["--verbose"],
+      "forbiddenSubstrings": ["um", "dash dash"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Filler lands INSIDE a spoken flag — transform must bridge it."
+    },
+    {
+      "id": "d-en-scratch-that",
+      "lang": "en",
+      "spokenForm": "delete the cache directory scratch that just rename it to cache dot bak",
+      "intendedText": "Rename the cache directory to cache.bak.",
+      "requiredTokens": ["cache.bak"],
+      "forbiddenSubstrings": ["scratch that", "delete"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Whole-clause retraction: the first instruction must vanish.",
+      "source": {"seed": "idiolect"}
+    },
+    {
+      "id": "d-en-double-word",
+      "lang": "en",
+      "spokenForm": "run the the linter before you commit",
+      "intendedText": "Run the linter before you commit.",
+      "requiredTokens": ["linter"],
+      "forbiddenSubstrings": ["the the"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "Stutter repetition."
+    },
+    {
+      "id": "d-fr-euh",
+      "lang": "fr",
+      "spokenForm": "euh est-ce que tu peux vérifier le cache de build",
+      "intendedText": "Est-ce que tu peux vérifier le cache de build ?",
+      "requiredTokens": ["cache de build"],
+      "forbiddenSubstrings": ["euh"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French sentence-initial filler."
+    },
+    {
+      "id": "d-fr-correction-nombre",
+      "lang": "fr",
+      "spokenForm": "mets trois tentatives non attends cinq",
+      "intendedText": "Mets cinq tentatives.",
+      "requiredTokens": ["cinq tentatives"],
+      "forbiddenSubstrings": ["trois"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French numeric self-correction."
+    },
+    {
+      "id": "d-fr-en-fait",
+      "lang": "fr",
+      "spokenForm": "pointe-le vers le port huit mille en fait huit mille quatre-vingts",
+      "intendedText": "Pointe-le vers le port 8080.",
+      "requiredTokens": ["8080"],
+      "forbiddenSubstrings": ["en fait", "8000"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French corrected port; correction + digit transform compose."
+    },
+    {
+      "id": "d-fr-bah",
+      "lang": "fr",
+      "spokenForm": "bah relance le serveur et regarde les logs",
+      "intendedText": "Relance le serveur et regarde les logs.",
+      "requiredTokens": ["serveur", "logs"],
+      "forbiddenSubstrings": ["bah"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French discourse filler 'bah'."
+    },
+    {
+      "id": "d-fr-correction-fichier",
+      "lang": "fr",
+      "spokenForm": "ouvre settings non pardon dictation view model point swift",
+      "intendedText": "Ouvre DictationViewModel.swift.",
+      "requiredTokens": ["DictationViewModel.swift"],
+      "forbiddenSubstrings": ["pardon", "settings"],
+      "status": {"tokens": "known-hard", "exactText": "known-hard"},
+      "notes": "French self-corrected filename."
+    }
+  ]
+}

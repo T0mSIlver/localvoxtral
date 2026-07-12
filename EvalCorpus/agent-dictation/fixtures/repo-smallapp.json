@@ -1,0 +1,22 @@
+{
+  "name": "smallapp",
+  "branch": "feature/session-refactor",
+  "files": [
+    "package.json",
+    "README.md",
+    ".env.example",
+    "Makefile",
+    ".github/workflows/ci.yml",
+    "scripts/deploy.sh",
+    "src/auth/useAuth.ts",
+    "src/auth/AuthService.ts",
+    "src/api/fetchUserProfile.ts",
+    "src/components/SettingsView.swift",
+    "Sources/App/DictationViewModel.swift",
+    "Sources/App/UserSessionManager.swift",
+    "Sources/App/OverlayBufferStateMachine.swift",
+    "src/utils/POSIXPipeRead.swift",
+    "docs/known-issues.md",
+    "tests/auth/useAuth.test.ts"
+  ]
+}
