@@ -97,16 +97,18 @@ DEMO_TERMINAL_AGENT="${DEMO_TERMINAL_AGENT:-auto}"
 # to a coding agent; streamed raw, so no spoken symbol forms here.
 DEMO_LINE_LIVE="${DEMO_LINE_LIVE:-Refactor the retry logic in the websocket client, and add a unit test for the reconnect path.}"
 # Beat 2 (tap -> overlay + agent-profile polish): spoken symbol forms the
-# polish profile turns into written forms (useAuth.ts — grounded by the repo
-# vocabulary indexed from the staged repo — and --filter). Phrased as a
-# read-only question so submitting it to a real Claude Code session yields a
-# fast text answer instead of a tool-permission prompt.
-DEMO_LINE_OVERLAY="${DEMO_LINE_OVERLAY:-Look at use auth dot t s and tell me which tests dash dash filter auth would run.}"
+# polish profile turns into written forms (`index.ts`, `--coverage`). Words
+# chosen for TTS->ASR robustness — take 6 proved "use auth" / "filter auth"
+# get misheard ("the use of that TS", "filter off") and the repo-vocabulary
+# rescue no-ops in claude mode because claude overwrites the Terminal title
+# the resolver reads. Phrased as a read-only ask so submitting it to a real
+# Claude Code session yields a fast text answer, not a tool-permission stall.
+DEMO_LINE_OVERLAY="${DEMO_LINE_OVERLAY:-Explain what index dot t s does, then give me the test command with dash dash coverage.}"
 # In claude mode the polished beat-2 prompt is genuinely SUBMITTED (one small
 # request against the owner's Claude usage) and the response is recorded for
 # DEMO_RESPONSE_SECONDS. DEMO_SUBMIT_PROMPT=0 turns the ending off.
 DEMO_SUBMIT_PROMPT="${DEMO_SUBMIT_PROMPT:-1}"
-DEMO_RESPONSE_SECONDS="${DEMO_RESPONSE_SECONDS:-14}"
+DEMO_RESPONSE_SECONDS="${DEMO_RESPONSE_SECONDS:-12}"
 DEMO_HANDS_FREE="${DEMO_HANDS_FREE:-0}"
 DEMO_SAY_DEVICE="${DEMO_SAY_DEVICE:-}"
 DEMO_SAY_INPUT_UID="${DEMO_SAY_INPUT_UID:-}"
@@ -507,6 +509,14 @@ cat > "$REPO_DIR/package.json" <<'JSON'
   }
 }
 JSON
+cat > "$REPO_DIR/src/index.ts" <<'TS'
+import { createClient } from "./client";
+
+export function main(): void {
+  const client = createClient();
+  client.connect();
+}
+TS
 cat > "$REPO_DIR/src/client.ts" <<'TS'
 export function createClient() {
   return {
