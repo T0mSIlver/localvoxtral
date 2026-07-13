@@ -200,28 +200,6 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
-    private var isLLMPolishingReachable: Bool {
-        settings.isOverlayBufferSessionReachable
-    }
-
-    private var llmPolishingEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { settings.llmPolishingEnabled },
-            set: { newValue in
-                let wasEnabled = settings.llmPolishingEnabled
-                settings.llmPolishingEnabled = newValue
-
-                if newValue, !wasEnabled {
-                    viewModel.prepareLLMPolishingPromptAccessIfNeeded()
-                }
-                // Turning polishing off stops the managed polishd process
-                // (Managed local mode only). External URL mode owns no local
-                // process, and re-enabling starts managed polishd eagerly.
-                viewModel.llmPolishingEnabledDidChange(newValue)
-            }
-        )
-    }
-
     private var managedPolishingModelBinding: Binding<String> {
         Binding(
             get: { settings.resolvedManagedLLMPolishingModel },
@@ -269,8 +247,6 @@ private struct ConnectionSettingsPane: View {
                 case .managedLocal:
                     ManagedBackendStatusRow(
                         title: "Status",
-                        spec: BackendCatalog.voxmlx,
-                        endpoint: ManagedBackendEndpoints.realtimeURLString,
                         status: backendManager.voxmlxStatus
                     )
                 }
@@ -291,134 +267,62 @@ private struct ConnectionSettingsPane: View {
                     }
                 }
 
-                if !isLLMPolishingReachable {
-                    SettingsAvailabilityCard(
-                        title: "No Overlay Buffer shortcut",
-                        message:
-                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
-                        systemImage: "exclamationmark.triangle.fill",
-                        tint: .orange
-                    )
-                }
-
-                Group {
-                    SettingsFieldRow(title: "Enable") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: llmPolishingEnabledBinding)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText("Overlay Buffer dictations only.")
-                        }
+                switch settings.polishingBackendMode {
+                case .externalURL:
+                    SettingsFieldRow(title: "Endpoint") {
+                        TextField(
+                            "http://127.0.0.1:8080/v1/chat/completions",
+                            text: $settings.llmPolishingEndpointURL
+                        )
+                        .textFieldStyle(.roundedBorder)
                     }
 
-                    SettingsFieldRow(title: "Agent prompt profile in terminals") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.agentPolishProfileEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText("Extra cleanup for prompts dictated to coding agents.")
-                        }
+                    SettingsFieldRow(title: "API key") {
+                        SecureField(
+                            "Required for remote providers",
+                            text: $settings.llmPolishingAPIKey
+                        )
+                        .textFieldStyle(.roundedBorder)
                     }
 
-                    SettingsFieldRow(title: "Use clipboard as polish context") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.polishClipboardContextEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Grounds technical terms against your clipboard. Applies only with a local polishing endpoint — your clipboard never leaves this Mac."
-                            )
-                        }
+                    SettingsFieldRow(title: "Model") {
+                        TextField(
+                            "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+                            text: $settings.llmPolishingModel
+                        )
+                        .textFieldStyle(.roundedBorder)
                     }
-
-                    SettingsFieldRow(title: "Spoken clipboard paste") {
+                case .managedLocal:
+                    SettingsFieldRow(title: "Model") {
                         VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Say “paste clipboard” to insert your clipboard as a code block on commit."
-                            )
-                        }
-                    }
-
-                    SettingsFieldRow(title: "Repo vocabulary from terminal") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.repoVocabularyEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
-                            )
-                        }
-                    }
-
-                    switch settings.polishingBackendMode {
-                    case .externalURL:
-                        SettingsFieldRow(title: "Endpoint") {
-                            TextField(
-                                "http://127.0.0.1:8080/v1/chat/completions",
-                                text: $settings.llmPolishingEndpointURL
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsFieldRow(title: "API key") {
-                            SecureField(
-                                "Required for remote providers",
-                                text: $settings.llmPolishingAPIKey
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-
-                        SettingsFieldRow(title: "Model") {
-                            TextField(
-                                "mlx-community/Qwen3.5-4B-OptiQ-4bit",
-                                text: $settings.llmPolishingModel
-                            )
-                            .textFieldStyle(.roundedBorder)
-                        }
-                    case .managedLocal:
-                        SettingsFieldRow(title: "Model") {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Picker("", selection: managedPolishingModelBinding) {
-                                    ForEach(managedPolishingModelEntries) { entry in
-                                        Text(entry.label).tag(entry.repoID)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .labelsHidden()
-
-                                if let selectedEntry = managedPolishingModelEntries.first(
-                                    where: { $0.repoID == settings.resolvedManagedLLMPolishingModel }
-                                ) {
-                                    SettingsHelpText(
-                                        PolishModelPickerSupport.helpText(
-                                            for: selectedEntry,
-                                            isDownloaded: PolishModelCache.isDownloaded(
-                                                repoID: selectedEntry.repoID
-                                            )
-                                        )
-                                    )
+                            Picker("", selection: managedPolishingModelBinding) {
+                                ForEach(managedPolishingModelEntries) { entry in
+                                    Text(entry.label).tag(entry.repoID)
                                 }
                             }
-                        }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
 
-                        ManagedBackendStatusRow(
-                            title: "Status",
-                            spec: BackendCatalog.polishd,
-                            endpoint: ManagedBackendEndpoints.polishingURLString,
-                            status: backendManager.polishdStatus
-                        )
+                            if let selectedEntry = managedPolishingModelEntries.first(
+                                where: { $0.repoID == settings.resolvedManagedLLMPolishingModel }
+                            ) {
+                                SettingsHelpText(
+                                    PolishModelPickerSupport.helpText(
+                                        for: selectedEntry,
+                                        isDownloaded: PolishModelCache.isDownloaded(
+                                            repoID: selectedEntry.repoID
+                                        )
+                                    )
+                                )
+                            }
+                        }
                     }
+
+                    ManagedBackendStatusRow(
+                        title: "Status",
+                        status: backendManager.polishdStatus
+                    )
                 }
-                .disabled(!isLLMPolishingReachable)
-                .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
         }
     }
@@ -426,18 +330,11 @@ private struct ConnectionSettingsPane: View {
 
 private struct ManagedBackendStatusRow: View {
     let title: String
-    let spec: ManagedBackendSpec
-    let endpoint: String
     let status: ManagedBackendStatus
 
     var body: some View {
         SettingsFieldRow(title: title) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("\(spec.displayName) - \(endpoint)")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-
-                ManagedBackendStatusLabel(status: status)
-            }
+            ManagedBackendStatusLabel(status: status)
         }
     }
 }
@@ -760,6 +657,28 @@ private struct TextProcessingSettingsPane: View {
     @Bindable var settings: SettingsStore
     let viewModel: DictationViewModel
 
+    private var isLLMPolishingReachable: Bool {
+        settings.isOverlayBufferSessionReachable
+    }
+
+    private var llmPolishingEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settings.llmPolishingEnabled },
+            set: { newValue in
+                let wasEnabled = settings.llmPolishingEnabled
+                settings.llmPolishingEnabled = newValue
+
+                if newValue, !wasEnabled {
+                    viewModel.prepareLLMPolishingPromptAccessIfNeeded()
+                }
+                // Turning polishing off stops the managed polishd process
+                // (Managed local mode only). External URL mode owns no local
+                // process, and re-enabling starts managed polishd eagerly.
+                viewModel.llmPolishingEnabledDidChange(newValue)
+            }
+        )
+    }
+
     var body: some View {
         SettingsPage {
             SettingsGroup(title: "Replacements") {
@@ -773,7 +692,79 @@ private struct TextProcessingSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "Shared Configuration") {
+            SettingsGroup(title: "Polishing") {
+                if !isLLMPolishingReachable {
+                    SettingsAvailabilityCard(
+                        title: "No Overlay Buffer shortcut",
+                        message:
+                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tint: .orange
+                    )
+                }
+
+                Group {
+                    SettingsFieldRow(title: "Enable") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: llmPolishingEnabledBinding)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText("Overlay Buffer dictations only.")
+                        }
+                    }
+
+                    SettingsFieldRow(title: "Agent prompt profile in terminals") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.agentPolishProfileEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText("Extra instructions for prompts dictated to coding agents.")
+                        }
+                    }
+
+                    SettingsFieldRow(title: "Repo vocabulary from terminal") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.repoVocabularyEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
+                            )
+                        }
+                    }
+
+                    SettingsFieldRow(title: "Use clipboard as polish context") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.polishClipboardContextEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Grounds technical terms against your clipboard. Local polishing endpoints only."
+                            )
+                        }
+                    }
+
+                    SettingsFieldRow(title: "Spoken clipboard paste") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Say “paste clipboard” to insert your clipboard as a code block on commit."
+                            )
+                        }
+                    }
+                }
+                .disabled(!isLLMPolishingReachable)
+                .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
+            }
+
+            SettingsGroup(title: "Configuration") {
                 SettingsFieldRow(title: "Config folder") {
                     Button("Open Config Folder") {
                         viewModel.openConfigFolder()
@@ -795,6 +786,18 @@ private struct TextProcessingSettingsPane: View {
                             name: "llm_user_prompt.toml",
                             description:
                                 "User prompt template for polishing. Remove {{replacement_dictionary}} to stop sending the dictionary to the LLM."
+                        ),
+                        SettingsFileNote(
+                            name: "llm_system_prompt_agent.toml",
+                            description: "System prompt for the agent profile in terminals."
+                        ),
+                        SettingsFileNote(
+                            name: "llm_user_prompt_agent.toml",
+                            description: "User prompt template for the agent profile."
+                        ),
+                        SettingsFileNote(
+                            name: "terminal_apps.toml",
+                            description: "Extra apps to treat as terminals."
                         ),
                     ])
                 }
