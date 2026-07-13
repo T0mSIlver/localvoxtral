@@ -9,7 +9,8 @@ import XCTest
 ///
 ///   recorded human WAV OR TTS(spokenForm, /usr/bin/say)
 ///     -> production websocket ASR (voxmlx)
-///     -> production polish stop-commit path (bundled polishd helper)
+///     -> production polish stop-commit path (bundled polishd helper or an
+///        explicitly selected OpenAI-compatible endpoint)
 ///     -> corpus-contract scoring -> scoreboard
 ///
 /// What each stage exercises (documented per the Phase-2 contract):
@@ -47,7 +48,10 @@ import XCTest
 ///   LV_AGENT_EVAL_E2E_VOXMLX_ENDPOINT, LV_AGENT_EVAL_E2E_ASR_MODEL,
 ///   LV_AGENT_EVAL_E2E_POLISH_MODEL), used by eval-e2e.yml
 ///   LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY selects a strict human recording
-///   set; every speech-running case must be present and corpus-current.
+///   set; every speech-running case must be present and corpus-current unless
+///   LV_AGENT_EVAL_E2E_RECORDING_SUBSET=1 explicitly selects an exploratory
+///   partial-set run. LV_AGENT_EVAL_E2E_POLISH_ENDPOINT bypasses the bundled
+///   helper while preserving the production Qwen 4B sampling/template shape.
 /// - marker file `.agent-eval-e2e-enable.json` at the repo root, written by
 ///   `./scripts/remote-build.sh eval-e2e` (the SSH gate can't pass env, so
 ///   enablement rides the rsynced tree — the PolishHelperIntegrationTests
@@ -84,14 +88,21 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     func testAgentDictationE2EEvalScoreboard() async throws {
         let enablement = try resolveEnablementOrSkip()
-        let binary = try resolveHelperBinary(enablement.helperPath)
+        let binary: URL?
+        if enablement.polishEndpoint == nil {
+            binary = try resolveHelperBinary(enablement.helperPath)
+        } else {
+            binary = nil
+        }
         let strata = try AgentDictationEvalCorpus.loadStrata()
         let fixtures = try AgentDictationEvalCorpus.loadRepoFixtures()
         // Validate the entire human set before loading either model. A bad or
         // partial set must fail cheaply and must never become a mixed
         // human/TTS baseline.
         let recordedAudio = try resolveRecordedAudioSet(
-            enablement.recordingDirectory, strata: strata
+            enablement.recordingDirectory,
+            strata: strata,
+            allowSubset: enablement.recordingSubset
         )
 
         // Fixture repos: git-inited at runtime from the corpus specs (paths
@@ -109,15 +120,38 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
         let configStore = AppConfigStore(configDirectoryOverride: configDirectory)
 
-        // The bundled polishing helper with the real pinned model.
-        try await ensureModelCached(enablement.polishModel)
-        let helper = try await launchHelper(binary: binary, model: enablement.polishModel)
-        addTeardownBlock { await Self.reap(helper.process) }
-        let polishConfiguration = LLMPolishEvalSupport.configuration(
-            endpointURL: URL(string: "http://127.0.0.1:\(helper.port)/v1/chat/completions")!,
-            apiKey: "",
-            model: enablement.polishModel
-        )
+        let polishConfiguration: LLMPolishingConfiguration
+        let polishBackend: String
+        if let endpoint = enablement.polishEndpoint {
+            // The external alias may not be a catalog repo ID (llama.cpp uses
+            // aliases such as qwen35-4b), but this experiment must still send
+            // the shipped 4B request shape: greedy sampling and thinking off.
+            polishConfiguration = LLMPolishEvalSupport.configuration(
+                endpointURL: endpoint,
+                apiKey: "",
+                model: enablement.polishModel,
+                requestShapeModel: PolishModelCatalog.defaultOption.repoID
+            )
+            polishBackend = "external \(endpoint.absoluteString)"
+            print(
+                "agent-e2e: polish=external model=\(enablement.polishModel) "
+                    + "temperature=0 top_p=1 top_k=0 min_p=0 presence_penalty=0 "
+                    + "enable_thinking=false"
+            )
+        } else {
+            guard let binary else { throw EvalInfraError("missing bundled helper path") }
+            try await ensureModelCached(enablement.polishModel)
+            let helper = try await launchHelper(binary: binary, model: enablement.polishModel)
+            addTeardownBlock { await Self.reap(helper.process) }
+            polishConfiguration = LLMPolishEvalSupport.configuration(
+                endpointURL: URL(
+                    string: "http://127.0.0.1:\(helper.port)/v1/chat/completions"
+                )!,
+                apiKey: "",
+                model: enablement.polishModel
+            )
+            polishBackend = "helper \(binary.path)"
+        }
         // Pay each profile's prompt-prefix prefill up front (two cache slots,
         // one per profile) so no case's polish request times out behind a cold
         // prefill — the CI failure mode of 2026-07-11.
@@ -132,7 +166,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             )
             : nil
         if let recordedAudio {
-            print("agent-e2e: audio=human-recorded set=\(recordedAudio.name)")
+            print(
+                "agent-e2e: audio=human-recorded set=\(recordedAudio.name) "
+                    + "cases=\(recordedAudio.pcmByCaseID.count)"
+                    + (recordedAudio.isSubset ? " subset=true" : "")
+            )
         } else {
             print(
                 "agent-e2e: audio=tts voices en=\(enVoice ?? "<system default>") "
@@ -141,7 +179,17 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
 
         let vocabularyCache = RepoVocabularyCache()
-        let totalCases = strata.reduce(0) { $0 + $1.stratum.cases.count }
+        let selectedCaseIDs: Set<String>?
+        if let recordedAudio, recordedAudio.isSubset {
+            selectedCaseIDs = Set(recordedAudio.pcmByCaseID.keys)
+        } else {
+            selectedCaseIDs = nil
+        }
+        let totalCases = strata.reduce(0) { total, loaded in
+            total + loaded.stratum.cases.filter {
+                selectedCaseIDs?.contains($0.id) ?? true
+            }.count
+        }
         var results: [Support.CaseResult] = []
         var reports: [Support.CaseReportRecord] = []
         var reportSystemPrompts: [String] = []
@@ -151,6 +199,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             let stratum = loaded.stratum
             let plan = Support.stagePlan(for: stratum.resolvedPipeline)
             for evalCase in stratum.cases {
+                if let selectedCaseIDs, !selectedCaseIDs.contains(evalCase.id) { continue }
                 caseIndex += 1
                 print("agent-e2e [\(caseIndex)/\(totalCases)] \(evalCase.id)")
                 let run = await runCase(
@@ -194,7 +243,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             header: "polish model: \(enablement.polishModel), "
                 + "asr: \(enablement.asrModel) @ \(enablement.voxmlxEndpoint), "
                 + "audio: \(recordedAudio.map { "human-recorded/\($0.name)" } ?? "macOS say"), "
-                + "helper: \(binary.path)"
+                + "polish backend: \(polishBackend)"
         )
         print(board.text)
 
@@ -460,6 +509,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private struct RecordedAudioSet {
         let name: String
+        let isSubset: Bool
         /// Exact manifest-verified bytes retained after preflight. Keeping
         /// them in memory prevents a long eval from observing a take changed
         /// on disk after its hash was checked.
@@ -468,7 +518,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private func resolveRecordedAudioSet(
         _ requestedPath: String?,
-        strata: [AgentDictationEvalCorpus.LoadedStratum]
+        strata: [AgentDictationEvalCorpus.LoadedStratum],
+        allowSubset: Bool
     ) throws -> RecordedAudioSet? {
         guard let requestedPath else { return nil }
         let directory: URL
@@ -488,14 +539,17 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             )
         }
 
-        let expected = strata.flatMap { loaded -> [Support.RecordingExpectation] in
+        let allExpected = strata.flatMap { loaded -> [Support.RecordingExpectation] in
             guard Support.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
             else { return [] }
             return loaded.stratum.cases.map {
                 Support.RecordingExpectation(id: $0.id, lang: $0.lang, spokenForm: $0.spokenForm)
             }
         }
-        let recordings = try Support.validateRecordingManifest(manifest, expected: expected)
+        let recordings = try Support.validateRecordingManifest(
+            manifest, expected: allExpected, allowSubset: allowSubset
+        )
+        let expected = allExpected.filter { recordings[$0.id] != nil }
         // Integrity + audio-format preflight for every case, before model load.
         // Retain the verified PCM so the bytes scored cannot change later.
         var pcmByCaseID: [String: Data] = [:]
@@ -525,6 +579,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
         return RecordedAudioSet(
             name: standardized.lastPathComponent,
+            isSubset: allowSubset,
             pcmByCaseID: pcmByCaseID
         )
     }

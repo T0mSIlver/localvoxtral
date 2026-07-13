@@ -15,7 +15,8 @@ set -euo pipefail
 #                  with the real model and score it against the polish eval
 #                  baseline + parent-pid tether
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
-#                  optional arg = chat/completions endpoint (default
+#                  optional args = chat/completions endpoint and external
+#                  model alias (default endpoint
 #                  http://127.0.0.1:8080/v1/chat/completions, the
 #                  com.localvoxtral.mlxlm service — runbook scripts/mac/README.md)
 #     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
@@ -255,11 +256,12 @@ case "$CMD" in
     # Enablement travels as a gitignored marker file inside the synced tree
     # (removed again on exit): the build gate only allowlists exact
     # `swift test ...` payloads, so env prefixes can't be passed per-run.
-    if [[ $# -gt 1 ]]; then
-      echo "eval-llm accepts at most one argument (the chat/completions endpoint)" >&2
+    if [[ $# -gt 2 ]]; then
+      echo "eval-llm accepts an optional chat/completions endpoint and model alias" >&2
       exit 1
     fi
     EVAL_ENDPOINT="${1:-http://127.0.0.1:8080/v1/chat/completions}"
+    EVAL_MODEL="${2:-}"
     # Only warm the local on-demand mlxlm service when the eval targets it; a
     # custom endpoint is the caller's own server and we must not touch it.
     if [[ "$EVAL_ENDPOINT" == *"127.0.0.1:8080"* || "$EVAL_ENDPOINT" == *"localhost:8080"* ]]; then
@@ -269,7 +271,13 @@ case "$CMD" in
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
-    printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
+    if [[ -n "$EVAL_MODEL" ]]; then
+      printf '{"endpoint": "%s", "model": "%s", "requestShapeModel": "%s"}\n' \
+        "$EVAL_ENDPOINT" "$EVAL_MODEL" "mlx-community/Qwen3.5-4B-OptiQ-4bit" \
+        >"$EVAL_MARKER"
+    else
+      printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
+    fi
     REMOTE_CMD=(swift test --filter LLMPolishPromptEvalTests)
     ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;

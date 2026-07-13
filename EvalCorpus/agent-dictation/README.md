@@ -49,11 +49,27 @@ through macOS's native audio recorder, then converts offline to the eval's
 fallback. Running the same command again resumes the set; `--lang en`,
 `--case <id>`, `--redo`, and `--list` are available for focused passes.
 
+An in-progress set can be scored without waiting for 146/146. This mode runs
+only IDs with accepted human recordings and never fills gaps with TTS. An
+external OpenAI-compatible server can replace the bundled helper while the
+request retains production's deterministic Qwen 4B sampling and
+`enable_thinking=false` template argument:
+
+```bash
+./scripts/run-agent-eval-local.sh --subset \
+  --polish-endpoint http://192.168.1.183:8080/v1/chat/completions \
+  --polish-model qwen35-4b \
+  EvalRecordings/agent-dictation/owner
+```
+
+Full output is retained in `.build/agent-eval-local.log` for failure analysis.
+
 Accepted takes and `manifest.json` live under the gitignored, voice-private
 `EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the
-exact case ID, language, spoken phrase, file name, and SHA-256. Recorded mode
-is deliberately strict: the eval rejects an incomplete, stale, modified, or
-wrong-format set before loading either model and never fills gaps with TTS.
+exact case ID, language, spoken phrase, file name, and SHA-256. By default,
+recorded mode is deliberately strict: the eval rejects an incomplete, stale,
+modified, or wrong-format set before loading either model. The explicit subset
+mode skips missing IDs and never fills gaps with TTS.
 Each acceptance is also flushed to an append-only recovery journal before its
 WAV is atomically installed. Restarting the recorder rebuilds a missing or
 corrupt manifest and finishes an interrupted save; already accepted takes do

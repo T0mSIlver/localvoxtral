@@ -23,7 +23,9 @@ enum AgentDictationE2EEvalSupport {
     static let voxmlxEndpointEnvKey = "LV_AGENT_EVAL_E2E_VOXMLX_ENDPOINT"
     static let asrModelEnvKey = "LV_AGENT_EVAL_E2E_ASR_MODEL"
     static let polishModelEnvKey = "LV_AGENT_EVAL_E2E_POLISH_MODEL"
+    static let polishEndpointEnvKey = "LV_AGENT_EVAL_E2E_POLISH_ENDPOINT"
     static let recordingDirectoryEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY"
+    static let recordingSubsetEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_SUBSET"
 
     static let defaultHelperPath =
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
@@ -37,20 +39,26 @@ enum AgentDictationE2EEvalSupport {
         let voxmlxEndpoint: String?
         let asrModel: String?
         let polishModel: String?
+        let polishEndpoint: String?
         let recordingDirectory: String?
+        let recordingSubset: Bool?
 
         init(
             helperPath: String? = nil,
             voxmlxEndpoint: String? = nil,
             asrModel: String? = nil,
             polishModel: String? = nil,
-            recordingDirectory: String? = nil
+            polishEndpoint: String? = nil,
+            recordingDirectory: String? = nil,
+            recordingSubset: Bool? = nil
         ) {
             self.helperPath = helperPath
             self.voxmlxEndpoint = voxmlxEndpoint
             self.asrModel = asrModel
             self.polishModel = polishModel
+            self.polishEndpoint = polishEndpoint
             self.recordingDirectory = recordingDirectory
+            self.recordingSubset = recordingSubset
         }
     }
 
@@ -59,9 +67,15 @@ enum AgentDictationE2EEvalSupport {
         let voxmlxEndpoint: URL
         let asrModel: String
         let polishModel: String
+        /// Non-nil bypasses the bundled helper and sends production-shaped
+        /// requests to this OpenAI-compatible chat/completions endpoint.
+        let polishEndpoint: URL?
         /// Nil uses cached `say` synthesis. Non-nil is a strict human WAV set:
         /// no missing/stale recording silently falls back to TTS.
         let recordingDirectory: String?
+        /// Explicit exploratory mode: score only human-recorded case IDs.
+        /// The default/full baseline remains all-or-nothing.
+        let recordingSubset: Bool
     }
 
     static func parseMarker(_ data: Data) throws -> MarkerConfig {
@@ -99,6 +113,17 @@ enum AgentDictationE2EEvalSupport {
             voxmlxEndpointEnvKey, marker?.voxmlxEndpoint, default: defaultVoxmlxEndpoint
         )
         guard let endpoint = URL(string: endpointString) else { return nil }
+        let polishEndpointString = pickOptional(
+            polishEndpointEnvKey, marker?.polishEndpoint
+        )
+        let polishEndpoint = polishEndpointString.flatMap(URL.init(string:))
+        if polishEndpointString != nil, polishEndpoint == nil { return nil }
+        let recordingSubset: Bool
+        if envEnabled, let value = environment[recordingSubsetEnvKey] {
+            recordingSubset = value == "1"
+        } else {
+            recordingSubset = marker?.recordingSubset == true
+        }
         return Enablement(
             helperPath: pick(helperPathEnvKey, marker?.helperPath, default: defaultHelperPath),
             voxmlxEndpoint: endpoint,
@@ -110,9 +135,11 @@ enum AgentDictationE2EEvalSupport {
                 polishModelEnvKey, marker?.polishModel,
                 default: PolishModelCatalog.defaultOption.repoID
             ),
+            polishEndpoint: polishEndpoint,
             recordingDirectory: pickOptional(
                 recordingDirectoryEnvKey, marker?.recordingDirectory
-            )
+            ),
+            recordingSubset: recordingSubset
         )
     }
 
@@ -182,12 +209,15 @@ enum AgentDictationE2EEvalSupport {
     }
 
     /// Validates the manifest against the exact speech-running corpus before
-    /// model load. Recorded mode is deliberately all-or-nothing: partial sets,
-    /// corpus drift, duplicate IDs, unsafe filenames, and stale extras fail
-    /// loudly rather than producing a TTS/human hybrid baseline.
+    /// model load. Recorded mode is deliberately all-or-nothing by default:
+    /// partial sets, corpus drift, duplicate IDs, unsafe filenames, and stale
+    /// extras fail loudly rather than producing a TTS/human hybrid baseline.
+    /// `allowSubset` is an explicit exploratory mode that validates and runs
+    /// only known recorded IDs; it never fills missing cases with TTS.
     static func validateRecordingManifest(
         _ manifest: RecordingManifest,
-        expected: [RecordingExpectation]
+        expected: [RecordingExpectation],
+        allowSubset: Bool = false
     ) throws -> [String: Recording] {
         guard manifest.schemaVersion == recordingSchemaVersion else {
             throw RecordingSetError(message: "recording manifest schemaVersion must be \(recordingSchemaVersion)")
@@ -214,8 +244,17 @@ enum AgentDictationE2EEvalSupport {
             byID[recording.id] = recording
         }
 
-        let expectedIDs = Set(expected.map(\.id))
         let actualIDs = Set(byID.keys)
+        let expectedForRun: [RecordingExpectation]
+        if allowSubset {
+            guard !actualIDs.isEmpty else {
+                throw RecordingSetError(message: "recording subset is empty")
+            }
+            expectedForRun = expected.filter { actualIDs.contains($0.id) }
+        } else {
+            expectedForRun = expected
+        }
+        let expectedIDs = Set(expectedForRun.map(\.id))
         let missing = expectedIDs.subtracting(actualIDs).sorted()
         let extra = actualIDs.subtracting(expectedIDs).sorted()
         guard missing.isEmpty else {
@@ -224,7 +263,7 @@ enum AgentDictationE2EEvalSupport {
         guard extra.isEmpty else {
             throw RecordingSetError(message: "recording set has stale/unknown cases: \(extra.joined(separator: ", "))")
         }
-        for item in expected {
+        for item in expectedForRun {
             guard let recording = byID[item.id] else { continue }
             guard recording.lang == item.lang, recording.spokenForm == item.spokenForm else {
                 throw RecordingSetError(

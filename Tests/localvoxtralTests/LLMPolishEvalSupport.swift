@@ -319,9 +319,10 @@ enum LLMPolishEvalSupport {
     static func configuration(
         endpointURL: URL,
         apiKey: String,
-        model: String
+        model: String,
+        requestShapeModel: String? = nil
     ) -> LLMPolishingConfiguration {
-        let option = PolishModelCatalog.option(forRepoID: model)
+        let option = PolishModelCatalog.option(forRepoID: requestShapeModel ?? model)
         return LLMPolishingConfiguration(
             endpointURL: endpointURL,
             apiKey: apiKey,

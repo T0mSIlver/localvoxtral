@@ -20,7 +20,9 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             """
             {"helperPath": "/tmp/polishd", "voxmlxEndpoint": "ws://127.0.0.1:9000/v1/realtime",
              "asrModel": "acme/asr", "polishModel": "acme/polish",
-             "recordingDirectory": "EvalRecordings/agent-dictation/owner"}
+             "polishEndpoint": "http://gpu:8080/v1/chat/completions",
+             "recordingDirectory": "EvalRecordings/agent-dictation/owner",
+             "recordingSubset": true}
             """.utf8
         )
         let marker = try Support.parseMarker(data)
@@ -28,7 +30,9 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(marker.voxmlxEndpoint, "ws://127.0.0.1:9000/v1/realtime")
         XCTAssertEqual(marker.asrModel, "acme/asr")
         XCTAssertEqual(marker.polishModel, "acme/polish")
+        XCTAssertEqual(marker.polishEndpoint, "http://gpu:8080/v1/chat/completions")
         XCTAssertEqual(marker.recordingDirectory, "EvalRecordings/agent-dictation/owner")
+        XCTAssertEqual(marker.recordingSubset, true)
     }
 
     func testParseMarkerToleratesMissingFields() throws {
@@ -37,7 +41,9 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertNil(marker.voxmlxEndpoint)
         XCTAssertNil(marker.asrModel)
         XCTAssertNil(marker.polishModel)
+        XCTAssertNil(marker.polishEndpoint)
         XCTAssertNil(marker.recordingDirectory)
+        XCTAssertNil(marker.recordingSubset)
     }
 
     func testEnablementNilWithoutEnvOrMarker() {
@@ -61,6 +67,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(enablement.voxmlxEndpoint.absoluteString, Support.defaultVoxmlxEndpoint)
         XCTAssertEqual(enablement.asrModel, Support.defaultASRModel)
         XCTAssertEqual(enablement.polishModel, SettingsStore.defaultLLMPolishingModel)
+        XCTAssertNil(enablement.polishEndpoint)
+        XCTAssertFalse(enablement.recordingSubset)
     }
 
     func testEnablementFromEnvOverridesMarker() throws {
@@ -69,7 +77,9 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
                 environment: [
                     Support.enableEnvKey: "1",
                     Support.helperPathEnvKey: "/env/polishd",
+                    Support.polishEndpointEnvKey: "http://gpu:8080/v1/chat/completions",
                     Support.recordingDirectoryEnvKey: "/env/recordings",
+                    Support.recordingSubsetEnvKey: "1",
                 ],
                 marker: Support.MarkerConfig(
                     helperPath: "marker/polishd",
@@ -82,6 +92,11 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         // Fields the env does not carry still fall through to the marker.
         XCTAssertEqual(enablement.asrModel, "marker/asr")
         XCTAssertEqual(enablement.recordingDirectory, "/env/recordings")
+        XCTAssertEqual(
+            enablement.polishEndpoint?.absoluteString,
+            "http://gpu:8080/v1/chat/completions"
+        )
+        XCTAssertTrue(enablement.recordingSubset)
     }
 
     // MARK: - WAV cache key
@@ -151,6 +166,44 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             )[recordingExpectation.id],
             recording()
         )
+    }
+
+    func testRecordingManifestSubsetIsExplicitAndNeverFallsBackToTTS() throws {
+        let second = Support.RecordingExpectation(
+            id: "a-en-websocket-timeout", lang: .en,
+            spokenForm: "the websocket client times out"
+        )
+        let partial = Support.RecordingManifest(
+            schemaVersion: Support.recordingSchemaVersion,
+            dataFormat: Support.recordingDataFormat,
+            recordings: [recording()]
+        )
+        XCTAssertThrowsError(
+            try Support.validateRecordingManifest(
+                partial, expected: [recordingExpectation, second]
+            )
+        ) { XCTAssertTrue($0.localizedDescription.contains("incomplete")) }
+        XCTAssertEqual(
+            try Support.validateRecordingManifest(
+                partial,
+                expected: [recordingExpectation, second],
+                allowSubset: true
+            ),
+            [recordingExpectation.id: recording()]
+        )
+
+        let unknown = Support.RecordingManifest(
+            schemaVersion: Support.recordingSchemaVersion,
+            dataFormat: Support.recordingDataFormat,
+            recordings: [recording(id: "unknown-case")]
+        )
+        XCTAssertThrowsError(
+            try Support.validateRecordingManifest(
+                unknown,
+                expected: [recordingExpectation, second],
+                allowSubset: true
+            )
+        ) { XCTAssertTrue($0.localizedDescription.contains("stale/unknown")) }
     }
 
     func testRecordingManifestRejectsPartialStaleAndDuplicateSets() {

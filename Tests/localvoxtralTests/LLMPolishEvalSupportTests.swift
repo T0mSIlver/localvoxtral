@@ -47,4 +47,23 @@ final class LLMPolishEvalSupportTests: XCTestCase {
         XCTAssertNil(configuration.samplingDefaults)
         XCTAssertNil(configuration.chatTemplateArguments)
     }
+
+    /// OpenAI-compatible gateways commonly expose a short alias rather than
+    /// the catalog repo ID. The alias must be sent as `model`, while an
+    /// explicit request-shape model still supplies production's deterministic
+    /// Qwen sampling and thinking-mode fields.
+    func testEvalConfigurationCanApplyCatalogShapeToExternalAlias() throws {
+        let endpointURL = try XCTUnwrap(URL(string: "http://gpu:8080/v1/chat/completions"))
+        let production = PolishModelCatalog.defaultOption
+        let configuration = LLMPolishEvalSupport.configuration(
+            endpointURL: endpointURL,
+            apiKey: "",
+            model: "qwen35-4b",
+            requestShapeModel: production.repoID
+        )
+
+        XCTAssertEqual(configuration.model, "qwen35-4b")
+        XCTAssertEqual(configuration.samplingDefaults, production.samplingDefaults)
+        XCTAssertEqual(configuration.chatTemplateArguments, ["enable_thinking": false])
+    }
 }

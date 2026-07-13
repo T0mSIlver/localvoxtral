@@ -6,12 +6,53 @@ set -euo pipefail
 # it was captured, while the env gate avoids creating a transient marker.
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RECORDING_DIR="${1:-}"
+RECORDING_DIR=""
+RECORDING_SUBSET=0
+POLISH_ENDPOINT=""
+POLISH_MODEL=""
 
-if [[ $# -gt 1 ]]; then
-  echo "Usage: $0 [EvalRecordings/agent-dictation/<set>]" >&2
-  exit 1
-fi
+usage() {
+  cat <<EOF
+Usage: $0 [options] [EvalRecordings/agent-dictation/<set>]
+
+  --subset                 Score only cases present in the recording manifest
+  --polish-endpoint URL    Use an external OpenAI chat/completions endpoint
+  --polish-model MODEL     Request model/alias for the external endpoint
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --subset)
+      RECORDING_SUBSET=1
+      shift
+      ;;
+    --polish-endpoint)
+      [[ $# -ge 2 ]] || { echo "--polish-endpoint needs a URL" >&2; exit 1; }
+      POLISH_ENDPOINT="$2"
+      shift 2
+      ;;
+    --polish-model)
+      [[ $# -ge 2 ]] || { echo "--polish-model needs a model name" >&2; exit 1; }
+      POLISH_MODEL="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      [[ -z "$RECORDING_DIR" ]] || { echo "only one recording directory is allowed" >&2; exit 1; }
+      RECORDING_DIR="$1"
+      shift
+      ;;
+  esac
+done
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "run-agent-eval-local.sh must run from a macOS checkout" >&2
   echo "From Linux, use: ./scripts/remote-build.sh eval-e2e [recording-set]" >&2
@@ -27,9 +68,17 @@ if [[ -n "$RECORDING_DIR" ]]; then
     exit 1
   fi
 fi
+if [[ "$RECORDING_SUBSET" == "1" && -z "$RECORDING_DIR" ]]; then
+  echo "--subset requires a recording-set directory" >&2
+  exit 1
+fi
+if [[ -n "$POLISH_ENDPOINT" && ! "$POLISH_ENDPOINT" =~ ^https?:// ]]; then
+  echo "--polish-endpoint must be an http:// or https:// URL" >&2
+  exit 1
+fi
 
 HELPER="$ROOT_DIR/PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
-if [[ ! -x "$HELPER" ]]; then
+if [[ -z "$POLISH_ENDPOINT" && ! -x "$HELPER" ]]; then
   echo "packaged polishing helper not found; run this first:" >&2
   echo "  ./scripts/package_app.sh release" >&2
   exit 1
@@ -42,12 +91,22 @@ if ! "$ROOT_DIR/scripts/mac/lv-test-servers.sh" ensure voxmlx; then
 fi
 
 cd "$ROOT_DIR"
+ENV_ARGS=(env LV_AGENT_EVAL_E2E_ENABLE=1)
 if [[ -n "$RECORDING_DIR" ]]; then
-  env \
-    LV_AGENT_EVAL_E2E_ENABLE=1 \
-    LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY="$RECORDING_DIR" \
-    swift test --filter AgentDictationE2EEvalTests
-else
-  env LV_AGENT_EVAL_E2E_ENABLE=1 \
-    swift test --filter AgentDictationE2EEvalTests
+  ENV_ARGS+=(LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY="$RECORDING_DIR")
 fi
+if [[ "$RECORDING_SUBSET" == "1" ]]; then
+  ENV_ARGS+=(LV_AGENT_EVAL_E2E_RECORDING_SUBSET=1)
+fi
+if [[ -n "$POLISH_ENDPOINT" ]]; then
+  ENV_ARGS+=(LV_AGENT_EVAL_E2E_POLISH_ENDPOINT="$POLISH_ENDPOINT")
+fi
+if [[ -n "$POLISH_MODEL" ]]; then
+  ENV_ARGS+=(LV_AGENT_EVAL_E2E_POLISH_MODEL="$POLISH_MODEL")
+fi
+
+mkdir -p .build
+LOG_FILE="$ROOT_DIR/.build/agent-eval-local.log"
+echo "Full eval output: $LOG_FILE"
+set -o pipefail
+"${ENV_ARGS[@]}" swift test --filter AgentDictationE2EEvalTests 2>&1 | tee "$LOG_FILE"
