@@ -1,17 +1,32 @@
 name: Record README Demo
 
 # Hands-free demo recording on the self-hosted runner (the owner's Mac, GUI
-# session): scripts/record-demo.sh drives the app and speaks the demo lines
+# session): scripts/record-demo.sh stages a terminal-centric scene (a small
+# git repo in Terminal.app, with a real Claude Code session when the runner
+# has a logged-in `claude` CLI), drives the app, and speaks the demo lines
 # via TTS into the BlackHole loopback device. The encoded mp4 lands in the
 # run's artifacts; publishing it is manual by design — GitHub only renders
 # inline README video from user-attachments URLs, which have no upload API,
 # so the owner drag-drops the mp4 into a PR comment and pastes the URL.
+#
+# The script announces itself audibly and waits 3 s before taking over the
+# GUI session (owner rule), and needs an UNLOCKED session — it fails fast
+# when Secure Keyboard Entry is held (locked screen).
 #
 # One-time runner-machine setup (beyond the capture-assets grants):
 #   brew install blackhole-2ch ffmpeg
 
 on:
   workflow_dispatch:
+    inputs:
+      terminal_agent:
+        description: "Terminal scene: auto = real Claude Code session when usable else plain zsh; claude = require it; shell = plain zsh"
+        type: choice
+        default: auto
+        options:
+          - auto
+          - claude
+          - shell
 
 concurrency:
   group: record-demo-${{ github.ref }}
@@ -48,8 +63,12 @@ jobs:
         env:
           DEMO_HANDS_FREE: "1"
           DEMO_WARMUP_SECONDS: "25"
+          DEMO_TERMINAL_AGENT: ${{ inputs.terminal_agent || 'auto' }}
         run: |
           bash scripts/record-demo.sh dist/localvoxtral.app
+          # The runner's /bin/bash 3.2 has returned exit 0 on a PARSE ERROR
+          # before — never trust the exit code alone, require the artifact.
+          test -s dist/demo/demo.mp4 || { echo "demo.mp4 was not produced"; exit 1; }
           echo "ran=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload demo video
