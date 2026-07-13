@@ -42,10 +42,11 @@ macOS may prompt for Microphone access for Terminal/iTerm. Grant it in System
 Settings → Privacy & Security → Microphone if needed. Digitally silent takes
 are rejected, and unusually quiet takes produce a warning.
 Press Return to record and Return again to stop. Playback is not automatic:
-at review, Return accepts immediately; `p`, `r`, `s`, and `q` play, re-record,
-skip, or quit. Capture stays at the microphone's native rate, then converts
-offline to the eval's 16 kHz mono format to avoid real-time resampling
-artifacts. Running the same command again resumes the set; `--lang en`,
+at review, Return accepts immediately; `p`, `r`, `s`, and `q` play the
+native-rate take, re-record, skip, or quit. The default microphone records
+through macOS's native audio recorder, then converts offline to the eval's
+16 kHz mono format; explicit numeric device indexes retain the ffmpeg capture
+fallback. Running the same command again resumes the set; `--lang en`,
 `--case <id>`, `--redo`, and `--list` are available for focused passes.
 
 Accepted takes and `manifest.json` live under the gitignored, voice-private

@@ -2,6 +2,7 @@ import AVFoundation
 import CryptoKit
 import Darwin
 import Foundation
+import Synchronization
 
 // Interactive, resumable human-audio capture for AgentDictationE2EEvalTests.
 // Microphone access belongs to ffmpeg (an ordinary signed executable), not to
@@ -325,11 +326,68 @@ func normalizeCapturedTake(ffmpeg: String, source: URL, destination: URL) throws
     }
 }
 
-func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAnalysis {
-    try? fileManager.removeItem(at: temporary)
-    let nativeCapture = temporary.appendingPathExtension("native.tmp.wav")
-    try? fileManager.removeItem(at: nativeCapture)
-    defer { try? fileManager.removeItem(at: nativeCapture) }
+func microphoneAccessGranted() -> Bool {
+    switch AVCaptureDevice.authorizationStatus(for: .audio) {
+    case .authorized:
+        return true
+    case .denied, .restricted:
+        return false
+    case .notDetermined:
+        let result = Mutex(false)
+        let completed = DispatchSemaphore(value: 0)
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            result.withLock { $0 = granted }
+            completed.signal()
+        }
+        completed.wait()
+        return result.withLock { $0 }
+    @unknown default:
+        return false
+    }
+}
+
+/// Record the system-default input with Apple's audio stack. This bypasses
+/// ffmpeg's live AVFoundation demuxer, which produced mild crackling on the
+/// same microphone that recorded cleanly in Photo Booth.
+func recordNativeMicrophone(to destination: URL) throws {
+    guard microphoneAccessGranted() else {
+        throw HarnessError.message(
+            "microphone access is denied; grant Terminal/iTerm access in "
+                + "System Settings → Privacy & Security → Microphone"
+        )
+    }
+    let formatProbe = AVAudioEngine()
+    let hardwareFormat = formatProbe.inputNode.inputFormat(forBus: 0)
+    guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
+        throw HarnessError.message("the system default microphone has no enabled input format")
+    }
+    let settings: [String: Any] = [
+        AVFormatIDKey: Int(kAudioFormatLinearPCM),
+        AVSampleRateKey: hardwareFormat.sampleRate,
+        AVNumberOfChannelsKey: Int(hardwareFormat.channelCount),
+        AVLinearPCMBitDepthKey: 32,
+        AVLinearPCMIsFloatKey: true,
+        AVLinearPCMIsBigEndianKey: false,
+        AVLinearPCMIsNonInterleaved: false,
+    ]
+    let recorder = try AVAudioRecorder(url: destination, settings: settings)
+    guard recorder.prepareToRecord(), recorder.record() else {
+        throw HarnessError.message("macOS could not start the system default microphone")
+    }
+    print(
+        "● Recording natively at \(Int(hardwareFormat.sampleRate)) Hz — "
+            + "speak the phrase, then press Return to stop."
+    )
+    _ = readLine()
+    recorder.stop()
+}
+
+func recordFFmpegMicrophone(
+    ffmpeg: String,
+    device: String,
+    destination: URL
+) throws {
+    try? fileManager.removeItem(at: destination)
     let process = Process()
     let errors = Pipe()
     process.executableURL = URL(fileURLWithPath: ffmpeg)
@@ -337,7 +395,7 @@ func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAna
         "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
         "-thread_queue_size", "1024",
         "-f", "avfoundation", "-i", ":\(device)",
-        "-map", "0:a:0", "-c:a", "pcm_s16le", nativeCapture.path,
+        "-map", "0:a:0", "-c:a", "pcm_s16le", destination.path,
     ]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = errors
@@ -351,14 +409,32 @@ func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAna
     _ = readLine()
     process.interrupt()
     process.waitUntilExit()
-    guard fileManager.fileExists(atPath: nativeCapture.path) else {
+    guard fileManager.fileExists(atPath: destination.path) else {
         let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        throw HarnessError.message("ffmpeg did not produce a WAV: \(detail)")
+        throw HarnessError.message("ffmpeg did not produce an audio file: \(detail)")
+    }
+}
+
+func recordTake(
+    ffmpeg: String,
+    device: String,
+    nativeCapture: URL,
+    normalized: URL
+) throws -> WAVAnalysis {
+    try? fileManager.removeItem(at: nativeCapture)
+    try? fileManager.removeItem(at: normalized)
+    if device == "default" {
+        try recordNativeMicrophone(to: nativeCapture)
+    } else {
+        print("Note: explicit device indexes use ffmpeg capture; 'default' uses native macOS audio.")
+        try recordFFmpegMicrophone(
+            ffmpeg: ffmpeg, device: device, destination: nativeCapture
+        )
     }
     try normalizeCapturedTake(
-        ffmpeg: ffmpeg, source: nativeCapture, destination: temporary
+        ffmpeg: ffmpeg, source: nativeCapture, destination: normalized
     )
-    let data = try Data(contentsOf: temporary)
+    let data = try Data(contentsOf: normalized)
     return try analyzeWAV(data)
 }
 
@@ -412,7 +488,9 @@ do {
     }
     // Abandoned temporary takes never affect resume or eval.
     for file in (try? fileManager.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)) ?? []
-    where file.lastPathComponent.hasSuffix(".tmp.wav") {
+    where file.lastPathComponent.hasSuffix(".tmp.wav")
+        || file.lastPathComponent.hasSuffix(".tmp.caf")
+    {
         try? fileManager.removeItem(at: file)
     }
 
@@ -443,7 +521,11 @@ do {
         }
         let destination = outputDirectory.appendingPathComponent("\(item.id).wav")
         let temporary = outputDirectory.appendingPathComponent(".\(item.id).tmp.wav")
+        let nativeTemporary = outputDirectory.appendingPathComponent(
+            ".\(item.id).native.tmp.caf"
+        )
         defer { try? fileManager.removeItem(at: temporary) }
+        defer { try? fileManager.removeItem(at: nativeTemporary) }
 
         takeLoop: while true {
             print("\n[\(offset + 1)/\(selected.count)] \(item.id) [\(item.lang)]")
@@ -456,7 +538,8 @@ do {
             let analysis: WAVAnalysis
             do {
                 analysis = try recordTake(
-                    ffmpeg: ffmpeg, device: options.device, temporary: temporary
+                    ffmpeg: ffmpeg, device: options.device,
+                    nativeCapture: nativeTemporary, normalized: temporary
                 )
             } catch {
                 print("Take rejected: \(error)")
@@ -488,10 +571,11 @@ do {
                     print("Accepted \(item.id); progress saved.")
                     break takeLoop
                 case "r": break reviewLoop
-                case "p": play(temporary)
+                case "p": play(nativeTemporary)
                 case "s": break takeLoop
                 case "q":
                     try? fileManager.removeItem(at: temporary)
+                    try? fileManager.removeItem(at: nativeTemporary)
                     try writeManifest(entries, to: manifestURL)
                     exit(0)
                 default: print("Press Return to accept, or choose p, r, s, or q.")
