@@ -295,6 +295,10 @@ Key subsystems:
   `StatusPopoverView.statusDetailView` line-limits as a backstop — keep it.
 - Hand-testing builds: see "Hand-testing & field debugging" above — use
   try-pr.sh and the stable signing identity, don't reinvent manual steps.
+- Bundled config TOMLs (`Sources/localvoxtral/Resources/Config`): any content
+  change must append the new file's SHA-256 to `BundledConfigDefaultHistory`
+  (keep the old hashes — they let existing installs auto-adopt the new
+  default). A tier-0 test fails with the exact hash to paste if you forget.
 - Backend/lifecycle code paths log their requests, completions, and failures
   (`Log.backends`) — a silent failure path is how the ensureReady
   single-flight bug cost an hour of remote probing. Keep new paths loud.

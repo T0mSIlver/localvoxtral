@@ -123,6 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let settingsNavigator = SettingsNavigator()
 
     private var onboardingController: OnboardingWindowController?
+    private let appConfigStore = AppConfigStore()
+    /// Customized-but-outdated config files awaiting the user's
+    /// update-or-keep decision; held here while onboarding is on screen.
+    private var pendingConfigDefaultsPromptFileNames: [String]?
 
     override init() {
         let settings = SettingsStore()
@@ -144,8 +148,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) {
             LegacyMLXLMCleanup().run()
         }
+        reconcileBundledConfigDefaults()
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
+    }
+
+    /// Brings existing installs up to date with this build's bundled config
+    /// defaults: unedited stale seeds are refreshed silently; customized files
+    /// are never touched without asking. When onboarding is still due (a
+    /// pre-onboarding install upgrading, or a wizard never finished), the
+    /// prompt is held until the wizard closes so the modal never stacks on
+    /// top of it.
+    private func reconcileBundledConfigDefaults() {
+        let outcome = appConfigStore.reconcileBundledDefaults()
+        guard !outcome.customizedOutdatedFileNames.isEmpty else { return }
+        pendingConfigDefaultsPromptFileNames = outcome.customizedOutdatedFileNames
+        guard settingsStore.onboardingCompleted else { return }
+
+        // Defer past launch so the alert never blocks
+        // applicationDidFinishLaunching.
+        Task { @MainActor in
+            self.presentPendingConfigDefaultsPromptIfNeeded()
+        }
+    }
+
+    private func presentPendingConfigDefaultsPromptIfNeeded() {
+        guard let fileNames = pendingConfigDefaultsPromptFileNames else { return }
+        pendingConfigDefaultsPromptFileNames = nil
+        promptToUpdateCustomizedConfigFiles(fileNames: fileNames)
+    }
+
+    private func promptToUpdateCustomizedConfigFiles(fileNames: [String]) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Updated default config files"
+        let fileList = fileNames.map { "•  \($0)" }.joined(separator: "\n")
+        let single = fileNames.count == 1
+        alert.informativeText = """
+        This version of localvoxtral improves the default content of:
+
+        \(fileList)
+
+        You've edited \(single ? "this file" : "these files"), so \(single ? "it was" : "they were") left untouched.
+
+        Update replaces \(single ? "it" : "them") with the new defaults and saves your \(single ? "version" : "versions") alongside as .backup files. Keep Mine won't ask again until the defaults next change.
+        """
+        alert.addButton(withTitle: "Update (Keep Backups)")
+        alert.addButton(withTitle: "Keep Mine")
+        alert.addButton(withTitle: "Show Files…")
+
+        decision: while true {
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                let backups = appConfigStore.adoptBundledDefaults(fileNames: fileNames)
+                Log.config.notice(
+                    "User adopted new bundled defaults for \(fileNames.joined(separator: ", "), privacy: .public); backups: \(backups.joined(separator: ", "), privacy: .public)"
+                )
+                break decision
+            case .alertSecondButtonReturn:
+                appConfigStore.recordKeptCustomizedDefaults(fileNames: fileNames)
+                Log.config.notice(
+                    "User kept customized config files \(fileNames.joined(separator: ", "), privacy: .public)"
+                )
+                break decision
+            default:
+                // Show Files: reveal the files in Finder and re-present the
+                // alert so Update/Keep Mine stay available — Finder is a
+                // separate app, so the user can inspect the files while the
+                // alert waits. Quitting instead still re-prompts next launch.
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    fileNames.map { appConfigStore.configDirectoryURL().appendingPathComponent($0) }
+                )
+            }
+        }
     }
 
     private func presentOnboarding() {
@@ -165,6 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // once the wizard is done — finished or skipped — start whatever
             // required managed backends it didn't already start.
             self?.viewModel.warmUpManagedBackendsAtLaunchIfNeeded()
+            self?.presentPendingConfigDefaultsPromptIfNeeded()
         }
         onboardingController = controller
         controller.present()
