@@ -28,6 +28,16 @@ final class LegacyMLXLMCleanupTests: XCTestCase {
         try fileManager.createDirectory(at: layout.toolBin, withIntermediateDirectories: true)
         // uv links bin entries into the venv; after the venv is gone these
         // dangle, which fileExists-based checks would miss.
+        //
+        // The wheel installs a BARE `mlx_lm` console script alongside the dotted
+        // entry points. Fixturing only the dotted names is what let the bare one
+        // ship unremoved: the old `"mlx_lm."` prefix deleted its siblings and
+        // left it behind.
+        let consoleScriptLink = layout.toolBin.appendingPathComponent("mlx_lm")
+        try fileManager.createSymbolicLink(
+            at: consoleScriptLink,
+            withDestinationURL: legacyVenv.appendingPathComponent("bin/mlx_lm")
+        )
         let serverLink = layout.toolBin.appendingPathComponent("mlx_lm.server")
         try fileManager.createSymbolicLink(
             at: serverLink,
@@ -57,13 +67,15 @@ final class LegacyMLXLMCleanupTests: XCTestCase {
 
         let removedPaths = Set(removed.map(\.path))
         XCTAssertTrue(removedPaths.contains(legacyVenv.path))
+        XCTAssertTrue(removedPaths.contains(consoleScriptLink.path))
         XCTAssertTrue(removedPaths.contains(serverLink.path))
         XCTAssertTrue(removedPaths.contains(generateBin.path))
         XCTAssertTrue(removedPaths.contains(legacyWheel.path))
         XCTAssertTrue(removedPaths.contains(markerURL.path))
-        XCTAssertEqual(removedPaths.count, 5)
+        XCTAssertEqual(removedPaths.count, 6)
 
         XCTAssertFalse(fileManager.fileExists(atPath: legacyVenv.path))
+        XCTAssertNil(try? fileManager.destinationOfSymbolicLink(atPath: consoleScriptLink.path))
         XCTAssertNil(try? fileManager.destinationOfSymbolicLink(atPath: serverLink.path))
         XCTAssertFalse(fileManager.fileExists(atPath: generateBin.path))
         XCTAssertFalse(fileManager.fileExists(atPath: legacyWheel.path))
@@ -92,6 +104,34 @@ final class LegacyMLXLMCleanupTests: XCTestCase {
 
         XCTAssertEqual(removed.map(\.path), [danglingLink.path])
         XCTAssertNil(try? fileManager.destinationOfSymbolicLink(atPath: danglingLink.path))
+    }
+
+    /// The field state observed on a real 0.7.4 → 0.8.0 upgrade: a first cleanup
+    /// pass (dotted prefix) had already removed `mlx_lm.server` and friends, so
+    /// the bare `mlx_lm` shim was the only legacy entry left — dangling, and
+    /// enough to make a later `uv tool install mlx-lm` fail with "Executable
+    /// already exists". Re-running cleanup must finish the job.
+    func testBareConsoleScriptLeftByAnEarlierPassIsStillRemoved() throws {
+        let root = makeTemporaryDirectory()
+        let layout = BackendInstallLayout(root: root)
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: layout.toolBin, withIntermediateDirectories: true)
+
+        let bareShim = layout.toolBin.appendingPathComponent("mlx_lm")
+        try fileManager.createSymbolicLink(
+            at: bareShim,
+            withDestinationURL: layout.tools.appendingPathComponent("mlx-lm/bin/mlx_lm")
+        )
+        // voxmlx sits in the same directory and must survive: the undotted
+        // prefix must not start matching its neighbours.
+        let voxmlxBin = layout.toolBin.appendingPathComponent("voxmlx-serve")
+        try Data("#!/bin/sh".utf8).write(to: voxmlxBin)
+
+        let removed = LegacyMLXLMCleanup(layout: layout).run()
+
+        XCTAssertEqual(removed.map(\.path), [bareShim.path])
+        XCTAssertNil(try? fileManager.destinationOfSymbolicLink(atPath: bareShim.path))
+        XCTAssertTrue(fileManager.fileExists(atPath: voxmlxBin.path))
     }
 
     func testSecondRunAndMissingRootAreSilentNoOps() throws {
