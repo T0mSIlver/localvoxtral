@@ -54,6 +54,10 @@ Accepted takes and `manifest.json` live under the gitignored, voice-private
 exact case ID, language, spoken phrase, file name, and SHA-256. Recorded mode
 is deliberately strict: the eval rejects an incomplete, stale, modified, or
 wrong-format set before loading either model and never fills gaps with TTS.
+Each acceptance is also flushed to an append-only recovery journal before its
+WAV is atomically installed. Restarting the recorder rebuilds a missing or
+corrupt manifest and finishes an interrupted save; already accepted takes do
+not depend on the recording process exiting cleanly.
 
 After the recorder reports 146/146:
 

@@ -297,6 +297,91 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         )
     }
 
+    /// Losing or corrupting the convenience manifest must not discard hours
+    /// of accepted human speech. Older manifests are journaled on first run;
+    /// subsequent runs reconstruct the manifest from that durable journal.
+    func testHumanRecorderRecoveryJournalRebuildsCorruptManifest() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-recorder-recovery-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: outputDirectory, withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
+
+        let id = "a-en-websocket-timeout"
+        let spokenForm = "the integration tests fail on main since yesterday. "
+            + "the websocket client times out after ten seconds. look at the reconnect logic "
+            + "and add a regression test before changing anything else."
+        let wav = makeWAV(sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 8_000)
+        try wav.write(to: outputDirectory.appendingPathComponent("\(id).wav"))
+        let recording = Support.Recording(
+            id: id, lang: .en, spokenForm: spokenForm,
+            file: "\(id).wav", sha256: Support.sha256Hex(wav)
+        )
+        let manifestURL = outputDirectory.appendingPathComponent("manifest.json")
+        let manifest = Support.RecordingManifest(
+            schemaVersion: Support.recordingSchemaVersion,
+            dataFormat: Support.recordingDataFormat,
+            recordings: [recording]
+        )
+        try JSONEncoder().encode(manifest).write(to: manifestURL)
+
+        let bootstrap = try runRecorder(
+            ["--list", "--output", outputDirectory.path, "--case", id]
+        )
+        XCTAssertEqual(bootstrap.status, 0, bootstrap.output)
+        XCTAssertTrue(bootstrap.output.contains("DONE \(id)"), bootstrap.output)
+        let journalURL = outputDirectory.appendingPathComponent("accepted-recordings.jsonl")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: journalURL.path))
+
+        try Data("deliberately corrupt".utf8).write(to: manifestURL)
+        let recovered = try runRecorder(
+            ["--list", "--output", outputDirectory.path, "--case", id]
+        )
+        XCTAssertEqual(recovered.status, 0, recovered.output)
+        XCTAssertTrue(recovered.output.contains("manifest.json is unreadable"), recovered.output)
+        XCTAssertTrue(recovered.output.contains("DONE \(id)"), recovered.output)
+        XCTAssertTrue(recovered.output.contains("1 accepted take(s) protected"), recovered.output)
+        XCTAssertEqual(
+            try Support.parseRecordingManifest(Data(contentsOf: manifestURL)).recordings,
+            [recording]
+        )
+
+        // Simulate termination after the replacement was journaled and its
+        // normalized WAV was written, but before the atomic rename occurred.
+        var replacementWAV = wav
+        replacementWAV[44] = 2
+        let replacement = Support.Recording(
+            id: id, lang: .en, spokenForm: spokenForm,
+            file: "\(id).wav", sha256: Support.sha256Hex(replacementWAV)
+        )
+        var journal = try Data(contentsOf: journalURL)
+        journal.append(try JSONEncoder().encode(replacement))
+        journal.append(0x0a)
+        try journal.write(to: journalURL)
+        let temporaryURL = outputDirectory.appendingPathComponent(".\(id).tmp.wav")
+        try replacementWAV.write(to: temporaryURL)
+        try Data("deliberately corrupt again".utf8).write(to: manifestURL)
+
+        let interruptedSave = try runRecorder(
+            ["--list", "--output", outputDirectory.path, "--case", id]
+        )
+        XCTAssertEqual(interruptedSave.status, 0, interruptedSave.output)
+        XCTAssertTrue(
+            interruptedSave.output.contains("Recovered interrupted save for \(id)"),
+            interruptedSave.output
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporaryURL.path))
+        XCTAssertEqual(
+            try Data(contentsOf: outputDirectory.appendingPathComponent("\(id).wav")),
+            replacementWAV
+        )
+        XCTAssertEqual(
+            try Support.parseRecordingManifest(Data(contentsOf: manifestURL)).recordings,
+            [replacement]
+        )
+    }
+
     /// Regression: ffmpeg-backed enumeration could remain alive forever on
     /// macOS. The recorder now uses in-process AVFoundation discovery and
     /// must return without requiring ffmpeg or microphone capture.
@@ -305,6 +390,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(run.status, 0, run.output)
         XCTAssertTrue(run.output.contains("AVFoundation audio inputs:"), run.output)
         XCTAssertTrue(run.output.contains("[default] System default input"), run.output)
+        XCTAssertFalse(run.output.contains("DeprecatedDeclaration"), run.output)
     }
 
     func testHumanRecorderAdvertisesFastDefaultReviewFlow() throws {

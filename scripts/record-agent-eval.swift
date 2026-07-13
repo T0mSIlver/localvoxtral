@@ -20,7 +20,7 @@ struct Stratum: Decodable {
     let cases: [CorpusCase]
 }
 
-struct Recording: Codable {
+struct Recording: Codable, Equatable {
     let id: String
     let lang: String
     let spokenForm: String
@@ -57,6 +57,7 @@ enum HarnessError: Error, CustomStringConvertible {
 
 let schemaVersion = 1
 let dataFormat = "pcm_s16le@16000Hz-mono"
+let recoveryJournalFileName = "accepted-recordings.jsonl"
 let fileManager = FileManager.default
 let scriptURL = URL(fileURLWithPath: #filePath)
 let repoRoot = scriptURL.deletingLastPathComponent().deletingLastPathComponent()
@@ -132,7 +133,11 @@ func findExecutable(_ name: String, additional: [String] = []) -> String? {
 /// combinations even after it prints the list; device discovery itself does
 /// not require opening the microphone or starting a child process.
 func listAudioDevices() {
-    let devices = AVCaptureDevice.devices(for: .audio)
+    let devices = AVCaptureDevice.DiscoverySession(
+        deviceTypes: [.microphone],
+        mediaType: .audio,
+        position: .unspecified
+    ).devices
     print("AVFoundation audio inputs:")
     print("  [default] System default input (recommended)")
     if devices.isEmpty {
@@ -247,15 +252,20 @@ func analyzeWAV(_ wav: Data) throws -> WAVAnalysis {
     )
 }
 
-func loadManifest(at url: URL) throws -> Manifest {
+func loadManifest(at url: URL) -> Manifest {
     guard fileManager.fileExists(atPath: url.path) else {
         return Manifest(schemaVersion: schemaVersion, dataFormat: dataFormat, recordings: [])
     }
-    let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
-    guard manifest.schemaVersion == schemaVersion, manifest.dataFormat == dataFormat else {
-        throw HarnessError.message("unsupported manifest schema or data format at \(url.path)")
+    do {
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
+        guard manifest.schemaVersion == schemaVersion, manifest.dataFormat == dataFormat else {
+            throw HarnessError.message("unsupported schema or data format")
+        }
+        return manifest
+    } catch {
+        print("Warning: manifest.json is unreadable (\(error)); recovering accepted takes from the journal.")
+        return Manifest(schemaVersion: schemaVersion, dataFormat: dataFormat, recordings: [])
     }
-    return manifest
 }
 
 func writeManifest(_ entries: [String: Recording], to url: URL) throws {
@@ -271,17 +281,99 @@ func writeManifest(_ entries: [String: Recording], to url: URL) throws {
     try data.write(to: url, options: .atomic)
 }
 
-func isComplete(_ item: CorpusCase, entry: Recording?, directory: URL) -> Bool {
-    guard let entry,
-          entry.lang == item.lang,
-          entry.spokenForm == item.spokenForm,
-          entry.file == "\(item.id).wav"
+/// The manifest is convenient for the eval, while this append-only journal is
+/// the durable source of truth for the recorder. Each accepted take is flushed
+/// here before its WAV is installed. On restart, a journal entry can recover
+/// either the installed WAV or the still-pending temporary WAV.
+func appendRecoveryRecord(_ recording: Recording, to url: URL) throws {
+    var data = try JSONEncoder().encode(recording)
+    data.append(0x0a)
+    if !fileManager.fileExists(atPath: url.path) {
+        guard fileManager.createFile(atPath: url.path, contents: nil) else {
+            throw HarnessError.message("could not create recovery journal at \(url.path)")
+        }
+    }
+    let handle = try FileHandle(forWritingTo: url)
+    defer { try? handle.close() }
+    try handle.seekToEnd()
+    try handle.write(contentsOf: data)
+    try handle.synchronize()
+}
+
+func loadRecoveryRecords(at url: URL) -> [Recording] {
+    guard let data = try? Data(contentsOf: url), !data.isEmpty else { return [] }
+    let decoder = JSONDecoder()
+    var records: [Recording] = []
+    var ignoredLines = 0
+    for line in data.split(separator: 0x0a) {
+        do {
+            records.append(try decoder.decode(Recording.self, from: Data(line)))
+        } catch {
+            ignoredLines += 1
+        }
+    }
+    if ignoredLines > 0 {
+        print("Warning: ignored \(ignoredLines) incomplete recovery-journal line(s).")
+    }
+    return records
+}
+
+func atomicallyInstall(_ source: URL, at destination: URL) throws {
+    let result = source.path.withCString { sourcePath in
+        destination.path.withCString { destinationPath in
+            Darwin.rename(sourcePath, destinationPath)
+        }
+    }
+    guard result == 0 else {
+        let code = errno
+        throw HarnessError.message(
+            "could not atomically save \(destination.lastPathComponent): "
+                + String(cString: strerror(code))
+        )
+    }
+}
+
+func recordingMatches(_ recording: Recording, item: CorpusCase) -> Bool {
+    recording.id == item.id
+        && recording.lang == item.lang
+        && recording.spokenForm == item.spokenForm
+        && recording.file == "\(item.id).wav"
+}
+
+func dataMatches(_ recording: Recording, at url: URL) -> Bool {
+    guard let data = try? Data(contentsOf: url),
+          (try? analyzeWAV(data)) != nil
     else { return false }
-    let url = directory.appendingPathComponent(entry.file)
-    guard let data = try? Data(contentsOf: url), (try? analyzeWAV(data)) != nil else {
+    return sha256(data) == recording.sha256
+}
+
+/// Recover a fully accepted entry. If the process stopped after journaling but
+/// before the atomic rename, finish installing the normalized temporary WAV.
+func recoverRecording(
+    _ recording: Recording,
+    item: CorpusCase,
+    directory: URL,
+    mayInstallTemporary: Bool
+) -> Bool {
+    guard recordingMatches(recording, item: item) else { return false }
+    let destination = directory.appendingPathComponent(recording.file)
+    if dataMatches(recording, at: destination) { return true }
+    guard mayInstallTemporary else { return false }
+    let temporary = directory.appendingPathComponent(".\(item.id).tmp.wav")
+    guard dataMatches(recording, at: temporary) else { return false }
+    do {
+        try atomicallyInstall(temporary, at: destination)
+        print("Recovered interrupted save for \(item.id).")
+        return true
+    } catch {
+        print("Warning: could not recover \(item.id): \(error)")
         return false
     }
-    return sha256(data) == entry.sha256
+}
+
+func isComplete(_ item: CorpusCase, entry: Recording?, directory: URL) -> Bool {
+    guard let entry, recordingMatches(entry, item: item) else { return false }
+    return dataMatches(entry, at: directory.appendingPathComponent(entry.file))
 }
 
 func play(_ url: URL) {
@@ -477,15 +569,42 @@ do {
     }
     try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
     let manifestURL = outputDirectory.appendingPathComponent("manifest.json")
-    let loadedManifest = try loadManifest(at: manifestURL)
-    let currentIDs = Set(allCases.map(\.id))
+    let journalURL = outputDirectory.appendingPathComponent(recoveryJournalFileName)
+    let loadedManifest = loadManifest(at: manifestURL)
+    let casesByID = Dictionary(uniqueKeysWithValues: allCases.map { ($0.id, $0) })
     var entries: [String: Recording] = [:]
-    for recording in loadedManifest.recordings where currentIDs.contains(recording.id) {
-        guard entries[recording.id] == nil else {
-            throw HarnessError.message("duplicate recording id in manifest: \(recording.id)")
+    var manifestIDs = Set<String>()
+    for recording in loadedManifest.recordings {
+        guard manifestIDs.insert(recording.id).inserted else {
+            print("Warning: ignored duplicate manifest entry for \(recording.id).")
+            continue
         }
+        guard let item = casesByID[recording.id],
+              recoverRecording(
+                  recording, item: item, directory: outputDirectory,
+                  mayInstallTemporary: false
+              )
+        else { continue }
         entries[recording.id] = recording
     }
+    let recoveryRecords = loadRecoveryRecords(at: journalURL)
+    for recording in recoveryRecords {
+        guard let item = casesByID[recording.id],
+              recoverRecording(
+                  recording, item: item, directory: outputDirectory,
+                  mayInstallTemporary: true
+              )
+        else { continue }
+        entries[recording.id] = recording
+    }
+    // One-time migration for takes created by older recorder versions. Once
+    // these records are synced, manifest loss cannot hide accepted WAVs.
+    for recording in entries.values.sorted(by: { $0.id < $1.id })
+    where !recoveryRecords.contains(recording)
+    {
+        try appendRecoveryRecord(recording, to: journalURL)
+    }
+    try writeManifest(entries, to: manifestURL)
     // Abandoned temporary takes never affect resume or eval.
     for file in (try? fileManager.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)) ?? []
     where file.lastPathComponent.hasSuffix(".tmp.wav")
@@ -501,6 +620,7 @@ do {
     print("Output: \(outputDirectory.path)")
     print("Corpus speech cases: \(allCases.count); complete: \(completeCount); remaining: \(allCases.count - completeCount)")
     print("Manifest: schema \(schemaVersion), format \(dataFormat)")
+    print("Recovery journal: \(entries.count) accepted take(s) protected")
     print("Microphone: AVFoundation audio input \(options.device) (use --list-devices to inspect)\n")
 
     if options.listOnly {
@@ -557,16 +677,17 @@ do {
                 print("[Return] accept  [p] play  [r] re-record  [s] skip  [q] quit: ", terminator: "")
                 switch (readLine() ?? "q").lowercased() {
                 case "", "a":
-                    try? fileManager.removeItem(at: destination)
-                    try fileManager.moveItem(at: temporary, to: destination)
-                    let data = try Data(contentsOf: destination)
-                    entries[item.id] = Recording(
+                    let data = try Data(contentsOf: temporary)
+                    let recording = Recording(
                         id: item.id,
                         lang: item.lang,
                         spokenForm: item.spokenForm,
                         file: destination.lastPathComponent,
                         sha256: sha256(data)
                     )
+                    try appendRecoveryRecord(recording, to: journalURL)
+                    try atomicallyInstall(temporary, at: destination)
+                    entries[item.id] = recording
                     try writeManifest(entries, to: manifestURL)
                     print("Accepted \(item.id); progress saved.")
                     break takeLoop
