@@ -206,11 +206,13 @@ snapshot_defaults || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to
 # Capture the app as a NEW USER sees it, not as this Mac happens to be set up:
 # clearing the domain drops personal and demo-staged values (record-demo leaves
 # a 22 pt overlay; opt-in features may be switched on), so the shots show real
-# defaults. AppleLanguages pins the app to English regardless of the Mac's
-# locale, so numbers format for this English README ("3.3 GB", not "3,3 GB").
-# Both keys live in the snapshotted domain and are restored on exit.
+# defaults. AppleLanguages pins the app's language and AppleLocale its region
+# — the region is what byte/number formatting follows, so a French Mac renders
+# "3,3 GB" without it; this README is English and wants "3.3 GB". All these
+# keys live in the snapshotted domain and are restored on exit.
 defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
 defaults write "$BUNDLE_ID" AppleLanguages -array en-US
+defaults write "$BUNDLE_ID" AppleLocale -string en_US
 defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
 LAUNCHED_APP=1
 open "$APP_PATH"
