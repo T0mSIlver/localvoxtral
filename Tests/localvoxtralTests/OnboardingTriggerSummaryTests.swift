@@ -27,6 +27,15 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:])
     }
 
+    /// A store in keyboard-shortcut mode. A fresh install now seeds the
+    /// modifier-only gesture on, so the shortcut cases must turn it off to say
+    /// which trigger they are exercising rather than leaning on a default.
+    private func makeKeyboardShortcutStore() -> SettingsStore {
+        let store = makeStore()
+        store.modifierOnlyHotKeyEnabled = false
+        return store
+    }
+
     // MARK: - DictationShortcutFormatter
 
     func testFormatter_optionSpace() {
@@ -67,10 +76,9 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
         XCTAssertTrue(summary.isModifierOnly)
     }
 
-    func testSummary_keyboardDefault_showsOverlayShortcut() {
-        let store = makeStore()
-        // Fresh defaults: keyboard shortcuts, overlay = Option+Space, no live paste.
-        XCTAssertFalse(store.modifierOnlyHotKeyEnabled)
+    func testSummary_keyboardShortcuts_showsOverlayShortcut() {
+        // Keyboard-shortcut mode: overlay = Option+Space, no live paste.
+        let store = makeKeyboardShortcutStore()
 
         let summary = DictationTriggerSummary.make(settings: store)
 
@@ -80,7 +88,7 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
     }
 
     func testSummary_keyboardWithLivePaste_mentionsBoth() {
-        let store = makeStore()
+        let store = makeKeyboardShortcutStore()
         store.setLivePasteShortcut(
             DictationShortcut(
                 keyCode: UInt32(kVK_ANSI_L), carbonModifierFlags: UInt32(cmdKey | optionKey)))
@@ -92,7 +100,7 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
     }
 
     func testSummary_onlyLivePaste_showsLivePasteShortcut() {
-        let store = makeStore()
+        let store = makeKeyboardShortcutStore()
         store.setOverlayBufferShortcut(nil)
         store.setLivePasteShortcut(
             DictationShortcut(
@@ -105,7 +113,7 @@ final class OnboardingTriggerSummaryTests: XCTestCase {
     }
 
     func testSummary_noShortcut_pointsToMenuBar() {
-        let store = makeStore()
+        let store = makeKeyboardShortcutStore()
         store.setOverlayBufferShortcut(nil)
         // Live paste is unset by default.
 

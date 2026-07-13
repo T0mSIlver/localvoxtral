@@ -1,0 +1,106 @@
+import Foundation
+import XCTest
+
+@testable import localvoxtral
+
+/// The out-of-box defaults a first-time user gets, and — just as important —
+/// the ones an existing install must NOT be given behind the user's back.
+@MainActor
+final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
+    private var defaults: UserDefaults!
+    private var defaultsSuiteName = ""
+
+    private static let onboardingKey = "settings.onboarding_completed"
+    private static let legacyBackendModeKey = "settings.backend_mode"
+    private static let polishingEnabledKey = "settings.llm_polishing_enabled"
+    private static let modifierOnlyKey = "settings.modifier_only_hotkey_enabled"
+
+    override func setUp() async throws {
+        try await super.setUp()
+        defaultsSuiteName = "localvoxtral.SettingsStoreOutOfBoxDefaultsTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+        self.defaults = defaults
+    }
+
+    override func tearDown() async throws {
+        defaults?.removePersistentDomain(forName: defaultsSuiteName)
+        defaults = nil
+        defaultsSuiteName = ""
+        try await super.tearDown()
+    }
+
+    private func makeStore(environment: [String: String] = [:]) -> SettingsStore {
+        SettingsStore(defaults: defaults, environment: environment)
+    }
+
+    // MARK: - Fresh install
+
+    func testFreshInstall_enablesTheModifierGesture() {
+        let store = makeStore()
+
+        XCTAssertTrue(store.modifierOnlyHotKeyEnabled)
+    }
+
+    func testFreshInstall_seedSurvivesTheSecondLaunch() {
+        // The first launch persists the backend-mode keys, so by the second
+        // launch this install no longer looks fresh. If the seed were left to
+        // the load fallback (false) instead of being written, the gesture would
+        // silently switch itself back off here.
+        _ = makeStore()
+
+        let secondLaunch = makeStore()
+
+        XCTAssertTrue(secondLaunch.modifierOnlyHotKeyEnabled)
+    }
+
+    func testFreshInstall_leavesPolishingToTheOnboardingWizard() {
+        // The wizard enables polishing (consent defaults on) *together with*
+        // downloading the model. Seeding it here would strand a user who
+        // declines: that path leaves the key unwritten and relies on this
+        // fallback, so a seeded `true` would survive as polishing-on with no
+        // model on disk.
+        let store = makeStore()
+
+        XCTAssertFalse(store.llmPolishingEnabled)
+        XCTAssertNil(defaults.object(forKey: Self.polishingEnabledKey))
+    }
+
+    func testFreshInstall_leavesTheSurroundingsFeaturesOptIn() {
+        // Repo vocabulary and clipboard-as-context feed the user's surroundings
+        // to the polisher; they stay a decision the user makes.
+        let store = makeStore()
+
+        XCTAssertFalse(store.repoVocabularyEnabled)
+        XCTAssertFalse(store.polishClipboardContextEnabled)
+    }
+
+    func testFreshInstall_neverOverwritesAChoiceTheUserAlreadyMade() {
+        defaults.set(false, forKey: Self.modifierOnlyKey)
+
+        let store = makeStore()
+
+        XCTAssertFalse(store.modifierOnlyHotKeyEnabled)
+    }
+
+    // MARK: - Existing install (an update must change nothing)
+
+    func testExistingInstall_thatCompletedOnboarding_keepsTheGestureOff() {
+        defaults.set(true, forKey: Self.onboardingKey)
+
+        let store = makeStore()
+
+        XCTAssertFalse(store.modifierOnlyHotKeyEnabled)
+        // Nothing was written on its behalf.
+        XCTAssertNil(defaults.object(forKey: Self.modifierOnlyKey))
+    }
+
+    func testExistingInstall_detectedByLegacyBackendModeKey_keepsTheGestureOff() {
+        // A pre-onboarding install: no onboarding flag, but configured settings.
+        defaults.set(BackendMode.managedLocal.rawValue, forKey: Self.legacyBackendModeKey)
+
+        let store = makeStore()
+
+        XCTAssertFalse(store.modifierOnlyHotKeyEnabled)
+    }
+}

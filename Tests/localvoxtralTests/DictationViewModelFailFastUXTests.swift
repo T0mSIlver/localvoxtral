@@ -768,6 +768,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         viewModel.settings.setOverlayBufferShortcut(nil)
+        viewModel.settings.modifierOnlyHotKeyEnabled = false
         viewModel.settings.polishingBackendMode = .externalURL
         viewModel.settings.llmPolishingEnabled = true
         viewModel.settings.onboardingCompleted = true
@@ -910,6 +911,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste, backendManager: backendManager)
         // Polishing is enabled but unreachable (no gesture, no overlay
         // shortcut, Live output mode), so launch must warm dictation only.
+        viewModel.settings.modifierOnlyHotKeyEnabled = false
         viewModel.settings.setOverlayBufferShortcut(nil)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
