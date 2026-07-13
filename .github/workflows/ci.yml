@@ -128,6 +128,10 @@ jobs:
           key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
           restore-keys: swiftpm-${{ runner.os }}-
 
+      - name: Installer asset-resolution regression test (issue #131)
+        # Pure bash against a stubbed curl — no network, sub-second.
+        run: ./scripts/ci/test-install-resolve.sh
+
       - name: Format lint (advisory)
         # Advisory until the one-shot tree reformat lands: swift-format exits 0
         # on findings without --strict. After the reformat, add --strict here

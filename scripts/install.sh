@@ -55,9 +55,13 @@ resolve_zip_url() {
     *) die "Could not fetch GitHub release metadata from $api_url (HTTP $http_code)" ;;
   esac
 
+  # Releases also attach debug-symbol archives (*.dSYM.zip), and the GitHub
+  # API can list those before the app zip — filter them out or the installer
+  # downloads symbols instead of the app (issue #131).
   zip_urls="$(printf '%s\n' "$release_json" |
     grep '"browser_download_url"[[:space:]]*:' |
-    sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' || true)"
+    sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' |
+    grep -v '\.dSYM\.zip$' || true)"
   zip_url="$(printf '%s\n' "$zip_urls" | sed -n '1p')"
 
   [ -n "$zip_url" ] || die "No .zip asset found for release '${VERSION}'. Check https://github.com/${REPO}/releases"
