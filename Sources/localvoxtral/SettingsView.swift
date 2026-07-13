@@ -720,7 +720,7 @@ private struct TextProcessingSettingsPane: View {
                                 .labelsHidden()
                                 .toggleStyle(.switch)
 
-                            SettingsHelpText("Extra cleanup for prompts dictated to coding agents.")
+                            SettingsHelpText("Extra instructions for prompts dictated to coding agents.")
                         }
                     }
 
@@ -743,7 +743,7 @@ private struct TextProcessingSettingsPane: View {
                                 .toggleStyle(.switch)
 
                             SettingsHelpText(
-                                "Grounds technical terms against your clipboard. Applies only with a local polishing endpoint — your clipboard never leaves this Mac."
+                                "Grounds technical terms against your clipboard. Local polishing endpoints only."
                             )
                         }
                     }
