@@ -17,7 +17,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/github/license/T0mSIlver/localvoxtral" alt="License" /></a>
 </p>
 
-https://github.com/user-attachments/assets/d1c42aaf-6180-440a-bce4-3b90306ef3e2
+https://github.com/user-attachments/assets/81a341ff-0c53-4fcf-9b7f-ef148b24dfae
 
 Unlike tools that transcribe after you stop speaking, localvoxtral streams text as the audio arrives, powered by Mistral AI's [Voxtral Mini 4B Realtime](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) running on your own Apple Silicon. It is built first for [prompting coding agents by voice](#terminals--coding-agents), and it stays a solid general dictation app everywhere else. Everything runs on-device — no account, no subscription, nothing leaving your Mac (see [Privacy](#privacy)).
 

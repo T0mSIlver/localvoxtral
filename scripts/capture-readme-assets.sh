@@ -214,6 +214,17 @@ defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
 defaults write "$BUNDLE_ID" AppleLanguages -array en-US
 defaults write "$BUNDLE_ID" AppleLocale -string en_US
 defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
+
+# The two settings a real first-time user ends up with, which marking onboarding
+# complete above would otherwise hide — so the shots depict a state that exists:
+#   - the gesture: SettingsStore seeds it only on a never-launched install, and
+#     the onboarding key we just wrote makes this install look launched;
+#   - polishing: the wizard enables it (consent defaults on) while downloading
+#     the model, and we skip the wizard.
+# Keep in step with SettingsStore.seedFreshInstallDefaults and
+# OnboardingViewModel.startDownloads.
+defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
+defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
 LAUNCHED_APP=1
 open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
