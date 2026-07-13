@@ -307,6 +307,13 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(run.output.contains("[default] System default input"), run.output)
     }
 
+    func testHumanRecorderAdvertisesFastDefaultReviewFlow() throws {
+        let run = try runRecorder(["--help"])
+        XCTAssertEqual(run.status, 0, run.output)
+        XCTAssertTrue(run.output.contains("Playback is optional"), run.output)
+        XCTAssertTrue(run.output.contains("Return\naccepts a take"), run.output)
+    }
+
     private func runRecorder(_ arguments: [String]) throws -> (status: Int32, output: String) {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

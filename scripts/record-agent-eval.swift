@@ -76,8 +76,9 @@ func usage() -> Never {
           -h, --help          Show this help
 
         Takes are written to the gitignored directory
-        EvalRecordings/agent-dictation/<set>/. The tool plays every take back;
-        accept, re-record, skip, or quit. Run it again to resume.
+        EvalRecordings/agent-dictation/<set>/. Playback is optional; Return
+        accepts a take, while single keys replay, re-record, skip, or quit.
+        Run the command again to resume.
         """
     )
     exit(0)
@@ -293,15 +294,50 @@ func play(_ url: URL) {
     process.waitUntilExit()
 }
 
-func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAnalysis {
-    try? fileManager.removeItem(at: temporary)
+/// Convert only after capture has stopped. Capturing and resampling in the
+/// same real-time ffmpeg graph produced audible crackles on the owner Mac,
+/// while native-rate recordings from Photo Booth were clean. Keeping the
+/// realtime graph to a PCM file write avoids resampler work and timestamp
+/// correction on the capture thread; the finished WAV is then normalized to
+/// the exact 16 kHz mono format voxmlx expects.
+func normalizeCapturedTake(ffmpeg: String, source: URL, destination: URL) throws {
+    try? fileManager.removeItem(at: destination)
     let process = Process()
     let errors = Pipe()
     process.executableURL = URL(fileURLWithPath: ffmpeg)
     process.arguments = [
         "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-i", source.path,
+        "-map", "0:a:0",
+        "-af", "aresample=16000:async=1:first_pts=0",
+        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+        destination.path,
+    ]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = errors
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        let detail = String(
+            decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
+        )
+        throw HarnessError.message("ffmpeg could not normalize the take: \(detail)")
+    }
+}
+
+func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAnalysis {
+    try? fileManager.removeItem(at: temporary)
+    let nativeCapture = temporary.appendingPathExtension("native.tmp.wav")
+    try? fileManager.removeItem(at: nativeCapture)
+    defer { try? fileManager.removeItem(at: nativeCapture) }
+    let process = Process()
+    let errors = Pipe()
+    process.executableURL = URL(fileURLWithPath: ffmpeg)
+    process.arguments = [
+        "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-thread_queue_size", "1024",
         "-f", "avfoundation", "-i", ":\(device)",
-        "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", temporary.path,
+        "-map", "0:a:0", "-c:a", "pcm_s16le", nativeCapture.path,
     ]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = errors
@@ -315,10 +351,14 @@ func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAna
     _ = readLine()
     process.interrupt()
     process.waitUntilExit()
-    guard let data = try? Data(contentsOf: temporary) else {
+    guard fileManager.fileExists(atPath: nativeCapture.path) else {
         let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         throw HarnessError.message("ffmpeg did not produce a WAV: \(detail)")
     }
+    try normalizeCapturedTake(
+        ffmpeg: ffmpeg, source: nativeCapture, destination: temporary
+    )
+    let data = try Data(contentsOf: temporary)
     return try analyzeWAV(data)
 }
 
@@ -430,12 +470,10 @@ do {
             if analysis.peak < 0.005 {
                 print("Warning: this take is extremely quiet; listen carefully before accepting.")
             }
-            print("Playing take…")
-            play(temporary)
             reviewLoop: while true {
-                print("[a] accept  [r] re-record  [p] play again  [s] skip  [q] save and quit: ", terminator: "")
-                switch (readLine() ?? "r").lowercased() {
-                case "a":
+                print("[Return] accept  [p] play  [r] re-record  [s] skip  [q] quit: ", terminator: "")
+                switch (readLine() ?? "q").lowercased() {
+                case "", "a":
                     try? fileManager.removeItem(at: destination)
                     try fileManager.moveItem(at: temporary, to: destination)
                     let data = try Data(contentsOf: destination)
@@ -456,7 +494,7 @@ do {
                     try? fileManager.removeItem(at: temporary)
                     try writeManifest(entries, to: manifestURL)
                     exit(0)
-                default: print("Choose a, r, p, s, or q.")
+                default: print("Press Return to accept, or choose p, r, s, or q.")
                 }
             }
         }
