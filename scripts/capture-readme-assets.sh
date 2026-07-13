@@ -17,6 +17,10 @@ set -euo pipefail
 #   - Accessibility    (System Events drives the menu and settings tabs)
 #   - Screen Recording (screencapture -l reads window contents)
 #
+# The run takes over the GUI session (appearance switch, app launch, menus,
+# synthetic keystrokes), so it announces itself audibly and waits 3 seconds
+# before the first focus-stealing action, and announces completion/failure.
+#
 # The demo video is separate — see scripts/record-demo.sh / record-demo.yml.
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -106,6 +110,8 @@ HELPER="$(mktemp -t lv-windowid).swift"
 # capture step would otherwise strand a localvoxtral instance (and possibly
 # an open menu) in the GUI session, poisoning the next run.
 LAUNCHED_APP=0
+ANNOUNCED_TAKEOVER=0
+CAPTURE_COMPLETED=0
 cleanup() {
   rm -f "$HELPER" "$PREFLIGHT"
   if [[ "$LAUNCHED_APP" == 1 ]]; then
@@ -120,8 +126,24 @@ cleanup() {
   if [[ -n "${ORIGINAL_DARK_MODE:-}" ]]; then
     osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
   fi
+  # Owner rule: announce completion audibly whenever the script took over the
+  # GUI session, so an unattended run never ends silently.
+  if [[ "$ANNOUNCED_TAKEOVER" == 1 ]]; then
+    if [[ "$CAPTURE_COMPLETED" == 1 ]]; then
+      say "capture readme assets done" >/dev/null 2>&1 || true
+    else
+      say "capture readme assets failed" >/dev/null 2>&1 || true
+    fi
+  fi
 }
 trap cleanup EXIT INT TERM HUP
+
+# --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action ---
+# Everything below drives the GUI session (appearance switch, app launch,
+# menus, synthetic keystrokes) — warn the human at the Mac first.
+say "capture readme assets taking control in 3" >/dev/null 2>&1 || true
+ANNOUNCED_TAKEOVER=1
+sleep 3
 
 # Appearance isolation: README assets are always captured in dark mode so
 # reruns are deterministic regardless of the Mac's current (possibly
@@ -243,4 +265,5 @@ OSA
 done
 
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+CAPTURE_COMPLETED=1
 echo "Done. Review with: open $ASSETS_DIR"
