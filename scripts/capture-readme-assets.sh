@@ -17,6 +17,10 @@ set -euo pipefail
 #   - Accessibility    (System Events drives the menu and settings tabs)
 #   - Screen Recording (screencapture -l reads window contents)
 #
+# The run takes over the GUI session (appearance switch, app launch, menus,
+# synthetic keystrokes), so it announces itself audibly and waits 3 seconds
+# before the first focus-stealing action, and announces completion/failure.
+#
 # The demo video is separate — see scripts/record-demo.sh / record-demo.yml.
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -106,6 +110,8 @@ HELPER="$(mktemp -t lv-windowid).swift"
 # capture step would otherwise strand a localvoxtral instance (and possibly
 # an open menu) in the GUI session, poisoning the next run.
 LAUNCHED_APP=0
+ANNOUNCED_TAKEOVER=0
+CAPTURE_COMPLETED=0
 cleanup() {
   rm -f "$HELPER" "$PREFLIGHT"
   if [[ "$LAUNCHED_APP" == 1 ]]; then
@@ -120,8 +126,24 @@ cleanup() {
   if [[ -n "${ORIGINAL_DARK_MODE:-}" ]]; then
     osascript -e "tell application \"System Events\" to tell appearance preferences to set dark mode to ${ORIGINAL_DARK_MODE}" >/dev/null 2>&1 || true
   fi
+  # Owner rule: announce completion audibly whenever the script took over the
+  # GUI session, so an unattended run never ends silently.
+  if [[ "$ANNOUNCED_TAKEOVER" == 1 ]]; then
+    if [[ "$CAPTURE_COMPLETED" == 1 ]]; then
+      say "capture readme assets done" >/dev/null 2>&1 || true
+    else
+      say "capture readme assets failed" >/dev/null 2>&1 || true
+    fi
+  fi
 }
 trap cleanup EXIT INT TERM HUP
+
+# --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action ---
+# Everything below drives the GUI session (appearance switch, app launch,
+# menus, synthetic keystrokes) — warn the human at the Mac first.
+say "capture readme assets taking control in 3" >/dev/null 2>&1 || true
+ANNOUNCED_TAKEOVER=1
+sleep 3
 
 # Appearance isolation: README assets are always captured in dark mode so
 # reruns are deterministic regardless of the Mac's current (possibly
@@ -181,7 +203,28 @@ if pgrep -xq "$APP_PROCESS"; then
   exit 1
 fi
 snapshot_defaults || { echo "Could not snapshot $BUNDLE_ID defaults; refusing to mutate owner defaults." >&2; exit 1; }
+# Capture the app as a NEW USER sees it, not as this Mac happens to be set up:
+# clearing the domain drops personal and demo-staged values (record-demo leaves
+# a 22 pt overlay; opt-in features may be switched on), so the shots show real
+# defaults. AppleLanguages pins the app's language and AppleLocale its region
+# — the region is what byte/number formatting follows, so a French Mac renders
+# "3,3 GB" without it; this README is English and wants "3.3 GB". All these
+# keys live in the snapshotted domain and are restored on exit.
+defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+defaults write "$BUNDLE_ID" AppleLanguages -array en-US
+defaults write "$BUNDLE_ID" AppleLocale -string en_US
 defaults write "$BUNDLE_ID" "settings.onboarding_completed" -bool true
+
+# The two settings a real first-time user ends up with, which marking onboarding
+# complete above would otherwise hide — so the shots depict a state that exists:
+#   - the gesture: SettingsStore seeds it only on a never-launched install, and
+#     the onboarding key we just wrote makes this install look launched;
+#   - polishing: the wizard enables it (consent defaults on) while downloading
+#     the model, and we skip the wizard.
+# Keep in step with SettingsStore.seedFreshInstallDefaults and
+# OnboardingViewModel.startDownloads.
+defaults write "$BUNDLE_ID" "settings.modifier_only_hotkey_enabled" -bool true
+defaults write "$BUNDLE_ID" "settings.llm_polishing_enabled" -bool true
 LAUNCHED_APP=1
 open "$APP_PATH"
 for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
@@ -243,4 +286,5 @@ OSA
 done
 
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+CAPTURE_COMPLETED=1
 echo "Done. Review with: open $ASSETS_DIR"
