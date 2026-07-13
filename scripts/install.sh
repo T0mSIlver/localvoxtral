@@ -36,7 +36,7 @@ resolve_release_api_url() {
 }
 
 resolve_zip_url() {
-  local api_url http_code release_json release_json_file zip_url zip_urls
+  local api_url http_code release_json release_json_file tag zip_url zip_urls
 
   api_url="$(resolve_release_api_url)"
   release_json_file="$(mktemp "${TMPDIR:-/tmp}/localvoxtral-release.XXXXXX")"
@@ -55,16 +55,25 @@ resolve_zip_url() {
     *) die "Could not fetch GitHub release metadata from $api_url (HTTP $http_code)" ;;
   esac
 
-  # Releases also attach debug-symbol archives (*.dSYM.zip), and the GitHub
-  # API can list those before the app zip — filter them out or the installer
-  # downloads symbols instead of the app (issue #131).
+  # Select the app asset by its exact, contractual name: release.yml has
+  # named it localvoxtral-<tag>.zip in every release ever published. Picking
+  # by position or by excluding known-bad names broke in v0.7.4, when the API
+  # listed the dSYM archive before the app zip and the installer downloaded
+  # debug symbols (issue #131); exact-name selection is immune to new assets
+  # appearing in any order. The tag comes from the metadata itself so
+  # VERSION=latest resolves correctly too.
+  tag="$(printf '%s\n' "$release_json" |
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+    sed -n '1p')"
+  [ -n "$tag" ] || die "Could not read tag_name from GitHub release metadata for '${VERSION}'"
+
   zip_urls="$(printf '%s\n' "$release_json" |
     grep '"browser_download_url"[[:space:]]*:' |
-    sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' |
-    grep -v '\.dSYM\.zip$' || true)"
-  zip_url="$(printf '%s\n' "$zip_urls" | sed -n '1p')"
+    sed -n 's/.*"browser_download_url"[[:space:]]*:[[:space:]]*"\([^"]*\.zip\)".*/\1/p' || true)"
+  zip_url="$(printf '%s\n' "$zip_urls" |
+    awk -v want="localvoxtral-${tag}.zip" -F/ '$NF == want { print; exit }')"
 
-  [ -n "$zip_url" ] || die "No .zip asset found for release '${VERSION}'. Check https://github.com/${REPO}/releases"
+  [ -n "$zip_url" ] || die "Release '${tag}' has no asset named localvoxtral-${tag}.zip. Check https://github.com/${REPO}/releases"
   printf '%s\n' "$zip_url"
 }
 

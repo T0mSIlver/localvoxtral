@@ -2,10 +2,13 @@
 # Regression test for install.sh release-asset resolution (issue #131).
 #
 # v0.7.4 started shipping dSYM archives next to the app zip, and the GitHub
-# API lists them first, so "take the first .zip asset" resolved the
-# debug-symbol archive and the install failed at extraction. This test runs
-# install.sh in dry-run mode against a stubbed curl serving a fixture that
-# mirrors the real v0.7.4 API asset ordering, and asserts the app zip wins.
+# API listed them first, so "take the first .zip asset" resolved the
+# debug-symbol archive and the install failed at extraction. The fix selects
+# the asset by its exact contractual name (localvoxtral-<tag>.zip, the name
+# release.yml has produced for every release), so no ordering and no future
+# extra zip asset can ever be picked by mistake. This test runs install.sh in
+# dry-run mode against a stubbed curl serving hostile fixtures and asserts
+# the app zip always wins — or that resolution fails loudly.
 #
 # Pure bash, no network, runs anywhere: ./scripts/ci/test-install-resolve.sh
 set -euo pipefail
@@ -39,18 +42,23 @@ STUB
 chmod +x "$TMP_DIR/bin/curl"
 
 run_resolve() {
-  local fixture="$1"
+  local fixture="$1" version="$2"
   PATH="$TMP_DIR/bin:$PATH" LV_TEST_FIXTURE="$fixture" \
-    LOCALVOXTRAL_INSTALL_DRYRUN=1 LOCALVOXTRAL_VERSION=v0.7.4 \
+    LOCALVOXTRAL_INSTALL_DRYRUN=1 LOCALVOXTRAL_VERSION="$version" \
     bash "$ROOT_DIR/scripts/install.sh"
 }
 
-# Case 1: real v0.7.4 asset ordering (dSYM zip listed before the app zip),
-# plus the polishd dSYM zip that release.yml attaches to newer releases.
+expected="https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.zip"
+
+# Case 1: hostile asset ordering. Mirrors the real v0.7.4 API response (dSYM
+# zip listed before the app zip, which triggered #131), plus the polishd dSYM
+# zip release.yml attaches to newer releases, plus a hypothetical future
+# non-dSYM zip listed first — the case a dSYM-only blocklist would get wrong.
 cat > "$TMP_DIR/release.json" <<'JSON'
 {
   "tag_name": "v0.7.4",
   "assets": [
+    {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4-update.zip"},
     {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.dmg"},
     {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.dmg.sha256"},
     {"browser_download_url": "https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.dSYM.zip"},
@@ -61,15 +69,15 @@ cat > "$TMP_DIR/release.json" <<'JSON'
 }
 JSON
 
-output="$(run_resolve "$TMP_DIR/release.json")" || fail "install.sh dry run exited non-zero:
+output="$(run_resolve "$TMP_DIR/release.json" v0.7.4)" || fail "install.sh dry run exited non-zero:
 $output"
 resolved="$(printf '%s\n' "$output" | sed -n 's/^Resolved zip: //p')"
-expected="https://github.com/T0mSIlver/localvoxtral/releases/download/v0.7.4/localvoxtral-v0.7.4.zip"
 [ "$resolved" = "$expected" ] ||
   fail "resolved '$resolved', expected '$expected'"
-echo "PASS: app zip wins over dSYM zips"
+echo "PASS: exact app zip wins over dSYM zips and other zip assets"
 
-# Case 2: a release with only dSYM zips must die loudly, not install symbols.
+# Case 2: a release without the contractual app zip must die loudly, not
+# fall back to whatever zip is present (here: only a dSYM archive).
 cat > "$TMP_DIR/release-dsym-only.json" <<'JSON'
 {
   "tag_name": "v0.7.4",
@@ -79,13 +87,24 @@ cat > "$TMP_DIR/release-dsym-only.json" <<'JSON'
 }
 JSON
 
-if output="$(run_resolve "$TMP_DIR/release-dsym-only.json" 2>&1)"; then
-  fail "expected failure when only dSYM zips exist, got:
+if output="$(run_resolve "$TMP_DIR/release-dsym-only.json" v0.7.4 2>&1)"; then
+  fail "expected failure when the app zip asset is missing, got:
 $output"
 fi
-printf '%s\n' "$output" | grep -q 'No .zip asset found' ||
-  fail "expected 'No .zip asset found' error, got:
+case "$output" in
+  *"has no asset named localvoxtral-v0.7.4.zip"*) ;;
+  *) fail "expected 'has no asset named' error, got:
+$output" ;;
+esac
+echo "PASS: release without the app zip fails with a clear error"
+
+# Case 3: VERSION=latest — the expected asset name must come from the
+# metadata's tag_name, not from LOCALVOXTRAL_VERSION.
+output="$(run_resolve "$TMP_DIR/release.json" latest)" || fail "install.sh dry run (latest) exited non-zero:
 $output"
-echo "PASS: dSYM-only release fails with a clear error"
+resolved="$(printf '%s\n' "$output" | sed -n 's/^Resolved zip: //p')"
+[ "$resolved" = "$expected" ] ||
+  fail "latest resolved '$resolved', expected '$expected'"
+echo "PASS: VERSION=latest resolves via the metadata tag_name"
 
 echo "OK: all install.sh resolution tests passed"
