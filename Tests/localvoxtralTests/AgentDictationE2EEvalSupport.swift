@@ -541,4 +541,113 @@ enum AgentDictationE2EEvalSupport {
             failedRequired ? "FAIL \(row.caseID) [required]" : "XFAIL \(row.caseID) (known-hard)"
         return "\(label): \(failureParts.joined(separator: " ")) — output: \(flatOutput)\(suffix)"
     }
+
+    // MARK: - Per-case inspection report
+
+    /// Sentinels bracketing the JSONL inspection report in the suite's
+    /// stdout. The SSH build gate has no file fetch-back channel, so the
+    /// remote log (`.build/last-remote.log`) is the transport: between the
+    /// sentinels, line 1 is the `ReportHeader` and every further line is one
+    /// `CaseReportRecord`.
+    static let reportBeginSentinel = "=== AGENT-E2E-INSPECTION-REPORT-BEGIN ==="
+    static let reportEndSentinel = "=== AGENT-E2E-INSPECTION-REPORT-END ==="
+
+    /// Line 1 of the report: run metadata plus the deduplicated system-prompt
+    /// table — two profiles means two entries, so per-case records reference
+    /// an index instead of repeating kilobytes 150+ times.
+    struct ReportHeader: Codable, Equatable {
+        let polishModel: String
+        let asrModel: String
+        let systemPrompts: [String]
+    }
+
+    /// Intermediate pipeline artifacts the live suite observes for one case,
+    /// beyond what `CaseResult` scores: the ASR transcript, the exact polish
+    /// request, and the model output before the token guard.
+    struct CaseCapture {
+        /// ASR output (nil when the pipeline skipped speech recognition).
+        var transcript: String?
+        /// The system prompt exactly as the production request carried it.
+        var polishSystemPrompt: String?
+        var polishUserPrompts: [String]?
+        var polishInputText: String?
+        /// Pre-guard model output (macro cases: still placeholder-form).
+        var rawModelOutput: String?
+        /// Guard-off diagnostic text as scored (macro payload substituted).
+        var guardOffOutput: String?
+    }
+
+    /// Everything the harness saw for one case, for offline inspection:
+    /// corpus inputs, pipeline artifacts, and the scored verdicts.
+    struct CaseReportRecord: Codable {
+        let caseID: String
+        let stratum: String
+        let pipeline: AgentDictationEvalCorpus.Pipeline
+        let lang: AgentDictationEvalCorpus.Language
+        let statusByMetric: [String: AgentDictationEvalCorpus.Status]
+        let spokenForm: String
+        let intendedText: String
+        let requiredTokens: [String]
+        let features: AgentDictationEvalCorpus.Features?
+        let transcript: String?
+        /// Index into `ReportHeader.systemPrompts`; nil when no polish ran.
+        let systemPromptIndex: Int?
+        let userPrompts: [String]?
+        let polishInputText: String?
+        let rawModelOutput: String?
+        let guardOffOutput: String?
+        let output: String
+        let skipReason: String?
+        let infraFailure: String?
+        let tokensFailures: [String]
+        let exactTextFailures: [String]?
+        let guardOffTokensFailures: [String]?
+        let wordAccuracyVsIntended: Double?
+    }
+
+    static func makeReportRecord(
+        evalCase: AgentDictationEvalCorpus.Case,
+        result: CaseResult,
+        capture: CaseCapture,
+        systemPromptIndex: Int?
+    ) -> CaseReportRecord {
+        CaseReportRecord(
+            caseID: result.caseID,
+            stratum: result.stratum,
+            pipeline: result.pipeline,
+            lang: result.lang,
+            statusByMetric: result.statusByMetric,
+            spokenForm: evalCase.spokenForm,
+            intendedText: evalCase.intendedText,
+            requiredTokens: evalCase.requiredTokens,
+            features: evalCase.features,
+            transcript: capture.transcript,
+            systemPromptIndex: systemPromptIndex,
+            userPrompts: capture.polishUserPrompts,
+            polishInputText: capture.polishInputText,
+            rawModelOutput: capture.rawModelOutput,
+            guardOffOutput: capture.guardOffOutput,
+            output: result.output,
+            skipReason: result.skipReason,
+            infraFailure: result.infraFailure,
+            tokensFailures: result.tokensFailures,
+            exactTextFailures: result.exactTextFailures,
+            guardOffTokensFailures: result.guardOffTokensFailures,
+            wordAccuracyVsIntended: result.wordAccuracyVsIntended
+        )
+    }
+
+    static func renderReport(
+        header: ReportHeader, records: [CaseReportRecord]
+    ) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var lines: [String] = [reportBeginSentinel]
+        lines.append(String(decoding: try encoder.encode(header), as: UTF8.self))
+        for record in records {
+            lines.append(String(decoding: try encoder.encode(record), as: UTF8.self))
+        }
+        lines.append(reportEndSentinel)
+        return lines.joined(separator: "\n")
+    }
 }

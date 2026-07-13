@@ -516,4 +516,60 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - Inspection report
+
+    func testInspectionReportRendersSentinelDelimitedJSONL() throws {
+        let evalCase = try makeCase(
+            id: "r-en-report",
+            spokenForm: "open use auth dot t s",
+            intendedText: "Open `useAuth.ts`.",
+            requiredTokens: ["useAuth.ts"]
+        )
+        var result = makeResult(caseID: "r-en-report")
+        result.output = "Open `useAuth.ts`."
+        result.wordAccuracyVsIntended = 1.0
+        var capture = Support.CaseCapture()
+        capture.transcript = "open use auth dot t s"
+        capture.polishSystemPrompt = "SYSTEM PROMPT"
+        capture.polishUserPrompts = ["user prompt with\nnewline"]
+        capture.polishInputText = "open use auth dot t s"
+        capture.rawModelOutput = "Open `useAuth.ts`."
+
+        let record = Support.makeReportRecord(
+            evalCase: evalCase, result: result, capture: capture, systemPromptIndex: 0
+        )
+        let report = try Support.renderReport(
+            header: Support.ReportHeader(
+                polishModel: "polish-model", asrModel: "asr-model",
+                systemPrompts: ["SYSTEM PROMPT"]
+            ),
+            records: [record]
+        )
+
+        let lines = report.components(separatedBy: "\n")
+        XCTAssertEqual(lines.first, Support.reportBeginSentinel)
+        XCTAssertEqual(lines.last, Support.reportEndSentinel)
+        // Sentinels + header + one record, each JSON value on ONE line (the
+        // remote log is line-oriented; embedded newlines must stay escaped).
+        XCTAssertEqual(lines.count, 4)
+
+        let header = try JSONDecoder().decode(
+            Support.ReportHeader.self, from: Data(lines[1].utf8)
+        )
+        XCTAssertEqual(header.systemPrompts, ["SYSTEM PROMPT"])
+
+        let decoded = try JSONDecoder().decode(
+            Support.CaseReportRecord.self, from: Data(lines[2].utf8)
+        )
+        XCTAssertEqual(decoded.caseID, "r-en-report")
+        XCTAssertEqual(decoded.spokenForm, "open use auth dot t s")
+        XCTAssertEqual(decoded.intendedText, "Open `useAuth.ts`.")
+        XCTAssertEqual(decoded.transcript, "open use auth dot t s")
+        XCTAssertEqual(decoded.systemPromptIndex, 0)
+        XCTAssertEqual(decoded.userPrompts, ["user prompt with\nnewline"])
+        XCTAssertEqual(decoded.rawModelOutput, "Open `useAuth.ts`.")
+        XCTAssertEqual(decoded.output, "Open `useAuth.ts`.")
+        XCTAssertEqual(decoded.wordAccuracyVsIntended, 1.0)
+    }
 }

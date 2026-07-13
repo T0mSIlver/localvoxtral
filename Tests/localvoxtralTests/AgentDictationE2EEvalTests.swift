@@ -125,6 +125,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let vocabularyCache = RepoVocabularyCache()
         let totalCases = strata.reduce(0) { $0 + $1.stratum.cases.count }
         var results: [Support.CaseResult] = []
+        var reports: [Support.CaseReportRecord] = []
+        var reportSystemPrompts: [String] = []
         var caseIndex = 0
 
         for loaded in strata {
@@ -133,7 +135,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             for evalCase in stratum.cases {
                 caseIndex += 1
                 print("agent-e2e [\(caseIndex)/\(totalCases)] \(evalCase.id)")
-                let result = await runCase(
+                let run = await runCase(
                     evalCase,
                     stratumName: stratum.stratum,
                     pipeline: stratum.resolvedPipeline,
@@ -146,7 +148,25 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     enVoice: enVoice,
                     frVoice: frVoice
                 )
-                results.append(result)
+                results.append(run.result)
+
+                var systemPromptIndex: Int?
+                if let prompt = run.capture.polishSystemPrompt {
+                    if let existing = reportSystemPrompts.firstIndex(of: prompt) {
+                        systemPromptIndex = existing
+                    } else {
+                        reportSystemPrompts.append(prompt)
+                        systemPromptIndex = reportSystemPrompts.count - 1
+                    }
+                }
+                reports.append(
+                    Support.makeReportRecord(
+                        evalCase: evalCase,
+                        result: run.result,
+                        capture: run.capture,
+                        systemPromptIndex: systemPromptIndex
+                    )
+                )
             }
         }
 
@@ -157,6 +177,23 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 + "helper: \(binary.path)"
         )
         print(board.text)
+
+        // Per-case inspection report: the remote log is the only channel back
+        // from the build host (the SSH gate has no file fetch-back), so print
+        // it between sentinels for offline extraction and inspection.
+        do {
+            let report = try Support.renderReport(
+                header: Support.ReportHeader(
+                    polishModel: enablement.polishModel,
+                    asrModel: enablement.asrModel,
+                    systemPrompts: reportSystemPrompts
+                ),
+                records: reports
+            )
+            print(report)
+        } catch {
+            print("agent-e2e: inspection report rendering failed: \(error)")
+        }
 
         // Owner policy: required cases assert INDIVIDUALLY (one failure = red
         // suite); infra rot fails too (a dead backend must redden the nightly
@@ -183,7 +220,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         vocabularyCache: RepoVocabularyCache,
         enVoice: String?,
         frVoice: String?
-    ) async -> Support.CaseResult {
+    ) async -> (result: Support.CaseResult, capture: Support.CaseCapture) {
         var result = Support.CaseResult(
             caseID: evalCase.id,
             stratum: stratumName,
@@ -191,6 +228,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             lang: evalCase.lang,
             statusByMetric: evalCase.status
         )
+        var capture = Support.CaseCapture()
 
         do {
             var polishInput = evalCase.spokenForm
@@ -202,12 +240,13 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 case .fr:
                     guard let frVoice else {
                         result.skipReason = "no French TTS voice installed (say -v ?)"
-                        return result
+                        return (result, capture)
                     }
                     voice = frVoice
                 }
                 let pcm = try synthesizedPCM16(text: evalCase.spokenForm, voice: voice)
                 polishInput = try await transcribe(pcm: pcm, enablement: enablement)
+                capture.transcript = polishInput
             }
 
             var finalOutput = polishInput
@@ -222,6 +261,10 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     vocabularyCache: vocabularyCache
                 )
                 finalOutput = polish.committedText
+                capture.polishSystemPrompt = polish.request?.systemPrompt
+                capture.polishUserPrompts = polish.request?.userPrompts
+                capture.polishInputText = polish.request?.inputText
+                capture.rawModelOutput = polish.rawModelOutput
 
                 // Guard-off diagnostic column: what the commit would look
                 // like WITHOUT PolishTokenGuard, at zero extra inference.
@@ -243,6 +286,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                             in: guardOffOutput, payload: payload
                         )
                     }
+                    capture.guardOffOutput = guardOffOutput
                     result.guardOffTokensFailures = Support.tokensFailures(
                         output: guardOffOutput.trimmingCharacters(in: .whitespacesAndNewlines),
                         evalCase: evalCase
@@ -270,7 +314,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         } catch {
             result.infraFailure = "\(error)"
         }
-        return result
+        return (result, capture)
     }
 
     // MARK: - Polish stage (production stop-commit path)
@@ -282,6 +326,10 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         /// placeholder). The guard-off column applies the commit-time payload
         /// substitution before scoring; see the call site.
         let rawModelOutput: String?
+        /// The polish request exactly as the production stop-commit path
+        /// assembled it (system prompt, user prompts, input text) — recorded
+        /// for the inspection report.
+        let request: LLMPolishingRequest?
     }
 
     private func runPolishStage(
@@ -373,9 +421,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             )
         }
         let raw = await service.lastRawPolishedText
+        let request = await service.lastRequest
         return PolishStageOutcome(
             committedText: viewModel.currentDictationEventText,
-            rawModelOutput: raw
+            rawModelOutput: raw,
+            request: request
         )
     }
 
@@ -817,13 +867,15 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
 /// Forwards to the production `LLMPolishingService` with the catalog-aware
 /// configuration production's managed mode builds (only the port differs —
-/// the ephemeral helper port), and records the RAW model output for the
-/// guard-off diagnostic column. The request itself is assembled by the
-/// production stop-commit path; this wrapper adds no request shaping.
+/// the ephemeral helper port), and records the RAW model output (guard-off
+/// diagnostic column) plus the request itself (inspection report). The
+/// request is assembled by the production stop-commit path; this wrapper
+/// adds no request shaping.
 private actor EvalRecordingPolishingService: LLMPolishingServicing {
     private let underlying = LLMPolishingService()
     private let configuration: LLMPolishingConfiguration
     private(set) var lastRawPolishedText: String?
+    private(set) var lastRequest: LLMPolishingRequest?
 
     init(configuration: LLMPolishingConfiguration) {
         self.configuration = configuration
@@ -833,6 +885,7 @@ private actor EvalRecordingPolishingService: LLMPolishingServicing {
         request: LLMPolishingRequest,
         configuration _: LLMPolishingConfiguration
     ) async throws -> LLMPolishingResult {
+        lastRequest = request
         let result = try await underlying.polish(request: request, configuration: configuration)
         lastRawPolishedText = result.polishedText
         return result
