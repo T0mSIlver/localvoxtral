@@ -245,6 +245,10 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         settings.setDictationShortcut(SettingsStore.defaultDictationShortcut)
         settings.setOverlayBufferShortcut(nil)
         settings.setLivePasteShortcut(nil)
+        // The subject is "no shortcuts left to register" — the modifier-only
+        // gesture is a trigger of its own (seeded on for fresh installs), so it
+        // has to be off too for there to be nothing to register.
+        settings.modifierOnlyHotKeyEnabled = false
         let overlayCoordinator = MockOverlayCoordinator()
         let viewModel = DictationViewModel(
             settings: settings,

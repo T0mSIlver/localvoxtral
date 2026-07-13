@@ -435,8 +435,24 @@ final class SettingsStore {
         // keys were *already* stored, so it must observe the untouched domain.
         let resolvedOnboardingCompleted = Self.resolveOnboardingCompleted(
             defaults: defaults, environment: environment)
+        // Seed the out-of-box defaults on a never-launched install only, and
+        // WRITE them rather than express them as a load fallback below: once
+        // the wizard completes it persists onboarding as done, this install
+        // stops looking fresh, and a fallback would silently flip the seeded
+        // values back off.
+        //
+        // The gate needs the onboarding key to be ABSENT, not merely resolved
+        // false. "Re-run Setup…" resets that flag to false on an existing
+        // install (DictationViewModel.reRunOnboarding), so a crash or force-quit
+        // before the wizard closes would otherwise leave a configured user
+        // looking fresh on the next launch — and claim Right Command from them.
+        let isNeverLaunchedInstall = defaults.object(forKey: Keys.onboardingCompleted) == nil
         onboardingCompleted = resolvedOnboardingCompleted
         defaults.set(resolvedOnboardingCompleted, forKey: Keys.onboardingCompleted)
+
+        if isNeverLaunchedInstall, !resolvedOnboardingCompleted {
+            Self.seedFreshInstallDefaults(defaults: defaults)
+        }
 
         let resolvedBackendModes = Self.resolveBackendModes(defaults: defaults, environment: environment)
         dictationBackendMode = resolvedBackendModes.dictation
@@ -651,6 +667,29 @@ final class SettingsStore {
         defaults.object(forKey: key) != nil
             ? defaults.bool(forKey: key)
             : fallback
+    }
+
+    /// What a first-time user gets out of the box: the tap/hold gesture works
+    /// without a trip to Settings, instead of the ⌥Space shortcut.
+    ///
+    /// Only ever called for a fresh install (see init), and only writes keys
+    /// that are absent, so it can never overwrite a choice the user made. The
+    /// load fallback stays `false` on purpose — that is what an EXISTING
+    /// install reads, and an update must not claim Right Command behind the
+    /// user's back.
+    ///
+    /// Polishing is deliberately NOT seeded here: the onboarding wizard already
+    /// enables it by default (`polishingConsent`), and does so together with
+    /// downloading the model. Seeding it would strand a user who declines —
+    /// that path leaves the key unwritten and relies on this fallback, so a
+    /// seeded `true` would survive as polishing-on with no model on disk.
+    private static func seedFreshInstallDefaults(defaults: UserDefaults) {
+        let outOfBoxDefaults: [String: Bool] = [
+            Keys.modifierOnlyHotKeyEnabled: true
+        ]
+        for (key, value) in outOfBoxDefaults where defaults.object(forKey: key) == nil {
+            defaults.set(value, forKey: key)
+        }
     }
 
     /// Decide whether the first-launch wizard should be skipped.
