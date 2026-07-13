@@ -10,6 +10,10 @@ DerivedData/
 /dist
 /.codex
 
+# Local human-voice recordings for the agent-dictation eval. These can carry
+# biometric voice data and are synced to the private Mac build host only.
+/EvalRecordings/
+
 /docs
 
 # Agent runtime dirs (opencode/Claude workers) — never commit

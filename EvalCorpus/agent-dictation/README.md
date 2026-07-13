@@ -5,9 +5,9 @@ directory) is data + structural validation; Phase 2 is the harness that
 drives it through the production pipeline:
 
 ```
-TTS(spokenForm, /usr/bin/say) → websocket ASR (Voxtral realtime)
-                              → LLM polish (bundled polishd, agent profile)
-                              → scoring against this corpus
+human WAV or TTS(spokenForm) → websocket ASR (Voxtral realtime)
+                            → LLM polish (bundled polishd, agent profile)
+                            → scoring against this corpus
 ```
 
 The Swift loader is `Tests/localvoxtralTests/AgentDictationEvalCorpus.swift`;
@@ -23,6 +23,49 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
                              repo-vocabulary cases
 ```
 
+## Record a human baseline
+
+The interactive recorder presents the 146 speech-running phrases, records
+mono 16-bit/16 kHz WAVs, plays each take back, and saves progress after every
+accept. The 17 `polish-only` cases are text inputs and do not need recordings.
+
+```bash
+brew install ffmpeg                         # one-time, if needed
+./scripts/record-agent-eval.sh --list-devices
+./scripts/record-agent-eval.sh --set owner --device 0
+```
+
+Choose the AVFoundation audio index shown under the audio-device section.
+Run the recorder from a local GUI terminal (not SSH); on the first take,
+macOS may prompt for Microphone access for Terminal/iTerm. Grant it in System
+Settings → Privacy & Security → Microphone if needed. Digitally silent takes
+are rejected, and unusually quiet takes produce a warning.
+Press Return to record, then accept, replay, re-record, skip, or quit. Running
+the same command again resumes the set; `--lang en`, `--case <id>`, `--redo`,
+and `--list` are available for focused passes.
+
+Accepted takes and `manifest.json` live under the gitignored, voice-private
+`EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the
+exact case ID, language, spoken phrase, file name, and SHA-256. Recorded mode
+is deliberately strict: the eval rejects an incomplete, stale, modified, or
+wrong-format set before loading either model and never fills gaps with TTS.
+
+After the recorder reports 146/146:
+
+```bash
+./scripts/package_app.sh release
+./scripts/run-agent-eval-local.sh EvalRecordings/agent-dictation/owner
+```
+
+This same-Mac path keeps the voice files in the checkout where they were
+captured. If the recording set instead lives in the source checkout that drives
+the SSH build loop, the equivalent commands are `remote-build.sh package` and
+`remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner`; rsync copies
+the set into the private Mac's per-worktree build directory and keeps it there
+for fast reruns. The files are never committed. Delete a local set when it is
+no longer needed. Running either eval launcher without a recording argument
+retains the repeatable `say`-based nightly baseline.
+
 ## Stratum file schema (schemaVersion 1)
 
 ```jsonc
@@ -37,8 +80,8 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
 
 Pipelines:
 
-- `full` — TTS → ASR → polish. The normal lane.
-- `asr-only` — TTS → ASR, no polish. Used by `plain-asr-baseline`: tokens
+- `full` — recorded speech or TTS → ASR → polish. The normal lane.
+- `asr-only` — recorded speech or TTS → ASR, no polish. Used by `plain-asr-baseline`: tokens
   assert raw recognition only.
 - `polish-only` — `spokenForm` is fed directly to the polish path as input
   text. Used by `punctuation-spacing-migration`, whose inputs carry
@@ -50,7 +93,7 @@ Pipelines:
 |---|---|
 | `id` | Stable slug `<stratum-letter>-<lang>-<slug>`, unique corpus-wide. |
 | `lang` | `"en"` or `"fr"` (validated by a function-word heuristic). |
-| `spokenForm` | Exactly what TTS speaks. Symbols written phonetically, the way a human dictates: "dash dash force", "dot env", "tiret tiret", "colle le presse-papier". Include the fillers/self-corrections when the stratum calls for them. |
+| `spokenForm` | Exactly what the human recorder or TTS speaks. Symbols written phonetically, the way a human dictates: "dash dash force", "dot env", "tiret tiret", "colle le presse-papier". Include the fillers/self-corrections when the stratum calls for them. |
 | `intendedText` | Ground-truth final output. |
 | `requiredTokens` | Substrings that MUST appear in the final text — the primary metric. Matched after spacing normalization (U+202F/U+00A0 → space, runs collapsed), byte-exact and case-SENSITIVE unless `caseInsensitive` is set. |
 | `forbiddenSubstrings` | Substrings that must NOT appear (fillers, macro marker phrases, leaked payloads, the `$LV_CLIPBOARD_PAYLOAD` placeholder). Always matched case-insensitively. Pick collision-free needles — validation rejects any that appear in `intendedText` or overlap a required token. |
@@ -118,9 +161,10 @@ Pipelines:
 - Load via `AgentDictationEvalCorpus.loadStrata()` /
   `loadRepoFixtures()`; drive the pipeline named by
   `stratum.resolvedPipeline`.
-- Speak `spokenForm` with `/usr/bin/say` at LEI16@16000 (see
+- Feed either a manifest-bound human WAV set or speak `spokenForm` with
+  `/usr/bin/say` at LEI16@16000 (see
   `RealtimeAPIVLLMIntegrationTests.makeSpokenPCM16Data`), FR cases with a
-  French voice.
+  French voice. Never mix sources within one scoreboard.
 - Arrange `features` BEFORE the run: pasteboard payload, git-inited fixture
   repo (files from the spec, checked out on the spec's `branch`) fronted as
   the active terminal repo.

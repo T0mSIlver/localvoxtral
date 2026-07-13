@@ -19,7 +19,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         let data = Data(
             """
             {"helperPath": "/tmp/polishd", "voxmlxEndpoint": "ws://127.0.0.1:9000/v1/realtime",
-             "asrModel": "acme/asr", "polishModel": "acme/polish"}
+             "asrModel": "acme/asr", "polishModel": "acme/polish",
+             "recordingDirectory": "EvalRecordings/agent-dictation/owner"}
             """.utf8
         )
         let marker = try Support.parseMarker(data)
@@ -27,6 +28,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(marker.voxmlxEndpoint, "ws://127.0.0.1:9000/v1/realtime")
         XCTAssertEqual(marker.asrModel, "acme/asr")
         XCTAssertEqual(marker.polishModel, "acme/polish")
+        XCTAssertEqual(marker.recordingDirectory, "EvalRecordings/agent-dictation/owner")
     }
 
     func testParseMarkerToleratesMissingFields() throws {
@@ -35,6 +37,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertNil(marker.voxmlxEndpoint)
         XCTAssertNil(marker.asrModel)
         XCTAssertNil(marker.polishModel)
+        XCTAssertNil(marker.recordingDirectory)
     }
 
     func testEnablementNilWithoutEnvOrMarker() {
@@ -66,13 +69,19 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
                 environment: [
                     Support.enableEnvKey: "1",
                     Support.helperPathEnvKey: "/env/polishd",
+                    Support.recordingDirectoryEnvKey: "/env/recordings",
                 ],
-                marker: Support.MarkerConfig(helperPath: "marker/polishd", asrModel: "marker/asr")
+                marker: Support.MarkerConfig(
+                    helperPath: "marker/polishd",
+                    asrModel: "marker/asr",
+                    recordingDirectory: "marker/recordings"
+                )
             )
         )
         XCTAssertEqual(enablement.helperPath, "/env/polishd")
         // Fields the env does not carry still fall through to the marker.
         XCTAssertEqual(enablement.asrModel, "marker/asr")
+        XCTAssertEqual(enablement.recordingDirectory, "/env/recordings")
     }
 
     // MARK: - WAV cache key
@@ -104,6 +113,251 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             Support.wavCacheKey(text: "a|Samantha", voice: nil),
             Support.wavCacheKey(text: "a", voice: "Samantha|default")
         )
+    }
+
+    // MARK: - Human recording manifests + WAV validation
+
+    private var recordingExpectation: Support.RecordingExpectation {
+        Support.RecordingExpectation(
+            id: "b-en-flag-force", lang: .en,
+            spokenForm: "run it with dash dash force"
+        )
+    }
+
+    private func recording(
+        id: String = "b-en-flag-force",
+        spokenForm: String = "run it with dash dash force",
+        file: String? = nil,
+        sha256: String = String(repeating: "a", count: 64)
+    ) -> Support.Recording {
+        Support.Recording(
+            id: id,
+            lang: .en,
+            spokenForm: spokenForm,
+            file: file ?? "\(id).wav",
+            sha256: sha256
+        )
+    }
+
+    func testRecordingManifestAcceptsExactCompleteCorpusBinding() throws {
+        let manifest = Support.RecordingManifest(
+            schemaVersion: Support.recordingSchemaVersion,
+            dataFormat: Support.recordingDataFormat,
+            recordings: [recording()]
+        )
+        XCTAssertEqual(
+            try Support.validateRecordingManifest(
+                manifest, expected: [recordingExpectation]
+            )[recordingExpectation.id],
+            recording()
+        )
+    }
+
+    func testRecordingManifestRejectsPartialStaleAndDuplicateSets() {
+        let empty = Support.RecordingManifest(
+            schemaVersion: 1,
+            dataFormat: Support.recordingDataFormat,
+            recordings: []
+        )
+        XCTAssertThrowsError(
+            try Support.validateRecordingManifest(empty, expected: [recordingExpectation])
+        ) { XCTAssertTrue($0.localizedDescription.contains("incomplete")) }
+
+        let stale = Support.RecordingManifest(
+            schemaVersion: 1,
+            dataFormat: Support.recordingDataFormat,
+            recordings: [recording(spokenForm: "old phrase")]
+        )
+        XCTAssertThrowsError(
+            try Support.validateRecordingManifest(stale, expected: [recordingExpectation])
+        ) { XCTAssertTrue($0.localizedDescription.contains("stale")) }
+
+        let duplicate = Support.RecordingManifest(
+            schemaVersion: 1,
+            dataFormat: Support.recordingDataFormat,
+            recordings: [recording(), recording()]
+        )
+        XCTAssertThrowsError(
+            try Support.validateRecordingManifest(duplicate, expected: [recordingExpectation])
+        ) { XCTAssertTrue($0.localizedDescription.contains("duplicate")) }
+    }
+
+    func testRecordingManifestRejectsSchemaFormatExtraUnsafeAndMalformedHash() {
+        let expected = [recordingExpectation]
+        let wrongSchema = Support.RecordingManifest(
+            schemaVersion: 2, dataFormat: Support.recordingDataFormat,
+            recordings: [recording()]
+        )
+        XCTAssertThrowsError(try Support.validateRecordingManifest(wrongSchema, expected: expected)) {
+            XCTAssertTrue($0.localizedDescription.contains("schemaVersion"))
+        }
+        let wrongFormat = Support.RecordingManifest(
+            schemaVersion: 1, dataFormat: "pcm_s16le@44100Hz-stereo",
+            recordings: [recording()]
+        )
+        XCTAssertThrowsError(try Support.validateRecordingManifest(wrongFormat, expected: expected)) {
+            XCTAssertTrue($0.localizedDescription.contains("dataFormat"))
+        }
+        let extra = Support.RecordingManifest(
+            schemaVersion: 1, dataFormat: Support.recordingDataFormat,
+            recordings: [recording(), recording(id: "unknown-case")]
+        )
+        XCTAssertThrowsError(try Support.validateRecordingManifest(extra, expected: expected)) {
+            XCTAssertTrue($0.localizedDescription.contains("stale/unknown"))
+        }
+        let unsafe = Support.RecordingManifest(
+            schemaVersion: 1, dataFormat: Support.recordingDataFormat,
+            recordings: [recording(file: "../take.wav")]
+        )
+        XCTAssertThrowsError(try Support.validateRecordingManifest(unsafe, expected: expected)) {
+            XCTAssertTrue($0.localizedDescription.contains("unsafe"))
+        }
+        let malformedHash = Support.RecordingManifest(
+            schemaVersion: 1, dataFormat: Support.recordingDataFormat,
+            recordings: [recording(sha256: "NOT-A-HASH")]
+        )
+        XCTAssertThrowsError(
+            try Support.validateRecordingManifest(malformedHash, expected: expected)
+        ) { XCTAssertTrue($0.localizedDescription.contains("SHA-256")) }
+    }
+
+    func testRecordedWAVValidationAcceptsExactProductionFormat() throws {
+        let wav = makeWAV(sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 8_000)
+        XCTAssertEqual(try Support.recordedPCM16(fromWAVData: wav).count, 8_000)
+        XCTAssertEqual(Support.sha256Hex(wav).count, 64)
+    }
+
+    /// ffmpeg's WAV muxer writes metadata chunks (normally LIST/INFO) that
+    /// our synthetic minimal WAV omitted. Unknown chunks — including odd
+    /// sizes with RIFF padding and chunks after data — must be skipped.
+    func testRecordedWAVValidationAcceptsFFmpegStyleExtraChunks() throws {
+        let wav = makeWAV(
+            sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 8_000,
+            chunksBeforeData: [("LIST", Data("abc".utf8))],
+            chunksAfterData: [("JUNK", Data([1, 2, 3, 4]))]
+        )
+        XCTAssertEqual(try Support.recordedPCM16(fromWAVData: wav).count, 8_000)
+    }
+
+    func testRecordedWAVValidationRejectsWrongRateAndShortAudio() {
+        XCTAssertThrowsError(
+            try Support.recordedPCM16(
+                fromWAVData: makeWAV(
+                    sampleRate: 44_100, channels: 1, bits: 16, pcmBytes: 8_000
+                )
+            )
+        ) { XCTAssertTrue($0.localizedDescription.contains("16000")) }
+        XCTAssertThrowsError(
+            try Support.recordedPCM16(
+                fromWAVData: makeWAV(
+                    sampleRate: 16_000, channels: 1, bits: 16, pcmBytes: 2_000
+                )
+            )
+        ) { XCTAssertTrue($0.localizedDescription.contains("0.25")) }
+        XCTAssertThrowsError(
+            try Support.recordedPCM16(
+                fromWAVData: makeWAV(
+                    sampleRate: 16_000, channels: 1, bits: 16,
+                    pcmBytes: 8_000, containsSignal: false
+                )
+            )
+        ) { XCTAssertTrue($0.localizedDescription.contains("digitally silent")) }
+    }
+
+    /// The recorder is a standalone Swift script rather than a SwiftPM
+    /// target. Exercise its non-recording list path in tier 0 so syntax/API
+    /// drift or corpus-decoding drift cannot leave the operator workflow
+    /// broken while app tests pass. This path intentionally needs no ffmpeg.
+    func testHumanRecorderScriptCompilesAndListsEverySpeechCase() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = repoRoot.appendingPathComponent("scripts/record-agent-eval.sh")
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-recorder-smoke-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [script.path, "--list", "--output", outputDirectory.path]
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        let text = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
+        )
+        XCTAssertEqual(process.terminationStatus, 0, text)
+        let expectedSpeechCases = try AgentDictationEvalCorpus.loadStrata().reduce(0) {
+            $0 + (Support.stagePlan(for: $1.stratum.resolvedPipeline).runsSpeechRecognition
+                ? $1.stratum.cases.count : 0)
+        }
+        XCTAssertTrue(text.contains("Corpus speech cases: \(expectedSpeechCases)"), text)
+        XCTAssertEqual(
+            text.split(separator: "\n").filter { $0.hasPrefix("TODO ") }.count,
+            expectedSpeechCases,
+            text
+        )
+        XCTAssertTrue(
+            text.contains(
+                "Manifest: schema \(Support.recordingSchemaVersion), "
+                    + "format \(Support.recordingDataFormat)"
+            ),
+            text
+        )
+    }
+
+    private func makeWAV(
+        sampleRate: UInt32,
+        channels: UInt16,
+        bits: UInt16,
+        pcmBytes: Int,
+        containsSignal: Bool = true,
+        chunksBeforeData: [(String, Data)] = [],
+        chunksAfterData: [(String, Data)] = []
+    ) -> Data {
+        var data = Data("RIFF".utf8)
+        appendLE32(0, to: &data)
+        data.append(Data("WAVEfmt ".utf8))
+        appendLE32(16, to: &data)
+        appendLE16(1, to: &data)
+        appendLE16(channels, to: &data)
+        appendLE32(sampleRate, to: &data)
+        let blockAlign = channels * (bits / 8)
+        appendLE32(sampleRate * UInt32(blockAlign), to: &data)
+        appendLE16(blockAlign, to: &data)
+        appendLE16(bits, to: &data)
+        for chunk in chunksBeforeData { appendChunk(chunk, to: &data) }
+        data.append(Data("data".utf8))
+        appendLE32(UInt32(pcmBytes), to: &data)
+        data.append(Data(repeating: 0, count: pcmBytes))
+        if containsSignal, pcmBytes >= 2 { data[data.count - pcmBytes] = 1 }
+        for chunk in chunksAfterData { appendChunk(chunk, to: &data) }
+        var riffSize = Data()
+        appendLE32(UInt32(data.count - 8), to: &riffSize)
+        data.replaceSubrange(4..<8, with: riffSize)
+        return data
+    }
+
+    private func appendChunk(_ chunk: (String, Data), to data: inout Data) {
+        XCTAssertEqual(chunk.0.utf8.count, 4)
+        data.append(Data(chunk.0.utf8))
+        appendLE32(UInt32(chunk.1.count), to: &data)
+        data.append(chunk.1)
+        if !chunk.1.count.isMultiple(of: 2) { data.append(0) }
+    }
+
+    private func appendLE16(_ value: UInt16, to data: inout Data) {
+        data.append(UInt8(value & 0xff))
+        data.append(UInt8((value >> 8) & 0xff))
+    }
+
+    private func appendLE32(_ value: UInt32, to data: inout Data) {
+        data.append(UInt8(value & 0xff))
+        data.append(UInt8((value >> 8) & 0xff))
+        data.append(UInt8((value >> 16) & 0xff))
+        data.append(UInt8((value >> 24) & 0xff))
     }
 
     // MARK: - Pipeline routing
@@ -542,6 +796,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         let report = try Support.renderReport(
             header: Support.ReportHeader(
                 polishModel: "polish-model", asrModel: "asr-model",
+                audioSource: "human-recorded/owner",
                 systemPrompts: ["SYSTEM PROMPT"]
             ),
             records: [record]
@@ -558,6 +813,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             Support.ReportHeader.self, from: Data(lines[1].utf8)
         )
         XCTAssertEqual(header.systemPrompts, ["SYSTEM PROMPT"])
+        XCTAssertEqual(header.audioSource, "human-recorded/owner")
 
         let decoded = try JSONDecoder().decode(
             Support.CaseReportRecord.self, from: Data(lines[2].utf8)

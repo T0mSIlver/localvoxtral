@@ -18,10 +18,11 @@ set -euo pipefail
 #                  optional arg = chat/completions endpoint (default
 #                  http://127.0.0.1:8080/v1/chat/completions, the
 #                  com.localvoxtral.mlxlm service — runbook scripts/mac/README.md)
-#     eval-e2e     agent-dictation end-to-end eval: TTS -> live voxmlx ASR ->
-#                  bundled polishd via the production stop-commit path, scored
-#                  against EvalCorpus/agent-dictation (run `package` first;
-#                  takes many minutes — live TTS/ASR/polish over ~150 cases)
+#     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
+#                  voxmlx ASR -> bundled polishd via the production stop-commit
+#                  path, scored against EvalCorpus/agent-dictation (run
+#                  `package` first; optional arg = a complete recording-set
+#                  directory made by scripts/record-agent-eval.sh)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -32,6 +33,7 @@ set -euo pipefail
 # Examples:
 #   ./scripts/remote-build.sh
 #   ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
+#   ./scripts/remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner
 #   ./scripts/remote-build.sh exec swift test --list-tests
 #
 # The build host is machine-local configuration, never committed. Resolution
@@ -203,26 +205,50 @@ case "$CMD" in
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
-    # TTS -> live voxmlx ASR -> bundled polishd helper through the production
-    # stop-commit path, scored against EvalCorpus/agent-dictation. Requires a
-    # helper binary from a prior `./scripts/remote-build.sh package` run.
+    # human WAVs (when supplied) or TTS -> live voxmlx ASR -> bundled polishd
+    # helper through the production stop-commit path, scored against
+    # EvalCorpus/agent-dictation. Requires a helper binary from a prior
+    # `./scripts/remote-build.sh package` run.
     # Marker-through-the-tree, same as eval-llm/integration-polishd (the gate
     # pins env prefixes per-command). Expect many minutes: ~150 TTS+ASR cases
     # plus live 4B polish inference (synthesized WAVs are cached on the host
     # under ~/Library/Caches/localvoxtral-eval/wav, so reruns skip TTS).
-    if [[ $# -ne 0 ]]; then
-      echo "eval-e2e does not accept extra arguments" >&2
+    if [[ $# -gt 1 ]]; then
+      echo "eval-e2e accepts at most one argument (recording-set directory)" >&2
       exit 1
+    fi
+    E2E_RECORDING_DIR="${1:-}"
+    if [[ -n "$E2E_RECORDING_DIR" ]]; then
+      # Keep the marker JSON trivially safe and make operator mistakes fail
+      # before waking/model-loading the Mac. Human mode is strict: the Swift
+      # harness validates completeness, corpus binding, WAV format, and hashes.
+      if [[ ! "$E2E_RECORDING_DIR" =~ ^EvalRecordings/agent-dictation/[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-e2e recording directory must be EvalRecordings/agent-dictation/<set>" >&2
+        exit 1
+      fi
+      if [[ ! -f "$ROOT_DIR/$E2E_RECORDING_DIR/manifest.json" ]]; then
+        echo "recording manifest not found: $E2E_RECORDING_DIR/manifest.json" >&2
+        echo "Create or resume it with: ./scripts/record-agent-eval.sh" >&2
+        exit 1
+      fi
     fi
     ENSURE_SERVER="voxmlx"
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$E2E_MARKER"' EXIT
-    printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
-      "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-      "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
-      >"$E2E_MARKER"
+    if [[ -n "$E2E_RECORDING_DIR" ]]; then
+      printf '{"helperPath": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+        "$E2E_RECORDING_DIR" \
+        >"$E2E_MARKER"
+    else
+      printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+        >"$E2E_MARKER"
+    fi
     REMOTE_CMD=(swift test --filter AgentDictationE2EEvalTests)
     ;;
   eval-llm)

@@ -7,7 +7,8 @@ import XCTest
 /// The agent-dictation END-TO-END eval (Phase 2 of the eval effort — the
 /// corpus and its contract are Phase 1, `EvalCorpus/agent-dictation/`):
 ///
-///   TTS(spokenForm, /usr/bin/say) -> production websocket ASR (voxmlx)
+///   recorded human WAV OR TTS(spokenForm, /usr/bin/say)
+///     -> production websocket ASR (voxmlx)
 ///     -> production polish stop-commit path (bundled polishd helper)
 ///     -> corpus-contract scoring -> scoreboard
 ///
@@ -45,6 +46,8 @@ import XCTest
 /// - env: LV_AGENT_EVAL_E2E_ENABLE=1 (optional LV_AGENT_EVAL_E2E_HELPER_PATH,
 ///   LV_AGENT_EVAL_E2E_VOXMLX_ENDPOINT, LV_AGENT_EVAL_E2E_ASR_MODEL,
 ///   LV_AGENT_EVAL_E2E_POLISH_MODEL), used by eval-e2e.yml
+///   LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY selects a strict human recording
+///   set; every speech-running case must be present and corpus-current.
 /// - marker file `.agent-eval-e2e-enable.json` at the repo root, written by
 ///   `./scripts/remote-build.sh eval-e2e` (the SSH gate can't pass env, so
 ///   enablement rides the rsynced tree — the PolishHelperIntegrationTests
@@ -84,6 +87,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         let binary = try resolveHelperBinary(enablement.helperPath)
         let strata = try AgentDictationEvalCorpus.loadStrata()
         let fixtures = try AgentDictationEvalCorpus.loadRepoFixtures()
+        // Validate the entire human set before loading either model. A bad or
+        // partial set must fail cheaply and must never become a mixed
+        // human/TTS baseline.
+        let recordedAudio = try resolveRecordedAudioSet(
+            enablement.recordingDirectory, strata: strata
+        )
 
         // Fixture repos: git-inited at runtime from the corpus specs (paths
         // are the vocabulary; the branch is part of it too).
@@ -114,13 +123,22 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // prefill — the CI failure mode of 2026-07-11.
         await warmPromptPrefixes(configStore: configStore, configuration: polishConfiguration)
 
-        let enVoice = Self.resolveVoice(languagePrefix: "en", preferred: ["Samantha", "Alex"])
-        let frVoice = Self.resolveVoice(
-            languagePrefix: "fr", preferred: ["Thomas", "Amélie", "Aurélie", "Audrey"]
-        )
-        print(
-            "agent-e2e: voices en=\(enVoice ?? "<system default>") fr=\(frVoice ?? "<none — fr TTS cases skip>")"
-        )
+        let enVoice = recordedAudio == nil
+            ? Self.resolveVoice(languagePrefix: "en", preferred: ["Samantha", "Alex"])
+            : nil
+        let frVoice = recordedAudio == nil
+            ? Self.resolveVoice(
+                languagePrefix: "fr", preferred: ["Thomas", "Amélie", "Aurélie", "Audrey"]
+            )
+            : nil
+        if let recordedAudio {
+            print("agent-e2e: audio=human-recorded set=\(recordedAudio.name)")
+        } else {
+            print(
+                "agent-e2e: audio=tts voices en=\(enVoice ?? "<system default>") "
+                    + "fr=\(frVoice ?? "<none — fr TTS cases skip>")"
+            )
+        }
 
         let vocabularyCache = RepoVocabularyCache()
         let totalCases = strata.reduce(0) { $0 + $1.stratum.cases.count }
@@ -145,6 +163,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                     configStore: configStore,
                     fixtureRepos: fixtureRepos,
                     vocabularyCache: vocabularyCache,
+                    recordedAudio: recordedAudio,
                     enVoice: enVoice,
                     frVoice: frVoice
                 )
@@ -174,6 +193,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             results: results,
             header: "polish model: \(enablement.polishModel), "
                 + "asr: \(enablement.asrModel) @ \(enablement.voxmlxEndpoint), "
+                + "audio: \(recordedAudio.map { "human-recorded/\($0.name)" } ?? "macOS say"), "
                 + "helper: \(binary.path)"
         )
         print(board.text)
@@ -186,6 +206,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 header: Support.ReportHeader(
                     polishModel: enablement.polishModel,
                     asrModel: enablement.asrModel,
+                    audioSource: recordedAudio.map { "human-recorded/\($0.name)" } ?? "macOS say",
                     systemPrompts: reportSystemPrompts
                 ),
                 records: reports
@@ -218,6 +239,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         configStore: AppConfigStore,
         fixtureRepos: [String: URL],
         vocabularyCache: RepoVocabularyCache,
+        recordedAudio: RecordedAudioSet?,
         enVoice: String?,
         frVoice: String?
     ) async -> (result: Support.CaseResult, capture: Support.CaseCapture) {
@@ -233,18 +255,23 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         do {
             var polishInput = evalCase.spokenForm
             if plan.runsSpeechRecognition {
-                let voice: String?
-                switch evalCase.lang {
-                case .en:
-                    voice = enVoice
-                case .fr:
-                    guard let frVoice else {
-                        result.skipReason = "no French TTS voice installed (say -v ?)"
-                        return (result, capture)
+                let pcm: Data
+                if let recordedAudio {
+                    pcm = try recordedPCM16(for: evalCase, in: recordedAudio)
+                } else {
+                    let voice: String?
+                    switch evalCase.lang {
+                    case .en:
+                        voice = enVoice
+                    case .fr:
+                        guard let frVoice else {
+                            result.skipReason = "no French TTS voice installed (say -v ?)"
+                            return (result, capture)
+                        }
+                        voice = frVoice
                     }
-                    voice = frVoice
+                    pcm = try synthesizedPCM16(text: evalCase.spokenForm, voice: voice)
                 }
-                let pcm = try synthesizedPCM16(text: evalCase.spokenForm, voice: voice)
                 polishInput = try await transcribe(pcm: pcm, enablement: enablement)
                 capture.transcript = polishInput
             }
@@ -430,6 +457,87 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     }
 
     // MARK: - TTS (cached)
+
+    private struct RecordedAudioSet {
+        let name: String
+        /// Exact manifest-verified bytes retained after preflight. Keeping
+        /// them in memory prevents a long eval from observing a take changed
+        /// on disk after its hash was checked.
+        let pcmByCaseID: [String: Data]
+    }
+
+    private func resolveRecordedAudioSet(
+        _ requestedPath: String?,
+        strata: [AgentDictationEvalCorpus.LoadedStratum]
+    ) throws -> RecordedAudioSet? {
+        guard let requestedPath else { return nil }
+        let directory: URL
+        if requestedPath.hasPrefix("/") {
+            directory = URL(fileURLWithPath: requestedPath, isDirectory: true)
+        } else {
+            directory = repoRoot.appendingPathComponent(requestedPath, isDirectory: true)
+        }
+        let standardized = directory.standardizedFileURL
+        let manifestURL = standardized.appendingPathComponent(Support.recordingManifestFileName)
+        let manifest: Support.RecordingManifest
+        do {
+            manifest = try Support.parseRecordingManifest(Data(contentsOf: manifestURL))
+        } catch {
+            throw Support.RecordingSetError(
+                message: "cannot read human recording manifest at \(manifestURL.path): \(error)"
+            )
+        }
+
+        let expected = strata.flatMap { loaded -> [Support.RecordingExpectation] in
+            guard Support.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+            else { return [] }
+            return loaded.stratum.cases.map {
+                Support.RecordingExpectation(id: $0.id, lang: $0.lang, spokenForm: $0.spokenForm)
+            }
+        }
+        let recordings = try Support.validateRecordingManifest(manifest, expected: expected)
+        // Integrity + audio-format preflight for every case, before model load.
+        // Retain the verified PCM so the bytes scored cannot change later.
+        var pcmByCaseID: [String: Data] = [:]
+        for item in expected {
+            guard let recording = recordings[item.id] else { continue }
+            let wavURL = standardized.appendingPathComponent(recording.file)
+            let wav: Data
+            do {
+                wav = try Data(contentsOf: wavURL)
+            } catch {
+                throw Support.RecordingSetError(
+                    message: "cannot read recording \(recording.id): \(error)"
+                )
+            }
+            guard Support.sha256Hex(wav) == recording.sha256 else {
+                throw Support.RecordingSetError(
+                    message: "recording \(recording.id) does not match its manifest SHA-256"
+                )
+            }
+            do {
+                pcmByCaseID[item.id] = try Support.recordedPCM16(fromWAVData: wav)
+            } catch {
+                throw Support.RecordingSetError(
+                    message: "recording \(recording.id) is invalid: \(error.localizedDescription)"
+                )
+            }
+        }
+        return RecordedAudioSet(
+            name: standardized.lastPathComponent,
+            pcmByCaseID: pcmByCaseID
+        )
+    }
+
+    private func recordedPCM16(
+        for evalCase: AgentDictationEvalCorpus.Case,
+        in set: RecordedAudioSet
+    ) throws -> Data {
+        guard let pcm = set.pcmByCaseID[evalCase.id] else {
+            throw Support.RecordingSetError(message: "missing recording: \(evalCase.id)")
+        }
+        return pcm
+    }
 
     private func synthesizedPCM16(text: String, voice: String?) throws -> Data {
         let cacheDirectory = FileManager.default.homeDirectoryForCurrentUser
