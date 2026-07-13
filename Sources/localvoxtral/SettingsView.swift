@@ -692,7 +692,7 @@ private struct TextProcessingSettingsPane: View {
                 }
             }
 
-            SettingsGroup(title: "LLM Polishing") {
+            SettingsGroup(title: "Polishing") {
                 if !isLLMPolishingReachable {
                     SettingsAvailabilityCard(
                         title: "No Overlay Buffer shortcut",
@@ -764,7 +764,7 @@ private struct TextProcessingSettingsPane: View {
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
             }
 
-            SettingsGroup(title: "Shared Configuration") {
+            SettingsGroup(title: "Configuration") {
                 SettingsFieldRow(title: "Config folder") {
                     Button("Open Config Folder") {
                         viewModel.openConfigFolder()
