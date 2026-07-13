@@ -435,15 +435,22 @@ final class SettingsStore {
         // keys were *already* stored, so it must observe the untouched domain.
         let resolvedOnboardingCompleted = Self.resolveOnboardingCompleted(
             defaults: defaults, environment: environment)
+        // Seed the out-of-box defaults on a never-launched install only, and
+        // WRITE them rather than express them as a load fallback below: once
+        // the wizard completes it persists onboarding as done, this install
+        // stops looking fresh, and a fallback would silently flip the seeded
+        // values back off.
+        //
+        // The gate needs the onboarding key to be ABSENT, not merely resolved
+        // false. "Re-run Setup…" resets that flag to false on an existing
+        // install (DictationViewModel.reRunOnboarding), so a crash or force-quit
+        // before the wizard closes would otherwise leave a configured user
+        // looking fresh on the next launch — and claim Right Command from them.
+        let isNeverLaunchedInstall = defaults.object(forKey: Keys.onboardingCompleted) == nil
         onboardingCompleted = resolvedOnboardingCompleted
         defaults.set(resolvedOnboardingCompleted, forKey: Keys.onboardingCompleted)
 
-        // A fresh install is the only place the out-of-box defaults are seeded,
-        // and they are WRITTEN rather than left to the load fallbacks below:
-        // the migration a few lines down persists the backend-mode keys, so by
-        // the second launch this install no longer looks fresh and a fallback
-        // would silently flip them back off.
-        if !resolvedOnboardingCompleted {
+        if isNeverLaunchedInstall, !resolvedOnboardingCompleted {
             Self.seedFreshInstallDefaults(defaults: defaults)
         }
 

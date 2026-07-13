@@ -42,16 +42,16 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
         XCTAssertTrue(store.modifierOnlyHotKeyEnabled)
     }
 
-    func testFreshInstall_seedSurvivesTheSecondLaunch() {
-        // The first launch persists the backend-mode keys, so by the second
-        // launch this install no longer looks fresh. If the seed were left to
-        // the load fallback (false) instead of being written, the gesture would
-        // silently switch itself back off here.
+    func testFreshInstall_seedSurvivesOnceTheWizardIsDone() {
+        // Completing the wizard persists onboarding as done, so this install
+        // stops looking fresh. That is exactly when a fallback-based seed would
+        // silently flip the gesture back off — only a WRITTEN seed survives.
         _ = makeStore()
+        defaults.set(true, forKey: Self.onboardingKey)  // wizard completed
 
-        let secondLaunch = makeStore()
+        let laterLaunch = makeStore()
 
-        XCTAssertTrue(secondLaunch.modifierOnlyHotKeyEnabled)
+        XCTAssertTrue(laterLaunch.modifierOnlyHotKeyEnabled)
     }
 
     func testFreshInstall_leavesPolishingToTheOnboardingWizard() {
@@ -92,6 +92,23 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
 
         XCTAssertFalse(store.modifierOnlyHotKeyEnabled)
         // Nothing was written on its behalf.
+        XCTAssertNil(defaults.object(forKey: Self.modifierOnlyKey))
+    }
+
+    func testExistingInstall_interruptedWhileReRunningSetup_keepsTheGestureOff() {
+        // "Re-run Setup…" resets the onboarding flag to false on a configured
+        // install. If the app then dies before the wizard closes (crash or
+        // force-quit — a graceful close completes onboarding), the next launch
+        // sees the flag present-and-false. That must NOT read as a fresh
+        // install: this user has been here for versions and never asked for the
+        // gesture, and taking Right Command from them is exactly what the seed
+        // promises never to do.
+        defaults.set(false, forKey: Self.onboardingKey)
+        defaults.set(BackendMode.managedLocal.rawValue, forKey: Self.legacyBackendModeKey)
+
+        let store = makeStore()
+
+        XCTAssertFalse(store.modifierOnlyHotKeyEnabled)
         XCTAssertNil(defaults.object(forKey: Self.modifierOnlyKey))
     }
 
