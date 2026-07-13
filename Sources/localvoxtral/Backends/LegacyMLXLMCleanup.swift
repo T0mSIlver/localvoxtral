@@ -15,8 +15,14 @@ struct LegacyMLXLMCleanup {
 
     /// uv tool venv directory name (`tools/mlx-lm`) and `installed.json` key.
     private static let legacyToolID = "mlx-lm"
-    /// Entry points uv linked into `bin/` (`mlx_lm.server`, `mlx_lm.generate`, …).
-    private static let legacyBinPrefix = "mlx_lm."
+    /// Entry points uv linked into `bin/`. The wheel installs a BARE `mlx_lm`
+    /// console script alongside the dotted ones (`mlx_lm.server`,
+    /// `mlx_lm.generate`, …). An earlier `"mlx_lm."` prefix here removed the
+    /// dotted siblings and walked straight past the bare one, leaving it behind
+    /// as a dangling symlink — and making a later `uv tool install mlx-lm` fail
+    /// with "Executable already exists". Found by hand-testing the 0.7.4 → 0.8.0
+    /// upgrade; the undotted prefix covers both shapes.
+    private static let legacyBinPrefix = "mlx_lm"
     /// Wheels the installer parked in `downloads/`.
     private static let legacyWheelPrefix = "mlx_lm-"
 
