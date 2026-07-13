@@ -198,23 +198,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Keep Mine")
         alert.addButton(withTitle: "Show Files…")
 
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            let backups = appConfigStore.adoptBundledDefaults(fileNames: fileNames)
-            Log.config.notice(
-                "User adopted new bundled defaults for \(fileNames.joined(separator: ", "), privacy: .public); backups: \(backups.joined(separator: ", "), privacy: .public)"
-            )
-        case .alertSecondButtonReturn:
-            appConfigStore.recordKeptCustomizedDefaults(fileNames: fileNames)
-            Log.config.notice(
-                "User kept customized config files \(fileNames.joined(separator: ", "), privacy: .public)"
-            )
-        default:
-            // Show Files: reveal the config folder and leave the decision
-            // open — the prompt returns on the next launch.
-            NSWorkspace.shared.activateFileViewerSelecting(
-                fileNames.map { appConfigStore.configDirectoryURL().appendingPathComponent($0) }
-            )
+        decision: while true {
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                let backups = appConfigStore.adoptBundledDefaults(fileNames: fileNames)
+                Log.config.notice(
+                    "User adopted new bundled defaults for \(fileNames.joined(separator: ", "), privacy: .public); backups: \(backups.joined(separator: ", "), privacy: .public)"
+                )
+                break decision
+            case .alertSecondButtonReturn:
+                appConfigStore.recordKeptCustomizedDefaults(fileNames: fileNames)
+                Log.config.notice(
+                    "User kept customized config files \(fileNames.joined(separator: ", "), privacy: .public)"
+                )
+                break decision
+            default:
+                // Show Files: reveal the files in Finder and re-present the
+                // alert so Update/Keep Mine stay available — Finder is a
+                // separate app, so the user can inspect the files while the
+                // alert waits. Quitting instead still re-prompts next launch.
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    fileNames.map { appConfigStore.configDirectoryURL().appendingPathComponent($0) }
+                )
+            }
         }
     }
 
