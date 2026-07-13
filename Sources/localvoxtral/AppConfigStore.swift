@@ -953,6 +953,11 @@ extension AppConfigStore {
         }
 
         for file in ConfigFile.allCases {
+            // The replacement dictionary is the user's own rule set, not a
+            // tunable default — its format has never changed since shipping,
+            // and "updating" it would only swap the user's rules for the
+            // bundled samples. Never refresh it, never prompt for it.
+            if file == .replacementDictionary { continue }
             guard let bundled = bundledConfigData(for: file) else { continue }
             if state.resolvedBundledHashes[file.fileName] == bundled.hash { continue }
             let userURL = directory.appendingPathComponent(file.fileName, isDirectory: false)

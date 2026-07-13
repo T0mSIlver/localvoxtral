@@ -106,6 +106,38 @@ final class AppConfigDefaultsReconcileTests: XCTestCase {
         XCTAssertEqual(untouched, customized)
     }
 
+    /// The replacement dictionary is the user's own rule set, not a tunable
+    /// default: even a byte-identical old shipped seed must never be
+    /// refreshed, and an edited dictionary must never be reported for the
+    /// update prompt.
+    func testReconcileNeverTouchesOrReportsReplacementDictionary() throws {
+        let directory = makeTemporaryConfigDirectory()
+        let staleSeed = "an older shipped dictionary default"
+        try write(staleSeed, named: "replacement_dictionary.toml", in: directory)
+
+        var hashes = BundledConfigDefaultHistory.knownDefaultHashes
+        hashes["replacement_dictionary.toml", default: []]
+            .insert(AppConfigStore.sha256Hex(Data(staleSeed.utf8)))
+        let store = AppConfigStore(
+            configDirectoryOverride: directory,
+            knownDefaultHashes: hashes
+        )
+
+        XCTAssertEqual(store.reconcileBundledDefaults(), BundledDefaultsReconciliation())
+        XCTAssertEqual(
+            try String(
+                contentsOf: directory.appendingPathComponent("replacement_dictionary.toml"),
+                encoding: .utf8
+            ),
+            staleSeed
+        )
+
+        // An edited dictionary is a customization by definition — still
+        // neither refreshed nor reported.
+        try write("my = \"own rules\"", named: "replacement_dictionary.toml", in: directory)
+        XCTAssertEqual(store.reconcileBundledDefaults(), BundledDefaultsReconciliation())
+    }
+
     func testReconcileFreshSeedReportsNothing() throws {
         let store = AppConfigStore(configDirectoryOverride: makeTemporaryConfigDirectory())
         _ = store.configDirectoryURL()
