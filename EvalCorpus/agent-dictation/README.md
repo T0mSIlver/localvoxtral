@@ -32,10 +32,11 @@ accept. The 17 `polish-only` cases are text inputs and do not need recordings.
 ```bash
 brew install ffmpeg                         # one-time, if needed
 ./scripts/record-agent-eval.sh --list-devices
-./scripts/record-agent-eval.sh --set owner --device 0
+./scripts/record-agent-eval.sh --set owner              # system default microphone
 ```
 
-Choose the AVFoundation audio index shown under the audio-device section.
+The default input is recommended. If needed, choose an AVFoundation audio
+index shown by `--list-devices` and pass `--device <index>`.
 Run the recorder from a local GUI terminal (not SSH); on the first take,
 macOS may prompt for Microphone access for Terminal/iTerm. Grant it in System
 Settings → Privacy & Security → Microphone if needed. Digitally silent takes

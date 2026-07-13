@@ -269,42 +269,61 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     /// drift or corpus-decoding drift cannot leave the operator workflow
     /// broken while app tests pass. This path intentionally needs no ffmpeg.
     func testHumanRecorderScriptCompilesAndListsEverySpeechCase() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-recorder-smoke-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
+        let run = try runRecorder(
+            ["--list", "--output", outputDirectory.path]
+        )
+        XCTAssertEqual(run.status, 0, run.output)
+        let expectedSpeechCases = try AgentDictationEvalCorpus.loadStrata().reduce(0) {
+            $0 + (Support.stagePlan(for: $1.stratum.resolvedPipeline).runsSpeechRecognition
+                ? $1.stratum.cases.count : 0)
+        }
+        XCTAssertTrue(
+            run.output.contains("Corpus speech cases: \(expectedSpeechCases)"), run.output
+        )
+        XCTAssertEqual(
+            run.output.split(separator: "\n").filter { $0.hasPrefix("TODO ") }.count,
+            expectedSpeechCases,
+            run.output
+        )
+        XCTAssertTrue(
+            run.output.contains(
+                "Manifest: schema \(Support.recordingSchemaVersion), "
+                    + "format \(Support.recordingDataFormat)"
+            ),
+            run.output
+        )
+    }
+
+    /// Regression: ffmpeg-backed enumeration could remain alive forever on
+    /// macOS. The recorder now uses in-process AVFoundation discovery and
+    /// must return without requiring ffmpeg or microphone capture.
+    func testHumanRecorderListsAudioDevicesInProcess() throws {
+        let run = try runRecorder(["--list-devices"])
+        XCTAssertEqual(run.status, 0, run.output)
+        XCTAssertTrue(run.output.contains("AVFoundation audio inputs:"), run.output)
+        XCTAssertTrue(run.output.contains("[default] System default input"), run.output)
+    }
+
+    private func runRecorder(_ arguments: [String]) throws -> (status: Int32, output: String) {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let script = repoRoot.appendingPathComponent("scripts/record-agent-eval.sh")
-        let outputDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lv-recorder-smoke-\(UUID().uuidString)", isDirectory: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
         let output = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
-        process.arguments = [script.path, "--list", "--output", outputDirectory.path]
+        process.arguments = [script.path] + arguments
         process.standardOutput = output
         process.standardError = output
         try process.run()
         process.waitUntilExit()
-        let text = String(
-            decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
-        )
-        XCTAssertEqual(process.terminationStatus, 0, text)
-        let expectedSpeechCases = try AgentDictationEvalCorpus.loadStrata().reduce(0) {
-            $0 + (Support.stagePlan(for: $1.stratum.resolvedPipeline).runsSpeechRecognition
-                ? $1.stratum.cases.count : 0)
-        }
-        XCTAssertTrue(text.contains("Corpus speech cases: \(expectedSpeechCases)"), text)
-        XCTAssertEqual(
-            text.split(separator: "\n").filter { $0.hasPrefix("TODO ") }.count,
-            expectedSpeechCases,
-            text
-        )
-        XCTAssertTrue(
-            text.contains(
-                "Manifest: schema \(Support.recordingSchemaVersion), "
-                    + "format \(Support.recordingDataFormat)"
-            ),
-            text
+        return (
+            process.terminationStatus,
+            String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         )
     }
 

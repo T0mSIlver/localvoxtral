@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Darwin
 import Foundation
@@ -35,7 +36,7 @@ struct Manifest: Codable {
 struct Options {
     var setName = "owner"
     var output: String?
-    var device = "0"
+    var device = "default"
     var caseID: String?
     var language: String?
     var redo = false
@@ -66,8 +67,8 @@ func usage() -> Never {
 
           --set NAME          Recording-set name (default: owner)
           --output PATH       Override output directory (must remain under EvalRecordings)
-          --device INDEX      ffmpeg AVFoundation audio index (default: 0)
-          --list-devices      Print available camera/microphone indexes and exit
+          --device INDEX      AVFoundation audio index, or default (default: default)
+          --list-devices      Print available microphone indexes and exit
           --case ID           Record only one corpus case
           --lang en|fr        Record only one language
           --redo              Include already completed matching cases
@@ -107,8 +108,10 @@ func parseOptions() throws -> Options {
     guard !options.setName.isEmpty,
           options.setName.allSatisfy({ $0.isLetter || $0.isNumber || "._-".contains($0) })
     else { throw HarnessError.message("--set may contain only letters, numbers, dot, underscore, dash") }
-    guard options.device.allSatisfy(\.isNumber), !options.device.isEmpty else {
-        throw HarnessError.message("--device must be an AVFoundation audio device index")
+    guard options.device == "default"
+            || (!options.device.isEmpty && options.device.allSatisfy(\.isNumber))
+    else {
+        throw HarnessError.message("--device must be default or an AVFoundation audio index")
     }
     if let language = options.language, language != "en" && language != "fr" {
         throw HarnessError.message("--lang must be en or fr")
@@ -122,17 +125,21 @@ func findExecutable(_ name: String, additional: [String] = []) -> String? {
     return (additional + pathCandidates).first { fileManager.isExecutableFile(atPath: $0) }
 }
 
-func runAndCapture(_ executable: String, _ arguments: [String]) throws -> (Int32, String) {
-    let process = Process()
-    let pipe = Pipe()
-    process.executableURL = URL(fileURLWithPath: executable)
-    process.arguments = arguments
-    process.standardOutput = pipe
-    process.standardError = pipe
-    try process.run()
-    process.waitUntilExit()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+/// Enumerate through AVFoundation directly. Invoking ffmpeg with
+/// `-list_devices true` can remain alive indefinitely on some macOS/ffmpeg
+/// combinations even after it prints the list; device discovery itself does
+/// not require opening the microphone or starting a child process.
+func listAudioDevices() {
+    let devices = AVCaptureDevice.devices(for: .audio)
+    print("AVFoundation audio inputs:")
+    print("  [default] System default input (recommended)")
+    if devices.isEmpty {
+        print("  No indexed audio inputs were discovered.")
+        return
+    }
+    for (index, device) in devices.enumerated() {
+        print("  [\(index)] \(device.localizedName)")
+    }
 }
 
 func loadCases() throws -> [CorpusCase] {
@@ -317,21 +324,13 @@ func recordTake(ffmpeg: String, device: String, temporary: URL) throws -> WAVAna
 
 do {
     let options = try parseOptions()
+    if options.listDevices {
+        listAudioDevices()
+        exit(0)
+    }
     let ffmpeg = findExecutable(
         "ffmpeg", additional: ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
     )
-    if options.listDevices {
-        guard let ffmpeg else {
-            throw HarnessError.message(
-                "ffmpeg is required; install it once with: brew install ffmpeg"
-            )
-        }
-        let (_, output) = try runAndCapture(
-            ffmpeg, ["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""]
-        )
-        print(output)
-        exit(0)
-    }
 
     let allCases = try loadCases()
     var selected = allCases
@@ -384,7 +383,7 @@ do {
     print("Output: \(outputDirectory.path)")
     print("Corpus speech cases: \(allCases.count); complete: \(completeCount); remaining: \(allCases.count - completeCount)")
     print("Manifest: schema \(schemaVersion), format \(dataFormat)")
-    print("Microphone: AVFoundation audio index \(options.device) (use --list-devices to inspect)\n")
+    print("Microphone: AVFoundation audio input \(options.device) (use --list-devices to inspect)\n")
 
     if options.listOnly {
         for item in selected {
