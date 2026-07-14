@@ -295,7 +295,7 @@ public final class VoxtralRealtimeStreamSession {
             // is starved in this GPU state.
             if FastProfile.enabled {
                 FastProfile.time(.headProbe) {
-                    let h = MLXRandom.normal([model.config.dim]).asType(.float16)
+                    let h = MLXRandom.normal([model.config.decoder.dim]).asType(.float16)
                     MLX.eval(h)
                     let l = model.decoder.logits(h)
                     MLX.eval(l)
