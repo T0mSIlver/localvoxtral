@@ -96,7 +96,7 @@ public func voxtralHeadBenchmark(dim: Int = 3072, vocab: Int = 131072, iters: In
     MLX.eval(w, h)
 
     let emb = Embedding(embeddingCount: vocab, dimensions: dim)
-    emb.update(parameters: ModuleParameters.unflattened(["weight": .value(w)]))
+    emb.update(parameters: ModuleParameters.unflattened([("weight", w)]))
     MLX.eval(emb)
 
     // transposed-view matmul (what upstream does)
