@@ -14,7 +14,19 @@ let package = Package(
         .executable(name: "localvoxtral-polishd", targets: ["localvoxtral-polishd"])
     ],
     dependencies: [
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.4"),
+        // Revision, not a tag: the newest release (3.31.4) loads EVERY
+        // .safetensors file under the model directory, ignoring
+        // model.safetensors.index.json. Our default polishing model
+        // (mlx-community/Qwen3.5-4B-OptiQ-4bit) ships optiq/mtp.safetensors +
+        // optiq/optiq_vision.safetensors next to the indexed weights, so those
+        // auxiliary tensors get merged into the model's weight dictionary and
+        // generation comes out incoherent. Fixed upstream by ml-explore/
+        // mlx-swift-lm#408 (this commit, main head); move back to a tag once a
+        // release carries it.
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift-lm.git",
+            revision: "f5f18ed9d3373b21874bd43da34922377c6da0fb"
+        ),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
     ],
     targets: [
