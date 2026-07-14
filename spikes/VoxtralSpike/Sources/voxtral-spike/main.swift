@@ -102,7 +102,14 @@ func pct(_ xs: [Double], _ p: Double) -> Double {
 
 // MARK: - Run
 
-GPU.set(cacheLimit: 4 * 1024 * 1024 * 1024)  // mirrors voxmlx's mx.metal.set_cache_limit
+// voxmlx caps its Metal cache at 4 GB; the spike takes 1 GB because it may run while
+// the owner's app already holds a 4B ASR model (8471) and a 4B polish model (8472)
+// resident on the same GPU.
+GPU.set(cacheLimit: 1024 * 1024 * 1024)
+
+FileHandle.standardError.write(
+    "physical RAM: \(ProcessInfo.processInfo.physicalMemory / 1_073_741_824) GB\n"
+        .data(using: .utf8)!)
 
 let samples = try loadPCM16kMono(wavPath)
 let audioSeconds = Double(samples.count) / 16000.0
