@@ -12,16 +12,14 @@ import Foundation
 ///   1. `replaceMarkersWithPlaceholder` swaps each marker for the env-var-shaped
 ///      `placeholder`. That placeholder is what flows through the LLM polish
 ///      request and the persisted session record — never the payload.
-///      `PolishTokenGuard.protectedTokens` already recognizes `$LV_..._..` shapes
-///      (`\$[A-Z_][A-Z0-9_]+`), so F1's verify/repair/fallback machinery
-///      guarantees the placeholder survives the model byte-exact.
-///   2. `substitutePayload` runs only at the very end, after polish + token
-///      guard, replacing the placeholder with the formatted clipboard payload
-///      just before commit.
+///      Both profiles independently verify its occurrence count before commit;
+///      model drift therefore fails safe by discarding the polish.
+///   2. `substitutePayload` runs only at the very end, after polish and the
+///      profile-specific guards, replacing the placeholder with the formatted
+///      clipboard payload just before commit.
 enum ClipboardPayloadMacro {
-    /// Env-var-shaped so `PolishTokenGuard` protects it through polishing with
-    /// zero guard changes (see the type doc). All markers collapse to this one
-    /// placeholder string.
+    /// Env-var-shaped so it is conspicuous to the model and unlikely to be
+    /// confused with dictated prose. All markers collapse to this one string.
     static let placeholder = "$LV_CLIPBOARD_PAYLOAD"
 
     /// A single-line payload no longer than this (after trimming) is inlined as
@@ -118,6 +116,18 @@ enum ClipboardPayloadMacro {
     /// block always stands on its own lines without doubling blank lines.
     static func substitutePayload(in text: String, payload: String) -> String {
         guard text.contains(placeholder) else { return text }
+
+        // The agent prompt correctly teaches the model to put environment
+        // variables in code spans, so real inference normally returns
+        // `$LV_CLIPBOARD_PAYLOAD` with one backtick on each side. The wrapper
+        // describes the placeholder, not the eventual payload: consume an
+        // exact wrapper before applying our own inline/fenced formatting.
+        // Only the exact code span is normalized; a placeholder embedded in a
+        // larger user-authored code span is left alone.
+        let text = text.replacingOccurrences(
+            of: "`\(placeholder)`",
+            with: placeholder
+        )
 
         let clean = payload.trimmingCharacters(in: .whitespacesAndNewlines)
 

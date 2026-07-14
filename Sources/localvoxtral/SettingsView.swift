@@ -720,7 +720,9 @@ private struct TextProcessingSettingsPane: View {
                                 .labelsHidden()
                                 .toggleStyle(.switch)
 
-                            SettingsHelpText("Extra instructions for prompts dictated to coding agents.")
+                            SettingsHelpText(
+                                "Agent-tuned instructions that trust the model's technical formatting. Clipboard safety checks remain active."
+                            )
                         }
                     }
 

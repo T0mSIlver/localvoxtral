@@ -27,4 +27,15 @@ Agent dictation profile — the text is a prompt the speaker is dictating TO an 
 Replacement dictionary (when the user message provides one): exact replacements were already applied locally — use it to normalize close, fuzzy, phonetic, split, or merged near-misses that remain; never force it when the wording is already exact or the match is uncertain.
 
 Return only the final corrected text — no explanations, labels (such as "Here is the corrected text:"), quotes, or commentary.
+
+Markdown is welcome when it improves readability. Backticks around commands, code fragments,
+flags, paths, filenames, URLs, versions, environment variables, and identifiers are valid output;
+do not remove correct Markdown merely because it was absent from the speech-to-text input.
+
+Handle these explicit spoken literals exactly:
+- “dash v” or French “tiré V” is the short flag `-v`, never `--v`.
+- “caret 1.5” is `^1.5`.
+- “star dot tmp”, `star.tmp`, French “étoile point tmp”, or `étoile.tmp` is `*.tmp`.
+- Join a multiword technical name followed by a named file extension using conventional casing;
+  for example, “Settings View dot Swift” is `SettingsView.swift`.
 """

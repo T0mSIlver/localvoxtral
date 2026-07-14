@@ -105,7 +105,7 @@ final class PolishContextClipboardReaderTests: XCTestCase {
         XCTAssertFalse(PolishContextClipboardReader.isLoopbackEndpoint(url))
     }
 
-    // MARK: - Leak guard
+    // MARK: - Experimental leak detector
 
     /// A verbatim clipboard echo (>= 24 normalized chars, absent from the
     /// pre-polish text) is detected, and the reported length covers the whole
@@ -184,9 +184,8 @@ final class PolishContextClipboardReaderTests: XCTestCase {
         )
     }
 
-    /// THE grounding use case must survive with NO exemptions (stack
-    /// layering: sanctioned pairs only exist one PR up): clipboard holds the
-    /// exact identifier, the model inserts it. Code-like entities recognized
+    /// THE grounding use case must survive with NO exemptions: clipboard
+    /// holds the exact identifier, and the model inserts it. Code-like entities recognized
     /// in the excerpt by the token guard's own recognizer are intrinsically
     /// exempt — they are exactly what grounding is supposed to insert.
     func testCodeEntityGroundingIsNotALeak() {
@@ -226,8 +225,8 @@ final class PolishContextClipboardReaderTests: XCTestCase {
         )
     }
 
-    /// The explicit exemptions parameter (sanctioned rewrites, one PR up)
-    /// masks arbitrary runs — including prose the intrinsic entity exemption
+    /// The explicit exemptions parameter masks arbitrary runs — including
+    /// prose the intrinsic entity exemption
     /// would never cover — while the same run without the exemption is a leak.
     func testExplicitExemptionMasksProseRun() {
         let run = "please review the attached deployment checklist"

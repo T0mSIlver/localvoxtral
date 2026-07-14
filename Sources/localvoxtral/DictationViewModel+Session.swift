@@ -589,10 +589,10 @@ extension DictationViewModel {
             // replacement dictionary and BEFORE the polish request is built,
             // swap each spoken marker for the env-var-shaped placeholder and
             // read the clipboard once. The placeholder — not the payload —
-            // flows through polish (PolishTokenGuard already protects its
-            // shape) and persistence; the real payload is substituted back only
-            // at the very end, just before commit. No marker or setting off:
-            // a no-op that never touches the pasteboard.
+            // flows through polish and persistence. Both profiles enforce its
+            // occurrence count before the real payload is substituted at
+            // commit. No marker or setting off: a no-op that never touches the
+            // pasteboard.
             let clipboardMacro = applyClipboardPayloadMacroIfEnabled(to: replacementAppliedText)
             let workingText = clipboardMacro.placeholderText
             let clipboardPayload = clipboardMacro.payload
@@ -670,12 +670,6 @@ extension DictationViewModel {
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
                     var repoVocabularyCount = 0
-                    // The vocabulary corrections we ASK the model to make must
-                    // also be sanctioned through the token guard, or its
-                    // near-miss repair would deterministically revert them
-                    // (the STT's wrong filename-shaped token is what the guard
-                    // protects). (from: spoken alias, to: exact term) pairs.
-                    var sanctionedVocabularyRewrites: [(from: String, to: String)] = []
                     if templateCarriesDictionarySlot,
                        let endpointURL = polishingConfig?.endpointURL,
                        let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
@@ -692,30 +686,18 @@ extension DictationViewModel {
                             entries: vocabularyEntries
                         )
                         repoVocabularyCount = vocabularyEntries.count
-                        // A multi-word alias whose tail is itself a protected
-                        // token ("user session manager.swift" containing
-                        // `manager.swift`) is covered by the guard's
-                        // substring-canonical sanctioning.
-                        sanctionedVocabularyRewrites = vocabularyEntries.flatMap { entry in
-                            entry.matches.map { (from: $0, to: entry.replaceWith) }
-                        }
                         Log.polishing.info(
                             "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
                         )
                     }
 
-                    // Clipboard vocabulary: the SAME sanctioned-rewrite pipeline,
-                    // grounded in the already privacy-gated clipboard excerpt
+                    // Clipboard vocabulary is grounded in the already
+                    // privacy-gated clipboard excerpt
                     // (feature toggle ON + loopback endpoint + never concealed/
                     // transient — all enforced when the excerpt was captured;
                     // nil context means none of it runs). Without this, the
                     // context excerpt lets the model produce the exact copied
-                    // spelling and the token guard then DISCARDS that very
-                    // correction whenever the misheard form was filename-shaped
-                    // (field, 2026-07-11: `manager.swift` glued into
-                    // `UserSessionManager.swift`). Hint entries need the
-                    // dictionary slot; sanctioning must apply even without it —
-                    // the model corrects from the context excerpt alone.
+                    // spelling. Hint entries need the dictionary slot.
                     var clipboardVocabularyCount = 0
                     if let clipboardContext = capturedClipboardContext {
                         let clipboardEntries = ClipboardVocabulary.candidateEntries(
@@ -730,9 +712,6 @@ extension DictationViewModel {
                                         entries: clipboardEntries,
                                         header: RepoVocabularyMatcher.clipboardVocabularyHeader
                                     )
-                            }
-                            sanctionedVocabularyRewrites += clipboardEntries.flatMap { entry in
-                                entry.matches.map { (from: $0, to: entry.replaceWith) }
                             }
                             clipboardVocabularyCount = clipboardEntries.count
                             // Counts only — entity content is clipboard content.
@@ -794,82 +773,20 @@ extension DictationViewModel {
                             )
                             polishingDuration = result.durationSeconds
 
-                            // Token protection: a small polish model can mangle
-                            // code-like tokens (CLI flags, paths, URLs, backtick
-                            // spans). Repair byte-exact where possible; if a
-                            // protected token is neither present nor repairable,
-                            // discard the polish and keep the pre-polish text.
-                            let guardResult = PolishTokenGuard.verifyAndRepair(
-                                polished: result.polishedText,
-                                original: workingText,
-                                sanctionedReplacements: sanctionedVocabularyRewrites
-                            )
-                            if guardResult.sanctionedCount > 0 {
-                                Log.polishing.info(
-                                    "Token guard accepted \(guardResult.sanctionedCount, privacy: .public) sanctioned repo-vocabulary rewrite(s)"
-                                )
-                            }
-                            var committedText: String
-                            switch guardResult.outcome {
-                            case .clean:
-                                committedText = guardResult.text
-                            case .repaired(let count):
-                                committedText = guardResult.text
-                                Log.polishing.info(
-                                    "Token guard repaired \(count) protected token(s) after polishing"
-                                )
-                            case .fallback(let missing):
-                                committedText = workingText
-                                // Count is public; the token list is dictated
-                                // content (URLs, paths, env vars) and keeps the
-                                // default private redaction in unified logs.
-                                Log.polishing.warning(
-                                    "Token guard discarded polish; \(missing.count, privacy: .public) protected token(s) not preserved: \(missing.joined(separator: ", "))"
-                                )
-                            }
+                            // Trust the polishing model for both prompt profiles.
+                            // Human evaluation found deterministic token repair
+                            // could undo useful formatting and reconstruction.
+                            // Placeholder-count integrity for an explicit paste
+                            // macro remains independent below.
+                            var committedText = result.polishedText
 
-                            // Clipboard leak guard: the context excerpt is
-                            // reference material, but a small model can echo
-                            // prompt text or follow instructions embedded in
-                            // the clipboard — and the token guard above only
-                            // verifies tokens from the working text, so it
-                            // would accept clipboard-only output. A long
-                            // contiguous excerpt substring in the output that
-                            // the pre-polish text never contained is a leak:
-                            // discard the polish, keep the pre-polish text
-                            // (same fallback shape as the token guard).
-                            // Counts-only logging — the matched run is
-                            // clipboard content.
-                            // Sanctioned rewrites are the one kind of
-                            // clipboard-derived output we ASKED for: their
-                            // `to` values are exempt (masked out before the
-                            // scan), so an intentional exact-entity insertion
-                            // can never trip the leak guard however long the
-                            // entity.
-                            if let excerpt = capturedClipboardContext?.excerpt,
-                               committedText != workingText,
-                               let leakedLength = PolishContextClipboardReader.detectClipboardLeak(
-                                   polished: committedText,
-                                   original: workingText,
-                                   excerpt: excerpt,
-                                   exemptions: sanctionedVocabularyRewrites.map(\.to)
-                               )
-                            {
-                                committedText = workingText
-                                Log.polishing.warning(
-                                    "Clipboard leak guard discarded polish: match:\(leakedLength, privacy: .public)ch"
-                                )
-                            }
-
-                            // Placeholder-count integrity: the guard dedupes
-                            // tokens and only verifies "at least one standalone
-                            // occurrence", so a model output that DUPLICATED
-                            // the placeholder (payload pasted twice) or dropped
-                            // one of two (a requested paste lost) sails
-                            // through it. Compare standalone counts against
-                            // the pre-polish working text; on mismatch,
-                            // discard the polish and keep the placeholder-
-                            // bearing working text.
+                            // Placeholder-count integrity stays independent of
+                            // trusting model text: a duplicated placeholder
+                            // would paste the payload twice, while dropping one
+                            // of two would lose a requested paste. Compare
+                            // standalone counts against the pre-polish working
+                            // text; on mismatch, discard the polish and keep the
+                            // placeholder-bearing working text.
                             if clipboardPayload != nil {
                                 let expectedPlaceholders =
                                     ClipboardPayloadMacro.standalonePlaceholderCount(

@@ -33,6 +33,8 @@ enum BundledConfigDefaultHistory {
             "43ededf94739fe2a1d5ccfb7c99bcefc438afc30737c974cd9d284826bbbb771",
         ],
         "llm_system_prompt_agent.toml": [
+            // 2026-07-14 human agent-dictation calibration
+            "9b6e268a52459c911b4094839e5a4efe38b7348cef53781d8d12905ac6a845ba",
             // 2026-07-12 prompt trim (#126)
             "e3c586e3cf1a7ba2d30fe693f2e0213b63f97e4e62dabb915ae1dc90298d0a8c",
             // 2026-07-12 agent profile introduction (#113)
