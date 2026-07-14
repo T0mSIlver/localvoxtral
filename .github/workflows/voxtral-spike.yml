@@ -44,7 +44,7 @@ jobs:
         run: |
           {
             echo '## Voxtral Swift spike'
-            for f in spikes/out/en.json spikes/out/fr.json; do
+            for f in spikes/out/*.json; do
               [[ -f "$f" ]] || continue
               echo "### $f"
               echo '```json'

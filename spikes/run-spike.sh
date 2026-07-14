@@ -83,14 +83,23 @@ do_run() {
     echo "==> WARNING: no on-demand voxmlx — Swift RTF will have no baseline to compare against"
   fi
 
-  echo "==> EN: delay sweep (chunk 80 ms), model $MODEL_REPO"
+  # Chunk sweep FIRST: the engine pays its fixed per-step cost once per chunk (and
+  # recomputes the conv stem over all audio each step), so RTF should fall as chunks
+  # grow. If a realistic chunk size already lands under RTF 1.0, no engine surgery
+  # is needed. The Python baseline rides along at the first chunk size.
+  echo "==> EN: chunk sweep, model $MODEL_REPO"
   "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
-    --chunk-ms 80 --delays "default,480,240,160,80" --label en "${WS_ARGS[@]}" \
-    | tee "$OUT_DIR/en.json"
+    --chunks "80,160,240,480,960" --delays "default" --label en-chunks "${WS_ARGS[@]}" \
+    | tee "$OUT_DIR/en-chunks.json"
+
+  echo "==> EN: delay sweep at 80 ms chunks"
+  "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
+    --chunks "80" --delays "default,480,240,160,80" --label en-delays \
+    | tee "$OUT_DIR/en-delays.json"
 
   echo "==> FR: accented text (delta-integrity smoke)"
   "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/fr.wav" --expected "$OUT_DIR/fr.txt" \
-    --chunk-ms 80 --delays "default" --label fr "${WS_ARGS[@]}" \
+    --chunks "80,480" --delays "default" --label fr \
     | tee "$OUT_DIR/fr.json"
 
   echo "==> done"

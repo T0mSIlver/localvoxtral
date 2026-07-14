@@ -27,7 +27,12 @@ func arg(_ name: String, default def: String? = nil) -> String? {
 let repoID = arg("repo", default: "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")!
 let wavPath = arg("wav")!
 let expectedPath = arg("expected")
-let chunkMs = Int(arg("chunk-ms", default: "80")!)!
+// Every fixed per-step cost (encoder pass, kernel launches, the O(n) conv-stem
+// recompute, the GPU sync) is paid ONCE PER CHUNK — so chunk size is a first-class
+// performance knob, not just a plumbing detail. Upstream's own CLI feeds 480 ms.
+let chunkSpecs = (arg("chunks", default: arg("chunk-ms", default: "80")!)!)
+    .split(separator: ",").compactMap { Int($0) }
+let chunkMs = chunkSpecs.first!
 // "default" = don't pass the parameter at all (whatever the model's config says).
 let delaySpecs = (arg("delays", default: "default")!).split(separator: ",").map(String.init)
 let label = arg("label", default: "run")!
@@ -241,10 +246,10 @@ let warm = model.makeStreamSession(temperature: 0.0)
 _ = warm.step(Array(samples.prefix(16000)))
 _ = warm.finish()
 
-let chunkSamples = max(1, 16000 * chunkMs / 1000)
 var report: [[String: Any]] = []
 
-for spec in delaySpecs {
+for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
+    let chunkSamples = max(1, 16000 * chunkMs / 1000)
     let delayMs: Int? = spec == "default" ? nil : Int(spec)
     let session = model.makeStreamSession(temperature: 0.0, transcriptionDelayMs: delayMs)
 
