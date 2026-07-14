@@ -1,0 +1,57 @@
+name: Voxtral Spike
+
+# THROWAWAY SPIKE lane. Answers one question before we commit to replacing the
+# managed Python voxmlx backend with a bundled Swift engine: does mlx-audio-swift's
+# VoxtralRealtime streaming session transcribe accurately, keep up with realtime,
+# and emit clean deltas (no re-emits — our insertion path has no backspaces)?
+#
+# Runs on the self-hosted Mac because it needs xcodebuild (SwiftPM's CLI cannot
+# compile mlx-swift's Metal kernels) and a real 4B model on the GPU.
+# Delete this workflow, spikes/, once the go/no-go is recorded.
+
+on:
+  push:
+    branches: ['spike/**']
+  workflow_dispatch:
+    inputs:
+      model_repo:
+        description: 'HF repo for the Voxtral realtime weights'
+        default: 'mlx-community/Voxtral-Mini-4B-Realtime-6bit'
+        required: false
+
+jobs:
+  spike:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Voxtral streaming spike
+        env:
+          MODEL_REPO: ${{ github.event.inputs.model_repo || 'mlx-community/Voxtral-Mini-4B-Realtime-6bit' }}
+        run: ./spikes/run-spike.sh
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo '## Voxtral Swift spike'
+            for f in spikes/out/en.json spikes/out/fr.json; do
+              [[ -f "$f" ]] || continue
+              echo "### $f"
+              echo '```json'
+              cat "$f"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxtral-spike-results
+          path: |
+            spikes/out/*.json
+            spikes/VoxtralSpike/.build/xcodebuild.log
+          if-no-files-found: warn
