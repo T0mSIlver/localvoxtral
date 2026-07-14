@@ -105,6 +105,30 @@ struct HFModelDownloader: ModelPreparing {
         let scriptURL = layout.downloads.appendingPathComponent("hf_model_download.py")
         try Self.pythonDownloaderScript.write(to: scriptURL, atomically: true, encoding: .utf8)
 
+        let result = try await ModelDownloadProcess.run(
+            executableURL: uvBinary,
+            arguments: Self.downloaderArguments(scriptPath: scriptURL.path, request: request),
+            environment: processEnvironment(),
+            livenessTimeoutSeconds: livenessTimeoutSeconds,
+            progress: progress
+        )
+        if result.exitCode != 0 {
+            throw ModelDownloadError.processExited(
+                code: result.exitCode,
+                stderrTail: result.stderrTail
+            )
+        }
+    }
+
+    /// The uv argv that fetches a model. Extracted so the pin is testable
+    /// without a network download: dropping `--revision` here would leave
+    /// every unit and eval lane green (the lanes provision the HF cache
+    /// themselves) while shipping an app that downloads one revision and
+    /// launches the helper against another.
+    static func downloaderArguments(
+        scriptPath: String,
+        request: ModelPreparationRequest
+    ) -> [String] {
         var arguments = [
             "run",
             "--python",
@@ -118,7 +142,7 @@ struct HFModelDownloader: ModelPreparing {
             "tqdm<5",
             "python",
             "-u",
-            scriptURL.path,
+            scriptPath,
             request.repoID,
         ]
         for pattern in request.includePatterns {
@@ -129,20 +153,7 @@ struct HFModelDownloader: ModelPreparing {
             arguments.append("--revision")
             arguments.append(revision)
         }
-
-        let result = try await ModelDownloadProcess.run(
-            executableURL: uvBinary,
-            arguments: arguments,
-            environment: processEnvironment(),
-            livenessTimeoutSeconds: livenessTimeoutSeconds,
-            progress: progress
-        )
-        if result.exitCode != 0 {
-            throw ModelDownloadError.processExited(
-                code: result.exitCode,
-                stderrTail: result.stderrTail
-            )
-        }
+        return arguments
     }
 
     private func processEnvironment() -> [String: String] {

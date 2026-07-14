@@ -111,18 +111,25 @@ final class PolishHelperIntegrationTests: XCTestCase {
         // (2026-07-14). Custom repo ids (no catalog entry) still track main.
         let pinnedRevision = PolishModelCatalog.option(forRepoID: repoID)?.revision
 
-        // Completeness marker is refs/main, which is written LAST below.
-        // Keying on config.json alone would let a cancelled half-download
-        // (config present, weights missing) poison the cache into a
-        // permanently-failing suite.
-        let mainRef = repoDir.appendingPathComponent("refs/main")
-        if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
+        // Completeness marker is a sentinel INSIDE the snapshot, written LAST
+        // below. Keying on config.json alone would let a cancelled
+        // half-download (config present, weights missing) poison the cache
+        // into a permanently-failing suite. It is deliberately not refs/main:
+        // hf_hub writes no ref for a sha-pinned download, so a ref-keyed marker
+        // would (a) miss a cache the app itself populated and (b) force this
+        // suite to point the SHARED cache's main ref at a non-head commit,
+        // lying to every other tool on the host.
+        if let pinnedRevision {
+            if Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(pinnedRevision)) {
+                return
+            }
+        } else if let revision = try? String(
+            contentsOf: repoDir.appendingPathComponent("refs/main"),
+            encoding: .utf8
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            pinnedRevision == nil || revision == pinnedRevision,
-            FileManager.default.fileExists(
-                atPath: snapshotsDir.appendingPathComponent("\(revision)/config.json").path
-            )
+            Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(revision))
         {
             return
         }
@@ -183,10 +190,28 @@ final class PolishHelperIntegrationTests: XCTestCase {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
 
-        let refsDir = repoDir.appendingPathComponent("refs")
-        try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
-        try Data("\(info.sha)\n".utf8).write(to: mainRef)
+        // An unpinned (custom) repo is still resolved through refs/main by the
+        // helper, so it needs the ref; a pinned one must not touch it.
+        if pinnedRevision == nil {
+            let refsDir = repoDir.appendingPathComponent("refs")
+            try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+            try Data("\(info.sha)\n".utf8).write(to: repoDir.appendingPathComponent("refs/main"))
+        }
+        // Written LAST: everything above is resumable, this says "complete".
+        try Data().write(to: snapshotDir.appendingPathComponent(Self.provisionedSentinel))
         print("polishd integration: model provisioned (\(wanted.count) files)")
+    }
+
+    /// Marker the suite writes after the last file lands (see ensureModelCached).
+    static let provisionedSentinel = ".localvoxtral-provisioned"
+
+    static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: snapshot.appendingPathComponent(provisionedSentinel).path
+        )
+            && FileManager.default.fileExists(
+                atPath: snapshot.appendingPathComponent("config.json").path
+            )
     }
 
     /// Spawns the helper and waits for its stderr readiness line

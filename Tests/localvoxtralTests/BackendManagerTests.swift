@@ -288,6 +288,11 @@ final class BackendManagerTests: XCTestCase {
             Array(relaunchedConfiguration.arguments.prefix(2)),
             ["--model", "example/new-polishing-model"]
         )
+        // A custom repo id has no catalog pin: it tracks main, in the download
+        // and in the helper's load alike. Pinning a revision we never chose
+        // would point the helper at a snapshot that cannot exist.
+        XCTAssertFalse(relaunchedConfiguration.arguments.contains("--model-revision"))
+        XCTAssertNil(modelPreparer.prepareCalls.last?.revision)
     }
 
     func testStopPolishingAwaitsCancelledEnsureSoASubsequentEnsureStartsFresh() async throws {

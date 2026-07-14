@@ -32,6 +32,47 @@ final class HFModelDownloaderTests: XCTestCase {
         )
     }
 
+    /// The app must FETCH the revision it later LAUNCHES the helper against.
+    /// No lane covers this: the eval suites provision the HF cache themselves,
+    /// so a downloader that silently dropped the pin would stay green here and
+    /// break every fresh install (download main, load pinned → hard error).
+    func testDownloaderArgvCarriesThePinnedRevisionOnlyWhenPinned() throws {
+        let pinned = ModelPreparationRequest(
+            backendID: "polishd",
+            displayName: "Polishing",
+            repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            revision: "41eccc3316fd4bf4b27cedf4924fe23ce44e77d9",
+            includePatterns: ["*.json", "model*.safetensors"]
+        )
+        let arguments = HFModelDownloader.downloaderArguments(
+            scriptPath: "/tmp/hf_model_download.py",
+            request: pinned
+        )
+        let flagIndex = try XCTUnwrap(
+            arguments.firstIndex(of: "--revision"),
+            "pinned download dropped --revision: \(arguments)"
+        )
+        XCTAssertEqual(
+            arguments[arguments.index(after: flagIndex)],
+            "41eccc3316fd4bf4b27cedf4924fe23ce44e77d9"
+        )
+
+        // A custom repo id has no pin: track main, exactly as before.
+        let unpinned = ModelPreparationRequest(
+            backendID: "polishd",
+            displayName: "Polishing",
+            repoID: "example/custom-polisher",
+            includePatterns: ["*.json"]
+        )
+        XCTAssertFalse(
+            HFModelDownloader.downloaderArguments(
+                scriptPath: "/tmp/hf_model_download.py",
+                request: unpinned
+            )
+            .contains("--revision")
+        )
+    }
+
     /// Regression, 2026-07-14: the downloader tracked the repo's main ref, so
     /// an upstream commit (vision tower registered in the weight index)
     /// silently changed what every install fetched. The pin must reach BOTH

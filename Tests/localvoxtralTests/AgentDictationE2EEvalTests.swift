@@ -861,15 +861,24 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         // the helper refuses any other snapshot (see HFCacheModelLocator).
         let pinnedRevision = PolishModelCatalog.option(forRepoID: repoID)?.revision
 
-        // Completeness marker is refs/main, written LAST below, so a cancelled
-        // half-download can never poison the cache.
-        let mainRef = repoDir.appendingPathComponent("refs/main")
-        if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
+        // Completeness marker is a sentinel inside the snapshot, written LAST
+        // below (never refs/main — a sha-pinned download writes no ref, and
+        // rewriting the SHARED cache's main ref would lie to other tools on
+        // the host). Same scheme as PolishHelperIntegrationTests.
+        if let pinnedRevision {
+            if PolishHelperIntegrationTests.snapshotIsProvisioned(
+                snapshotsDir.appendingPathComponent(pinnedRevision)
+            ) {
+                return
+            }
+        } else if let revision = try? String(
+            contentsOf: repoDir.appendingPathComponent("refs/main"),
+            encoding: .utf8
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            pinnedRevision == nil || revision == pinnedRevision,
-            FileManager.default.fileExists(
-                atPath: snapshotsDir.appendingPathComponent("\(revision)/config.json").path
+            PolishHelperIntegrationTests.snapshotIsProvisioned(
+                snapshotsDir.appendingPathComponent(revision)
             )
         {
             return
@@ -928,9 +937,14 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
 
-        let refsDir = repoDir.appendingPathComponent("refs")
-        try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
-        try Data("\(info.sha)\n".utf8).write(to: mainRef)
+        if pinnedRevision == nil {
+            let refsDir = repoDir.appendingPathComponent("refs")
+            try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+            try Data("\(info.sha)\n".utf8).write(to: repoDir.appendingPathComponent("refs/main"))
+        }
+        try Data().write(
+            to: snapshotDir.appendingPathComponent(PolishHelperIntegrationTests.provisionedSentinel)
+        )
         print("agent-e2e: model provisioned (\(wanted.count) files)")
     }
 
