@@ -1077,10 +1077,10 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(board.requiredFailures.isEmpty)
         XCTAssertTrue(board.text.contains("XFAIL b-en-flag (known-hard)"))
         XCTAssertTrue(board.text.contains("PASS b-en-port"))
-        // Guard-off column annotated, and the flip counted (baseline pass,
-        // raw model output fail = the guard earned its keep).
-        XCTAssertTrue(board.text.contains("guard-off tokens: FAIL"))
-        XCTAssertTrue(board.text.contains("token guard flipped 1 case(s)"))
+        // Raw-model column annotated, and the post-model safety improvement
+        // counted (production pass, raw model output fail).
+        XCTAssertTrue(board.text.contains("raw-model tokens: FAIL"))
+        XCTAssertTrue(board.text.contains("post-model safety changed 1 case(s)"))
     }
 
     func testScoreboardSkipAndInfraErrorRows() {

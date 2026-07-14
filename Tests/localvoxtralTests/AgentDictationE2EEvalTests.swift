@@ -24,7 +24,7 @@ import XCTest
 ///   path on a view model built with `startRuntimeServices: false` —
 ///   replacement dictionary -> clipboard-paste macro -> profile selection ->
 ///   clipboard context -> repo vocabulary -> `LLMPolishingRequest` ->
-///   profile-specific token guard policy -> leak/placeholder guards -> commit.
+///   raw model output -> leak/placeholder guards -> commit.
 ///   Prompt templates load through the production `AppConfigStore`
 ///   (configDirectoryOverride seeded with the bundled files). Existing DEBUG
 ///   seams only: target-bundle override (profile routing), pasteboard stubs
@@ -347,17 +347,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 capture.polishInputText = polish.request?.inputText
                 capture.rawModelOutput = polish.rawModelOutput
 
-                // Raw-model diagnostic column: what the commit would look like
-                // without PolishTokenGuard, at zero extra inference. This is
-                // normally the agent-profile final now, except when a
-                // clipboard safety guard rejects it. Precisely: the SAME run's
-                // pre-guard model output, and for
-                // macro-positive cases with the commit-time payload
-                // substitution applied on top — the guard itself saw the
-                // PLACEHOLDER form, but a no-guard commit would still
-                // substitute the payload, and scoring the placeholder form
-                // against payload-bearing required tokens would count every
-                // macro case as a guard save it never made.
+                // Raw-model diagnostic column: the SAME run's model output
+                // before clipboard safety checks, at zero extra inference.
+                // Macro-positive cases additionally apply the commit-time
+                // payload substitution; scoring the placeholder form against
+                // payload-bearing required tokens would create false failures.
                 if var guardOffOutput = polish.rawModelOutput {
                     if evalCase.features?.macro == true,
                         let clipboard = evalCase.features?.clipboard,
@@ -406,10 +400,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private struct PolishStageOutcome {
         let committedText: String
-        /// The raw model output before profile-specific guards and
-        /// pre-substitution — for macro cases this still carries the
-        /// placeholder). The guard-off column applies the commit-time payload
-        /// substitution before scoring; see the call site.
+        /// The raw model output before clipboard safety checks and payload
+        /// substitution. Macro cases still carry the placeholder here; the
+        /// diagnostic column substitutes it before scoring.
         let rawModelOutput: String?
         /// The polish request exactly as the production stop-commit path
         /// assembled it (system prompt, user prompts, input text) — recorded
@@ -1039,8 +1032,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
 /// Forwards to the production `LLMPolishingService` with the catalog-aware
 /// configuration production's managed mode builds (only the port differs —
-/// the ephemeral helper port), and records the RAW model output (guard-off
-/// diagnostic column) plus the request itself (inspection report). The
+/// the ephemeral helper port), and records the raw model output (diagnostic
+/// column) plus the request itself (inspection report). The
 /// request is assembled by the production stop-commit path; this wrapper
 /// adds no request shaping.
 private actor EvalRecordingPolishingService: LLMPolishingServicing {

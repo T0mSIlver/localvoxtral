@@ -158,13 +158,12 @@ enum PolishContextClipboardReader {
 
     /// Deterministic clipboard-leak detection on the polished model output:
     /// the context excerpt is REFERENCE material, but a small model can echo
-    /// prompt text or follow instructions embedded in the clipboard, and the
-    /// commit path would accept it (the token guard only verifies tokens from
-    /// the working text). Returns the length of the longest leaked run — a
+    /// prompt text or follow instructions embedded in the clipboard. Returns
+    /// the length of the longest leaked run — a
     /// contiguous whitespace-normalized substring of `excerpt`, at least
     /// `leakGuardMinimumMatchLength` chars, present in `polished` but absent
     /// from `original` — or nil when no leak is detected. Callers discard the
-    /// polish on a hit (same fallback shape as the token guard).
+    /// polish on a hit.
     ///
     /// `exemptions` are substrings the caller ASKED the model to produce
     /// (sanctioned clipboard-vocabulary rewrites): their occurrences are

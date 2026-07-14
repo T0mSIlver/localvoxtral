@@ -518,14 +518,11 @@ enum AgentDictationE2EEvalSupport {
     // MARK: - Case results + scoreboard
 
     /// The outcome of one corpus case, one row of the scoreboard. Columns:
-    /// `tokensFailures`/`exactTextFailures` score the BASELINE run (the
-    /// production path, token guard on); `guardOffTokensFailures` is the
-    /// diagnostic guard-off column — the same run's PRE-GUARD model output
-    /// (for macro cases: after the commit-time payload substitution the
-    /// no-guard commit would still perform — the guard itself saw the
-    /// placeholder form) scored on the tokens metric, measuring what the
-    /// token guard saved (how often #101 earns its keep) at zero extra
-    /// inference cost. More ablation columns (feature-off runs) slot in as
+    /// `tokensFailures`/`exactTextFailures` score the BASELINE production path;
+    /// `guardOffTokensFailures` retains its schema name for compatibility but
+    /// is the raw-model diagnostic column — the same run's model output before
+    /// clipboard safety checks (for macro cases, after commit-time payload
+    /// substitution) scored on the tokens metric. More ablation columns slot in as
     /// additional optional fields + a line suffix in `renderLine` (Phase 3).
     struct CaseResult {
         let caseID: String
@@ -748,8 +745,8 @@ enum AgentDictationE2EEvalSupport {
                 + "skipped \(totalSkipped), errors \(totalErrors) =="
         )
         lines.append(
-            "== guard-off diagnostic: token guard flipped \(totalGuardSaves) case(s) "
-                + "from fail (raw model output) to pass (guarded commit) =="
+            "== raw-model diagnostic: post-model safety changed \(totalGuardSaves) case(s) "
+                + "from token fail (raw model output) to pass (production commit) =="
         )
         lines.append(scoreboardEndMarker)
 
@@ -771,7 +768,7 @@ enum AgentDictationE2EEvalSupport {
 
         var suffix = ""
         if let guardOff = row.guardOffTokensFailures {
-            suffix = " | guard-off tokens: \(guardOff.isEmpty ? "PASS" : "FAIL")"
+            suffix = " | raw-model tokens: \(guardOff.isEmpty ? "PASS" : "FAIL")"
         }
 
         let flatOutput = row.output.replacingOccurrences(of: "\n", with: "\\n")
@@ -822,7 +819,7 @@ enum AgentDictationE2EEvalSupport {
 
     /// Intermediate pipeline artifacts the live suite observes for one case,
     /// beyond what `CaseResult` scores: the ASR transcript, the exact polish
-    /// request, and the model output before the token guard.
+    /// request, and the model output before post-model safety checks.
     struct CaseCapture {
         /// ASR output (nil when the pipeline skipped speech recognition).
         var transcript: String?
@@ -830,9 +827,9 @@ enum AgentDictationE2EEvalSupport {
         var polishSystemPrompt: String?
         var polishUserPrompts: [String]?
         var polishInputText: String?
-        /// Pre-guard model output (macro cases: still placeholder-form).
+        /// Raw model output (macro cases: still placeholder-form).
         var rawModelOutput: String?
-        /// Guard-off diagnostic text as scored (macro payload substituted).
+        /// Raw-model diagnostic text as scored (macro payload substituted).
         var guardOffOutput: String?
     }
 

@@ -137,7 +137,7 @@ This is a real app with daily users. Nothing ships on "it compiles".
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
-| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; guard-off diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
+| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
 expects voxmlx at `ws://127.0.0.1:8000/v1/realtime` — on the build host it runs
@@ -313,11 +313,12 @@ Key subsystems:
   so `LiveHoldBackReplacementStream` withholds the trailing partial word plus
   any suffix that is still a live prefix of a dictionary rule. Nothing is lost
   (`flushRemainder()` releases it at stop) but it costs latency of appearance.
-- **Agent-profile polishing trusts the model's text.** Human terminal-dictation
-  evaluation found that `PolishTokenGuard` slightly reduced fidelity by undoing
-  useful Markdown and reconstructed identifiers, so the agent profile bypasses
-  it. The standard profile still uses the guard, and clipboard-leak plus payload-
-  placeholder integrity checks remain active for both profiles.
+- **LLM polishing trusts the model's text in both profiles.** Human dictation
+  evaluation found that `PolishTokenGuard` could reduce fidelity by undoing
+  useful formatting and reconstructed identifiers, so it is not in the commit
+  path. Clipboard-leak and payload-placeholder integrity checks remain active
+  for both profiles. The guard type remains as a recognizer used by clipboard
+  vocabulary and by focused unit coverage; do not infer that it runs at commit.
 
 ## Conventions
 

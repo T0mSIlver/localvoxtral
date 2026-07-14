@@ -84,7 +84,7 @@ Most dictation tools fall apart in a terminal. localvoxtral treats it as its pri
 When an Overlay Buffer dictation commits, optional LLM polishing understands how developers talk:
 
 - **Agent prompt profile** (on by default) — when the target is a terminal, polishing switches to an agent-tuned prompt. Spoken symbol forms become written ones ("dash dash force" → `--force`, "src slash auth" → `src/auth`, "the dot env file" → `.env`), code-like tokens (and only those) get backticks, filler words are stripped, self-corrections resolve to the final intent, and explicit enumerations become lists
-- **Profile-aware token handling** — standard polishing checks flags, paths, URLs, hashes, and versions byte for byte. The terminal agent profile instead trusts the model's technical formatting so useful Markdown and reconstructed identifiers survive; clipboard-leak and paste-placeholder checks still run
+- **Model-first polishing** — both prompt profiles trust the model's final wording and technical formatting so useful Markdown and reconstructed identifiers survive; clipboard-leak and paste-placeholder integrity checks still run independently
 - **Repo vocabulary** (opt-in) — when the terminal sits in a git repo, localvoxtral indexes the repo's file list (a single sandboxed `git ls-files`, cached briefly) and passes up to 12 relevant terms as hints to the polisher, so "use auth dot t s" comes out as `useAuth.ts`. Hints only, never automatic replacement
 - **Clipboard as context** (opt-in) — the polisher sees a sanitized excerpt of your clipboard to ground technical spellings
 - **"Paste clipboard" macro** (on by default) — say it mid-dictation and the clipboard content is embedded as a code block when the text commits

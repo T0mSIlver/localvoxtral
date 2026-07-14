@@ -957,16 +957,12 @@ enum RepoVocabularyMatcher {
 
 // MARK: - Clipboard vocabulary
 
-/// Clipboard entities join the sanctioned-rewrite pipeline (field regression,
-/// 2026-07-11): the clipboard polish-context excerpt already tells the model
-/// the exact spelling of a copied identifier, but when the STT's misheard form
-/// was itself a protected token (`manager.swift` for a dictated
-/// "user session manager dot swift", clipboard holding
-/// `UserSessionManager.swift`), the token guard deterministically DISCARDED
-/// the model's correct rewrite. Extracting the excerpt's code-like entities
-/// (the guard's OWN recognizer — never a second grammar), matching transcript
-/// n-grams against them exactly like repo vocabulary, and registering the
-/// matches as sanctioned pairs makes that correction survive the guard.
+/// Clipboard entities join the vocabulary-hint pipeline: the clipboard polish-
+/// context excerpt tells the model the exact spelling of a copied identifier.
+/// Extracting its code-like entities with the existing `PolishTokenGuard`
+/// recognizer (never a second token grammar), matching transcript n-grams
+/// against them exactly like repo vocabulary, and registering the matches as
+/// leak-check exemptions lets grounded corrections commit safely.
 ///
 /// Pure functions; all privacy gating (feature toggle, loopback endpoint,
 /// concealed/transient pasteboard) already happened when the excerpt was
