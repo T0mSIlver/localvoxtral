@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXNN
 
 /// Each optimization is individually switchable so a single run can bisect which one
 /// breaks correctness (the first A/B produced word-accuracy 0.000 with all three on,
