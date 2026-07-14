@@ -83,24 +83,27 @@ do_run() {
     echo "==> WARNING: no on-demand voxmlx — Swift RTF will have no baseline to compare against"
   fi
 
-  # Chunk sweep FIRST: the engine pays its fixed per-step cost once per chunk (and
-  # recomputes the conv stem over all audio each step), so RTF should fall as chunks
-  # grow. If a realistic chunk size already lands under RTF 1.0, no engine surgery
-  # is needed. The Python baseline rides along at the first chunk size.
-  echo "==> EN: chunk sweep, model $MODEL_REPO"
-  "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
-    --chunks "80,160,240,480,960" --delays "default" --label en-chunks "${WS_ARGS[@]}" \
-    | tee "$OUT_DIR/en-chunks.json"
+  # A/B, one engine per process (never two 4B models resident at once):
+  #   stock = upstream mlx-audio-swift            fast = vendored + optimized
+  # The Python baseline rides along in BOTH runs — it is the normalizer for whatever
+  # GPU contention the owner's app is causing at that moment (it swung 0.61→0.76 between
+  # runs), so stock-vs-fast is only meaningful relative to it.
+  for eng in stock fast; do
+    echo "==> [$eng] EN: chunk sweep, model $MODEL_REPO"
+    "$BIN" --engine "$eng" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
+      --chunks "80,240,480" --delays "default" --label "en-chunks-$eng" "${WS_ARGS[@]}" \
+      | tee "$OUT_DIR/en-chunks-$eng.json"
 
-  echo "==> EN: delay sweep at 80 ms chunks"
-  "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
-    --chunks "80" --delays "default,480,240,160,80" --label en-delays \
-    | tee "$OUT_DIR/en-delays.json"
+    echo "==> [$eng] FR: accented text (delta-integrity smoke)"
+    "$BIN" --engine "$eng" --repo "$MODEL_REPO" --wav "$OUT_DIR/fr.wav" --expected "$OUT_DIR/fr.txt" \
+      --chunks "80" --delays "default" --label "fr-$eng" \
+      | tee "$OUT_DIR/fr-$eng.json"
+  done
 
-  echo "==> FR: accented text (delta-integrity smoke)"
-  "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/fr.wav" --expected "$OUT_DIR/fr.txt" \
-    --chunks "80,480" --delays "default" --label fr \
-    | tee "$OUT_DIR/fr.json"
+  echo "==> [fast] EN: delay sweep at 80 ms chunks"
+  "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
+    --chunks "80" --delays "default,240,160,80" --label en-delays-fast \
+    | tee "$OUT_DIR/en-delays-fast.json"
 
   echo "==> done"
 }
