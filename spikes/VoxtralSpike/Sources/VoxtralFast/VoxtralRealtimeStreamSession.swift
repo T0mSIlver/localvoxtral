@@ -1,5 +1,7 @@
 import Foundation
 import MLX
+import MLXNN
+import MLXRandom
 import MLXAudioCore
 
 // True incremental (online) streaming for Voxtral Realtime.
@@ -285,6 +287,20 @@ public final class VoxtralRealtimeStreamSession {
                 let l = model.decoder.logits(next.0[0])
                 if FastProfile.enabled { MLX.eval(l) }
                 return l
+            }
+            // Discriminator: the SAME head op on a fresh random vector, timed right here in
+            // the loop. Isolated at startup it takes ~5 ms. If this probe is also ~5 ms while
+            // the real head above reads ~73 ms, then the head is innocent and the `logits`
+            // timer is absorbing queued GPU work. If the probe is ALSO slow, the head really
+            // is starved in this GPU state.
+            if FastProfile.enabled {
+                FastProfile.time(.headProbe) {
+                    let h = MLXRandom.normal([model.config.dim]).asType(.float16)
+                    MLX.eval(h)
+                    let l = model.decoder.logits(h)
+                    MLX.eval(l)
+                }
+                FastProfile.countProbe()
             }
             lastLogits = logits
             pendingToken = model.sampleArray(logits: logits, temperature: temperature)

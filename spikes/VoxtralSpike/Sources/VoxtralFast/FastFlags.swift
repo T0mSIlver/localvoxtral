@@ -57,7 +57,7 @@ public func voxtralRoPESelfTest() -> [String: Float] {
 /// (this perturbs the total slightly; it is a diagnostic, not a benchmark).
 public enum FastProfile {
     public enum Phase: String, CaseIterable, Sendable {
-        case convStem, encoder, decodeTokens, decoderForward, logits
+        case convStem, encoder, decodeTokens, decoderForward, logits, headProbe
     }
 
     public static let enabled = ProcessInfo.processInfo.environment["VOXFAST_PROFILE"] == "1"
@@ -75,12 +75,15 @@ public enum FastProfile {
     }
 
     static func countToken() { if enabled { tokens += 1 } }
+    nonisolated(unsafe) public private(set) static var probes = 0
+    static func countProbe() { if enabled { probes += 1 } }
     static func countStep() { if enabled { steps += 1 } }
 
     public static func snapshot() -> [String: Double] {
         var out = totals
         out["tokens"] = Double(tokens)
         out["steps"] = Double(steps)
+        out["probes"] = Double(probes)
         return out
     }
 }
