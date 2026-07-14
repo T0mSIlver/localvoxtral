@@ -10,6 +10,16 @@ public final class FastEngine {
 
     public init(repo: String) async throws {
         model = try await VoxtralRealtimeModel.fromPretrained(repo)
+        if FastFlags.fp16 {
+            model.castFloat32ParamsToFloat16()
+        }
+    }
+
+    /// What dtype is the model ACTUALLY running in? The profile said the LM head reads
+    /// ~800 MB at ~9 GB/s effective, which only makes sense if the weights are being
+    /// upcast per token — i.e. the activations are float32.
+    public func dtypes() -> [String: String] {
+        model.dtypeReport()
     }
 
     public func makeSession(temperature: Float = 0.0, transcriptionDelayMs: Int?) -> FastSession {

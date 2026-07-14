@@ -262,10 +262,13 @@ FileHandle.standardError.write(
     "loading \(repoID) [engine=\(engineName)] …\n".data(using: .utf8)!)
 let loadStart = CFAbsoluteTimeGetCurrent()
 
+var dtypeReport: [String: String] = [:]
 let engine: Engine
 switch engineName {
 case "fast":
     let fast = try await FastEngine(repo: repoID)
+    FileHandle.standardError.write("dtypes: \(fast.dtypes())\n".data(using: .utf8)!)
+    dtypeReport = fast.dtypes()
     engine = Engine(makeSession: { delay in
         let s = fast.makeSession(transcriptionDelayMs: delay)
         return (step: { s.step($0) }, finish: { s.finish() }, text: { s.text })
@@ -354,6 +357,7 @@ for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
         "engine": "swift-\(engineName)",
         "fast_flags": FastFlags.description,
         "profile_ms": FastProfile.snapshot(),
+        "dtypes": dtypeReport,
     ])
     FileHandle.standardError.write("  delay=\(spec) done\n".data(using: .utf8)!)
 }

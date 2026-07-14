@@ -645,6 +645,30 @@ public extension VoxtralRealtimeModel {
         return newWeights
     }
 
+    func dtypeReport() -> [String: String] {
+        [
+            "conv1.weight": "\(encoder.convLayers0Conv.conv.weight.dtype)",
+            "tok_embeddings.weight": "\(decoder.tokEmbeddings.weight.dtype)",
+            "adapter.w_in.weight": "\(adapter.wIn.weight.dtype)",
+        ]
+    }
+
+    /// Cast every float32 parameter to float16.
+    ///
+    /// The mel front-end is built in float32 (DFT/filters), and `convStem` fed it straight
+    /// into the conv weights — so the hidden state was promoted to float32 at layer 1 and
+    /// stayed there. float32 activations against float16 scales push `quantizedMM` onto a
+    /// silent upcast path (ml-explore/mlx-swift#420), and force the tied fp16 embedding to
+    /// be upcast on EVERY token — which is why the LM head profiled at 92 ms/token.
+    /// voxmlx avoids this by casting the mel to `conv1.weight.dtype` at the seam.
+    func castFloat32ParamsToFloat16() {
+        func cast(_ p: NestedDictionary<String, MLXArray>) -> NestedDictionary<String, MLXArray> {
+            p.mapValues { $0.dtype == .float32 ? $0.asType(.float16) : $0 }
+        }
+        update(parameters: cast(parameters()))
+        eval(self)
+    }
+
     func shouldQuantize(path: String) -> Bool {
         let skipPatterns = [
             "norm",

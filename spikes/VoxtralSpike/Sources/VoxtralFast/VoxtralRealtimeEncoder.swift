@@ -312,6 +312,13 @@ final class VoxtralRealtimeAudioEncoder: Module {
 
     func convStem(_ mel: MLXArray) -> MLXArray {
         var x = mel.transposed(1, 0).expandedDimensions(axis: 0)
+        // The mel is float32 (DFT + filters are built in float32). Feeding it straight into
+        // fp16 conv weights promotes the ENTIRE hidden state to float32 — through the
+        // encoder, the adapter, and the whole decoder. voxmlx casts here
+        // (`x_mel.astype(conv1.weight.dtype)`); mlx-audio-swift did not.
+        if FastFlags.fp16 {
+            x = x.asType(convLayers0Conv.conv.weight.dtype)
+        }
         x = gelu(convLayers0Conv(x))
         x = gelu(convLayers1Conv(x))
         x = x.squeezed(axis: 0)

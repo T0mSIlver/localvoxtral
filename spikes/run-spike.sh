@@ -93,10 +93,11 @@ do_run() {
   # so this isolates which one breaks correctness — and what each is worth on its own.
   #   fast-none = vendored with everything OFF; MUST match stock, proving the vendoring itself
   #               is faithful and the fault is in one of the three changes.
-  run_cfg() {  # name rope async mask head [extra args...]
-    local name="$1" rope="$2" async="$3" mask="$4" head="$5"; shift 5
-    echo "==> [$name] EN (rope=$rope async=$async mask=$mask head=$head)"
+  run_cfg() {  # name rope async mask head fp16 [extra args...]
+    local name="$1" rope="$2" async="$3" mask="$4" head="$5" fp16="$6"; shift 6
+    echo "==> [$name] EN (rope=$rope async=$async mask=$mask head=$head fp16=$fp16)"
     VOXFAST_ROPE="$rope" VOXFAST_ASYNC="$async" VOXFAST_MASK="$mask" VOXFAST_HEAD="$head" \
+    VOXFAST_FP16="$fp16" \
       "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
         --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label "$name" \
         "${WS_ARGS[@]}" "$@" \
@@ -108,13 +109,15 @@ do_run() {
     --chunks "80" --delays "default" --label stock "${WS_ARGS[@]}" \
     | tee "$OUT_DIR/stock.json"
 
-  run_cfg fast-none  0 0 0 0
-  run_cfg fast-head  0 0 0 1
-  run_cfg fast-all   1 1 1 1
+  # VOXFAST_FP16 is the new suspect: the mel is float32, and convStem fed it straight into
+  # the fp16 conv weights — promoting the whole model's activations to float32.
+  run_cfg fast-none  0 0 0 0 0
+  run_cfg fast-fp16  0 0 0 0 1
+  run_cfg fast-all   1 1 1 1 1
 
   # Where does the ~130 ms/step actually go? Phase-attributed, all optimizations on.
   echo "==> [profile] EN (phase breakdown)"
-  VOXFAST_PROFILE=1 VOXFAST_HEAD=1 "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
+  VOXFAST_PROFILE=1 "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
     --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label profile \
     | tee "$OUT_DIR/profile.json"
 
