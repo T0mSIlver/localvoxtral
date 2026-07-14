@@ -20,6 +20,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
 ./scripts/remote-build.sh package         # build the .app bundle (also builds the polishing helper)
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first); optional repo = per-model gate for PolishModelCatalog additions (self-provisions weights)
+./scripts/remote-build.sh eval-e2e        # agent-dictation E2E eval: TTS -> live voxmlx ASR -> polishd stop-commit path (run package first; many minutes)
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
 ```
@@ -134,6 +135,7 @@ This is a real app with daily users. Nothing ships on "it compiles".
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
+| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; guard-off diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e` (run `package` first) | many minutes (live TTS/ASR/4B polish over ~160 cases; WAVs cached on the host) |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
 expects voxmlx at `ws://127.0.0.1:8000/v1/realtime` — on the build host it runs
@@ -146,7 +148,7 @@ On-demand test servers: the voxmlx (8000) and mlxlm (8080) launchd services are
 launch-on-demand (a trigger file + idle reaper — `scripts/mac/lv-test-servers.sh`,
 owner runbook `scripts/mac/README.md`), so their weights are not resident 24/7.
 This is hands-free: CI warms voxmlx in a step before the integration suite, and
-`remote-build.sh integration|eval-llm` warm the right server through the gate's
+`remote-build.sh integration|eval-llm|eval-e2e` warm the right server through the gate's
 `ensure` verb first, blocking until the port is healthy. A burst of runs reuses
 one warm process (each `ensure` resets a ~20 min idle window); the reaper frees
 the RAM once the machine goes quiet.
@@ -197,9 +199,18 @@ Either way, the PR's Proof section states one of the two: the lane's
 scoreboard, or a one-line justification for skipping. If the path filter
 misses a change that belongs above, add `[run-llm-eval]` AND extend the
 filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
-remains the local equivalent. There is no nightly eval — a lane skipped by
-the filter runs again only when a matching change (or the marker) triggers
-it.
+remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
+scheduled eval; the per-PR polishd lane skipped by the filter runs again only
+when a matching change (or the marker) triggers it.
+
+Agent-dictation E2E eval (`AgentDictationE2EEvalTests`, nightly `eval-e2e.yml`
++ `remote-build.sh eval-e2e`): model/prompt/feature-pipeline changes — anything
+the rule above marks LLM-relevant, plus the TTS→ASR→polish harness itself —
+MUST paste the eval-e2e scoreboard in the PR's Proof section, or explicitly
+justify skipping it in one line. Only the 7 migrated punctuation cases are
+`required` today; Phase 3 calibration will promote cases that prove stable
+across server states (restarts / prompt-cache configurations) to `required` —
+promotion PRs must carry that cross-state evidence.
 
 ## CI / shipping
 

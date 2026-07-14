@@ -17,6 +17,7 @@ DerivedData/
 .opencode/
 
 # Transient enable markers written by remote-build.sh eval-llm /
-# integration-polishd
+# integration-polishd / eval-e2e
 /.llm-polish-eval-enable.json
 /.polishd-integration-enable.json
+/.agent-eval-e2e-enable.json

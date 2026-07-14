@@ -1,0 +1,118 @@
+name: Agent Dictation E2E Eval
+
+# The wide agent-dictation eval (owner decision 2026-07-11): nightly + manual
+# only, NEVER per-PR — it runs live TTS -> voxmlx ASR -> polishd inference
+# over the ~160-case EvalCorpus/agent-dictation corpus and takes many minutes.
+# Required cases (the 7 migrated punctuation cases) assert individually;
+# everything else is XFAIL-tracked on the scoreboard. Local equivalent:
+# ./scripts/remote-build.sh eval-e2e (after `package`).
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly, offset from ui-smoke's 04:00 so the two self-hosted GUI/eval
+    # lanes never contend for the runner at the same minute.
+    - cron: "45 4 * * *"
+
+concurrency:
+  group: eval-e2e
+  cancel-in-progress: false
+
+jobs:
+  eval-e2e:
+    # Self-hosted only, and there is no pull_request trigger above — fork code
+    # must never reach this runner (same invariant as ci.yml/ui-smoke.yml).
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Keep gitignored build state between runs on the persistent
+          # self-hosted runner (same rationale as ci.yml: default git clean
+          # would force a cold MLX C++ + Metal helper rebuild every night).
+          clean: false
+
+      - name: Clean stale outputs (keep build caches)
+        run: |
+          if [[ -d .build.smoke-hidden ]]; then
+            rm -rf .build
+            mv .build.smoke-hidden .build
+          fi
+          rm -rf dist logs
+
+      - name: Ensure Metal toolchain
+        # Same probe as ci.yml: `xcrun --find metal` succeeding does NOT mean
+        # the component is installed; only invoking metal proves it.
+        run: |
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            echo "Metal toolchain not active for $(whoami); installing component..."
+            for attempt in 1 2 3; do
+              xcodebuild -downloadComponent MetalToolchain && break
+              echo "catalog fetch failed (attempt $attempt); retrying in 10s..."
+              sleep 10
+            done
+            xcrun metal --version
+          fi
+
+      - name: Package app bundle (builds the polishing helper)
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+        run: ./scripts/package_app.sh release
+
+      - name: Warm on-demand voxmlx server
+        # Launch-on-demand infra (scripts/mac/lv-test-servers.sh): touch the
+        # trigger and block until port 8000 is healthy. Best-effort during
+        # rollout — the eval itself fails loudly if voxmlx is really down.
+        run: |
+          if [ -d /Users/Shared/localvoxtral/run ]; then
+            ./scripts/mac/lv-test-servers.sh ensure voxmlx
+          else
+            echo "on-demand infra not installed (run dir absent) — relying on the" \
+                 "always-on voxmlx; see scripts/mac/README.md to enable on-demand."
+          fi
+
+      - name: Run agent-dictation E2E eval
+        env:
+          LV_AGENT_EVAL_E2E_ENABLE: "1"
+          LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
+          LV_AGENT_EVAL_E2E_ASR_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+        run: |
+          mkdir -p logs
+          set -o pipefail
+          swift test --filter AgentDictationE2EEvalTests 2>&1 | tee logs/eval-e2e.log
+
+      - name: Scoreboard to step summary
+        # Extract the section between the scoreboard markers (kept in sync
+        # with AgentDictationE2EEvalSupport.scoreboardBeginMarker/EndMarker).
+        if: always()
+        run: |
+          if [[ -f logs/eval-e2e.log ]]; then
+            {
+              echo '```'
+              awk '/^== agent-dictation E2E eval scoreboard ==/{flag=1} flag{print} /^== end agent-dictation E2E eval scoreboard ==/{flag=0}' logs/eval-e2e.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "no eval log produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload eval log (scoreboard artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-e2e-scoreboard
+          path: logs/eval-e2e.log
+          retention-days: 30
+
+      - name: Process leak check (informational)
+        if: always()
+        run: |
+          survivors="$(ps -axo pid,etime,ucomm \
+            | grep -iE 'localvoxtral|polishd|xctest|swiftpm-testing|XCBBuildService' \
+            | grep -v grep || true)"
+          if [[ -n "$survivors" ]]; then
+            echo "candidate processes still alive at job end:"
+            echo "$survivors"
+          else
+            echo "no candidate processes alive at job end"
+          fi
