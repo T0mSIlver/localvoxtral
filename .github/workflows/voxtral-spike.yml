@@ -22,15 +22,22 @@ on:
 jobs:
   spike:
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 45
+    # A cold xcodebuild of this package compiles mlx-swift's C++/Metal core from
+    # scratch (PolishHelper's DerivedData is warm on this runner; the spike's is not),
+    # which alone blew the original 45 min budget.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Split from the run step so a timeout tells us WHICH phase was slow.
+      - name: Build spike (xcodebuild)
+        run: ./spikes/run-spike.sh build
+
       - name: Run Voxtral streaming spike
         env:
           MODEL_REPO: ${{ github.event.inputs.model_repo || 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit' }}
-        run: ./spikes/run-spike.sh
+        run: ./spikes/run-spike.sh run
 
       - name: Summarize
         if: always()
