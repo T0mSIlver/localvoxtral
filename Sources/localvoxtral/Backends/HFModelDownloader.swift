@@ -15,7 +15,23 @@ struct ModelPreparationRequest: Equatable, Sendable {
     let backendID: String
     let displayName: String
     let repoID: String
+    /// Pinned commit, or nil to track the repo's `main` (custom repo ids).
+    let revision: String?
     let includePatterns: [String]
+
+    init(
+        backendID: String,
+        displayName: String,
+        repoID: String,
+        revision: String? = nil,
+        includePatterns: [String]
+    ) {
+        self.backendID = backendID
+        self.displayName = displayName
+        self.repoID = repoID
+        self.revision = revision
+        self.includePatterns = includePatterns
+    }
 }
 
 protocol ModelPreparing: Sendable {
@@ -89,6 +105,30 @@ struct HFModelDownloader: ModelPreparing {
         let scriptURL = layout.downloads.appendingPathComponent("hf_model_download.py")
         try Self.pythonDownloaderScript.write(to: scriptURL, atomically: true, encoding: .utf8)
 
+        let result = try await ModelDownloadProcess.run(
+            executableURL: uvBinary,
+            arguments: Self.downloaderArguments(scriptPath: scriptURL.path, request: request),
+            environment: processEnvironment(),
+            livenessTimeoutSeconds: livenessTimeoutSeconds,
+            progress: progress
+        )
+        if result.exitCode != 0 {
+            throw ModelDownloadError.processExited(
+                code: result.exitCode,
+                stderrTail: result.stderrTail
+            )
+        }
+    }
+
+    /// The uv argv that fetches a model. Extracted so the pin is testable
+    /// without a network download: dropping `--revision` here would leave
+    /// every unit and eval lane green (the lanes provision the HF cache
+    /// themselves) while shipping an app that downloads one revision and
+    /// launches the helper against another.
+    static func downloaderArguments(
+        scriptPath: String,
+        request: ModelPreparationRequest
+    ) -> [String] {
         var arguments = [
             "run",
             "--python",
@@ -102,27 +142,18 @@ struct HFModelDownloader: ModelPreparing {
             "tqdm<5",
             "python",
             "-u",
-            scriptURL.path,
+            scriptPath,
             request.repoID,
         ]
         for pattern in request.includePatterns {
             arguments.append("--include")
             arguments.append(pattern)
         }
-
-        let result = try await ModelDownloadProcess.run(
-            executableURL: uvBinary,
-            arguments: arguments,
-            environment: processEnvironment(),
-            livenessTimeoutSeconds: livenessTimeoutSeconds,
-            progress: progress
-        )
-        if result.exitCode != 0 {
-            throw ModelDownloadError.processExited(
-                code: result.exitCode,
-                stderrTail: result.stderrTail
-            )
+        if let revision = request.revision {
+            arguments.append("--revision")
+            arguments.append(revision)
         }
+        return arguments
     }
 
     private func processEnvironment() -> [String: String] {
@@ -247,10 +278,11 @@ class _NullTqdmFile:
         pass
 
 
-def resolve_total(repo, include_patterns):
+def resolve_total(repo, include_patterns, revision):
     dry_run = snapshot_download(
         repo,
         allow_patterns=include_patterns,
+        revision=revision,
         dry_run=True,
     )
     total = 0
@@ -261,11 +293,12 @@ def resolve_total(repo, include_patterns):
 
 
 def main():
-    total = resolve_total(ARGS.repo, ARGS.include)
+    total = resolve_total(ARGS.repo, ARGS.include, ARGS.revision)
     emit({"event": "total", "repo": ARGS.repo, "total": total})
     snapshot_download(
         ARGS.repo,
         allow_patterns=ARGS.include,
+        revision=ARGS.revision,
         tqdm_class=JSONTqdm,
     )
     emit({"event": "done", "repo": ARGS.repo})
@@ -274,6 +307,8 @@ def main():
 parser = argparse.ArgumentParser()
 parser.add_argument("repo")
 parser.add_argument("--include", action="append", default=[])
+# Absent => track main (custom repo ids); a commit sha pins the snapshot.
+parser.add_argument("--revision", default=None)
 ARGS = parser.parse_args()
 
 try:

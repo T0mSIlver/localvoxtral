@@ -44,6 +44,52 @@ final class HFCacheModelLocatorTests: XCTestCase {
         XCTAssertEqual(located.standardizedFileURL, wanted.standardizedFileURL)
     }
 
+    /// Regression, 2026-07-14: main moved to a revision the app never
+    /// downloaded (its index named a vision shard our include patterns skip)
+    /// and the helper loaded it anyway, dying in load_safetensors. A pinned
+    /// revision must win over refs/main.
+    func testPinnedRevisionWinsOverMainRef() throws {
+        let repo = "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+        let pinned = try makeSnapshot(repo: repo, revision: "pinned-sha")
+        _ = try makeSnapshot(repo: repo, revision: "upstream-head")
+        try writeMainRef(repo: repo, revision: "upstream-head")
+
+        let located = try HFCacheModelLocator.locate(
+            repoID: repo,
+            revision: "pinned-sha",
+            cacheRoot: cacheRoot
+        )
+        XCTAssertEqual(located.standardizedFileURL, pinned.standardizedFileURL)
+    }
+
+    /// Never silently fall back to another snapshot: loading weights the app
+    /// did not download is the failure mode this pin exists to prevent, so an
+    /// uncached pin is a hard, actionable error.
+    func testUncachedPinnedRevisionThrowsInsteadOfFallingBack() throws {
+        let repo = "mlx-community/Qwen3.5-4B-OptiQ-4bit"
+        _ = try makeSnapshot(repo: repo, revision: "upstream-head")
+        try writeMainRef(repo: repo, revision: "upstream-head")
+
+        XCTAssertThrowsError(
+            try HFCacheModelLocator.locate(
+                repoID: repo,
+                revision: "pinned-sha",
+                cacheRoot: cacheRoot
+            )
+        ) { error in
+            guard
+                case HFCacheModelLocator.LocatorError.pinnedRevisionNotCached(
+                    _,
+                    let revision,
+                    _
+                ) = error
+            else {
+                return XCTFail("unexpected error: \(error)")
+            }
+            XCTAssertEqual(revision, "pinned-sha")
+        }
+    }
+
     func testFallsBackToNewestSnapshotWithConfigWhenRefMissing() throws {
         let repo = "org/model"
         _ = try makeSnapshot(repo: repo, revision: "no-config", withConfig: false)

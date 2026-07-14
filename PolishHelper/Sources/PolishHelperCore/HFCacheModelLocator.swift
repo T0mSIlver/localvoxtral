@@ -9,6 +9,7 @@ public enum HFCacheModelLocator {
     public enum LocatorError: Error, CustomStringConvertible {
         case modelNotCached(repoID: String, searched: URL)
         case noUsableSnapshot(repoID: String, searched: URL)
+        case pinnedRevisionNotCached(repoID: String, revision: String, searched: URL)
 
         public var description: String {
             switch self {
@@ -16,6 +17,8 @@ public enum HFCacheModelLocator {
                 "model \(repoID) not found in HF cache at \(searched.path); download it first"
             case .noUsableSnapshot(let repoID, let searched):
                 "model \(repoID) has no snapshot containing config.json under \(searched.path)"
+            case .pinnedRevisionNotCached(let repoID, let revision, let searched):
+                "model \(repoID) has no snapshot for pinned revision \(revision) under \(searched.path); download it first"
             }
         }
     }
@@ -35,12 +38,28 @@ public enum HFCacheModelLocator {
         return home.appending(path: ".cache/huggingface/hub")
     }
 
-    public static func locate(repoID: String, cacheRoot: URL) throws -> URL {
+    /// `revision` is the app's catalog pin. When set, ONLY that snapshot is
+    /// acceptable: falling back to the main ref is what let an upstream index
+    /// rewrite reach the loader (2026-07-14), and silently loading a revision
+    /// the app never downloaded is worse than a clear error.
+    public static func locate(repoID: String, revision: String? = nil, cacheRoot: URL) throws -> URL {
         let repoDir = cacheRoot.appending(path: "models--" + repoID.replacingOccurrences(of: "/", with: "--"))
         let snapshotsDir = repoDir.appending(path: "snapshots")
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: snapshotsDir.path) else {
             throw LocatorError.modelNotCached(repoID: repoID, searched: cacheRoot)
+        }
+
+        if let revision {
+            let pinned = snapshotsDir.appending(path: revision)
+            guard fileManager.fileExists(atPath: pinned.appending(path: "config.json").path) else {
+                throw LocatorError.pinnedRevisionNotCached(
+                    repoID: repoID,
+                    revision: revision,
+                    searched: snapshotsDir
+                )
+            }
+            return pinned
         }
 
         // Prefer the revision recorded for the main ref; otherwise fall back

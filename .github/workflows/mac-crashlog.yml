@@ -55,6 +55,22 @@ jobs:
           export UV_CACHE_DIR="$B/uv-cache" UV_PYTHON_INSTALL_DIR="$B/python" \
                  UV_TOOL_DIR="$B/tools" UV_TOOL_BIN_DIR="$B/bin" \
                  LOCALVOXTRAL_HF_EMIT_INTERVAL=0
+          # The SCRIPT on disk was written by whatever app build last ran
+          # prepareModel: a pre-pin build's argparse rejects --revision and
+          # would fail the probe on exactly the machine we came here to
+          # diagnose. Pass the pin only if that script understands it, and read
+          # the pin from the catalog so it can't drift from what the app runs.
+          REVISION_ARGS=()
+          if grep -q -- '--revision' "$SCRIPT"; then
+            PIN="$(awk '/repoID: "mlx-community\/Qwen3.5-4B-OptiQ-4bit"/{found=1} found && /revision: "/{gsub(/.*revision: "|".*/, ""); print; exit}' \
+              Sources/localvoxtral/Backends/PolishModelCatalog.swift)"
+            if [ -n "$PIN" ]; then
+              REVISION_ARGS=(--revision "$PIN")
+              echo "pinned revision: $PIN"
+            fi
+          else
+            echo "on-disk downloader predates the revision pin: probing without --revision"
+          fi
           # Faithful to the app: minimal env (PATH/HOME + UV vars only) and
           # the full mlx-lm include pattern set.
           env -i PATH="$PATH" HOME="$HOME" \
@@ -63,6 +79,7 @@ jobs:
             "$UV" run --python 3.12 \
             --with 'huggingface_hub<2' --with 'tqdm<5' \
             python -u "$SCRIPT" mlx-community/Qwen3.5-4B-OptiQ-4bit \
+            "${REVISION_ARGS[@]}" \
             --include '*.json' --include 'model*.safetensors' --include '*.py' \
             --include 'tokenizer.model' --include '*.tiktoken' --include 'tiktoken.model' \
             --include '*.txt' --include '*.jsonl' --include '*.jinja' \

@@ -479,14 +479,22 @@ final class BackendManager: ManagedBackendManaging {
                 parentPID,
             ]
         case BackendCatalog.polishd.id:
-            return [
+            let repoID = polishingModelProvider()
+            var arguments = [
                 "--model",
-                polishingModelProvider(),
+                repoID,
                 "--port",
                 "\(spec.port)",
                 "--parent-pid",
                 parentPID,
             ]
+            // Load exactly the snapshot we downloaded. Without this the helper
+            // resolves the repo's main ref, which can point at a revision we
+            // never fetched (upstream index rewrite, 2026-07-14).
+            if let revision = PolishModelCatalog.option(forRepoID: repoID)?.revision {
+                arguments.append(contentsOf: ["--model-revision", revision])
+            }
+            return arguments
         default:
             return []
         }
@@ -516,10 +524,12 @@ final class BackendManager: ManagedBackendManaging {
                 ]
             )
         case BackendCatalog.polishd.id:
+            let repoID = polishingModelProvider()
             return ModelPreparationRequest(
                 backendID: spec.id,
                 displayName: spec.displayName,
-                repoID: polishingModelProvider(),
+                repoID: repoID,
+                revision: PolishModelCatalog.option(forRepoID: repoID)?.revision,
                 includePatterns: [
                     "*.json",
                     "model*.safetensors",

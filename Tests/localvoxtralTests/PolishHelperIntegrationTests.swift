@@ -105,17 +105,31 @@ final class PolishHelperIntegrationTests: XCTestCase {
         )
         let snapshotsDir = repoDir.appendingPathComponent("snapshots")
 
-        // Completeness marker is refs/main, which is written LAST below (and
-        // is what HFCacheModelLocator prefers). Keying on config.json alone
-        // would let a cancelled half-download (config present, weights
-        // missing) poison the cache into a permanently-failing suite.
-        let mainRef = repoDir.appendingPathComponent("refs/main")
-        if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
+        // Provision the revision the app PINS (catalog), not whatever main
+        // points at — the helper now refuses any other snapshot, and tracking
+        // main is exactly how an upstream index rewrite broke this suite
+        // (2026-07-14). Custom repo ids (no catalog entry) still track main.
+        let pinnedRevision = PolishModelCatalog.option(forRepoID: repoID)?.revision
+
+        // Completeness marker is a sentinel INSIDE the snapshot, written LAST
+        // below. Keying on config.json alone would let a cancelled
+        // half-download (config present, weights missing) poison the cache
+        // into a permanently-failing suite. It is deliberately not refs/main:
+        // hf_hub writes no ref for a sha-pinned download, so a ref-keyed marker
+        // would (a) miss a cache the app itself populated and (b) force this
+        // suite to point the SHARED cache's main ref at a non-head commit,
+        // lying to every other tool on the host.
+        if let pinnedRevision {
+            if Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(pinnedRevision)) {
+                return
+            }
+        } else if let revision = try? String(
+            contentsOf: repoDir.appendingPathComponent("refs/main"),
+            encoding: .utf8
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
-            FileManager.default.fileExists(
-                atPath: snapshotsDir.appendingPathComponent("\(revision)/config.json").path
-            )
+            Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(revision))
         {
             return
         }
@@ -126,7 +140,10 @@ final class PolishHelperIntegrationTests: XCTestCase {
             let sha: String
             let siblings: [Sibling]
         }
-        let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)/revision/main")!
+        let apiURL = URL(
+            string:
+                "https://huggingface.co/api/models/\(repoID)/revision/\(pinnedRevision ?? "main")"
+        )!
         let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
         guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
             throw ModelProvisioningError(
@@ -134,6 +151,12 @@ final class PolishHelperIntegrationTests: XCTestCase {
             )
         }
         let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
+        if let pinnedRevision, info.sha != pinnedRevision {
+            throw ModelProvisioningError(
+                description:
+                    "HF resolved \(repoID)@\(pinnedRevision) to sha \(info.sha) — pin is not a commit"
+            )
+        }
 
         // Same include patterns as BackendManager.modelPreparationRequest.
         let patterns = [
@@ -167,10 +190,28 @@ final class PolishHelperIntegrationTests: XCTestCase {
             try FileManager.default.moveItem(at: temporary, to: destination)
         }
 
-        let refsDir = repoDir.appendingPathComponent("refs")
-        try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
-        try Data("\(info.sha)\n".utf8).write(to: mainRef)
+        // An unpinned (custom) repo is still resolved through refs/main by the
+        // helper, so it needs the ref; a pinned one must not touch it.
+        if pinnedRevision == nil {
+            let refsDir = repoDir.appendingPathComponent("refs")
+            try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+            try Data("\(info.sha)\n".utf8).write(to: repoDir.appendingPathComponent("refs/main"))
+        }
+        // Written LAST: everything above is resumable, this says "complete".
+        try Data().write(to: snapshotDir.appendingPathComponent(Self.provisionedSentinel))
         print("polishd integration: model provisioned (\(wanted.count) files)")
+    }
+
+    /// Marker the suite writes after the last file lands (see ensureModelCached).
+    static let provisionedSentinel = ".localvoxtral-provisioned"
+
+    static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: snapshot.appendingPathComponent(provisionedSentinel).path
+        )
+            && FileManager.default.fileExists(
+                atPath: snapshot.appendingPathComponent("config.json").path
+            )
     }
 
     /// Spawns the helper and waits for its stderr readiness line
@@ -185,7 +226,13 @@ final class PolishHelperIntegrationTests: XCTestCase {
     ) async throws -> (process: Process, port: UInt16, stderrLog: LineLog) {
         let process = Process()
         process.executableURL = binary
-        process.arguments = ["--model", model, "--port", "0"] + extraArguments
+        // Mirror BackendManager.arguments(for:): the app pins the revision, so
+        // the suite must exercise the helper with the pin attached.
+        var arguments = ["--model", model, "--port", "0"]
+        if let revision = PolishModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        process.arguments = arguments + extraArguments
 
         let stderr = Pipe()
         process.standardError = stderr
