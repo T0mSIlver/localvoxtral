@@ -11,7 +11,7 @@ SPIKE_DIR="$ROOT_DIR/spikes/VoxtralSpike"
 OUT_DIR="$ROOT_DIR/spikes/out"
 DERIVED="$SPIKE_DIR/.build/xcode"
 BIN="$DERIVED/Build/Products/Release/voxtral-spike"
-MODEL_REPO="${MODEL_REPO:-mlx-community/Voxtral-Mini-4B-Realtime-6bit}"
+MODEL_REPO="${MODEL_REPO:-mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit}"
 
 mkdir -p "$OUT_DIR"
 

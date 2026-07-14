@@ -24,7 +24,7 @@ func arg(_ name: String, default def: String? = nil) -> String? {
     return args[i + 1]
 }
 
-let repoID = arg("repo", default: "mlx-community/Voxtral-Mini-4B-Realtime-6bit")!
+let repoID = arg("repo", default: "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")!
 let wavPath = arg("wav")!
 let expectedPath = arg("expected")
 let chunkMs = Int(arg("chunk-ms", default: "80")!)!

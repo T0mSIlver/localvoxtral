@@ -16,7 +16,7 @@ on:
     inputs:
       model_repo:
         description: 'HF repo for the Voxtral realtime weights'
-        default: 'mlx-community/Voxtral-Mini-4B-Realtime-6bit'
+        default: 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit'
         required: false
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
 
       - name: Run Voxtral streaming spike
         env:
-          MODEL_REPO: ${{ github.event.inputs.model_repo || 'mlx-community/Voxtral-Mini-4B-Realtime-6bit' }}
+          MODEL_REPO: ${{ github.event.inputs.model_repo || 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit' }}
         run: ./spikes/run-spike.sh
 
       - name: Summarize
