@@ -10,9 +10,11 @@ public enum FastFlags {
     static let fusedRoPE = ProcessInfo.processInfo.environment["VOXFAST_ROPE"] != "0"
     static let asyncDecode = ProcessInfo.processInfo.environment["VOXFAST_ASYNC"] != "0"
     static let maskDtype = ProcessInfo.processInfo.environment["VOXFAST_MASK"] != "0"
+    /// Tied-embedding LM head via `asLinear` instead of a transposed-view matmul.
+    static let fusedHead = ProcessInfo.processInfo.environment["VOXFAST_HEAD"] != "0"
 
     public static var description: String {
-        "rope=\(fusedRoPE ? 1 : 0) async=\(asyncDecode ? 1 : 0) mask=\(maskDtype ? 1 : 0)"
+        "rope=\(fusedRoPE ? 1 : 0) async=\(asyncDecode ? 1 : 0) mask=\(maskDtype ? 1 : 0) head=\(fusedHead ? 1 : 0)"
     }
 }
 

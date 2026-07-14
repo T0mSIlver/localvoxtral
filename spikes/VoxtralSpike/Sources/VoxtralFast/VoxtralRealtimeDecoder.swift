@@ -279,6 +279,15 @@ final class VoxtralRealtimeDecoder: Module {
     }
 
     func logits(_ h: MLXArray) -> MLXArray {
-        MLX.matmul(h, tokEmbeddings.weight.transposed(1, 0))
+        // 68% of ALL compute used to live on this line (92 ms/token, profiled).
+        // `matmul(h, weight.transposed(1, 0))` is a matvec against a TRANSPOSED VIEW of a
+        // 131072x3072 fp16 matrix — off MLX's fast path, and re-laying out ~800 MB per
+        // token. `asLinear` is the tied-embedding projection MLX provides for exactly this
+        // (voxmlx calls its Python twin, `embed_tokens.as_linear(x)`); it consumes the
+        // weight in its natural layout.
+        if FastFlags.fusedHead {
+            return tokEmbeddings.asLinear(h)
+        }
+        return MLX.matmul(h, tokEmbeddings.weight.transposed(1, 0))
     }
 }
