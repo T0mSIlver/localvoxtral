@@ -36,7 +36,16 @@ final class VoxtralRealtimeAdaRMSNorm: Module {
     }
 
     func callAsFunction(_ x: MLXArray, adaScale: MLXArray) -> MLXArray {
-        x * (1.0 + adaScale)
+        // THE float32 leak. The time-conditioning scale is built in float32
+        // (`voxtralComputeTimeEmbedding`), so this multiply promoted the hidden state to
+        // float32 — in every one of the 32 layers, from the very first token. Downstream,
+        // the tied fp16 embedding had to be upcast on EVERY token, which is why the LM head
+        // measured 73 ms/token in-loop but 13 ms on an fp16 vector (and ~5 ms isolated).
+        // voxmlx casts it: `t_cond.astype(x.dtype)`.
+        if FastFlags.fp16 {
+            return x * (1.0 + adaScale.asType(x.dtype))
+        }
+        return x * (1.0 + adaScale)
     }
 }
 
