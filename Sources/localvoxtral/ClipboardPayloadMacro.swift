@@ -120,6 +120,18 @@ enum ClipboardPayloadMacro {
     static func substitutePayload(in text: String, payload: String) -> String {
         guard text.contains(placeholder) else { return text }
 
+        // The agent prompt correctly teaches the model to put environment
+        // variables in code spans, so real inference normally returns
+        // `$LV_CLIPBOARD_PAYLOAD` with one backtick on each side. The wrapper
+        // describes the placeholder, not the eventual payload: consume an
+        // exact wrapper before applying our own inline/fenced formatting.
+        // Only the exact code span is normalized; a placeholder embedded in a
+        // larger user-authored code span is left alone.
+        let text = text.replacingOccurrences(
+            of: "`\(placeholder)`",
+            with: placeholder
+        )
+
         let clean = payload.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if !clean.contains("\n"), !clean.contains("`"),

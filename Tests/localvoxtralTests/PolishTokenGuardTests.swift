@@ -1103,6 +1103,27 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(result.record?.polishProfile, "agent")
     }
 
+    /// Real agent inference formats the env-var-shaped placeholder as inline
+    /// code. The commit-time substitution consumes that wrapper before adding
+    /// the payload's own fence, while persistence remains payload-free.
+    func testAgentProfileBacktickedPlaceholderCommitsCleanFencedPayload() async throws {
+        let placeholder = ClipboardPayloadMacro.placeholder
+        let payload = "line1\nline2"
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "inspect paste clipboard now",
+            agentProfile: true,
+            payloadPasteboard: PasteboardStub(string: payload),
+            polishTransform: {
+                $0.replacingOccurrences(of: placeholder, with: "`\(placeholder)`")
+            }
+        )
+
+        XCTAssertEqual(result.committedText, "inspect \n```\n\(payload)\n```\n now")
+        XCTAssertEqual(result.record?.polishedText, "inspect `\(placeholder)` now")
+        XCTAssertFalse(result.committedText.contains(placeholder))
+        XCTAssertEqual(result.record?.polishProfile, "agent")
+    }
+
     /// The polish DROPPED one of two placeholders (a requested paste lost): the
     /// guard still passes (the surviving occurrence satisfies it), but the count
     /// check falls back to the working text — both payloads are committed.

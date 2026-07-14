@@ -110,6 +110,27 @@ final class ClipboardPayloadMacroTests: XCTestCase {
         XCTAssertEqual(out, "run `config.yaml` now")
     }
 
+    /// The agent prompt asks the model to format environment variables as
+    /// code, so real inference consistently returns the placeholder inside a
+    /// Markdown code span. Substitution must consume that model-added wrapper
+    /// instead of producing a doubled code span.
+    func testBacktickedPlaceholderDoesNotDoubleWrapInlinePayload() {
+        let out = ClipboardPayloadMacro.substitutePayload(
+            in: "run `\(placeholder)` now", payload: "config.yaml"
+        )
+        XCTAssertEqual(out, "run `config.yaml` now")
+    }
+
+    /// The same wrapper is especially damaging for multi-line payloads: if it
+    /// survives around the generated fence, the committed Markdown contains
+    /// dangling inline-code delimiters around a block.
+    func testBacktickedPlaceholderDoesNotWrapFencedPayload() {
+        let out = ClipboardPayloadMacro.substitutePayload(
+            in: "inspect `\(placeholder)` now", payload: "line1\nline2"
+        )
+        XCTAssertEqual(out, "inspect \n```\nline1\nline2\n```\n now")
+    }
+
     func testInlineStripsSurroundingWhitespace() {
         let out = ClipboardPayloadMacro.substitutePayload(
             in: "x \(placeholder) y", payload: "  abc  "
