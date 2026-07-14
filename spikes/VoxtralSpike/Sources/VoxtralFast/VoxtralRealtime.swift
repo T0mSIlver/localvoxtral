@@ -649,7 +649,6 @@ public extension VoxtralRealtimeModel {
         [
             "conv1.weight": "\(encoder.convLayers0Conv.conv.weight.dtype)",
             "tok_embeddings.weight": "\(decoder.tokEmbeddings.weight.dtype)",
-            "adapter.w_in.weight": "\(adapter.wIn.weight.dtype)",
         ]
     }
 
