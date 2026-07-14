@@ -72,14 +72,25 @@ do_run() {
 
   [[ -x "$BIN" ]] || { echo "spike binary missing — run the build phase first"; exit 1; }
 
+  # Warm the on-demand Python voxmlx (port 8000) so the SAME binary can measure it as a
+  # baseline: same audio, same chunking, same clock, same GPU contention. Without this
+  # the Swift RTF is unjudgeable — the owner's app may be holding two 4B models resident.
+  WS_ARGS=()
+  if [[ -d /Users/Shared/localvoxtral/run ]] && ./scripts/mac/lv-test-servers.sh ensure voxmlx; then
+    WS_ARGS=(--ws "ws://127.0.0.1:8000/v1/realtime")
+    echo "==> Python voxmlx baseline enabled (port 8000)"
+  else
+    echo "==> WARNING: no on-demand voxmlx — Swift RTF will have no baseline to compare against"
+  fi
+
   echo "==> EN: delay sweep (chunk 80 ms), model $MODEL_REPO"
   "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
-    --chunk-ms 80 --delays "default,480,240,160,80" --label en \
+    --chunk-ms 80 --delays "default,480,240,160,80" --label en "${WS_ARGS[@]}" \
     | tee "$OUT_DIR/en.json"
 
   echo "==> FR: accented text (delta-integrity smoke)"
   "$BIN" --repo "$MODEL_REPO" --wav "$OUT_DIR/fr.wav" --expected "$OUT_DIR/fr.txt" \
-    --chunk-ms 80 --delays "default" --label fr \
+    --chunk-ms 80 --delays "default" --label fr "${WS_ARGS[@]}" \
     | tee "$OUT_DIR/fr.json"
 
   echo "==> done"

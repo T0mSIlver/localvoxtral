@@ -100,6 +100,106 @@ func pct(_ xs: [Double], _ p: Double) -> Double {
     return s[min(s.count - 1, max(0, Int((p / 100.0) * Double(s.count - 1)).advanced(by: 0)))]
 }
 
+// MARK: - Python voxmlx baseline (same audio, same chunking, same clock)
+
+/// Streams the WAV to the running Python voxmlx server over its realtime websocket and
+/// measures the same way the in-process path is measured. Both engines therefore see
+/// identical GPU contention — the only fair way to compare on a machine that is also
+/// running the owner's app.
+func runWebSocketBaseline(url: String, samples: [Float], chunkSamples: Int, expected: String)
+    async throws -> [String: Any]
+{
+    let task = URLSession.shared.webSocketTask(with: URL(string: url)!)
+    task.resume()
+
+    let collected = Mutex2<(deltas: [String], final: String?, firstDeltaAt: Double?)>(([], nil, nil))
+    let start = CFAbsoluteTimeGetCurrent()
+
+    // Receive loop.
+    let receiver = Task {
+        while !Task.isCancelled {
+            let msg = try await task.receive()
+            guard case .string(let s) = msg,
+                let obj = try? JSONSerialization.jsonObject(with: Data(s.utf8)) as? [String: Any],
+                let type = obj["type"] as? String
+            else { continue }
+            if type.hasSuffix("transcript.delta"), let d = obj["delta"] as? String {
+                collected.withLock {
+                    if $0.firstDeltaAt == nil { $0.firstDeltaAt = CFAbsoluteTimeGetCurrent() }
+                    $0.deltas.append(d)
+                }
+            } else if type.hasSuffix("transcript.done") {
+                collected.withLock { $0.final = (obj["text"] as? String) ?? $0.final }
+                return
+            }
+        }
+    }
+
+    func send(_ o: [String: Any]) async throws {
+        let d = try JSONSerialization.data(withJSONObject: o)
+        try await task.send(.string(String(data: d, encoding: .utf8)!))
+    }
+
+    try await send(["type": "session.update", "model": "voxtral-realtime"])
+
+    let sendStart = CFAbsoluteTimeGetCurrent()
+    var idx = 0
+    while idx < samples.count {
+        let end = min(idx + chunkSamples, samples.count)
+        // PCM16 LE, exactly what MicrophoneCaptureService produces.
+        var pcm = Data(capacity: (end - idx) * 2)
+        for s in samples[idx..<end] {
+            let v = Int16(max(-32768, min(32767, s * 32768))).littleEndian
+            withUnsafeBytes(of: v) { pcm.append(contentsOf: $0) }
+        }
+        try await send([
+            "type": "input_audio_buffer.append", "audio": pcm.base64EncodedString(),
+        ])
+        idx = end
+    }
+    try await send(["type": "input_audio_buffer.commit", "final": true])
+
+    _ = try await withThrowingTaskGroup(of: Bool.self) { group -> Bool in
+        group.addTask { _ = await receiver.result; return true }
+        group.addTask {
+            try await Task.sleep(for: .seconds(120))
+            receiver.cancel()
+            return false
+        }
+        let first = try await group.next()!
+        group.cancelAll()
+        return first
+    }
+    let totalSeconds = CFAbsoluteTimeGetCurrent() - sendStart
+    task.cancel(with: .goingAway, reason: nil)
+
+    let snap = collected.withLock { $0 }
+    let text = (snap.final ?? snap.deltas.joined()).trimmingCharacters(in: .whitespacesAndNewlines)
+    let audioSeconds = Double(samples.count) / 16000.0
+    return [
+        "engine": "python-voxmlx(ws)",
+        "audio_sec": audioSeconds,
+        "compute_sec": totalSeconds,
+        "rtf": totalSeconds / audioSeconds,
+        "first_delta_sec": snap.firstDeltaAt.map { $0 - sendStart } ?? -1,
+        "word_accuracy": expected.isEmpty ? -1 : wordAccuracy(expected: expected, actual: text),
+        "transcript": text,
+        "connect_overhead_sec": sendStart - start,
+    ]
+}
+
+/// Minimal lock (the spike can't import the app's Mutex helpers).
+final class Mutex2<T>: @unchecked Sendable {
+    private var value: T
+    private let lock = NSLock()
+    init(_ v: T) { value = v }
+    func withLock<R>(_ body: (inout T) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&value)
+    }
+}
+
 // MARK: - Run
 
 // voxmlx caps its Metal cache at 4 GB; the spike takes 1 GB because it may run while
@@ -114,6 +214,20 @@ FileHandle.standardError.write(
 let samples = try loadPCM16kMono(wavPath)
 let audioSeconds = Double(samples.count) / 16000.0
 let expected = expectedPath.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) } ?? ""
+
+let chunkSamplesForBaseline = max(1, 16000 * chunkMs / 1000)
+var baseline: [String: Any]?
+// Run the Python baseline BEFORE loading the Swift model, so the Swift 4B isn't
+// resident on the GPU during its measurement (production runs one engine, not two).
+if let ws = arg("ws") {
+    FileHandle.standardError.write("baseline: streaming to \(ws) …\n".data(using: .utf8)!)
+    do {
+        baseline = try await runWebSocketBaseline(
+            url: ws, samples: samples, chunkSamples: chunkSamplesForBaseline, expected: expected)
+    } catch {
+        baseline = ["engine": "python-voxmlx(ws)", "error": "\(error)"]
+    }
+}
 
 FileHandle.standardError.write(
     "loading \(repoID) …\n".data(using: .utf8)!)
@@ -189,9 +303,17 @@ for spec in delaySpecs {
         "transcript": text,
         "peak_gpu_gb": Double(GPU.snapshot().peakMemory) / 1_073_741_824.0,
         "load_sec": loadSeconds,
+        // Every 20th step: if the session re-encodes history instead of working
+        // incrementally, this series climbs with position instead of staying flat.
+        "step_ms_every_20": stride(from: 0, to: stepMs.count, by: 20).map {
+            (Double(round(stepMs[$0] * 10)) / 10)
+        },
+        "engine": "swift-mlx-audio",
     ])
     FileHandle.standardError.write("  delay=\(spec) done\n".data(using: .utf8)!)
 }
+
+if let baseline { report.append(baseline) }
 
 let json = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
 print(String(data: json, encoding: .utf8)!)
