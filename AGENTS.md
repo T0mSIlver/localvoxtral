@@ -316,9 +316,11 @@ Key subsystems:
 - **LLM polishing trusts the model's text in both profiles.** Human dictation
   evaluation found that `PolishTokenGuard` could reduce fidelity by undoing
   useful formatting and reconstructed identifiers, so it is not in the commit
-  path. Clipboard-leak and payload-placeholder integrity checks remain active
-  for both profiles. The guard type remains as a recognizer used by clipboard
-  vocabulary and by focused unit coverage; do not infer that it runs at commit.
+  path. Clipboard context is only a prompt/vocabulary hint; no content-based
+  leak detector scans or rejects the model output. Only explicit clipboard-paste
+  payload-placeholder count integrity remains active for both profiles. The
+  token guard type remains as a recognizer used by clipboard vocabulary and by
+  focused unit coverage; do not infer that it runs at commit.
 
 ## Conventions
 

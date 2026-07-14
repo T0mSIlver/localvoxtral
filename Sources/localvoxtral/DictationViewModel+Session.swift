@@ -670,10 +670,6 @@ extension DictationViewModel {
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
                     var repoVocabularyCount = 0
-                    // Vocabulary corrections asked of the model are exempted
-                    // from both profiles' clipboard-leak check. (from: spoken
-                    // alias, to: exact term) pairs.
-                    var sanctionedVocabularyRewrites: [(from: String, to: String)] = []
                     if templateCarriesDictionarySlot,
                        let endpointURL = polishingConfig?.endpointURL,
                        let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
@@ -690,26 +686,18 @@ extension DictationViewModel {
                             entries: vocabularyEntries
                         )
                         repoVocabularyCount = vocabularyEntries.count
-                        // A multi-word alias whose tail is itself a protected
-                        // token ("user session manager.swift" containing
-                        // `manager.swift`) is covered by the guard's
-                        // substring-canonical sanctioning.
-                        sanctionedVocabularyRewrites = vocabularyEntries.flatMap { entry in
-                            entry.matches.map { (from: $0, to: entry.replaceWith) }
-                        }
                         Log.polishing.info(
                             "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
                         )
                     }
 
-                    // Clipboard vocabulary: the SAME sanctioned-rewrite pipeline,
-                    // grounded in the already privacy-gated clipboard excerpt
+                    // Clipboard vocabulary is grounded in the already
+                    // privacy-gated clipboard excerpt
                     // (feature toggle ON + loopback endpoint + never concealed/
                     // transient — all enforced when the excerpt was captured;
                     // nil context means none of it runs). Without this, the
                     // context excerpt lets the model produce the exact copied
-                    // spelling. Hint entries need the dictionary slot; leak
-                    // exemptions must apply even without it.
+                    // spelling. Hint entries need the dictionary slot.
                     var clipboardVocabularyCount = 0
                     if let clipboardContext = capturedClipboardContext {
                         let clipboardEntries = ClipboardVocabulary.candidateEntries(
@@ -724,9 +712,6 @@ extension DictationViewModel {
                                         entries: clipboardEntries,
                                         header: RepoVocabularyMatcher.clipboardVocabularyHeader
                                     )
-                            }
-                            sanctionedVocabularyRewrites += clipboardEntries.flatMap { entry in
-                                entry.matches.map { (from: $0, to: entry.replaceWith) }
                             }
                             clipboardVocabularyCount = clipboardEntries.count
                             // Counts only — entity content is clipboard content.
@@ -791,39 +776,9 @@ extension DictationViewModel {
                             // Trust the polishing model for both prompt profiles.
                             // Human evaluation found deterministic token repair
                             // could undo useful formatting and reconstruction.
-                            // The independent clipboard-leak and payload-count
-                            // safety checks below remain active.
+                            // Placeholder-count integrity for an explicit paste
+                            // macro remains independent below.
                             var committedText = result.polishedText
-
-                            // Clipboard leak guard: the context excerpt is
-                            // reference material, but a small model can echo
-                            // prompt text or follow instructions embedded in
-                            // the clipboard. A long
-                            // contiguous excerpt substring in the output that
-                            // the pre-polish text never contained is a leak:
-                            // discard the polish and keep the pre-polish text.
-                            // Counts-only logging — the matched run is
-                            // clipboard content.
-                            // Sanctioned rewrites are the one kind of
-                            // clipboard-derived output we ASKED for: their
-                            // `to` values are exempt (masked out before the
-                            // scan), so an intentional exact-entity insertion
-                            // can never trip the leak guard however long the
-                            // entity.
-                            if let excerpt = capturedClipboardContext?.excerpt,
-                               committedText != workingText,
-                               let leakedLength = PolishContextClipboardReader.detectClipboardLeak(
-                                   polished: committedText,
-                                   original: workingText,
-                                   excerpt: excerpt,
-                                   exemptions: sanctionedVocabularyRewrites.map(\.to)
-                               )
-                            {
-                                committedText = workingText
-                                Log.polishing.warning(
-                                    "Clipboard leak guard discarded polish: match:\(leakedLength, privacy: .public)ch"
-                                )
-                            }
 
                             // Placeholder-count integrity stays independent of
                             // trusting model text: a duplicated placeholder

@@ -144,7 +144,7 @@ enum PolishContextClipboardReader {
         )
     }
 
-    // MARK: - Leak guard
+    // MARK: - Experimental leak detector
 
     /// Minimum contiguous whitespace-normalized clipboard substring (in
     /// characters) that counts as a LEAK when it appears in the polished text
@@ -152,10 +152,13 @@ enum PolishContextClipboardReader {
     /// four words — comfortably longer than the code-like tokens the context
     /// legitimately grounds (filenames, flags, identifiers), and short enough
     /// to catch a single echoed clipboard line or an instruction-following
-    /// payload. Intentional longer rewrites are the sanctioned-vocabulary
-    /// pipeline's job and ride the explicit `exemptions` list.
+    /// payload. Comparison callers can supply intentional longer rewrites in
+    /// the explicit `exemptions` list.
     static let leakGuardMinimumMatchLength = 24
 
+    /// Experimental clipboard-leak detector retained for focused comparison
+    /// tests. The production commit path intentionally does not call it.
+    ///
     /// Deterministic clipboard-leak detection on the polished model output:
     /// the context excerpt is REFERENCE material, but a small model can echo
     /// prompt text or follow instructions embedded in the clipboard. Returns
@@ -163,10 +166,10 @@ enum PolishContextClipboardReader {
     /// contiguous whitespace-normalized substring of `excerpt`, at least
     /// `leakGuardMinimumMatchLength` chars, present in `polished` but absent
     /// from `original` — or nil when no leak is detected. Callers discard the
-    /// polish on a hit.
+    /// polish on a hit if they explicitly opt into this experiment.
     ///
-    /// `exemptions` are substrings the caller ASKED the model to produce
-    /// (sanctioned clipboard-vocabulary rewrites): their occurrences are
+    /// `exemptions` are substrings an experimental caller asked the model to
+    /// produce: their occurrences are
     /// masked out of the polished text before scanning, so an intentional
     /// exact-entity insertion can never trip the guard, however long the
     /// entity.
