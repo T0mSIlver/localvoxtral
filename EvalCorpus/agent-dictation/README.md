@@ -26,8 +26,9 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
 ## Record a human baseline
 
 The interactive recorder presents the 146 speech-running phrases, records
-mono 16-bit/16 kHz WAVs, plays each take back, and saves progress after every
-accept. The 17 `polish-only` cases are text inputs and do not need recordings.
+mono 16-bit/16 kHz WAVs, offers optional playback, and saves progress after
+every accept. The 17 `polish-only` cases are text inputs and do not need
+recordings.
 
 ```bash
 brew install ffmpeg                         # one-time, if needed
@@ -88,10 +89,17 @@ output, alternate prompts, and alternate models:
 
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
-inference. Rerunning the same command resumes by exact request hash. The generated
+inference. Rerunning the same command resumes by model, variant, prompt-content
+hash. The runner explicitly sends the production Qwen sampling shape
+(`temperature=0`, `top_p=1`, `top_k=0`, `min_p=0`, presence penalty 0, thinking
+off); preserve it when adding variants. The generated
 `.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
-scoring is Markdown-neutral: backticks, headings, and list markers remain visible
-and are not treated as transcript errors.
+scoring is Markdown-neutral: backticks, headings, and list markers remain
+visible and are not treated as transcript errors. Compare stages over the same
+case IDs—the source log may contain ASR-only cases that have no historical
+production-polish row. XCTest can rarely interleave a suite-status line into one
+JSONL record; the offline parser warns and skips that record, so report the
+reduced denominator or rerun the E2E suite.
 
 Accepted takes and `manifest.json` live under the gitignored, voice-private
 `EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the

@@ -9,7 +9,8 @@ the text, and which can be removed?
 
 Only Python's standard library is used so the analysis can run on either the Mac
 or a development box. Results append to JSONL after every response and are keyed
-by the exact request hash, making long experiments resumable and safe to rerun.
+by model, variant, and prompt-content hash, making long experiments resumable and
+safe to rerun.
 """
 
 from __future__ import annotations

@@ -22,6 +22,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first); optional repo = per-model gate for PolishModelCatalog additions (self-provisions weights)
 ./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval: human WAVs (optional) or TTS -> voxmlx -> polishd (run package first)
 ./scripts/run-agent-eval-local.sh [EvalRecordings/agent-dictation/<set>]   # same eval directly from a Mac checkout (run package_app.sh first)
+./scripts/ablate-agent-eval.py .build/agent-eval-local.log                 # reuse one E2E log to compare pre/post-processing, prompts, and models without rerunning audio
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
 ```
@@ -212,6 +213,27 @@ justify skipping it in one line. Only the 7 migrated punctuation cases are
 `required` today; Phase 3 calibration will promote cases that prove stable
 across server states (restarts / prompt-cache configurations) to `required` —
 promotion PRs must carry that cross-state evidence.
+
+### Human agent-eval recordings and ablations
+
+On the Mac in a GUI terminal, `./scripts/record-agent-eval.sh --set owner`
+starts or resumes the private, gitignored human set. Return starts recording,
+Return stops, and Return accepts; playback is optional (`p`). `q` saves and
+quits. Accepted WAVs are installed atomically and journaled first, so a crash or
+interrupted Swift invocation does not lose prior takes. Do not use `--redo`
+unless intentionally replacing accepted audio. The complete operator guide and
+data-safety details live in `EvalCorpus/agent-dictation/README.md`.
+
+While the set is incomplete, run `scripts/run-agent-eval-local.sh --subset ...`;
+after it reaches 146/146, omit `--subset` for the strict baseline. The run writes
+`.build/agent-eval-local.log` and opens the per-case HTML report beside the WAVs.
+Use `scripts/ablate-agent-eval.py` on that log to compare stages/prompts/models
+without transcribing again. Ablation responses append immediately to a resumable
+JSONL file and its aggregate score is Markdown-neutral. Keep comparisons paired
+on the same case IDs and preserve the explicit Qwen sampling parameters. XCTest
+can occasionally splice a status line into the sentinel-delimited JSONL report;
+the offline tools warn and skip only the damaged record, so note the resulting
+denominator (or rerun) rather than silently treating it as a model failure.
 
 ## CI / shipping
 
