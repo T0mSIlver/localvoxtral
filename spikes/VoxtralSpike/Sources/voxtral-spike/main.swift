@@ -2,6 +2,7 @@ import AVFoundation
 import Foundation
 import MLX
 import MLXAudioSTT
+import VoxtralFast
 
 // THROWAWAY SPIKE. Feeds a WAV through mlx-audio-swift's VoxtralRealtime online
 // streaming session exactly the way the app feeds the mic (fixed-size 16 kHz
@@ -234,15 +235,39 @@ if let ws = arg("ws") {
     }
 }
 
+// One engine per process: the stock upstream engine, or the vendored+optimized one.
+// Never both — two 4B models resident would distort the measurement (and may get the
+// process jetsam'd while the owner's app holds two more).
+let engineName = arg("engine", default: "stock")!
+
+/// Uniform handle so both engines are measured by identical code.
+struct Engine {
+    let makeSession: (Int?) -> (step: ([Float]) -> String, finish: () -> String, text: () -> String)
+}
+
 FileHandle.standardError.write(
-    "loading \(repoID) …\n".data(using: .utf8)!)
+    "loading \(repoID) [engine=\(engineName)] …\n".data(using: .utf8)!)
 let loadStart = CFAbsoluteTimeGetCurrent()
-let model = try await VoxtralRealtimeModel.fromPretrained(repoID)
+
+let engine: Engine
+switch engineName {
+case "fast":
+    let fast = try await FastEngine(repo: repoID)
+    engine = Engine(makeSession: { delay in
+        let s = fast.makeSession(transcriptionDelayMs: delay)
+        return (step: { s.step($0) }, finish: { s.finish() }, text: { s.text })
+    })
+default:
+    let stock = try await MLXAudioSTT.VoxtralRealtimeModel.fromPretrained(repoID)
+    engine = Engine(makeSession: { delay in
+        let s = stock.makeStreamSession(temperature: 0.0, transcriptionDelayMs: delay)
+        return (step: { s.step($0).text }, finish: { s.finish().text }, text: { s.text })
+    })
+}
 let loadSeconds = CFAbsoluteTimeGetCurrent() - loadStart
 
-// Warm the Metal pipelines so the first measured chunk isn't paying kernel-compile
-// cost. The real app warms on its first dictation the same way.
-let warm = model.makeStreamSession(temperature: 0.0)
+// Warm the Metal pipelines so the first measured chunk isn't paying kernel-compile cost.
+let warm = engine.makeSession(nil)
 _ = warm.step(Array(samples.prefix(16000)))
 _ = warm.finish()
 
@@ -251,7 +276,7 @@ var report: [[String: Any]] = []
 for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
     let chunkSamples = max(1, 16000 * chunkMs / 1000)
     let delayMs: Int? = spec == "default" ? nil : Int(spec)
-    let session = model.makeStreamSession(temperature: 0.0, transcriptionDelayMs: delayMs)
+    let session = engine.makeSession(delayMs)
 
     var stepMs: [Double] = []
     var reemits = 0
@@ -267,14 +292,14 @@ for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
         let delta = session.step(Array(samples[idx..<end]))
         stepMs.append((CFAbsoluteTimeGetCurrent() - t0) * 1000)
 
-        let newText = session.text
+        let newText = session.text()
         if !prevText.isEmpty && !newText.hasPrefix(prevText) {
             reemits += 1
             if reemitExamples.count < 3 {
                 reemitExamples.append("was:'\(prevText.suffix(24))' now:'\(newText.suffix(24))'")
             }
         }
-        if firstDeltaAfterAudioSec == nil && !delta.text.isEmpty {
+        if firstDeltaAfterAudioSec == nil && !delta.isEmpty {
             firstDeltaAfterAudioSec = Double(end) / 16000.0
         }
         prevText = newText
@@ -285,7 +310,7 @@ for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
     let finishMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
     let computeSeconds = CFAbsoluteTimeGetCurrent() - runStart
 
-    let text = session.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = session.text().trimmingCharacters(in: .whitespacesAndNewlines)
     let acc = expected.isEmpty ? -1 : wordAccuracy(expected: expected, actual: text)
 
     report.append([
@@ -313,7 +338,7 @@ for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
         "step_ms_every_20": stride(from: 0, to: stepMs.count, by: 20).map {
             (Double(round(stepMs[$0] * 10)) / 10)
         },
-        "engine": "swift-mlx-audio",
+        "engine": "swift-\(engineName)",
     ])
     FileHandle.standardError.write("  delay=\(spec) done\n".data(using: .utf8)!)
 }

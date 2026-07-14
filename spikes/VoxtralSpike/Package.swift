@@ -25,14 +25,34 @@ let package = Package(
         // (ml-explore/mlx-swift#428) that our polishd helper is currently pinned to.
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.3"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.3"),
     ],
     targets: [
+        // The upstream VoxtralRealtime sources (MIT), vendored verbatim EXCEPT for the
+        // optimizations under test: fused dtype-preserving RoPE, an async-eval decode
+        // pipeline, and dtype-correct attention masks. Kept as its own module so the
+        // stock engine (MLXAudioSTT) stays importable side-by-side for A/B runs.
+        .target(
+            name: "VoxtralFast",
+            dependencies: [
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioVAD", package: "mlx-audio-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+            ]
+        ),
         .executableTarget(
             name: "voxtral-spike",
             dependencies: [
+                "VoxtralFast",
                 .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
             ]
-        )
+        ),
     ]
 )
