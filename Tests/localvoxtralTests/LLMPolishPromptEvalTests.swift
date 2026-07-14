@@ -32,6 +32,7 @@ final class LLMPolishPromptEvalTests: XCTestCase {
     private static let enableEnv = "LLM_POLISH_EVAL_ENABLE"
     private static let endpointEnv = "LLM_POLISH_EVAL_ENDPOINT"
     private static let modelEnv = "LLM_POLISH_EVAL_MODEL"
+    private static let requestShapeModelEnv = "LLM_POLISH_EVAL_REQUEST_SHAPE_MODEL"
     private static let apiKeyEnv = "LLM_POLISH_EVAL_API_KEY"
     private static let markerFileName = ".llm-polish-eval-enable.json"
     private static let defaultEndpoint = "http://127.0.0.1:8080/v1/chat/completions"
@@ -39,6 +40,8 @@ final class LLMPolishPromptEvalTests: XCTestCase {
     private struct MarkerConfig: Decodable {
         let endpoint: String?
         let model: String?
+        let requestShapeModel: String?
+        let useDefaultRequestShape: Bool?
         let apiKey: String?
     }
 
@@ -46,15 +49,20 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         var endpointString: String?
         var model: String?
+        var requestShapeModel: String?
+        var useDefaultRequestShape = false
         var apiKey: String?
 
         if env[Self.enableEnv] == "1" {
             endpointString = env[Self.endpointEnv]
             model = env[Self.modelEnv]
+            requestShapeModel = env[Self.requestShapeModelEnv]
             apiKey = env[Self.apiKeyEnv]
         } else if let marker = try loadMarkerConfig() {
             endpointString = marker.endpoint
             model = marker.model
+            requestShapeModel = marker.requestShapeModel
+            useDefaultRequestShape = marker.useDefaultRequestShape == true
             apiKey = marker.apiKey
         } else {
             throw XCTSkip(
@@ -79,10 +87,14 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         // chat-template kwargs ride along, exactly like the managed
         // production configuration (pinned by
         // `LLMPolishEvalSupportTests.testEvalConfigurationCarriesCatalogRequestShape`).
+        let resolvedRequestShapeModel = requestShapeModel?.isEmpty == false
+            ? requestShapeModel
+            : (useDefaultRequestShape ? PolishModelCatalog.defaultOption.repoID : nil)
         return LLMPolishEvalSupport.configuration(
             endpointURL: endpointURL,
             apiKey: apiKey ?? "",
-            model: model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel
+            model: model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel,
+            requestShapeModel: resolvedRequestShapeModel
         )
     }
 

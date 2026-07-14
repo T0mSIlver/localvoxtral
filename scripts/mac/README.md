@@ -217,6 +217,13 @@ No gate change is needed for the `eval-e2e` lane: its payload is a plain
 gitignored marker `.agent-eval-e2e-enable.json`. The lane also caches
 synthesized TTS WAVs under `~/Library/Caches/localvoxtral-eval/wav` in the
 build/runner account — safe to delete any time; the next run regenerates them.
+For a human-voice baseline, create a complete gitignored set with
+`scripts/record-agent-eval.sh`, then pass its repo-relative directory to
+`remote-build.sh eval-e2e`; rsync carries the WAVs and strict manifest to this
+same private build directory without changing the gate payload.
+When capture happens in a Mac checkout, `scripts/run-agent-eval-local.sh`
+runs the same env-gated suite directly and avoids copying the voice set through
+another source checkout.
 
 ## `localvoxtral-build-gate.sh` — SSH build gate (v2)
 

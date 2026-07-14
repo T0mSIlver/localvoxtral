@@ -9,7 +9,7 @@ import Foundation
 /// corpus-contract scoring, `say -v ?` voice picking, and scoreboard
 /// rendering. Everything here is deterministic and unit-tested in the plain
 /// tier-0 suite (`AgentDictationE2EEvalSupportTests`) — the live suite only
-/// adds TTS/ASR/polish I/O around these functions.
+/// adds recorded-or-TTS audio, ASR, and polish I/O around these functions.
 enum AgentDictationE2EEvalSupport {
     // MARK: - Enablement
 
@@ -23,6 +23,9 @@ enum AgentDictationE2EEvalSupport {
     static let voxmlxEndpointEnvKey = "LV_AGENT_EVAL_E2E_VOXMLX_ENDPOINT"
     static let asrModelEnvKey = "LV_AGENT_EVAL_E2E_ASR_MODEL"
     static let polishModelEnvKey = "LV_AGENT_EVAL_E2E_POLISH_MODEL"
+    static let polishEndpointEnvKey = "LV_AGENT_EVAL_E2E_POLISH_ENDPOINT"
+    static let recordingDirectoryEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY"
+    static let recordingSubsetEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_SUBSET"
 
     static let defaultHelperPath =
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
@@ -36,17 +39,26 @@ enum AgentDictationE2EEvalSupport {
         let voxmlxEndpoint: String?
         let asrModel: String?
         let polishModel: String?
+        let polishEndpoint: String?
+        let recordingDirectory: String?
+        let recordingSubset: Bool?
 
         init(
             helperPath: String? = nil,
             voxmlxEndpoint: String? = nil,
             asrModel: String? = nil,
-            polishModel: String? = nil
+            polishModel: String? = nil,
+            polishEndpoint: String? = nil,
+            recordingDirectory: String? = nil,
+            recordingSubset: Bool? = nil
         ) {
             self.helperPath = helperPath
             self.voxmlxEndpoint = voxmlxEndpoint
             self.asrModel = asrModel
             self.polishModel = polishModel
+            self.polishEndpoint = polishEndpoint
+            self.recordingDirectory = recordingDirectory
+            self.recordingSubset = recordingSubset
         }
     }
 
@@ -55,6 +67,15 @@ enum AgentDictationE2EEvalSupport {
         let voxmlxEndpoint: URL
         let asrModel: String
         let polishModel: String
+        /// Non-nil bypasses the bundled helper and sends production-shaped
+        /// requests to this OpenAI-compatible chat/completions endpoint.
+        let polishEndpoint: URL?
+        /// Nil uses cached `say` synthesis. Non-nil is a strict human WAV set:
+        /// no missing/stale recording silently falls back to TTS.
+        let recordingDirectory: String?
+        /// Explicit exploratory mode: score only human-recorded case IDs.
+        /// The default/full baseline remains all-or-nothing.
+        let recordingSubset: Bool
     }
 
     static func parseMarker(_ data: Data) throws -> MarkerConfig {
@@ -82,10 +103,27 @@ enum AgentDictationE2EEvalSupport {
             return defaultValue
         }
 
+        func pickOptional(_ envKey: String, _ markerValue: String?) -> String? {
+            if envEnabled, let value = environment[envKey], !value.isEmpty { return value }
+            if let markerValue, !markerValue.isEmpty { return markerValue }
+            return nil
+        }
+
         let endpointString = pick(
             voxmlxEndpointEnvKey, marker?.voxmlxEndpoint, default: defaultVoxmlxEndpoint
         )
         guard let endpoint = URL(string: endpointString) else { return nil }
+        let polishEndpointString = pickOptional(
+            polishEndpointEnvKey, marker?.polishEndpoint
+        )
+        let polishEndpoint = polishEndpointString.flatMap(URL.init(string:))
+        if polishEndpointString != nil, polishEndpoint == nil { return nil }
+        let recordingSubset: Bool
+        if envEnabled, let value = environment[recordingSubsetEnvKey] {
+            recordingSubset = value == "1"
+        } else {
+            recordingSubset = marker?.recordingSubset == true
+        }
         return Enablement(
             helperPath: pick(helperPathEnvKey, marker?.helperPath, default: defaultHelperPath),
             voxmlxEndpoint: endpoint,
@@ -96,7 +134,12 @@ enum AgentDictationE2EEvalSupport {
             polishModel: pick(
                 polishModelEnvKey, marker?.polishModel,
                 default: PolishModelCatalog.defaultOption.repoID
-            )
+            ),
+            polishEndpoint: polishEndpoint,
+            recordingDirectory: pickOptional(
+                recordingDirectoryEnvKey, marker?.recordingDirectory
+            ),
+            recordingSubset: recordingSubset
         )
     }
 
@@ -130,10 +173,186 @@ enum AgentDictationE2EEvalSupport {
             .joined()
     }
 
+    // MARK: - Human recording sets
+
+    static let recordingManifestFileName = "manifest.json"
+    static let recordingSchemaVersion = 1
+    static let recordingDataFormat = "pcm_s16le@16000Hz-mono"
+
+    struct RecordingManifest: Codable, Equatable {
+        let schemaVersion: Int
+        let dataFormat: String
+        let recordings: [Recording]
+    }
+
+    struct Recording: Codable, Equatable {
+        let id: String
+        let lang: AgentDictationEvalCorpus.Language
+        let spokenForm: String
+        let file: String
+        let sha256: String
+    }
+
+    struct RecordingExpectation: Equatable {
+        let id: String
+        let lang: AgentDictationEvalCorpus.Language
+        let spokenForm: String
+    }
+
+    struct RecordingSetError: Error, LocalizedError, Equatable {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    static func parseRecordingManifest(_ data: Data) throws -> RecordingManifest {
+        try JSONDecoder().decode(RecordingManifest.self, from: data)
+    }
+
+    /// Validates the manifest against the exact speech-running corpus before
+    /// model load. Recorded mode is deliberately all-or-nothing by default:
+    /// partial sets, corpus drift, duplicate IDs, unsafe filenames, and stale
+    /// extras fail loudly rather than producing a TTS/human hybrid baseline.
+    /// `allowSubset` is an explicit exploratory mode that validates and runs
+    /// only known recorded IDs; it never fills missing cases with TTS.
+    static func validateRecordingManifest(
+        _ manifest: RecordingManifest,
+        expected: [RecordingExpectation],
+        allowSubset: Bool = false
+    ) throws -> [String: Recording] {
+        guard manifest.schemaVersion == recordingSchemaVersion else {
+            throw RecordingSetError(message: "recording manifest schemaVersion must be \(recordingSchemaVersion)")
+        }
+        guard manifest.dataFormat == recordingDataFormat else {
+            throw RecordingSetError(message: "recording manifest dataFormat must be \(recordingDataFormat)")
+        }
+
+        var byID: [String: Recording] = [:]
+        for recording in manifest.recordings {
+            guard byID[recording.id] == nil else {
+                throw RecordingSetError(message: "duplicate recording id: \(recording.id)")
+            }
+            guard recording.file == "\(recording.id).wav",
+                  !recording.file.contains("/"), !recording.file.contains("..")
+            else {
+                throw RecordingSetError(message: "unsafe recording filename for \(recording.id)")
+            }
+            guard recording.sha256.count == 64,
+                  recording.sha256.allSatisfy({ $0.isHexDigit && !$0.isUppercase })
+            else {
+                throw RecordingSetError(message: "invalid SHA-256 for recording \(recording.id)")
+            }
+            byID[recording.id] = recording
+        }
+
+        let actualIDs = Set(byID.keys)
+        let expectedForRun: [RecordingExpectation]
+        if allowSubset {
+            guard !actualIDs.isEmpty else {
+                throw RecordingSetError(message: "recording subset is empty")
+            }
+            expectedForRun = expected.filter { actualIDs.contains($0.id) }
+        } else {
+            expectedForRun = expected
+        }
+        let expectedIDs = Set(expectedForRun.map(\.id))
+        let missing = expectedIDs.subtracting(actualIDs).sorted()
+        let extra = actualIDs.subtracting(expectedIDs).sorted()
+        guard missing.isEmpty else {
+            throw RecordingSetError(message: "recording set is incomplete; missing: \(missing.joined(separator: ", "))")
+        }
+        guard extra.isEmpty else {
+            throw RecordingSetError(message: "recording set has stale/unknown cases: \(extra.joined(separator: ", "))")
+        }
+        for item in expectedForRun {
+            guard let recording = byID[item.id] else { continue }
+            guard recording.lang == item.lang, recording.spokenForm == item.spokenForm else {
+                throw RecordingSetError(
+                    message: "recording \(item.id) is stale; language or spokenForm changed"
+                )
+            }
+        }
+        return byID
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Validates the exact format the websocket client expects and returns the
+    /// data chunk. The recorder command writes this format directly, avoiding
+    /// an implicit resample during eval.
+    static func recordedPCM16(fromWAVData wav: Data) throws -> Data {
+        guard wav.count >= 44,
+              String(data: wav[0..<4], encoding: .ascii) == "RIFF",
+              String(data: wav[8..<12], encoding: .ascii) == "WAVE"
+        else { throw RecordingSetError(message: "recording is not a RIFF/WAVE file") }
+
+        var format: (code: UInt16, channels: UInt16, rate: UInt32, bits: UInt16)?
+        var pcm: Data?
+        var index = 12
+        while index + 8 <= wav.count {
+            let chunkID = String(data: wav[index..<(index + 4)], encoding: .ascii) ?? ""
+            let size = Int(readLEUInt32(wav, at: index + 4))
+            let start = index + 8
+            let end = start + size
+            guard end <= wav.count else {
+                throw RecordingSetError(message: "recording has a truncated WAV chunk")
+            }
+            if chunkID == "fmt ", size >= 16 {
+                format = (
+                    readLEUInt16(wav, at: start),
+                    readLEUInt16(wav, at: start + 2),
+                    readLEUInt32(wav, at: start + 4),
+                    readLEUInt16(wav, at: start + 14)
+                )
+            } else if chunkID == "data" {
+                pcm = wav.subdata(in: start..<end)
+            }
+            index = end + (size % 2)
+        }
+        guard let format else {
+            throw RecordingSetError(message: "recording has no WAV fmt chunk")
+        }
+        guard format.code == 1, format.channels == 1,
+              format.rate == 16_000, format.bits == 16
+        else {
+            throw RecordingSetError(
+                message: "recording must be mono 16-bit PCM at 16000 Hz"
+            )
+        }
+        guard let pcm, pcm.count >= 8_000, pcm.count.isMultiple(of: 2) else {
+            throw RecordingSetError(message: "recording is missing or shorter than 0.25 seconds")
+        }
+        var containsSignal = false
+        var sampleOffset = 0
+        while sampleOffset < pcm.count {
+            if readLEUInt16(pcm, at: sampleOffset) != 0 {
+                containsSignal = true
+                break
+            }
+            sampleOffset += 2
+        }
+        guard containsSignal else {
+            throw RecordingSetError(message: "recording is digitally silent")
+        }
+        return pcm
+    }
+
+    private static func readLEUInt16(_ data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
+    }
+
+    private static func readLEUInt32(_ data: Data, at offset: Int) -> UInt32 {
+        UInt32(data[offset])
+            | UInt32(data[offset + 1]) << 8
+            | UInt32(data[offset + 2]) << 16
+            | UInt32(data[offset + 3]) << 24
+    }
+
     // MARK: - Pipeline routing
 
     struct StagePlan: Equatable {
-        /// TTS(spokenForm) -> websocket ASR.
+        /// Recorded speech or TTS(spokenForm) -> websocket ASR.
         let runsSpeechRecognition: Bool
         /// The polish stop-commit path.
         let runsPolish: Bool
@@ -148,6 +367,24 @@ enum AgentDictationE2EEvalSupport {
         case .polishOnly:
             return StagePlan(runsSpeechRecognition: false, runsPolish: true)
         }
+    }
+
+    /// A partial human recording set limits only speech-driven rows. Cases
+    /// that do not need audio (notably all polish-only required checks) still
+    /// run, so an exploratory subset cannot report green by omitting them.
+    static func selectedCaseIDs(
+        strata: [AgentDictationEvalCorpus.LoadedStratum],
+        recordedCaseIDs: Set<String>,
+        isSubset: Bool
+    ) -> Set<String>? {
+        guard isSubset else { return nil }
+        var selected = recordedCaseIDs
+        for loaded in strata
+        where !stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+        {
+            selected.formUnion(loaded.stratum.cases.map(\.id))
+        }
+        return selected
     }
 
     // MARK: - Polish-profile routing
@@ -311,6 +548,11 @@ enum AgentDictationE2EEvalSupport {
         var exactTextFailures: [String]?
         /// nil when no polish ran (asr-only) or no raw output was captured.
         var guardOffTokensFailures: [String]?
+        /// Anti-rewrite failure kept separate from token preservation so the
+        /// inspection report can classify model rewrites directly.
+        var rewriteFailure: String?
+        /// True when the rewrite failure contributes to a required metric.
+        var rewriteIsFatal: Bool?
         /// Informational: word accuracy of the final output vs intendedText.
         var wordAccuracyVsIntended: Double?
         var output: String
@@ -326,6 +568,8 @@ enum AgentDictationE2EEvalSupport {
             tokensFailures: [String] = [],
             exactTextFailures: [String]? = nil,
             guardOffTokensFailures: [String]? = nil,
+            rewriteFailure: String? = nil,
+            rewriteIsFatal: Bool? = nil,
             wordAccuracyVsIntended: Double? = nil,
             output: String = ""
         ) {
@@ -339,6 +583,8 @@ enum AgentDictationE2EEvalSupport {
             self.tokensFailures = tokensFailures
             self.exactTextFailures = exactTextFailures
             self.guardOffTokensFailures = guardOffTokensFailures
+            self.rewriteFailure = rewriteFailure
+            self.rewriteIsFatal = rewriteIsFatal
             self.wordAccuracyVsIntended = wordAccuracyVsIntended
             self.output = output
         }
@@ -558,7 +804,20 @@ enum AgentDictationE2EEvalSupport {
     struct ReportHeader: Codable, Equatable {
         let polishModel: String
         let asrModel: String
+        let audioSource: String?
         let systemPrompts: [String]
+
+        init(
+            polishModel: String,
+            asrModel: String,
+            audioSource: String? = nil,
+            systemPrompts: [String]
+        ) {
+            self.polishModel = polishModel
+            self.asrModel = asrModel
+            self.audioSource = audioSource
+            self.systemPrompts = systemPrompts
+        }
     }
 
     /// Intermediate pipeline artifacts the live suite observes for one case,
@@ -602,6 +861,8 @@ enum AgentDictationE2EEvalSupport {
         let tokensFailures: [String]
         let exactTextFailures: [String]?
         let guardOffTokensFailures: [String]?
+        let rewriteFailure: String?
+        let rewriteIsFatal: Bool?
         let wordAccuracyVsIntended: Double?
     }
 
@@ -633,6 +894,8 @@ enum AgentDictationE2EEvalSupport {
             tokensFailures: result.tokensFailures,
             exactTextFailures: result.exactTextFailures,
             guardOffTokensFailures: result.guardOffTokensFailures,
+            rewriteFailure: result.rewriteFailure,
+            rewriteIsFatal: result.rewriteIsFatal,
             wordAccuracyVsIntended: result.wordAccuracyVsIntended
         )
     }

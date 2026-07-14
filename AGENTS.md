@@ -20,7 +20,9 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
 ./scripts/remote-build.sh package         # build the .app bundle (also builds the polishing helper)
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first); optional repo = per-model gate for PolishModelCatalog additions (self-provisions weights)
-./scripts/remote-build.sh eval-e2e        # agent-dictation E2E eval: TTS -> live voxmlx ASR -> polishd stop-commit path (run package first; many minutes)
+./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval: human WAVs (optional) or TTS -> voxmlx -> polishd (run package first)
+./scripts/run-agent-eval-local.sh [EvalRecordings/agent-dictation/<set>]   # same eval directly from a Mac checkout (run package_app.sh first)
+./scripts/ablate-agent-eval.py .build/agent-eval-local.log                 # reuse one E2E log to compare pre/post-processing, prompts, and models without rerunning audio
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
 ```
@@ -135,7 +137,7 @@ This is a real app with daily users. Nothing ships on "it compiles".
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
-| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; guard-off diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e` (run `package` first) | many minutes (live TTS/ASR/4B polish over ~160 cases; WAVs cached on the host) |
+| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; guard-off diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
 expects voxmlx at `ws://127.0.0.1:8000/v1/realtime` — on the build host it runs
@@ -211,6 +213,30 @@ justify skipping it in one line. Only the 7 migrated punctuation cases are
 `required` today; Phase 3 calibration will promote cases that prove stable
 across server states (restarts / prompt-cache configurations) to `required` —
 promotion PRs must carry that cross-state evidence.
+
+### Human agent-eval recordings and ablations
+
+On the Mac in a GUI terminal, `./scripts/record-agent-eval.sh --set owner`
+starts or resumes the private, gitignored human set. Return starts recording,
+Return stops, and Return accepts; playback is optional (`p`). `q` saves and
+quits. Accepted WAVs are installed atomically and journaled first, so a crash or
+interrupted Swift invocation does not lose prior takes. Do not use `--redo`
+unless intentionally replacing accepted audio. The complete operator guide and
+data-safety details live in `EvalCorpus/agent-dictation/README.md`.
+
+While the set is incomplete, run `scripts/run-agent-eval-local.sh --subset ...`;
+this selects recorded speech rows but still runs every polish-only required
+case. After it reaches 146/146, omit `--subset` for the strict baseline. The run writes
+`.build/agent-eval-local.log` and opens the per-case HTML report beside the WAVs.
+Use `scripts/ablate-agent-eval.py` on that log to compare stages/prompts/models
+without transcribing again. Ablation responses append immediately to a resumable
+JSONL file and its aggregate score is Markdown-neutral. Cache identity includes
+the endpoint and complete request payload. Keep comparisons paired on the same
+case IDs and preserve the explicit Qwen sampling parameters. XCTest
+can occasionally splice a status line into the sentinel-delimited JSONL report;
+the offline tools recover known XCTest diagnostics and warn only if an unknown
+corruption still forces a record to be skipped. Note any resulting denominator
+rather than silently treating it as a model failure.
 
 ## CI / shipping
 

@@ -5,9 +5,9 @@ directory) is data + structural validation; Phase 2 is the harness that
 drives it through the production pipeline:
 
 ```
-TTS(spokenForm, /usr/bin/say) → websocket ASR (Voxtral realtime)
-                              → LLM polish (bundled polishd, agent profile)
-                              → scoring against this corpus
+human WAV or TTS(spokenForm) → websocket ASR (Voxtral realtime)
+                            → LLM polish (bundled polishd, agent profile)
+                            → scoring against this corpus
 ```
 
 The Swift loader is `Tests/localvoxtralTests/AgentDictationEvalCorpus.swift`;
@@ -23,6 +23,118 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
                              repo-vocabulary cases
 ```
 
+## Record a human baseline
+
+The interactive recorder presents the 146 speech-running phrases, records
+mono 16-bit/16 kHz WAVs, offers optional playback, and saves progress after
+every accept. The 17 `polish-only` cases are text inputs and do not need
+recordings.
+
+```bash
+brew install ffmpeg                         # one-time, if needed
+./scripts/record-agent-eval.sh --list-devices
+./scripts/record-agent-eval.sh --set owner              # system default microphone
+```
+
+The default input is recommended. If needed, choose an AVFoundation audio
+index shown by `--list-devices` and pass `--device <index>`.
+Run the recorder from a local GUI terminal (not SSH); on the first take,
+macOS may prompt for Microphone access for Terminal/iTerm. Grant it in System
+Settings → Privacy & Security → Microphone if needed. Digitally silent takes
+are rejected, and unusually quiet takes produce a warning.
+Press Return to record and Return again to stop. Playback is not automatic:
+at review, Return accepts immediately; `p`, `r`, `s`, and `q` play the
+normalized WAV that the eval will score, re-record, skip, or quit. The default microphone records
+through macOS's native audio recorder, then converts offline to the eval's
+16 kHz mono format; explicit numeric device indexes retain the ffmpeg capture
+fallback. Running the same command again resumes the set; `--lang en`,
+`--case <id>`, `--redo`, and `--list` are available for focused passes.
+
+An in-progress set can be scored without waiting for 146/146. This mode runs
+speech-driven IDs with accepted human recordings plus every audio-independent
+polish-only case (including the required checks), and never fills gaps with TTS. An
+external OpenAI-compatible server can replace the bundled helper while the
+request retains production's deterministic Qwen 4B sampling and
+`enable_thinking=false` template argument:
+
+```bash
+./scripts/run-agent-eval-local.sh --subset \
+  --polish-endpoint http://127.0.0.1:8080/v1/chat/completions \
+  --polish-model qwen35-4b \
+  EvalRecordings/agent-dictation/owner
+```
+
+Full output is retained in `.build/agent-eval-local.log` for failure analysis.
+At the end of the run, the harness writes and opens
+`EvalRecordings/agent-dictation/owner/eval-report.html`. The self-contained
+page (apart from relative, private WAV links) sorts scored issues first and
+puts audio, ASR transcript, raw LLM polish, guarded final text, and ground
+truth side by side. Re-render an existing log without rerunning either model:
+
+```bash
+./scripts/render-agent-eval-report.sh --open \
+  .build/agent-eval-local.log EvalRecordings/agent-dictation/owner
+```
+
+### Processing-stage ablations
+
+The inspection log retains enough intermediate text to test polishing stages
+without transcribing the audio again. The resumable ablation runner compares raw
+ASR, production pre-LLM normalization, raw model output, guarded production
+output, alternate prompts, and alternate models:
+
+```bash
+./scripts/ablate-agent-eval.py .build/agent-eval-local.log \
+  --model qwen35-4b --jobs 8
+```
+
+Every response is appended immediately to
+`.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
+inference. Rerunning the same command resumes by endpoint, model, variant, and
+the complete request payload hash. Stale entries may remain in the append-only
+JSONL but are excluded from the current report. The runner explicitly sends the production Qwen sampling shape
+(`temperature=0`, `top_p=1`, `top_k=0`, `min_p=0`, presence penalty 0, thinking
+off); preserve it when adding variants. The generated
+`.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
+scoring is Markdown-neutral: backticks, headings, and list markers remain
+visible and are not treated as transcript errors. Compare stages over the same
+case IDs—the source log may contain ASR-only cases that have no historical
+production-polish row. XCTest can rarely interleave a suite-status line into one
+JSONL record; the offline parsers remove known XCTest diagnostics and reassemble
+the split JSON value. They warn and skip a value only when an unknown form of
+corruption remains, so report any reduced denominator rather than treating it as
+a model failure.
+
+Accepted takes and `manifest.json` live under the gitignored, voice-private
+`EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the
+exact case ID, language, spoken phrase, file name, and SHA-256. By default,
+recorded mode is deliberately strict: the eval rejects an incomplete, stale,
+modified, or wrong-format set before loading either model. The explicit subset
+mode skips missing speech IDs, still runs audio-independent cases, and never
+fills gaps with TTS.
+Each acceptance is also flushed to an append-only recovery journal before its
+WAV is atomically installed. Restarting the recorder rebuilds a missing or
+corrupt manifest and finishes an interrupted save; already accepted takes do
+not depend on the recording process exiting cleanly.
+
+After the recorder reports 146/146:
+
+```bash
+./scripts/package_app.sh release
+./scripts/run-agent-eval-local.sh EvalRecordings/agent-dictation/owner
+```
+
+This same-Mac path keeps the voice files in the checkout where they were
+captured. If the recording set instead lives in the source checkout that drives
+the SSH build loop, the equivalent commands are `remote-build.sh package` and
+`remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner`; rsync copies
+the set into the private Mac's per-worktree build directory and keeps it there
+for fast reruns. Remote sync cleanup explicitly protects `EvalRecordings/`, so
+a Mac-only set is not deleted when the source checkout has no copy. The files
+are never committed. Delete a local set when it is
+no longer needed. Running either eval launcher without a recording argument
+retains the repeatable `say`-based nightly baseline.
+
 ## Stratum file schema (schemaVersion 1)
 
 ```jsonc
@@ -37,8 +149,8 @@ fixtures/repo-<name>.json    repo specs the harness git-inits for
 
 Pipelines:
 
-- `full` — TTS → ASR → polish. The normal lane.
-- `asr-only` — TTS → ASR, no polish. Used by `plain-asr-baseline`: tokens
+- `full` — recorded speech or TTS → ASR → polish. The normal lane.
+- `asr-only` — recorded speech or TTS → ASR, no polish. Used by `plain-asr-baseline`: tokens
   assert raw recognition only.
 - `polish-only` — `spokenForm` is fed directly to the polish path as input
   text. Used by `punctuation-spacing-migration`, whose inputs carry
@@ -50,7 +162,7 @@ Pipelines:
 |---|---|
 | `id` | Stable slug `<stratum-letter>-<lang>-<slug>`, unique corpus-wide. |
 | `lang` | `"en"` or `"fr"` (validated by a function-word heuristic). |
-| `spokenForm` | Exactly what TTS speaks. Symbols written phonetically, the way a human dictates: "dash dash force", "dot env", "tiret tiret", "colle le presse-papier". Include the fillers/self-corrections when the stratum calls for them. |
+| `spokenForm` | Exactly what the human recorder or TTS speaks. Symbols written phonetically, the way a human dictates: "dash dash force", "dot env", "tiret tiret", "colle le presse-papier". Include the fillers/self-corrections when the stratum calls for them. |
 | `intendedText` | Ground-truth final output. |
 | `requiredTokens` | Substrings that MUST appear in the final text — the primary metric. Matched after spacing normalization (U+202F/U+00A0 → space, runs collapsed), byte-exact and case-SENSITIVE unless `caseInsensitive` is set. |
 | `forbiddenSubstrings` | Substrings that must NOT appear (fillers, macro marker phrases, leaked payloads, the `$LV_CLIPBOARD_PAYLOAD` placeholder). Always matched case-insensitively. Pick collision-free needles — validation rejects any that appear in `intendedText` or overlap a required token. |
@@ -118,9 +230,10 @@ Pipelines:
 - Load via `AgentDictationEvalCorpus.loadStrata()` /
   `loadRepoFixtures()`; drive the pipeline named by
   `stratum.resolvedPipeline`.
-- Speak `spokenForm` with `/usr/bin/say` at LEI16@16000 (see
+- Feed either a manifest-bound human WAV set or speak `spokenForm` with
+  `/usr/bin/say` at LEI16@16000 (see
   `RealtimeAPIVLLMIntegrationTests.makeSpokenPCM16Data`), FR cases with a
-  French voice.
+  French voice. Never mix sources within one scoreboard.
 - Arrange `features` BEFORE the run: pasteboard payload, git-inited fixture
   repo (files from the spec, checked out on the spec's `branch`) fronted as
   the active terminal repo.

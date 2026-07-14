@@ -3,6 +3,8 @@ name: Agent Dictation E2E Eval
 # The wide agent-dictation eval (owner decision 2026-07-11): nightly + manual
 # only, NEVER per-PR — it runs live TTS -> voxmlx ASR -> polishd inference
 # over the ~160-case EvalCorpus/agent-dictation corpus and takes many minutes.
+# The operator-only human-WAV baseline uses remote-build.sh's optional
+# recording-set argument; CI intentionally keeps the repeatable TTS source.
 # Required cases (the 7 migrated punctuation cases) assert individually;
 # everything else is XFAIL-tracked on the scoreboard. Local equivalent:
 # ./scripts/remote-build.sh eval-e2e (after `package`).

@@ -15,13 +15,15 @@ set -euo pipefail
 #                  with the real model and score it against the polish eval
 #                  baseline + parent-pid tether
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
-#                  optional arg = chat/completions endpoint (default
+#                  optional args = chat/completions endpoint and external
+#                  model alias (default endpoint
 #                  http://127.0.0.1:8080/v1/chat/completions, the
 #                  com.localvoxtral.mlxlm service — runbook scripts/mac/README.md)
-#     eval-e2e     agent-dictation end-to-end eval: TTS -> live voxmlx ASR ->
-#                  bundled polishd via the production stop-commit path, scored
-#                  against EvalCorpus/agent-dictation (run `package` first;
-#                  takes many minutes — live TTS/ASR/polish over ~150 cases)
+#     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
+#                  voxmlx ASR -> bundled polishd via the production stop-commit
+#                  path, scored against EvalCorpus/agent-dictation (run
+#                  `package` first; optional arg = a complete recording-set
+#                  directory made by scripts/record-agent-eval.sh)
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -32,6 +34,7 @@ set -euo pipefail
 # Examples:
 #   ./scripts/remote-build.sh
 #   ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
+#   ./scripts/remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner
 #   ./scripts/remote-build.sh exec swift test --list-tests
 #
 # The build host is machine-local configuration, never committed. Resolution
@@ -102,7 +105,10 @@ cleanup_transient_marker() {
   local marker="$1"
   rm -f "$marker"
   if [[ "$TREE_SYNCED" == "1" ]]; then
+    # A recording set may exist only in the remote Mac checkout. Protect it
+    # from --delete during marker cleanup just as in the main tree sync.
     rsync -az --delete \
+      --filter='P EvalRecordings/***' \
       --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
       "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
   fi
@@ -203,37 +209,62 @@ case "$CMD" in
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
-    # TTS -> live voxmlx ASR -> bundled polishd helper through the production
-    # stop-commit path, scored against EvalCorpus/agent-dictation. Requires a
-    # helper binary from a prior `./scripts/remote-build.sh package` run.
+    # human WAVs (when supplied) or TTS -> live voxmlx ASR -> bundled polishd
+    # helper through the production stop-commit path, scored against
+    # EvalCorpus/agent-dictation. Requires a helper binary from a prior
+    # `./scripts/remote-build.sh package` run.
     # Marker-through-the-tree, same as eval-llm/integration-polishd (the gate
     # pins env prefixes per-command). Expect many minutes: ~150 TTS+ASR cases
     # plus live 4B polish inference (synthesized WAVs are cached on the host
     # under ~/Library/Caches/localvoxtral-eval/wav, so reruns skip TTS).
-    if [[ $# -ne 0 ]]; then
-      echo "eval-e2e does not accept extra arguments" >&2
+    if [[ $# -gt 1 ]]; then
+      echo "eval-e2e accepts at most one argument (recording-set directory)" >&2
       exit 1
+    fi
+    E2E_RECORDING_DIR="${1:-}"
+    if [[ -n "$E2E_RECORDING_DIR" ]]; then
+      # Keep the marker JSON trivially safe and make operator mistakes fail
+      # before waking/model-loading the Mac. Human mode is strict: the Swift
+      # harness validates completeness, corpus binding, WAV format, and hashes.
+      if [[ ! "$E2E_RECORDING_DIR" =~ ^EvalRecordings/agent-dictation/[A-Za-z0-9._-]+$ ]]; then
+        echo "eval-e2e recording directory must be EvalRecordings/agent-dictation/<set>" >&2
+        exit 1
+      fi
+      if [[ ! -f "$ROOT_DIR/$E2E_RECORDING_DIR/manifest.json" ]]; then
+        echo "recording manifest not found: $E2E_RECORDING_DIR/manifest.json" >&2
+        echo "Create or resume it with: ./scripts/record-agent-eval.sh" >&2
+        exit 1
+      fi
     fi
     ENSURE_SERVER="voxmlx"
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$E2E_MARKER"' EXIT
-    printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
-      "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-      "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
-      >"$E2E_MARKER"
+    if [[ -n "$E2E_RECORDING_DIR" ]]; then
+      printf '{"helperPath": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+        "$E2E_RECORDING_DIR" \
+        >"$E2E_MARKER"
+    else
+      printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
+        "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
+        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+        >"$E2E_MARKER"
+    fi
     REMOTE_CMD=(swift test --filter AgentDictationE2EEvalTests)
     ;;
   eval-llm)
     # Enablement travels as a gitignored marker file inside the synced tree
     # (removed again on exit): the build gate only allowlists exact
     # `swift test ...` payloads, so env prefixes can't be passed per-run.
-    if [[ $# -gt 1 ]]; then
-      echo "eval-llm accepts at most one argument (the chat/completions endpoint)" >&2
+    if [[ $# -gt 2 ]]; then
+      echo "eval-llm accepts an optional chat/completions endpoint and model alias" >&2
       exit 1
     fi
     EVAL_ENDPOINT="${1:-http://127.0.0.1:8080/v1/chat/completions}"
+    EVAL_MODEL="${2:-}"
     # Only warm the local on-demand mlxlm service when the eval targets it; a
     # custom endpoint is the caller's own server and we must not touch it.
     if [[ "$EVAL_ENDPOINT" == *"127.0.0.1:8080"* || "$EVAL_ENDPOINT" == *"localhost:8080"* ]]; then
@@ -243,7 +274,13 @@ case "$CMD" in
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
-    printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
+    if [[ -n "$EVAL_MODEL" ]]; then
+      printf '{"endpoint": "%s", "model": "%s", "useDefaultRequestShape": true}\n' \
+        "$EVAL_ENDPOINT" "$EVAL_MODEL" \
+        >"$EVAL_MARKER"
+    else
+      printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
+    fi
     REMOTE_CMD=(swift test --filter LLMPolishPromptEvalTests)
     ;;
   package) REMOTE_CMD=(./scripts/package_app.sh release "$@") ;;
@@ -267,8 +304,10 @@ fi
 echo "==> Syncing working tree to $HOST:$DIR"
 ssh "$HOST" "mkdir -p $(printf '%q' "$DIR")"
 # .build/ and dist/ are excluded from deletion too, so the remote incremental
-# build state survives between runs.
+# build state survives between runs. EvalRecordings is receiver-protected:
+# private human WAVs may live only on the Mac and must survive a Linux sync.
 rsync -az --delete \
+  --filter='P EvalRecordings/***' \
   --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
   "$ROOT_DIR/" "$HOST:$DIR/"
 # From here on the marker (if any) exists remotely too; the EXIT trap's
