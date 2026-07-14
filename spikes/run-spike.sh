@@ -86,7 +86,7 @@ do_run() {
   # Fused RoPE must reproduce the manual RoPE it replaces — check that numerically
   # BEFORE trusting any transcript from the optimized engine.
   echo "==> RoPE self-test"
-  "$BIN" --selftest 1 --wav "$OUT_DIR/en.wav" || echo "!! RoPE MISMATCH — fused path is wrong"
+  "$BIN" --selftest 1 --wav "$OUT_DIR/en.wav" || { echo "!! RoPE MISMATCH — fused path is wrong"; exit 1; }
 
   # Bisect: the all-on optimized engine scored word-accuracy 0.000 while stock scored
   # 0.804 on the same audio in the same run. Each optimization is individually switchable,
@@ -98,7 +98,8 @@ do_run() {
     echo "==> [$name] EN (rope=$rope async=$async mask=$mask)"
     VOXFAST_ROPE="$rope" VOXFAST_ASYNC="$async" VOXFAST_MASK="$mask" \
       "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
-        --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label "$name" "$@" \
+        --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label "$name" \
+        "${WS_ARGS[@]}" "$@" \
       | tee "$OUT_DIR/$name.json"
   }
 
@@ -110,7 +111,7 @@ do_run() {
   run_cfg fast-none  0 0 0
   run_cfg fast-rope  1 0 0
   run_cfg fast-async 0 1 0
-  run_cfg fast-all   1 1 1 "${WS_ARGS[@]}"
+  run_cfg fast-all   1 1 1
 
   echo "==> done"
 }

@@ -43,7 +43,15 @@ func voxtralFusedRoPE(
     offset: Int
 ) -> MLXArray {
     let seqLen = x.shape[0]
-    let heads = x.reshaped(seqLen, nHeads, headDim).transposed(1, 0, 2)  // [H, L, D]
+    // MUST be 4-D [B=1, H, L, D], not 3-D [H, L, D]. The 3-D form puts the heads in the
+    // BATCH position, and mlx-swift's Metal RoPE returns garbage for single-token decode
+    // when batch > 1 (ml-explore/mlx-swift#441) — which is every decode step, so the
+    // transcript came out empty. Verified by `voxtralRoPESelfTest`: the 3-D form matched
+    // the manual RoPE at L=8 but was off by ~3.2 at L=1. [1, H, L, D] is the layout
+    // mlx-swift-lm uses in production.
+    let heads = x.reshaped(seqLen, nHeads, headDim)
+        .transposed(1, 0, 2)
+        .expandedDimensions(axis: 0)  // [1, H, L, D]
     let roped = MLXFast.RoPE(
         heads,
         dimensions: headDim,
@@ -52,7 +60,7 @@ func voxtralFusedRoPE(
         scale: 1.0,
         offset: offset
     )
-    return roped.transposed(1, 0, 2).reshaped(seqLen, nHeads * headDim)
+    return roped.squeezed(axis: 0).transposed(1, 0, 2).reshaped(seqLen, nHeads * headDim)
 }
 
 func voxtralApplyInterleavedRoPE(
