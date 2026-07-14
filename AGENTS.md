@@ -313,6 +313,11 @@ Key subsystems:
   so `LiveHoldBackReplacementStream` withholds the trailing partial word plus
   any suffix that is still a live prefix of a dictionary rule. Nothing is lost
   (`flushRemainder()` releases it at stop) but it costs latency of appearance.
+- **Agent-profile polishing trusts the model's text.** Human terminal-dictation
+  evaluation found that `PolishTokenGuard` slightly reduced fidelity by undoing
+  useful Markdown and reconstructed identifiers, so the agent profile bypasses
+  it. The standard profile still uses the guard, and clipboard-leak plus payload-
+  placeholder integrity checks remain active for both profiles.
 
 ## Conventions
 

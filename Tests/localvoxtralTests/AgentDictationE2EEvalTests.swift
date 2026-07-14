@@ -24,7 +24,7 @@ import XCTest
 ///   path on a view model built with `startRuntimeServices: false` —
 ///   replacement dictionary -> clipboard-paste macro -> profile selection ->
 ///   clipboard context -> repo vocabulary -> `LLMPolishingRequest` ->
-///   `PolishTokenGuard.verifyAndRepair` -> leak/placeholder guards -> commit.
+///   profile-specific token guard policy -> leak/placeholder guards -> commit.
 ///   Prompt templates load through the production `AppConfigStore`
 ///   (configDirectoryOverride seeded with the bundled files). Existing DEBUG
 ///   seams only: target-bundle override (profile routing), pasteboard stubs
@@ -347,9 +347,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 capture.polishInputText = polish.request?.inputText
                 capture.rawModelOutput = polish.rawModelOutput
 
-                // Guard-off diagnostic column: what the commit would look
-                // like WITHOUT PolishTokenGuard, at zero extra inference.
-                // Precisely: the SAME run's pre-guard model output, and for
+                // Raw-model diagnostic column: what the commit would look like
+                // without PolishTokenGuard, at zero extra inference. This is
+                // normally the agent-profile final now, except when a
+                // clipboard safety guard rejects it. Precisely: the SAME run's
+                // pre-guard model output, and for
                 // macro-positive cases with the commit-time payload
                 // substitution applied on top — the guard itself saw the
                 // PLACEHOLDER form, but a no-guard commit would still
@@ -404,7 +406,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private struct PolishStageOutcome {
         let committedText: String
-        /// The raw model output exactly as PolishTokenGuard saw it (pre-guard,
+        /// The raw model output before profile-specific guards and
         /// pre-substitution — for macro cases this still carries the
         /// placeholder). The guard-off column applies the commit-time payload
         /// substitution before scoring; see the call site.
