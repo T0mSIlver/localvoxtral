@@ -23,10 +23,12 @@ FR="le café était très élégant et la crème brûlée façonnée à Noël. n
 printf '%s' "$EN" > "$OUT_DIR/en.txt"
 printf '%s' "$FR" > "$OUT_DIR/fr.txt"
 
+# Arg shape copied verbatim from the tier-1 test (makeSpokenPCM16Data): the phrase
+# is a positional arg — `--file` makes `say` fail with "Opening output file failed".
 echo "==> Synthesizing audio with /usr/bin/say"
-say -o "$OUT_DIR/en.wav" --file-format=WAVE --data-format=LEI16@16000 --file "$OUT_DIR/en.txt"
-say -v Thomas -o "$OUT_DIR/fr.wav" --file-format=WAVE --data-format=LEI16@16000 --file "$OUT_DIR/fr.txt" \
-  || say -o "$OUT_DIR/fr.wav" --file-format=WAVE --data-format=LEI16@16000 --file "$OUT_DIR/fr.txt"
+say -o "$OUT_DIR/en.wav" --file-format=WAVE --data-format=LEI16@16000 "$EN"
+say -v Thomas -o "$OUT_DIR/fr.wav" --file-format=WAVE --data-format=LEI16@16000 "$FR" \
+  || say -o "$OUT_DIR/fr.wav" --file-format=WAVE --data-format=LEI16@16000 "$FR"
 
 if ! xcrun metal --version >/dev/null 2>&1; then
   echo "Metal toolchain missing: xcodebuild -downloadComponent MetalToolchain" >&2
