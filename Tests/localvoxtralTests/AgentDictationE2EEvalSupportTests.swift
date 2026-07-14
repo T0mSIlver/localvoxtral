@@ -513,12 +513,12 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         \(Support.reportBeginSentinel)
         {"asrModel":"asr-model","audioSource":"human-recorded/owner","polishModel":"polish-model","systemPrompts":[]}
         {"caseID":"unrecoverable"
-        {"caseID":"r-en-report","exactTextFailures":["expected truth"],"guardOffOutput":"Open wrong.","guardOffTokensFailures":["missing token"],"intendedText":"Open <truth>.","lang":"en","output":"Open wrong.","pipeline":"full","polishInputText":"open wrong","rawModelOutput":"Fetch https://api.example.com/v2/users and cat /tmp/log, then open wr/Users/owner/localvoxtral/Tests/localvoxtralTests/AgentDictationE2EEvalTests.swift:275: error: -[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard] : failed - infra error on r-en-report
+        {"caseID":"r-en-report","caseInsensitive":false,"forbiddenSubstrings":[],"exactTextFailures":["expected truth"],"guardOffOutput":"Open wrong.","guardOffTokensFailures":["missing token"],"intendedText":"Open <truth>.","lang":"en","output":"Open wrong.","pipeline":"full","polishInputText":"open wrong","rawModelOutput":"Fetch https://api.example.com/v2/users and cat /tmp/log, then open wr/Users/owner/localvoxtral/Tests/localvoxtralTests/AgentDictationE2EEvalTests.swift:275: error: -[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard] : failed - infra error on r-en-report
         Test Case '-[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard]' passed (12.3 seconds).
         Test Suite 'AgentDictationE2EEvalTests' passed at 2026-07-14 10:00:00.000.
         \t Executed 1 test, with 0 failures in 12.3 seconds
         ong.","requiredTokens":["truth"],"rewriteFailure":"word accuracy vs input 0.20 < 0.8 (rewrote the text)","rewriteIsFatal":false,"spokenForm":"open less than unsafe","statusByMetric":{"exactText":"known-hard","tokens":"known-hard"},"stratum":"filenames-backticks","tokensFailures":["missing truth"],"transcript":"open <unsafe>","wordAccuracyVsIntended":0.5}
-        {"caseID":"r-en-asr","intendedText":"Tests fail on main.","lang":"en","output":"Tests fail on me.","pipeline":"asr-only","requiredTokens":["tests"],"spokenForm":"tests fail on main","statusByMetric":{"tokens":"known-hard"},"stratum":"plain-asr-baseline","tokensFailures":[],"transcript":"Tests fail on me.","wordAccuracyVsIntended":0.75}
+        {"caseID":"r-en-asr","caseInsensitive":false,"forbiddenSubstrings":[],"intendedText":"Tests fail on main.","lang":"en","output":"Tests fail on me.","pipeline":"asr-only","requiredTokens":["tests"],"spokenForm":"tests fail on main","statusByMetric":{"tokens":"known-hard"},"stratum":"plain-asr-baseline","tokensFailures":[],"transcript":"Tests fail on me.","wordAccuracyVsIntended":0.75}
         \(Support.reportEndSentinel)
         trailing test output
         """
@@ -595,6 +595,121 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             {left: {"output": "current"}, right: {"output": "stale"}}, [experiment]
         )
         assert list(filtered) == [left]
+        ceiling = module.Experiment("case", "ceiling", "variant", messages, right)
+        arms = module.pending_model_arms([experiment, ceiling], ["model", "ceiling"])
+        assert [(model, [item.model for item in items]) for model, items in arms] == [
+            ("model", ["model"]), ("ceiling", ["ceiling"])
+        ]
+        """#
+        let run = try runPython(["-c", snippet, script.path])
+        XCTAssertEqual(run.status, 0, run.output)
+    }
+
+    func testAblationRendersCurrentPromptsAndAttributesTechnicalTermFailures() throws {
+        let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
+        let snippet = #"""
+        import importlib.util, sys
+        spec = importlib.util.spec_from_file_location("agent_ablation", sys.argv[1])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        record = {
+            "caseID": "i-en-name",
+            "stratum": "repo-vocabulary",
+            "intendedText": "Open DictationViewModel.swift.",
+            "requiredTokens": ["DictationViewModel.swift"],
+            "polishInputText": "Open Dictation View Model.",
+            "userPrompts": [
+                "old static prefix",
+                "Reference context — text currently on the user's clipboard. Use it only as reference.\n"
+                "---\nDictationViewModel.swift\n---\n\n"
+                "Repository vocabulary (exact terms):\n"
+                "- DictationViewModel.swift: Dictation View Model\n\n"
+                "Working text:\nOpen Dictation View Model."
+            ],
+        }
+        system = module.bundled_prompt_content("llm_system_prompt_agent.toml")
+        user = module.bundled_prompt_content("llm_user_prompt_agent.toml")
+        assert not system.startswith("\n")
+        assert system.endswith("\n")
+        assert not user.startswith("\n")
+        assert user.endswith("\n")
+        messages = module.current_production_messages(record, system, user)
+        assert len(messages) == 3
+        assert messages[0] == {"role": "system", "content": system}
+        assert "Reference context" in messages[-1]["content"]
+        assert "- DictationViewModel.swift: Dictation View Model" in messages[-1]["content"]
+        assert "Working text:\nOpen Dictation View Model." in messages[-1]["content"]
+        oracle = module.current_production_messages(record, system, user, oracle=True)
+        assert "Evaluation-only oracle technical spellings" in oracle[-1]["content"]
+        assert "- DictationViewModel.swift" in oracle[-1]["content"]
+        standard_system = module.bundled_prompt_content("llm_system_prompt.toml")
+        standard_user = module.bundled_prompt_content("llm_user_prompt.toml")
+        standard_record = dict(record, stratum="punctuation-spacing-migration")
+        routed = module.messages_for(
+            standard_record, {}, "current-production", None,
+            {"standard": (standard_system, standard_user), "agent": (system, user)},
+        )
+        assert routed[0]["content"] == standard_system
+
+        malformed = dict(record, userPrompts=[
+            "Repository vocabulary (exact terms):\nnot a list\n\n"
+            "Working text:\nOpen Dictation View Model."
+        ])
+        try:
+            module.make_experiments(
+                [malformed], {}, "http://example.test", ["model"],
+                ["current-production"],
+                {"standard": (standard_system, standard_user), "agent": (system, user)},
+            )
+        except ValueError as error:
+            assert "could not recover every vocabulary block" in str(error)
+        else:
+            raise AssertionError("current prompt reconstruction failure was swallowed")
+
+        scored = module.score_output(
+            {
+                "intendedText": "Set NODE_ENV.",
+                "requiredTokens": ["NODE_ENV"],
+                "forbiddenSubstrings": ["underscore"],
+                "caseInsensitive": True,
+            },
+            "Set node_env underscore.",
+        )
+        assert not scored["tokensPass"]
+        assert scored["missingTokens"] == []
+        assert scored["forbiddenTokens"] == ["underscore"]
+        old_log_record = {
+            "caseID": "b-en-flag-force",
+            "intendedText": "Run the deploy script with --force and tell me if it complains.",
+            "requiredTokens": ["--force"],
+        }
+        module.enrich_report_contract([old_log_record])
+        assert old_log_record["forbiddenSubstrings"] == ["dash dash"]
+        assert old_log_record["caseInsensitive"] is False
+
+        rows = [
+            {"caseID": "i-en-name", "stage": "00 raw ASR", "tokensPass": False,
+             "matchedTokens": [], "requiredTokenCount": 1},
+            {"caseID": "i-en-name", "stage": "25 qwen35-4b current-production", "tokensPass": False,
+             "matchedTokens": [], "requiredTokenCount": 1},
+            {"caseID": "i-en-name", "stage": "25 qwen36dense-27b current-production", "tokensPass": True,
+             "matchedTokens": ["DictationViewModel.swift"], "requiredTokenCount": 1},
+            {"caseID": "i-en-name", "stage": "25 qwen35-4b current-production-oracle", "tokensPass": True,
+             "matchedTokens": ["DictationViewModel.swift"], "requiredTokenCount": 1},
+            {"caseID": "i-en-name", "stage": "25 qwen36dense-27b current-production-oracle", "tokensPass": True,
+             "matchedTokens": ["DictationViewModel.swift"], "requiredTokenCount": 1},
+        ]
+        attribution = module.technical_attribution(
+            [record], rows, "qwen35-4b", "qwen36dense-27b", "current-production"
+        )
+        assert attribution["categories"] == {
+            "ceiling recovers where primary misses": ["i-en-name"]
+        }
+        assert attribution["termCategories"] == {
+            "exact evidence lets primary recover": ["i-en-name: DictationViewModel.swift"]
+        }
         """#
         let run = try runPython(["-c", snippet, script.path])
         XCTAssertEqual(run.status, 0, run.output)
@@ -1077,7 +1192,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(board.requiredFailures.isEmpty)
         XCTAssertTrue(board.text.contains("XFAIL b-en-flag (known-hard)"))
         XCTAssertTrue(board.text.contains("PASS b-en-port"))
-        // Raw-model column annotated, and the post-model safety improvement
+        // Raw-model column annotated, and a deterministic post-model change
         // counted (production pass, raw model output fail).
         XCTAssertTrue(board.text.contains("raw-model tokens: FAIL"))
         XCTAssertTrue(board.text.contains("post-model safety changed 1 case(s)"))
@@ -1211,6 +1326,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(decoded.caseID, "r-en-report")
         XCTAssertEqual(decoded.spokenForm, "open use auth dot t s")
         XCTAssertEqual(decoded.intendedText, "Open `useAuth.ts`.")
+        XCTAssertEqual(decoded.forbiddenSubstrings, [])
+        XCTAssertFalse(decoded.caseInsensitive)
         XCTAssertEqual(decoded.transcript, "open use auth dot t s")
         XCTAssertEqual(decoded.systemPromptIndex, 0)
         XCTAssertEqual(decoded.userPrompts, ["user prompt with\nnewline"])

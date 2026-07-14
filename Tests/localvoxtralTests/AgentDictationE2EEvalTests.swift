@@ -24,7 +24,8 @@ import XCTest
 ///   path on a view model built with `startRuntimeServices: false` —
 ///   replacement dictionary -> clipboard-paste macro -> profile selection ->
 ///   clipboard context -> repo vocabulary -> `LLMPolishingRequest` ->
-///   raw model output -> leak/placeholder guards -> commit.
+///   raw model output -> explicit paste-placeholder integrity/substitution ->
+///   commit.
 ///   Prompt templates load through the production `AppConfigStore`
 ///   (configDirectoryOverride seeded with the bundled files). Existing DEBUG
 ///   seams only: target-bundle override (profile routing), pasteboard stubs
@@ -400,9 +401,9 @@ final class AgentDictationE2EEvalTests: XCTestCase {
 
     private struct PolishStageOutcome {
         let committedText: String
-        /// The raw model output before clipboard safety checks and payload
-        /// substitution. Macro cases still carry the placeholder here; the
-        /// diagnostic column substitutes it before scoring.
+        /// The raw model output before explicit paste-placeholder integrity and
+        /// payload substitution. Macro cases still carry the placeholder here;
+        /// the diagnostic column substitutes it before scoring.
         let rawModelOutput: String?
         /// The polish request exactly as the production stop-commit path
         /// assembled it (system prompt, user prompts, input text) — recorded

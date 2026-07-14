@@ -80,21 +80,47 @@ truth side by side. Re-render an existing log without rerunning either model:
 
 The inspection log retains enough intermediate text to test polishing stages
 without transcribing the audio again. The resumable ablation runner compares raw
-ASR, production pre-LLM normalization, raw model output, guarded production
-output, alternate prompts, and alternate models:
+ASR, production pre-LLM normalization, raw model output, the final text shown to
+the user, alternate prompts, and alternate models:
 
 ```bash
 ./scripts/ablate-agent-eval.py .build/agent-eval-local.log \
   --model qwen35-4b --jobs 8
 ```
 
+For technical-term work, run the checked-in production prompt against the 4B
+device target and the 27B performance ceiling over the same recorded ASR and
+context. Restricting the pass to the five technical strata keeps it fast:
+
+```bash
+./scripts/ablate-agent-eval.py .build/agent-eval-local.log \
+  --endpoint http://192.168.1.183:8080/v1/chat/completions \
+  --model qwen35-4b --ceiling-model qwen36dense-27b \
+  --variants current-production,current-production-oracle \
+  --strata symbol-forms,filenames-backticks,clipboard-context,repo-vocabulary,guard-stress \
+  --jobs 8
+```
+
+The oracle arm is evaluation-only: it adds the corpus's exact required technical
+spellings as hints. The technical-term section attributes each term as already
+present in ASR, recovered by 4B without help, recovered by 4B once exact evidence
+is available, recoverable only by the 27B ceiling, or missed by both. This makes
+context/STT, prompt, and model decisions separable. `--case` and `--strata`
+select focused reruns. Model arms run sequentially because llama.cpp routers may
+evict one model while loading another; requests remain parallel within an arm.
+Older inspection logs that predate embedded forbidden/case-sensitivity fields
+are backfilled by case ID from the checked-in corpus; stale corpus text or an
+unknown legacy case is a hard error, never a silently weakened score.
+
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
 inference. Rerunning the same command resumes by endpoint, model, variant, and
 the complete request payload hash. Stale entries may remain in the append-only
-JSONL but are excluded from the current report. The runner explicitly sends the production Qwen sampling shape
+JSONL but are excluded from the current report. The runner explicitly sends a
+deterministic Qwen eval shape for paired reproducibility
 (`temperature=0`, `top_p=1`, `top_k=0`, `min_p=0`, presence penalty 0, thinking
-off); preserve it when adding variants. The generated
+off); this is intentionally stricter than the app client's default temperature.
+Preserve it when adding variants. The generated
 `.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
 scoring is Markdown-neutral: backticks, headings, and list markers remain
 visible and are not treated as transcript errors. Compare stages over the same

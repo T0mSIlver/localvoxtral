@@ -231,8 +231,13 @@ case. After it reaches 146/146, omit `--subset` for the strict baseline. The run
 Use `scripts/ablate-agent-eval.py` on that log to compare stages/prompts/models
 without transcribing again. Ablation responses append immediately to a resumable
 JSONL file and its aggregate score is Markdown-neutral. Cache identity includes
-the endpoint and complete request payload. Keep comparisons paired on the same
-case IDs and preserve the explicit Qwen sampling parameters. XCTest
+the endpoint and complete request payload. For technical-term iteration, use
+`--variants current-production,current-production-oracle --model qwen35-4b
+--ceiling-model qwen36dense-27b`; the report attributes ASR preservation, 4B
+recovery, exact-evidence recovery, 27B-only recovery, and misses by both. Model
+arms are intentionally sequential to prevent a llama.cpp router from unloading
+one beneath the other. Keep comparisons paired on the same case IDs and preserve
+the explicit Qwen sampling parameters. XCTest
 can occasionally splice a status line into the sentinel-delimited JSONL report;
 the offline tools recover known XCTest diagnostics and warn only if an unknown
 corruption still forces a record to be skipped. Note any resulting denominator

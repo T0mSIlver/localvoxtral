@@ -819,7 +819,7 @@ enum AgentDictationE2EEvalSupport {
 
     /// Intermediate pipeline artifacts the live suite observes for one case,
     /// beyond what `CaseResult` scores: the ASR transcript, the exact polish
-    /// request, and the model output before post-model safety checks.
+    /// request, and the model output before deterministic post-model steps.
     struct CaseCapture {
         /// ASR output (nil when the pipeline skipped speech recognition).
         var transcript: String?
@@ -844,6 +844,8 @@ enum AgentDictationE2EEvalSupport {
         let spokenForm: String
         let intendedText: String
         let requiredTokens: [String]
+        let forbiddenSubstrings: [String]
+        let caseInsensitive: Bool
         let features: AgentDictationEvalCorpus.Features?
         let transcript: String?
         /// Index into `ReportHeader.systemPrompts`; nil when no polish ran.
@@ -878,6 +880,8 @@ enum AgentDictationE2EEvalSupport {
             spokenForm: evalCase.spokenForm,
             intendedText: evalCase.intendedText,
             requiredTokens: evalCase.requiredTokens,
+            forbiddenSubstrings: evalCase.forbidden,
+            caseInsensitive: evalCase.isCaseInsensitive,
             features: evalCase.features,
             transcript: capture.transcript,
             systemPromptIndex: systemPromptIndex,

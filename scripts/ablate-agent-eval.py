@@ -34,6 +34,16 @@ from typing import Any, Iterable
 
 REPORT_BEGIN = "=== AGENT-E2E-INSPECTION-REPORT-BEGIN ==="
 REPORT_END = "=== AGENT-E2E-INSPECTION-REPORT-END ==="
+ROOT = Path(__file__).resolve().parents[1]
+
+TECHNICAL_STRATA = {
+    "symbol-forms",
+    "filenames-backticks",
+    "clipboard-context",
+    "repo-vocabulary",
+    "guard-stress",
+}
+STANDARD_PROFILE_STRATA = {"punctuation-spacing-migration"}
 
 FOCUSED_SYSTEM_PROMPT = """You polish speech-to-text dictated to a terminal coding agent.
 Return only the final dictated prompt; do not answer or execute it.
@@ -74,7 +84,12 @@ VARIANT_HELP = {
     "raw-compact": "raw ASR -> compact language-preserving prompt -> model",
     "pre-compact": "production deterministic pre-processing -> compact language-preserving prompt -> model",
     "raw-production-v2": "raw ASR -> Markdown-friendly production prompt with missing literal examples -> model",
+    "current-production": "production pre-LLM text -> current checked-in production prompt/context -> model",
+    "current-production-oracle": "current production request + exact evaluation-only technical spelling hints",
 }
+DEFAULT_VARIANTS = tuple(
+    value for value in VARIANT_HELP if value != "current-production-oracle"
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -98,14 +113,26 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model", default="qwen35-4b", help="server model alias")
     parser.add_argument(
+        "--ceiling-model",
+        help="optional larger model alias run over the exact same experiments",
+    )
+    parser.add_argument(
         "--variants",
-        default=",".join(VARIANT_HELP),
+        default=",".join(DEFAULT_VARIANTS),
         help="comma-separated variants: " + ", ".join(VARIANT_HELP),
     )
     parser.add_argument("--jobs", type=int, default=8, help="parallel requests")
     parser.add_argument("--timeout", type=float, default=1200, help="request timeout seconds")
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--max-cases", type=int, help="run only the first N records")
+    parser.add_argument(
+        "--strata",
+        help="comma-separated corpus strata to run (default: all)",
+    )
+    parser.add_argument(
+        "--case",
+        help="regular expression selecting case IDs",
+    )
     parser.add_argument(
         "--results",
         type=Path,
@@ -120,6 +147,52 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--render-only", action="store_true")
     return parser.parse_args()
+
+
+def corpus_contract_by_case() -> dict[str, dict[str, Any]]:
+    contract: dict[str, dict[str, Any]] = {}
+    strata = ROOT / "EvalCorpus/agent-dictation/strata"
+    for path in sorted(strata.glob("*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for item in payload.get("cases") or []:
+            case_id = item.get("id")
+            if not isinstance(case_id, str) or case_id in contract:
+                raise ValueError(f"invalid or duplicate corpus case in {path}: {case_id}")
+            contract[case_id] = item
+    return contract
+
+
+def enrich_report_contract(records: list[dict[str, Any]]) -> None:
+    """Backfill old logs from the corpus and reject stale scoring contracts."""
+    corpus = corpus_contract_by_case()
+    for record in records:
+        needs_backfill = (
+            "forbiddenSubstrings" not in record or "caseInsensitive" not in record
+        )
+        expected = corpus.get(record["caseID"])
+        if expected is None:
+            if needs_backfill:
+                raise ValueError(
+                    f"report case {record['caseID']} lacks scoring fields and is not in the corpus"
+                )
+            continue
+        for field in ("intendedText", "requiredTokens"):
+            if record.get(field) != expected.get(field):
+                raise ValueError(f"report case {record['caseID']} has stale {field}")
+        expected_forbidden = expected.get("forbiddenSubstrings") or []
+        expected_insensitive = bool(expected.get("caseInsensitive"))
+        if "forbiddenSubstrings" in record:
+            if record["forbiddenSubstrings"] != expected_forbidden:
+                raise ValueError(
+                    f"report case {record['caseID']} has stale forbiddenSubstrings"
+                )
+        else:
+            record["forbiddenSubstrings"] = expected_forbidden
+        if "caseInsensitive" in record:
+            if record["caseInsensitive"] != expected_insensitive:
+                raise ValueError(f"report case {record['caseID']} has stale caseInsensitive")
+        else:
+            record["caseInsensitive"] = expected_insensitive
 
 
 def load_report(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -171,7 +244,9 @@ def load_report(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         raise ValueError(f"valid inspection header not found in {path}")
     if malformed:
         print(f"warning: skipped {malformed} malformed/interleaved report value(s)", file=sys.stderr)
-    return objects[0], [obj for obj in objects[1:] if "caseID" in obj]
+    records = [obj for obj in objects[1:] if "caseID" in obj]
+    enrich_report_contract(records)
+    return objects[0], records
 
 
 def replace_last(text: str, old: str, new: str) -> str:
@@ -194,11 +269,107 @@ def production_v2_system_prompt(system: str) -> str:
     return "\n".join(retained).rstrip() + PRODUCTION_V2_SUFFIX
 
 
+def bundled_prompt_content(name: str) -> str:
+    path = ROOT / "Sources/localvoxtral/Resources/Config" / name
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    match = re.fullmatch(r'\s*content\s*=\s*"""(.*)"""\s*', text, flags=re.DOTALL)
+    if match is None or not match.group(1).strip():
+        raise ValueError(f"bundled prompt has no content: {path}")
+    # Match AppConfigStore.parsePromptTemplate: a delimiter-only assignment
+    # line does not add a leading newline, while the empty closing-delimiter
+    # line does preserve one trailing newline.
+    content = match.group(1)
+    return content[1:] if content.startswith("\n") else content
+
+
+def recorded_dynamic_sections(record: dict[str, Any]) -> tuple[str, str]:
+    """Recover production vocabulary and clipboard context from a report row."""
+    joined = "\n\n".join(record.get("userPrompts") or [])
+    vocabulary_pattern = re.compile(
+        r"(?m)^(?:Replacement dictionary|(?:Repository|Clipboard) vocabulary \([^\n]*\)):\n"
+        r"(?:- [^\n]*(?:\n|$))+"
+    )
+    vocabulary_matches = list(vocabulary_pattern.finditer(joined))
+    vocabulary_headers = re.findall(
+        r"(?m)^(?:Replacement dictionary|(?:Repository|Clipboard) vocabulary \([^\n]*\)):",
+        joined,
+    )
+    if len(vocabulary_matches) != len(vocabulary_headers):
+        raise ValueError(
+            f"could not recover every vocabulary block for {record.get('caseID')}"
+        )
+    replacement_dictionary = "\n\n".join(
+        match.group(0).strip() for match in vocabulary_matches
+    )
+
+    context = ""
+    marker = "Reference context — text currently on the user's clipboard."
+    start = joined.find(marker)
+    if start >= 0:
+        opening = joined.find("\n---\n", start)
+        closing = joined.find("\n---", opening + 5) if opening >= 0 else -1
+        if opening < 0 or closing < 0:
+            raise ValueError(f"could not recover clipboard context for {record.get('caseID')}")
+        context = joined[start : closing + 4].strip()
+    return replacement_dictionary, context
+
+
+def rendered_user_prompts(
+    template: str,
+    input_text: str,
+    replacement_dictionary: str,
+) -> list[str]:
+    """Mirror LLMPromptTemplates.renderedUserPrompts from AppConfigStore.swift."""
+    placeholders = ("{{replacement_dictionary}}", "{{input_text}}")
+    boundaries = [template.find(value) for value in placeholders if value in template]
+    split = min(boundaries) if boundaries else -1
+
+    def render(value: str) -> str:
+        return value.replace("{{input_text}}", input_text).replace(
+            "{{replacement_dictionary}}", replacement_dictionary
+        )
+
+    if split <= 0 or not template[:split].strip():
+        return [render(template)]
+    return [template[:split], render(template[split:])]
+
+
+def current_production_messages(
+    record: dict[str, Any], system_prompt: str, user_template: str, oracle: bool = False
+) -> list[dict[str, str]]:
+    input_text = record.get("polishInputText") or record.get("transcript")
+    if not isinstance(input_text, str):
+        raise ValueError("case has no production polish input")
+    replacement_dictionary, clipboard_context = recorded_dynamic_sections(record)
+    if oracle:
+        tokens = [
+            normalized_spacing(value)
+            for value in record.get("requiredTokens") or []
+            if normalized_spacing(value)
+        ]
+        if tokens:
+            oracle_section = (
+                "Evaluation-only oracle technical spellings (use a spelling only "
+                "when it clearly corresponds to the Working text):\n"
+                + "\n".join(f"- {value}" for value in tokens)
+            )
+            replacement_dictionary = "\n\n".join(
+                value for value in (replacement_dictionary, oracle_section) if value
+            )
+    prompts = rendered_user_prompts(user_template, input_text, replacement_dictionary)
+    if clipboard_context:
+        prompts[-1] = clipboard_context + "\n\n" + prompts[-1]
+    return [{"role": "system", "content": system_prompt}] + [
+        {"role": "user", "content": prompt} for prompt in prompts
+    ]
+
+
 def messages_for(
     record: dict[str, Any],
     header: dict[str, Any],
     variant: str,
     fallback_request_record: dict[str, Any] | None,
+    current_prompts: dict[str, tuple[str, str]],
 ) -> list[dict[str, str]]:
     raw = record.get("transcript") or record.get("polishInputText") or record["spokenForm"]
     pre = record.get("polishInputText") or raw
@@ -215,6 +386,12 @@ def messages_for(
             {"role": "system", "content": COMPACT_SYSTEM_PROMPT},
             {"role": "user", "content": f"Speech-to-text:\n{input_text}"},
         ]
+
+    if variant in {"current-production", "current-production-oracle"}:
+        profile = "standard" if record.get("stratum") in STANDARD_PROFILE_STRATA else "agent"
+        return current_production_messages(
+            record, *current_prompts[profile], oracle=variant.endswith("-oracle")
+        )
 
     prompt_index = record.get("systemPromptIndex")
     prompts = record.get("userPrompts")
@@ -270,7 +447,8 @@ def experiment_hash(
 
 def make_experiments(
     records: list[dict[str, Any]], header: dict[str, Any], endpoint: str,
-    model: str, variants: list[str]
+    models: list[str], variants: list[str],
+    current_prompts: dict[str, tuple[str, str]]
 ) -> list[Experiment]:
     experiments: list[Experiment] = []
     fallback_request_record = next(
@@ -284,23 +462,28 @@ def make_experiments(
         ),
         None,
     )
-    for record in records:
-        for variant in variants:
-            try:
-                messages = messages_for(
-                    record, header, variant, fallback_request_record
+    for model in models:
+        for record in records:
+            for variant in variants:
+                try:
+                    messages = messages_for(
+                        record, header, variant, fallback_request_record, current_prompts
+                    )
+                except ValueError as error:
+                    if variant.startswith("current-production"):
+                        raise ValueError(
+                            f"{record['caseID']} {variant}: {error}"
+                        ) from error
+                    continue
+                experiments.append(
+                    Experiment(
+                        case_id=record["caseID"],
+                        model=model,
+                        variant=variant,
+                        messages=messages,
+                        request_hash=experiment_hash(endpoint, model, variant, messages),
+                    )
                 )
-            except ValueError:
-                continue
-            experiments.append(
-                Experiment(
-                    case_id=record["caseID"],
-                    model=model,
-                    variant=variant,
-                    messages=messages,
-                    request_hash=experiment_hash(endpoint, model, variant, messages),
-                )
-            )
     return experiments
 
 
@@ -323,6 +506,17 @@ def current_results(
 ) -> dict[str, dict[str, Any]]:
     active_hashes = {experiment.request_hash for experiment in experiments}
     return {key: value for key, value in results.items() if key in active_hashes}
+
+
+def pending_model_arms(
+    pending: list[Experiment], models: list[str]
+) -> list[tuple[str, list[Experiment]]]:
+    """Return sequential model arms while preserving experiment order per arm."""
+    return [
+        (model, [item for item in pending if item.model == model])
+        for model in models
+        if any(item.model == model for item in pending)
+    ]
 
 
 def request_experiment(
@@ -387,6 +581,10 @@ def markdown_neutral(text: str) -> str:
     return " ".join(value.split())
 
 
+def normalized_spacing(text: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", text).split())
+
+
 def word_tokens(text: str) -> list[str]:
     return re.findall(r"[\w]+", markdown_neutral(text).casefold(), flags=re.UNICODE)
 
@@ -415,22 +613,48 @@ def contains_standalone(text: str, token: str) -> bool:
     return re.search(rf"(?<![\w$-]){re.escape(token)}(?![\w$-])", text) is not None
 
 
-def contains_required_token(text: str, intended: str, token: str) -> bool:
+def contains_required_token(
+    text: str, intended: str, token: str, case_insensitive: bool = False
+) -> bool:
     # Preserve standalone semantics when the corpus truth itself uses the token
     # standalone (`-v` must not pass inside `--verbose`). A few legitimate
     # required fragments are embedded in a larger literal (`/health` in
     # `localhost:8472/health`); for those, exact substring preservation is the
     # only scoring rule under which the intended text itself passes.
-    if contains_standalone(intended, token):
-        return contains_standalone(text, token)
-    return token in text
+    haystack = normalized_spacing(text)
+    truth = normalized_spacing(intended)
+    needle = normalized_spacing(token)
+    if case_insensitive:
+        haystack, truth, needle = haystack.casefold(), truth.casefold(), needle.casefold()
+    if contains_standalone(truth, needle):
+        return contains_standalone(haystack, needle)
+    return needle in haystack
 
 
 def score_output(record: dict[str, Any], output: str) -> dict[str, Any]:
+    missing_contract = [
+        field
+        for field in ("caseInsensitive", "forbiddenSubstrings")
+        if field not in record
+    ]
+    if missing_contract:
+        raise ValueError(
+            f"report case {record.get('caseID', '<unknown>')} lacks scoring fields: "
+            + ", ".join(missing_contract)
+        )
     intended = record["intendedText"]
     required = record.get("requiredTokens") or []
+    case_insensitive = bool(record["caseInsensitive"])
     missing = [
-        token for token in required if not contains_required_token(output, intended, token)
+        token
+        for token in required
+        if not contains_required_token(output, intended, token, case_insensitive)
+    ]
+    forbidden_haystack = normalized_spacing(output).casefold()
+    forbidden = [
+        token
+        for token in record["forbiddenSubstrings"]
+        if normalized_spacing(token).casefold() in forbidden_haystack
     ]
     neutral_output = markdown_neutral(output)
     neutral_intended = markdown_neutral(intended)
@@ -438,8 +662,11 @@ def score_output(record: dict[str, Any], output: str) -> dict[str, Any]:
         "accuracy": word_accuracy(intended, output),
         "surfaceExact": neutral_output == neutral_intended,
         "casefoldExact": neutral_output.casefold() == neutral_intended.casefold(),
-        "tokensPass": not missing,
+        "tokensPass": not missing and not forbidden,
+        "matchedTokens": [token for token in required if token not in missing],
+        "requiredTokenCount": len(required),
         "missingTokens": missing,
+        "forbiddenTokens": forbidden,
         "markdown": bool(MARKDOWN_LINE_PREFIX.search(output) or MARKDOWN_DECORATION.search(output)),
     }
 
@@ -493,16 +720,143 @@ def summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "surfaceExact": sum(row["surfaceExact"] for row in values),
                 "casefoldExact": sum(row["casefoldExact"] for row in values),
                 "tokensPass": sum(row["tokensPass"] for row in values),
+                "matchedTokens": sum(len(row["matchedTokens"]) for row in values),
+                "requiredTokens": sum(row["requiredTokenCount"] for row in values),
                 "markdown": sum(row["markdown"] for row in values),
             }
         )
     return output
 
 
+def technical_attribution(
+    records: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    primary_model: str,
+    ceiling_model: str | None,
+    variant: str,
+) -> dict[str, Any]:
+    """Attribute required-token outcomes without pretending every miss is an LLM miss."""
+    by_case_stage = {(row["caseID"], row["stage"]): row for row in rows}
+    primary_stage = f"25 {primary_model} {variant}"
+    ceiling_stage = f"25 {ceiling_model} {variant}" if ceiling_model else None
+    categories: dict[str, list[str]] = defaultdict(list)
+    strata: dict[str, dict[str, int]] = defaultdict(
+        lambda: {
+            "cases": 0, "asr": 0, "primary": 0, "ceiling": 0, "ceilingCases": 0,
+            "asrMatched": 0, "asrTerms": 0, "primaryMatched": 0, "primaryTerms": 0,
+            "ceilingMatched": 0, "ceilingTerms": 0,
+        }
+    )
+
+    for record in records:
+        if record.get("stratum") not in TECHNICAL_STRATA:
+            continue
+        case_id = record["caseID"]
+        asr = by_case_stage.get((case_id, "00 raw ASR"))
+        primary = by_case_stage.get((case_id, primary_stage))
+        ceiling = by_case_stage.get((case_id, ceiling_stage)) if ceiling_stage else None
+        if asr is None:
+            continue
+
+        bucket = strata[record["stratum"]]
+        bucket["cases"] += 1
+        bucket["asr"] += int(asr["tokensPass"])
+        bucket["asrMatched"] += len(asr["matchedTokens"])
+        bucket["asrTerms"] += asr["requiredTokenCount"]
+        if primary is not None:
+            bucket["primary"] += int(primary["tokensPass"])
+            bucket["primaryMatched"] += len(primary["matchedTokens"])
+            bucket["primaryTerms"] += primary["requiredTokenCount"]
+        if ceiling is not None:
+            bucket["ceilingCases"] += 1
+            bucket["ceiling"] += int(ceiling["tokensPass"])
+            bucket["ceilingMatched"] += len(ceiling["matchedTokens"])
+            bucket["ceilingTerms"] += ceiling["requiredTokenCount"]
+
+        if primary is None:
+            category = "primary result missing"
+        elif asr["tokensPass"] and primary["tokensPass"]:
+            category = "ASR term preserved by primary"
+        elif asr["tokensPass"] and not primary["tokensPass"]:
+            category = "primary polishing regression"
+        elif not asr["tokensPass"] and primary["tokensPass"]:
+            category = "ASR miss recovered by primary"
+        elif ceiling_model and ceiling is None:
+            category = "ceiling result missing"
+        elif ceiling is None:
+            category = "primary miss; ceiling not run"
+        elif ceiling["tokensPass"]:
+            category = "ceiling recovers where primary misses"
+        else:
+            category = "both models miss after ASR miss"
+        categories[category].append(case_id)
+
+    term_categories: dict[str, list[str]] = defaultdict(list)
+    oracle_primary_stage = f"25 {primary_model} current-production-oracle"
+    oracle_ceiling_stage = (
+        f"25 {ceiling_model} current-production-oracle" if ceiling_model else None
+    )
+    has_oracle = any(row["stage"] == oracle_primary_stage for row in rows)
+    if has_oracle:
+        for record in records:
+            if record.get("stratum") not in TECHNICAL_STRATA:
+                continue
+            case_id = record["caseID"]
+            asr = by_case_stage.get((case_id, "00 raw ASR"))
+            primary = by_case_stage.get((case_id, primary_stage))
+            primary_oracle = by_case_stage.get((case_id, oracle_primary_stage))
+            ceiling_oracle = (
+                by_case_stage.get((case_id, oracle_ceiling_stage))
+                if oracle_ceiling_stage else None
+            )
+            if asr is None:
+                continue
+            if primary is None or primary_oracle is None:
+                for token in record.get("requiredTokens") or []:
+                    term_categories["primary/oracle result missing"].append(
+                        f"{case_id}: {token}"
+                    )
+                continue
+            matched_asr = set(asr["matchedTokens"])
+            matched_primary = set(primary["matchedTokens"])
+            matched_primary_oracle = set(primary_oracle["matchedTokens"])
+            matched_ceiling_oracle = (
+                set(ceiling_oracle["matchedTokens"]) if ceiling_oracle else set()
+            )
+            for token in record.get("requiredTokens") or []:
+                if token in matched_asr and token in matched_primary:
+                    category = "ASR term preserved by primary"
+                elif token in matched_asr:
+                    category = "primary dropped an ASR term"
+                elif token in matched_primary:
+                    category = "ASR miss recovered without oracle"
+                elif token in matched_primary_oracle:
+                    category = "exact evidence lets primary recover"
+                elif ceiling_model and ceiling_oracle is None:
+                    category = "ceiling oracle result missing"
+                elif ceiling_oracle and token in matched_ceiling_oracle:
+                    category = "ceiling-only recovery with exact evidence"
+                elif ceiling_oracle:
+                    category = "both models miss despite exact evidence"
+                else:
+                    category = "primary misses despite exact evidence"
+                term_categories[category].append(f"{case_id}: {token}")
+
+    return {
+        "variant": variant,
+        "primaryModel": primary_model,
+        "ceilingModel": ceiling_model,
+        "categories": dict(categories),
+        "termCategories": dict(term_categories),
+        "strata": dict(strata),
+    }
+
+
 def render_html(
     path: Path,
     records: list[dict[str, Any]],
     rows: list[dict[str, Any]],
+    attribution: dict[str, Any] | None = None,
 ) -> None:
     summary = summaries(rows)
     rows_by_case: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -517,9 +871,56 @@ def render_html(
         f"<td>{item['surfaceExact']}/{item['cases']}</td>"
         f"<td>{item['casefoldExact']}/{item['cases']}</td>"
         f"<td>{item['tokensPass']}/{item['cases']}</td>"
+        f"<td>{item['matchedTokens']}/{item['requiredTokens']}</td>"
         f"<td>{item['markdown']}/{item['cases']}</td></tr>"
         for item in summary
     )
+    attribution_html = ""
+    if attribution and attribution["strata"]:
+        ceiling_name = attribution["ceilingModel"] or "not run"
+        strata_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(stratum)}</td><td>{values['cases']}</td>"
+            f"<td>{values['asr']}/{values['cases']}</td>"
+            f"<td>{values['primary']}/{values['cases']}</td>"
+            f"<td>{values['ceiling']}/{values['ceilingCases']}</td>"
+            f"<td>{values['asrMatched']}/{values['asrTerms']}</td>"
+            f"<td>{values['primaryMatched']}/{values['primaryTerms']}</td>"
+            f"<td>{values['ceilingMatched']}/{values['ceilingTerms']}</td></tr>"
+            for stratum, values in sorted(attribution["strata"].items())
+        )
+        category_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(category)}</td><td>{len(case_ids)}</td>"
+            f"<td>{html.escape(', '.join(case_ids))}</td></tr>"
+            for category, case_ids in attribution["categories"].items()
+        )
+        term_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(category)}</td><td>{len(terms)}</td>"
+            f"<td>{html.escape(', '.join(terms))}</td></tr>"
+            for category, terms in attribution["termCategories"].items()
+        )
+        attribution_html = (
+            "<h2>Technical-term attribution</h2>"
+            f"<p class=\"note\">Required-token recovery in technical strata using "
+            f"<code>{html.escape(attribution['variant'])}</code>. Primary: "
+            f"{html.escape(attribution['primaryModel'])}; ceiling: {html.escape(ceiling_name)}.</p>"
+            "<table><thead><tr><th>Stratum</th><th>Cases</th><th>ASR</th>"
+            f"<th>{html.escape(attribution['primaryModel'])}</th>"
+            f"<th>{html.escape(ceiling_name)}</th><th>ASR term recall</th>"
+            f"<th>Primary term recall</th><th>Ceiling term recall</th></tr></thead>"
+            f"<tbody>{strata_rows}</tbody></table>"
+            "<table><thead><tr><th>Failure ownership</th><th>Cases</th><th>Case IDs</th>"
+            f"</tr></thead><tbody>{category_rows}</tbody></table>"
+            + (
+                "<h3>Per-term oracle decision</h3>"
+                "<table><thead><tr><th>Outcome</th><th>Terms</th><th>Case: term</th>"
+                f"</tr></thead><tbody>{term_rows}</tbody></table>"
+                if term_rows else ""
+            )
+        )
+
     case_html: list[str] = []
     for case_id in sorted(rows_by_case):
         record = record_by_case[case_id]
@@ -527,7 +928,7 @@ def render_html(
             "<tr>"
             f"<td>{html.escape(row['stage'])}</td>"
             f"<td>{row['accuracy']:.0%}</td>"
-            f"<td>{'yes' if row['tokensPass'] else html.escape(', '.join(row['missingTokens']))}</td>"
+            f"<td>{'yes' if row['tokensPass'] else html.escape(', '.join(row['missingTokens'] + ['forbidden: ' + value for value in row['forbiddenTokens']]))}</td>"
             f"<td><pre>{html.escape(row['output'])}</pre></td></tr>"
             for row in sorted(rows_by_case[case_id], key=lambda item: item["stage"])
         )
@@ -556,8 +957,10 @@ summary {{ cursor: pointer; font-weight: 600; }}
 Word accuracy is case- and punctuation-insensitive. Surface exactness ignores Markdown decoration
 but retains wording, punctuation, and case.</p>
 <table><thead><tr><th>Stage</th><th>Cases</th><th>Mean word accuracy</th>
-<th>Surface exact</th><th>Case-insensitive exact</th><th>Required tokens</th><th>Uses Markdown</th>
+<th>Surface exact</th><th>Case-insensitive exact</th><th>Required-token cases</th>
+<th>Required-term recall</th><th>Uses Markdown</th>
 </tr></thead><tbody>{summary_html}</tbody></table>
+{attribution_html}
 {''.join(case_html)}
 """
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -570,51 +973,111 @@ def main() -> int:
     unknown = sorted(set(variants) - set(VARIANT_HELP))
     if unknown:
         raise ValueError("unknown variants: " + ", ".join(unknown))
+    if (
+        "current-production-oracle" in variants
+        and "current-production" not in variants
+    ):
+        raise ValueError(
+            "current-production-oracle requires current-production for attribution"
+        )
     header, records = load_report(args.log)
+    if args.strata:
+        selected_strata = {value.strip() for value in args.strata.split(",") if value.strip()}
+        records = [record for record in records if record.get("stratum") in selected_strata]
+    if args.case:
+        case_pattern = re.compile(args.case)
+        records = [record for record in records if case_pattern.search(record["caseID"])]
     if args.max_cases is not None:
         records = records[: args.max_cases]
+    if not records:
+        raise ValueError("no eval cases match the selected filters")
+
+    models = [args.model]
+    if args.ceiling_model == args.model:
+        raise ValueError("--ceiling-model must differ from --model")
+    if args.ceiling_model:
+        models.append(args.ceiling_model)
+    current_prompts: dict[str, tuple[str, str]] = {}
+    if any(variant.startswith("current-production") for variant in variants):
+        current_prompts = {
+            "standard": (
+                bundled_prompt_content("llm_system_prompt.toml"),
+                bundled_prompt_content("llm_user_prompt.toml"),
+            ),
+            "agent": (
+                bundled_prompt_content("llm_system_prompt_agent.toml"),
+                bundled_prompt_content("llm_user_prompt_agent.toml"),
+            ),
+        }
     existing = load_results(args.results)
     experiments = make_experiments(
-        records, header, args.endpoint, args.model, variants
+        records, header, args.endpoint, models, variants, current_prompts
     )
 
     if not args.render_only:
         pending = [item for item in experiments if item.request_hash not in existing]
         print(
             f"agent ablation: {len(records)} cases, {len(experiments)} experiments, "
-            f"{len(pending)} pending; model={args.model}; jobs={args.jobs}"
+            f"{len(pending)} pending; models={','.join(models)}; jobs={args.jobs}"
         )
         completed = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as executor:
-            futures = {
-                executor.submit(
-                    request_experiment, item, args.endpoint, args.timeout, args.retries
-                ): item
-                for item in pending
-            }
-            for future in concurrent.futures.as_completed(futures):
-                item = future.result()
-                append_result(args.results, item)
-                if item.get("output") is not None:
-                    existing[item["requestHash"]] = item
-                completed += 1
-                state = "ok" if item.get("output") is not None else "ERROR"
-                print(
-                    f"[{completed}/{len(pending)}] {item['caseID']} "
-                    f"{item['variant']} {state} {item['durationSeconds']:.1f}s",
-                    flush=True,
-                )
+        # A llama.cpp model router may evict one model to load another. Keep
+        # model arms sequential so a ceiling request cannot unload the primary
+        # while its parallel requests are still running.
+        for model, model_pending in pending_model_arms(pending, models):
+            print(f"model arm: {model}; pending={len(model_pending)}", flush=True)
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, args.jobs)
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        request_experiment, item, args.endpoint, args.timeout, args.retries
+                    ): item
+                    for item in model_pending
+                }
+                for future in concurrent.futures.as_completed(futures):
+                    item = future.result()
+                    append_result(args.results, item)
+                    if item.get("output") is not None:
+                        existing[item["requestHash"]] = item
+                    completed += 1
+                    state = "ok" if item.get("output") is not None else "ERROR"
+                    print(
+                        f"[{completed}/{len(pending)}] {item['model']} "
+                        f"{item['caseID']} {item['variant']} {state} "
+                        f"{item['durationSeconds']:.1f}s",
+                        flush=True,
+                    )
 
     rows = collect_rows(header, records, current_results(existing, experiments))
-    render_html(args.html, records, rows)
+    attribution_variant = (
+        "current-production" if "current-production" in variants else variants[0]
+    )
+    attribution = technical_attribution(
+        records, rows, args.model, args.ceiling_model, attribution_variant
+    )
+    render_html(args.html, records, rows, attribution)
     print(f"report: {args.html}")
     print("\nStage summary (Markdown-neutral scoring):")
     for item in summaries(rows):
         print(
             f"{item['stage']}: n={item['cases']} accuracy={item['meanAccuracy']:.1%} "
             f"surface={item['surfaceExact']}/{item['cases']} "
-            f"tokens={item['tokensPass']}/{item['cases']} markdown={item['markdown']}/{item['cases']}"
+            f"token-cases={item['tokensPass']}/{item['cases']} "
+            f"term-recall={item['matchedTokens']}/{item['requiredTokens']} "
+            f"markdown={item['markdown']}/{item['cases']}"
         )
+    if attribution["categories"]:
+        print(
+            f"\nTechnical-term attribution ({attribution_variant}; "
+            f"primary={args.model}; ceiling={args.ceiling_model or 'not run'}):"
+        )
+        for category, case_ids in attribution["categories"].items():
+            print(f"{category}: {len(case_ids)}")
+        if attribution["termCategories"]:
+            print("Per-term oracle decision:")
+            for category, terms in attribution["termCategories"].items():
+                print(f"{category}: {len(terms)}")
     return 0
 
 
