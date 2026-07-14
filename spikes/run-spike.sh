@@ -116,8 +116,11 @@ do_run() {
   # the fp16 conv weights — promoting the whole model's activations to float32.
   # The LM head profiled at 79ms/token in-loop but 5ms in isolation — it is starved, not
   # slow. advance() dumps MLX's buffer pool (Memory.clearCache) on EVERY chunk.
+  # Final attribution. fp16 (mel cast + adaScale cast + fp16 params) is the load-bearing
+  # one: it stops the float32 hidden state from upcasting the 805MB tied embedding on
+  # every token.
   run_cfg fast-none  0 0 0 0 0 0
-  run_cfg fast-keep  0 0 0 0 0 1
+  run_cfg fast-fp16  0 0 0 0 1 0
   run_cfg fast-all   1 1 1 1 1 1
 
   # Where does the ~130 ms/step actually go? Phase-attributed, all optimizations on.
@@ -125,6 +128,18 @@ do_run() {
   VOXFAST_PROFILE=1 VOXFAST_KEEPCACHE=1 "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
     --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label profile \
     | tee "$OUT_DIR/profile.json"
+
+  echo "==> [fast-all] FR: accented text (delta integrity on the optimized engine)"
+  VOXFAST_ROPE=1 VOXFAST_ASYNC=1 VOXFAST_MASK=1 VOXFAST_HEAD=1 VOXFAST_FP16=1 VOXFAST_KEEPCACHE=1 \
+    "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/fr.wav" --expected "$OUT_DIR/fr.txt" \
+      --chunks "80" --delays "default" --label fr-fast \
+    | tee "$OUT_DIR/fr-fast.json"
+
+  echo "==> [fast-all] EN: transcription delay sweep (the knob the Python backend hardcodes at 480ms)"
+  VOXFAST_ROPE=1 VOXFAST_ASYNC=1 VOXFAST_MASK=1 VOXFAST_HEAD=1 VOXFAST_FP16=1 VOXFAST_KEEPCACHE=1 \
+    "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
+      --chunks "80" --delays "default,240,160,80" --label delays-fast \
+    | tee "$OUT_DIR/delays-fast.json"
 
   echo "==> done"
 }
