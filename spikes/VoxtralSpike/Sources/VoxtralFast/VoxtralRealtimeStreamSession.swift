@@ -197,8 +197,12 @@ public final class VoxtralRealtimeStreamSession {
         decCache = prefill.1
         decPos = promptLength
         prefilled = true
-        pendingToken = model.sampleArray(logits: lastLogits!, temperature: temperature)
-        MLX.asyncEval(pendingToken!)
+        if FastFlags.asyncDecode {
+            pendingToken = model.sampleArray(logits: lastLogits!, temperature: temperature)
+            MLX.asyncEval(pendingToken!)
+        } else {
+            MLX.eval(lastLogits!)
+        }
     }
 
     private func decode(adapter: MLXArray, upTo emitLimit: Int) -> Delta {
@@ -211,6 +215,29 @@ public final class VoxtralRealtimeStreamSession {
         // work is already done. The original blocked on `MLX.eval(lastLogits)` every
         // single token, serialising CPU and GPU once per decoded token.
         while decPos < emitLimit {
+            guard FastFlags.asyncDecode else {
+                // Upstream loop: blocking eval + `.item()` sample at the top of every step.
+                guard let logits = lastLogits else { break }
+                let token = model.sample(logits: logits, temperature: temperature)
+                generated.append(token)
+                if token == model.config.eosTokenId || generated.count > maxTokens {
+                    done = true
+                    if generated.last == model.config.eosTokenId { generated.removeLast() }
+                    break
+                }
+                newIds.append(token)
+                let tokenEmbed = model.decoder.embedToken(tokenId: token)
+                let inputEmbed = decPos < adapter.shape[0]
+                    ? adapter[decPos] + tokenEmbed
+                    : tokenEmbed
+                let next = model.decoder(
+                    inputEmbed.expandedDimensions(axis: 0), startPos: decPos, cache: decCache)
+                decCache = next.1
+                lastLogits = model.decoder.logits(next.0[0])
+                decPos += 1
+                MLX.eval(lastLogits!)
+                continue
+            }
             guard let y = pendingToken else { break }
             let token = y.item(Int.self)
             generated.append(token)

@@ -157,8 +157,15 @@ final class VoxtralRealtimeEncoderAttention: Module {
         var k = wk(x)
         var v = wv(x)
 
-        q = voxtralFusedRoPE(q, nHeads: nHeads, headDim: headDim, theta: ropeTheta, offset: queryStart)
-        k = voxtralFusedRoPE(k, nHeads: nHeads, headDim: headDim, theta: ropeTheta, offset: queryStart)
+        if FastFlags.fusedRoPE {
+            q = voxtralFusedRoPE(q, nHeads: nHeads, headDim: headDim, theta: ropeTheta, offset: queryStart)
+            k = voxtralFusedRoPE(k, nHeads: nHeads, headDim: headDim, theta: ropeTheta, offset: queryStart)
+        } else {
+            let (cos, sin) = voxtralComputeRopeFrequencies(
+                positions: positions, headDim: headDim, theta: ropeTheta)
+            q = voxtralApplyInterleavedRoPE(q, cos: cos, sin: sin, nHeads: nHeads, headDim: headDim)
+            k = voxtralApplyInterleavedRoPE(k, cos: cos, sin: sin, nHeads: nHeads, headDim: headDim)
+        }
 
         var positionOffset = cache?.positionOffset ?? 0
         if let cache {
@@ -196,7 +203,8 @@ final class VoxtralRealtimeEncoderAttention: Module {
             let causal = kPos .<= qPos
             let window = kPos .>= (qPos - MLXArray(Int32(slidingWindow - 1)))
             let allowed = logicalAnd(causal, window)
-            let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9)).asType(q.dtype)
+            var mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9))
+            if FastFlags.maskDtype { mask = mask.asType(q.dtype) }
             maskMode = .array(mask)
         }
 

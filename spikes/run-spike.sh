@@ -83,27 +83,34 @@ do_run() {
     echo "==> WARNING: no on-demand voxmlx — Swift RTF will have no baseline to compare against"
   fi
 
-  # A/B, one engine per process (never two 4B models resident at once):
-  #   stock = upstream mlx-audio-swift            fast = vendored + optimized
-  # The Python baseline rides along in BOTH runs — it is the normalizer for whatever
-  # GPU contention the owner's app is causing at that moment (it swung 0.61→0.76 between
-  # runs), so stock-vs-fast is only meaningful relative to it.
-  for eng in stock fast; do
-    echo "==> [$eng] EN: chunk sweep, model $MODEL_REPO"
-    "$BIN" --engine "$eng" --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
-      --chunks "80,240,480" --delays "default" --label "en-chunks-$eng" "${WS_ARGS[@]}" \
-      | tee "$OUT_DIR/en-chunks-$eng.json"
+  # Fused RoPE must reproduce the manual RoPE it replaces — check that numerically
+  # BEFORE trusting any transcript from the optimized engine.
+  echo "==> RoPE self-test"
+  "$BIN" --selftest 1 --wav "$OUT_DIR/en.wav" || echo "!! RoPE MISMATCH — fused path is wrong"
 
-    echo "==> [$eng] FR: accented text (delta-integrity smoke)"
-    "$BIN" --engine "$eng" --repo "$MODEL_REPO" --wav "$OUT_DIR/fr.wav" --expected "$OUT_DIR/fr.txt" \
-      --chunks "80" --delays "default" --label "fr-$eng" \
-      | tee "$OUT_DIR/fr-$eng.json"
-  done
+  # Bisect: the all-on optimized engine scored word-accuracy 0.000 while stock scored
+  # 0.804 on the same audio in the same run. Each optimization is individually switchable,
+  # so this isolates which one breaks correctness — and what each is worth on its own.
+  #   fast-none = vendored with everything OFF; MUST match stock, proving the vendoring itself
+  #               is faithful and the fault is in one of the three changes.
+  run_cfg() {  # name rope async mask [extra args...]
+    local name="$1" rope="$2" async="$3" mask="$4"; shift 4
+    echo "==> [$name] EN (rope=$rope async=$async mask=$mask)"
+    VOXFAST_ROPE="$rope" VOXFAST_ASYNC="$async" VOXFAST_MASK="$mask" \
+      "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
+        --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label "$name" "$@" \
+      | tee "$OUT_DIR/$name.json"
+  }
 
-  echo "==> [fast] EN: delay sweep at 80 ms chunks"
-  "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
-    --chunks "80" --delays "default,240,160,80" --label en-delays-fast \
-    | tee "$OUT_DIR/en-delays-fast.json"
+  echo "==> [stock] EN"
+  "$BIN" --engine stock --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" --expected "$OUT_DIR/en.txt" \
+    --chunks "80" --delays "default" --label stock "${WS_ARGS[@]}" \
+    | tee "$OUT_DIR/stock.json"
+
+  run_cfg fast-none  0 0 0
+  run_cfg fast-rope  1 0 0
+  run_cfg fast-async 0 1 0
+  run_cfg fast-all   1 1 1 "${WS_ARGS[@]}"
 
   echo "==> done"
 }

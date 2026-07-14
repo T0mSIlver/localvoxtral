@@ -235,6 +235,19 @@ if let ws = arg("ws") {
     }
 }
 
+// Numeric equivalence check for the fused RoPE against the manual one it replaces.
+// Runs before any model work so a layout/convention error is caught on its own terms
+// instead of showing up as a mysteriously empty transcript.
+if arg("selftest") != nil {
+    let diffs = voxtralRoPESelfTest()
+    let worst = diffs.values.max() ?? 0
+    print(
+        "rope-selftest \(diffs.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))"
+    )
+    print("rope-selftest worst=\(worst) verdict=\(worst < 1e-2 ? "MATCH" : "MISMATCH")")
+    exit(worst < 1e-2 ? 0 : 3)
+}
+
 // One engine per process: the stock upstream engine, or the vendored+optimized one.
 // Never both — two 4B models resident would distort the measurement (and may get the
 // process jetsam'd while the owner's app holds two more).
@@ -339,6 +352,7 @@ for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
             (Double(round(stepMs[$0] * 10)) / 10)
         },
         "engine": "swift-\(engineName)",
+        "fast_flags": FastFlags.description,
     ])
     FileHandle.standardError.write("  delay=\(spec) done\n".data(using: .utf8)!)
 }
