@@ -322,8 +322,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     /// drift or corpus-decoding drift cannot leave the operator workflow
     /// broken while app tests pass. This path intentionally needs no ffmpeg.
     func testHumanRecorderScriptCompilesAndListsEverySpeechCase() throws {
-        let outputDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lv-recorder-smoke-\(UUID().uuidString)", isDirectory: true)
+        let outputDirectory = recorderOutputDirectory(label: "smoke")
         addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
         let run = try runRecorder(
             ["--list", "--output", outputDirectory.path]
@@ -354,8 +353,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
     /// of accepted human speech. Older manifests are journaled on first run;
     /// subsequent runs reconstruct the manifest from that durable journal.
     func testHumanRecorderRecoveryJournalRebuildsCorruptManifest() throws {
-        let outputDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lv-recorder-recovery-\(UUID().uuidString)", isDirectory: true)
+        let outputDirectory = recorderOutputDirectory(label: "recovery")
         try FileManager.default.createDirectory(
             at: outputDirectory, withIntermediateDirectories: true
         )
@@ -453,6 +451,47 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(run.output.contains("Return\naccepts a take"), run.output)
     }
 
+    func testHumanRecorderListCannotWriteOutsideGitignoredRecordings() throws {
+        let outputDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-recorder-outside-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: outputDirectory) }
+        let run = try runRecorder(["--list", "--output", outputDirectory.path])
+        XCTAssertNotEqual(run.status, 0, run.output)
+        XCTAssertTrue(run.output.contains("recording output must stay under"), run.output)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outputDirectory.path))
+    }
+
+    func testRecordingSubsetStillRunsEveryAudioIndependentCase() throws {
+        let strata = try AgentDictationEvalCorpus.loadStrata()
+        let speechCase = try XCTUnwrap(
+            strata.first {
+                Support.stagePlan(for: $0.stratum.resolvedPipeline).runsSpeechRecognition
+            }?.stratum.cases.first
+        )
+        let selected = try XCTUnwrap(
+            Support.selectedCaseIDs(
+                strata: strata, recordedCaseIDs: [speechCase.id], isSubset: true
+            )
+        )
+        XCTAssertTrue(selected.contains(speechCase.id))
+        for loaded in strata
+        where !Support.stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+        {
+            XCTAssertTrue(Set(loaded.stratum.cases.map(\.id)).isSubset(of: selected))
+        }
+        let requiredCaseIDs = Set(
+            strata.flatMap(\.stratum.cases)
+                .filter { $0.status.values.contains(.required) }
+                .map(\.id)
+        )
+        XCTAssertTrue(requiredCaseIDs.isSubset(of: selected))
+        XCTAssertNil(
+            Support.selectedCaseIDs(
+                strata: strata, recordedCaseIDs: [speechCase.id], isSubset: false
+            )
+        )
+    }
+
     func testHumanEvalHTMLReportShowsAudioAndPipelineStages() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lv-agent-html-\(UUID().uuidString)", isDirectory: true)
@@ -473,10 +512,12 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         build noise
         \(Support.reportBeginSentinel)
         {"asrModel":"asr-model","audioSource":"human-recorded/owner","polishModel":"polish-model","systemPrompts":[]}
-        {"caseID":"r-en-report","exactTextFailures":["expected truth"],"guardOffOutput":"Open wrong.","guardOffTokensFailures":["missing token"],"intendedText":"Open <truth>.","lang":"en","output":"Open wrong.","pipeline":"full","polishInputText":"open wrong","rawModelOutput":"Open wrTest Case '-[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard]' passed (12.3 seconds).
+        {"caseID":"unrecoverable"
+        {"caseID":"r-en-report","exactTextFailures":["expected truth"],"guardOffOutput":"Open wrong.","guardOffTokensFailures":["missing token"],"intendedText":"Open <truth>.","lang":"en","output":"Open wrong.","pipeline":"full","polishInputText":"open wrong","rawModelOutput":"Fetch https://api.example.com/v2/users and cat /tmp/log, then open wr/Users/owner/localvoxtral/Tests/localvoxtralTests/AgentDictationE2EEvalTests.swift:275: error: -[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard] : failed - infra error on r-en-report
+        Test Case '-[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard]' passed (12.3 seconds).
         Test Suite 'AgentDictationE2EEvalTests' passed at 2026-07-14 10:00:00.000.
         \t Executed 1 test, with 0 failures in 12.3 seconds
-        ong.","requiredTokens":["truth"],"rewriteIsFatal":false,"spokenForm":"open less than unsafe","statusByMetric":{"exactText":"known-hard","tokens":"known-hard"},"stratum":"filenames-backticks","tokensFailures":["missing truth"],"transcript":"open <unsafe>","wordAccuracyVsIntended":0.5}
+        ong.","requiredTokens":["truth"],"rewriteFailure":"word accuracy vs input 0.20 < 0.8 (rewrote the text)","rewriteIsFatal":false,"spokenForm":"open less than unsafe","statusByMetric":{"exactText":"known-hard","tokens":"known-hard"},"stratum":"filenames-backticks","tokensFailures":["missing truth"],"transcript":"open <unsafe>","wordAccuracyVsIntended":0.5}
         {"caseID":"r-en-asr","intendedText":"Tests fail on main.","lang":"en","output":"Tests fail on me.","pipeline":"asr-only","requiredTokens":["tests"],"spokenForm":"tests fail on main","statusByMetric":{"tokens":"known-hard"},"stratum":"plain-asr-baseline","tokensFailures":[],"transcript":"Tests fail on me.","wordAccuracyVsIntended":0.75}
         \(Support.reportEndSentinel)
         trailing test output
@@ -486,6 +527,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
 
         let run = try runReportRenderer([logURL.path, directory.path])
         XCTAssertEqual(run.status, 0, run.output)
+        XCTAssertTrue(run.output.contains("skipped 1 malformed/interleaved report value"))
         let html = try String(
             contentsOf: directory.appendingPathComponent("eval-report.html"), encoding: .utf8
         )
@@ -495,11 +537,67 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(html.contains("Final shown to user"), html)
         XCTAssertTrue(html.contains("Ground truth"), html)
         XCTAssertTrue(html.contains("ASR unrecovered"), html)
+        XCTAssertTrue(html.contains(">rewrite<"), html)
         XCTAssertTrue(html.contains("ASR mismatch: 1"), html)
         XCTAssertTrue(html.contains("Open wrong."), html)
+        XCTAssertTrue(html.contains("https://api.example.com/v2/users"), html)
+        XCTAssertTrue(html.contains("cat /tmp/log"), html)
         XCTAssertFalse(html.contains("Test Suite &#39;AgentDictation"), html)
         XCTAssertTrue(html.contains("open &lt;unsafe&gt;"), html)
         XCTAssertFalse(html.contains("open <unsafe>"), html)
+
+        let ablationHTML = directory.appendingPathComponent("ablation.html")
+        let ablation = try runAblation([
+            logURL.path,
+            "--render-only",
+            "--results", directory.appendingPathComponent("results.jsonl").path,
+            "--html", ablationHTML.path,
+        ])
+        XCTAssertEqual(ablation.status, 0, ablation.output)
+        XCTAssertTrue(ablation.output.contains("00 raw ASR: n=2"), ablation.output)
+        let ablationPage = try String(contentsOf: ablationHTML, encoding: .utf8)
+        XCTAssertTrue(ablationPage.contains("r-en-report"), ablationPage)
+        XCTAssertTrue(ablationPage.contains("r-en-asr"), ablationPage)
+
+        let duplicateManifest = manifest.replacingOccurrences(
+            of: "]}",
+            with: ",{\"id\":\"r-en-report\",\"lang\":\"en\","
+                + "\"spokenForm\":\"duplicate\",\"file\":\"other.wav\","
+                + "\"sha256\":\"\(String(repeating: "2", count: 64))\"}]}"
+        )
+        try duplicateManifest.write(
+            to: directory.appendingPathComponent("manifest.json"),
+            atomically: true, encoding: .utf8
+        )
+        let duplicateRun = try runReportRenderer([logURL.path, directory.path])
+        XCTAssertNotEqual(duplicateRun.status, 0)
+        XCTAssertTrue(duplicateRun.output.contains("duplicate id: r-en-report"))
+    }
+
+    func testAblationCacheHashIncludesEndpointAndProductionRequestShape() throws {
+        let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
+        let snippet = #"""
+        import importlib.util, sys
+        spec = importlib.util.spec_from_file_location("agent_ablation", sys.argv[1])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        messages = [{"role": "user", "content": "hello"}]
+        left = module.experiment_hash("http://one/v1", "model", "variant", messages)
+        right = module.experiment_hash("http://two/v1", "model", "variant", messages)
+        assert left != right
+        payload = module.request_payload("model", messages)
+        assert payload["temperature"] == 0.0
+        assert payload["top_k"] == 0
+        assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+        experiment = module.Experiment("case", "model", "variant", messages, left)
+        filtered = module.current_results(
+            {left: {"output": "current"}, right: {"output": "stale"}}, [experiment]
+        )
+        assert list(filtered) == [left]
+        """#
+        let run = try runPython(["-c", snippet, script.path])
+        XCTAssertEqual(run.status, 0, run.output)
     }
 
     private func runRecorder(_ arguments: [String]) throws -> (status: Int32, output: String) {
@@ -522,6 +620,17 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         )
     }
 
+    private func recorderOutputDirectory(label: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("EvalRecordings/agent-dictation", isDirectory: true)
+            .appendingPathComponent(
+                ".tests-\(label)-\(UUID().uuidString)", isDirectory: true
+            )
+    }
+
     private func runReportRenderer(_ arguments: [String]) throws -> (status: Int32, output: String) {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -532,6 +641,51 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")
         process.arguments = [script.path] + arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
+    }
+
+    private func runAblation(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3", script.path] + arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
+    }
+
+    private var repoRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+    }
+
+    private func runPython(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["python3"] + arguments
+        process.environment = ProcessInfo.processInfo.environment.merging(
+            ["PYTHONDONTWRITEBYTECODE": "1"], uniquingKeysWith: { _, testValue in testValue }
+        )
         process.standardOutput = output
         process.standardError = output
         try process.run()
@@ -1016,6 +1170,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         )
         var result = makeResult(caseID: "r-en-report")
         result.output = "Open `useAuth.ts`."
+        result.rewriteFailure = "word accuracy vs input 0.20 < 0.8 (rewrote the text)"
+        result.rewriteIsFatal = false
         result.wordAccuracyVsIntended = 1.0
         var capture = Support.CaseCapture()
         capture.transcript = "open use auth dot t s"
@@ -1060,6 +1216,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(decoded.userPrompts, ["user prompt with\nnewline"])
         XCTAssertEqual(decoded.rawModelOutput, "Open `useAuth.ts`.")
         XCTAssertEqual(decoded.output, "Open `useAuth.ts`.")
+        XCTAssertEqual(decoded.rewriteFailure, result.rewriteFailure)
+        XCTAssertEqual(decoded.rewriteIsFatal, false)
         XCTAssertEqual(decoded.wordAccuracyVsIntended, 1.0)
     }
 }

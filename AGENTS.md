@@ -225,15 +225,18 @@ unless intentionally replacing accepted audio. The complete operator guide and
 data-safety details live in `EvalCorpus/agent-dictation/README.md`.
 
 While the set is incomplete, run `scripts/run-agent-eval-local.sh --subset ...`;
-after it reaches 146/146, omit `--subset` for the strict baseline. The run writes
+this selects recorded speech rows but still runs every polish-only required
+case. After it reaches 146/146, omit `--subset` for the strict baseline. The run writes
 `.build/agent-eval-local.log` and opens the per-case HTML report beside the WAVs.
 Use `scripts/ablate-agent-eval.py` on that log to compare stages/prompts/models
 without transcribing again. Ablation responses append immediately to a resumable
-JSONL file and its aggregate score is Markdown-neutral. Keep comparisons paired
-on the same case IDs and preserve the explicit Qwen sampling parameters. XCTest
+JSONL file and its aggregate score is Markdown-neutral. Cache identity includes
+the endpoint and complete request payload. Keep comparisons paired on the same
+case IDs and preserve the explicit Qwen sampling parameters. XCTest
 can occasionally splice a status line into the sentinel-delimited JSONL report;
-the offline tools warn and skip only the damaged record, so note the resulting
-denominator (or rerun) rather than silently treating it as a model failure.
+the offline tools recover known XCTest diagnostics and warn only if an unknown
+corruption still forces a record to be skipped. Note any resulting denominator
+rather than silently treating it as a model failure.
 
 ## CI / shipping
 

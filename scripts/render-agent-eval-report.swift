@@ -121,6 +121,7 @@ private func decodeReport(at logURL: URL) throws -> (ReportHeader, [CaseRecord])
     // the start of the case record we need to preserve.
     var payload = lines[(begin + 1)..<end].joined(separator: "\n") + "\n"
     let noisePatterns = [
+        #"/(?:Users|home|private|Volumes|tmp)/(?:(?!/(?:Users|home|private|Volumes|tmp)/)[^\"\n])*/Tests/localvoxtralTests/AgentDictationE2EEvalTests\.swift:\d+: error: -\[localvoxtralTests\.AgentDictationE2EEvalTests [^\n]*\n"#,
         #"Test Case '-\[[^\n]*\n"#,
         #"Test Suite '[^\n]*\n"#,
         #"[ \t]*Executed [^\n]*\n"#,
@@ -133,15 +134,29 @@ private func decodeReport(at logURL: URL) throws -> (ReportHeader, [CaseRecord])
 
     var values: [String] = []
     var pending = ""
+    var malformed = 0
     for fragment in payload.components(separatedBy: .newlines) where !fragment.isEmpty {
+        if pending.isEmpty, !fragment.hasPrefix("{") { continue }
+        if !pending.isEmpty, fragment.hasPrefix("{") {
+            malformed += 1
+            pending = ""
+        }
         pending += fragment
         if (try? JSONSerialization.jsonObject(with: Data(pending.utf8))) != nil {
             values.append(pending)
             pending = ""
         }
     }
-    guard pending.isEmpty else {
-        throw ReportError.message("inspection report ends with an incomplete JSON record")
+    if !pending.isEmpty {
+        malformed += 1
+    }
+    if malformed > 0 {
+        FileHandle.standardError.write(
+            Data(
+                "render-agent-eval-report: warning: skipped \(malformed) malformed/interleaved report value(s)\n"
+                    .utf8
+            )
+        )
     }
     guard values.count >= 2 else {
         throw ReportError.message("inspection report contains no cases")
@@ -161,7 +176,13 @@ private func loadAudioFiles(from directory: URL?) throws -> [String: String] {
     let manifest = try JSONDecoder().decode(
         Manifest.self, from: Data(contentsOf: manifestURL)
     )
-    return Dictionary(uniqueKeysWithValues: manifest.recordings.map { ($0.id, $0.file) })
+    var files: [String: String] = [:]
+    for recording in manifest.recordings {
+        guard files.updateValue(recording.file, forKey: recording.id) == nil else {
+            throw ReportError.message("recording manifest contains duplicate id: \(recording.id)")
+        }
+    }
+    return files
 }
 
 private let wordRegex = try! NSRegularExpression(pattern: "[\\p{L}\\p{N}]+")
@@ -199,7 +220,8 @@ private func wordAccuracy(expected: String, actual: String) -> Double {
 private func classify(_ record: CaseRecord) -> ClassifiedRecord {
     let finalTokenFailure = !record.tokensFailures.isEmpty
     let exactFailure = !(record.exactTextFailures ?? []).isEmpty
-    let fatalRewrite = record.rewriteIsFatal == true && record.rewriteFailure != nil
+    let rewrite = record.rewriteFailure != nil
+    let fatalRewrite = record.rewriteIsFatal == true && rewrite
     let infra = record.infraFailure != nil || record.skipReason != nil
     let transcriptAccuracy = record.transcript.map {
         wordAccuracy(expected: record.spokenForm, actual: $0)
@@ -226,7 +248,7 @@ private func classify(_ record: CaseRecord) -> ClassifiedRecord {
     if guardLoss { tags.append("guard loss") }
     if guardSave { tags.append("guard save") }
     if exactFailure { tags.append("exact mismatch") }
-    if fatalRewrite { tags.append("rewrite") }
+    if rewrite { tags.append("rewrite") }
     if tags.isEmpty { tags.append("pass") }
 
     let issue = infra || finalFailure || asrMismatch

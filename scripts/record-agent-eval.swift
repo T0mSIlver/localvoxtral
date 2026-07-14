@@ -387,6 +387,22 @@ func play(_ url: URL) {
     process.waitUntilExit()
 }
 
+func makeErrorCapture(near destination: URL) throws -> (url: URL, handle: FileHandle) {
+    let url = destination.deletingLastPathComponent().appendingPathComponent(
+        ".ffmpeg-errors-\(UUID().uuidString).log"
+    )
+    guard fileManager.createFile(atPath: url.path, contents: nil) else {
+        throw HarnessError.message("could not create temporary ffmpeg error log")
+    }
+    return (url, try FileHandle(forWritingTo: url))
+}
+
+func readCapturedErrors(_ capture: (url: URL, handle: FileHandle)) -> String {
+    try? capture.handle.close()
+    guard let data = try? Data(contentsOf: capture.url) else { return "" }
+    return String(decoding: data, as: UTF8.self)
+}
+
 /// Convert only after capture has stopped. Capturing and resampling in the
 /// same real-time ffmpeg graph produced audible crackles on the owner Mac,
 /// while native-rate recordings from Photo Booth were clean. Keeping the
@@ -396,7 +412,11 @@ func play(_ url: URL) {
 func normalizeCapturedTake(ffmpeg: String, source: URL, destination: URL) throws {
     try? fileManager.removeItem(at: destination)
     let process = Process()
-    let errors = Pipe()
+    let errors = try makeErrorCapture(near: destination)
+    defer {
+        try? errors.handle.close()
+        try? fileManager.removeItem(at: errors.url)
+    }
     process.executableURL = URL(fileURLWithPath: ffmpeg)
     process.arguments = [
         "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -407,13 +427,11 @@ func normalizeCapturedTake(ffmpeg: String, source: URL, destination: URL) throws
         destination.path,
     ]
     process.standardOutput = FileHandle.nullDevice
-    process.standardError = errors
+    process.standardError = errors.handle
     try process.run()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
-        let detail = String(
-            decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self
-        )
+        let detail = readCapturedErrors(errors)
         throw HarnessError.message("ffmpeg could not normalize the take: \(detail)")
     }
 }
@@ -481,7 +499,11 @@ func recordFFmpegMicrophone(
 ) throws {
     try? fileManager.removeItem(at: destination)
     let process = Process()
-    let errors = Pipe()
+    let errors = try makeErrorCapture(near: destination)
+    defer {
+        try? errors.handle.close()
+        try? fileManager.removeItem(at: errors.url)
+    }
     process.executableURL = URL(fileURLWithPath: ffmpeg)
     process.arguments = [
         "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
@@ -490,11 +512,11 @@ func recordFFmpegMicrophone(
         "-map", "0:a:0", "-c:a", "pcm_s16le", destination.path,
     ]
     process.standardOutput = FileHandle.nullDevice
-    process.standardError = errors
+    process.standardError = errors.handle
     try process.run()
     Thread.sleep(forTimeInterval: 0.4)
     guard process.isRunning else {
-        let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let detail = readCapturedErrors(errors)
         throw HarnessError.message("ffmpeg could not open microphone index \(device): \(detail)")
     }
     print("● Recording — speak the phrase, then press Return to stop.")
@@ -502,7 +524,7 @@ func recordFFmpegMicrophone(
     process.interrupt()
     process.waitUntilExit()
     guard fileManager.fileExists(atPath: destination.path) else {
-        let detail = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let detail = readCapturedErrors(errors)
         throw HarnessError.message("ffmpeg did not produce an audio file: \(detail)")
     }
 }
@@ -560,9 +582,7 @@ do {
         .appendingPathComponent("EvalRecordings/agent-dictation", isDirectory: true)
         .standardizedFileURL
     let standardizedOutput = outputDirectory.standardizedFileURL
-    if !options.listOnly,
-        !standardizedOutput.path.hasPrefix(recordingsRoot.path + "/")
-    {
+    if !standardizedOutput.path.hasPrefix(recordingsRoot.path + "/") {
         throw HarnessError.message(
             "recording output must stay under \(recordingsRoot.path) so voice data remains gitignored"
         )
@@ -571,7 +591,12 @@ do {
     let manifestURL = outputDirectory.appendingPathComponent("manifest.json")
     let journalURL = outputDirectory.appendingPathComponent(recoveryJournalFileName)
     let loadedManifest = loadManifest(at: manifestURL)
-    let casesByID = Dictionary(uniqueKeysWithValues: allCases.map { ($0.id, $0) })
+    var casesByID: [String: CorpusCase] = [:]
+    for item in allCases {
+        guard casesByID.updateValue(item, forKey: item.id) == nil else {
+            throw HarnessError.message("corpus contains duplicate case id: \(item.id)")
+        }
+    }
     var entries: [String: Recording] = [:]
     var manifestIDs = Set<String>()
     for recording in loadedManifest.recordings {
@@ -609,6 +634,8 @@ do {
     for file in (try? fileManager.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil)) ?? []
     where file.lastPathComponent.hasSuffix(".tmp.wav")
         || file.lastPathComponent.hasSuffix(".tmp.caf")
+        || (file.lastPathComponent.hasPrefix(".ffmpeg-errors-")
+            && file.pathExtension == "log")
     {
         try? fileManager.removeItem(at: file)
     }
@@ -692,7 +719,7 @@ do {
                     print("Accepted \(item.id); progress saved.")
                     break takeLoop
                 case "r": break reviewLoop
-                case "p": play(nativeTemporary)
+                case "p": play(temporary)
                 case "s": break takeLoop
                 case "q":
                     try? fileManager.removeItem(at: temporary)

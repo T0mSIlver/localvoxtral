@@ -44,21 +44,22 @@ Settings → Privacy & Security → Microphone if needed. Digitally silent takes
 are rejected, and unusually quiet takes produce a warning.
 Press Return to record and Return again to stop. Playback is not automatic:
 at review, Return accepts immediately; `p`, `r`, `s`, and `q` play the
-native-rate take, re-record, skip, or quit. The default microphone records
+normalized WAV that the eval will score, re-record, skip, or quit. The default microphone records
 through macOS's native audio recorder, then converts offline to the eval's
 16 kHz mono format; explicit numeric device indexes retain the ffmpeg capture
 fallback. Running the same command again resumes the set; `--lang en`,
 `--case <id>`, `--redo`, and `--list` are available for focused passes.
 
 An in-progress set can be scored without waiting for 146/146. This mode runs
-only IDs with accepted human recordings and never fills gaps with TTS. An
+speech-driven IDs with accepted human recordings plus every audio-independent
+polish-only case (including the required checks), and never fills gaps with TTS. An
 external OpenAI-compatible server can replace the bundled helper while the
 request retains production's deterministic Qwen 4B sampling and
 `enable_thinking=false` template argument:
 
 ```bash
 ./scripts/run-agent-eval-local.sh --subset \
-  --polish-endpoint http://192.168.1.183:8080/v1/chat/completions \
+  --polish-endpoint http://127.0.0.1:8080/v1/chat/completions \
   --polish-model qwen35-4b \
   EvalRecordings/agent-dictation/owner
 ```
@@ -89,8 +90,9 @@ output, alternate prompts, and alternate models:
 
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
-inference. Rerunning the same command resumes by model, variant, prompt-content
-hash. The runner explicitly sends the production Qwen sampling shape
+inference. Rerunning the same command resumes by endpoint, model, variant, and
+the complete request payload hash. Stale entries may remain in the append-only
+JSONL but are excluded from the current report. The runner explicitly sends the production Qwen sampling shape
 (`temperature=0`, `top_p=1`, `top_k=0`, `min_p=0`, presence penalty 0, thinking
 off); preserve it when adding variants. The generated
 `.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
@@ -98,15 +100,18 @@ scoring is Markdown-neutral: backticks, headings, and list markers remain
 visible and are not treated as transcript errors. Compare stages over the same
 case IDs—the source log may contain ASR-only cases that have no historical
 production-polish row. XCTest can rarely interleave a suite-status line into one
-JSONL record; the offline parser warns and skips that record, so report the
-reduced denominator or rerun the E2E suite.
+JSONL record; the offline parsers remove known XCTest diagnostics and reassemble
+the split JSON value. They warn and skip a value only when an unknown form of
+corruption remains, so report any reduced denominator rather than treating it as
+a model failure.
 
 Accepted takes and `manifest.json` live under the gitignored, voice-private
 `EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the
 exact case ID, language, spoken phrase, file name, and SHA-256. By default,
 recorded mode is deliberately strict: the eval rejects an incomplete, stale,
 modified, or wrong-format set before loading either model. The explicit subset
-mode skips missing IDs and never fills gaps with TTS.
+mode skips missing speech IDs, still runs audio-independent cases, and never
+fills gaps with TTS.
 Each acceptance is also flushed to an append-only recovery journal before its
 WAV is atomically installed. Restarting the recorder rebuilds a missing or
 corrupt manifest and finishes an interrupted save; already accepted takes do
@@ -124,7 +129,9 @@ captured. If the recording set instead lives in the source checkout that drives
 the SSH build loop, the equivalent commands are `remote-build.sh package` and
 `remote-build.sh eval-e2e EvalRecordings/agent-dictation/owner`; rsync copies
 the set into the private Mac's per-worktree build directory and keeps it there
-for fast reruns. The files are never committed. Delete a local set when it is
+for fast reruns. Remote sync cleanup explicitly protects `EvalRecordings/`, so
+a Mac-only set is not deleted when the source checkout has no copy. The files
+are never committed. Delete a local set when it is
 no longer needed. Running either eval launcher without a recording argument
 retains the repeatable `say`-based nightly baseline.
 

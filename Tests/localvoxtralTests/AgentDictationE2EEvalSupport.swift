@@ -369,6 +369,24 @@ enum AgentDictationE2EEvalSupport {
         }
     }
 
+    /// A partial human recording set limits only speech-driven rows. Cases
+    /// that do not need audio (notably all polish-only required checks) still
+    /// run, so an exploratory subset cannot report green by omitting them.
+    static func selectedCaseIDs(
+        strata: [AgentDictationEvalCorpus.LoadedStratum],
+        recordedCaseIDs: Set<String>,
+        isSubset: Bool
+    ) -> Set<String>? {
+        guard isSubset else { return nil }
+        var selected = recordedCaseIDs
+        for loaded in strata
+        where !stagePlan(for: loaded.stratum.resolvedPipeline).runsSpeechRecognition
+        {
+            selected.formUnion(loaded.stratum.cases.map(\.id))
+        }
+        return selected
+    }
+
     // MARK: - Polish-profile routing
 
     /// A terminal-like bundle ID on the built-in allowlist — the production
@@ -530,6 +548,11 @@ enum AgentDictationE2EEvalSupport {
         var exactTextFailures: [String]?
         /// nil when no polish ran (asr-only) or no raw output was captured.
         var guardOffTokensFailures: [String]?
+        /// Anti-rewrite failure kept separate from token preservation so the
+        /// inspection report can classify model rewrites directly.
+        var rewriteFailure: String?
+        /// True when the rewrite failure contributes to a required metric.
+        var rewriteIsFatal: Bool?
         /// Informational: word accuracy of the final output vs intendedText.
         var wordAccuracyVsIntended: Double?
         var output: String
@@ -545,6 +568,8 @@ enum AgentDictationE2EEvalSupport {
             tokensFailures: [String] = [],
             exactTextFailures: [String]? = nil,
             guardOffTokensFailures: [String]? = nil,
+            rewriteFailure: String? = nil,
+            rewriteIsFatal: Bool? = nil,
             wordAccuracyVsIntended: Double? = nil,
             output: String = ""
         ) {
@@ -558,6 +583,8 @@ enum AgentDictationE2EEvalSupport {
             self.tokensFailures = tokensFailures
             self.exactTextFailures = exactTextFailures
             self.guardOffTokensFailures = guardOffTokensFailures
+            self.rewriteFailure = rewriteFailure
+            self.rewriteIsFatal = rewriteIsFatal
             self.wordAccuracyVsIntended = wordAccuracyVsIntended
             self.output = output
         }
@@ -834,6 +861,8 @@ enum AgentDictationE2EEvalSupport {
         let tokensFailures: [String]
         let exactTextFailures: [String]?
         let guardOffTokensFailures: [String]?
+        let rewriteFailure: String?
+        let rewriteIsFatal: Bool?
         let wordAccuracyVsIntended: Double?
     }
 
@@ -865,6 +894,8 @@ enum AgentDictationE2EEvalSupport {
             tokensFailures: result.tokensFailures,
             exactTextFailures: result.exactTextFailures,
             guardOffTokensFailures: result.guardOffTokensFailures,
+            rewriteFailure: result.rewriteFailure,
+            rewriteIsFatal: result.rewriteIsFatal,
             wordAccuracyVsIntended: result.wordAccuracyVsIntended
         )
     }

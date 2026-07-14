@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("log", type=Path, help="agent-eval-local.log or remote eval log")
     parser.add_argument(
         "--endpoint",
-        default="http://192.168.1.183:8080/v1/chat/completions",
+        default="http://127.0.0.1:8080/v1/chat/completions",
         help="OpenAI-compatible chat/completions endpoint",
     )
     parser.add_argument("--model", default="qwen35-4b", help="server model alias")
@@ -124,28 +124,53 @@ def parse_args() -> argparse.Namespace:
 
 def load_report(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    start = text.find(REPORT_BEGIN)
+    start = text.rfind(REPORT_BEGIN)
     end = text.find(REPORT_END, start + len(REPORT_BEGIN))
     if start < 0 or end < 0:
         raise ValueError(f"inspection report sentinels not found in {path}")
 
+    # XCTest writes assertion diagnostics directly to the same descriptor as
+    # the buffered report. On a failing run they can land in the middle of one
+    # long JSON value. Strip only XCTest's rigid diagnostic shapes, then join
+    # fragments until a complete JSON value parses. This mirrors the HTML
+    # renderer and preserves the case that exposed the infrastructure failure.
+    payload = text[start + len(REPORT_BEGIN) : end] + "\n"
+    noise_patterns = (
+        r"/(?:Users|home|private|Volumes|tmp)/(?:(?!/(?:Users|home|private|Volumes|tmp)/)[^\"\n])*/Tests/localvoxtralTests/AgentDictationE2EEvalTests\.swift:\d+: error: -\[localvoxtralTests\.AgentDictationE2EEvalTests [^\n]*\n",
+        r"Test Case '-\[[^\n]*\n",
+        r"Test Suite '[^\n]*\n",
+        r"[ \t]*Executed [^\n]*\n",
+    )
+    for pattern in noise_patterns:
+        payload = re.sub(pattern, "", payload)
+
     objects: list[dict[str, Any]] = []
+    pending = ""
     malformed = 0
-    for line in text[start + len(REPORT_BEGIN) : end].splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
+    for fragment in payload.splitlines():
+        fragment = fragment.strip()
+        if not fragment:
             continue
-        try:
-            objects.append(json.loads(line))
-        except json.JSONDecodeError:
-            # XCTest occasionally interleaves its own status line with stdout.
-            # A damaged record cannot be inferred safely; retain every other
-            # complete case and make the omission visible.
+        if not pending and not fragment.startswith("{"):
+            continue
+        if pending and fragment.startswith("{"):
+            # Unknown corruption made the previous value unrecoverable. Drop
+            # that value but resynchronize at the next intact JSON object so
+            # one bad case never consumes the rest of the report.
             malformed += 1
+            pending = ""
+        pending += fragment
+        try:
+            objects.append(json.loads(pending))
+            pending = ""
+        except json.JSONDecodeError:
+            continue
+    if pending:
+        malformed += 1
     if not objects or "systemPrompts" not in objects[0]:
         raise ValueError(f"valid inspection header not found in {path}")
     if malformed:
-        print(f"warning: skipped {malformed} malformed/interleaved report line(s)", file=sys.stderr)
+        print(f"warning: skipped {malformed} malformed/interleaved report value(s)", file=sys.stderr)
     return objects[0], [obj for obj in objects[1:] if "caseID" in obj]
 
 
@@ -213,8 +238,39 @@ def messages_for(
     ]
 
 
+def request_payload(model: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+    return {
+        "model": model,
+        "messages": messages,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "min_p": 0.0,
+        "presence_penalty": 0.0,
+        "max_tokens": 2048,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+def experiment_hash(
+    endpoint: str, model: str, variant: str, messages: list[dict[str, str]]
+) -> str:
+    canonical = json.dumps(
+        {
+            "endpoint": endpoint,
+            "variant": variant,
+            "payload": request_payload(model, messages),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def make_experiments(
-    records: list[dict[str, Any]], header: dict[str, Any], model: str, variants: list[str]
+    records: list[dict[str, Any]], header: dict[str, Any], endpoint: str,
+    model: str, variants: list[str]
 ) -> list[Experiment]:
     experiments: list[Experiment] = []
     fallback_request_record = next(
@@ -236,19 +292,13 @@ def make_experiments(
                 )
             except ValueError:
                 continue
-            canonical = json.dumps(
-                {"model": model, "variant": variant, "messages": messages},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
             experiments.append(
                 Experiment(
                     case_id=record["caseID"],
                     model=model,
                     variant=variant,
                     messages=messages,
-                    request_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+                    request_hash=experiment_hash(endpoint, model, variant, messages),
                 )
             )
     return experiments
@@ -268,22 +318,19 @@ def load_results(path: Path) -> dict[str, dict[str, Any]]:
     return results
 
 
+def current_results(
+    results: dict[str, dict[str, Any]], experiments: list[Experiment]
+) -> dict[str, dict[str, Any]]:
+    active_hashes = {experiment.request_hash for experiment in experiments}
+    return {key: value for key, value in results.items() if key in active_hashes}
+
+
 def request_experiment(
     experiment: Experiment, endpoint: str, timeout: float, retries: int
 ) -> dict[str, Any]:
     # Match the production Qwen request shape explicitly. Server preset defaults
     # must not silently change the ablation when another model is loaded.
-    payload = {
-        "model": experiment.model,
-        "messages": experiment.messages,
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "top_k": 0,
-        "min_p": 0.0,
-        "presence_penalty": 0.0,
-        "max_tokens": 2048,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }
+    payload = request_payload(experiment.model, experiment.messages)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     error: Exception | None = None
     started = time.monotonic()
@@ -527,9 +574,11 @@ def main() -> int:
     if args.max_cases is not None:
         records = records[: args.max_cases]
     existing = load_results(args.results)
+    experiments = make_experiments(
+        records, header, args.endpoint, args.model, variants
+    )
 
     if not args.render_only:
-        experiments = make_experiments(records, header, args.model, variants)
         pending = [item for item in experiments if item.request_hash not in existing]
         print(
             f"agent ablation: {len(records)} cases, {len(experiments)} experiments, "
@@ -556,7 +605,7 @@ def main() -> int:
                     flush=True,
                 )
 
-    rows = collect_rows(header, records, existing)
+    rows = collect_rows(header, records, current_results(existing, experiments))
     render_html(args.html, records, rows)
     print(f"report: {args.html}")
     print("\nStage summary (Markdown-neutral scoring):")

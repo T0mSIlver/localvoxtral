@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import XCTest
 
@@ -179,12 +180,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
 
         let vocabularyCache = RepoVocabularyCache()
-        let selectedCaseIDs: Set<String>?
-        if let recordedAudio, recordedAudio.isSubset {
-            selectedCaseIDs = Set(recordedAudio.pcmByCaseID.keys)
-        } else {
-            selectedCaseIDs = nil
-        }
+        let selectedCaseIDs = Support.selectedCaseIDs(
+            strata: strata,
+            recordedCaseIDs: Set(recordedAudio?.pcmByCaseID.keys.map { $0 } ?? []),
+            isSubset: recordedAudio?.isSubset == true
+        )
         let totalCases = strata.reduce(0) { total, loaded in
             total + loaded.stratum.cases.filter {
                 selectedCaseIDs?.contains($0.id) ?? true
@@ -261,6 +261,11 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 records: reports
             )
             print(report)
+            // `print` uses stdio buffering while XCTest writes assertion
+            // diagnostics to the same descriptor. Flush the complete report
+            // before any XCTFail below can splice its status line into a long
+            // JSON record (observed on the first 163-case human run).
+            fflush(stdout)
         } catch {
             print("agent-e2e: inspection report rendering failed: \(error)")
         }
@@ -379,6 +384,8 @@ final class AgentDictationE2EEvalTests: XCTestCase {
                 )
             {
                 result.tokensFailures.append(rewrite)
+                result.rewriteFailure = rewrite
+                result.rewriteIsFatal = evalCase.status.values.contains(.required)
             }
             if evalCase.status["exactText"] != nil {
                 result.exactTextFailures =

@@ -105,7 +105,10 @@ cleanup_transient_marker() {
   local marker="$1"
   rm -f "$marker"
   if [[ "$TREE_SYNCED" == "1" ]]; then
+    # A recording set may exist only in the remote Mac checkout. Protect it
+    # from --delete during marker cleanup just as in the main tree sync.
     rsync -az --delete \
+      --filter='P EvalRecordings/***' \
       --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
       "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
   fi
@@ -272,8 +275,8 @@ case "$CMD" in
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
     if [[ -n "$EVAL_MODEL" ]]; then
-      printf '{"endpoint": "%s", "model": "%s", "requestShapeModel": "%s"}\n' \
-        "$EVAL_ENDPOINT" "$EVAL_MODEL" "mlx-community/Qwen3.5-4B-OptiQ-4bit" \
+      printf '{"endpoint": "%s", "model": "%s", "useDefaultRequestShape": true}\n' \
+        "$EVAL_ENDPOINT" "$EVAL_MODEL" \
         >"$EVAL_MARKER"
     else
       printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
@@ -301,8 +304,10 @@ fi
 echo "==> Syncing working tree to $HOST:$DIR"
 ssh "$HOST" "mkdir -p $(printf '%q' "$DIR")"
 # .build/ and dist/ are excluded from deletion too, so the remote incremental
-# build state survives between runs.
+# build state survives between runs. EvalRecordings is receiver-protected:
+# private human WAVs may live only on the Mac and must survive a Linux sync.
 rsync -az --delete \
+  --filter='P EvalRecordings/***' \
   --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
   "$ROOT_DIR/" "$HOST:$DIR/"
 # From here on the marker (if any) exists remotely too; the EXIT trap's

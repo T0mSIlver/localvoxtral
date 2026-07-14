@@ -41,6 +41,7 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         let endpoint: String?
         let model: String?
         let requestShapeModel: String?
+        let useDefaultRequestShape: Bool?
         let apiKey: String?
     }
 
@@ -49,6 +50,7 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         var endpointString: String?
         var model: String?
         var requestShapeModel: String?
+        var useDefaultRequestShape = false
         var apiKey: String?
 
         if env[Self.enableEnv] == "1" {
@@ -60,6 +62,7 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             endpointString = marker.endpoint
             model = marker.model
             requestShapeModel = marker.requestShapeModel
+            useDefaultRequestShape = marker.useDefaultRequestShape == true
             apiKey = marker.apiKey
         } else {
             throw XCTSkip(
@@ -84,13 +87,14 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         // chat-template kwargs ride along, exactly like the managed
         // production configuration (pinned by
         // `LLMPolishEvalSupportTests.testEvalConfigurationCarriesCatalogRequestShape`).
+        let resolvedRequestShapeModel = requestShapeModel?.isEmpty == false
+            ? requestShapeModel
+            : (useDefaultRequestShape ? PolishModelCatalog.defaultOption.repoID : nil)
         return LLMPolishEvalSupport.configuration(
             endpointURL: endpointURL,
             apiKey: apiKey ?? "",
             model: model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel,
-            requestShapeModel: requestShapeModel?.isEmpty == false
-                ? requestShapeModel
-                : nil
+            requestShapeModel: resolvedRequestShapeModel
         )
     }
 
