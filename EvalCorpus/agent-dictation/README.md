@@ -74,6 +74,25 @@ truth side by side. Re-render an existing log without rerunning either model:
   .build/agent-eval-local.log EvalRecordings/agent-dictation/owner
 ```
 
+### Processing-stage ablations
+
+The inspection log retains enough intermediate text to test polishing stages
+without transcribing the audio again. The resumable ablation runner compares raw
+ASR, production pre-LLM normalization, raw model output, guarded production
+output, alternate prompts, and alternate models:
+
+```bash
+./scripts/ablate-agent-eval.py .build/agent-eval-local.log \
+  --model qwen35-4b --jobs 8
+```
+
+Every response is appended immediately to
+`.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
+inference. Rerunning the same command resumes by exact request hash. The generated
+`.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
+scoring is Markdown-neutral: backticks, headings, and list markers remain visible
+and are not treated as transcript errors.
+
 Accepted takes and `manifest.json` live under the gitignored, voice-private
 `EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the
 exact case ID, language, spoken phrase, file name, and SHA-256. By default,
