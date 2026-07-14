@@ -237,7 +237,10 @@ the endpoint and complete request payload. For technical-term iteration, use
 recovery, exact-evidence recovery, 27B-only recovery, and misses by both. Model
 arms are intentionally sequential to prevent a llama.cpp router from unloading
 one beneath the other. Keep comparisons paired on the same case IDs and preserve
-the explicit Qwen sampling parameters. XCTest
+the explicit Qwen sampling parameters. Technique trials print paired term/case
+gains AND losses plus large word-accuracy regressions; never promote a variant
+from token recall alone, because exact-term recovery can still damage the user's
+surrounding instruction. XCTest
 can occasionally splice a status line into the sentinel-delimited JSONL report;
 the offline tools recover known XCTest diagnostics and warn only if an unknown
 corruption still forces a record to be skipped. Note any resulting denominator

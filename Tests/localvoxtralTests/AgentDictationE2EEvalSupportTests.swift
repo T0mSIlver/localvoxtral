@@ -619,6 +619,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             "stratum": "repo-vocabulary",
             "intendedText": "Open DictationViewModel.swift.",
             "requiredTokens": ["DictationViewModel.swift"],
+            "features": {"repo": {"fixture": "smallapp"}},
             "polishInputText": "Open Dictation View Model.",
             "userPrompts": [
                 "old static prefix",
@@ -644,8 +645,41 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         oracle = module.current_production_messages(record, system, user, oracle=True)
         assert "Evaluation-only oracle technical spellings" in oracle[-1]["content"]
         assert "- DictationViewModel.swift" in oracle[-1]["content"]
+        grounded = module.append_grounded_candidate_check(messages, record)
+        assert len(grounded) == len(messages) + 1
+        assert "src/auth/useAuth.ts" in grounded[-1]["content"]
+        assert "Sources/App/DictationViewModel.swift" in grounded[-1]["content"]
+        assert "Grounded technical-term check" in grounded[-1]["content"]
+        strict = module.append_strict_oracle_check(oracle, record)
+        assert len(strict) == len(oracle) + 1
+        assert "must contain each one exactly" in strict[-1]["content"]
+        assert "- DictationViewModel.swift" in strict[-1]["content"]
+        grounded_repair = module.targeted_repair_messages(
+            record, "Open uzoft.ts and add a null check.", oracle=False
+        )
+        assert len(grounded_repair) == 2
+        assert "Current polished text:\nOpen uzoft.ts" in grounded_repair[-1]["content"]
+        assert "src/auth/useAuth.ts" in grounded_repair[-1]["content"]
+        oracle_repair = module.targeted_repair_messages(
+            record, "Open uzoft.ts and add a null check.", oracle=True
+        )
+        assert "evaluation-only exact literals" in oracle_repair[-1]["content"]
+        assert "- DictationViewModel.swift" in oracle_repair[-1]["content"]
+        exact, heard, score = module.broad_repo_match(record)
+        assert exact == "DictationViewModel.swift"
+        assert heard == "Dictation View Model"
+        assert score > 0.8
+        ranked_repair = module.ranked_repo_repair_messages(
+            record, "Open Dictation View Model."
+        )
+        assert "- exact: DictationViewModel.swift" in ranked_repair[-1]["content"]
         standard_system = module.bundled_prompt_content("llm_system_prompt.toml")
         standard_user = module.bundled_prompt_content("llm_user_prompt.toml")
+        preapplied = module.messages_for(
+            record, {}, "current-production-ranked-preapply", None,
+            {"standard": (standard_system, standard_user), "agent": (system, user)},
+        )
+        assert "Working text:\nOpen DictationViewModel.swift." in preapplied[-1]["content"]
         standard_record = dict(record, stratum="punctuation-spacing-migration")
         routed = module.messages_for(
             standard_record, {}, "current-production", None,
@@ -710,6 +744,25 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         assert attribution["termCategories"] == {
             "exact evidence lets primary recover": ["i-en-name: DictationViewModel.swift"]
         }
+        deltas = module.paired_variant_deltas([
+            {"caseID": "a", "stage": "25 model current-production", "output": "wrong",
+             "tokensPass": False,
+             "matchedTokens": [], "accuracy": 0.5, "surfaceExact": False},
+            {"caseID": "a", "stage": "25 model technique", "output": "term",
+             "tokensPass": True,
+             "matchedTokens": ["term"], "accuracy": 0.8, "surfaceExact": True},
+        ])
+        assert len(deltas) == 1
+        delta = deltas[0]
+        assert delta["model"] == "model"
+        assert delta["variant"] == "technique"
+        assert delta["cases"] == 1
+        assert delta["caseGains"] == 1 and delta["caseLosses"] == 0
+        assert delta["termGains"] == 1 and delta["termLosses"] == 0
+        assert abs(delta["accuracyDelta"] - 0.3) < 1e-9
+        assert delta["surfaceDelta"] == 1
+        assert delta["largeAccuracyRegressions"] == 0
+        assert delta["expansionsVsBaseline"] == 0
         """#
         let run = try runPython(["-c", snippet, script.path])
         XCTAssertEqual(run.status, 0, run.output)

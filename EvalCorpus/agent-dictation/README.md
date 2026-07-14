@@ -112,6 +112,25 @@ Older inspection logs that predate embedded forbidden/case-sensitivity fields
 are backfilled by case ID from the checked-in corpus; stale corpus text or an
 unknown legacy case is a hard error, never a silently weakened score.
 
+For fast recovery experiments, keep `current-production` in `--variants` as
+the paired baseline and add only the technique being tested. The runner prints
+case/term gains and losses, mean word-accuracy change, surface-exact change, the
+number of cases whose accuracy fell by more than ten points, and suspiciously
+large expansions. Useful
+diagnostic arms include `current-production-recorded-system` and
+`current-production-recorded-user` (factor prompt changes), the
+`*-oracle-strict` / `*-oracle-repair` arms (perfect-evidence capacity bounds),
+and `current-production-grounded-repair` (real repo/clipboard evidence in a
+compact second pass). The `ranked-*` arms use an intentionally broad
+best-of-16 corpus-fixture matcher to test retrieval hypotheses; they are tiny-repo
+retrieval upper bounds, not production matching code, and select at most one
+candidate per case. Repair arms require a cached `current-production` result:
+run the baseline once, then rerun with the repair variant (non-applicable cases
+are reported and skipped). A higher required-term score is insufficient on its
+own: always inspect surface exactness, word accuracy, large regressions, and the
+HTML text because a model can preserve the requested token while damaging the
+surrounding instruction.
+
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
 inference. Rerunning the same command resumes by endpoint, model, variant, and
