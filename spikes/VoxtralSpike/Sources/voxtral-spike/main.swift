@@ -238,6 +238,12 @@ if let ws = arg("ws") {
 // Numeric equivalence check for the fused RoPE against the manual one it replaces.
 // Runs before any model work so a layout/convention error is caught on its own terms
 // instead of showing up as a mysteriously empty transcript.
+if arg("bench-head") != nil {
+    let b = voxtralHeadBenchmark()
+    print("head-bench \(b.sorted { $0.key < $1.key }.map { "\($0.key)=\(String(format: "%.2f", $0.value))ms" }.joined(separator: " "))")
+    exit(0)
+}
+
 if arg("selftest") != nil {
     let diffs = voxtralRoPESelfTest()
     let worst = diffs.values.max() ?? 0

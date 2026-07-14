@@ -271,6 +271,13 @@ public final class VoxtralRealtimeStreamSession {
             )
             decCache = next.1
             FastProfile.countToken()
+            // Attribute honestly: MLX is lazy, so `next` has computed NOTHING yet. Eval the
+            // decoder output FIRST (that's the 32-layer forward), and only then time the
+            // head. The earlier profile evaluated the whole graph inside the head's timer
+            // and blamed the head for 68% of compute.
+            FastProfile.time(.decoderForward) {
+                if FastProfile.enabled { MLX.eval(next.0) }
+            }
             let logits = FastProfile.time(.logits) {
                 let l = model.decoder.logits(next.0[0])
                 if FastProfile.enabled { MLX.eval(l) }

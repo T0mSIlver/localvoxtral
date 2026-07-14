@@ -54,7 +54,7 @@ public func voxtralRoPESelfTest() -> [String: Float] {
 /// (this perturbs the total slightly; it is a diagnostic, not a benchmark).
 public enum FastProfile {
     public enum Phase: String, CaseIterable, Sendable {
-        case convStem, encoder, decodeTokens, logits
+        case convStem, encoder, decodeTokens, decoderForward, logits
     }
 
     public static let enabled = ProcessInfo.processInfo.environment["VOXFAST_PROFILE"] == "1"
@@ -80,4 +80,39 @@ public enum FastProfile {
         out["steps"] = Double(steps)
         return out
     }
+}
+
+/// Micro-benchmark of the tied-embedding LM head in isolation.
+///
+/// Needed because MLX is LAZY: timing `logits(...)` and calling `eval` on its output
+/// charges the ENTIRE decoder graph (32 layers) to the head. This times the head alone,
+/// with a materialised input, both ways.
+public func voxtralHeadBenchmark(dim: Int = 3072, vocab: Int = 131072, iters: Int = 50)
+    -> [String: Double]
+{
+    let w = MLXRandom.normal([vocab, dim]).asType(.float16)
+    let h = MLXRandom.normal([dim]).asType(.float16)
+    MLX.eval(w, h)
+
+    let emb = Embedding(embeddingCount: vocab, dimensions: dim)
+    emb.update(parameters: ModuleParameters.unflattened(["weight": .value(w)]))
+    MLX.eval(emb)
+
+    // transposed-view matmul (what upstream does)
+    var t0 = CFAbsoluteTimeGetCurrent()
+    for _ in 0..<iters {
+        let l = MLX.matmul(h, w.transposed(1, 0))
+        MLX.eval(l)
+    }
+    let matmulMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000 / Double(iters)
+
+    // asLinear (what voxmlx's as_linear does)
+    t0 = CFAbsoluteTimeGetCurrent()
+    for _ in 0..<iters {
+        let l = emb.asLinear(h)
+        MLX.eval(l)
+    }
+    let asLinearMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000 / Double(iters)
+
+    return ["matmul_transposed_ms": matmulMs, "as_linear_ms": asLinearMs]
 }

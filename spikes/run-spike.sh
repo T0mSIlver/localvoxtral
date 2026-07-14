@@ -85,6 +85,9 @@ do_run() {
 
   # Fused RoPE must reproduce the manual RoPE it replaces — check that numerically
   # BEFORE trusting any transcript from the optimized engine.
+  echo "==> LM head micro-benchmark (isolated; MLX laziness made the in-loop timing lie)"
+  "$BIN" --bench-head 1 --wav "$OUT_DIR/en.wav" || true
+
   echo "==> RoPE self-test"
   "$BIN" --selftest 1 --wav "$OUT_DIR/en.wav" || { echo "!! RoPE MISMATCH — fused path is wrong"; exit 1; }
 
