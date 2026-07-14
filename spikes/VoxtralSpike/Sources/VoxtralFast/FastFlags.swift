@@ -16,9 +16,11 @@ public enum FastFlags {
     /// Keep activations in the weights' dtype: cast the mel at the conv-stem seam AND
     /// force any float32 parameter to float16 at load.
     static let fp16 = ProcessInfo.processInfo.environment["VOXFAST_FP16"] != "0"
+    /// Don't dump the Metal buffer pool on every chunk.
+    static let keepCache = ProcessInfo.processInfo.environment["VOXFAST_KEEPCACHE"] != "0"
 
     public static var description: String {
-        "rope=\(fusedRoPE ? 1 : 0) async=\(asyncDecode ? 1 : 0) mask=\(maskDtype ? 1 : 0) head=\(fusedHead ? 1 : 0) fp16=\(fp16 ? 1 : 0)"
+        "rope=\(fusedRoPE ? 1 : 0) async=\(asyncDecode ? 1 : 0) mask=\(maskDtype ? 1 : 0) head=\(fusedHead ? 1 : 0) fp16=\(fp16 ? 1 : 0) keepcache=\(keepCache ? 1 : 0)"
     }
 }
 

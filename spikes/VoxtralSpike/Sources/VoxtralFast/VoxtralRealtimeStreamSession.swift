@@ -167,7 +167,7 @@ public final class VoxtralRealtimeStreamSession {
         }
 
         guard let adapter = adapterBuf else {
-            Memory.clearCache()
+            if !FastFlags.keepCache { Memory.clearCache() }
             return Delta(text: "", tokenIds: [])
         }
         prefillIfNeeded(adapter: adapter)
@@ -175,7 +175,10 @@ public final class VoxtralRealtimeStreamSession {
             decode(adapter: adapter, upTo: min(emitLimit, adapter.shape[0]))
         }
 
-        Memory.clearCache()
+        // Dumping MLX's buffer pool on EVERY chunk (331 times for a 26 s utterance) forces
+        // every subsequent allocation back through the driver. The LM head profiled at
+        // 79 ms/token in-loop but 5 ms in isolation — the op isn't slow, it's starved.
+        if !FastFlags.keepCache { Memory.clearCache() }
         return delta
     }
 
