@@ -24,6 +24,16 @@ struct PolishSamplingDefaults: Equatable, Sendable {
 
 struct PolishModelOption: Equatable, Sendable {
     let repoID: String
+    /// Exact commit the app downloads and the helper loads. A repo id alone
+    /// tracks `main`, and upstream rewrites reach every install the moment
+    /// the cache re-resolves: on 2026-07-14 the OptiQ repos registered their
+    /// bf16 vision tower in model.safetensors.index.json, so the indexed
+    /// weight_map suddenly named optiq/optiq_vision.safetensors — a file our
+    /// include patterns never fetch — and the helper died on load
+    /// ("[load_safetensors] Failed to open file …/optiq/optiq_vision.safetensors").
+    /// Pin, don't chase: bumping a pin is a reviewed change that reruns the
+    /// eval lanes.
+    let revision: String
     let displayName: String
     let sizeOnDiskGB: Double
     let estimatedRAMGB: Double
@@ -41,6 +51,7 @@ enum PolishModelCatalog {
         // them (field finding: picker said 6.6, bar said 7.1).
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-0.8B-8bit",
+            revision: "87e768fbfa03994095f3d14527c80c5ae70c5758",
             displayName: "Qwen3.5 0.8B (fastest)",
             sizeOnDiskGB: 1.0,
             estimatedRAMGB: 1.2,
@@ -50,6 +61,10 @@ enum PolishModelCatalog {
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-4B-OptiQ-4bit",
+            // Last revision whose index maps every weight into
+            // model.safetensors; the next one (6cb5bdf) added the vision
+            // tower to the weight_map.
+            revision: "41eccc3316fd4bf4b27cedf4924fe23ce44e77d9",
             displayName: "Qwen3.5 4B (better quality, default)",
             sizeOnDiskGB: 3.3,
             estimatedRAMGB: 3.8,
@@ -59,6 +74,8 @@ enum PolishModelCatalog {
         ),
         PolishModelOption(
             repoID: "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+            // Same cut-off as the 4B (804d898 is the 9B's equivalent commit).
+            revision: "804d898651e45f0478323cd30ffebcb3c8e6714d",
             displayName: "Qwen3.5 9B (best quality)",
             sizeOnDiskGB: 7.1,
             estimatedRAMGB: 7.5,
@@ -135,8 +152,13 @@ enum PolishModelCache {
         return home.appending(path: ".cache/huggingface/hub")
     }
 
+    /// `revision` is the catalog pin (nil for a user's custom repo id, which
+    /// we can only resolve through `main`). A pinned model is downloaded only
+    /// when ITS snapshot is complete — an install that still holds some other
+    /// revision, however complete, is not the model we run.
     static func isDownloaded(
         repoID: String,
+        revision: String? = nil,
         cacheRoot: URL = defaultCacheRoot(),
         fileManager: FileManager = .default
     ) -> Bool {
@@ -144,6 +166,13 @@ enum PolishModelCache {
             path: "models--" + repoID.replacingOccurrences(of: "/", with: "--")
         )
         let snapshotsDirectory = repoDirectory.appending(path: "snapshots")
+
+        if let revision {
+            return snapshotIsComplete(
+                snapshotsDirectory.appending(path: revision),
+                fileManager: fileManager
+            )
+        }
 
         let mainReference = repoDirectory.appending(path: "refs/main")
         if let revision = try? String(contentsOf: mainReference, encoding: .utf8)

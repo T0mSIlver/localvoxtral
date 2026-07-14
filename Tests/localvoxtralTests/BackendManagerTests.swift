@@ -119,6 +119,40 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertFalse(polishdConfiguration.executableURL.path.contains("backends"))
     }
 
+    /// Regression, 2026-07-14: the catalog pinned only a repo id, so the
+    /// download and the helper's load both resolved the repo's main ref.
+    /// Upstream added the vision tower to model.safetensors.index.json and
+    /// every polish start died on a weight file we never fetch. Download and
+    /// load must name the SAME pinned commit.
+    func testPolishdDownloadsAndLoadsThePinnedModelRevision() async throws {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let modelPreparer = FakeModelPreparer()
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            modelPreparer: modelPreparer,
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: false, polishing: true)
+
+        let pin = PolishModelCatalog.defaultOption.revision
+        let request = try XCTUnwrap(
+            modelPreparer.prepareCalls.first { $0.backendID == BackendCatalog.polishd.id }
+        )
+        XCTAssertEqual(request.repoID, SettingsStore.defaultLLMPolishingModel)
+        XCTAssertEqual(request.revision, pin)
+
+        let configuration = try XCTUnwrap(
+            supervisorFactory.createdConfigurations
+                .first { $0.name == BackendCatalog.polishd.displayName }
+        )
+        let arguments = configuration.arguments
+        let flagIndex = try XCTUnwrap(arguments.firstIndex(of: "--model-revision"))
+        XCTAssertEqual(arguments[arguments.index(after: flagIndex)], pin)
+    }
+
     func testBundledPolishingBackendNeverEntersInstallPathEvenIfInstallerClaimsNeed() async throws {
         // The guard must be structural (installKind), not data-driven: even a
         // (mis)configured installer that claims the bundled backend needs an

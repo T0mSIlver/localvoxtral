@@ -32,6 +32,7 @@ PATTERNS=(
   'PolishHelper/*'                                   # helper engine, server, its own package
   'Sources/localvoxtral/Resources/Config/llm_*.toml' # bundled polish prompts
   '*PolishModelCatalog*'                             # model pins / catalog
+  '*HFModelDownloader*'                              # which revision/files of the weights we fetch
   '*LLMPolishing*'                                   # polish client: request shape, sampling, kwargs
   '*PolishTokenGuard*'                               # token-protection repair semantics
   '*PolishPromptWarmup*'                             # prompt-prefix warmup path

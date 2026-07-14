@@ -105,14 +105,21 @@ final class PolishHelperIntegrationTests: XCTestCase {
         )
         let snapshotsDir = repoDir.appendingPathComponent("snapshots")
 
-        // Completeness marker is refs/main, which is written LAST below (and
-        // is what HFCacheModelLocator prefers). Keying on config.json alone
-        // would let a cancelled half-download (config present, weights
-        // missing) poison the cache into a permanently-failing suite.
+        // Provision the revision the app PINS (catalog), not whatever main
+        // points at — the helper now refuses any other snapshot, and tracking
+        // main is exactly how an upstream index rewrite broke this suite
+        // (2026-07-14). Custom repo ids (no catalog entry) still track main.
+        let pinnedRevision = PolishModelCatalog.option(forRepoID: repoID)?.revision
+
+        // Completeness marker is refs/main, which is written LAST below.
+        // Keying on config.json alone would let a cancelled half-download
+        // (config present, weights missing) poison the cache into a
+        // permanently-failing suite.
         let mainRef = repoDir.appendingPathComponent("refs/main")
         if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
+            pinnedRevision == nil || revision == pinnedRevision,
             FileManager.default.fileExists(
                 atPath: snapshotsDir.appendingPathComponent("\(revision)/config.json").path
             )
@@ -126,7 +133,10 @@ final class PolishHelperIntegrationTests: XCTestCase {
             let sha: String
             let siblings: [Sibling]
         }
-        let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)/revision/main")!
+        let apiURL = URL(
+            string:
+                "https://huggingface.co/api/models/\(repoID)/revision/\(pinnedRevision ?? "main")"
+        )!
         let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
         guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
             throw ModelProvisioningError(
@@ -134,6 +144,12 @@ final class PolishHelperIntegrationTests: XCTestCase {
             )
         }
         let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
+        if let pinnedRevision, info.sha != pinnedRevision {
+            throw ModelProvisioningError(
+                description:
+                    "HF resolved \(repoID)@\(pinnedRevision) to sha \(info.sha) — pin is not a commit"
+            )
+        }
 
         // Same include patterns as BackendManager.modelPreparationRequest.
         let patterns = [
@@ -185,7 +201,13 @@ final class PolishHelperIntegrationTests: XCTestCase {
     ) async throws -> (process: Process, port: UInt16, stderrLog: LineLog) {
         let process = Process()
         process.executableURL = binary
-        process.arguments = ["--model", model, "--port", "0"] + extraArguments
+        // Mirror BackendManager.arguments(for:): the app pins the revision, so
+        // the suite must exercise the helper with the pin attached.
+        var arguments = ["--model", model, "--port", "0"]
+        if let revision = PolishModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        process.arguments = arguments + extraArguments
 
         let stderr = Pipe()
         process.standardError = stderr

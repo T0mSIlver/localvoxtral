@@ -32,6 +32,109 @@ final class HFModelDownloaderTests: XCTestCase {
         )
     }
 
+    /// Regression, 2026-07-14: the downloader tracked the repo's main ref, so
+    /// an upstream commit (vision tower registered in the weight index)
+    /// silently changed what every install fetched. The pin must reach BOTH
+    /// snapshot_download calls — the dry run that sizes the progress bar and
+    /// the real fetch — or the bar and the weights describe different commits.
+    func testEmbeddedScriptPassesPinnedRevisionToSnapshotDownload() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localvoxtral-revision-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let uvURL = try await Self.resolveUVForRealTqdmTest(
+            fallbackRoot: tempDirectory.appendingPathComponent("managed-uv", isDirectory: true)
+        )
+        let scriptURL = tempDirectory.appendingPathComponent("hf_model_download.py")
+        try HFModelDownloader.pythonDownloaderScript.write(
+            to: scriptURL,
+            atomically: true,
+            encoding: .utf8
+        )
+        let driverURL = tempDirectory.appendingPathComponent("revision_driver.py")
+        try Self.snapshotDownloadStubDriver.write(to: driverURL, atomically: true, encoding: .utf8)
+
+        // Runs the REAL script (argparse + both snapshot_download calls) with
+        // huggingface_hub stubbed, so the assertion is on the shipped source.
+        let pinned = try await Self.runScript(
+            uv: uvURL,
+            driver: driverURL,
+            script: scriptURL,
+            arguments: ["org/model", "--include", "*.json", "--revision", "abc123"]
+        )
+        XCTAssertEqual(pinned, ["abc123", "abc123"])
+
+        // No pin (custom repo id) still means "track main": revision=None.
+        let unpinned = try await Self.runScript(
+            uv: uvURL,
+            driver: driverURL,
+            script: scriptURL,
+            arguments: ["org/model", "--include", "*.json"]
+        )
+        XCTAssertEqual(unpinned, [nil, nil])
+    }
+
+    /// Runs the embedded downloader script under the stub driver and returns
+    /// the `revision=` each snapshot_download call received (dry run, fetch).
+    private static func runScript(
+        uv: URL,
+        driver: URL,
+        script: URL,
+        arguments: [String]
+    ) async throws -> [String?] {
+        let result = try runProcess(
+            executableURL: uv,
+            arguments: ["run", "--with", "tqdm<5", "python3", driver.path, script.path] + arguments,
+            environment: ["LOCALVOXTRAL_HF_EMIT_INTERVAL": "0"]
+        )
+        XCTAssertEqual(
+            result.exitCode,
+            0,
+            "stub driver failed\nstdout:\n\(result.stdout)\nstderr:\n\(result.stderr)"
+        )
+        let line = try XCTUnwrap(
+            result.stdout
+                .split(separator: "\n")
+                .first { $0.contains("\"revisions\"") },
+            "driver emitted no revisions line\nstdout:\n\(result.stdout)"
+        )
+        struct Recorded: Decodable { let revisions: [String?] }
+        return try JSONDecoder().decode(Recorded.self, from: Data(line.utf8)).revisions
+    }
+
+    private static let snapshotDownloadStubDriver = #"""
+import json
+import sys
+import types
+
+script_path = sys.argv[1]
+sys.argv = [script_path] + sys.argv[2:]
+
+revisions = []
+
+
+def snapshot_download(repo, allow_patterns=None, revision=None, dry_run=False, tqdm_class=None):
+    revisions.append(revision)
+    if dry_run:
+        return []
+    return "/tmp/snapshot"
+
+
+stub = types.ModuleType("huggingface_hub")
+stub.snapshot_download = snapshot_download
+sys.modules["huggingface_hub"] = stub
+
+with open(script_path, "r", encoding="utf-8") as handle:
+    source = handle.read()
+
+exec(compile(source, script_path, "exec"), {"__name__": "__main__"})
+
+# Written last: a script that raised never reaches this line.
+sys.stdout.write(json.dumps({"revisions": revisions}) + "\n")
+sys.stdout.flush()
+"""#
+
     func testEmbeddedJSONTqdmReportsCumulativeByteProgressWithRealTqdm() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("localvoxtral-json-tqdm-\(UUID().uuidString)", isDirectory: true)

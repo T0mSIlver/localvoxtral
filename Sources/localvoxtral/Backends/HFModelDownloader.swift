@@ -15,7 +15,23 @@ struct ModelPreparationRequest: Equatable, Sendable {
     let backendID: String
     let displayName: String
     let repoID: String
+    /// Pinned commit, or nil to track the repo's `main` (custom repo ids).
+    let revision: String?
     let includePatterns: [String]
+
+    init(
+        backendID: String,
+        displayName: String,
+        repoID: String,
+        revision: String? = nil,
+        includePatterns: [String]
+    ) {
+        self.backendID = backendID
+        self.displayName = displayName
+        self.repoID = repoID
+        self.revision = revision
+        self.includePatterns = includePatterns
+    }
 }
 
 protocol ModelPreparing: Sendable {
@@ -108,6 +124,10 @@ struct HFModelDownloader: ModelPreparing {
         for pattern in request.includePatterns {
             arguments.append("--include")
             arguments.append(pattern)
+        }
+        if let revision = request.revision {
+            arguments.append("--revision")
+            arguments.append(revision)
         }
 
         let result = try await ModelDownloadProcess.run(
@@ -247,10 +267,11 @@ class _NullTqdmFile:
         pass
 
 
-def resolve_total(repo, include_patterns):
+def resolve_total(repo, include_patterns, revision):
     dry_run = snapshot_download(
         repo,
         allow_patterns=include_patterns,
+        revision=revision,
         dry_run=True,
     )
     total = 0
@@ -261,11 +282,12 @@ def resolve_total(repo, include_patterns):
 
 
 def main():
-    total = resolve_total(ARGS.repo, ARGS.include)
+    total = resolve_total(ARGS.repo, ARGS.include, ARGS.revision)
     emit({"event": "total", "repo": ARGS.repo, "total": total})
     snapshot_download(
         ARGS.repo,
         allow_patterns=ARGS.include,
+        revision=ARGS.revision,
         tqdm_class=JSONTqdm,
     )
     emit({"event": "done", "repo": ARGS.repo})
@@ -274,6 +296,8 @@ def main():
 parser = argparse.ArgumentParser()
 parser.add_argument("repo")
 parser.add_argument("--include", action="append", default=[])
+# Absent => track main (custom repo ids); a commit sha pins the snapshot.
+parser.add_argument("--revision", default=None)
 ARGS = parser.parse_args()
 
 try:

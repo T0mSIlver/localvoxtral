@@ -310,7 +310,8 @@ private struct ConnectionSettingsPane: View {
                                     PolishModelPickerSupport.helpText(
                                         for: selectedEntry,
                                         isDownloaded: PolishModelCache.isDownloaded(
-                                            repoID: selectedEntry.repoID
+                                            repoID: selectedEntry.repoID,
+                                            revision: selectedEntry.option?.revision
                                         )
                                     )
                                 )

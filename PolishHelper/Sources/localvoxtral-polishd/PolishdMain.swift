@@ -10,6 +10,9 @@ import PolishHelperCore
 struct PolishdMain {
     struct Options {
         var modelID: String?
+        /// Commit the app pinned and downloaded; nil resolves through the
+        /// repo's main ref (custom repo ids).
+        var modelRevision: String?
         var modelDirectory: String?
         var port: UInt16 = 8472
         var parentPID: pid_t?
@@ -42,6 +45,7 @@ struct PolishdMain {
         while let flag = iterator.next() {
             switch flag {
             case "--model": options.modelID = try value(for: flag)
+            case "--model-revision": options.modelRevision = try value(for: flag)
             case "--model-dir": options.modelDirectory = try value(for: flag)
             case "--port":
                 guard let port = UInt16(try value(for: flag)) else {
@@ -113,6 +117,7 @@ struct PolishdMain {
         } else if let repoID = options.modelID {
             modelDirectory = try HFCacheModelLocator.locate(
                 repoID: repoID,
+                revision: options.modelRevision,
                 cacheRoot: HFCacheModelLocator.defaultCacheRoot()
             )
         } else {

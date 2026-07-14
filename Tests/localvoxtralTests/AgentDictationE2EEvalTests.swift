@@ -857,12 +857,17 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         )
         let snapshotsDir = repoDir.appendingPathComponent("snapshots")
 
+        // Provision the revision the app PINS, not whatever main points at:
+        // the helper refuses any other snapshot (see HFCacheModelLocator).
+        let pinnedRevision = PolishModelCatalog.option(forRepoID: repoID)?.revision
+
         // Completeness marker is refs/main, written LAST below, so a cancelled
         // half-download can never poison the cache.
         let mainRef = repoDir.appendingPathComponent("refs/main")
         if let revision = try? String(contentsOf: mainRef, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
             !revision.isEmpty,
+            pinnedRevision == nil || revision == pinnedRevision,
             FileManager.default.fileExists(
                 atPath: snapshotsDir.appendingPathComponent("\(revision)/config.json").path
             )
@@ -876,12 +881,20 @@ final class AgentDictationE2EEvalTests: XCTestCase {
             let sha: String
             let siblings: [Sibling]
         }
-        let apiURL = URL(string: "https://huggingface.co/api/models/\(repoID)/revision/main")!
+        let apiURL = URL(
+            string:
+                "https://huggingface.co/api/models/\(repoID)/revision/\(pinnedRevision ?? "main")"
+        )!
         let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
         guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
             throw EvalInfraError("HF API unreachable for \(repoID): \(infoResponse)")
         }
         let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
+        if let pinnedRevision, info.sha != pinnedRevision {
+            throw EvalInfraError(
+                "HF resolved \(repoID)@\(pinnedRevision) to sha \(info.sha) — pin is not a commit"
+            )
+        }
 
         // Same include patterns as BackendManager.modelPreparationRequest.
         let patterns = [
@@ -930,7 +943,12 @@ final class AgentDictationE2EEvalTests: XCTestCase {
     ) async throws -> (process: Process, port: UInt16) {
         let process = Process()
         process.executableURL = binary
-        process.arguments = ["--model", model, "--port", "0"]
+        // Mirror BackendManager.arguments(for:): the app pins the revision.
+        var arguments = ["--model", model, "--port", "0"]
+        if let revision = PolishModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        process.arguments = arguments
 
         let stderr = Pipe()
         process.standardError = stderr
