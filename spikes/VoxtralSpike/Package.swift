@@ -18,7 +18,13 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", exact: "0.1.3"),
-        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.30.6"),
+        // Pinned to mlx-audio-swift's own resolved graph. Left to float, SwiftPM picks
+        // swift-transformers >= 1.2, which does not compile under Xcode 26's toolchain
+        // (Hub/Config.swift: ObjectKey vs String dictionary-key type errors).
+        // mlx-swift 0.31.3 is also deliberate: 0.31.4 introduced the evalLock deadlock
+        // (ml-explore/mlx-swift#428) that our polishd helper is currently pinned to.
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.3"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
     ],
     targets: [
         .executableTarget(
