@@ -353,6 +353,7 @@ for (chunkMs, spec) in chunkSpecs.flatMap({ c in delaySpecs.map { (c, $0) } }) {
         },
         "engine": "swift-\(engineName)",
         "fast_flags": FastFlags.description,
+        "profile_ms": FastProfile.snapshot(),
     ])
     FileHandle.standardError.write("  delay=\(spec) done\n".data(using: .utf8)!)
 }

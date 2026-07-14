@@ -140,12 +140,17 @@ public final class VoxtralRealtimeStreamSession {
         guard !done else { return Delta(text: "", tokenIds: []) }
         guard !realAudio.isEmpty else { return Delta(text: "", tokenIds: []) }
 
+        FastProfile.countStep()
         let ds = model.config.encoderArgs.downsampleFactor
-        let audio = MLXArray(realAudio)
-        let (convOut, nAudioTotal, pLen) = model.convStemForAudio(
-            audio: audio,
-            transcriptionDelayMs: transcriptionDelayMs
-        )
+        let (convOut, nAudioTotal, pLen) = FastProfile.time(.convStem) {
+            let audio = MLXArray(realAudio)
+            let r = model.convStemForAudio(
+                audio: audio,
+                transcriptionDelayMs: transcriptionDelayMs
+            )
+            if FastProfile.enabled { MLX.eval(r.0) }
+            return r
+        }
         promptLength = pLen
 
         let realRegion = model.config.nLeftPadTokens + model.numAudioTokens(realAudio.count)
@@ -153,10 +158,12 @@ public final class VoxtralRealtimeStreamSession {
         let convFreeze = min(convOut.shape[0], emitLimit * ds)
 
         if convFreeze > encState.consumed {
-            let newEnc = model.encoder.feedIncremental(convOut, upTo: convFreeze, state: &encState)
-            let rows = model.encoder.downsampleAndProject(newEnc)   // multiple-of-ds ⇒ whole rows
-            adapterBuf = adapterBuf == nil ? rows : MLX.concatenated([adapterBuf!, rows], axis: 0)
-            freezeEncoderState()
+            FastProfile.time(.encoder) {
+                let newEnc = model.encoder.feedIncremental(convOut, upTo: convFreeze, state: &encState)
+                let rows = model.encoder.downsampleAndProject(newEnc)  // multiple-of-ds ⇒ whole rows
+                adapterBuf = adapterBuf == nil ? rows : MLX.concatenated([adapterBuf!, rows], axis: 0)
+                freezeEncoderState()
+            }
         }
 
         guard let adapter = adapterBuf else {
@@ -164,7 +171,9 @@ public final class VoxtralRealtimeStreamSession {
             return Delta(text: "", tokenIds: [])
         }
         prefillIfNeeded(adapter: adapter)
-        let delta = decode(adapter: adapter, upTo: min(emitLimit, adapter.shape[0]))
+        let delta = FastProfile.time(.decodeTokens) {
+            decode(adapter: adapter, upTo: min(emitLimit, adapter.shape[0]))
+        }
 
         Memory.clearCache()
         return delta
@@ -261,7 +270,12 @@ public final class VoxtralRealtimeStreamSession {
                 cache: decCache
             )
             decCache = next.1
-            let logits = model.decoder.logits(next.0[0])
+            FastProfile.countToken()
+            let logits = FastProfile.time(.logits) {
+                let l = model.decoder.logits(next.0[0])
+                if FastProfile.enabled { MLX.eval(l) }
+                return l
+            }
             lastLogits = logits
             pendingToken = model.sampleArray(logits: logits, temperature: temperature)
             MLX.asyncEval(pendingToken!)

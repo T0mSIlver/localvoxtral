@@ -113,6 +113,12 @@ do_run() {
   run_cfg fast-async 0 1 0
   run_cfg fast-all   1 1 1
 
+  # Where does the ~130 ms/step actually go? Phase-attributed, all optimizations on.
+  echo "==> [profile] EN (phase breakdown)"
+  VOXFAST_PROFILE=1 "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
+    --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label profile \
+    | tee "$OUT_DIR/profile.json"
+
   echo "==> done"
 }
 

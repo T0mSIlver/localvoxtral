@@ -42,3 +42,37 @@ public func voxtralRoPESelfTest() -> [String: Float] {
     }
     return results
 }
+
+/// Phase profiler. The three "obvious" optimizations bought only ~4%, which means the
+/// ~130 ms/step is somewhere else entirely — so measure it instead of theorising.
+/// MLX is lazy, so each phase `eval`s its own output to attribute GPU time honestly
+/// (this perturbs the total slightly; it is a diagnostic, not a benchmark).
+public enum FastProfile {
+    public enum Phase: String, CaseIterable, Sendable {
+        case convStem, encoder, decodeTokens, logits
+    }
+
+    public static let enabled = ProcessInfo.processInfo.environment["VOXFAST_PROFILE"] == "1"
+
+    nonisolated(unsafe) private static var totals: [String: Double] = [:]
+    nonisolated(unsafe) public private(set) static var tokens = 0
+    nonisolated(unsafe) public private(set) static var steps = 0
+
+    static func time<T>(_ phase: Phase, _ body: () -> T) -> T {
+        guard enabled else { return body() }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let r = body()
+        totals[phase.rawValue, default: 0] += (CFAbsoluteTimeGetCurrent() - t0) * 1000
+        return r
+    }
+
+    static func countToken() { if enabled { tokens += 1 } }
+    static func countStep() { if enabled { steps += 1 } }
+
+    public static func snapshot() -> [String: Double] {
+        var out = totals
+        out["tokens"] = Double(tokens)
+        out["steps"] = Double(steps)
+        return out
+    }
+}
