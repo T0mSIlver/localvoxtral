@@ -18,6 +18,10 @@ Usage: $0 [options] [EvalRecordings/agent-dictation/<set>]
   --subset                 Score only cases present in the recording manifest
   --polish-endpoint URL    Use an external OpenAI chat/completions endpoint
   --polish-model MODEL     Request model/alias for the external endpoint
+
+After the eval, a skim-friendly HTML report is written beside human WAVs and
+opened in the default browser. It includes audio, ASR, polish, final text, and
+ground truth. The report is still generated when a scored assertion fails.
 EOF
 }
 
@@ -108,5 +112,16 @@ fi
 mkdir -p .build
 LOG_FILE="$ROOT_DIR/.build/agent-eval-local.log"
 echo "Full eval output: $LOG_FILE"
-set -o pipefail
+set +e
 "${ENV_ARGS[@]}" swift test --filter AgentDictationE2EEvalTests 2>&1 | tee "$LOG_FILE"
+TEST_STATUS=${PIPESTATUS[0]}
+set -e
+
+REPORT_ARGS=(--open "$LOG_FILE")
+if [[ -n "$RECORDING_DIR" ]]; then
+  REPORT_ARGS+=("$ROOT_DIR/$RECORDING_DIR")
+fi
+if ! "$ROOT_DIR/scripts/render-agent-eval-report.sh" "${REPORT_ARGS[@]}"; then
+  echo "WARN: eval finished but the HTML report could not be generated" >&2
+fi
+exit "$TEST_STATUS"

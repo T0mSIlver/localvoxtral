@@ -453,12 +453,81 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(run.output.contains("Return\naccepts a take"), run.output)
     }
 
+    func testHumanEvalHTMLReportShowsAudioAndPipelineStages() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lv-agent-html-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let manifest = """
+        {"schemaVersion":1,"dataFormat":"pcm_s16le@16000Hz-mono","recordings":[
+          {"id":"r-en-report","lang":"en","spokenForm":"open less than unsafe","file":"r-en-report.wav","sha256":"\(String(repeating: "0", count: 64))"},
+          {"id":"r-en-asr","lang":"en","spokenForm":"tests fail on main","file":"r-en-asr.wav","sha256":"\(String(repeating: "1", count: 64))"}
+        ]}
+        """
+        try manifest.write(
+            to: directory.appendingPathComponent("manifest.json"),
+            atomically: true, encoding: .utf8
+        )
+        let log = """
+        build noise
+        \(Support.reportBeginSentinel)
+        {"asrModel":"asr-model","audioSource":"human-recorded/owner","polishModel":"polish-model","systemPrompts":[]}
+        {"caseID":"r-en-report","exactTextFailures":["expected truth"],"guardOffOutput":"Open wrong.","guardOffTokensFailures":["missing token"],"intendedText":"Open <truth>.","lang":"en","output":"Open wrong.","pipeline":"full","polishInputText":"open wrong","rawModelOutput":"Open wrTest Case '-[localvoxtralTests.AgentDictationE2EEvalTests testScoreboard]' passed (12.3 seconds).
+        Test Suite 'AgentDictationE2EEvalTests' passed at 2026-07-14 10:00:00.000.
+        \t Executed 1 test, with 0 failures in 12.3 seconds
+        ong.","requiredTokens":["truth"],"rewriteIsFatal":false,"spokenForm":"open less than unsafe","statusByMetric":{"exactText":"known-hard","tokens":"known-hard"},"stratum":"filenames-backticks","tokensFailures":["missing truth"],"transcript":"open <unsafe>","wordAccuracyVsIntended":0.5}
+        {"caseID":"r-en-asr","intendedText":"Tests fail on main.","lang":"en","output":"Tests fail on me.","pipeline":"asr-only","requiredTokens":["tests"],"spokenForm":"tests fail on main","statusByMetric":{"tokens":"known-hard"},"stratum":"plain-asr-baseline","tokensFailures":[],"transcript":"Tests fail on me.","wordAccuracyVsIntended":0.75}
+        \(Support.reportEndSentinel)
+        trailing test output
+        """
+        let logURL = directory.appendingPathComponent("eval.log")
+        try log.write(to: logURL, atomically: true, encoding: .utf8)
+
+        let run = try runReportRenderer([logURL.path, directory.path])
+        XCTAssertEqual(run.status, 0, run.output)
+        let html = try String(
+            contentsOf: directory.appendingPathComponent("eval-report.html"), encoding: .utf8
+        )
+        XCTAssertTrue(html.contains("src=\"r-en-report.wav\""), html)
+        XCTAssertTrue(html.contains("ASR transcript"), html)
+        XCTAssertTrue(html.contains("LLM polish"), html)
+        XCTAssertTrue(html.contains("Final shown to user"), html)
+        XCTAssertTrue(html.contains("Ground truth"), html)
+        XCTAssertTrue(html.contains("ASR unrecovered"), html)
+        XCTAssertTrue(html.contains("ASR mismatch: 1"), html)
+        XCTAssertTrue(html.contains("Open wrong."), html)
+        XCTAssertFalse(html.contains("Test Suite &#39;AgentDictation"), html)
+        XCTAssertTrue(html.contains("open &lt;unsafe&gt;"), html)
+        XCTAssertFalse(html.contains("open <unsafe>"), html)
+    }
+
     private func runRecorder(_ arguments: [String]) throws -> (status: Int32, output: String) {
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let script = repoRoot.appendingPathComponent("scripts/record-agent-eval.sh")
+        let output = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [script.path] + arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        )
+    }
+
+    private func runReportRenderer(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let script = repoRoot.appendingPathComponent("scripts/render-agent-eval-report.sh")
         let output = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/bash")

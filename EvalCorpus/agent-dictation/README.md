@@ -63,6 +63,16 @@ request retains production's deterministic Qwen 4B sampling and
 ```
 
 Full output is retained in `.build/agent-eval-local.log` for failure analysis.
+At the end of the run, the harness writes and opens
+`EvalRecordings/agent-dictation/owner/eval-report.html`. The self-contained
+page (apart from relative, private WAV links) sorts scored issues first and
+puts audio, ASR transcript, raw LLM polish, guarded final text, and ground
+truth side by side. Re-render an existing log without rerunning either model:
+
+```bash
+./scripts/render-agent-eval-report.sh --open \
+  .build/agent-eval-local.log EvalRecordings/agent-dictation/owner
+```
 
 Accepted takes and `manifest.json` live under the gitignored, voice-private
 `EvalRecordings/agent-dictation/owner/`. The manifest binds each take to the
