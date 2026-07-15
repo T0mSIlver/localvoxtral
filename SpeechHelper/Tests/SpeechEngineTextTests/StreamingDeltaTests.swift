@@ -56,6 +56,28 @@ final class StreamingDeltaTests: XCTestCase {
         XCTAssertFalse(step.wasRewrite)
     }
 
+    func testStreamEndingInUnresolvedReplacementCharHoldsItBack() {
+        // The stream's FINAL snapshot still carries a trailing U+FFFD that never resolves
+        // (audio cut off mid multi-byte char). `stablePrefix` must hold it back: the running
+        // concatenation ends at the stable text, the provisional char is never emitted, and
+        // no rewrite is flagged (dropping a trailing provisional char is not a divergence).
+        let r = replay(["caf", "café", "café \u{FFFD}"])
+        XCTAssertEqual(r.concatenated, "café ")
+        XCTAssertFalse(r.concatenated.contains("\u{FFFD}"), "a provisional trailing char must never be emitted")
+        XCTAssertEqual(r.rewrites, 0)
+    }
+
+    func testShrinkToProperPrefixHoldsInsteadOfReEmitting() {
+        // `fullText` gets SHORTER — shrinking to a proper prefix of what was already emitted.
+        // The consumer has typed the longer text and can't un-type it, so this is the
+        // `wasRewrite` hold path (a shorter, not same-length, divergence): emit nothing, keep
+        // `emitted` pinned to what was typed, flag the rewrite. Re-emitting would garble.
+        let step = StreamingDelta.next(previouslyEmitted: "hello world", fullText: "hello")
+        XCTAssertEqual(step.delta, "", "a shrink must not re-emit")
+        XCTAssertEqual(step.emitted, "hello world", "emitted must never move backwards")
+        XCTAssertTrue(step.wasRewrite)
+    }
+
     func testGenuineRewriteHoldsInsteadOfMovingEmittedBackwards() {
         // On a true divergence we must NOT shrink `emitted` (the consumer already typed it and
         // can't un-type). Emit nothing, keep `emitted` == what was typed, flag the rewrite.

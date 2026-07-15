@@ -6,9 +6,11 @@
 
 - Upstream commit: `d302a5c6080d2bb97bae38c7418f82abb76013b6` (tag `v0.1.3`, `main` at
   vendoring time — the `Models/VoxtralRealtime/` tree is identical between the two).
-- Files taken verbatim then modified: `Models/VoxtralRealtime/*.swift`, plus
-  `Generation.swift` and `Models/GLMASR/STTOutput.swift` (the `STT*` protocol types the
-  engine references).
+- Byte-identical verbatim copies: `VoxtralRealtime.swift`, `VoxtralRealtimeAudio.swift`,
+  `VoxtralRealtimeConfig.swift`, `VoxtralRealtimeTokenizer.swift`, `Generation.swift`, and
+  `STTOutput.swift` (the `STT*` protocol types the engine references). Only
+  `VoxtralRealtimeDecoder.swift`, `VoxtralRealtimeEncoder.swift`, and
+  `VoxtralRealtimeStreamSession.swift` carry `LOCAL FIX` changes.
 
 ## Why vendor instead of depend
 
@@ -24,7 +26,11 @@ it lands we can revisit depending on a release.
    float32 and promoted the fp16 hidden state. That forced the tied fp16 embedding
    (131072x3072) to be upcast on every token and pushed quantized matmuls off their fast
    path. Fixes: cast the adaScale to the activation dtype; make the manual RoPE
-   dtype-preserving; cast the float32 mel to the conv weight dtype at the conv-stem seam.
+   dtype-preserving; cast the float32 mel to the conv weight dtype at the conv-stem seam;
+   and, as a required correctness companion once q/k/v are fp16, cast the additive attention
+   mask to the query dtype in both the encoder (`VoxtralRealtimeEncoder.swift:172`) and the
+   decoder (`VoxtralRealtimeDecoder.swift:136`) — a float32 additive mask makes
+   `scaledDotProductAttention` abort with "Mask type must promote to output type float16".
    Measured downstream (see PR #141 / the `spike/voxtral-swift` branch): RTF 1.84 -> 0.62
    at identical word accuracy, reaching parity with the Python voxmlx backend.
 2. **append-only delta contract.** Delta computation is routed through
