@@ -1044,6 +1044,23 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
     }
 
+    /// Clipboard vocabulary must never rewrite the payload macro placeholder,
+    /// even when the copied entity normalizes to the placeholder body. The
+    /// identity polisher then commits the real payload exactly once.
+    func testClipboardGroundingCannotRewritePayloadPlaceholder() async throws {
+        let clipboardText = "lvClipboardPayload"
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "paste clipboard",
+            contextEnabled: true,
+            payloadPasteboard: PasteboardStub(string: clipboardText),
+            contextPasteboard: PasteboardStub(string: clipboardText)
+        )
+
+        XCTAssertEqual(result.request?.inputText, ClipboardPayloadMacro.placeholder)
+        XCTAssertEqual(result.committedText, "`\(clipboardText)`")
+        XCTAssertEqual(result.record?.polishedText, ClipboardPayloadMacro.placeholder)
+    }
+
     /// The polish DUPLICATED the placeholder (payload would paste twice): the
     /// placeholder-count check discards the polish, and the committed text is
     /// the substituted pre-polish working text with the payload exactly once.

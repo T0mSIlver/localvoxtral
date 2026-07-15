@@ -735,10 +735,29 @@ extension DictationViewModel {
                     // prompt as provenance/context. Boundary checks make this
                     // a no-op if a recorded span is no longer independently
                     // replaceable.
-                    let groundedWorkingText = RepoVocabularyMatcher.preapplying(
-                        entries: repoVocabularyEntries + clipboardVocabularyEntries,
-                        to: workingText
-                    )
+                    let groundingEntries = repoVocabularyEntries + clipboardVocabularyEntries
+                    let groundedWorkingText: String
+                    if clipboardPayload != nil {
+                        // The payload placeholder is a commit-control token,
+                        // not dictation. Ground every surrounding segment but
+                        // keep each placeholder byte-exact so its integrity
+                        // count and final substitution cannot be bypassed by a
+                        // vocabulary term with the same normalized body.
+                        groundedWorkingText = workingText
+                            .components(separatedBy: ClipboardPayloadMacro.placeholder)
+                            .map {
+                                RepoVocabularyMatcher.preapplying(
+                                    entries: groundingEntries,
+                                    to: $0
+                                )
+                            }
+                            .joined(separator: ClipboardPayloadMacro.placeholder)
+                    } else {
+                        groundedWorkingText = RepoVocabularyMatcher.preapplying(
+                            entries: groundingEntries,
+                            to: workingText
+                        )
+                    }
                     if groundedWorkingText != workingText {
                         Log.polishing.info(
                             "Technical grounding pre-applied: repo=\(repoVocabularyEntries.count, privacy: .public), clipboard=\(clipboardVocabularyEntries.count, privacy: .public)"
