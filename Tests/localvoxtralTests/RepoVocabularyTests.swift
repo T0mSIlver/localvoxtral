@@ -612,6 +612,45 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         )
     }
 
+    func testPreapplyRepoClipboardConflictUsesLongerExactTermPrecedence() {
+        let repoEntry = ReplacementEntry(
+            replaceWith: "RepoAPI",
+            matches: ["heard api"]
+        )
+        let clipboardEntry = ReplacementEntry(
+            replaceWith: "ClipboardAPI",
+            matches: ["heard api"]
+        )
+
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: [repoEntry, clipboardEntry],
+                to: "Open heard api."
+            ),
+            "Open ClipboardAPI."
+        )
+    }
+
+    func testFrenchComposedAndDecomposedAccentsFallbackAndPreapplyPreservePunctuation() {
+        let accentForms = ["modèle", "mode\u{0300}le"]
+        for accentForm in accentForms {
+            let transcript = "Regarde, dictation vie ou \(accentForm)."
+            let entries = RepoVocabularyMatcher.groundedCandidateEntries(
+                transcript: transcript,
+                vocabulary: RepoVocabulary(
+                    terms: ["DictationViewModel.swift"],
+                    branch: nil
+                )
+            )
+
+            XCTAssertEqual(entries.first?.matches, ["dictation vie ou \(accentForm)"])
+            XCTAssertEqual(
+                RepoVocabularyMatcher.preapplying(entries: entries, to: transcript),
+                "Regarde, DictationViewModel.swift."
+            )
+        }
+    }
+
     func testPreapplyApprovedMappingDoesNotRewriteInsideIdentifier() {
         XCTAssertEqual(
             RepoVocabularyMatcher.preapplying(
