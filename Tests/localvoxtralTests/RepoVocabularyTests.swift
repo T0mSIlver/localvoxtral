@@ -330,6 +330,70 @@ final class TerminalDescendantProcessResolverTests: XCTestCase {
         )
         XCTAssertEqual(result, .none)
     }
+
+    /// A malformed snapshot with a ppid cycle must terminate rather than loop
+    /// forever: pid 101 is a direct child of the terminal, 102's parent is 101,
+    /// and a second (malformed) record makes 101's parent ALSO 102 — so 101 and
+    /// 102 mutually parent each other. The descendant `Set` breaks the cycle
+    /// (a revisit is a non-inserting no-op), the walk halts, and — both cyclic
+    /// descendants sharing one repo — the sane result is `.unique`.
+    func testCyclicPPIDDataTerminates() throws {
+        let repo = try makeRepo(named: "cycle")
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 100,
+            processSnapshot: {
+                [
+                    .init(pid: 101, parentPID: 100),  // 101 is under the terminal
+                    .init(pid: 102, parentPID: 101),  // 102's parent is 101
+                    .init(pid: 101, parentPID: 102),  // malformed back-edge: 101's parent is also 102
+                ]
+            },
+            workingDirectoryForPID: { pid in
+                [101, 102].contains(pid) ? repo.path : nil
+            }
+        )
+
+        XCTAssertEqual(result, .unique(repo.resolvingSymlinksInPath().path))
+    }
+
+    /// Two descendants whose CWDs are DIFFERENT symlink-alias spellings of the
+    /// SAME repo root (the `/var` vs `/private/var` shape, here an explicit
+    /// symlink) must collapse to one canonical root and resolve `.unique`, not
+    /// be mistaken for two repos (`.ambiguous`). Exercises the
+    /// `resolvingSymlinksInPath()` canonicalization in `resolveGitRoot`.
+    func testSymlinkAliasCWDsCanonicalizeToUnique() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-symlink-\(UUID().uuidString)")
+        let realRepo = base.appendingPathComponent("real")
+        try FileManager.default.createDirectory(
+            at: realRepo.appendingPathComponent(".git"), withIntermediateDirectories: true
+        )
+        let aliasRepo = base.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: aliasRepo, withDestinationURL: realRepo)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 100,
+            processSnapshot: {
+                [
+                    .init(pid: 101, parentPID: 100),
+                    .init(pid: 102, parentPID: 100),
+                ]
+            },
+            workingDirectoryForPID: { pid in
+                switch pid {
+                case 101: realRepo.path    // real spelling
+                case 102: aliasRepo.path   // symlink-alias spelling of the same root
+                default: nil
+                }
+            }
+        )
+
+        let expected = URL(fileURLWithPath: realRepo.path)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        XCTAssertEqual(result, .unique(expected))
+    }
 }
 
 // MARK: - Git-root walk + HEAD/branch parsing (fixture dirs, no git binary)
@@ -1229,6 +1293,26 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             }
         )
         XCTAssertEqual(entries?.first?.replaceWith, "useAuth.ts")
+    }
+
+    /// Fail-closed at the `entries()` level: an unusable (nil) title plus a
+    /// valid terminal PID whose process snapshot is EMPTY must yield no
+    /// vocabulary. No descendants is not a resolution — `resolveGitRoot`
+    /// returns `.none`, `entries` finds no git root, and the whole pipeline
+    /// returns nil (never reading a CWD).
+    func testEmptySnapshotFailsClosedAtEntriesLevel() async {
+        let entries = await RepoVocabularyService.entries(
+            forWindowTitle: nil,
+            terminalApplicationPID: 800,
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            processSnapshot: { [] },
+            workingDirectoryForPID: { _ in
+                XCTFail("no descendants exist; cwd must not be read")
+                return nil
+            }
+        )
+        XCTAssertNil(entries)
     }
 
     /// Byte-cap path of the real subprocess runner: a tiny `maxBytes` trips the
