@@ -133,7 +133,11 @@ final class VoxtralRealtimeDecoderAttention: Module {
             let causal = kPos .<= qPos
             let window = kPos .>= (qPos - MLXArray(Int32(slidingWindow - 1)))
             let allowed = logicalAnd(causal, window)
-            let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9))
+            // LOCAL FIX (see VENDORED.md): build the additive mask in the activation dtype.
+            // Once the hidden state is fp16 (the dtype fixes above), a float32 mask makes
+            // scaled_dot_product_attention abort ("Mask type must promote to output type
+            // float16"). Required companion to the float32-leak fix, not optional polish.
+            let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9)).asType(q.dtype)
             maskMode = .array(mask)
         }
 
