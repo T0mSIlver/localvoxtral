@@ -96,11 +96,11 @@ do_run() {
   # so this isolates which one breaks correctness — and what each is worth on its own.
   #   fast-none = vendored with everything OFF; MUST match stock, proving the vendoring itself
   #               is faithful and the fault is in one of the three changes.
-  run_cfg() {  # name rope async mask head fp16 keepcache [extra args...]
-    local name="$1" rope="$2" async="$3" mask="$4" head="$5" fp16="$6" keep="$7"; shift 7
-    echo "==> [$name] EN (rope=$rope async=$async mask=$mask head=$head fp16=$fp16 keepcache=$keep)"
+  run_cfg() {  # name rope async mask head fp16 keepcache ropecast [extra args...]
+    local name="$1" rope="$2" async="$3" mask="$4" head="$5" fp16="$6" keep="$7" rc="$8"; shift 8
+    echo "==> [$name] EN (rope=$rope async=$async mask=$mask head=$head fp16=$fp16 keep=$keep ropecast=$rc)"
     VOXFAST_ROPE="$rope" VOXFAST_ASYNC="$async" VOXFAST_MASK="$mask" VOXFAST_HEAD="$head" \
-    VOXFAST_FP16="$fp16" VOXFAST_KEEPCACHE="$keep" \
+    VOXFAST_FP16="$fp16" VOXFAST_KEEPCACHE="$keep" VOXFAST_ROPECAST="$rc" \
       "$BIN" --engine fast --repo "$MODEL_REPO" --wav "$OUT_DIR/en.wav" \
         --expected "$OUT_DIR/en.txt" --chunks "80" --delays "default" --label "$name" \
         "${WS_ARGS[@]}" "$@" \
@@ -119,9 +119,12 @@ do_run() {
   # Final attribution. fp16 (mel cast + adaScale cast + fp16 params) is the load-bearing
   # one: it stops the float32 hidden state from upcasting the 805MB tied embedding on
   # every token.
-  run_cfg fast-none  0 0 0 0 0 0
-  run_cfg fast-fp16  0 0 0 0 1 0
-  run_cfg fast-all   1 1 1 1 1 1
+  # fast-min = the MINIMAL upstream-shaped fix, isolated: manual RoPE made dtype-preserving
+  # (ropecast) + adaScale/conv-seam casts (fp16), and NOTHING else. If this alone reaches
+  # parity, that is the patch worth sending upstream.
+  run_cfg fast-none  0 0 0 0 0 0 0
+  run_cfg fast-min   0 0 0 0 1 0 1
+  run_cfg fast-all   1 1 1 1 1 1 1
 
   # Where does the ~130 ms/step actually go? Phase-attributed, all optimizations on.
   echo "==> [profile] EN (phase breakdown)"

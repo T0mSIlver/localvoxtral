@@ -18,9 +18,12 @@ public enum FastFlags {
     static let fp16 = ProcessInfo.processInfo.environment["VOXFAST_FP16"] != "0"
     /// Don't dump the Metal buffer pool on every chunk.
     static let keepCache = ProcessInfo.processInfo.environment["VOXFAST_KEEPCACHE"] != "0"
+    /// Manual RoPE, but dtype-preserving (cast cos/sin to the activation dtype). The
+    /// minimal, upstream-shaped alternative to swapping in the fused MLXFast.RoPE kernel.
+    static let ropeCast = ProcessInfo.processInfo.environment["VOXFAST_ROPECAST"] != "0"
 
     public static var description: String {
-        "rope=\(fusedRoPE ? 1 : 0) async=\(asyncDecode ? 1 : 0) mask=\(maskDtype ? 1 : 0) head=\(fusedHead ? 1 : 0) fp16=\(fp16 ? 1 : 0) keepcache=\(keepCache ? 1 : 0)"
+        "rope=\(fusedRoPE ? 1 : 0) async=\(asyncDecode ? 1 : 0) mask=\(maskDtype ? 1 : 0) head=\(fusedHead ? 1 : 0) fp16=\(fp16 ? 1 : 0) keepcache=\(keepCache ? 1 : 0) ropecast=\(ropeCast ? 1 : 0)"
     }
 }
 
