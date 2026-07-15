@@ -1378,7 +1378,19 @@ enum ClipboardVocabulary {
 
     private static func isSupplementalTechnicalEntity(_ value: String) -> Bool {
         guard value.count >= 7 else { return false }
-        if value.contains(where: { "._/$#():-".contains($0) }) { return true }
+        let envBody = value.drop(while: { $0 == "$" })
+        let isLongEnvironmentVariable = envBody.contains("_")
+            && envBody.contains(where: { $0.isLetter })
+            && envBody.allSatisfy { $0 == "_" || $0.isUppercase || $0.isNumber }
+        if isLongEnvironmentVariable { return true }
+
+        if let openParen = value.firstIndex(of: "("),
+           openParen != value.startIndex,
+           value.hasSuffix(")")
+        {
+            return true
+        }
+
         let hasLowercase = value.contains { $0.isLowercase }
         let hasInternalUppercase = value.dropFirst().contains { $0.isUppercase }
         let hasLetter = value.contains { $0.isLetter }

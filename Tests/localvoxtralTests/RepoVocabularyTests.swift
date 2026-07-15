@@ -803,6 +803,27 @@ final class ClipboardVocabularyTests: XCTestCase {
         )
     }
 
+    func testSupplementalEntitiesRejectColonAndHyphenatedProse() {
+        let cases: [(excerpt: String, transcript: String)] = [
+            ("Description: details", "description"),
+            ("well-known", "well known"),
+        ]
+
+        for item in cases {
+            XCTAssertTrue(
+                ClipboardVocabulary.entities(inExcerpt: item.excerpt).isEmpty,
+                "excerpt: \(item.excerpt)"
+            )
+            XCTAssertTrue(
+                ClipboardVocabulary.candidateEntries(
+                    transcript: item.transcript,
+                    excerpt: item.excerpt
+                ).isEmpty,
+                "excerpt: \(item.excerpt)"
+            )
+        }
+    }
+
     func testProseExcerptYieldsNoEntities() {
         XCTAssertTrue(
             ClipboardVocabulary.entities(
