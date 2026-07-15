@@ -223,6 +223,8 @@ quits. Accepted WAVs are installed atomically and journaled first, so a crash or
 interrupted Swift invocation does not lose prior takes. Do not use `--redo`
 unless intentionally replacing accepted audio. The complete operator guide and
 data-safety details live in `EvalCorpus/agent-dictation/README.md`.
+For a focused retry, repeat `--case <id>` in one invocation; the recorder
+replaces only those selected takes and preserves the rest of the manifest.
 
 While the set is incomplete, run `scripts/run-agent-eval-local.sh --subset ...`;
 this selects recorded speech rows but still runs every polish-only required

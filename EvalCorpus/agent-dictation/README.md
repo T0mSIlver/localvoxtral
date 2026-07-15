@@ -48,7 +48,9 @@ normalized WAV that the eval will score, re-record, skip, or quit. The default m
 through macOS's native audio recorder, then converts offline to the eval's
 16 kHz mono format; explicit numeric device indexes retain the ffmpeg capture
 fallback. Running the same command again resumes the set; `--lang en`,
-`--case <id>`, `--redo`, and `--list` are available for focused passes.
+repeatable `--case <id>`, `--redo`, and `--list` are available for focused
+passes. Repeating `--case` records the selected cases in one process and leaves
+every other accepted take in the set untouched.
 
 An in-progress set can be scored without waiting for 146/146. This mode runs
 speech-driven IDs with accepted human recordings plus every audio-independent
