@@ -631,6 +631,34 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertEqual(run.status, 0, run.output)
     }
 
+    func testAblationAppendRecoversAfterPartialFinalJSONLLine() throws {
+        let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
+        let snippet = #"""
+        import contextlib, importlib.util, io, pathlib, sys, tempfile
+        spec = importlib.util.spec_from_file_location("agent_ablation", sys.argv[1])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "results.jsonl"
+            path.write_text('{"caseID":"orphan"', encoding="utf-8")
+            valid = {
+                "caseID": "complete",
+                "requestHash": "complete-hash",
+                "output": "kept",
+            }
+            module.append_result(path, valid)
+            warnings = io.StringIO()
+            with contextlib.redirect_stderr(warnings):
+                loaded = module.load_results(path)
+            assert loaded == {"complete-hash": valid}
+            assert "warning: skipped 1 malformed/interleaved result value(s)" in warnings.getvalue()
+        """#
+        let run = try runPython(["-c", snippet, script.path])
+        XCTAssertEqual(run.status, 0, run.output)
+    }
+
     func testAblationRendersCurrentPromptsAndAttributesTechnicalTermFailures() throws {
         let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
         let snippet = #"""

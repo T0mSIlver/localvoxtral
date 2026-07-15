@@ -1019,13 +1019,20 @@ def load_results(path: Path) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     if not path.exists():
         return results
+    malformed = 0
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             item = json.loads(line)
         except json.JSONDecodeError:
+            malformed += 1
             continue
         if item.get("requestHash") and item.get("output") is not None:
             results[item["requestHash"]] = item
+    if malformed:
+        print(
+            f"warning: skipped {malformed} malformed/interleaved result value(s)",
+            file=sys.stderr,
+        )
     return results
 
 
@@ -1093,7 +1100,16 @@ def request_experiment(
 
 def append_result(path: Path, item: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    needs_separator = False
+    if path.exists():
+        with path.open("rb") as existing:
+            existing.seek(0, 2)
+            if existing.tell() > 0:
+                existing.seek(-1, 2)
+                needs_separator = existing.read(1) != b"\n"
     with path.open("a", encoding="utf-8") as handle:
+        if needs_separator:
+            handle.write("\n")
         handle.write(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n")
         handle.flush()
 
