@@ -173,6 +173,12 @@ final class VoxtralRealtimeEncoderAttention: Module {
             // Once the hidden state is fp16 (the dtype fixes above), a float32 mask makes
             // scaled_dot_product_attention abort ("Mask type must promote to output type
             // float16"). Required companion to the float32-leak fix, not optional polish.
+            // -1e9 overflows fp16 to -inf, which is the correct additive-mask value for a
+            // PARTIALLY masked row. It would only NaN a FULLY masked row (softmax over all
+            // -inf). That can't happen here: within a sliding-window block the total length is
+            // <= sw so caches never trim and every query keeps its own (diagonal) key; the
+            // offline chunked path likewise always retains the query's own position. So every
+            // row has >= 1 unmasked key. (Live path: reached by feedIncremental blocks 2+.)
             let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9)).asType(q.dtype)
             maskMode = .array(mask)
         }

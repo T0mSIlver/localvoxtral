@@ -56,14 +56,34 @@ final class StreamingDeltaTests: XCTestCase {
         XCTAssertFalse(step.wasRewrite)
     }
 
-    func testGenuineRewriteNeverEmitsContradictingText() {
-        // If the text truly diverges (not just a provisional char), we must not append text
-        // that contradicts what was already shown; we extend only along the common prefix.
+    func testGenuineRewriteHoldsInsteadOfMovingEmittedBackwards() {
+        // On a true divergence we must NOT shrink `emitted` (the consumer already typed it and
+        // can't un-type). Emit nothing, keep `emitted` == what was typed, flag the rewrite.
         let step = StreamingDelta.next(previouslyEmitted: "hello wXY", fullText: "hello world")
-        XCTAssertTrue("hello wXY".hasPrefix("hello w" + String(step.delta.prefix(0))))
-        XCTAssertFalse(step.emitted.hasPrefix("hello wXYZ"))
+        XCTAssertEqual(step.delta, "")
+        XCTAssertEqual(step.emitted, "hello wXY", "emitted must never move backwards")
         XCTAssertTrue(step.wasRewrite)
-        XCTAssertTrue("hello world".hasPrefix(step.emitted))
+    }
+
+    func testRewriteThenExtensionNeverGarblesAcrossSteps() {
+        // The regression the module exists to prevent: a rewrite followed by more text must not
+        // append a suffix onto stale on-screen text. Before the fix this produced "hello wXYorld".
+        let r = replay(["hello wXY", "hello world", "hello world"])
+        XCTAssertNotEqual(r.concatenated, "hello wXYorld")
+        // Append-only invariant: the running concatenation is always a prefix of itself over time
+        // and never contains contradicting interleaving. Here it holds at "hello wXY".
+        XCTAssertEqual(r.concatenated, "hello wXY")
+        XCTAssertEqual(r.rewrites, 2)
+    }
+
+    func testEmittedPlusDeltaAlwaysEqualsEmitted_invariant() {
+        // The core invariant, checked over a mixed sequence incl. a divergence.
+        var emitted = ""
+        for full in ["ab", "abc", "abX", "abcd", "abcde"] {
+            let step = StreamingDelta.next(previouslyEmitted: emitted, fullText: full)
+            XCTAssertEqual(emitted + step.delta, step.emitted, "invariant violated at fullText=\(full)")
+            emitted = step.emitted
+        }
     }
 
     func testStablePrefixDropsOnlyTrailingReplacementChars() {

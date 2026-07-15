@@ -54,7 +54,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "localvoxtral-speechd",
-            dependencies: ["SpeechEngine"]
+            dependencies: ["SpeechEngine", "SpeechEngineText"]
         ),
     ]
 )

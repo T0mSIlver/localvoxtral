@@ -50,26 +50,13 @@ public enum StreamingDelta {
             )
         }
 
-        // Divergence beyond a provisional trailing char. Never emit contradicting text:
-        // extend only along the longest common prefix, and flag the rewrite.
-        let common = commonPrefixCount(previouslyEmitted, stable)
-        let emitted = String(stable.prefix(common))
-        return Result(
-            delta: String(emitted.dropFirst(min(previouslyEmitted.count, emitted.count))),
-            emitted: emitted,
-            wasRewrite: true
-        )
-    }
-
-    private static func commonPrefixCount(_ a: String, _ b: String) -> Int {
-        var count = 0
-        var ai = a.startIndex
-        var bi = b.startIndex
-        while ai < a.endIndex, bi < b.endIndex, a[ai] == b[bi] {
-            count += 1
-            ai = a.index(after: ai)
-            bi = b.index(after: bi)
-        }
-        return count
+        // Divergence beyond a provisional trailing char (should not happen at temperature 0).
+        // The consumer has ALREADY typed `previouslyEmitted` and cannot un-type it, so we must
+        // never move `emitted` backwards: doing so would let a later forward extension append a
+        // suffix onto text the screen no longer matches, garbling it (e.g. "hello wXY" then
+        // "hello world" → "hello wXYorld"). Instead hold: emit nothing and keep `emitted`
+        // pinned to what was actually typed. Worst case is a stuck/slightly-wrong tail — strictly
+        // safer than duplication for a no-backspace sink. `wasRewrite` surfaces it for logging.
+        return Result(delta: "", emitted: previouslyEmitted, wasRewrite: true)
     }
 }

@@ -137,6 +137,12 @@ final class VoxtralRealtimeDecoderAttention: Module {
             // Once the hidden state is fp16 (the dtype fixes above), a float32 mask makes
             // scaled_dot_product_attention abort ("Mask type must promote to output type
             // float16"). Required companion to the float32-leak fix, not optional polish.
+            // See the encoder's note on -1e9→-inf. NOTE: this decoder `.array` branch is not
+            // reached under the current config — single-token decode uses `.none` and prefill
+            // (promptLength ≈ 39 ≪ slidingWindow 8192) uses `.causal`. It's defensive. If a
+            // future config ever made promptLength > slidingWindow, prefill would enter here AND
+            // trim, fully-masking early query rows (qPos < trim) → NaN under the fp16 -inf mask.
+            // Revisit the sentinel value (e.g. a finite fp16 floor) before enabling that.
             let mask = MLX.where(allowed, MLXArray(0.0), MLXArray(-1e9)).asType(q.dtype)
             maskMode = .array(mask)
         }
