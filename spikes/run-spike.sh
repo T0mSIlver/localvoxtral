@@ -123,7 +123,7 @@ do_run() {
   # (ropecast) + adaScale/conv-seam casts (fp16), and NOTHING else. If this alone reaches
   # parity, that is the patch worth sending upstream.
   run_cfg fast-none  0 0 0 0 0 0 0
-  run_cfg fast-min   0 0 0 0 1 0 1
+  run_cfg fast-min   0 0 1 0 1 0 1
   run_cfg fast-all   1 1 1 1 1 1 1
 
   # Where does the ~130 ms/step actually go? Phase-attributed, all optimizations on.
