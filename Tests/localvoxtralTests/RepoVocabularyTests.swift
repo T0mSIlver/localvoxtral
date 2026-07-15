@@ -230,6 +230,172 @@ final class TerminalWorkingDirectoryResolverTests: XCTestCase {
     }
 }
 
+// MARK: - Terminal descendant-process cwd resolver
+
+final class TerminalDescendantProcessResolverTests: XCTestCase {
+    private func makeRepo(named name: String) throws -> URL {
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-process-\(name)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: repo.appendingPathComponent(".git"), withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+        return repo
+    }
+
+    func testNestedDescendantsAgreeOnOneRepoAndUnrelatedProcessIsIgnored() throws {
+        let repo = try makeRepo(named: "one")
+        let nested = repo.appendingPathComponent("Sources/App")
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 100,
+            processSnapshot: {
+                // Reverse order proves traversal does not depend on snapshot order.
+                [
+                    .init(pid: 103, parentPID: 102),
+                    .init(pid: 999, parentPID: 1),
+                    .init(pid: 102, parentPID: 101),
+                    .init(pid: 101, parentPID: 100),
+                ]
+            },
+            workingDirectoryForPID: { pid in
+                switch pid {
+                case 101: repo.path
+                case 102, 103: nested.path
+                case 999: "/definitely/unrelated"
+                default: nil
+                }
+            }
+        )
+
+        XCTAssertEqual(result, .unique(repo.resolvingSymlinksInPath().path))
+    }
+
+    func testDifferentRepoDescendantsAreAmbiguous() throws {
+        let repoA = try makeRepo(named: "a")
+        let repoB = try makeRepo(named: "b")
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 200,
+            processSnapshot: {
+                [
+                    .init(pid: 201, parentPID: 200),
+                    .init(pid: 202, parentPID: 200),
+                ]
+            },
+            workingDirectoryForPID: { $0 == 201 ? repoA.path : repoB.path }
+        )
+
+        XCTAssertEqual(result, .ambiguous)
+    }
+
+    func testUnreadableDescendantFailsClosedInsteadOfHidingAmbiguity() throws {
+        let repo = try makeRepo(named: "readable")
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 300,
+            processSnapshot: {
+                [
+                    .init(pid: 301, parentPID: 300),
+                    .init(pid: 302, parentPID: 300),
+                ]
+            },
+            workingDirectoryForPID: { $0 == 301 ? repo.path : nil }
+        )
+
+        XCTAssertEqual(result, .indeterminate)
+    }
+
+    func testNonRepoDescendantFailsClosedBecauseItCouldBeFocusedTab() throws {
+        let repo = try makeRepo(named: "background")
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 400,
+            processSnapshot: {
+                [
+                    .init(pid: 401, parentPID: 400),
+                    .init(pid: 402, parentPID: 400),
+                ]
+            },
+            workingDirectoryForPID: { $0 == 401 ? repo.path : NSTemporaryDirectory() }
+        )
+        XCTAssertEqual(result, .indeterminate)
+    }
+
+    func testNoDescendantsReturnsNone() {
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 500,
+            processSnapshot: { [.init(pid: 999, parentPID: 1)] },
+            workingDirectoryForPID: { _ in XCTFail("unrelated cwd must not be read"); return nil }
+        )
+        XCTAssertEqual(result, .none)
+    }
+
+    /// A malformed snapshot with a ppid cycle must terminate rather than loop
+    /// forever: pid 101 is a direct child of the terminal, 102's parent is 101,
+    /// and a second (malformed) record makes 101's parent ALSO 102 — so 101 and
+    /// 102 mutually parent each other. The descendant `Set` breaks the cycle
+    /// (a revisit is a non-inserting no-op), the walk halts, and — both cyclic
+    /// descendants sharing one repo — the sane result is `.unique`.
+    func testCyclicPPIDDataTerminates() throws {
+        let repo = try makeRepo(named: "cycle")
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 100,
+            processSnapshot: {
+                [
+                    .init(pid: 101, parentPID: 100),  // 101 is under the terminal
+                    .init(pid: 102, parentPID: 101),  // 102's parent is 101
+                    .init(pid: 101, parentPID: 102),  // malformed back-edge: 101's parent is also 102
+                ]
+            },
+            workingDirectoryForPID: { pid in
+                [101, 102].contains(pid) ? repo.path : nil
+            }
+        )
+
+        XCTAssertEqual(result, .unique(repo.resolvingSymlinksInPath().path))
+    }
+
+    /// Two descendants whose CWDs are DIFFERENT symlink-alias spellings of the
+    /// SAME repo root (the `/var` vs `/private/var` shape, here an explicit
+    /// symlink) must collapse to one canonical root and resolve `.unique`, not
+    /// be mistaken for two repos (`.ambiguous`). Exercises the
+    /// `resolvingSymlinksInPath()` canonicalization in `resolveGitRoot`.
+    func testSymlinkAliasCWDsCanonicalizeToUnique() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-symlink-\(UUID().uuidString)")
+        let realRepo = base.appendingPathComponent("real")
+        try FileManager.default.createDirectory(
+            at: realRepo.appendingPathComponent(".git"), withIntermediateDirectories: true
+        )
+        let aliasRepo = base.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: aliasRepo, withDestinationURL: realRepo)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+
+        let result = TerminalDescendantProcessResolver.resolveGitRoot(
+            terminalApplicationPID: 100,
+            processSnapshot: {
+                [
+                    .init(pid: 101, parentPID: 100),
+                    .init(pid: 102, parentPID: 100),
+                ]
+            },
+            workingDirectoryForPID: { pid in
+                switch pid {
+                case 101: realRepo.path    // real spelling
+                case 102: aliasRepo.path   // symlink-alias spelling of the same root
+                default: nil
+                }
+            }
+        )
+
+        let expected = URL(fileURLWithPath: realRepo.path)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        XCTAssertEqual(result, .unique(expected))
+    }
+}
+
 // MARK: - Git-root walk + HEAD/branch parsing (fixture dirs, no git binary)
 
 final class RepoIndexingWalkTests: XCTestCase {
@@ -1078,6 +1244,75 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             cache: RepoVocabularyCache()
         )
         XCTAssertEqual(titleEntries?.first?.replaceWith, "useAuth.ts")
+
+        // A usable focused-window title disambiguates the focused tab and must
+        // stay tier 1 even when descendant inspection would fail closed.
+        let titlePreferredEntries = await RepoVocabularyService.entries(
+            forWindowTitle: "user@mac: \(repo.path) — zsh",
+            terminalApplicationPID: 700,
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            processSnapshot: { [.init(pid: 701, parentPID: 700)] },
+            workingDirectoryForPID: { _ in nil }
+        )
+        XCTAssertEqual(titlePreferredEntries?.first?.replaceWith, "useAuth.ts")
+    }
+
+    func testTitleClobberedAgentResolvesRepoFromTerminalDescendant() async throws {
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: "/usr/bin/git"))
+
+        let repo = FileManager.default.temporaryDirectory
+            .appendingPathComponent("repovocab-agent-title-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: repo) }
+
+        XCTAssertEqual(runGit(["init", "-b", "main"], in: repo), 0)
+        runGit(["config", "user.email", "test@example.com"], in: repo)
+        runGit(["config", "user.name", "Test"], in: repo)
+        runGit(["config", "commit.gpgsign", "false"], in: repo)
+        try "export const useAuth = () => {}\n".write(
+            to: repo.appendingPathComponent("useAuth.ts"), atomically: true, encoding: .utf8
+        )
+        XCTAssertEqual(runGit(["add", "-A"], in: repo), 0)
+        XCTAssertEqual(runGit(["commit", "-m", "init"], in: repo), 0)
+
+        let entries = await RepoVocabularyService.entries(
+            forWindowTitle: "Claude Code",
+            terminalApplicationPID: 400,
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            processSnapshot: {
+                [
+                    .init(pid: 401, parentPID: 400), // shell
+                    .init(pid: 402, parentPID: 401), // coding agent
+                    .init(pid: 999, parentPID: 1),   // unrelated process
+                ]
+            },
+            workingDirectoryForPID: { pid in
+                [401, 402].contains(pid) ? repo.path : nil
+            }
+        )
+        XCTAssertEqual(entries?.first?.replaceWith, "useAuth.ts")
+    }
+
+    /// Fail-closed at the `entries()` level: an unusable (nil) title plus a
+    /// valid terminal PID whose process snapshot is EMPTY must yield no
+    /// vocabulary. No descendants is not a resolution — `resolveGitRoot`
+    /// returns `.none`, `entries` finds no git root, and the whole pipeline
+    /// returns nil (never reading a CWD).
+    func testEmptySnapshotFailsClosedAtEntriesLevel() async {
+        let entries = await RepoVocabularyService.entries(
+            forWindowTitle: nil,
+            terminalApplicationPID: 800,
+            transcript: "open use auth dot t s please",
+            cache: RepoVocabularyCache(),
+            processSnapshot: { [] },
+            workingDirectoryForPID: { _ in
+                XCTFail("no descendants exist; cwd must not be read")
+                return nil
+            }
+        )
+        XCTAssertNil(entries)
     }
 
     /// Byte-cap path of the real subprocess runner: a tiny `maxBytes` trips the

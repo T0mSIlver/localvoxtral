@@ -444,7 +444,8 @@ final class DictationViewModel {
     /// marker was spoken.
     @ObservationIgnored
     var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
-    /// Test seam: replaces the whole AX-title -> git-index -> match pipeline of
+    /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
+    /// pipeline of
     /// `repoVocabularyEntriesIfEnabled` with a closure returning the entries for
     /// a given transcript, so VM tests exercise the setting + loopback gates
     /// without touching live AX or a git subprocess. Consulted only AFTER those
@@ -454,8 +455,8 @@ final class DictationViewModel {
     /// tests can read main-actor stub state inside it.
     @ObservationIgnored
     var debugRepoVocabularyEntriesOverride: (@MainActor (String) -> [ReplacementEntry]?)?
-    /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title +
-    /// cwd resolve + git index + match) while keeping the deadline race in
+    /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
+    /// process cwd + git index + match) while keeping the deadline race in
     /// play, so tests can inject a never-completing pipeline and prove the
     /// commit still proceeds (without vocabulary) when the deadline expires.
     @ObservationIgnored

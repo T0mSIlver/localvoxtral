@@ -1236,18 +1236,20 @@ extension DictationViewModel {
     /// setting is on AND the polishing endpoint is loopback (repo file names must
     /// never ride to a remote endpoint, same privacy stance as clipboard
     /// context). Both gates short-circuit before any AX read or subprocess.
-    /// Only the AX title read happens on the main actor (with a 0.5 s AX
-    /// messaging timeout); everything blocking-ish — FS stats on the title's
-    /// path candidates (possibly a stale network mount), the git subprocess
-    /// (2 s timeout), and the n-gram match over a possibly-20k-term vocabulary
-    /// — runs in one detached hop RACED against
+    /// Only the AX title and captured-app identity reads happen on the main
+    /// actor (with a 0.5 s AX messaging timeout); everything blocking-ish — FS
+    /// stats on the title/process CWD candidates (possibly a stale network
+    /// mount), the process-table/CWD reads, the git subprocess (2 s timeout),
+    /// and the n-gram match over a possibly-20k-term vocabulary — runs in one
+    /// detached hop RACED against
     /// `repoVocabularyPipelineDeadline`, so no blocked syscall can ever wedge
     /// the commit. A single-flight gate caps the cost of abandonment at one
     /// blocked pool thread: while an abandoned pipeline is still wedged,
     /// subsequent commits fast-skip vocabulary instead of stacking more
     /// blocked threads until the pool (and the deadline itself) starves.
-    /// Returns nil (silent skip) when off, remote, no terminal window, no
-    /// repo, no transcript-relevant match, deadline expiry, or in-flight skip.
+    /// Returns nil (silent skip) when off, remote, no trustworthy terminal
+    /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
+    /// skip.
     func repoVocabularyEntriesIfEnabled(
         endpointURL: URL,
         transcript: String
@@ -1327,8 +1329,10 @@ extension DictationViewModel {
         }
     }
 
-    /// The detached title -> cwd -> index -> match pipeline as a task, or nil
-    /// when there is no window title to start from. Split out so the deadline
+    /// The detached focused-title/terminal-PID -> cwd -> index -> match
+    /// pipeline as a task. A title is optional because foreground terminal
+    /// programs commonly overwrite it; the captured terminal app PID enables
+    /// the conservative descendant-CWD fallback. Split out so the deadline
     /// race above stays readable and the DEBUG pipeline seam replaces exactly
     /// the detached section (keeping the race in play for deadline tests).
     private func makeRepoVocabularyPipelineTask(
@@ -1339,14 +1343,31 @@ extension DictationViewModel {
             return Task.detached(priority: .utility) { await override(transcript) }
         }
         #endif
-        guard let title = resolveCommitTargetWindowTitle() else {
-            Log.polishing.info("Repo vocabulary: no terminal window title available")
+        guard let terminalApplicationPID = overlayBufferCoordinator.commitTargetAppPID else {
+            Log.polishing.info("Repo vocabulary: no terminal application PID available")
             return nil
+        }
+        let title = TerminalWorkingDirectoryResolver.windowTitle(
+            forApplicationPID: terminalApplicationPID
+        )
+        let targetBundleID = resolveTargetAppBundleID()
+        let processFallbackPID: pid_t?
+        if let targetBundleID,
+           TerminalTargetDetector.isTerminalLikeBundleID(targetBundleID)
+            || appConfigStore.loadTerminalAppBundleIDs().contains(targetBundleID)
+        {
+            processFallbackPID = terminalApplicationPID
+        } else {
+            // Descendant CWDs only have the intended meaning for terminal
+            // emulators. Other apps (IDEs especially) may own build helpers in
+            // unrelated repos; never treat those as a focused-terminal signal.
+            processFallbackPID = nil
         }
         let cache = repoVocabularyCache
         return Task.detached(priority: .utility) {
             await RepoVocabularyService.entries(
                 forWindowTitle: title,
+                terminalApplicationPID: processFallbackPID,
                 transcript: transcript,
                 cache: cache
             )
@@ -1362,14 +1383,6 @@ extension DictationViewModel {
         return {
             try? await Task.sleep(for: Self.repoVocabularyPipelineDeadline)
         }
-    }
-
-    /// The focused/main window title of the app owning the overlay commit PID
-    /// (the same source `resolveTargetAppBundleID` uses). Main-actor AX read;
-    /// nil on any failure.
-    private func resolveCommitTargetWindowTitle() -> String? {
-        guard let pid = overlayBufferCoordinator.commitTargetAppPID else { return nil }
-        return TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID: pid)
     }
 
     private func resolveClipboardPayloadPasteboardReader() -> any PasteboardReading {
