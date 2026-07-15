@@ -644,7 +644,8 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // instructions placed after the input text (documented model-family
         // quirk), so the context block must always precede it.
         XCTAssertTrue(prompts[1].hasSuffix("fix the user session manager"))
-        // "UserSessionManager.swift" is 24 characters, untruncated.
+        // No explicit filename cue was spoken, so the fallback deliberately
+        // leaves the exact entity as context instead of forcing `.swift`.
         XCTAssertEqual(record?.polishContextSummary, "clipboard:24ch")
     }
 
@@ -1043,6 +1044,23 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         )
     }
 
+    /// Clipboard vocabulary must never rewrite the payload macro placeholder,
+    /// even when the copied entity normalizes to the placeholder body. The
+    /// identity polisher then commits the real payload exactly once.
+    func testClipboardGroundingCannotRewritePayloadPlaceholder() async throws {
+        let clipboardText = "lvClipboardPayload"
+        let result = await runClipboardPayloadMacroSession(
+            transcript: "paste clipboard",
+            contextEnabled: true,
+            payloadPasteboard: PasteboardStub(string: clipboardText),
+            contextPasteboard: PasteboardStub(string: clipboardText)
+        )
+
+        XCTAssertEqual(result.request?.inputText, ClipboardPayloadMacro.placeholder)
+        XCTAssertEqual(result.committedText, "`\(clipboardText)`")
+        XCTAssertEqual(result.record?.polishedText, ClipboardPayloadMacro.placeholder)
+    }
+
     /// The polish DUPLICATED the placeholder (payload would paste twice): the
     /// placeholder-count check discards the polish, and the committed text is
     /// the substituted pre-polish working text with the payload exactly once.
@@ -1209,6 +1227,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertEqual(counter.count, 1)
         let prompts = try XCTUnwrap(request?.userPrompts)
         let joined = prompts.joined(separator: "\n")
+        XCTAssertEqual(request?.inputText, "open useAuth.ts and fix the import")
         XCTAssertTrue(joined.contains("Repository vocabulary"))
         XCTAssertTrue(joined.contains("useAuth.ts"))
         XCTAssertTrue(joined.contains("use auth dot t s"))
@@ -1348,9 +1367,9 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertNotNil(savedRecord?.polishContextSummary)
     }
 
-    /// The full vocabulary path end to end: the entry asks the model to fix the
-    /// misheard `useauth.ts` to the repo's `useAuth.ts`, and standard-profile
-    /// commit preserves the model's correction.
+    /// The full vocabulary path end to end: exact repo bytes are placed before
+    /// the model call, so even an identity model commits `useAuth.ts` rather
+    /// than depending on the model to reproduce the prompt hint.
     func testVocabularyRewriteCommitsInStandardProfile() async {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -1367,10 +1386,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        // The model applies exactly the injected vocabulary correction.
-        let service = RecordingPolishingService(transform: {
-            $0.replacingOccurrences(of: "useauth.ts", with: "useAuth.ts")
-        })
+        let service = RecordingPolishingService()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1391,6 +1407,8 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.finishStoppedSession(promotePendingSegment: false)
         await waitUntilStoppedSessionCompletes(viewModel)
 
+        let capturedRequest = await service.capturedRequest
+        XCTAssertEqual(capturedRequest?.inputText, "open useAuth.ts and fix the import")
         XCTAssertEqual(
             viewModel.currentDictationEventText,
             "open useAuth.ts and fix the import"
@@ -1419,13 +1437,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        // The model applies exactly the clipboard-grounded correction.
-        let service = RecordingPolishingService(transform: {
-            $0.replacingOccurrences(
-                of: "user session manager.swift",
-                with: "UserSessionManager.swift"
-            )
-        })
+        let service = RecordingPolishingService()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1455,6 +1467,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // The matched entity also rode the dictionary slot as a hint entry.
         let capturedRequest = await service.capturedRequest
         let request = try XCTUnwrap(capturedRequest)
+        XCTAssertEqual(request.inputText, "look at UserSessionManager.swift")
         XCTAssertTrue(
             request.userPrompts.contains {
                 $0.contains(RepoVocabularyMatcher.clipboardVocabularyHeader)
@@ -1487,12 +1500,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
             promptTemplates: template,
             agentPromptTemplates: template
         )
-        let service = RecordingPolishingService(transform: {
-            $0.replacingOccurrences(
-                of: "user session manager.swift",
-                with: "UserSessionManager.swift"
-            )
-        })
+        let service = RecordingPolishingService()
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: MockOverlayCoordinator(),
@@ -1520,6 +1528,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         // No dictionary slot: the hint section must not appear anywhere.
         let capturedRequest = await service.capturedRequest
         let request = try XCTUnwrap(capturedRequest)
+        XCTAssertEqual(request.inputText, "look at UserSessionManager.swift")
         XCTAssertFalse(
             request.userPrompts.contains {
                 $0.contains(RepoVocabularyMatcher.clipboardVocabularyHeader)

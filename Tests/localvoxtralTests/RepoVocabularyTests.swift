@@ -467,6 +467,210 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         XCTAssertEqual(result.first?.replaceWith, "useAuth.ts")
     }
 
+    func testGroundedFuzzyTierAbstainsForTiedDistanceOneCandidates() {
+        let transcript = "Open ConfigC.swift."
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: transcript,
+            vocabulary: RepoVocabulary(
+                terms: ["ConfigA.swift", "ConfigB.swift"],
+                branch: nil
+            )
+        )
+
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(entries: result, to: transcript),
+            transcript
+        )
+    }
+
+    func testGroundedCandidatesUseAlignedFallbackAfterExistingMatcherMisses() {
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "Open uzoft.ts and add a null check.",
+            vocabulary: RepoVocabulary(terms: ["useAuth.ts"], branch: nil)
+        )
+        XCTAssertEqual(
+            result,
+            [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["uzoft.ts"])]
+        )
+    }
+
+    func testAlignedFallbackRecoversLongFrenchPhoneticDamage() {
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "Regarde de dictation vie ou modèle.",
+            vocabulary: RepoVocabulary(terms: ["DictationViewModel.swift"], branch: nil)
+        )
+        XCTAssertEqual(result.first?.replaceWith, "DictationViewModel.swift")
+        XCTAssertEqual(result.first?.matches, ["dictation vie ou modèle"])
+    }
+
+    func testAlignedFallbackRecoversRecordedContextMisses() {
+        let cases: [(transcript: String, exact: String, heard: String)] = [
+            (
+                "Rebase my brand John to feed/Polish helper MLX Swift.",
+                "feat/polish-helper-mlx-swift",
+                "feed/Polish helper MLX Swift"
+            ),
+            (
+                "Why is local voxtral cotisin identity not picked up by the runner?",
+                "LOCALVOXTRAL_CODESIGN_IDENTITY",
+                "local voxtral cotisin identity"
+            ),
+            (
+                "The crash is in Pozik's pipe read next Chong.",
+                "POSIXPipeRead.nextChunk(fromDescriptor:)",
+                "Pozik's pipe read next Chong"
+            ),
+            (
+                "Pourquoi la variable locale Voxtral co-design identity est ignorée?",
+                "LOCALVOXTRAL_CODESIGN_IDENTITY",
+                "locale Voxtral co-design identity"
+            ),
+            (
+                "Move the token refresh into off service.ts.",
+                "AuthService.ts",
+                "service.ts"
+            ),
+        ]
+
+        for item in cases {
+            let result = RepoVocabularyMatcher.groundedCandidateEntries(
+                transcript: item.transcript,
+                vocabulary: RepoVocabulary(terms: [item.exact], branch: nil)
+            )
+            XCTAssertEqual(result.first?.replaceWith, item.exact, item.transcript)
+            XCTAssertEqual(result.first?.matches, [item.heard], item.transcript)
+        }
+    }
+
+    func testAlignedFallbackAbstainsWhenCandidatesAreAmbiguous() {
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "Open auth sir vice here.",
+            vocabulary: RepoVocabulary(
+                terms: ["AuthService.ts", "AuthServices.ts"],
+                branch: nil
+            )
+        )
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+    }
+
+    func testAlignedFallbackAbstainsOnUnrelatedProse() {
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "Please improve the error message for users.",
+            vocabulary: RepoVocabulary(
+                terms: ["UserSessionManager.swift", "AuthService.ts"],
+                branch: nil
+            )
+        )
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+    }
+
+    func testAlignedFallbackDoesNotForceUnspokenFileExtensionWithoutFileCue() {
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "Fix the user session manager.",
+            vocabulary: RepoVocabulary(terms: ["UserSessionManager.swift"], branch: nil)
+        )
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+    }
+
+    func testAlignedFallbackAbstainsOnGluedSingleTokenThatWouldDeleteProse() {
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "Ouvreusot.ts maintenant.",
+            vocabulary: RepoVocabulary(terms: ["useAuth.ts"], branch: nil)
+        )
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+    }
+
+    func testPreapplyApprovedMappingPreservesPunctuation() {
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: [
+                    ReplacementEntry(
+                        replaceWith: "useAuth.ts",
+                        matches: ["use auth dot t s"]
+                    )
+                ],
+                to: "Open use auth dot t s, then add a null check."
+            ),
+            "Open useAuth.ts, then add a null check."
+        )
+    }
+
+    func testPreapplyApprovedMappingsUsesLongestAliasFirst() {
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: [
+                    ReplacementEntry(replaceWith: "Auth", matches: ["auth"]),
+                    ReplacementEntry(
+                        replaceWith: "AuthService.ts",
+                        matches: ["auth service dot t s"]
+                    ),
+                ],
+                to: "Open auth service dot t s and inspect auth."
+            ),
+            "Open AuthService.ts and inspect Auth."
+        )
+    }
+
+    func testPreapplyRepoClipboardConflictUsesLongerExactTermPrecedence() {
+        let repoEntry = ReplacementEntry(
+            replaceWith: "RepoAPI",
+            matches: ["heard api"]
+        )
+        let clipboardEntry = ReplacementEntry(
+            replaceWith: "ClipboardAPI",
+            matches: ["heard api"]
+        )
+
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: [repoEntry, clipboardEntry],
+                to: "Open heard api."
+            ),
+            "Open ClipboardAPI."
+        )
+    }
+
+    func testFrenchComposedAndDecomposedAccentsFallbackAndPreapplyPreservePunctuation() {
+        let accentForms = ["modèle", "mode\u{0300}le"]
+        for accentForm in accentForms {
+            let transcript = "Regarde, dictation vie ou \(accentForm)."
+            let entries = RepoVocabularyMatcher.groundedCandidateEntries(
+                transcript: transcript,
+                vocabulary: RepoVocabulary(
+                    terms: ["DictationViewModel.swift"],
+                    branch: nil
+                )
+            )
+
+            XCTAssertEqual(entries.first?.matches, ["dictation vie ou \(accentForm)"])
+            XCTAssertEqual(
+                RepoVocabularyMatcher.preapplying(entries: entries, to: transcript),
+                "Regarde, DictationViewModel.swift."
+            )
+        }
+    }
+
+    func testPreapplyApprovedMappingDoesNotRewriteInsideIdentifier() {
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["auth"])],
+                to: "Keep preauth_handler unchanged."
+            ),
+            "Keep preauth_handler unchanged."
+        )
+    }
+
+    func testPreapplySkipsUnsafeControlCharacterTerm() {
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: [ReplacementEntry(replaceWith: "bad\nname.ts", matches: ["bad name"])],
+                to: "Open bad name now."
+            ),
+            "Open bad name now."
+        )
+    }
+
     func testShortFormTermsRejected() {
         // Bare "app"/"src" normalize to < 4 chars: no standalone entries.
         XCTAssertTrue(entries("open the app and src", terms: ["app", "src"]).isEmpty)
@@ -583,6 +787,15 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         )
         XCTAssertTrue(entries.contains { $0.replaceWith == "useAuth.ts" })
     }
+
+    func testAlignedFallbackAbstainsCleanlyWithLargeAmbiguousVocabulary() {
+        let terms = (0..<20_000).map { "GeneratedFile\($0).swift" }
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: "please improve overall error handling for generated files",
+            vocabulary: RepoVocabulary(terms: terms, branch: nil)
+        )
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+    }
 }
 
 // MARK: - Service orchestration (injected subprocess + fixture .git)
@@ -608,6 +821,48 @@ final class ClipboardVocabularyTests: XCTestCase {
         )
     }
 
+    func testEntitiesRecognizeBareContextIdentifiersMissedByGuardGrammar() {
+        XCTAssertEqual(
+            ClipboardVocabulary.entities(
+                inExcerpt: "LOCALVOXTRAL_CODESIGN_IDENTITY ShortcutRecorder POSIXPipeRead.nextChunk(fromDescriptor:)"
+            ),
+            [
+                "LOCALVOXTRAL_CODESIGN_IDENTITY",
+                "ShortcutRecorder",
+                "POSIXPipeRead.nextChunk(fromDescriptor:)",
+            ]
+        )
+    }
+
+    func testSupplementalEntityExtractionRejectsOrdinaryClipboardProse() {
+        XCTAssertTrue(
+            ClipboardVocabulary.entities(
+                inExcerpt: "Please remember that authentication service behavior matters"
+            ).isEmpty
+        )
+    }
+
+    func testSupplementalEntitiesRejectColonAndHyphenatedProse() {
+        let cases: [(excerpt: String, transcript: String)] = [
+            ("Description: details", "description"),
+            ("well-known", "well known"),
+        ]
+
+        for item in cases {
+            XCTAssertTrue(
+                ClipboardVocabulary.entities(inExcerpt: item.excerpt).isEmpty,
+                "excerpt: \(item.excerpt)"
+            )
+            XCTAssertTrue(
+                ClipboardVocabulary.candidateEntries(
+                    transcript: item.transcript,
+                    excerpt: item.excerpt
+                ).isEmpty,
+                "excerpt: \(item.excerpt)"
+            )
+        }
+    }
+
     func testProseExcerptYieldsNoEntities() {
         XCTAssertTrue(
             ClipboardVocabulary.entities(
@@ -620,8 +875,8 @@ final class ClipboardVocabularyTests: XCTestCase {
 
     /// The T5 field case (2026-07-11): clipboard holds the exact identifier,
     /// the STT glued the dictated tail into `manager.swift`. The transcript
-    /// n-gram must match the clipboard entity and yield the hint entry whose
-    /// (spoken, exact) pair the session sanctions through the guard.
+    /// n-gram must match the clipboard entity and yield the structured
+    /// (spoken, exact) pair the session can pre-apply before polishing.
     func testT5TranscriptGramMatchesClipboardEntity() {
         let result = ClipboardVocabulary.candidateEntries(
             transcript: "look at user session manager.swift",
@@ -630,6 +885,38 @@ final class ClipboardVocabularyTests: XCTestCase {
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result.first?.replaceWith, "UserSessionManager.swift")
         XCTAssertEqual(result.first?.matches, ["user session manager.swift"])
+    }
+
+    func testSupplementalEntitiesGroundCommonTechnicalDictationDamage() {
+        let cases: [(transcript: String, excerpt: String, expected: String)] = [
+            (
+                "set local voxtral code sign identity before packaging",
+                "LOCALVOXTRAL_CODESIGN_IDENTITY",
+                "LOCALVOXTRAL_CODESIGN_IDENTITY"
+            ),
+            (
+                "the crash is in posix pipe read next chunk from descriptor",
+                "POSIXPipeRead.nextChunk(fromDescriptor:)",
+                "POSIXPipeRead.nextChunk(fromDescriptor:)"
+            ),
+            (
+                "check whether shortcut recorder is initialized",
+                "ShortcutRecorder",
+                "ShortcutRecorder"
+            ),
+        ]
+
+        for testCase in cases {
+            let result = ClipboardVocabulary.candidateEntries(
+                transcript: testCase.transcript,
+                excerpt: testCase.excerpt
+            )
+            XCTAssertEqual(
+                result.first?.replaceWith,
+                testCase.expected,
+                "transcript: \(testCase.transcript); entries: \(result)"
+            )
+        }
     }
 
     func testUnrelatedTranscriptYieldsNoEntries() {
