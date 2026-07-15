@@ -94,6 +94,9 @@ VARIANT_HELP = {
     "current-production-oracle-repair": "targeted repair pass using evaluation-only exact literals",
     "current-production-ranked-repair": "targeted repair pass using an automatic broad repo match",
     "current-production-ranked-preapply": "automatic broad repo match applied before normal polishing",
+    "current-production-aligned-hint": "high-confidence repo/clipboard fallback supplied as one mapping",
+    "current-production-aligned-preapply": "high-confidence repo/clipboard fallback applied to one exact span",
+    "current-production-grounding-preapply": "approved context mappings plus aligned fallback applied before polishing",
     "current-production-recorded-system": "recorded hardened system prompt + current user request",
     "current-production-recorded-user": "current system prompt + recorded compact user request",
 }
@@ -108,10 +111,16 @@ OPTIONAL_EXPERIMENT_VARIANTS = {
     "current-production-oracle-repair",
     "current-production-ranked-repair",
     "current-production-ranked-preapply",
+    "current-production-aligned-hint",
+    "current-production-aligned-preapply",
+    "current-production-grounding-preapply",
 }
 BROAD_MATCH_MIN_NORMALIZED_LENGTH = 8
 BROAD_MATCH_MIN_SCORE = 0.55
 BROAD_MATCH_MAX_WORDS = 6
+ALIGNED_MATCH_MIN_SCORE = 0.60
+ALIGNED_MATCH_MIN_MARGIN = 0.05
+ALIGNED_MATCH_MAX_WORDS = 7
 
 
 @dataclasses.dataclass(frozen=True)
@@ -121,6 +130,22 @@ class Experiment:
     variant: str
     messages: list[dict[str, str]]
     request_hash: str
+
+
+@dataclasses.dataclass(frozen=True)
+class ContextCandidate:
+    exact: str
+    family: str
+
+
+@dataclasses.dataclass(frozen=True)
+class AlignedContextMatch:
+    exact: str
+    heard: str
+    start: int
+    end: int
+    score: float
+    margin: float
 
 
 def parse_args() -> argparse.Namespace:
@@ -357,12 +382,17 @@ def rendered_user_prompts(
 
 
 def current_production_messages(
-    record: dict[str, Any], system_prompt: str, user_template: str, oracle: bool = False
+    record: dict[str, Any], system_prompt: str, user_template: str, oracle: bool = False,
+    extra_dictionary: str = "",
 ) -> list[dict[str, str]]:
     input_text = record.get("polishInputText") or record.get("transcript")
     if not isinstance(input_text, str):
         raise ValueError("case has no production polish input")
     replacement_dictionary, clipboard_context = recorded_dynamic_sections(record)
+    if extra_dictionary:
+        replacement_dictionary = "\n\n".join(
+            value for value in (replacement_dictionary, extra_dictionary) if value
+        )
     if oracle:
         tokens = [
             normalized_spacing(value)
@@ -556,6 +586,173 @@ def broad_repo_match(record: dict[str, Any]) -> tuple[str, str, float]:
     return best[1], spoken_core, best[0]
 
 
+def has_recorded_context_mapping(record: dict[str, Any]) -> bool:
+    replacement_dictionary, _ = recorded_dynamic_sections(record)
+    return "Repository vocabulary (" in replacement_dictionary or (
+        "Clipboard vocabulary (" in replacement_dictionary
+    )
+
+
+def recorded_context_mappings(record: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return (exact, heard) pairs already approved by production matching."""
+    replacement_dictionary, _ = recorded_dynamic_sections(record)
+    mappings: list[tuple[str, str]] = []
+    active = False
+    for line in replacement_dictionary.splitlines():
+        if line.startswith(("Repository vocabulary (", "Clipboard vocabulary (")):
+            active = True
+            continue
+        if line.endswith(":") and not line.startswith("- "):
+            active = False
+            continue
+        if not active or not line.startswith("- ") or ": " not in line:
+            continue
+        exact, heard_list = line[2:].split(": ", 1)
+        for heard in heard_list.split(", "):
+            if exact and heard:
+                mappings.append((exact, heard))
+    return mappings
+
+
+def apply_recorded_context_mappings(text: str, record: dict[str, Any]) -> str:
+    """Apply only literal spans production already emitted as context mappings."""
+    output = text
+    mappings = sorted(recorded_context_mappings(record), key=lambda item: len(item[1]), reverse=True)
+    for exact, heard in mappings:
+        start = output.find(heard)
+        if start < 0:
+            continue
+        end = start + len(heard)
+        leading_technical_boundary = "._/-"
+        trailing_technical_boundary = "_/-"
+        if (
+            start > 0
+            and heard[0].isalnum()
+            and (
+                output[start - 1].isalnum()
+                or output[start - 1] in leading_technical_boundary
+            )
+        ):
+            continue
+        if (
+            end < len(output)
+            and heard[-1].isalnum()
+            and (
+                output[end].isalnum()
+                or output[end] in trailing_technical_boundary
+            )
+        ):
+            continue
+        output = output[:start] + exact + output[end:]
+    return output
+
+
+def context_candidates(record: dict[str, Any]) -> list[ContextCandidate]:
+    """Evaluation candidate retrieval without using corpus truth labels."""
+    candidates: list[ContextCandidate] = []
+    for path in repo_fixture_candidates(record):
+        family = f"repo:{path}"
+        candidates.append(ContextCandidate(path, family))
+        basename = path.rsplit("/", 1)[-1]
+        if basename != path:
+            candidates.append(ContextCandidate(basename, family))
+
+    clipboard = (record.get("features") or {}).get("clipboard")
+    if isinstance(clipboard, str):
+        excerpt = clipboard.strip()
+        if excerpt and not re.search(r"\s", excerpt):
+            candidates.append(ContextCandidate(excerpt, f"clipboard:{excerpt}"))
+        for token in re.findall(r"[$#]?[A-Za-z0-9_.:/()'-]{7,}", excerpt):
+            candidates.append(ContextCandidate(token, f"clipboard:{token}"))
+
+    deduped: list[ContextCandidate] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        key = (candidate.exact, candidate.family)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
+def aligned_context_match(record: dict[str, Any]) -> AlignedContextMatch | None:
+    """Find one minimal, unambiguous context-to-ASR span or abstain."""
+    if has_recorded_context_mapping(record):
+        return None
+    transcript = record.get("polishInputText") or record.get("transcript")
+    if not isinstance(transcript, str):
+        return None
+
+    def normalized(value: str) -> str:
+        ascii_value = unicodedata.normalize("NFKD", value).encode(
+            "ascii", "ignore"
+        ).decode().casefold()
+        return re.sub(r"[^a-z0-9]", "", ascii_value)
+
+    tokens = list(re.finditer(r"\S+", transcript))
+    ranked: list[tuple[float, int, int, int, ContextCandidate, str, int, int]] = []
+    for candidate in context_candidates(record):
+        normalized_exact = normalized(candidate.exact)
+        if len(normalized_exact) < BROAD_MATCH_MIN_NORMALIZED_LENGTH:
+            continue
+        extension = Path(candidate.exact).suffix.casefold()
+        for start_index in range(len(tokens)):
+            for length in range(
+                1, min(ALIGNED_MATCH_MAX_WORDS, len(tokens) - start_index) + 1
+            ):
+                raw_start = tokens[start_index].start()
+                raw_end = tokens[start_index + length - 1].end()
+                raw_span = transcript[raw_start:raw_end]
+                left_trimmed = raw_span.lstrip("`'\"“‘([{<")
+                heard = left_trimmed.rstrip("`'\"”’)]}>.,;:!?")
+                span_start = raw_start + len(raw_span) - len(left_trimmed)
+                span_end = span_start + len(heard)
+                normalized_heard = normalized(heard)
+                if (
+                    len(normalized_heard) * 2 < len(normalized_exact)
+                    or len(normalized_heard) > len(normalized_exact) * 2
+                ):
+                    continue
+                score = difflib.SequenceMatcher(
+                    None, normalized_heard, normalized_exact
+                ).ratio()
+                if extension and extension in heard.casefold():
+                    score = min(score + 0.1, 1.0)
+                # Prefer the smallest boundary-preserving span when the score
+                # ties (the old matcher consumed leading "in", "to", "open").
+                ranked.append((
+                    score, -abs(len(normalized_heard) - len(normalized_exact)),
+                    -length, -len(heard), candidate, heard, span_start, span_end,
+                ))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: item[:4], reverse=True)
+    best = ranked[0]
+    if best[0] < ALIGNED_MATCH_MIN_SCORE:
+        return None
+    normalized_best = normalized(best[5])
+    normalized_exact = normalized(best[4].exact)
+    # A single ASR token much longer than its candidate usually has a prose
+    # word glued to it (for example French "Ouvreusot.ts"). Replacing it would
+    # delete that word, so boundary preservation requires abstention.
+    if " " not in best[5] and len(normalized_best) > len(normalized_exact) * 1.2:
+        return None
+    runner_up = next(
+        (item for item in ranked[1:] if item[4].family != best[4].family), None
+    )
+    margin = best[0] - (runner_up[0] if runner_up else 0.0)
+    if margin < ALIGNED_MATCH_MIN_MARGIN:
+        return None
+    return AlignedContextMatch(
+        exact=best[4].exact, heard=best[5], start=best[6], end=best[7],
+        score=best[0], margin=margin,
+    )
+
+
+def apply_aligned_context_match(text: str, match: AlignedContextMatch) -> str:
+    return text[:match.start] + match.exact + text[match.end:]
+
+
 def ranked_repo_repair_messages(
     record: dict[str, Any], current_output: str
 ) -> list[dict[str, str]]:
@@ -628,6 +825,37 @@ def messages_for(
                 raise ValueError("ranked preapply could not locate the matched phrase")
             rendered_record = dict(record)
             rendered_record["polishInputText"] = input_text.replace(spoken, exact, 1)
+        aligned = None
+        if variant in {
+            "current-production-aligned-hint",
+            "current-production-aligned-preapply",
+            "current-production-grounding-preapply",
+        }:
+            aligned = aligned_context_match(record)
+        if variant == "current-production-grounding-preapply":
+            input_text = record.get("polishInputText") or record.get("transcript")
+            if not isinstance(input_text, str):
+                raise ValueError("grounding preapply requires transcript text")
+            input_text = apply_recorded_context_mappings(input_text, record)
+            if aligned is not None:
+                input_text = apply_aligned_context_match(input_text, aligned)
+            rendered_record = dict(record)
+            rendered_record["polishInputText"] = input_text
+        elif aligned is not None and variant == "current-production-aligned-preapply":
+            input_text = record.get("polishInputText") or record.get("transcript")
+            if not isinstance(input_text, str):
+                raise ValueError("aligned preapply requires transcript text")
+            rendered_record = dict(record)
+            rendered_record["polishInputText"] = apply_aligned_context_match(
+                input_text, aligned
+            )
+        extra_dictionary = ""
+        if aligned is not None and variant == "current-production-aligned-hint":
+            extra_dictionary = (
+                "High-confidence local vocabulary fallback (use only for the exact "
+                "near-match shown):\n"
+                f"- {aligned.exact}: {aligned.heard}"
+            )
         messages = current_production_messages(
             rendered_record,
             system_prompt,
@@ -636,6 +864,7 @@ def messages_for(
                 "current-production-oracle",
                 "current-production-oracle-strict",
             },
+            extra_dictionary=extra_dictionary,
         )
         if variant == "current-production-grounded":
             return append_grounded_candidate_check(messages, record)

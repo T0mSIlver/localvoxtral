@@ -10,6 +10,7 @@ RECORDING_DIR=""
 RECORDING_SUBSET=0
 POLISH_ENDPOINT=""
 POLISH_MODEL=""
+CASE_IDS=()
 
 usage() {
   cat <<EOF
@@ -18,6 +19,7 @@ Usage: $0 [options] [EvalRecordings/agent-dictation/<set>]
   --subset                 Score only cases present in the recording manifest
   --polish-endpoint URL    Use an external OpenAI chat/completions endpoint
   --polish-model MODEL     Request model/alias for the external endpoint
+  --case ID                Score one corpus case (repeat for a focused batch)
 
 After the eval, a skim-friendly HTML report is written beside human WAVs and
 opened in the default browser. It includes audio, ASR, polish, final text, and
@@ -39,6 +41,12 @@ while [[ $# -gt 0 ]]; do
     --polish-model)
       [[ $# -ge 2 ]] || { echo "--polish-model needs a model name" >&2; exit 1; }
       POLISH_MODEL="$2"
+      shift 2
+      ;;
+    --case)
+      [[ $# -ge 2 ]] || { echo "--case needs an ID" >&2; exit 1; }
+      [[ "$2" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "invalid --case ID: $2" >&2; exit 1; }
+      CASE_IDS+=("$2")
       shift 2
       ;;
     -h|--help)
@@ -107,6 +115,10 @@ if [[ -n "$POLISH_ENDPOINT" ]]; then
 fi
 if [[ -n "$POLISH_MODEL" ]]; then
   ENV_ARGS+=(LV_AGENT_EVAL_E2E_POLISH_MODEL="$POLISH_MODEL")
+fi
+if [[ ${#CASE_IDS[@]} -gt 0 ]]; then
+  CASE_ID_LIST="$(IFS=,; echo "${CASE_IDS[*]}")"
+  ENV_ARGS+=(LV_AGENT_EVAL_E2E_CASE_IDS="$CASE_ID_LIST")
 fi
 
 mkdir -p .build

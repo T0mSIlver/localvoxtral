@@ -80,6 +80,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
                     Support.polishEndpointEnvKey: "http://gpu:8080/v1/chat/completions",
                     Support.recordingDirectoryEnvKey: "/env/recordings",
                     Support.recordingSubsetEnvKey: "1",
+                    Support.caseIDsEnvKey: "one,two,one",
                 ],
                 marker: Support.MarkerConfig(
                     helperPath: "marker/polishd",
@@ -97,6 +98,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             "http://gpu:8080/v1/chat/completions"
         )
         XCTAssertTrue(enablement.recordingSubset)
+        XCTAssertEqual(enablement.caseIDs, ["one", "two"])
     }
 
     // MARK: - WAV cache key
@@ -347,6 +349,22 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             ),
             run.output
         )
+    }
+
+    func testHumanRecorderAcceptsRepeatedCaseFilters() throws {
+        let outputDirectory = recorderOutputDirectory(label: "focused-batch")
+        addTeardownBlock { try? FileManager.default.removeItem(at: outputDirectory) }
+        let selected = ["b-en-equals-assignment", "j-fr-git-dense"]
+        let run = try runRecorder([
+            "--list", "--output", outputDirectory.path,
+            "--case", selected[0], "--case", selected[1],
+        ])
+        XCTAssertEqual(run.status, 0, run.output)
+        let rows = run.output.split(separator: "\n").filter { $0.hasPrefix("TODO ") }
+        XCTAssertEqual(rows.count, selected.count, run.output)
+        for id in selected {
+            XCTAssertTrue(run.output.contains("TODO \(id) "), run.output)
+        }
     }
 
     /// Losing or corrupting the convenience manifest must not discard hours
@@ -680,6 +698,85 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
             {"standard": (standard_system, standard_user), "agent": (system, user)},
         )
         assert "Working text:\nOpen DictationViewModel.swift." in preapplied[-1]["content"]
+        unmapped = dict(
+            record,
+            caseID="i-en-useauth",
+            polishInputText="Open uzoft.ts and add a null check.",
+            userPrompts=["Working text:\nOpen uzoft.ts and add a null check."],
+        )
+        aligned = module.aligned_context_match(unmapped)
+        assert aligned is not None
+        assert aligned.exact == "useAuth.ts"
+        assert aligned.heard == "uzoft.ts"
+        assert module.apply_aligned_context_match(
+            unmapped["polishInputText"], aligned
+        ) == "Open useAuth.ts and add a null check."
+        glued = dict(
+            unmapped,
+            polishInputText="Ouvreusot.ts et ajoute une vérification.",
+            userPrompts=["Working text:\nOuvreusot.ts et ajoute une vérification."],
+        )
+        assert module.aligned_context_match(glued) is None
+        unrelated = dict(
+            unmapped,
+            polishInputText="Please update the documentation.",
+            userPrompts=["Working text:\nPlease update the documentation."],
+        )
+        assert module.aligned_context_match(unrelated) is None
+        hinted = module.messages_for(
+            unmapped, {}, "current-production-aligned-hint", None,
+            {"standard": (standard_system, standard_user), "agent": (system, user)},
+        )
+        assert "- useAuth.ts: uzoft.ts" in hinted[-1]["content"]
+        aligned_preapplied = module.messages_for(
+            unmapped, {}, "current-production-aligned-preapply", None,
+            {"standard": (standard_system, standard_user), "agent": (system, user)},
+        )
+        assert "Working text:\nOpen useAuth.ts and add a null check." in aligned_preapplied[-1]["content"]
+        assert module.aligned_context_match(record) is None
+        assert module.recorded_context_mappings(record) == [
+            ("DictationViewModel.swift", "Dictation View Model")
+        ]
+        assert module.apply_recorded_context_mappings(
+            record["polishInputText"], record
+        ) == "Open DictationViewModel.swift."
+        env_record = dict(record, userPrompts=[
+            "Clipboard vocabulary (exact terms):\n- .env.example: env.example\n\n"
+            "Working text:\nCopy .env.example."
+        ], polishInputText="Copy .env.example.")
+        assert module.apply_recorded_context_mappings(
+            env_record["polishInputText"], env_record
+        ) == "Copy .env.example."
+        aliases_record = dict(record, userPrompts=[
+            "Clipboard vocabulary (exact terms):\n"
+            "- useAuth.ts: use auth, uzoft.ts\n\n"
+            "Working text:\nOpen uzoft.ts."
+        ], polishInputText="Open uzoft.ts.")
+        assert module.recorded_context_mappings(aliases_record) == [
+            ("useAuth.ts", "use auth"), ("useAuth.ts", "uzoft.ts")
+        ]
+        assert module.apply_recorded_context_mappings(
+            aliases_record["polishInputText"], aliases_record
+        ) == "Open useAuth.ts."
+        original_candidates = module.context_candidates
+        module.context_candidates = lambda _: [
+            module.ContextCandidate("useAuth.ts", "first"),
+            module.ContextCandidate("UseAuth.ts", "second"),
+        ]
+        ambiguous = dict(
+            unmapped,
+            polishInputText="Open use auth.ts.",
+            userPrompts=["Working text:\nOpen use auth.ts."],
+        )
+        try:
+            assert module.aligned_context_match(ambiguous) is None
+        finally:
+            module.context_candidates = original_candidates
+        grounding_preapplied = module.messages_for(
+            record, {}, "current-production-grounding-preapply", None,
+            {"standard": (standard_system, standard_user), "agent": (system, user)},
+        )
+        assert "Working text:\nOpen DictationViewModel.swift." in grounding_preapplied[-1]["content"]
         standard_record = dict(record, stratum="punctuation-spacing-migration")
         routed = module.messages_for(
             standard_record, {}, "current-production", None,

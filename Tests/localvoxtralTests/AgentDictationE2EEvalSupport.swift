@@ -26,6 +26,7 @@ enum AgentDictationE2EEvalSupport {
     static let polishEndpointEnvKey = "LV_AGENT_EVAL_E2E_POLISH_ENDPOINT"
     static let recordingDirectoryEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_DIRECTORY"
     static let recordingSubsetEnvKey = "LV_AGENT_EVAL_E2E_RECORDING_SUBSET"
+    static let caseIDsEnvKey = "LV_AGENT_EVAL_E2E_CASE_IDS"
 
     static let defaultHelperPath =
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
@@ -76,6 +77,9 @@ enum AgentDictationE2EEvalSupport {
         /// Explicit exploratory mode: score only human-recorded case IDs.
         /// The default/full baseline remains all-or-nothing.
         let recordingSubset: Bool
+        /// Optional explicit focused slice. Unlike recordingSubset, this does
+        /// not add audio-independent cases: the operator asked for exact IDs.
+        let caseIDs: Set<String>?
     }
 
     static func parseMarker(_ data: Data) throws -> MarkerConfig {
@@ -124,6 +128,15 @@ enum AgentDictationE2EEvalSupport {
         } else {
             recordingSubset = marker?.recordingSubset == true
         }
+        let caseIDs: Set<String>?
+        if envEnabled, let raw = environment[caseIDsEnvKey] {
+            let parsed = Set(raw.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty })
+            caseIDs = parsed.isEmpty ? nil : parsed
+        } else {
+            caseIDs = nil
+        }
         return Enablement(
             helperPath: pick(helperPathEnvKey, marker?.helperPath, default: defaultHelperPath),
             voxmlxEndpoint: endpoint,
@@ -139,7 +152,8 @@ enum AgentDictationE2EEvalSupport {
             recordingDirectory: pickOptional(
                 recordingDirectoryEnvKey, marker?.recordingDirectory
             ),
-            recordingSubset: recordingSubset
+            recordingSubset: recordingSubset,
+            caseIDs: caseIDs
         )
     }
 

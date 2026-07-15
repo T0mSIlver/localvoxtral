@@ -66,6 +66,11 @@ request retains production's deterministic Qwen 4B sampling and
   EvalRecordings/agent-dictation/owner
 ```
 
+Repeat `--case <id>` on `run-agent-eval-local.sh` to rerun only a focused set
+of recordings after replacing their WAVs. This filters the complete manifest
+without copying or deleting audio and is intended for exploratory comparisons,
+not the strict full-baseline score.
+
 Full output is retained in `.build/agent-eval-local.log` for failure analysis.
 At the end of the run, the harness writes and opens
 `EvalRecordings/agent-dictation/owner/eval-report.html`. The self-contained
@@ -132,6 +137,20 @@ are reported and skipped). A higher required-term score is insufficient on its
 own: always inspect surface exactness, word accuracy, large regressions, and the
 HTML text because a model can preserve the requested token while damaging the
 surrounding instruction.
+
+The `aligned-hint` and `aligned-preapply` arms narrow that upper bound. They run
+only as a fallback when the recorded production matcher emitted no repo or
+clipboard mapping, require a score and runner-up margin, choose the smallest
+matching ASR span, and abstain when a single token likely has surrounding prose
+glued to it. `aligned-hint` adds one mapping to the normal prompt;
+`aligned-preapply` replaces only the matched span before normal polishing. These
+still use the small eval fixture/context candidate pool, so success measures the
+value of safe alignment, not production-scale retrieval precision.
+`grounding-preapply` is the closest production-shape arm: it first applies
+literal, boundary-checked repo/clipboard mappings the current matcher already
+approved, then uses the aligned fallback only when no mapping was emitted. It
+deliberately does not repair the model output afterward; a model that changes an
+approved literal remains visible as a failure.
 
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed

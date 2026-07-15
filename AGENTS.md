@@ -230,6 +230,8 @@ While the set is incomplete, run `scripts/run-agent-eval-local.sh --subset ...`;
 this selects recorded speech rows but still runs every polish-only required
 case. After it reaches 146/146, omit `--subset` for the strict baseline. The run writes
 `.build/agent-eval-local.log` and opens the per-case HTML report beside the WAVs.
+Repeat `--case <id>` on `run-agent-eval-local.sh` for an exact focused E2E slice;
+unlike `--subset`, this does not add every polish-only case.
 Use `scripts/ablate-agent-eval.py` on that log to compare stages/prompts/models
 without transcribing again. Ablation responses append immediately to a resumable
 JSONL file and its aggregate score is Markdown-neutral. Cache identity includes

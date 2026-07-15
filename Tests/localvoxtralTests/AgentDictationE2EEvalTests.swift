@@ -181,7 +181,16 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         }
 
         let vocabularyCache = RepoVocabularyCache()
-        let selectedCaseIDs = Support.selectedCaseIDs(
+        let allCaseIDs = Set(strata.flatMap { $0.stratum.cases.map(\.id) })
+        if let requested = enablement.caseIDs {
+            let unknown = requested.subtracting(allCaseIDs).sorted()
+            guard unknown.isEmpty else {
+                throw EvalInfraError(
+                    "unknown focused eval case id(s): \(unknown.joined(separator: ", "))"
+                )
+            }
+        }
+        let selectedCaseIDs = enablement.caseIDs ?? Support.selectedCaseIDs(
             strata: strata,
             recordedCaseIDs: Set(recordedAudio?.pcmByCaseID.keys.map { $0 } ?? []),
             isSubset: recordedAudio?.isSubset == true
