@@ -22,6 +22,9 @@ let package = Package(
         // swift-transformers 1.1.9 (>=1.2 fails to compile under Xcode 26).
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.3"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.3"),
+        // Pinned but not directly imported: it's a transitive dep of mlx-audio-swift, and
+        // >=1.2 fails to compile under Xcode 26 (the xcodebuild packaging lane). Pinning it
+        // here freezes the whole graph to 1.1.9. (SPM warns it's "unused" — expected.)
         .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
         .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", exact: "0.1.3"),
