@@ -33,8 +33,12 @@ func voxtralApplyInterleavedRoPE(
     let x1 = reshaped[0..., 0..., 0..., 0]
     let x2 = reshaped[0..., 0..., 0..., 1]
 
-    let cosE = cos.expandedDimensions(axis: 1)
-    let sinE = sin.expandedDimensions(axis: 1)
+    // LOCAL FIX (see VENDORED.md): cast the float32-computed cos/sin down to the activation
+    // dtype BEFORE the rotation. Angles are computed in float32 for precision, but
+    // multiplying fp16 activations by float32 factors promotes the whole hidden state to
+    // float32 (half of the leak; the other half is AdaptiveNorm's adaScale).
+    let cosE = cos.expandedDimensions(axis: 1).asType(x.dtype)
+    let sinE = sin.expandedDimensions(axis: 1).asType(x.dtype)
 
     let o1 = x1 * cosE - x2 * sinE
     let o2 = x2 * cosE + x1 * sinE
