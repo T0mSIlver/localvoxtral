@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXAudioSTT
 import Network
 import SpeechEngineText
 import Synchronization
@@ -111,6 +112,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         var phase: Phase = .http
         var buffer = Data()
         var session: VoxtralRealtimeStreamSession?
+        // Append-only delta contract lives in OUR layer now (the engine is an upstream
+        // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
+        // Feed it the session's full-transcript snapshot after each step/finish; emit only
+        // its append-only delta. Touched only on the inference queue, like `session`.
+        var deltas = TranscriptDeltaEmitter()
         enum Phase { case http, webSocket }
     }
 
@@ -205,17 +211,26 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                     return
                 }
                 let session = self.ensureSession(ctx)
-                let delta = session.step(samples).text
+                session.step(samples)
+                // Emit the append-only delta from the full transcript snapshot, NOT the
+                // engine's raw `Delta` (which re-emits the whole transcript on a non-prefix
+                // step — our no-backspace insertion path would duplicate it).
+                let delta = ctx.deltas.emit(fullText: session.text)
                 if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
             case .commit(let final):
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
                 let session = self.ensureSession(ctx)
-                let tail = session.finish().text
+                session.finish()
+                let tail = ctx.deltas.emit(fullText: session.text)
                 if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }
-                self.sendServer(connection, .transcriptDone(text: session.text))
+                // Use the append-only emitted text (== sum of every delta), so the final
+                // payload can never contradict what was streamed on the wire.
+                self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
                 ctx.session = nil  // ready for the next utterance
+                ctx.deltas = TranscriptDeltaEmitter()
             case .clear:
                 ctx.session = nil
+                ctx.deltas = TranscriptDeltaEmitter()
             case .ignored:
                 break
             }

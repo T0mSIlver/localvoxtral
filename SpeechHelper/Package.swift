@@ -7,8 +7,12 @@ import PackageDescription
 // but produces a binary that cannot load Metal kernels at runtime — fine for the
 // Metal-free unit tests (SpeechEngineTextTests), which is what CI's tier-0 lane runs here.
 //
-// SpeechEngine vendors Blaizzy/mlx-audio-swift's VoxtralRealtime (MIT) with local fixes —
-// see VENDORED.md. It replaces the managed Python voxmlx backend.
+// SpeechEngine consumes Blaizzy/mlx-audio-swift's VoxtralRealtime engine as an upstream
+// dependency (product `MLXAudioSTT`), pinned to a reviewed revision — see DEPENDENCY.md.
+// The float32-leak fixes we previously carried as local patches were upstreamed in
+// Blaizzy/mlx-audio-swift#226. Only the append-only delta contract stays local, now in
+// our own SpeechEngineText layer (TranscriptDeltaEmitter). Replaces the managed Python
+// voxmlx backend.
 let package = Package(
     name: "SpeechHelper",
     platforms: [.macOS(.v15)],
@@ -27,29 +31,32 @@ let package = Package(
         // here freezes the whole graph to 1.1.9. (SPM warns it's "unused" — expected.)
         .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", exact: "0.8.1"),
-        .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", exact: "0.1.3"),
+        // The Voxtral Realtime engine, consumed as a dependency (was vendored+patched before
+        // #226). Pinned to a full-SHA revision, not a tag, so the exact reviewed tree is
+        // reproducible — see DEPENDENCY.md for the upgrade procedure.
+        .package(
+            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
+            revision: "3b0b114fc7d98dd000bb7f631588a172b5c61823"
+        ),
     ],
     targets: [
-        // Pure-Swift, Metal-free: the append-only delta contract. Kept separate so its
-        // regression tests run in the tier-0 `swift test` lane without touching MLX.
+        // Pure-Swift, Metal-free: the append-only delta contract (StreamingDelta +
+        // TranscriptDeltaEmitter), the realtime wire protocol/codecs, and the watchdog.
+        // Kept separate so its regression tests run in the tier-0 `swift test` lane
+        // without touching MLX.
         .target(name: "SpeechEngineText"),
         .testTarget(
             name: "SpeechEngineTextTests",
             dependencies: ["SpeechEngineText"]
         ),
-        // The vendored Voxtral Realtime engine (MLX; needs Metal at runtime).
+        // Our loopback OpenAI-Realtime server, driving the upstream Voxtral Realtime engine
+        // (MLX; needs Metal at runtime).
         .target(
             name: "SpeechEngine",
             dependencies: [
                 "SpeechEngineText",
-                .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
-                .product(name: "MLXAudioVAD", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
                 .product(name: "MLX", package: "mlx-swift"),
-                .product(name: "MLXFast", package: "mlx-swift"),
-                .product(name: "MLXNN", package: "mlx-swift"),
-                .product(name: "MLXRandom", package: "mlx-swift"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "HuggingFace", package: "swift-huggingface"),
             ]
         ),
         .executableTarget(
