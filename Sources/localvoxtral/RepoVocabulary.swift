@@ -856,15 +856,34 @@ enum RepoVocabularyMatcher {
         }
     }
 
-    /// Production matcher: keep every entry approved by the existing exact /
-    /// edit-distance-one tiers. Only when those tiers find NOTHING, try one
-    /// broader aligned match and otherwise abstain.
+    /// Production matcher: keep entries approved by the existing exact /
+    /// edit-distance-one tiers unless one heard span maps to multiple terms.
+    /// Exact-index hits are single-valued; multiple terms for the same span are
+    /// therefore tied distance-one fuzzy hits and must all abstain. Only when
+    /// those tiers leave NOTHING, try one broader aligned match (which applies
+    /// its own score margin) and otherwise abstain.
     static func groundedCandidateEntries(
         transcript: String,
         vocabulary: RepoVocabulary
     ) -> [ReplacementEntry] {
         let approved = candidateEntries(transcript: transcript, vocabulary: vocabulary)
-        guard approved.isEmpty else { return approved }
+        var termsByHeard: [String: Set<String>] = [:]
+        for entry in approved {
+            for heard in entry.matches {
+                termsByHeard[heard, default: []].insert(entry.replaceWith)
+            }
+        }
+        let ambiguousHeard = Set(
+            termsByHeard.compactMap { heard, terms in
+                terms.count > 1 ? heard : nil
+            }
+        )
+        let unambiguous = approved.compactMap { entry -> ReplacementEntry? in
+            let matches = entry.matches.filter { !ambiguousHeard.contains($0) }
+            guard !matches.isEmpty else { return nil }
+            return ReplacementEntry(replaceWith: entry.replaceWith, matches: matches)
+        }
+        guard unambiguous.isEmpty else { return unambiguous }
         guard let fallback = alignedFallbackEntry(
             transcript: transcript,
             vocabulary: vocabulary

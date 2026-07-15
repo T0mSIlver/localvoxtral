@@ -467,6 +467,23 @@ final class RepoVocabularyMatcherTests: XCTestCase {
         XCTAssertEqual(result.first?.replaceWith, "useAuth.ts")
     }
 
+    func testGroundedFuzzyTierAbstainsForTiedDistanceOneCandidates() {
+        let transcript = "Open ConfigC.swift."
+        let result = RepoVocabularyMatcher.groundedCandidateEntries(
+            transcript: transcript,
+            vocabulary: RepoVocabulary(
+                terms: ["ConfigA.swift", "ConfigB.swift"],
+                branch: nil
+            )
+        )
+
+        XCTAssertTrue(result.isEmpty, "entries: \(result)")
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(entries: result, to: transcript),
+            transcript
+        )
+    }
+
     func testGroundedCandidatesUseAlignedFallbackAfterExistingMatcherMisses() {
         let result = RepoVocabularyMatcher.groundedCandidateEntries(
             transcript: "Open uzoft.ts and add a null check.",
