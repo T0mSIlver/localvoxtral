@@ -9,7 +9,9 @@ import Synchronization
 // dictionary section, so the polish model spells `useAuth.ts` /
 // `UserSessionManager.swift` exactly instead of hallucinating. Opt-in, loopback
 // endpoints only (repo file names must not ride to a remote endpoint), and
-// prompt-context only (no deterministic auto-replacement). Three separable,
+// high-confidence mappings are also applied to the pre-polish working text so
+// exact local bytes do not depend on a generative model reproducing them.
+// Three separable,
 // independently testable pieces + a TTL cache do the amortizing:
 //   1. `TerminalWorkingDirectoryResolver` — terminal window title -> cwd
 //   2. `RepoIndexing` / `RepoGitRunner` / `RepoVocabularyService` — cwd -> vocab
@@ -233,9 +235,20 @@ struct RepoVocabulary: Sendable {
     /// by normalized length, so an n-gram only edit-distance-checks terms
     /// within ±1 of its own length, with character arrays precomputed.
     let fuzzyBuckets: [Int: [FuzzyCandidate]]
+    /// Candidate spellings and a character n-gram index for the conservative aligned
+    /// fallback. Built once with the vocabulary so a miss never degrades into
+    /// an O(transcript n-grams x every repo term) scan in a large monorepo.
+    let alignedCandidates: [AlignedCandidate]
+    let alignedNGramIndex: [String: [Int]]
 
     struct FuzzyCandidate: Sendable {
         let term: String
+        let normalizedCharacters: [Character]
+    }
+
+    struct AlignedCandidate: Sendable {
+        let term: String
+        let normalized: String
         let normalizedCharacters: [Character]
     }
 
@@ -244,6 +257,8 @@ struct RepoVocabulary: Sendable {
         self.branch = branch
         var exact: [String: String] = [:]
         var buckets: [Int: [FuzzyCandidate]] = [:]
+        var aligned: [AlignedCandidate] = []
+        var ngramIndex: [String: [Int]] = [:]
         for term in terms {
             let normalized = RepoVocabularyMatcher.normalize(term)
             guard normalized.count >= RepoVocabularyMatcher.minNormalizedLength else { continue }
@@ -253,9 +268,23 @@ struct RepoVocabulary: Sendable {
                     FuzzyCandidate(term: term, normalizedCharacters: Array(normalized))
                 )
             }
+            let alignedNormalized = RepoVocabularyMatcher.alignedNormalize(term)
+            if alignedNormalized.count >= RepoVocabularyMatcher.alignedMinNormalizedLength {
+                let candidateIndex = aligned.count
+                aligned.append(AlignedCandidate(
+                    term: term,
+                    normalized: alignedNormalized,
+                    normalizedCharacters: Array(alignedNormalized)
+                ))
+                for ngram in RepoVocabularyMatcher.characterNGrams(alignedNormalized) {
+                    ngramIndex[ngram, default: []].append(candidateIndex)
+                }
+            }
         }
         self.exactIndex = exact
         self.fuzzyBuckets = buckets
+        self.alignedCandidates = aligned
+        self.alignedNGramIndex = ngramIndex
     }
 }
 
@@ -685,7 +714,7 @@ enum RepoVocabularyService {
         ) else {
             return nil
         }
-        let entries = RepoVocabularyMatcher.candidateEntries(
+        let entries = RepoVocabularyMatcher.groundedCandidateEntries(
             transcript: transcript, vocabulary: vocabulary
         )
         if entries.isEmpty {
@@ -715,6 +744,16 @@ enum RepoVocabularyMatcher {
     /// Minimum normalized length (both sides) for the edit-distance-1 fuzzy
     /// tier — short forms would collide constantly.
     static let fuzzyMinNormalizedLength = 8
+    /// The aligned fallback is intentionally narrower than the exact matcher:
+    /// short strings collide too easily in normal prose.
+    static let alignedMinNormalizedLength = 8
+    static let alignedMinimumScore = 0.60
+    static let alignedMinimumMargin = 0.05
+    static let alignedMaxWords = 7
+    /// A span whose rarest shared n-gram still fans out beyond this cap is not
+    /// distinctive enough for deterministic grounding. This also bounds work
+    /// in large same-language monorepos.
+    static let alignedMaxCandidatesPerSpan = 512
 
     /// Spoken separator words map to the symbols the file side already strips,
     /// so "use auth dot t s" normalizes identically to `useAuth.ts`.
@@ -817,6 +856,169 @@ enum RepoVocabularyMatcher {
         }
     }
 
+    /// Production matcher: keep every entry approved by the existing exact /
+    /// edit-distance-one tiers. Only when those tiers find NOTHING, try one
+    /// broader aligned match and otherwise abstain.
+    static func groundedCandidateEntries(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> [ReplacementEntry] {
+        let approved = candidateEntries(transcript: transcript, vocabulary: vocabulary)
+        guard approved.isEmpty else { return approved }
+        guard let fallback = alignedFallbackEntry(
+            transcript: transcript,
+            vocabulary: vocabulary
+        ) else { return [] }
+        return [fallback]
+    }
+
+    /// Places exact vocabulary bytes into only the literal ASR spans already
+    /// selected by the matcher. Longest aliases run first; technical-token
+    /// boundaries prevent a short alias from rewriting inside another path or
+    /// identifier. Punctuation remains outside the replaced range.
+    static func preapplying(
+        entries: [ReplacementEntry],
+        to text: String
+    ) -> String {
+        let mappings = entries.flatMap { entry in
+            entry.matches.map { (exact: entry.replaceWith, heard: $0) }
+        }.sorted { lhs, rhs in
+            if lhs.heard.count != rhs.heard.count {
+                return lhs.heard.count > rhs.heard.count
+            }
+            return lhs.exact.count > rhs.exact.count
+        }
+
+        var output = text
+        for mapping in mappings {
+            guard !mapping.exact.isEmpty, !mapping.heard.isEmpty,
+                  sanitizedTerm(mapping.exact) == mapping.exact,
+                  sanitizedTerm(mapping.heard) == mapping.heard,
+                  mapping.exact != mapping.heard
+            else { continue }
+
+            var searchStart = output.startIndex
+            while searchStart < output.endIndex,
+                  let range = output.range(
+                    of: mapping.heard,
+                    range: searchStart..<output.endIndex
+                  )
+            {
+                if hasTechnicalBoundaries(in: output, range: range) {
+                    output.replaceSubrange(range, with: mapping.exact)
+                    break
+                }
+                searchStart = range.upperBound
+            }
+        }
+        return output
+    }
+
+    /// Evaluation-proven fallback for phonetic damage beyond edit distance 1.
+    /// It searches only candidates sharing a character n-gram with the ASR
+    /// span, requires a strong best score and an unambiguous runner-up margin,
+    /// and emits at most one mapping.
+    static func alignedFallbackEntry(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> ReplacementEntry? {
+        let tokens = fallbackTokens(in: transcript)
+        guard !tokens.isEmpty, !vocabulary.alignedCandidates.isEmpty else { return nil }
+
+        var bestByCandidate: [Int: AlignedHit] = [:]
+        for start in tokens.indices {
+            let maxLength = min(alignedMaxWords, tokens.count - start)
+            for length in 1...maxLength {
+                let rawRange = tokens[start].lowerBound..<tokens[start + length - 1].upperBound
+                let rawSpan = String(transcript[rawRange])
+                let heard = rawSpan.trimmingCharacters(in: fallbackEdgeCharacters)
+                let normalizedHeard = alignedNormalize(heard)
+                // The exact local term must be long; its damaged ASR span may
+                // be shorter (the field `uzoft.ts` -> `useAuth.ts` case is 7
+                // normalized characters). The score and ambiguity margin do
+                // the remaining safety work.
+                guard normalizedHeard.count >= minNormalizedLength else { continue }
+
+                let postingLists = characterNGrams(normalizedHeard).compactMap {
+                    vocabulary.alignedNGramIndex[$0]
+                }.sorted { $0.count < $1.count }
+                var candidateIndexes = Set<Int>()
+                for postings in postingLists {
+                    let additions = postings.filter { !candidateIndexes.contains($0) }
+                    guard candidateIndexes.count + additions.count
+                            <= alignedMaxCandidatesPerSpan
+                    else { continue }
+                    candidateIndexes.formUnion(additions)
+                }
+                guard !candidateIndexes.isEmpty else { continue }
+
+                let heardCharacters = Array(normalizedHeard)
+                for candidateIndex in candidateIndexes {
+                    let candidate = vocabulary.alignedCandidates[candidateIndex]
+                    guard normalizedHeard.count * 2 >= candidate.normalized.count,
+                          candidate.normalized.count * 2 >= normalizedHeard.count
+                    else { continue }
+                    var score = longestCommonSubsequenceRatio(
+                        heardCharacters,
+                        candidate.normalizedCharacters
+                    )
+                    if let fileExtension = shortFileExtension(in: candidate.term),
+                       heard.lowercased().contains(".\(fileExtension)")
+                    {
+                        score = min(1, score + 0.1)
+                    }
+                    let hit = AlignedHit(
+                        candidateIndex: candidateIndex,
+                        heard: heard,
+                        score: score,
+                        lengthDelta: abs(normalizedHeard.count - candidate.normalized.count),
+                        startWord: start,
+                        wordCount: length
+                    )
+                    if let previous = bestByCandidate[candidateIndex],
+                       !alignedHit(hit, isBetterThan: previous)
+                    {
+                        continue
+                    }
+                    bestByCandidate[candidateIndex] = hit
+                }
+            }
+        }
+
+        let ranked = bestByCandidate.values.sorted {
+            alignedHit($0, isBetterThan: $1)
+        }
+        guard let best = ranked.first, best.score >= alignedMinimumScore else { return nil }
+        let bestCandidate = vocabulary.alignedCandidates[best.candidateIndex]
+        let runnerUp = ranked.dropFirst().first
+        let margin = best.score - (runnerUp?.score ?? 0)
+        guard margin >= alignedMinimumMargin else { return nil }
+
+        // A filename extension that was not spoken is a semantic choice, not
+        // merely a spelling correction. Require a nearby file-oriented verb /
+        // noun before deterministic grounding; otherwise leave the exact term
+        // as clipboard context for the LLM to interpret. This prevents
+        // `fix the user session manager` from becoming a `.swift` filename,
+        // while `look at dictation view model` remains eligible.
+        if let fileExtension = shortFileExtension(in: bestCandidate.term),
+           !best.heard.lowercased().contains(".\(fileExtension)"),
+           !hasFileReferenceCue(tokens: tokens, hit: best, transcript: transcript)
+        {
+            return nil
+        }
+
+        let normalizedHeard = alignedNormalize(best.heard)
+        if !best.heard.contains(where: { $0.isWhitespace }),
+           Double(normalizedHeard.count) > Double(bestCandidate.normalized.count) * 1.2
+        {
+            return nil
+        }
+        return ReplacementEntry(
+            replaceWith: bestCandidate.term,
+            matches: [best.heard]
+        )
+    }
+
     // MARK: - Internals
 
     /// One matched (term, transcript n-gram) pairing.
@@ -828,7 +1030,24 @@ enum RepoVocabularyMatcher {
         let exact: Bool
     }
 
+    private struct FallbackToken {
+        let lowerBound: String.Index
+        let upperBound: String.Index
+    }
+
+    private struct AlignedHit {
+        let candidateIndex: Int
+        let heard: String
+        let score: Double
+        let lengthDelta: Int
+        let startWord: Int
+        let wordCount: Int
+    }
+
     private static let nonAlphanumericEdges = CharacterSet.alphanumerics.inverted
+    private static let fallbackEdgeCharacters = CharacterSet(
+        charactersIn: "`'\"“”‘’()[]{}<>.,;:!?"
+    )
 
     /// Splits on whitespace and trims each word of leading/trailing
     /// non-alphanumerics (STT-sprinkled commas/periods) so the normalized form
@@ -838,6 +1057,128 @@ enum RepoVocabularyMatcher {
             .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
             .map { $0.trimmingCharacters(in: nonAlphanumericEdges) }
             .filter { !$0.isEmpty }
+    }
+
+    private static func fallbackTokens(in transcript: String) -> [FallbackToken] {
+        let regex = try! NSRegularExpression(pattern: #"\S+"#)
+        return regex.matches(
+            in: transcript,
+            range: NSRange(transcript.startIndex..., in: transcript)
+        ).compactMap { match in
+            guard let range = Range(match.range, in: transcript) else { return nil }
+            return FallbackToken(lowerBound: range.lowerBound, upperBound: range.upperBound)
+        }
+    }
+
+    /// Comparison-only normalization used by the broader fallback. Diacritics
+    /// are folded so French ASR remains comparable; the emitted term and heard
+    /// span always retain their original bytes.
+    static func alignedNormalize(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        ).unicodeScalars.filter {
+            CharacterSet.alphanumerics.contains($0)
+        }.map(String.init).joined()
+    }
+
+    static func characterNGrams(_ value: String, width: Int = 2) -> Set<String> {
+        let characters = Array(value)
+        guard characters.count >= width else { return [] }
+        return Set((0...(characters.count - width)).map {
+            String(characters[$0..<($0 + width)])
+        })
+    }
+
+    private static func longestCommonSubsequenceRatio(
+        _ lhs: [Character],
+        _ rhs: [Character]
+    ) -> Double {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return 0 }
+        var previous = Array(repeating: 0, count: rhs.count + 1)
+        for left in lhs {
+            var current = Array(repeating: 0, count: rhs.count + 1)
+            for (offset, right) in rhs.enumerated() {
+                current[offset + 1] = left == right
+                    ? previous[offset] + 1
+                    : max(previous[offset + 1], current[offset])
+            }
+            previous = current
+        }
+        return Double(2 * previous[rhs.count]) / Double(lhs.count + rhs.count)
+    }
+
+    private static func alignedHit(
+        _ candidate: AlignedHit,
+        isBetterThan existing: AlignedHit
+    ) -> Bool {
+        if candidate.score != existing.score { return candidate.score > existing.score }
+        if candidate.lengthDelta != existing.lengthDelta {
+            return candidate.lengthDelta < existing.lengthDelta
+        }
+        if candidate.wordCount != existing.wordCount {
+            return candidate.wordCount < existing.wordCount
+        }
+        if candidate.startWord != existing.startWord {
+            return candidate.startWord < existing.startWord
+        }
+        return candidate.heard.count < existing.heard.count
+    }
+
+    private static func shortFileExtension(in term: String) -> String? {
+        let lastComponent = term.split(separator: "/").last.map(String.init) ?? term
+        guard let dot = lastComponent.lastIndex(of: ".") else { return nil }
+        let suffix = String(lastComponent[lastComponent.index(after: dot)...]).lowercased()
+        guard (1...8).contains(suffix.count),
+              suffix.unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains)
+        else { return nil }
+        return suffix
+    }
+
+    private static let fileReferenceCues: Set<String> = [
+        "open", "ouvre", "ouvrir", "edit", "edite", "édite", "update",
+        "look", "regard", "regarde", "corrige", "file", "filename", "fichier",
+    ]
+
+    private static func hasFileReferenceCue(
+        tokens: [FallbackToken],
+        hit: AlignedHit,
+        transcript: String
+    ) -> Bool {
+        let lower = max(0, hit.startWord - 3)
+        let upper = min(tokens.count, hit.startWord + hit.wordCount)
+        return tokens[lower..<upper].contains { token in
+            let value = String(transcript[token.lowerBound..<token.upperBound])
+                .trimmingCharacters(in: nonAlphanumericEdges)
+                .folding(
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    locale: Locale(identifier: "en_US_POSIX")
+                )
+            return fileReferenceCues.contains(value)
+        }
+    }
+
+    private static func hasTechnicalBoundaries(
+        in text: String,
+        range: Range<String.Index>
+    ) -> Bool {
+        if let first = text[range].first, first.isLetter || first.isNumber,
+           range.lowerBound > text.startIndex
+        {
+            let previous = text[text.index(before: range.lowerBound)]
+            if previous.isLetter || previous.isNumber || "._/-".contains(previous) {
+                return false
+            }
+        }
+        if let last = text[range].last, last.isLetter || last.isNumber,
+           range.upperBound < text.endIndex
+        {
+            let next = text[range.upperBound]
+            if next.isLetter || next.isNumber || "_/-".contains(next) {
+                return false
+            }
+        }
+        return true
     }
 
     private static func stripJoiners(_ token: String) -> String {
@@ -960,31 +1301,70 @@ enum RepoVocabularyMatcher {
 /// Clipboard entities join the vocabulary-hint pipeline: the clipboard polish-
 /// context excerpt tells the model the exact spelling of a copied identifier.
 /// Extracting its code-like entities with the existing `PolishTokenGuard`
-/// recognizer (never a second token grammar), matching transcript n-grams
-/// against them exactly like repo vocabulary, and registering the matches as
-/// leak-check exemptions lets grounded corrections commit safely.
+/// recognizer plus a narrow technical-identifier supplement, matching
+/// transcript n-grams against them exactly like repo vocabulary, then
+/// pre-applying only the selected spans gives the model exact bytes without
+/// scanning its output.
 ///
 /// Pure functions; all privacy gating (feature toggle, loopback endpoint,
 /// concealed/transient pasteboard) already happened when the excerpt was
 /// captured — this type never touches the pasteboard.
 enum ClipboardVocabulary {
     /// Ordered, de-duplicated code-like entities in `excerpt`, recognized by
-    /// `PolishTokenGuard.protectedTokens` (backtick spans, dotted filenames,
-    /// paths, flags, env vars, URLs, hashes, versions). Backtick spans are
-    /// unwrapped to their inner text: the vocabulary term is the identifier,
-    /// not its markdown decoration.
+    /// `PolishTokenGuard.protectedTokens` plus a narrow supplemental grammar
+    /// for long bare env vars, method signatures, and mixed-case identifiers.
+    /// Backtick spans are unwrapped to their inner text: the vocabulary term
+    /// is the identifier, not its markdown decoration.
     static func entities(inExcerpt excerpt: String) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
+        func append(_ term: String) {
+            guard !term.isEmpty, seen.insert(term).inserted else { return }
+            result.append(term)
+        }
         for token in PolishTokenGuard.protectedTokens(in: excerpt) {
             var term = token
             if term.hasPrefix("`"), term.hasSuffix("`"), term.count > 2 {
                 term = String(term.dropFirst().dropLast())
             }
-            guard !term.isEmpty, seen.insert(term).inserted else { continue }
-            result.append(term)
+            append(term)
+        }
+        // The guard recognizer is intentionally conservative and does not
+        // cover every useful INPUT-side context spelling (notably a bare
+        // ALL_CAPS env var, a method signature, or a PascalCase package name).
+        // Admit only long tokens carrying machine-checkable technical signal;
+        // ordinary clipboard prose never becomes a fallback candidate.
+        for match in supplementalEntityRegex.matches(
+            in: excerpt,
+            range: NSRange(excerpt.startIndex..., in: excerpt)
+        ) {
+            guard let range = Range(match.range, in: excerpt) else { continue }
+            var term = String(excerpt[range])
+                .trimmingCharacters(in: supplementalEntityEdges)
+            if term.hasSuffix(")"), !term.contains("(") {
+                term.removeLast()
+            }
+            guard isSupplementalTechnicalEntity(term) else { continue }
+            append(term)
         }
         return result
+    }
+
+    private static let supplementalEntityRegex = try! NSRegularExpression(
+        pattern: #"[$#A-Za-z0-9][_$#A-Za-z0-9./:()'\-]{6,}"#
+    )
+    private static let supplementalEntityEdges = CharacterSet(
+        charactersIn: "`'\"“”‘’[]{}<>.,;!?"
+    )
+
+    private static func isSupplementalTechnicalEntity(_ value: String) -> Bool {
+        guard value.count >= 7 else { return false }
+        if value.contains(where: { "._/$#():-".contains($0) }) { return true }
+        let hasLowercase = value.contains { $0.isLowercase }
+        let hasInternalUppercase = value.dropFirst().contains { $0.isUppercase }
+        let hasLetter = value.contains { $0.isLetter }
+        let hasNumber = value.contains { $0.isNumber }
+        return (hasLowercase && hasInternalUppercase) || (hasLetter && hasNumber)
     }
 
     /// The transcript-relevant clipboard entities as replacement entries, via
@@ -998,7 +1378,7 @@ enum ClipboardVocabulary {
         let terms = entities(inExcerpt: excerpt)
         guard !terms.isEmpty else { return [] }
         let vocabulary = RepoVocabulary(terms: terms, branch: nil)
-        return RepoVocabularyMatcher.candidateEntries(
+        return RepoVocabularyMatcher.groundedCandidateEntries(
             transcript: transcript,
             vocabulary: vocabulary
         )

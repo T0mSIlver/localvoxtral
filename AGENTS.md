@@ -328,11 +328,17 @@ Key subsystems:
 - **LLM polishing trusts the model's text in both profiles.** Human dictation
   evaluation found that `PolishTokenGuard` could reduce fidelity by undoing
   useful formatting and reconstructed identifiers, so it is not in the commit
-  path. Clipboard context is only a prompt/vocabulary hint; no content-based
-  leak detector scans or rejects the model output. Only explicit clipboard-paste
-  payload-placeholder count integrity remains active for both profiles. The
-  token guard type remains as a recognizer used by clipboard vocabulary and by
-  focused unit coverage; do not infer that it runs at commit.
+  path. Repo/clipboard vocabulary is an INPUT-side exception: matcher-approved
+  `(heard span, exact local term)` pairs are boundary-checked and pre-applied
+  before the single polish call. When the existing exact/edit-distance-one
+  matcher finds nothing, a bounded aligned fallback may emit at most one pair;
+  it score/margin-gates, abstains on ambiguity/glued prose, and will not add an
+  unspoken filename extension without a nearby file cue. This is grounding,
+  not an output guard. No content-based leak detector scans or rejects model
+  output. Only explicit clipboard-paste payload-placeholder count integrity
+  remains active for both profiles. The token guard type remains as a recognizer
+  used by clipboard vocabulary and by focused unit coverage; do not infer that
+  it runs at commit.
 
 ## Conventions
 

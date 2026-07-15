@@ -152,6 +152,12 @@ approved, then uses the aligned fallback only when no mapping was emitted. It
 deliberately does not repair the model output afterward; a model that changes an
 approved literal remains visible as a failure.
 
+Production grounding lives in `RepoVocabularyMatcher.groundedCandidateEntries`
+and `preapplying`: it ports the same one-fallback/pre-apply shape, but adds a
+production-scale character n-gram index, a per-span candidate-work cap, and an
+unspoken-file-extension cue gate. The Python arm remains a fixture-level
+reference rather than a byte-for-byte implementation of the Swift matcher.
+
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
 inference. Rerunning the same command resumes by endpoint, model, variant, and

@@ -670,6 +670,7 @@ extension DictationViewModel {
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
                     var repoVocabularyCount = 0
+                    var repoVocabularyEntries: [ReplacementEntry] = []
                     if templateCarriesDictionarySlot,
                        let endpointURL = polishingConfig?.endpointURL,
                        let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
@@ -685,6 +686,7 @@ extension DictationViewModel {
                             base: replacementDictionarySection,
                             entries: vocabularyEntries
                         )
+                        repoVocabularyEntries = vocabularyEntries
                         repoVocabularyCount = vocabularyEntries.count
                         Log.polishing.info(
                             "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
@@ -699,12 +701,14 @@ extension DictationViewModel {
                     // context excerpt lets the model produce the exact copied
                     // spelling. Hint entries need the dictionary slot.
                     var clipboardVocabularyCount = 0
+                    var clipboardVocabularyEntries: [ReplacementEntry] = []
                     if let clipboardContext = capturedClipboardContext {
                         let clipboardEntries = ClipboardVocabulary.candidateEntries(
                             transcript: workingText,
                             excerpt: clipboardContext.excerpt
                         )
                         if !clipboardEntries.isEmpty {
+                            clipboardVocabularyEntries = clipboardEntries
                             if templateCarriesDictionarySlot {
                                 replacementDictionarySection =
                                     RepoVocabularyMatcher.appendedPromptSection(
@@ -723,8 +727,26 @@ extension DictationViewModel {
 
                     guard !Task.isCancelled else { return }
 
+                    // Exact repo/clipboard bytes and their ASR spans have
+                    // already been selected by the deterministic matcher. Put
+                    // those bytes into the working text before the single LLM
+                    // call instead of relying on a generative model to copy a
+                    // prompt hint exactly. The same mappings remain in the
+                    // prompt as provenance/context. Boundary checks make this
+                    // a no-op if a recorded span is no longer independently
+                    // replaceable.
+                    let groundedWorkingText = RepoVocabularyMatcher.preapplying(
+                        entries: repoVocabularyEntries + clipboardVocabularyEntries,
+                        to: workingText
+                    )
+                    if groundedWorkingText != workingText {
+                        Log.polishing.info(
+                            "Technical grounding pre-applied: repo=\(repoVocabularyEntries.count, privacy: .public), clipboard=\(clipboardVocabularyEntries.count, privacy: .public)"
+                        )
+                    }
+
                     var userPrompts = promptTemplates.renderedUserPrompts(
-                        inputText: workingText,
+                        inputText: groundedWorkingText,
                         replacementDictionary: replacementDictionarySection
                     )
                     // Prepend the pre-captured clipboard reference-context block
@@ -754,7 +776,7 @@ extension DictationViewModel {
                     }
 
                     let polishingRequest = LLMPolishingRequest(
-                        inputText: workingText,
+                        inputText: groundedWorkingText,
                         systemPrompt: promptTemplates.systemContent,
                         userPrompts: userPrompts
                     )
@@ -784,20 +806,20 @@ extension DictationViewModel {
                             // trusting model text: a duplicated placeholder
                             // would paste the payload twice, while dropping one
                             // of two would lose a requested paste. Compare
-                            // standalone counts against the pre-polish working
-                            // text; on mismatch, discard the polish and keep the
-                            // placeholder-bearing working text.
+                            // standalone counts against the grounded pre-polish
+                            // text; on mismatch, discard the polish and keep
+                            // that placeholder-bearing text.
                             if clipboardPayload != nil {
                                 let expectedPlaceholders =
                                     ClipboardPayloadMacro.standalonePlaceholderCount(
-                                        in: workingText
+                                        in: groundedWorkingText
                                     )
                                 let actualPlaceholders =
                                     ClipboardPayloadMacro.standalonePlaceholderCount(
                                         in: committedText
                                     )
                                 if actualPlaceholders != expectedPlaceholders {
-                                    committedText = workingText
+                                    committedText = groundedWorkingText
                                     Log.polishing.warning(
                                         "Clipboard payload macro: polish changed placeholder count (\(expectedPlaceholders, privacy: .public) -> \(actualPlaceholders, privacy: .public)); polish discarded"
                                     )
@@ -817,12 +839,12 @@ extension DictationViewModel {
                                 committedText, payload: clipboardPayload
                             )
                             // Polish-changed iff the guarded/verified committed
-                            // text differs from the pre-polish working text: a
-                            // `.clean` outcome that left the text identical, a
-                            // `.fallback` to raw, or a placeholder-count revert
-                            // all leave committedText == workingText → not
-                            // changed. Drives the overlay badge (during hold)
-                            // and the "Copy raw transcript" popover affordance.
+                            // text differs from the pre-grounding working text.
+                            // This intentionally counts an evidence-backed
+                            // deterministic spelling correction even when the
+                            // model otherwise returns its input unchanged.
+                            // Drives the overlay badge (during hold) and the
+                            // "Copy raw transcript" popover affordance.
                             let polishChanged = committedText != workingText
                             self.overlayBufferCoordinator.markPolished(polishChanged)
                             // Retain the RAW (pre-everything) transcript for the
