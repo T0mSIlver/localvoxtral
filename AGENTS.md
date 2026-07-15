@@ -223,16 +223,28 @@ quits. Accepted WAVs are installed atomically and journaled first, so a crash or
 interrupted Swift invocation does not lose prior takes. Do not use `--redo`
 unless intentionally replacing accepted audio. The complete operator guide and
 data-safety details live in `EvalCorpus/agent-dictation/README.md`.
+For a focused retry, repeat `--case <id>` in one invocation; the recorder
+replaces only those selected takes and preserves the rest of the manifest.
 
 While the set is incomplete, run `scripts/run-agent-eval-local.sh --subset ...`;
 this selects recorded speech rows but still runs every polish-only required
 case. After it reaches 146/146, omit `--subset` for the strict baseline. The run writes
 `.build/agent-eval-local.log` and opens the per-case HTML report beside the WAVs.
+Repeat `--case <id>` on `run-agent-eval-local.sh` for an exact focused E2E slice;
+unlike `--subset`, this does not add every polish-only case.
 Use `scripts/ablate-agent-eval.py` on that log to compare stages/prompts/models
 without transcribing again. Ablation responses append immediately to a resumable
 JSONL file and its aggregate score is Markdown-neutral. Cache identity includes
-the endpoint and complete request payload. Keep comparisons paired on the same
-case IDs and preserve the explicit Qwen sampling parameters. XCTest
+the endpoint and complete request payload. For technical-term iteration, use
+`--variants current-production,current-production-oracle --model qwen35-4b
+--ceiling-model qwen36dense-27b`; the report attributes ASR preservation, 4B
+recovery, exact-evidence recovery, 27B-only recovery, and misses by both. Model
+arms are intentionally sequential to prevent a llama.cpp router from unloading
+one beneath the other. Keep comparisons paired on the same case IDs and preserve
+the explicit Qwen sampling parameters. Technique trials print paired term/case
+gains AND losses plus large word-accuracy regressions; never promote a variant
+from token recall alone, because exact-term recovery can still damage the user's
+surrounding instruction. XCTest
 can occasionally splice a status line into the sentinel-delimited JSONL report;
 the offline tools recover known XCTest diagnostics and warn only if an unknown
 corruption still forces a record to be skipped. Note any resulting denominator

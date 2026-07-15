@@ -48,7 +48,9 @@ normalized WAV that the eval will score, re-record, skip, or quit. The default m
 through macOS's native audio recorder, then converts offline to the eval's
 16 kHz mono format; explicit numeric device indexes retain the ffmpeg capture
 fallback. Running the same command again resumes the set; `--lang en`,
-`--case <id>`, `--redo`, and `--list` are available for focused passes.
+repeatable `--case <id>`, `--redo`, and `--list` are available for focused
+passes. Repeating `--case` records the selected cases in one process and leaves
+every other accepted take in the set untouched.
 
 An in-progress set can be scored without waiting for 146/146. This mode runs
 speech-driven IDs with accepted human recordings plus every audio-independent
@@ -63,6 +65,11 @@ request retains production's deterministic Qwen 4B sampling and
   --polish-model qwen35-4b \
   EvalRecordings/agent-dictation/owner
 ```
+
+Repeat `--case <id>` on `run-agent-eval-local.sh` to rerun only a focused set
+of recordings after replacing their WAVs. This filters the complete manifest
+without copying or deleting audio and is intended for exploratory comparisons,
+not the strict full-baseline score.
 
 Full output is retained in `.build/agent-eval-local.log` for failure analysis.
 At the end of the run, the harness writes and opens
@@ -80,21 +87,80 @@ truth side by side. Re-render an existing log without rerunning either model:
 
 The inspection log retains enough intermediate text to test polishing stages
 without transcribing the audio again. The resumable ablation runner compares raw
-ASR, production pre-LLM normalization, raw model output, guarded production
-output, alternate prompts, and alternate models:
+ASR, production pre-LLM normalization, raw model output, the final text shown to
+the user, alternate prompts, and alternate models:
 
 ```bash
 ./scripts/ablate-agent-eval.py .build/agent-eval-local.log \
   --model qwen35-4b --jobs 8
 ```
 
+For technical-term work, run the checked-in production prompt against the 4B
+device target and the 27B performance ceiling over the same recorded ASR and
+context. Restricting the pass to the five technical strata keeps it fast:
+
+```bash
+./scripts/ablate-agent-eval.py .build/agent-eval-local.log \
+  --endpoint http://192.168.1.183:8080/v1/chat/completions \
+  --model qwen35-4b --ceiling-model qwen36dense-27b \
+  --variants current-production,current-production-oracle \
+  --strata symbol-forms,filenames-backticks,clipboard-context,repo-vocabulary,guard-stress \
+  --jobs 8
+```
+
+The oracle arm is evaluation-only: it adds the corpus's exact required technical
+spellings as hints. The technical-term section attributes each term as already
+present in ASR, recovered by 4B without help, recovered by 4B once exact evidence
+is available, recoverable only by the 27B ceiling, or missed by both. This makes
+context/STT, prompt, and model decisions separable. `--case` and `--strata`
+select focused reruns. Model arms run sequentially because llama.cpp routers may
+evict one model while loading another; requests remain parallel within an arm.
+Older inspection logs that predate embedded forbidden/case-sensitivity fields
+are backfilled by case ID from the checked-in corpus; stale corpus text or an
+unknown legacy case is a hard error, never a silently weakened score.
+
+For fast recovery experiments, keep `current-production` in `--variants` as
+the paired baseline and add only the technique being tested. The runner prints
+case/term gains and losses, mean word-accuracy change, surface-exact change, the
+number of cases whose accuracy fell by more than ten points, and suspiciously
+large expansions. Useful
+diagnostic arms include `current-production-recorded-system` and
+`current-production-recorded-user` (factor prompt changes), the
+`*-oracle-strict` / `*-oracle-repair` arms (perfect-evidence capacity bounds),
+and `current-production-grounded-repair` (real repo/clipboard evidence in a
+compact second pass). The `ranked-*` arms use an intentionally broad
+best-of-16 corpus-fixture matcher to test retrieval hypotheses; they are tiny-repo
+retrieval upper bounds, not production matching code, and select at most one
+candidate per case. Repair arms require a cached `current-production` result:
+run the baseline once, then rerun with the repair variant (non-applicable cases
+are reported and skipped). A higher required-term score is insufficient on its
+own: always inspect surface exactness, word accuracy, large regressions, and the
+HTML text because a model can preserve the requested token while damaging the
+surrounding instruction.
+
+The `aligned-hint` and `aligned-preapply` arms narrow that upper bound. They run
+only as a fallback when the recorded production matcher emitted no repo or
+clipboard mapping, require a score and runner-up margin, choose the smallest
+matching ASR span, and abstain when a single token likely has surrounding prose
+glued to it. `aligned-hint` adds one mapping to the normal prompt;
+`aligned-preapply` replaces only the matched span before normal polishing. These
+still use the small eval fixture/context candidate pool, so success measures the
+value of safe alignment, not production-scale retrieval precision.
+`grounding-preapply` is the closest production-shape arm: it first applies
+literal, boundary-checked repo/clipboard mappings the current matcher already
+approved, then uses the aligned fallback only when no mapping was emitted. It
+deliberately does not repair the model output afterward; a model that changes an
+approved literal remains visible as a failure.
+
 Every response is appended immediately to
 `.build/agent-eval-ablation.jsonl`, so interruption does not lose completed
 inference. Rerunning the same command resumes by endpoint, model, variant, and
 the complete request payload hash. Stale entries may remain in the append-only
-JSONL but are excluded from the current report. The runner explicitly sends the production Qwen sampling shape
+JSONL but are excluded from the current report. The runner explicitly sends a
+deterministic Qwen eval shape for paired reproducibility
 (`temperature=0`, `top_p=1`, `top_k=0`, `min_p=0`, presence penalty 0, thinking
-off); preserve it when adding variants. The generated
+off); this is intentionally stricter than the app client's default temperature.
+Preserve it when adding variants. The generated
 `.build/agent-eval-ablation.html` compares every stage per case. Its aggregate
 scoring is Markdown-neutral: backticks, headings, and list markers remain
 visible and are not treated as transcript errors. Compare stages over the same

@@ -38,7 +38,7 @@ struct Options {
     var setName = "owner"
     var output: String?
     var device = "default"
-    var caseID: String?
+    var caseIDs: [String] = []
     var language: String?
     var redo = false
     var listOnly = false
@@ -71,7 +71,7 @@ func usage() -> Never {
           --output PATH       Override output directory (must remain under EvalRecordings)
           --device INDEX      AVFoundation audio index, or default (default: default)
           --list-devices      Print available microphone indexes and exit
-          --case ID           Record only one corpus case
+          --case ID           Record a corpus case (repeat for a focused batch)
           --lang en|fr        Record only one language
           --redo              Include already completed matching cases
           --list              List selected pending/completed cases without recording
@@ -99,7 +99,7 @@ func parseOptions() throws -> Options {
         case "--set": options.setName = try value()
         case "--output": options.output = try value()
         case "--device": options.device = try value()
-        case "--case": options.caseID = try value()
+        case "--case": options.caseIDs.append(try value())
         case "--lang": options.language = try value()
         case "--redo": options.redo = true
         case "--list": options.listOnly = true
@@ -564,7 +564,17 @@ do {
 
     let allCases = try loadCases()
     var selected = allCases
-    if let caseID = options.caseID { selected = selected.filter { $0.id == caseID } }
+    if !options.caseIDs.isEmpty {
+        let requested = Set(options.caseIDs)
+        let known = Set(allCases.map(\.id))
+        let unknown = requested.subtracting(known).sorted()
+        guard unknown.isEmpty else {
+            throw HarnessError.message(
+                "unknown corpus case id(s): \(unknown.joined(separator: ", "))"
+            )
+        }
+        selected = selected.filter { requested.contains($0.id) }
+    }
     if let language = options.language { selected = selected.filter { $0.lang == language } }
     guard !selected.isEmpty else { throw HarnessError.message("no corpus cases match the filters") }
 
