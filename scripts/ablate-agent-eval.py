@@ -909,10 +909,15 @@ def request_payload(model: str, messages: list[dict[str, str]]) -> dict[str, Any
 
 
 def experiment_hash(
-    endpoint: str, model: str, variant: str, messages: list[dict[str, str]]
+    case_id: str,
+    endpoint: str,
+    model: str,
+    variant: str,
+    messages: list[dict[str, str]],
 ) -> str:
     canonical = json.dumps(
         {
+            "caseID": case_id,
             "endpoint": endpoint,
             "variant": variant,
             "payload": request_payload(model, messages),
@@ -959,6 +964,7 @@ def make_experiments(
                             current_prompts,
                         )
                         baseline_hash = experiment_hash(
+                            record["caseID"],
                             endpoint,
                             model,
                             "current-production",
@@ -1001,7 +1007,9 @@ def make_experiments(
                         model=model,
                         variant=variant,
                         messages=messages,
-                        request_hash=experiment_hash(endpoint, model, variant, messages),
+                        request_hash=experiment_hash(
+                            record["caseID"], endpoint, model, variant, messages
+                        ),
                     )
                 )
     return experiments

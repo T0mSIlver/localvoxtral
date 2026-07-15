@@ -592,7 +592,7 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         XCTAssertTrue(duplicateRun.output.contains("duplicate id: r-en-report"))
     }
 
-    func testAblationCacheHashIncludesEndpointAndProductionRequestShape() throws {
+    func testAblationCacheHashIncludesCaseEndpointAndProductionRequestShape() throws {
         let script = repoRoot.appendingPathComponent("scripts/ablate-agent-eval.py")
         let snippet = #"""
         import importlib.util, sys
@@ -601,8 +601,8 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
         messages = [{"role": "user", "content": "hello"}]
-        left = module.experiment_hash("http://one/v1", "model", "variant", messages)
-        right = module.experiment_hash("http://two/v1", "model", "variant", messages)
+        left = module.experiment_hash("case", "http://one/v1", "model", "variant", messages)
+        right = module.experiment_hash("case", "http://two/v1", "model", "variant", messages)
         assert left != right
         payload = module.request_payload("model", messages)
         assert payload["temperature"] == 0.0
@@ -618,6 +618,14 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         assert [(model, [item.model for item in items]) for model, items in arms] == [
             ("model", ["model"]), ("ceiling", ["ceiling"])
         ]
+        records = [
+            {"caseID": "case-one", "spokenForm": "same request"},
+            {"caseID": "case-two", "spokenForm": "same request"},
+        ]
+        experiments = module.make_experiments(
+            records, {}, "http://one/v1", ["model"], ["raw-focused"], {}
+        )
+        assert len({item.request_hash for item in experiments}) == 2
         """#
         let run = try runPython(["-c", snippet, script.path])
         XCTAssertEqual(run.status, 0, run.output)
