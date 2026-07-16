@@ -16,15 +16,24 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-    revision: "3b0b114fc7d98dd000bb7f631588a172b5c61823"
+    url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+    revision: "03890317975a2371fe0a0a9b13ad6a790f929814"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
-can't move under us. `3b0b114` is the merge of
-[Blaizzy/mlx-audio-swift#226](https://github.com/Blaizzy/mlx-audio-swift/pull/226)
-("Fix float32 leak in VoxtralRealtime streaming"), authored by us.
+can't move under us.
+
+**Temporary fork pin.** `0389031` is our fork's `localvoxtral-pin-e1-e2` branch: upstream
+`3b0b114` (the merge of
+[Blaizzy/mlx-audio-swift#226](https://github.com/Blaizzy/mlx-audio-swift/pull/226),
+"Fix float32 leak in VoxtralRealtime streaming", authored by us) plus two
+streaming-performance fixes staged for upstream as fork PRs
+([#2](https://github.com/T0mSIlver/mlx-audio-swift/pull/2): Metal-pool clear cadence,
+[#3](https://github.com/T0mSIlver/mlx-audio-swift/pull/3): incremental mel/conv front end —
+both with bench evidence in the PR threads). Switchback plan: once both merge upstream, point
+the URL back at `Blaizzy/mlx-audio-swift` at the containing revision and delete the fork
+branch; nothing else changes.
 
 ## What #226 upstreamed
 
