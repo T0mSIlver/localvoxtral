@@ -310,12 +310,12 @@ Key subsystems:
   before typing — see "Known tradeoffs" below for the latency it costs
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
-- Backends: `BackendManager` lazily bootstraps app-managed local serving on
-  first dictation start; managed ASR is the bundled `localvoxtral-speechd`
-  helper on port 8471 with an exact HF model revision, while the legacy
-  managed voxmlx spec remains only for part-4 retirement/cleanup. The installer/downloader keeps
-  pinned `uv` machinery; supervisors spawn/health-check/stop the managed
-  processes. User-facing backend copy (pinned models, fork
+- Backends: `BackendManager` lazily prepares pinned Hugging Face snapshots and
+  starts the bundled Swift helpers: `localvoxtral-speechd` for ASR on port
+  8471 and `localvoxtral-polishd` for polishing on port 8472. Supervisors
+  spawn, health-check, and stop both managed processes; launch cleanup removes
+  retired app-managed backend artifacts from existing installs. User-facing
+  backend copy (pinned models, fork
   optimizations, vLLM example) lives in the README "Under the hood" section
   (`/docs` is gitignored local notes — nothing user-facing goes there); keep
   it in sync when pins change.
@@ -325,8 +325,8 @@ Key subsystems:
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed
   mode, the bundled `localvoxtral-polishd` helper (`PolishHelper/` package:
   MLX Swift inference + a minimal loopback OpenAI server + parent-pid
-  watchdog), supervised like any managed backend on port 8472. Replaced the
-  uv-installed mlx-lm fork wheel (upstream mlx-lm unmaintained, 2026-07).
+  watchdog), supervised like any managed backend on port 8472. It replaced the
+  former mlx-lm helper after upstream became unmaintained (2026-07).
 
 ## Known tradeoffs — deliberate, not bugs
 
