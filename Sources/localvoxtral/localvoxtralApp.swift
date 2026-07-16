@@ -283,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Calling the coordinator directly would bind successfully while the
         // pane stayed at `.idle`, and would make a launch-time port conflict
         // log-only with no Retry action.
-        viewModel.claudeIntegrationSettings?.retryListener()
+        viewModel.claudeIntegrationSettings?.synchronizeListenerAtLaunch()
     }
 
     /// Brings existing installs up to date with this build's bundled config

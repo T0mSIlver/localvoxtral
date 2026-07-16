@@ -299,24 +299,25 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         git.setData("ls-files", Data("link.swift\0".utf8))
         let collector = ClaudeRepoCollector(
             files: ClaudeLocalFileSystem(),
+            now: TestClock(epoch).now,
             runGit: git.run,
             findGitRoot: { _ in repo.path }
         )
 
-        let snapshot = await collector.collect(
+        let collected = await collector.collect(
             workspace: try workspace(repo.path),
             recentFiles: [
                 ClaudeRecentFile(path: link.path, kind: .read, lastTouched: epoch)
             ],
             transcript: ""
         )
-        XCTAssertEqual(snapshot?.activeFiles ?? [], [])
-        if let snapshot {
-            XCTAssertFalse(
-                ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
-                    .contains("never-attach-this-secret")
-            )
-        }
+        let snapshot = try XCTUnwrap(collected)
+        XCTAssertFalse(snapshot.provenance.deadlineExpired, "the test must reach the file check")
+        XCTAssertEqual(snapshot.activeFiles, [])
+        XCTAssertFalse(
+            ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+                .contains("never-attach-this-secret")
+        )
     }
 
     // MARK: - Caps

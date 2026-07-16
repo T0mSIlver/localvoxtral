@@ -157,6 +157,32 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(listener.reconcileCount, 1)
     }
 
+    func testLaunchSyncPreservesFailureStatusWithoutQueueingALateModal() throws {
+        let registry = try makeRegistry()
+        _ = try registry.enroll(label: "builder")
+        let listener = StubListener(hosts: registry)
+        #if canImport(Darwin)
+        listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
+        #else
+        listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: 48)
+        #endif
+        let model = makeModel(registry: registry, listener: listener)
+
+        model.synchronizeListenerAtLaunch()
+
+        XCTAssertEqual(model.listenerStatus, .portConflict(port: 8473))
+        XCTAssertNil(model.alert)
+        XCTAssertEqual(listener.reconcileCount, 1)
+    }
+
+    func testRegistryPathFailuresHaveActionableCopy() {
+        let detail = ClaudeIntegrationSettingsModel.registryFailureDetail(
+            ClaudeSocketGuard.PreconditionFailure.permissive(path: "/tmp/claude", mode: 0o755)
+        )
+        XCTAssertTrue(detail.contains("unsafe permissions"))
+        XCTAssertTrue(detail.contains("/tmp/claude"))
+    }
+
     func testRevokingTheLastHostStopsListening() async throws {
         let registry = try makeRegistry()
         let listener = StubListener(hosts: registry)

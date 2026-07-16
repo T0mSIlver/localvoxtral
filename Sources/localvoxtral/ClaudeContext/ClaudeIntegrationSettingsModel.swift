@@ -390,22 +390,31 @@ public final class ClaudeIntegrationSettingsModel {
         reconcileListener()
     }
 
+    /// Reconcile during app launch without queueing a modal alert for a window
+    /// that does not exist yet. The status row and log still retain the exact
+    /// failure; opening Settings later shows the remedy and Retry in context.
+    public func synchronizeListenerAtLaunch() {
+        reconcileListener(presentAlert: false)
+    }
+
     public func dismissPlan() {
         // The plaintext goes with it. Nothing else holds a copy.
         presentedPlan = nil
     }
 
-    private func reconcileListener() {
+    private func reconcileListener(presentAlert: Bool = true) {
         guard let listener else { return }
         do {
             try listener.reconcile()
             listenerStatus = listener.isListening ? .listening(port: listener.boundPort) : .idle
         } catch {
             listenerStatus = Self.status(for: error, port: listener.boundPort)
-            alert = DetailAlert(
-                title: "Remote Claude Code context",
-                detail: Self.listenerFailureDetail(error, port: listener.boundPort)
-            )
+            if presentAlert {
+                alert = DetailAlert(
+                    title: "Remote Claude Code context",
+                    detail: Self.listenerFailureDetail(error, port: listener.boundPort)
+                )
+            }
             Log.claudeContext.error(
                 "Claude remote listener reconcile failed: \(String(describing: error), privacy: .public)"
             )
