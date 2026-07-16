@@ -394,9 +394,12 @@ Key subsystems:
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.
-  - Transcripts are never scraped (the publisher drops `transcript_path`) and
-    tool output is never attached: for a local session the files are readable
-    directly and are the better source.
+  - Transcripts are never scraped (the publisher drops `transcript_path`), and a
+    LOCAL session never attaches hook-quoted tool excerpts: its files are
+    readable directly and are the better source. A REMOTE session's bounded,
+    sanitized excerpts DO attach (`ClaudeSessionContextText`, gated on the
+    origin) — there is no remote collector, so they are the only thing we will
+    ever know about that tree.
   - Everything harvested feeds GROUNDING even when the rendered excerpt is cut
     to nothing — matching is input-side and free; only rendering pays the
     budget.

@@ -745,8 +745,14 @@ private struct TextProcessingSettingsPane: View {
                                 .labelsHidden()
                                 .toggleStyle(.switch)
 
+                            // Names the send, not just the benefit: when the
+                            // pane is joined to a live Claude Code session, part
+                            // of what is on screen is attached to the prompt
+                            // verbatim. "Fixes spellings" describes only the
+                            // matcher and would be consent obtained for the
+                            // smaller half.
                             SettingsHelpText(
-                                "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. Ghostty only, local polishing endpoints only."
+                                "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Ghostty only, local polishing endpoints only."
                             )
                         }
                     }
@@ -764,8 +770,17 @@ private struct TextProcessingSettingsPane: View {
                             // vocabulary toggle above does not. Someone who
                             // agreed to "spell my filenames right" has not
                             // thereby agreed to this.
+                            //
+                            // All four things the toggle actually sends are
+                            // named. The prior request is the one a user would
+                            // least expect from a label about "project files",
+                            // and it is their own typed words. The remote clause
+                            // is worded to describe what the SESSION carries, not
+                            // a second behavior: a remote session sends the
+                            // excerpts its hooks already reported, and never
+                            // causes anything on this machine to be read.
                             SettingsHelpText(
-                                "Sends your uncommitted changes and the contents of files Claude Code recently touched to the polisher, so it can spell code and file names exactly. Requires a Claude Code session in Ghostty; local polishing endpoints only."
+                                "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in Ghostty; local polishing endpoints only."
                             )
                         }
                     }

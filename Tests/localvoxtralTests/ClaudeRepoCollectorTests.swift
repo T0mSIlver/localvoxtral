@@ -598,4 +598,68 @@ final class ClaudeRepoContentFilterTests: XCTestCase {
             []
         )
     }
+
+    // MARK: - Basename forms
+
+    // The extension-less stem is a form in its own right. Without it, matching
+    // the whole basename means a speaker has to pronounce "dot swift" to select
+    // a file, because `contains` is not a prefix test — which is the entire
+    // spoken-form case this selector exists for.
+    func testBasenameFormsIncludeTheExtensionLessStem() {
+        let forms = ClaudeRepoContentFilter.basenameMatchForms("Sources/DictationViewModel.swift")
+        XCTAssertEqual(forms, ["dictationviewmodelswift", "dictationviewmodel"])
+    }
+
+    // `+` survives `RepoVocabularyMatcher.normalize` (it strips `.`/`/`/`_`/`-`
+    // and nothing else), so a `+` left in the file-side form can never match a
+    // transcript. Both spoken readings are emitted; neither is guessed at.
+    func testBasenameFormsExpandPlusBothWays() {
+        let forms = ClaudeRepoContentFilter.basenameMatchForms("DictationViewModel+Session.swift")
+        XCTAssertFalse(
+            forms.contains { $0.contains("+") },
+            "a form containing `+` is unmatchable against any transcript"
+        )
+        XCTAssertEqual(
+            forms,
+            [
+                "dictationviewmodelplussessionswift",
+                "dictationviewmodelsessionswift",
+                "dictationviewmodelplussession",
+                "dictationviewmodelsession",
+            ],
+            "longest first, so the caller's first match is the most specific"
+        )
+    }
+
+    // Dropping the extension must not smuggle a short stem past the guard: the
+    // length rule applies per form, not to the basename it came from.
+    func testShortStemsAreExcludedEvenWhenTheBasenameIsLongEnough() {
+        // `App.swift` -> `appswift` (8) clears the bar; its stem `app` (3) does
+        // not, and must not.
+        XCTAssertEqual(ClaudeRepoContentFilter.basenameMatchForms("Sources/App.swift"), ["appswift"])
+        XCTAssertEqual(
+            ClaudeRepoContentFilter.transcriptMatchedPaths(
+                trackedPaths: ["Sources/App.swift"],
+                excluding: [],
+                transcript: "the app crashed again",
+                limit: 5
+            ),
+            [],
+            "a three-letter stem must never select a whole file"
+        )
+    }
+
+    // The elided reading is not a curiosity: "+" is silent far more often than
+    // it is spoken, and before this the file was unmatchable by ANY utterance.
+    func testPlusFileIsSelectedWhenThePlusIsNotSpoken() {
+        XCTAssertEqual(
+            ClaudeRepoContentFilter.transcriptMatchedPaths(
+                trackedPaths: ["DictationViewModel+Session.swift"],
+                excluding: [],
+                transcript: "open dictation view model session",
+                limit: 5
+            ),
+            ["DictationViewModel+Session.swift"]
+        )
+    }
 }

@@ -261,9 +261,20 @@ public final class ClaudeSessionRegistry: Sendable {
             if state.markerIndex[candidate] == nil { return candidate }
         }
         // Exhausted: fall back to a value that cannot collide with the index.
+        //
+        // Hex-only, because the fallback must satisfy the SAME grammar the
+        // random allocator emits (`lvx-` + lowercase hex —
+        // `ClaudeMarkerSequence.isValidMarker`). The old `lvx-fallback-<n>`
+        // could not: `k` is not in the allowlist, so the marker was minted and
+        // indexed but `ClaudeMarkerSequence` refused to write it to a title,
+        // leaving that session permanently unjoinable — the marker join is
+        // positive-only, so it would silently never get context again.
+        //
+        // Terminating: each candidate is checked against the index, and the
+        // counter's space is vastly larger than the number of live sessions.
         var counter = 0
         while true {
-            let candidate = "lvx-fallback-\(counter)"
+            let candidate = "lvx-" + String(format: "%08x", counter)
             if state.markerIndex[candidate] == nil { return candidate }
             counter += 1
         }

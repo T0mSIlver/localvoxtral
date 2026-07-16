@@ -109,6 +109,66 @@ enum ClaudeRepoContentFilter {
         data.prefix(headBytes).contains(0x00)
     }
 
+    /// Minimum normalized length for a basename form to select a whole file.
+    ///
+    /// Short basenames (`api.ts` -> `apits`) collide with ordinary prose far too
+    /// easily. Applied to every candidate form independently, so dropping the
+    /// extension cannot smuggle a short stem past it.
+    static let minimumBasenameMatchLength = 8
+
+    /// The normalized basename forms of `path` that a speaker could plausibly
+    /// have uttered, longest first.
+    ///
+    /// Two axes, and both were silently broken before — the doc example below
+    /// ("the dictation view model" -> `DictationViewModel.swift`) could not
+    /// actually match:
+    ///
+    /// * **Extension.** `normalize("DictationViewModel.swift")` is
+    ///   `dictationviewmodelswift`, but a speaker who does not say "dot swift"
+    ///   produces `dictationviewmodel`, and `contains` is not a prefix test. So
+    ///   the extension-less STEM is a candidate alongside the full basename.
+    ///   Both are kept: someone who does say "dot swift" still matches, and the
+    ///   longer form wins the ranking, which is the correct outcome.
+    /// * **`+`.** `RepoVocabularyMatcher.normalize` strips `.`/`/`/`_`/`-` but
+    ///   NOT `+`, so `DictationViewModel+Session.swift` normalized to a form
+    ///   containing a literal `+` that no transcript can ever contain — the file
+    ///   was unmatchable by any utterance. A speaker either says "plus" or
+    ///   elides it, so BOTH readings are emitted rather than guessed between.
+    ///
+    /// Deterministic: same path in, same forms in the same order out.
+    static func basenameMatchForms(_ path: String) -> [String] {
+        let basename = (path as NSString).lastPathComponent
+        let stem = (basename as NSString).deletingPathExtension
+
+        var spellings: [String] = []
+        for raw in [basename, stem] where !raw.isEmpty {
+            if raw.contains("+") {
+                // Spoken, then elided. Spaces (not "") because `normalize`
+                // tokenizes on whitespace: "plus" must land as its own token to
+                // be a word rather than glued into the neighbouring one.
+                spellings.append(raw.replacingOccurrences(of: "+", with: " plus "))
+                spellings.append(raw.replacingOccurrences(of: "+", with: " "))
+            } else {
+                spellings.append(raw)
+            }
+        }
+
+        var forms: [String] = []
+        for spelling in spellings {
+            let normalized = RepoVocabularyMatcher.normalize(spelling)
+            guard normalized.count >= minimumBasenameMatchLength else { continue }
+            guard !forms.contains(normalized) else { continue }
+            forms.append(normalized)
+        }
+        // Longest first so the caller's `first(where:)` is the most specific
+        // match. Length ties break lexicographically — never on insertion order,
+        // which the `+` expansion above makes non-obvious.
+        return forms.sorted {
+            if $0.count != $1.count { return $0.count > $1.count }
+            return $0 < $1
+        }
+    }
+
     /// Tracked paths the transcript plausibly refers to, best match first.
     ///
     /// Uses the SAME normalization as the vocabulary matcher, so a speaker who
@@ -138,13 +198,12 @@ enum ClaudeRepoContentFilter {
         for (index, path) in trackedPaths.enumerated() {
             guard !excluding.contains(path) else { continue }
             guard !isGeneratedOrVendored(path), !isLogLike(path) else { continue }
-            let basename = (path as NSString).lastPathComponent
-            let normalized = RepoVocabularyMatcher.normalize(basename)
-            // Short basenames (`api.ts` -> `apits`) collide with ordinary prose
-            // far too easily to select a whole file on.
-            guard normalized.count >= 8 else { continue }
-            guard normalizedTranscript.contains(normalized) else { continue }
-            matches.append(Match(path: path, length: normalized.count, index: index))
+            // Longest-first, so this is the most specific form the speaker could
+            // have used, and its length is what ranks the file below.
+            guard let matched = basenameMatchForms(path).first(where: {
+                normalizedTranscript.contains($0)
+            }) else { continue }
+            matches.append(Match(path: path, length: matched.count, index: index))
         }
         // Longest normalized match first: a transcript containing
         // `DictationViewModel+Session.swift` mentions `Session.swift` too, and

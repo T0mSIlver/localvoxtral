@@ -32,6 +32,102 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
         ClaudeRepoSnapshot.File(path: path, contents: contents, touch: .edited, isTruncated: false)
     }
 
+    // MARK: - The budget demand
+
+    // The demand is what the snapshot can RENDER. `trackedPaths` are grounding
+    // material — they are not a section and never render a character — so they
+    // must not appear in it at any size.
+    func testRenderableDemandExcludesGroundingOnlyTrackedPaths() {
+        let paths = (0..<5_000).map { "Sources/Generated/File\($0).swift" }
+        let small = snapshot(branch: "main", active: [file("App.swift", "struct App {}")])
+        let huge = snapshot(
+            branch: "main",
+            active: [file("App.swift", "struct App {}")],
+            trackedPaths: paths
+        )
+
+        XCTAssertEqual(
+            ClaudeRepoContextSelection.renderableCharacterCount(snapshot: huge),
+            ClaudeRepoContextSelection.renderableCharacterCount(snapshot: small),
+            "tracked paths must not change what the repo can render, so they must not change its demand"
+        )
+        // The measure that was used before, for contrast: dominated by paths.
+        XCTAssertGreaterThan(
+            ClaudeRepoContextSelection.groundingText(snapshot: huge).count,
+            100_000,
+            "precondition: the grounding text really is enormous"
+        )
+    }
+
+    // The demand equals the string `render` measures for its verbatim case —
+    // which is what keeps "everything fits ⇒ everything is attached" reachable.
+    // A demand above that would be a grant the source cannot spend.
+    func testRenderableDemandIsExactlyTheVerbatimRenderLength() {
+        let snap = snapshot(
+            status: [" M App.swift"],
+            unstaged: "diff --git a/App.swift\n-old\n+new",
+            active: [file("App.swift", "struct App {}")],
+            trackedPaths: ["Sources/App.swift", "README.md"]
+        )
+        let demand = ClaudeRepoContextSelection.renderableCharacterCount(snapshot: snap)
+        let verbatim = ClaudeRepoContextSelection.render(
+            snapshot: snap,
+            transcript: "anything",
+            characterCap: demand
+        )
+        XCTAssertEqual(verbatim.count, demand)
+    }
+
+    // The cross-source consequence, which is the actual bug: the repo and the
+    // clipboard share ONE total. A repo bidding its tracked-path list — material
+    // it will never show — takes the space from a clipboard that had real text
+    // to render with it.
+    func testHugeTrackedPathListDoesNotStealTheClipboardGrant() {
+        // The asserted path leads the list: this test is about the BUDGET, so it
+        // must not also depend on how deep into a 5,000-path harvest the term
+        // extractor is willing to go.
+        let target = "Sources/Generated/RetryBudgetCalculator.swift"
+        let paths = [target] + (0..<5_000).map { "Sources/Generated/File\($0).swift" }
+        let repo = snapshot(
+            branch: "main",
+            active: [file("App.swift", "struct App {}")],
+            trackedPaths: paths
+        )
+        let clipboardDemand = 4_000
+
+        let allocation = PolishContextBudget.allocate(demands: [
+            .repository: ClaudeRepoContextSelection.renderableCharacterCount(snapshot: repo),
+            .clipboard: clipboardDemand,
+        ])
+
+        XCTAssertEqual(
+            allocation[.clipboard],
+            clipboardDemand,
+            "the clipboard asked for little and the repo can render little; both must be satisfied in full"
+        )
+        XCTAssertEqual(
+            allocation[.repository],
+            ClaudeRepoContextSelection.renderableCharacterCount(snapshot: repo)
+        )
+
+        // And the harvest is NOT reduced to make that true: every tracked path
+        // still grounds. Cutting the demand must not cut the vocabulary — that
+        // would trade one bug for a worse one.
+        let prepared = ClaudeRepoContextPreparation.prepare(
+            snapshot: repo,
+            transcript: "please open \(target) now",
+            renderBudget: allocation[.repository] ?? 0
+        )
+        XCTAssertTrue(
+            prepared.grounding.entries.contains { $0.replaceWith.contains("RetryBudgetCalculator") },
+            "a tracked path that never renders must still ground the transcript"
+        )
+        XCTAssertFalse(
+            prepared.excerpt.contains("RetryBudgetCalculator"),
+            "precondition: it grounded without rendering — the paths are not a section"
+        )
+    }
+
     // MARK: - Small repo: verbatim
 
     // The headline case. A small repo reaches the model exactly as it is, with

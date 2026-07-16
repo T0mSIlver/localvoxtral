@@ -26,6 +26,16 @@ struct ClaudeRepoContextPreparation: Sendable, Equatable {
 
     static let empty = ClaudeRepoContextPreparation(grounding: .empty, excerpt: "")
 
+    /// The `.repository` source's budget demand, computed off the main actor.
+    ///
+    /// The demand has to be known BEFORE `prepared` can run — the allocation it
+    /// feeds is what produces `renderBudget` — so it cannot ride along inside
+    /// the preparation. It gets the same off-actor treatment for the same
+    /// reason: it walks the harvest, and the stop-commit path is `@MainActor`.
+    nonisolated static func renderDemand(snapshot: ClaudeRepoSnapshot) async -> Int {
+        ClaudeRepoContextSelection.renderableCharacterCount(snapshot: snapshot)
+    }
+
     /// Prepares `snapshot` off the main actor.
     nonisolated static func prepared(
         snapshot: ClaudeRepoSnapshot,
@@ -80,9 +90,12 @@ enum ClaudeSessionContextText {
     /// receive the path (the publisher drops it) and we would not read it if we
     /// did. For a LOCAL session the files are readable directly and are the
     /// better source anyway — a transcript is a lossy retelling of a tree we can
-    /// just look at. Nor is arbitrary tool OUTPUT attached: the same argument
-    /// applies, and tool output is where command results, secrets, and
-    /// unbounded logs live.
+    /// just look at.
+    ///
+    /// Tool excerpts are the one bounded exception, and only for a REMOTE
+    /// session — see `remoteSnippetPart`. A local session never contributes
+    /// them, because the same argument that rules out its transcript rules out
+    /// its hook-quoted fragments: we can read the real file.
     static func text(for snapshot: ClaudeSessionSnapshot) -> String {
         var parts: [String] = []
         if let workspace = snapshot.workspace {
@@ -105,7 +118,45 @@ enum ClaudeSessionContextText {
             }
             parts.append("files the agent recently touched:\n" + files.joined(separator: "\n"))
         }
+        parts.append(contentsOf: remoteSnippetPart(for: snapshot))
         return parts.joined(separator: "\n\n")
+    }
+
+    /// The remote session's tool excerpts, or nothing.
+    ///
+    /// REMOTE ONLY, and gated on the ORIGIN rather than on the array being
+    /// non-empty. The local NDJSON wire has no snippet field, so a local
+    /// snapshot's array is empty in practice — but "in practice" is not an
+    /// invariant, and this one is worth an explicit check: a local session's
+    /// files are on this machine, where `ClaudeRepoCollecting` reads them
+    /// properly, under the collector's own caps and exclusions. A hook's quoted
+    /// fragment of the same file would be a strictly worse copy that skipped
+    /// every one of those rules. For a remote session there is no
+    /// collector and never will be, so these excerpts are the only thing we will
+    /// ever know about that tree — which is exactly why they are worth
+    /// attaching, and why they were dead weight until now.
+    ///
+    /// Bounding is already done and not re-litigated here: the transport caps
+    /// each snippet (`ClaudeSnippetLimits`, 512 bytes) and sanitizes it to an
+    /// allowlist before it is ever retained, and `ClaudeSessionReducer` caps how
+    /// many survive. What this adds is a LABEL per snippet, because the block is
+    /// untrusted foreign text and the model is told to treat it as inert data —
+    /// unlabelled quoted text from another machine reads like the user's own.
+    ///
+    /// This returns text, not a block: the caller's output rides the shared
+    /// `PolishContextPreparation`, so these characters compete for the same
+    /// `.claude` grant as the prompt and the file list, and ground over the
+    /// complete retained text even when the render budget cuts them.
+    private static func remoteSnippetPart(for snapshot: ClaudeSessionSnapshot) -> [String] {
+        guard !snapshot.origin.isLocalAuthenticated else { return [] }
+        guard !snapshot.recentSnippets.isEmpty else { return [] }
+        let rendered = snapshot.recentSnippets.map { snippet in
+            "[\(snippet.label) (\(snippet.kind.rawValue))]\n\(snippet.text)"
+        }
+        return [
+            "excerpts of what the agent's tools recently handled on the remote host:\n"
+                + rendered.joined(separator: "\n\n")
+        ]
     }
 
     /// A recent file's path as the prompt should see it: relative to the

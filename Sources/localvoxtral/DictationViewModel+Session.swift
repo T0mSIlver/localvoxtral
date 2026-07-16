@@ -767,22 +767,44 @@ extension DictationViewModel {
                     guard !Task.isCancelled else { return }
 
                     // The session block's text (workspace, the PRIOR prompt, the
-                    // files the agent touched) is flat, so it rides the shared
-                    // preparation like the clipboard and the screen. It is gated
-                    // on the same setting as the repo block: both attach the
-                    // session's content, and consenting to one is consenting to
-                    // both.
-                    let claudeSessionText: String = {
-                        guard settings.claudeRepoContextEnabled,
-                              let join = capturedClaudeJoin
-                        else { return "" }
-                        return ClaudeSessionContextText.text(for: join.snapshot)
-                    }()
+                    // files the agent touched, and a remote session's tool
+                    // excerpts) is flat, so it rides the shared preparation like
+                    // the clipboard and the screen.
+                    //
+                    // Gated through `claudeSessionTextIfEnabled` on ALL THREE of
+                    // the repo block's gates — current setting, current loopback
+                    // endpoint, this exact join still live — not just the
+                    // setting. Both blocks attach the session's content, and
+                    // consenting to one is consenting to both; it follows that
+                    // withdrawing consent, or a session dying mid-sentence, must
+                    // stop both too. Checking only the setting here meant a dead
+                    // session's PRIOR PROMPT still rode to whatever endpoint was
+                    // configured, including a remote one.
+                    var claudeSessionText = ""
+                    if let endpointURL = polishingConfig?.endpointURL {
+                        claudeSessionText = self.claudeSessionTextIfEnabled(
+                            join: capturedClaudeJoin,
+                            endpointURL: endpointURL
+                        )
+                    }
+
+                    // Only RENDERABLE material declares a demand — the repo's
+                    // demand is what it could show, never `groundingText.count`.
+                    // That string is mostly `trackedPaths`, which ground but
+                    // never render, so counting it made a monorepo bid hundreds
+                    // of thousands of characters for content it would not
+                    // attach, and take that space from sources that would. It is
+                    // also computed off-actor: it walks the harvest, and this is
+                    // the `@MainActor` commit path.
+                    var repoRenderDemand = 0
+                    if let claudeRepoSnapshot {
+                        repoRenderDemand = await ClaudeRepoContextPreparation.renderDemand(
+                            snapshot: claudeRepoSnapshot
+                        )
+                    }
 
                     let allocation = PolishContextBudget.allocate(demands: [
-                        .repository: claudeRepoSnapshot.map {
-                            ClaudeRepoContextSelection.groundingText(snapshot: $0).count
-                        } ?? 0,
+                        .repository: repoRenderDemand,
                         .terminal: screenRenderDemand,
                         .claude: claudeSessionText.count,
                         .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,

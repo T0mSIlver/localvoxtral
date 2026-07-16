@@ -158,9 +158,12 @@ final class ClaudePluginManifestTests: XCTestCase {
     func testPluginDeclaresNoTokenConsumingSurfaces() throws {
         // The plugin is a data channel, not a Claude feature: a skill, command,
         // or agent would put tokens (and latency) on the user's turn for
-        // something they never asked Claude to do.
+        // something they never asked Claude to do. `statusLine` is in the list
+        // for the same reason and a sharper one — it runs on EVERY turn — and
+        // because the remote plugin's guard already covers it: the two manifests
+        // make the same promise, so they must be held to the same list.
         let manifest = try json(at: pluginRoot.appendingPathComponent(".claude-plugin/plugin.json"))
-        for key in ["skills", "commands", "agents", "mcpServers"] {
+        for key in ["skills", "commands", "agents", "mcpServers", "statusLine"] {
             XCTAssertNil(manifest[key], "the plugin must not declare \(key)")
         }
         for directory in ["skills", "commands", "agents"] {

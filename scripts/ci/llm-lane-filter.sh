@@ -59,6 +59,7 @@ PATTERNS=(
   '*ClaudeSessionRegistry*'                          # session liveness: what the join resolves against
   '*ClaudeSessionState*'                             # the snapshot the session block renders from
   '*ClaudeTransportOrigin*'                          # workspace trust: whether a cwd can be read at all
+  'Sources/localvoxtral/ClaudeContext/*'             # every gate/collector/renderer feeding the Claude blocks
   '*ClaudeContextBroker*'                            # the socket that feeds the registry
   '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from
   '*ClaudeHookInputParser*'                          # which hook fields become session state

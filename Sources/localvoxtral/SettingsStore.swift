@@ -355,13 +355,19 @@ final class SettingsStore {
     /// app is focused, the screen is never read at all
     /// (`TerminalScreenContext.shouldAttemptRead`).
     ///
-    /// Scope, and why the help text promises only spellings: the screen is fed
-    /// to the deterministic vocabulary MATCHER, which emits `(heard span,
-    /// exact local term)` pairs. No verbatim screen excerpt reaches the prompt
-    /// — that additionally requires the Claude Code session broker's gate
-    /// (`TerminalScreenRawAttachmentPolicy`), which is not on this branch and
-    /// is hard-false in production. Widening this toggle's meaning to include
-    /// raw excerpts is a copy change too, not just a code change.
+    /// Scope, in two tiers — and the help text must state the second one,
+    /// because it is the one that SENDS text:
+    ///
+    /// 1. Always: the screen feeds the deterministic vocabulary MATCHER, which
+    ///    emits `(heard span, exact local term)` pairs. Input-side, no excerpt.
+    /// 2. When `TerminalScreenRawAttachmentPolicy` positively joins the focused
+    ///    pane to one live Claude Code session, a transcript-relevant EXCERPT of
+    ///    the screen is attached to the polish prompt verbatim.
+    ///
+    /// Tier 2 is live (the broker configures the authorizer); an unjoined pane
+    /// still contributes vocabulary only. Consent is asked for the union: a user
+    /// who reads "fixes spellings" has not agreed to have their screen sent, so
+    /// the help text names it.
     var terminalScreenContextEnabled: Bool {
         didSet {
             defaults.set(terminalScreenContextEnabled, forKey: Keys.terminalScreenContextEnabled)
@@ -388,6 +394,14 @@ final class SettingsStore {
     /// contents of files the agent just read or edited — plus the previous
     /// request the user sent that agent are attached to the polish prompt as
     /// untrusted reference material.
+    ///
+    /// For a session on a REMOTE host the same toggle attaches what that
+    /// session's transport carries — the prior request, its recent file labels,
+    /// and the bounded sanitized tool excerpts its hooks reported — and nothing
+    /// else. There is no remote repository collector and no remote read: a
+    /// remote cwd is an opaque label that cannot authorize a filesystem call.
+    /// The consent is the same either way (this session's content reaches the
+    /// polisher), which is why it is the same toggle.
     ///
     /// A separate toggle from `repoVocabularyEnabled`, deliberately, because it
     /// is a materially different consent. That one harvests NAMES — file

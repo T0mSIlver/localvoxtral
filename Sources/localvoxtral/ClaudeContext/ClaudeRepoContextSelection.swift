@@ -106,6 +106,24 @@ enum ClaudeRepoContextSelection {
         return output
     }
 
+    /// The characters this snapshot could actually RENDER — the demand it must
+    /// declare to `PolishContextBudget`.
+    ///
+    /// `groundingText.count` is the wrong measure and was the bug: that string
+    /// is dominated by `trackedPaths`, which are NOT a section and therefore
+    /// never render a single character. A monorepo would declare a demand of
+    /// hundreds of thousands of characters for material it would never show,
+    /// and — because the allocator shares one total across sources — take that
+    /// space from the clipboard, which had real text to render with it.
+    ///
+    /// Counting the render is also the only measure the allocator can honor: a
+    /// grant above what a source can render is simply wasted. This is exactly
+    /// the string `render` measures for its verbatim case, which is what keeps
+    /// "everything fits ⇒ everything is attached" reachable.
+    static func renderableCharacterCount(snapshot: ClaudeRepoSnapshot) -> Int {
+        join(populatedSections(snapshot: snapshot).map { ($0.key, $0.text) }).count
+    }
+
     /// Every section with text, in priority order.
     private static func populatedSections(
         snapshot: ClaudeRepoSnapshot

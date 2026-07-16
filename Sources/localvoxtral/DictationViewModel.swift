@@ -1827,9 +1827,54 @@ final class DictationViewModel {
         }
         return await claudeRepoCollector.collect(
             workspace: workspace,
-            recentFiles: join.snapshot.recentFiles,
+            // `localRecentFiles`, not `recentFiles`: the collector opens these
+            // paths. The workspace gate above already proves this session is
+            // local, so today the two are the same array — but the accessor is
+            // the documented gate for per-file paths (which are plain strings on
+            // the wire, unlike the cwd, which the type system covers), and a
+            // consumer that touches the filesystem must read it from there. Not
+            // a behavior change; a change to which invariant is load-bearing.
+            recentFiles: join.snapshot.localRecentFiles,
             transcript: transcript
         )
+    }
+
+    /// The Claude session block's text, re-gated at commit exactly like
+    /// `claudeRepoSnapshotIfEnabled` — current setting, current loopback
+    /// endpoint, this exact join still live.
+    ///
+    /// The same three gates because it carries the same kind of thing: the
+    /// session's workspace name, the PRIOR PROMPT the user typed to the agent,
+    /// the paths it touched, and (remote only) bounded tool excerpts. That is
+    /// the session's content, which is what the setting consents to and what a
+    /// non-loopback endpoint must never receive. The block previously checked
+    /// only the setting, so a session that died mid-sentence still had its
+    /// prompt attached, and a Settings change to a remote endpoint sent it
+    /// there.
+    ///
+    /// There is deliberately no LOCAL-workspace gate, which is the one place
+    /// this diverges from the repo collector: that gate exists because the
+    /// collector opens files, and this opens nothing. A remote session's
+    /// off-screen facts are exactly what this block is for.
+    ///
+    /// Returns "" rather than a snapshot on purpose. "" produces no
+    /// preparation, which withholds the GROUNDING as well as the rendered
+    /// block — a gate that suppressed only the excerpt would still let the
+    /// prior prompt's words reach the model as replacement entries.
+    func claudeSessionTextIfEnabled(join: ClaudeSessionJoin?, endpointURL: URL) -> String {
+        guard settings.claudeRepoContextEnabled else { return "" }
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+            Log.claudeContext.info(
+                "Claude session context skipped: polishing endpoint is not loopback"
+            )
+            return ""
+        }
+        guard let join else { return "" }
+        guard let resolver = claudeSessionJoinResolver, resolver.isStillLive(join) else {
+            Log.claudeContext.info("Claude session context skipped: session no longer live")
+            return ""
+        }
+        return ClaudeSessionContextText.text(for: join.snapshot)
     }
 
     /// Consumes the verdict captured at `beginDictationSession` time once

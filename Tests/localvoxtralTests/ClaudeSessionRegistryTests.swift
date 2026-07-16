@@ -193,6 +193,22 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertNotEqual(first.marker, second.marker)
     }
 
+    // Unique is necessary but not sufficient: the fallback marker also has to be
+    // one the publisher can WRITE. `lvx-fallback-<n>` was unique and unemittable
+    // — `k` is not in `ClaudeMarkerSequence`'s hex allowlist — so a session that
+    // reached the fallback was minted, indexed, and then permanently unjoinable,
+    // silently, because the marker join is positive-only.
+    func testFallbackMarkersAreEmittableAsTerminalSequences() throws {
+        let registry = makeRegistry(markers: TestMarkers([]))
+        registry.ingest(record(.sessionStart, session: "s1"), origin: local)
+        registry.ingest(record(.sessionStart, session: "s2"), origin: local)
+        let fallback = try XCTUnwrap(registry.snapshot(sessionID: "s2"))
+        XCTAssertTrue(
+            ClaudeMarkerSequence.isValidMarker(fallback.marker.value),
+            "\(fallback.marker.value) is minted but would never be emitted"
+        )
+    }
+
     func testDefaultMarkerValuesAreWellFormed() {
         let value = ClaudeSessionRegistry.defaultMarkerValue()
         XCTAssertTrue(value.hasPrefix("lvx-"))

@@ -278,6 +278,164 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         XCTAssertTrue(collector.collectedPaths.isEmpty)
     }
 
+    // MARK: - The session block's gates
+
+    // The session block carries the PRIOR PROMPT the user typed, the workspace
+    // name, and the files the agent touched. That is the session's content, so
+    // it answers to the same three gates as the repository block — it used to
+    // check only the setting, which meant a dead session's prompt still rode to
+    // whatever endpoint was configured.
+    //
+    // Each test asserts THREE things, because suppressing only the last would be
+    // a leak wearing a gate's clothes: no text, no rendered block, and no
+    // grounding entries. Grounding is the one that matters most — it is
+    // input-side and costs no budget, so a check that only emptied the excerpt
+    // would still hand the model the prompt's words as replacement entries.
+    private func sessionBlockOutcome(
+        _ viewModel: DictationViewModel,
+        join: ClaudeSessionJoin?,
+        endpointURL: URL
+    ) async -> (text: String, block: PolishContextBlock?, groundingCount: Int) {
+        let text = viewModel.claudeSessionTextIfEnabled(join: join, endpointURL: endpointURL)
+        let preparation = await PolishContextPreparation.prepared(
+            text: text,
+            transcript: "check the migration script",
+            renderBudget: 4_000
+        )
+        let block = join?.snapshot.claudeContextBlock(
+            excerpt: preparation.excerpt,
+            renderBudget: 4_000
+        )
+        return (text, block, preparation.grounding.entries.count)
+    }
+
+    /// A live join whose session has already submitted a prompt, so the block
+    /// has something to leak if a gate fails open.
+    private func wiredWithPriorPrompt() -> (DictationViewModel, ClaudeSessionJoin?) {
+        let viewModel = makeViewModel()
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in true },
+            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
+        )
+        for record in [
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: "s1",
+                timestamp: 0,
+                rawCwd: "/repo",
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+            ),
+            ClaudeHookRecord(
+                event: .userPromptSubmit,
+                sessionID: "s1",
+                timestamp: 1,
+                rawCwd: "/repo",
+                prompt: "rewrite the migration script to be idempotent",
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+            ),
+        ] {
+            registry.ingest(record, origin: .localAuthenticated(peerUID: 501))
+        }
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in ClaudeSessionMarker(value: "lvx-abcd") }
+        )
+        viewModel.claudeSessionJoinResolver = resolver
+        let join = resolver.resolve(target: ghostty)
+        viewModel.claudeSessionJoin = join
+        return (viewModel, join)
+    }
+
+    // The positive control. Without it every gate test below would pass just as
+    // well if the block were unreachable entirely.
+    func testEnabledLoopbackLiveJoinAttachesTheSessionBlock() async {
+        let (viewModel, join) = wiredWithPriorPrompt()
+        viewModel.settings.claudeRepoContextEnabled = true
+        let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: loopback)
+        XCTAssertTrue(outcome.text.contains("rewrite the migration script"))
+        XCTAssertNotNil(outcome.block)
+    }
+
+    // Consent withdrawn while they were speaking. It must land on this block
+    // too, not just on the repository read.
+    func testSettingToggledOffMidSessionAttachesNoSessionBlock() async {
+        let (viewModel, join) = wiredWithPriorPrompt()
+        viewModel.settings.claudeRepoContextEnabled = true
+        XCTAssertNotNil(join, "precondition: the join resolved while the setting was on")
+        viewModel.settings.claudeRepoContextEnabled = false
+
+        let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: loopback)
+        XCTAssertEqual(outcome.text, "")
+        XCTAssertNil(outcome.block)
+        XCTAssertEqual(outcome.groundingCount, 0, "an opted-out session must not ground either")
+    }
+
+    // Settings changed the endpoint to a remote one after the join resolved. The
+    // user's typed prompt must not ride to it.
+    func testRemoteEndpointAttachesNoSessionBlock() async {
+        let (viewModel, join) = wiredWithPriorPrompt()
+        viewModel.settings.claudeRepoContextEnabled = true
+
+        let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: remote)
+        XCTAssertEqual(outcome.text, "")
+        XCTAssertNil(outcome.block)
+        XCTAssertEqual(
+            outcome.groundingCount, 0,
+            "a remote endpoint must never receive the session's prompt, as text OR as grounding"
+        )
+    }
+
+    // The session died between start and commit. Its prior prompt is no longer
+    // what the user is continuing.
+    func testSessionThatEndedSinceStartAttachesNoSessionBlock() async {
+        let viewModel = makeViewModel()
+        viewModel.settings.claudeRepoContextEnabled = true
+
+        let dead = Mutex(false)
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in !dead.withLock { $0 } },
+            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
+        )
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .userPromptSubmit,
+                sessionID: "s1",
+                timestamp: 0,
+                rawCwd: "/repo",
+                prompt: "rewrite the migration script to be idempotent",
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in ClaudeSessionMarker(value: "lvx-abcd") }
+        )
+        viewModel.claudeSessionJoinResolver = resolver
+        let join = resolver.resolve(target: ghostty)
+        XCTAssertNotNil(join, "precondition: live at join time")
+
+        dead.withLock { $0 = true }
+        let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: loopback)
+        XCTAssertEqual(outcome.text, "")
+        XCTAssertNil(outcome.block)
+        XCTAssertEqual(outcome.groundingCount, 0)
+    }
+
+    // No resolver means nothing vouches for the join — the same abstention the
+    // repository read makes.
+    func testNoResolverAttachesNoSessionBlock() async {
+        let (viewModel, join) = wiredWithPriorPrompt()
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.claudeSessionJoinResolver = nil
+
+        let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: loopback)
+        XCTAssertEqual(outcome.text, "")
+        XCTAssertNil(outcome.block)
+    }
+
     // MARK: - Join lifecycle
 
     // The join names a session and a pane belonging to the session being
