@@ -18,8 +18,17 @@ public enum ClaudePluginAssets {
     public static let packagedDirectoryName = "claude-code-marketplace"
     /// Repo-relative source of truth.
     public static let repositoryRelativePath = "integrations/claude-code"
-    /// Plugin name, as it appears in marketplace.json.
+    /// Plugin name, as it appears in marketplace.json. Installed on the machine
+    /// running the app; publishes over the local AF_UNIX socket.
     public static let pluginName = "localvoxtral"
+    /// The second plugin in the same marketplace, installed on a REMOTE host.
+    ///
+    /// Structurally separate from `pluginName` and not a mode of it: it declares
+    /// HTTP hooks against the tunnelled loopback listener rather than a command
+    /// shim, it authenticates with a token instead of peer credentials, and the
+    /// context it delivers is opaque. One plugin with a switch would put those
+    /// two trust models one config typo apart.
+    public static let remotePluginName = "localvoxtral-remote"
     /// Marketplace name, as it appears in marketplace.json.
     public static let marketplaceName = "localvoxtral"
 
@@ -54,14 +63,31 @@ public enum ClaudePluginAssets {
 
     /// Repo checkout fallback, for `swift run`/`swift test`.
     static func developmentMarketplaceURL(sourceFile: String = #filePath) -> URL? {
+        repositoryRootURL(sourceFile: sourceFile)?
+            .appendingPathComponent(repositoryRelativePath)
+    }
+
+    /// The repo root's own marketplace.
+    ///
+    /// A REMOTE host has no app bundle, so it cannot register a local directory
+    /// the way the Mac does — it needs `claude plugin marketplace add
+    /// T0mSIlver/localvoxtral`, and Claude Code looks for `.claude-plugin/` at
+    /// the repository ROOT for that. Hence two manifests: the bundled one under
+    /// `integrations/claude-code/` that the app registers by path, and this one
+    /// that GitHub serves. They list the same two plugins with paths rewritten
+    /// for their own depth; the manifest test pins them to each other so they
+    /// cannot drift.
+    static func rootMarketplaceURL(sourceFile: String = #filePath) -> URL? {
+        repositoryRootURL(sourceFile: sourceFile)
+    }
+
+    static func repositoryRootURL(sourceFile: String = #filePath) -> URL? {
         // .../Sources/localvoxtral/ClaudeContext/ClaudePluginAssets.swift
-        var directory = URL(fileURLWithPath: sourceFile)
+        URL(fileURLWithPath: sourceFile)
             .deletingLastPathComponent() // ClaudeContext
             .deletingLastPathComponent() // localvoxtral
             .deletingLastPathComponent() // Sources
             .deletingLastPathComponent() // repo root
-        directory.appendPathComponent(repositoryRelativePath)
-        return directory
     }
 
     /// Name of the publisher binary, as packaged and as the shim looks for it.

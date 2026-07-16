@@ -76,11 +76,20 @@ public final class ClaudeSessionRegistry: Sendable {
 
     /// Fold an authenticated record into the registry.
     ///
-    /// - Parameter origin: decided by the BROKER from peer credentials. This is
-    ///   the only way trust enters; `record` has no origin field to consult.
+    /// - Parameters:
+    ///   - origin: decided by the TRANSPORT — the local broker from peer
+    ///     credentials, the remote listener from which token authenticated the
+    ///     connection. This is the only way trust enters; `record` has no origin
+    ///     field to consult.
+    ///   - snippets: sanitized excerpts the transport extracted. Always empty
+    ///     from the local NDJSON wire, which has no field for them.
     /// - Returns: the resulting snapshot, or nil if the record was dropped.
     @discardableResult
-    public func ingest(_ record: ClaudeHookRecord, origin: ClaudeTransportOrigin) -> ClaudeSessionSnapshot? {
+    public func ingest(
+        _ record: ClaudeHookRecord,
+        origin: ClaudeTransportOrigin,
+        snippets: [ClaudeContentSnippet] = []
+    ) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         return state.withLock { state -> ClaudeSessionSnapshot? in
             pruneLocked(&state, now: timestamp)
@@ -88,14 +97,18 @@ public final class ClaudeSessionRegistry: Sendable {
             var snapshot: ClaudeSessionSnapshot
             if let existing = state.sessions[record.sessionID] {
                 snapshot = existing
-                // A session's origin is fixed at first sight. If the same id
-                // shows up over a different transport, that is not a promotion
-                // path — keep the origin we authenticated originally.
-                if snapshot.origin != origin, origin.isLocalAuthenticated == false {
-                    // Remote re-delivery of a local session id: ignore entirely
-                    // rather than let it mutate local state.
-                    return nil
-                }
+                // A session's origin is fixed at first sight, and a mismatch is
+                // dropped in EITHER direction — not just remote-claiming-local.
+                //
+                // Remote→local was always the dangerous one (it would let a
+                // forwarded peer mutate a session whose paths authorize
+                // filesystem reads). Local→remote and remote(A)→remote(B) are
+                // dropped too because there is no legitimate way to reach them:
+                // remote ids are namespaced under the host whose token
+                // authenticated them (`ClaudeRemoteSessionScope`), so a second
+                // transport naming the same id is, by construction, someone
+                // spelling an id that is not theirs.
+                if snapshot.origin != origin { return nil }
             } else {
                 if record.event == .sessionEnd { return nil } // nothing to start
                 let marker = ClaudeSessionMarker(value: allocateUniqueMarkerLocked(&state))
@@ -108,7 +121,13 @@ public final class ClaudeSessionRegistry: Sendable {
                 state.markerIndex[marker.value] = record.sessionID
             }
 
-            ClaudeSessionReducer.reduce(&snapshot, record: record, origin: snapshot.origin, now: timestamp)
+            ClaudeSessionReducer.reduce(
+                &snapshot,
+                record: record,
+                origin: snapshot.origin,
+                snippets: snippets,
+                now: timestamp
+            )
 
             if record.event == .sessionEnd {
                 // Explicit end: evict immediately, but hand the final snapshot

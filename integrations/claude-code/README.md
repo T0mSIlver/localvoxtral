@@ -126,16 +126,150 @@ Every field is length-capped at both ends. Hook content is never logged.
 | `LOCALVOXTRAL_CLAUDE_SOCKET` | Socket path. Defaults to `~/Library/Application Support/localvoxtral/run/claude-context.sock` (macOS) or `$XDG_RUNTIME_DIR/localvoxtral/claude-context.sock` (Linux). |
 | `LOCALVOXTRAL_CLAUDE_HOOK_BIN` | Path to the publisher; overrides everything else. |
 
-### Remote / SSH sessions
+---
 
-The publisher is a dependency-free SwiftPM product that also builds on Linux, so
-a Claude Code session on a remote host can publish through a forwarded UNIX
-socket (`ssh -R`) by setting `LOCALVOXTRAL_CLAUDE_SOCKET`.
+# Remote / SSH sessions — the `localvoxtral-remote` plugin
 
-Note what the app does with those records: a forwarded connection's peer is
-`sshd`, not your local session, so the broker labels it **remote**. Remote
-records carry opaque context only — their working directory is reduced to a bare
-label and can never reach a local filesystem collector. That separation is
-enforced by the type system, not by a runtime check.
+When you dictate into a Claude Code session running on another machine over SSH,
+the local plugin cannot help: there is no app on that host and no socket to write
+to. `localvoxtral-remote` is the second plugin in this marketplace, and it is for
+exactly that case.
 
-See `AGENTS.md` for the follow-up work needed to make SSH sessions fully useful.
+**Install it on the REMOTE host, not on your Mac.** The two plugins are not modes
+of each other — they have different transports and different trust models, and a
+plugin installed on the wrong side fails open silently forever.
+
+| | `localvoxtral` | `localvoxtral-remote` |
+|---|---|---|
+| Install on | the Mac running the app | the remote host |
+| Transport | AF_UNIX socket, `command` hook + shim | HTTP over an SSH `RemoteForward`, declarative `http` hooks |
+| Authentication | kernel-verified peer UID | per-host bearer token you issue in the app |
+| Needs on that host | the app's publisher binary | **nothing** — no Python, no `jq`, no `nc`, no Node, no binary |
+| Context it delivers | full: cwd authorizes local repository reads | opaque: labels and bounded excerpts only |
+
+## How it works
+
+```
+remote host                            your Mac
+┌───────────────────────┐              ┌────────────────────────────┐
+│ Claude Code           │              │ localvoxtral               │
+│   http hook  ────────►│ 127.0.0.1:8473              ▲             │
+│   Bearer <token>      │   │          │              │             │
+└───────────────────────┘   │          │   ClaudeRemoteContextListener
+                            └── ssh RemoteForward ────┘             │
+        ◄──── {"terminalSequence": "\e]2;lvx-…\a"} ────────────────┘
+```
+
+Claude Code is the HTTP client. It POSTs each hook's event JSON to
+`http://127.0.0.1:8473/v1/hook/<Event>` on the *remote* loopback; OpenSSH's
+`RemoteForward` carries that to your Mac's loopback, where the app is listening.
+The app answers with the session's marker as a `terminalSequence`, which Claude
+Code writes to its terminal — so the marker rides the SSH PTY back into Ghostty
+and the pane identifies itself. Nothing else opens a port, and nothing is
+reachable from your LAN.
+
+## Set it up
+
+In localvoxtral, enroll the host. You get a token, shown once. Then:
+
+**1. Add the tunnel to `~/.ssh/config`:**
+
+```
+# BEGIN localvoxtral claude context (h1a2b3c4)
+Host builder
+    RemoteForward 8473 127.0.0.1:8473
+    ExitOnForwardFailure no
+# END localvoxtral claude context (h1a2b3c4)
+```
+
+`ExitOnForwardFailure no` is deliberate and is the default. With `yes`, SSH
+refuses to open the session at all when the remote's 8473 is already bound —
+usually by your own second window to the same host. **A dictation nicety must
+never cost you the shell.** The price of `no` is that a failed forward is
+silent: the hooks get connection refused, fail open, and you simply get no
+context. `ssh -v builder true 2>&1 | grep -i 'remote forward'` is where you see
+whether it took.
+
+**2. Install the plugin on the remote host:**
+
+```sh
+ssh builder
+claude plugin marketplace add T0mSIlver/localvoxtral
+ claude plugin install localvoxtral-remote@localvoxtral --config 'token=<YOUR-TOKEN>'
+```
+
+Note the leading space on the second line: with `HISTCONTROL=ignorespace` (bash)
+or `setopt HIST_IGNORE_SPACE` (zsh) it keeps the token out of your shell history.
+If it landed there anyway, rotate the token in the app — that is what rotation is
+for.
+
+Nothing else is installed. The marketplace add resolves the repository root's
+`.claude-plugin/marketplace.json`; the plugin is two JSON files.
+
+**3. Check it:**
+
+```sh
+claude plugin list
+# From the remote, through the tunnel. 401 is the RIGHT answer here — it proves
+# the tunnel is up and the app is answering. A connection error means the
+# forward did not take.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
+  -d '{}' http://127.0.0.1:8473/v1/hook/SessionStart
+```
+
+## Uninstall and revoke
+
+```sh
+ssh builder 'claude plugin uninstall localvoxtral-remote@localvoxtral'
+ssh builder 'claude plugin marketplace remove localvoxtral'
+# then delete the BEGIN/END block from ~/.ssh/config
+```
+
+Then **revoke the host in localvoxtral**. That is the part that matters: the
+token dies on your Mac, not on the remote. Uninstalling the plugin only stops
+the host asking; revoking stops it being answered, immediately and without a
+restart. Rotating instead of revoking issues a new token and kills the old one
+with no grace period.
+
+## tmux / screen
+
+A multiplexer owns the window title, so the OSC 2 marker the hook writes does not
+reach Ghostty and the pane stays **unjoined** — you still get the off-screen
+context (prior prompt, cwd, recent files), you just do not get the screen join.
+`set -g set-titles on` in `~/.tmux.conf` lets tmux pass the title through.
+
+## What the token can and cannot do
+
+A host presenting a valid token can give localvoxtral **remote context**. That is
+all it can ever do. It cannot make the app read a local file, and this is not a
+policy — the listener tags every session it accepts as `remote` regardless of
+what the payload says, and a remote working directory is reduced to a bare label
+that has no path accessor to hand a collector. A *local* process that connects to
+the listener gets the same treatment: connecting there can only downgrade you.
+
+Each host's sessions are namespaced under the host id its token authenticated,
+so two hosts can never collide on a session id, forge each other's sessions, or
+share a marker.
+
+## Plain SSH still works exactly as before
+
+No enrollment, no tunnel, no token, no hooks. Your session is unchanged and the
+pane stays screen-only and unjoined. Nothing about this feature is on by default:
+with no enrolled host, the app binds no port at all.
+
+## What crosses the tunnel
+
+The same allowlist as the local plugin, plus one addition:
+
+* bounded, sanitized excerpts of `Read`/`Edit`/`Write` tool input and output
+  (≤512 bytes each, ≤8 kept per session)
+
+These exist only for remote sessions. A local session's files are on your Mac
+and the app reads them properly; a remote session's are on a machine the app has
+no business reaching into, so what the hook quotes is all it will ever know.
+Every excerpt is stripped of control characters, C1 escapes, bidi overrides, and
+zero-width characters before it is stored — foreign text is treated as text, never
+as something that can act.
+
+Transcript contents, `Bash` command strings, and anything claiming to be trusted
+still never cross, exactly as locally.

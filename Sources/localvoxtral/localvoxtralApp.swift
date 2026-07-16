@@ -136,6 +136,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// records it exists to collect.
     private let claudeSessionRegistry = ClaudeSessionRegistry()
     private var claudeContextBroker: ClaudeContextBroker?
+    /// Remote (SSH) Claude Code sessions. Both the host registry and the
+    /// listener are lazy and optional: a user who has never enrolled a host has
+    /// no file to read and no port bound.
+    private var claudeRemoteHosts: ClaudeRemoteHostRegistry?
+    private var claudeRemoteListener: ClaudeRemoteContextListener?
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -161,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             LegacyMLXLMCleanup().run()
         }
         startClaudeContextBroker()
+        startClaudeRemoteListener()
         reconcileBundledConfigDefaults()
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
@@ -172,6 +178,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing is accepting on.
         claudeContextBroker?.stop()
         claudeContextBroker = nil
+        // Closes the port, so a hook from a surviving remote session gets a
+        // connection refused through the tunnel and fails open.
+        claudeRemoteListener?.stop()
+        claudeRemoteListener = nil
         TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
         // The resolver holds the registry; the view model must not keep
         // resolving joins against sessions nothing is feeding any more.
@@ -220,6 +230,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             Log.claudeContext.error(
                 "Claude context broker failed to start: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Binds the remote (SSH) hook listener, but only for a user who has
+    /// actually enrolled a host.
+    ///
+    /// "No enrollment ⇒ no open port" is the point: everyone else's Mac gets
+    /// exactly what it had before, with nothing listening on 8473. That is also
+    /// why the host registry is constructed here rather than as a stored
+    /// property — reading (and failing to read) a file nobody has is not
+    /// something to do at init.
+    ///
+    /// Failure is non-fatal and loud, matching the local broker. Enrolling a
+    /// host in a running app does not bind the port until the next launch;
+    /// there is no UI to enroll from yet, so nothing today can hit that.
+    private func startClaudeRemoteListener() {
+        let registry: ClaudeRemoteHostRegistry
+        do {
+            registry = try ClaudeRemoteHostRegistry()
+        } catch {
+            Log.claudeContext.error(
+                "Claude remote host registry unreadable: \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+        claudeRemoteHosts = registry
+        guard registry.hasActiveHosts else { return }
+
+        let listener = ClaudeRemoteContextListener(
+            registry: claudeSessionRegistry,
+            hosts: registry
+        )
+        do {
+            try listener.start()
+            claudeRemoteListener = listener
+        } catch {
+            Log.claudeContext.error(
+                "Claude remote listener failed to start: \(String(describing: error), privacy: .public)"
             )
         }
     }

@@ -1,0 +1,98 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8473/v1/hook/SessionStart",
+            "headers": {
+              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
+            },
+            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8473/v1/hook/UserPromptSubmit",
+            "headers": {
+              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
+            },
+            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8473/v1/hook/Stop",
+            "headers": {
+              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
+            },
+            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8473/v1/hook/CwdChanged",
+            "headers": {
+              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
+            },
+            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
+            "async": true,
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8473/v1/hook/PostToolUse",
+            "headers": {
+              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
+            },
+            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
+            "async": true,
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8473/v1/hook/SessionEnd",
+            "headers": {
+              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
+            },
+            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
+            "async": true,
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -65,6 +65,14 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var latestPriorUserPrompt: String?
     public var latestPriorUserPromptAt: Date?
     public var recentFiles: [ClaudeRecentFile]
+    /// Bounded, sanitized excerpts of what the session's tools just handled.
+    ///
+    /// Only ever populated for a REMOTE session, because only the remote
+    /// transport carries them: a local session's files are on this machine, and
+    /// `ClaudeLocalRepoCollecting` can read them properly rather than settle for
+    /// whatever a hook happened to quote. This is not a second local collector —
+    /// it is the only thing we will ever know about a remote tree.
+    public var recentSnippets: [ClaudeContentSnippet]
     public var activity: ClaudeSessionActivity
     public var process: ClaudeHookProcessInfo?
     public var firstSeen: Date
@@ -76,6 +84,19 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var localWorkspacePath: LocalWorkspacePath? {
         guard origin.isLocalAuthenticated else { return nil }
         return workspace?.localPath
+    }
+
+    /// Recent files that name paths on THIS machine.
+    ///
+    /// Empty for a remote session, whose paths name files in another host's
+    /// filesystem where they would either not exist or — worse — exist and be
+    /// something else entirely. `localWorkspacePath` makes the cwd's version of
+    /// this a compile-time guarantee; per-file paths are plain strings on the
+    /// wire, so this accessor is the gate for them. Consumers that touch the
+    /// filesystem must read files from here, never from `recentFiles`.
+    public var localRecentFiles: [ClaudeRecentFile] {
+        guard origin.isLocalAuthenticated else { return [] }
+        return recentFiles
     }
 
     init(
@@ -91,6 +112,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.latestPriorUserPrompt = nil
         self.latestPriorUserPromptAt = nil
         self.recentFiles = []
+        self.recentSnippets = []
         self.activity = .idle
         self.process = nil
         self.firstSeen = firstSeen
@@ -104,15 +126,25 @@ public enum ClaudeSessionReducer {
     /// Cap on retained file history per session. Recent means recent.
     public static let maxRecentFiles = 24
 
+    /// Cap on retained snippets per session. Smaller than the file cap because
+    /// each one is up to 512 bytes of foreign text and the polish context budget
+    /// is the real consumer.
+    public static let maxRecentSnippets = 8
+
     /// Fold one record into a snapshot.
     ///
     /// `origin` is passed separately and is authoritative — the record has no
     /// say in it. `rawCwd` only becomes a usable path via
     /// `ClaudeWorkspaceReference.make`, which refuses for remote origins.
+    ///
+    /// - Parameter snippets: sanitized excerpts, supplied by the transport that
+    ///   parsed them. The local NDJSON wire has no field for these, so in
+    ///   practice only the remote HTTP listener ever passes a non-empty array.
     public static func reduce(
         _ snapshot: inout ClaudeSessionSnapshot,
         record: ClaudeHookRecord,
         origin: ClaudeTransportOrigin,
+        snippets: [ClaudeContentSnippet] = [],
         now: Date
     ) {
         snapshot.lastActivity = now
@@ -141,6 +173,9 @@ public enum ClaudeSessionReducer {
             for file in record.files {
                 touch(&snapshot, file: file, now: now)
             }
+            for snippet in snippets {
+                attach(&snapshot, snippet: snippet)
+            }
             snapshot.activity = .working
         case .stop:
             snapshot.activity = .idle
@@ -166,6 +201,20 @@ public enum ClaudeSessionReducer {
         )
         if snapshot.recentFiles.count > maxRecentFiles {
             snapshot.recentFiles.removeLast(snapshot.recentFiles.count - maxRecentFiles)
+        }
+    }
+
+    /// Most-recent-first, de-duplicated, capped.
+    ///
+    /// Dedup is on the whole snippet, not the label: the same `Edit new_string`
+    /// label with different text is two different facts, while a hook that fires
+    /// twice for one edit is one fact reported twice.
+    static func attach(_ snapshot: inout ClaudeSessionSnapshot, snippet: ClaudeContentSnippet) {
+        guard !snippet.text.isEmpty else { return }
+        snapshot.recentSnippets.removeAll { $0 == snippet }
+        snapshot.recentSnippets.insert(snippet, at: 0)
+        if snapshot.recentSnippets.count > maxRecentSnippets {
+            snapshot.recentSnippets.removeLast(snapshot.recentSnippets.count - maxRecentSnippets)
         }
     }
 }

@@ -323,14 +323,30 @@ Key subsystems:
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
 - Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral/ClaudeContext/`,
   `integrations/claude-code/`): off-screen context for dictation into Claude
-  Code. A plugin declares hooks only (no skill/command/agent — nothing that
-  spends the user's tokens); each hook execs `localvoxtral-claude-hook`, which
-  publishes one bounded NDJSON line to a private AF_UNIX socket and fails open
-  (silent exit 0) whenever the app is absent. In-app, `ClaudeContextBroker`
-  verifies peer UID *before reading* and `ClaudeSessionRegistry` (Mutex,
-  injected clock) holds the prior prompt, cwd, recent files, and a
-  broker-allocated marker. See "Known tradeoffs" for what is deliberately
-  not wired up yet.
+  Code. Two plugins in one marketplace, structurally separate — never modes of
+  each other. Both declare hooks only (no skill/command/agent/statusLine —
+  nothing that spends the user's tokens).
+  - **Local** (`localvoxtral`): each hook execs `localvoxtral-claude-hook`,
+    which publishes one bounded NDJSON line to a private AF_UNIX socket and
+    fails open (silent exit 0) whenever the app is absent. In-app,
+    `ClaudeContextBroker` verifies peer UID *before reading*.
+  - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): declares
+    `type: "http"` hooks, so Claude Code itself POSTs to
+    `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH `RemoteForward` — no
+    binary, no shim, no `jq`/`nc`/Node on that host. `ClaudeRemoteContextListener`
+    (loopback-bound POSIX, dedicated port 8473; 8471/8472 remain the managed
+    backends) authenticates the Bearer token *before retaining a body* against
+    `ClaudeRemoteHostRegistry` (0600 atomic file, token hashes only,
+    constant-time compare, immediate revoke/rotate). No enrolled host ⇒ no port
+    bound. `ClaudeRemoteEnrollmentService` generates the ssh-config snippet and
+    the `claude plugin` commands; it mutates nothing without an injected runner,
+    and nothing supplies one.
+  - Shared: `ClaudeSessionRegistry` (Mutex, injected clock) holds the prior
+    prompt, cwd, recent files, remote snippets, and a broker-allocated marker,
+    returned to the hook as an OSC 2 `terminalSequence` so the marker rides the
+    PTY back into Ghostty. Response keys are allowlisted to
+    `terminalSequence`/`suppressOutput` by `ClaudeHookOutput`'s shape.
+    See "Known tradeoffs" for what is deliberately not wired up yet.
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed
   mode, the bundled `localvoxtral-polishd` helper (`PolishHelper/` package:
   MLX Swift inference + a minimal loopback OpenAI server + parent-pid
@@ -386,6 +402,21 @@ Key subsystems:
     budget.
   These paths are in `scripts/ci/llm-lane-filter.sh`: they change what reaches
   the model, so the LLM lanes run on them.
+- **Remote Claude context is opaque by construction.** The remote listener tags
+  every accepted session `.remote` regardless of its payload; a local process
+  connecting to that listener can only downgrade itself. Remote cwd values are
+  labels, not `LocalWorkspacePath` values, and can never authorize FileManager
+  or git calls. Sessions are namespaced by the host id whose token authenticated
+  them, so hosts cannot collide or forge each other's sessions. Bounded,
+  sanitized remote prompt/file/tool excerpts may feed the same context budget,
+  but there is no remote repository collector.
+- **Remote enrollment has a service but no UI, and no host is ever mutated.**
+  `ClaudeRemoteEnrollmentService` generates a copyable plan (idempotent ssh
+  config block, `claude plugin` commands, verify/uninstall steps, caveats); its
+  `executeRemoteSetup` throws `.executionNotConfigured` unless a runner is
+  injected, and the app injects none. Enrolling a host therefore needs a
+  relaunch before the listener binds — acceptable only while there is no UI to
+  enroll from. The UI that lands next owns both: the pane and the rebind.
 
 ## Conventions
 

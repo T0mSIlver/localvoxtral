@@ -32,6 +32,10 @@ final class ClaudePluginManifestTests: XCTestCase {
         marketplace.appendingPathComponent("plugins/localvoxtral")
     }
 
+    private var remotePluginRoot: URL {
+        marketplace.appendingPathComponent("plugins/\(ClaudePluginAssets.remotePluginName)")
+    }
+
     // MARK: Marketplace
 
     func testMarketplaceIsRecognisedAsAMarketplace() {
@@ -43,21 +47,102 @@ final class ClaudePluginManifestTests: XCTestCase {
         XCTAssertEqual(manifest["name"] as? String, ClaudePluginAssets.marketplaceName)
         XCTAssertNotNil(manifest["owner"] as? [String: Any])
         let plugins = try XCTUnwrap(manifest["plugins"] as? [[String: Any]])
-        XCTAssertEqual(plugins.count, 1)
-        XCTAssertEqual(plugins[0]["name"] as? String, ClaudePluginAssets.pluginName)
+        XCTAssertEqual(
+            plugins.compactMap { $0["name"] as? String },
+            [ClaudePluginAssets.pluginName, ClaudePluginAssets.remotePluginName]
+        )
     }
 
-    func testMarketplacePluginSourceResolvesToARealDirectory() throws {
+    func testEveryMarketplacePluginSourceResolvesToARealDirectory() throws {
         let manifest = try json(at: marketplaceManifest)
         let plugins = try XCTUnwrap(manifest["plugins"] as? [[String: Any]])
-        let source = try XCTUnwrap(plugins[0]["source"] as? String)
-        let resolved = marketplace.appendingPathComponent(source).standardizedFileURL
-        var isDirectory: ObjCBool = false
+        for plugin in plugins {
+            let source = try XCTUnwrap(plugin["source"] as? String)
+            let resolved = marketplace.appendingPathComponent(source).standardizedFileURL
+            var isDirectory: ObjCBool = false
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory),
+                "plugin source \(source) does not exist"
+            )
+            XCTAssertTrue(isDirectory.boolValue)
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: resolved.appendingPathComponent(".claude-plugin/plugin.json").path
+                ),
+                "plugin source \(source) has no manifest"
+            )
+        }
+    }
+
+    // MARK: Root marketplace (what a remote host installs from)
+
+    /// A remote host has no app bundle to register a directory from, so it runs
+    /// `claude plugin marketplace add T0mSIlver/localvoxtral` — which resolves
+    /// `.claude-plugin/marketplace.json` at the repository ROOT. Two manifests
+    /// that must never drift apart, hence this test rather than trust.
+    func testRootMarketplaceMirrorsTheBundledOne() throws {
+        let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
         XCTAssertTrue(
-            FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory),
-            "plugin source \(source) does not exist"
+            ClaudePluginAssets.isMarketplace(root),
+            "the repo root must be a marketplace: a remote host installs from the GitHub repo"
         )
-        XCTAssertTrue(isDirectory.boolValue)
+        let rootManifest = try json(at: root.appendingPathComponent(".claude-plugin/marketplace.json"))
+        let bundled = try json(at: marketplaceManifest)
+        XCTAssertEqual(
+            rootManifest["name"] as? String,
+            bundled["name"] as? String,
+            "both manifests must name the same marketplace, or the plugin reference differs by machine"
+        )
+        let rootPlugins = try XCTUnwrap(rootManifest["plugins"] as? [[String: Any]])
+        let bundledPlugins = try XCTUnwrap(bundled["plugins"] as? [[String: Any]])
+        XCTAssertEqual(
+            rootPlugins.compactMap { $0["name"] as? String },
+            bundledPlugins.compactMap { $0["name"] as? String }
+        )
+    }
+
+    func testRootMarketplacePluginSourcesResolveFromTheRepoRoot() throws {
+        let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
+        let manifest = try json(at: root.appendingPathComponent(".claude-plugin/marketplace.json"))
+        let plugins = try XCTUnwrap(manifest["plugins"] as? [[String: Any]])
+        XCTAssertFalse(plugins.isEmpty)
+        for plugin in plugins {
+            let source = try XCTUnwrap(plugin["source"] as? String)
+            // The root manifest is one directory tree up from the bundled one,
+            // so its sources must be rewritten for that depth. A copy-paste of
+            // "./plugins/..." would resolve to nothing and only fail on a
+            // remote host, at install time.
+            XCTAssertTrue(
+                source.hasPrefix("./\(ClaudePluginAssets.repositoryRelativePath)/"),
+                "root marketplace source must be repo-root relative: \(source)"
+            )
+            let resolved = root.appendingPathComponent(source).standardizedFileURL
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: resolved.appendingPathComponent(".claude-plugin/plugin.json").path
+                ),
+                "root marketplace source \(source) does not resolve"
+            )
+        }
+    }
+
+    func testNoUserFacingManifestURLPointsAtTheOldOwner() throws {
+        // The repo moved to T0mSIlver; a stale owner in a manifest is a link
+        // users click and a marketplace reference that resolves to nothing.
+        let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
+        let manifests = [
+            marketplaceManifest,
+            root.appendingPathComponent(".claude-plugin/marketplace.json"),
+            pluginRoot.appendingPathComponent(".claude-plugin/plugin.json"),
+            remotePluginRoot.appendingPathComponent(".claude-plugin/plugin.json"),
+        ]
+        for manifest in manifests {
+            let text = try String(contentsOf: manifest, encoding: .utf8)
+            XCTAssertFalse(
+                text.contains("tomvaucourt"),
+                "\(manifest.lastPathComponent) still points at the old repo owner"
+            )
+        }
     }
 
     // MARK: Plugin
