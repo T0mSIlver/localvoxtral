@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Synchronization
 import XCTest
@@ -78,6 +79,55 @@ final class BackendManagerTests: XCTestCase {
             configuration.arguments.firstIndex(of: "--model-revision")
         )
         XCTAssertEqual(configuration.arguments[revisionIndex + 1], option.revision)
+        // Default provider is Auto: the cache-limit flag is omitted so the
+        // helper's built-in default applies.
+        XCTAssertFalse(configuration.arguments.contains("--cache-limit-mb"))
+    }
+
+    func testSpeechdCacheLimitAutoOmitsFlagAndPresetsAppendMegabytes() async throws {
+        let option = SpeechModelCatalog.defaultOption
+        let baseArguments = [
+            "--model", option.repoID,
+            "--model-revision", option.revision,
+            "--port", "8471",
+            "--parent-pid", "\(Darwin.getpid())",
+        ]
+
+        // Auto: identical to the base argument list, no cache-limit flag.
+        let autoConfiguration = try await speechdConfiguration(cacheLimitMB: nil)
+        XCTAssertEqual(autoConfiguration.arguments, baseArguments)
+
+        // Each preset appends exactly `--cache-limit-mb <value>` and leaves the
+        // model / revision / port / parent-pid arguments untouched.
+        for megabytes in [2048, 4096, 6144, 8192] {
+            let configuration = try await speechdConfiguration(cacheLimitMB: megabytes)
+            XCTAssertEqual(
+                configuration.arguments,
+                baseArguments + ["--cache-limit-mb", "\(megabytes)"]
+            )
+        }
+    }
+
+    /// Starts speechd with the given cache-limit provider and returns the
+    /// supervisor configuration it was launched with.
+    private func speechdConfiguration(
+        cacheLimitMB: Int?
+    ) async throws -> BackendProcessConfiguration {
+        let installer = FakeBackendInstaller(needsInstall: [])
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let manager = makeManager(
+            installer: installer,
+            speechdCacheLimitProvider: { cacheLimitMB },
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        return try XCTUnwrap(
+            supervisorFactory.createdConfigurations
+                .first { $0.name == BackendCatalog.speechd.displayName }
+        )
     }
 
     func testBundledDictationBackendIgnoresInstallerFailureClaim() async throws {
@@ -705,6 +755,7 @@ final class BackendManagerTests: XCTestCase {
         polishingModelProvider: @escaping BackendManager.PolishingModelProvider = {
             SettingsStore.defaultLLMPolishingModel
         },
+        speechdCacheLimitProvider: @escaping BackendManager.SpeechdCacheLimitProvider = { nil },
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
@@ -712,6 +763,7 @@ final class BackendManagerTests: XCTestCase {
             modelPreparer: modelPreparer,
             layout: BackendInstallLayout(root: URL(fileURLWithPath: "/tmp/localvoxtral-backend-manager-tests")),
             polishingModelProvider: polishingModelProvider,
+            speechdCacheLimitProvider: speechdCacheLimitProvider,
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }

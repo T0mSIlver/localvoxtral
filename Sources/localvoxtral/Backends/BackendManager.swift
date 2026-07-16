@@ -90,6 +90,9 @@ protocol ManagedBackendManaging: AnyObject {
 final class BackendManager: ManagedBackendManaging {
     typealias SupervisorFactory = @MainActor (BackendProcessConfiguration) -> any ManagedBackendSupervising
     typealias PolishingModelProvider = @MainActor () -> String
+    /// Megabytes for the speechd `--cache-limit-mb` flag, or nil to omit it and
+    /// let the helper apply its built-in default.
+    typealias SpeechdCacheLimitProvider = @MainActor () -> Int?
 
     private(set) var speechdStatus: ManagedBackendStatus
     private(set) var polishdStatus: ManagedBackendStatus
@@ -99,6 +102,7 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let layout: BackendInstallLayout
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
+    @ObservationIgnored private let speechdCacheLimitProvider: SpeechdCacheLimitProvider
     @ObservationIgnored private var speechdSupervisor: (any ManagedBackendSupervising)?
     @ObservationIgnored private var polishdSupervisor: (any ManagedBackendSupervising)?
     // Per-backend single-flight slots. A global shared slot (the previous
@@ -122,6 +126,7 @@ final class BackendManager: ManagedBackendManaging {
         polishingModelProvider: @escaping PolishingModelProvider = {
             SettingsStore.defaultLLMPolishingModel
         },
+        speechdCacheLimitProvider: @escaping SpeechdCacheLimitProvider = { nil },
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
         }
@@ -130,6 +135,7 @@ final class BackendManager: ManagedBackendManaging {
         self.layout = layout
         self.modelPreparer = modelPreparer ?? HFModelDownloader(layout: layout)
         self.polishingModelProvider = polishingModelProvider
+        self.speechdCacheLimitProvider = speechdCacheLimitProvider
         self.supervisorFactory = supervisorFactory
         self.speechdStatus = installer.needsInstallOrUpdate(BackendCatalog.speechd)
             ? .notInstalled
@@ -471,7 +477,7 @@ final class BackendManager: ManagedBackendManaging {
         switch spec.id {
         case BackendCatalog.speechd.id:
             let option = SpeechModelCatalog.defaultOption
-            return [
+            var arguments = [
                 "--model",
                 option.repoID,
                 "--model-revision",
@@ -481,6 +487,11 @@ final class BackendManager: ManagedBackendManaging {
                 "--parent-pid",
                 parentPID,
             ]
+            // Auto (nil) omits the flag so the helper's built-in default applies.
+            if let cacheLimitMB = speechdCacheLimitProvider() {
+                arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
+            }
+            return arguments
         case BackendCatalog.polishd.id:
             let repoID = polishingModelProvider()
             var arguments = [

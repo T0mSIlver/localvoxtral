@@ -55,6 +55,32 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertTrue(store.isOverlayBufferSessionReachable)
     }
 
+    // MARK: - speechd Metal cache limit
+
+    func testSpeechdCacheLimit_defaultsToAuto() {
+        XCTAssertEqual(makeStore().speechdCacheLimit, .auto)
+        // Auto omits the flag: the helper's built-in default applies.
+        XCTAssertNil(SpeechdCacheLimit.auto.megabytes)
+    }
+
+    func testSpeechdCacheLimit_persistsAcrossStores() {
+        let store = makeStore()
+        store.speechdCacheLimit = .gb6
+        XCTAssertEqual(makeStore().speechdCacheLimit, .gb6)
+    }
+
+    func testSpeechdCacheLimit_unknownStoredValueFallsBackToAuto() {
+        defaults.set("garbage", forKey: "settings.speechd_cache_limit")
+        XCTAssertEqual(makeStore().speechdCacheLimit, .auto)
+    }
+
+    func testSpeechdCacheLimit_megabytesForEachPreset() {
+        XCTAssertEqual(SpeechdCacheLimit.gb2.megabytes, 2048)
+        XCTAssertEqual(SpeechdCacheLimit.gb4.megabytes, 4096)
+        XCTAssertEqual(SpeechdCacheLimit.gb6.megabytes, 6144)
+        XCTAssertEqual(SpeechdCacheLimit.gb8.megabytes, 8192)
+    }
+
     // MARK: - Overlay Buffer font size
 
     func testOverlayBufferFontSize_defaultsTo14() {

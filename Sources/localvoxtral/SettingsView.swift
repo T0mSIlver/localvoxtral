@@ -245,6 +245,16 @@ private struct ConnectionSettingsPane: View {
                             .textFieldStyle(.roundedBorder)
                     }
                 case .managedLocal:
+                    SettingsFieldRow(title: "Memory limit") {
+                        Picker("", selection: $settings.speechdCacheLimit) {
+                            ForEach(SpeechdCacheLimit.allCases) { limit in
+                                Text(limit.displayName).tag(limit)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+
                     ManagedBackendStatusRow(
                         title: "Status",
                         status: backendManager.speechdStatus

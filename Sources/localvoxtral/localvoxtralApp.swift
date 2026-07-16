@@ -131,7 +131,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override init() {
         let settings = SettingsStore()
         let manager = BackendManager(
-            polishingModelProvider: { settings.resolvedManagedLLMPolishingModel }
+            polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
+            speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
         )
         settingsStore = settings
         backendManager = manager
