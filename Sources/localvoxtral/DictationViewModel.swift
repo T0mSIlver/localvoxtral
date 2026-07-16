@@ -327,6 +327,15 @@ final class DictationViewModel {
         let decision: TerminalTargetDetector.Decision
         let secureKeyboardEntryEnabled: Bool
     }
+
+    /// The Ghostty screen as it looked when the user started speaking, sampled
+    /// in `beginDictationSession` before the overlay can take focus. Nil
+    /// whenever the opt-in gate rejected (setting off, remote endpoint,
+    /// non-Ghostty app, no Accessibility trust) — in which case no AX call was
+    /// made at all. Consumed at commit by `terminalScreenContextDecision()`.
+    @ObservationIgnored
+    var terminalScreenStartCapture: TerminalScreenCapture?
+
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -953,6 +962,11 @@ final class DictationViewModel {
     func cancelDictation() {
         guard isDictating || isFinalizingStop || isConnectingRealtimeSession else { return }
         wasCancelled = true
+        // A cancelled session never reaches the commit path that consumes the
+        // capture, so without this the user's screen text would sit in memory
+        // until the next session start — text from a session they explicitly
+        // threw away.
+        discardTerminalScreenCapture()
         cancelManagedStartupTask()
         if isDictating {
             stopDictation(reason: "cancelled", finalizeRemainingAudio: false)
@@ -1656,6 +1670,53 @@ final class DictationViewModel {
         preCapturedSessionTargetVerdict = SessionTargetVerdict(
             decision: TerminalTargetDetector.detectCurrentTarget(userBundleIDs: userBundleIDs),
             secureKeyboardEntryEnabled: TerminalTargetDetector.isSecureKeyboardEntryEnabled()
+        )
+    }
+
+    /// Samples the Ghostty screen for polish grounding, at the same moment and
+    /// for the same reason as the verdict above: this is the last point where
+    /// the app the user is dictating INTO is reliably frontmost. The target is
+    /// resolved independently of the overlay (see
+    /// `TerminalScreenContextSource.frontmostTarget`).
+    ///
+    /// Every privacy gate is evaluated inside the source before any AX call, so
+    /// an opted-out user, a remote polishing endpoint, or a non-Ghostty app
+    /// means the screen is never read. A nil polishing configuration also means
+    /// no read: with no endpoint there is nothing to ground for.
+    func captureTerminalScreenContextForSession() {
+        guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
+            terminalScreenStartCapture = nil
+            return
+        }
+        terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
+            settingEnabled: settings.terminalScreenContextEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+        )
+    }
+
+    /// Drops any retained screen capture. Idempotent, and safe to call on a
+    /// path that already consumed it. Screen text must not outlive the session
+    /// that captured it: every exit — cancel, connect abort, an early return in
+    /// the commit path — funnels here or through
+    /// `terminalScreenContextDecision(endpointURL:)`, and session start
+    /// reassigns the property unconditionally as a backstop.
+    func discardTerminalScreenCapture() {
+        terminalScreenStartCapture = nil
+    }
+
+    /// Reconciles the start capture against a stop-time re-read of the SAME
+    /// PID/bundle and clears it. See `TerminalScreenContext.reconcile` for the
+    /// truth table. Returns `.drop(.noStartCapture)` when nothing was captured,
+    /// which is also what makes stop-only context unrepresentable.
+    func terminalScreenContextDecision(endpointURL: URL) -> TerminalScreenContextDecision {
+        let start = terminalScreenStartCapture
+        terminalScreenStartCapture = nil
+        return TerminalScreenContextSource.reconcileAtStop(
+            start: start,
+            settingEnabled: settings.terminalScreenContextEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
         )
     }
 

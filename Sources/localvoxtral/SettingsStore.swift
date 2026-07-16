@@ -181,6 +181,7 @@ final class SettingsStore {
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
+        static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
@@ -338,6 +339,31 @@ final class SettingsStore {
     var clipboardPayloadMacroEnabled: Bool {
         didSet {
             defaults.set(clipboardPayloadMacroEnabled, forKey: Keys.clipboardPayloadMacroEnabled)
+        }
+    }
+
+    /// When true, the visible screen of a Claude Code Ghostty terminal is read
+    /// at dictation start and used to ground near-miss STT of technical terms
+    /// (file names, commands, identifiers, error names) the user could actually
+    /// see while speaking. Opt-in (default false), Ghostty only
+    /// (`TerminalScreenAllowlist` — NOT the broad terminal insertion allowlist,
+    /// which spans editors like VS Code / Cursor), and applied only when the
+    /// polishing endpoint is loopback
+    /// (`PolishContextClipboardReader.isLoopbackEndpoint`) — a remote endpoint
+    /// must never receive screen content. When off, remote, or a non-Ghostty
+    /// app is focused, the screen is never read at all
+    /// (`TerminalScreenContext.shouldAttemptRead`).
+    ///
+    /// Scope, and why the help text promises only spellings: the screen is fed
+    /// to the deterministic vocabulary MATCHER, which emits `(heard span,
+    /// exact local term)` pairs. No verbatim screen excerpt reaches the prompt
+    /// — that additionally requires the Claude Code session broker's gate
+    /// (`TerminalScreenRawAttachmentPolicy`), which is not on this branch and
+    /// is hard-false in production. Widening this toggle's meaning to include
+    /// raw excerpts is a copy change too, not just a code change.
+    var terminalScreenContextEnabled: Bool {
+        didSet {
+            defaults.set(terminalScreenContextEnabled, forKey: Keys.terminalScreenContextEnabled)
         }
     }
 
@@ -565,6 +591,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
         clipboardPayloadMacroEnabled = Self.loadBool(
             defaults: defaults, key: Keys.clipboardPayloadMacroEnabled, fallback: true)
+        terminalScreenContextEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.terminalScreenContextEnabled, fallback: false)
         repoVocabularyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(

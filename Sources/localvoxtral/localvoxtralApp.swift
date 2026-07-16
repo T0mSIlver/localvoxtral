@@ -1,4 +1,5 @@
 import AppKit
+import ClaudeContextWire
 import SwiftUI
 
 @main
@@ -124,6 +125,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var onboardingController: OnboardingWindowController?
     private let appConfigStore = AppConfigStore()
+
+    /// Claude Code session context. The registry is the app's memory of live
+    /// sessions; the broker is the socket that feeds it.
+    ///
+    /// Owned HERE rather than by `DictationViewModel` because the hooks fire on
+    /// Claude Code's schedule, not on dictation's: a session's marker and cwd
+    /// are published while the user is typing, long before they press the hotkey.
+    /// A broker that only listened during a dictation session would miss the very
+    /// records it exists to collect.
+    private let claudeSessionRegistry = ClaudeSessionRegistry()
+    private var claudeContextBroker: ClaudeContextBroker?
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -148,9 +160,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) {
             LegacyMLXLMCleanup().run()
         }
+        startClaudeContextBroker()
         reconcileBundledConfigDefaults()
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Unlinks the socket, so a publisher from a surviving Claude Code
+        // session fails open (silent exit 0) instead of blocking on a path
+        // nothing is accepting on.
+        claudeContextBroker?.stop()
+        claudeContextBroker = nil
+        TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
+    }
+
+    /// Binds the hook socket and installs the pane authorizer that depends on it.
+    ///
+    /// Failure is non-fatal by design: the app's own dictation does not need the
+    /// broker, and a user who never installed the plugin should not see an error
+    /// about it. But it is LOUD in the log (AGENTS: a silent failure path is how
+    /// the ensureReady bug cost an hour of remote probing), and the authorizer is
+    /// only installed on success — so a build where the broker never bound
+    /// degrades to vocabulary-only screen context rather than to an unguarded
+    /// attachment.
+    private func startClaudeContextBroker() {
+        guard let socketPath = ClaudeHookSocketPath.resolve() else {
+            Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
+            return
+        }
+        let broker = ClaudeContextBroker(socketPath: socketPath, registry: claudeSessionRegistry)
+        do {
+            try broker.start()
+            claudeContextBroker = broker
+            // The join gate for raw terminal screen attachment. Installed only
+            // now: without a running broker there are no markers to resolve, and
+            // an authorizer over an empty registry would answer `.unknown` to
+            // everything anyway — but making the dependency explicit is what
+            // keeps "no broker ⇒ no raw attachment" true by construction rather
+            // than by coincidence.
+            TerminalScreenRawAttachmentPolicy.configure(
+                authorizer: TerminalScreenClaudeJoinAuthorizer(registry: claudeSessionRegistry)
+            )
+        } catch {
+            Log.claudeContext.error(
+                "Claude context broker failed to start: \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 
     /// Brings existing installs up to date with this build's bundled config

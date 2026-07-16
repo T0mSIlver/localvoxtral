@@ -739,6 +739,18 @@ private struct TextProcessingSettingsPane: View {
                         }
                     }
 
+                    SettingsFieldRow(title: "Use Claude Code terminal screen as polish context") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.terminalScreenContextEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            SettingsHelpText(
+                                "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. Ghostty only, local polishing endpoints only."
+                            )
+                        }
+                    }
+
                     SettingsFieldRow(title: "Use clipboard as polish context") {
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle("", isOn: $settings.polishClipboardContextEnabled)

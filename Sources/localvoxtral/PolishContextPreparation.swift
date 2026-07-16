@@ -7,6 +7,12 @@ import Foundation
 /// ONCE over the whole buffer, and its results feed line selection. Splitting
 /// them is what let an earlier version re-run the entity recognizer per line.
 ///
+/// Source-agnostic on purpose. The clipboard and the terminal screen ask the
+/// same two questions of very different buffers (a 2M-character paste, a 24k
+/// screen), and the ANSWER to "ground over everything, render within budget" is
+/// identical for both — so they share this rather than each growing their own
+/// half-correct copy.
+///
 /// The work is pure and deterministic, and potentially large:
 /// `retentionCharacterCap` allows a 2M-character paste. The stop-commit path
 /// runs on `@MainActor`, so this must not run there — hence `prepared` is
@@ -20,7 +26,7 @@ struct PolishContextPreparation: Sendable, Equatable {
 
     static let empty = PolishContextPreparation(grounding: .empty, excerpt: "")
 
-    /// Prepares `clipboardText` off the main actor.
+    /// Prepares `text` off the main actor.
     ///
     /// `nonisolated` + `async` is the whole mechanism: under this package's
     /// settings a nonisolated async function runs on the generic executor, so
@@ -38,12 +44,12 @@ struct PolishContextPreparation: Sendable, Equatable {
     /// `Task.isCancelled` between batches, so cancelling the commit abandons it
     /// promptly. Boundedness comes from the cap; timeliness from cancellation.
     nonisolated static func prepared(
-        clipboardText: String,
+        text: String,
         transcript: String,
         renderBudget: Int
     ) async -> PolishContextPreparation {
         prepare(
-            clipboardText: clipboardText,
+            text: text,
             transcript: transcript,
             renderBudget: renderBudget
         )
@@ -53,20 +59,26 @@ struct PolishContextPreparation: Sendable, Equatable {
     /// production callers should prefer `prepared`, which runs it off the main
     /// actor.
     nonisolated static func prepare(
-        clipboardText: String,
+        text: String,
         transcript: String,
         renderBudget: Int
     ) -> PolishContextPreparation {
-        guard !clipboardText.isEmpty else { return .empty }
+        guard !text.isEmpty else { return .empty }
         // Matching sees everything retained; rendering is what pays the budget.
         // This is the ONE whole-buffer entity extraction — its results then feed
         // the selector, which must never re-derive them per line.
+        //
+        // Grounding is deliberately NOT gated on `renderBudget`: a source whose
+        // excerpt was cut to nothing (or that is barred from rendering at all,
+        // like an unjoined terminal pane) still grounds the transcript from its
+        // complete text. Matching is local, free, and input-side; rendering is
+        // what the budget pays for.
         let grounding = ClipboardVocabulary.candidateOutcome(
             transcript: transcript,
-            clipboardText: clipboardText
+            clipboardText: text
         )
         let excerpt = PolishContextExcerptSelector.select(
-            text: clipboardText,
+            text: text,
             transcript: transcript,
             characterCap: renderBudget,
             groundingTerms: grounding.entries.map(\.replaceWith)

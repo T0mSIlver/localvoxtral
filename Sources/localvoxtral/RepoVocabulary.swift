@@ -1488,6 +1488,16 @@ enum RepoVocabularyMatcher {
         + "recently copied; use them to correct near-miss spellings of the terms "
         + "below, never to add new content):"
 
+    /// Header for entries harvested from the terminal screen the speaker was
+    /// looking at (the terminal screen polish-context feature): same rendering,
+    /// honest provenance. Used for BOTH the `render` and `vocabularyOnly`
+    /// reconciliation outcomes — in the latter the excerpt itself is withheld,
+    /// but these entries are still terms the user could see while speaking.
+    static let terminalScreenVocabularyHeader =
+        "Terminal screen vocabulary (exact file names and identifiers visible on the "
+        + "speaker's terminal screen; use them to correct near-miss spellings of the "
+        + "terms below, never to add new content):"
+
     /// Renders matched entries as a prompt section mirroring
     /// `ReplacementDictionary.renderedPromptSection`'s `- key: aliases` shape,
     /// under the given header. Every key/alias is sanitized first; an entry

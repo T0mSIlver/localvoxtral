@@ -319,6 +319,10 @@ extension DictationViewModel {
             return
         }
         captureSessionTargetVerdict()
+        // Same timing rationale again, and the last chance to take it: the
+        // overlay takes focus once the socket connects, and screen context must
+        // record what the user could see as they chose their words.
+        captureTerminalScreenContextForSession()
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
@@ -642,12 +646,25 @@ extension DictationViewModel {
                 // off OR the polishing endpoint is not loopback, the pasteboard
                 // is never read (privacy).
                 let capturedClipboardContext: PolishClipboardContext?
+                let capturedScreenDecision: TerminalScreenContextDecision
                 if let endpointURL = polishingConfig?.endpointURL {
                     capturedClipboardContext = polishClipboardContextIfEnabled(
                         endpointURL: endpointURL
                     )
+                    // Reconciled HERE, pre-Task, for the same reason as the
+                    // clipboard read above: the stop-time re-read must sample
+                    // the screen at commit, not after the repo-vocabulary await
+                    // has let ~2 s of agent output scroll past — which would
+                    // report every session as mutated.
+                    capturedScreenDecision = terminalScreenContextDecision(
+                        endpointURL: endpointURL
+                    )
                 } else {
                     capturedClipboardContext = nil
+                    capturedScreenDecision = .drop(reason: .noStartCapture)
+                    // No endpoint: nothing to ground for, and the capture must
+                    // not survive into a later session's reconciliation.
+                    terminalScreenStartCapture = nil
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -704,38 +721,89 @@ extension DictationViewModel {
                     // large enough to be worth the hop — see
                     // `PolishContextPreparation`. The render budget is resolved
                     // first because it is also the inline/detached threshold.
+                    //
+                    // ONE allocation across ALL populated sources, not one per
+                    // source: they share a single request's prompt, so they must
+                    // share a single budget. Two sources each allocating from
+                    // `totalCharacterBudget` would each believe they had all of
+                    // it and together spend double.
+                    //
+                    // Only text that can actually RENDER declares a demand. The
+                    // screen demands nothing unless the decision is `.render`
+                    // (see below): `vocabularyOnly` and `drop` cost no prompt
+                    // characters, and letting them reserve some would starve the
+                    // clipboard of budget to render nothing with.
+                    let screenRenderDemand: Int = {
+                        guard case let .render(excerpt) = capturedScreenDecision else { return 0 }
+                        return excerpt.count
+                    }()
+                    let allocation = PolishContextBudget.allocate(demands: [
+                        .terminal: screenRenderDemand,
+                        .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
+                    ])
+                    let clipboardRenderBudget = allocation[.clipboard] ?? 0
+                    let screenRenderBudget = allocation[.terminal] ?? 0
+
                     var clipboardPreparation = PolishContextPreparation.empty
-                    var clipboardRenderBudget = 0
                     if let clipboardContext = capturedClipboardContext {
-                        // Clipboard is the only wired source today, so it can be
-                        // granted the whole budget; declaring the demand through
-                        // the allocator anyway is what makes adding the terminal
-                        // / Claude / repo sources a matter of adding a demand.
-                        let allocation = PolishContextBudget.allocate(
-                            demands: [.clipboard: clipboardContext.retainedCharacterCount]
-                        )
-                        clipboardRenderBudget = allocation[.clipboard] ?? 0
                         clipboardPreparation = await PolishContextPreparation.prepared(
-                            clipboardText: clipboardContext.retainedText,
+                            text: clipboardContext.retainedText,
                             transcript: workingText,
                             renderBudget: clipboardRenderBudget
                         )
                     }
                     let clipboardVocabularyOutcome = clipboardPreparation.grounding
 
+                    // Terminal screen context. Grounded in the screen the user
+                    // was looking at when they started speaking, which both
+                    // surviving reconciliation outcomes preserve — `.render`
+                    // may also show it to the model, `.vocabularyOnly` withholds
+                    // the excerpt but the terms the user could SEE while
+                    // choosing their words are still the right spellings to
+                    // match against. `.drop` yields nil and none of this runs.
+                    //
+                    // Matching runs over the COMPLETE sanitized screen, never
+                    // the excerpt: the budget can cut the rendered excerpt to
+                    // nothing (or bar it entirely) and the full screen still
+                    // grounds the transcript, exactly as it does for the
+                    // clipboard.
+                    var screenPreparation = PolishContextPreparation.empty
+                    if let screenText = capturedScreenDecision.vocabularyGroundingText {
+                        screenPreparation = await PolishContextPreparation.prepared(
+                            text: screenText,
+                            transcript: workingText,
+                            renderBudget: screenRenderBudget
+                        )
+                    }
+                    let screenVocabularyOutcome = screenPreparation.grounding
+
                     guard !Task.isCancelled else { return }
 
                     // Sources matched independently; the merge is what resolves
                     // them against each other (agreement collapses, conflicting
                     // spans abstain, a fallback guess yields to a solid hit).
-                    // Both sides carry REAL provenance — a repo aligned-fallback
+                    // Every side carries REAL provenance — a repo aligned-fallback
                     // guess yields to a clipboard exact hit on the same span,
                     // and vice versa.
+                    //
+                    // The terminal votes HERE, in the same single merge, rather
+                    // than appending its entries downstream. That is the whole
+                    // point: a span the screen and the clipboard read differently
+                    // must ABSTAIN, and a span they agree on must collapse to one
+                    // entry. A source that appends after the merge has silently
+                    // opted out of both rules and pre-applies its own reading of
+                    // a contested span unopposed — editing words the user did not
+                    // say.
                     let merged = PolishContextGrounding.merge([
                         PolishContextGrounding.Candidate(
                             source: .repository,
                             entries: repoVocabularyOutcome.entries,
                             isFallbackOnly: repoVocabularyOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .terminal,
+                            entries: screenVocabularyOutcome.entries,
+                            isFallbackOnly: screenVocabularyOutcome.isFallbackOnly
                         ),
                         PolishContextGrounding.Candidate(
                             source: .clipboard,
@@ -745,8 +813,10 @@ extension DictationViewModel {
                     ])
                     let repoVocabularyEntries = merged.entries(from: .repository)
                     let clipboardVocabularyEntries = merged.entries(from: .clipboard)
+                    let screenVocabularyEntries = merged.entries(from: .terminal)
                     let repoVocabularyCount = repoVocabularyEntries.count
                     let clipboardVocabularyCount = clipboardVocabularyEntries.count
+                    let screenVocabularyCount = screenVocabularyEntries.count
 
                     // Sections are rendered from the MERGED entries, never the
                     // per-source matches: a span the merge abstained on must
@@ -780,6 +850,25 @@ extension DictationViewModel {
                         )
                     }
 
+                    // Rendered from the MERGED entries like every other source —
+                    // a span the merge abstained on must not reappear here as a
+                    // prompt hint. Hint entries need the dictionary slot;
+                    // pre-application does not.
+                    if !screenVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: screenVocabularyEntries,
+                                header: RepoVocabularyMatcher.terminalScreenVocabularyHeader
+                            )
+                    }
+                    if screenVocabularyCount > 0 {
+                        // Counts only — entity content is screen content.
+                        Log.polishing.info(
+                            "Terminal screen vocabulary attached: screen-vocab:\(screenVocabularyCount, privacy: .public)"
+                        )
+                    }
+
                     guard !Task.isCancelled else { return }
 
                     // Exact repo/clipboard bytes and their ASR spans have
@@ -790,6 +879,12 @@ extension DictationViewModel {
                     // prompt as provenance/context. Boundary checks make this
                     // a no-op if a recorded span is no longer independently
                     // replaceable.
+                    // `merged.all`, never a concatenation of the per-source
+                    // entries: the merge is what already resolved agreement and
+                    // conflict ACROSS sources, and re-assembling its inputs by
+                    // hand would reintroduce exactly the duplicates and
+                    // contested spans it dropped. Terminal entries are in here
+                    // because the terminal is a candidate in the merge above.
                     let groundingEntries = merged.all
                     let groundedWorkingText: String
                     if clipboardPayload != nil {
@@ -815,7 +910,7 @@ extension DictationViewModel {
                     }
                     if groundedWorkingText != workingText {
                         Log.polishing.info(
-                            "Technical grounding pre-applied: repo=\(repoVocabularyEntries.count, privacy: .public), clipboard=\(clipboardVocabularyEntries.count, privacy: .public)"
+                            "Technical grounding pre-applied: repo=\(repoVocabularyCount, privacy: .public), terminal=\(screenVocabularyCount, privacy: .public), clipboard=\(clipboardVocabularyCount, privacy: .public)"
                         )
                     }
 
@@ -823,40 +918,68 @@ extension DictationViewModel {
                         inputText: groundedWorkingText,
                         replacementDictionary: replacementDictionarySection
                     )
-                    // Prepend the pre-captured clipboard reference-context block
-                    // to the FINAL user message (letting the polish model fix
-                    // near-miss spelling of technical terms against what the
-                    // user copied).
-                    var capturedPolishContextSummary: String? = nil
-                    if let clipboardContext = capturedClipboardContext {
-                        // Already selected, off-actor, above: at or below the
-                        // budget the clipboard is attached VERBATIM; above it,
-                        // this is the transcript-relevant selection rather than
-                        // the head of the buffer.
-                        let excerpt = clipboardPreparation.excerpt
-                        if !excerpt.isEmpty {
-                            // Prompt-cache safety lives in the composer: context
-                            // rides INSIDE the last message (a separate message
-                            // between prefix and suffix invalidated polishd's
-                            // single-slot checkpoint on every request, and the
-                            // cold 4B re-prefill blew the polish client timeout
-                            // — field, 2026-07-11), prepended so the working
-                            // text stays LAST.
-                            userPrompts = PolishContextComposer.prepending(
-                                contextMessage: PolishContextClipboardReader.contextMessage(
-                                    excerpt: excerpt,
-                                    characterCap: clipboardRenderBudget
-                                ),
-                                to: userPrompts
-                            )
-                            let summary = clipboardContext.provenanceSummary(
-                                renderedCharacterCount: excerpt.count
-                            )
-                            capturedPolishContextSummary = summary
-                            Log.polishing.info(
-                                "Polish clipboard context attached: \(summary, privacy: .public)"
-                            )
-                        }
+                    // Reference-context blocks are prepended to the FINAL user
+                    // message, letting the polish model fix near-miss spelling
+                    // of technical terms against what the user copied and what
+                    // was on their screen.
+                    //
+                    // ONE `attaching` call with the blocks ordered by
+                    // `allocationRank` (terminal, then clipboard). The composer
+                    // owns the two invariants for every source: context rides
+                    // INSIDE the last message (a separate message between prefix
+                    // and suffix invalidated polishd's single-slot checkpoint on
+                    // every request, and the cold 4B re-prefill blew the polish
+                    // client timeout — field, 2026-07-11), and it is prepended
+                    // so the transcript stays LAST. Two sequential prepends keep
+                    // both invariants too, but silently REVERSE source order —
+                    // the array is the form that cannot get that wrong.
+                    //
+                    // Both excerpts were already selected off-actor above: at or
+                    // below its grant a source is attached verbatim; above it,
+                    // the excerpt is the transcript-relevant selection rather
+                    // than the head of the buffer.
+                    //
+                    // The screen block is nil unless the decision is `.render`,
+                    // which requires the captured pane to be positively joined
+                    // to one live Claude session — so plain, unjoined Ghostty
+                    // scrollback contributes vocabulary only and never an
+                    // excerpt.
+                    let screenBlock = capturedScreenDecision.contextBlock(
+                        excerpt: screenPreparation.excerpt,
+                        renderBudget: screenRenderBudget
+                    )
+                    let clipboardBlock = capturedClipboardContext?.contextBlock(
+                        excerpt: clipboardPreparation.excerpt,
+                        renderBudget: clipboardRenderBudget
+                    )
+                    let contextBlocks = [screenBlock, clipboardBlock].compactMap { $0 }
+                    if !contextBlocks.isEmpty {
+                        userPrompts = PolishContextBlock.attaching(contextBlocks, to: userPrompts)
+                    }
+                    if let clipboardBlock {
+                        Log.polishing.info(
+                            "Polish clipboard context attached: \(clipboardBlock.summary, privacy: .public)"
+                        )
+                    }
+                    if let screenBlock {
+                        Log.polishing.info(
+                            "Polish terminal screen context attached: \(screenBlock.summary, privacy: .public)"
+                        )
+                    }
+
+                    // Provenance stays count-only. The screen is recorded only
+                    // when it actually contributed (an excerpt, terms, or both)
+                    // — a dropped capture is not worth a summary line. Ordered
+                    // clipboard-then-screen to match the existing session-record
+                    // format.
+                    var capturedPolishContextSummary: String? = clipboardBlock?.summary
+                    if screenVocabularyCount > 0 || screenBlock != nil {
+                        // The block's summary when one was rendered (it reports
+                        // the TRIMMED count); the decision's otherwise.
+                        let screenSummary =
+                            screenBlock?.summary ?? capturedScreenDecision.provenanceSummary
+                        capturedPolishContextSummary = capturedPolishContextSummary
+                            .map { "\($0) \(screenSummary)" } ?? screenSummary
                     }
 
                     let polishingRequest = LLMPolishingRequest(
@@ -1127,6 +1250,12 @@ extension DictationViewModel {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
+        // Every stop funnels through here. The commit path has already
+        // consumed the capture by now (it reconciles synchronously, before
+        // spawning the polish Task), so this is a no-op there — it exists to
+        // catch the stop paths that never reach the commit block at all: empty
+        // transcript, polishing disabled, cancelled overlay.
+        discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
         setRealtimeIndicatorIdle()
         livePartialText = ""

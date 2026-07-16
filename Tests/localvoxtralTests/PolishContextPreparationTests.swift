@@ -54,7 +54,7 @@ final class PolishContextPreparationTests: XCTestCase {
         let clipboard = CodeHeavyFixture.buffer(minimumCharacters: 2_000, target: target)
         XCTAssertGreaterThan(clipboard.count, 2_000)
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: clipboard,
+            text: clipboard,
             transcript: transcript,
             renderBudget: PolishContextBudget.totalCharacterBudget
         )
@@ -67,7 +67,7 @@ final class PolishContextPreparationTests: XCTestCase {
         let clipboard = CodeHeavyFixture.buffer(minimumCharacters: 20_000, target: target)
         XCTAssertGreaterThan(clipboard.count, 20_000)
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: clipboard,
+            text: clipboard,
             transcript: transcript,
             renderBudget: PolishContextBudget.totalCharacterBudget
         )
@@ -79,7 +79,7 @@ final class PolishContextPreparationTests: XCTestCase {
     func testGroundingSurvivesWhenTheExcerptIsAFractionOfTheBuffer() {
         let clipboard = CodeHeavyFixture.buffer(minimumCharacters: 20_000, target: target)
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: clipboard,
+            text: clipboard,
             transcript: transcript,
             renderBudget: 200
         )
@@ -93,7 +93,7 @@ final class PolishContextPreparationTests: XCTestCase {
     func testBufferAtOrBelowTheBudgetIsAttachedVerbatim() {
         let clipboard = "error in UserSessionManager.swift\n\n  at line 42\n"
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: clipboard,
+            text: clipboard,
             transcript: "fix the user session manager",
             renderBudget: PolishContextBudget.totalCharacterBudget
         )
@@ -103,7 +103,7 @@ final class PolishContextPreparationTests: XCTestCase {
     func testBufferAboveTheBudgetIsSelectedNotTruncated() {
         let clipboard = CodeHeavyFixture.buffer(minimumCharacters: 30_000, target: target)
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: clipboard,
+            text: clipboard,
             transcript: transcript,
             renderBudget: PolishContextBudget.totalCharacterBudget
         )
@@ -124,12 +124,12 @@ final class PolishContextPreparationTests: XCTestCase {
         for minimum in [100, PolishContextBudget.totalCharacterBudget + 1, 30_000] {
             let clipboard = CodeHeavyFixture.buffer(minimumCharacters: minimum, target: target)
             let sync = PolishContextPreparation.prepare(
-                clipboardText: clipboard,
+                text: clipboard,
                 transcript: transcript,
                 renderBudget: PolishContextBudget.totalCharacterBudget
             )
             let viaEntryPoint = await PolishContextPreparation.prepared(
-                clipboardText: clipboard,
+                text: clipboard,
                 transcript: transcript,
                 renderBudget: PolishContextBudget.totalCharacterBudget
             )
@@ -140,7 +140,7 @@ final class PolishContextPreparationTests: XCTestCase {
 
     func testEmptyClipboardPreparesToNothing() {
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: "",
+            text: "",
             transcript: transcript,
             renderBudget: 6000
         )
@@ -157,7 +157,7 @@ final class PolishContextPreparationTests: XCTestCase {
         let blob = String(repeating: "a", count: 20_000) + " PaymentReconciler.swift "
             + String(repeating: "b", count: 20_000)
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: blob,
+            text: blob,
             transcript: transcript,
             renderBudget: 500
         )
@@ -175,7 +175,7 @@ final class PolishContextPreparationTests: XCTestCase {
         let blob = String(repeating: "a", count: 5_000)
         for cap in [1, 2, 3, 4, 8] {
             let prepared = PolishContextPreparation.prepare(
-                clipboardText: blob, transcript: transcript, renderBudget: cap
+                text: blob, transcript: transcript, renderBudget: cap
             )
             XCTAssertLessThanOrEqual(prepared.excerpt.count, cap, "cap=\(cap)")
         }
@@ -186,7 +186,7 @@ final class PolishContextPreparationTests: XCTestCase {
     func testOversizedLineIsSkippedSoALaterFittingLineStillRenders() {
         let blob = String(repeating: "a", count: 20_000)
         let prepared = PolishContextPreparation.prepare(
-            clipboardText: blob + "\n" + target,
+            text: blob + "\n" + target,
             transcript: transcript,
             renderBudget: 500
         )
@@ -275,7 +275,7 @@ final class PolishContextPreparationTests: XCTestCase {
         let task = Task { () -> PolishContextPreparation in
             for await _ in gate { break }
             return await PolishContextPreparation.prepared(
-                clipboardText: text,
+                text: text,
                 transcript: spoken,
                 renderBudget: PolishContextBudget.totalCharacterBudget
             )
@@ -309,11 +309,11 @@ final class PolishContextPreparationTests: XCTestCase {
     func testPreparationIsDeterministic() {
         let clipboard = CodeHeavyFixture.buffer(minimumCharacters: 25_000, target: target)
         let first = PolishContextPreparation.prepare(
-            clipboardText: clipboard, transcript: transcript, renderBudget: 1500
+            text: clipboard, transcript: transcript, renderBudget: 1500
         )
         for _ in 0..<5 {
             let again = PolishContextPreparation.prepare(
-                clipboardText: clipboard, transcript: transcript, renderBudget: 1500
+                text: clipboard, transcript: transcript, renderBudget: 1500
             )
             XCTAssertEqual(again.excerpt, first.excerpt)
             XCTAssertEqual(again.grounding, first.grounding)
