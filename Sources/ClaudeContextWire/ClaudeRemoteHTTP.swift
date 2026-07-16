@@ -93,7 +93,10 @@ public enum ClaudeRemoteHTTPCodec {
     /// parser a fallback when a payload omits `hook_event_name`.
     public static let hookPathPrefix = "/v1/hook/"
 
-    static let headTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
+    /// CRLFCRLF. Public because it is not merely this parser's business: it
+    /// occupies the same read buffer as the head and the body, so anything
+    /// sizing that buffer has to account for it too.
+    public static let headTerminator = Data([0x0D, 0x0A, 0x0D, 0x0A])
 
     /// Parse a request head out of `buffer`.
     ///

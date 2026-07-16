@@ -2,6 +2,10 @@ import CryptoKit
 import Foundation
 import Synchronization
 
+#if canImport(Darwin)
+import Darwin
+#endif
+
 /// Non-secret metadata for one enrolled remote host.
 ///
 /// This is the whole public view of a host. There is no `token` property, and
@@ -117,46 +121,156 @@ public protocol ClaudeRemoteHostStoreIO: Sendable {
 }
 
 /// The on-disk implementation.
+///
+/// The threat this file defends against is a local process running as some OTHER
+/// user (or a compromised world-writable parent) reaching the token hashes, or
+/// steering our write somewhere it does not belong. Concretely:
+///
+/// * The containing directory is validated with the same rules as the broker's
+///   socket directory — ours, not a symlink, not group/world-accessible — via
+///   `ClaudeSocketGuard`. Nothing is written until that passes.
+/// * The temp file is created `O_CREAT|O_EXCL|O_NOFOLLOW` at 0600, with a unique
+///   name. `O_EXCL` means we never write through a file someone pre-created;
+///   `O_NOFOLLOW` means we never write through a symlink they planted.
+/// * The target is replaced with a POSIX `rename(2)` — no `remove` first. A
+///   delete-then-move leaves a window where the file is simply absent, and a
+///   crash inside it loses every enrollment.
+/// * The temp file is removed on every failure path, so a full disk or a failed
+///   rename does not litter the directory with 0600 droppings.
 public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
     public init() {}
 
     public func read(from url: URL) throws -> Data? {
+        #if canImport(Darwin)
+        // lstat, not `fileExists`: the question is what is AT this path, not what
+        // it points to. A symlink here is not a store we are willing to read.
+        guard let metadata = ClaudeSocketGuard.metadata(ofPath: url.path) else {
+            // ONLY "there is nothing here" means "start fresh". `metadata` fails
+            // for other reasons too — a parent we cannot traverse, a dead mount —
+            // and returning nil for those would report an empty registry, which
+            // reads downstream as "no hosts are enrolled" and silently revokes
+            // every one of them. `metadata` lstats and returns immediately, so
+            // errno is still its own here.
+            guard errno == ENOENT else {
+                throw ClaudeRemoteHostRegistry.StoreError.unreadable(path: url.path)
+            }
+            return nil
+        }
+        if let failure = ClaudeRemoteHostFileStoreIO.validateStoreFile(
+            metadata,
+            path: url.path,
+            expectedUID: UInt32(geteuid())
+        ) {
+            throw failure
+        }
+        #else
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        #endif
         return try Data(contentsOf: url)
     }
 
-    /// Write to a sibling temp file created 0600, then `rename(2)` over the
-    /// target.
+    /// The read-side counterpart of `ClaudeSocketGuard.validateDirectory`, split
+    /// out pure so every branch is testable without staging a hostile file.
     ///
-    /// Not `Data.write(options: .atomic)`: that is atomic, but it creates the
-    /// temp file with umask-derived permissions and only fixes them afterwards
-    /// — a window in which a file of token hashes is world-readable. Creating it
-    /// 0600 up front means the bytes are never reachable, not even briefly.
-    /// `rename` within the same directory is atomic, so a crash mid-write leaves
-    /// the previous file intact rather than a truncated one.
+    /// A store that is not ours, is a symlink, or is readable by anyone else is
+    /// REPORTED, never used. Reading it anyway would mean authenticating remote
+    /// hosts against hashes someone else could have written.
+    static func validateStoreFile(
+        _ metadata: ClaudeSocketGuard.PathMetadata,
+        path: String,
+        expectedUID: UInt32
+    ) -> ClaudeSocketGuard.PreconditionFailure? {
+        if metadata.isSymlink { return .isSymlink(path) }
+        if metadata.isDirectory { return .notADirectory(path) }
+        if metadata.ownerUID != expectedUID {
+            return .wrongOwner(path: path, owner: metadata.ownerUID, expected: expectedUID)
+        }
+        if metadata.mode & 0o077 != 0 {
+            return .permissive(path: path, mode: metadata.mode)
+        }
+        return nil
+    }
+
     public func write(_ data: Data, to url: URL) throws {
+        #if canImport(Darwin)
         let directory = url.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
-        )
-        let temporary = directory.appendingPathComponent(".\(url.lastPathComponent).tmp")
-        try? FileManager.default.removeItem(at: temporary)
-        guard FileManager.default.createFile(
-            atPath: temporary.path,
-            contents: data,
-            attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
-        ) else {
+        // Reuses the broker's hardened path prep: creates 0700 if absent, and
+        // otherwise REFUSES a directory that is a symlink, not ours, or loose.
+        // It never "repairs" one — a directory in that state is a situation to
+        // report, not to paper over.
+        try ClaudeSocketGuard.prepareDirectory(at: directory.path)
+
+        // Unique per attempt. A fixed name is shared mutable state between two
+        // concurrent writers (and between us and anything else in the
+        // directory): one would rename the other's half-written bytes over the
+        // target.
+        let temporaryPath = directory
+            .appendingPathComponent(".\(url.lastPathComponent).\(getpid()).\(UInt64.random(in: 0..<UInt64.max)).tmp")
+            .path
+
+        let fd = temporaryPath.withCString { path in
+            open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        }
+        guard fd >= 0 else {
             throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
         }
-        // `replaceItemAt` would leave the replacement's own metadata behind on
-        // some volumes; a plain rename keeps the 0600 we just set.
-        if FileManager.default.fileExists(atPath: url.path) {
-            try? FileManager.default.removeItem(at: url)
+
+        // From here on every exit removes the temp file. The only path that
+        // must NOT is the successful rename, which consumes it.
+        var renamed = false
+        defer {
+            close(fd)
+            if !renamed { _ = temporaryPath.withCString { unlink($0) } }
         }
-        try FileManager.default.moveItem(at: temporary, to: url)
+
+        try data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let written = ClaudeRemoteHostFileStoreIO.retryingOnEINTR {
+                    Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                }
+                guard written > 0 else {
+                    throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
+                }
+                offset += written
+            }
+        }
+        // The rename is atomic, but it does not imply the DATA reached the
+        // platter. Without this a crash can leave the renamed target pointing at
+        // unwritten blocks — an empty file where the enrollments were.
+        guard fsync(fd) == 0 else {
+            throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
+        }
+
+        // POSIX rename(2): atomically replaces the target if it exists. No
+        // `removeItem` first — that window is exactly when a crash loses the
+        // file, and any reader in it sees "no hosts enrolled" rather than the
+        // previous contents.
+        let moved = temporaryPath.withCString { source in
+            url.path.withCString { destination in
+                rename(source, destination)
+            }
+        }
+        guard moved == 0 else {
+            throw ClaudeRemoteHostRegistry.StoreError.writeFailed(path: url.path)
+        }
+        renamed = true
+        #else
+        try data.write(to: url, options: [.atomic, .completeFileProtection])
+        #endif
     }
+
+    #if canImport(Darwin)
+    @inline(__always)
+    static func retryingOnEINTR(_ body: () -> Int) -> Int {
+        while true {
+            let result = body()
+            if result == -1 && errno == EINTR { continue }
+            return result
+        }
+    }
+    #endif
 }
 
 /// Enrolled remote hosts and their token hashes.
@@ -228,6 +342,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     public static let maxHosts = 32
 
     private let state: Mutex<[StoredHost]>
+    /// Serializes snapshot+write. See `persist()` for why `state` alone is not
+    /// enough to keep memory and disk coherent.
+    private let persistLock = Mutex<Int>(0)
     private let fileURL: URL
     private let io: any ClaudeRemoteHostStoreIO
     private let now: @Sendable () -> Date
@@ -423,12 +540,25 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
     // MARK: - Persistence
 
+    /// Snapshot and write, serialized against every other persist.
+    ///
+    /// The `persistLock` is not redundant with `state`'s mutex. Mutations release
+    /// `state` before persisting, so two concurrent callers can interleave as:
+    /// A snapshots {A}, B snapshots {A,B}, B writes {A,B}, A writes {A} — and the
+    /// disk ends up behind memory, having silently un-enrolled B. Holding this
+    /// lock across BOTH the snapshot and the write makes disk order match memory
+    /// order, so the last write is always the newest state.
+    ///
+    /// Lock order is always persistLock → state, and nothing takes them the other
+    /// way round, so this cannot deadlock.
     private func persist() throws {
-        let hosts = state.withLock { $0 }
-        let file = StoredFile(version: Self.fileVersion, hosts: hosts)
-        let encoder = JSONEncoder.claudeRemote
-        let data = try encoder.encode(file)
-        try io.write(data, to: fileURL)
+        try persistLock.withLock { _ in
+            let hosts = state.withLock { $0 }
+            let file = StoredFile(version: Self.fileVersion, hosts: hosts)
+            let encoder = JSONEncoder.claudeRemote
+            let data = try encoder.encode(file)
+            try io.write(data, to: fileURL)
+        }
     }
 
     /// A label is shown in the UI and used in generated setup text; it is not an

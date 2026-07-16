@@ -15,9 +15,15 @@ The plugin declares **hooks only**. It ships no skill, no slash command, and no
 agent — nothing here consumes Claude tokens, adds latency to your turn, or
 appears in Claude's context. It is a data channel, not a Claude feature.
 
-On each hook event, Claude Code runs `hooks/publish.sh`, which execs the
-`localvoxtral-claude-hook` publisher. The publisher writes one bounded NDJSON
-line to a private UNIX socket owned by the app and exits.
+On each hook event, Claude Code runs `hooks/publish.sh`, which locates the
+`localvoxtral-claude-hook` publisher and runs it as a **child process** — not
+`exec`. That distinction is deliberate: `exec` would replace the shim, so a
+publisher that cannot start at all (wrong architecture, quarantined bundle,
+missing dyld dependency) would surface its exec failure as the hook's exit code
+— a visible error on your turn, which is precisely what fail-open exists to
+prevent. Staying alive to swallow that is the shim's whole job. The publisher
+writes one bounded NDJSON line to a private UNIX socket owned by the app and
+exits.
 
 | Hook | What localvoxtral learns |
 |---|---|
@@ -46,19 +52,32 @@ the hook prints nothing at all.
 
 ## Install / update / uninstall
 
-Everything goes through Claude Code's own plugin CLI.
+The app way: **Settings → Text Processing → Polishing → "Claude Code plugin
+(this Mac)" → Install or Update**. That button registers the bundled marketplace
+and installs the plugin, then reports one short line. Nothing is installed until
+you press it — the app never touches your Claude Code setup at launch or on a
+timer.
+
+Everything it does goes through Claude Code's own plugin CLI.
 
 **`~/.claude/settings.json` is never read, written, wrapped, or merged by
 localvoxtral.** That file is yours and Claude Code owns its schema; the CLI is
 the supported interface, and a third-party app editing it is how setups get
-corrupted during an unrelated upgrade. If you prefer, run these yourself — the
-app's installer runs exactly these commands and nothing else.
+corrupted during an unrelated upgrade.
+
+If you prefer to run the commands yourself, these are the same ones the button
+runs. The only difference is `--config publisher_path=…`: the app knows where
+its own publisher binary is and passes that path, which is how the plugin works
+for an app in `~/Applications`, on a mounted volume, or in a dev build. Omit it
+and the shim falls back to guessing `/Applications` and `~/Applications` (see
+the environment table below).
 
 From an **installed app**:
 
 ```sh
 claude plugin marketplace add "/Applications/localvoxtral.app/Contents/Resources/claude-code-marketplace"
-claude plugin install localvoxtral@localvoxtral
+claude plugin install localvoxtral@localvoxtral \
+  --config 'publisher_path=/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook'
 ```
 
 From a **repo checkout**:
@@ -72,7 +91,8 @@ Update (re-reads the marketplace, then updates the plugin):
 
 ```sh
 claude plugin marketplace add "/Applications/localvoxtral.app/Contents/Resources/claude-code-marketplace"
-claude plugin update localvoxtral@localvoxtral
+claude plugin update localvoxtral@localvoxtral \
+  --config 'publisher_path=/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook'
 ```
 
 Uninstall (removes the plugin, then deregisters the marketplace so nothing of
@@ -170,7 +190,19 @@ reachable from your LAN.
 
 ## Set it up
 
-In localvoxtral, enroll the host. You get a token, shown once. Then:
+In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH"**,
+type a name and your SSH host alias and press **Enroll…**. The app issues a
+token, shows it once alongside every command below with a Copy button on each,
+and binds the listener immediately — there is no relaunch step. The list in that
+row shows each enrolled host, when it was last seen, and gives you **Rotate
+Token**, **Revoke** and **Remove**.
+
+The app **does not edit `~/.ssh/config` and does not run anything on the remote
+host.** It hands you the text. Those files are yours and are load-bearing for
+work that has nothing to do with dictation.
+
+The token is shown exactly once, because only its hash is stored. If you lose it,
+rotate — that is what rotation is for. Then:
 
 **1. Add the tunnel to `~/.ssh/config`:**
 
@@ -250,6 +282,37 @@ the listener gets the same treatment: connecting there can only downgrade you.
 Each host's sessions are namespaced under the host id its token authenticated,
 so two hosts can never collide on a session id, forge each other's sessions, or
 share a marker.
+
+## What this does not protect against
+
+Stated plainly, because a security note that only lists wins is not a threat
+model.
+
+**A malicious process running as YOU on the remote host.** This is not solvable
+here and we do not claim otherwise. That process can already read
+`~/.claude/`, which is where Claude Code keeps the plugin's configured token —
+so it can read the token regardless of anything the app does, and it could
+equally well read your source, your keys, and your shell history without
+involving localvoxtral at all. Enrolling a host means trusting that host's user
+account to the extent it is already trusted. What the token bounds is what a
+host can do to *localvoxtral* (remote context only, never a local file read),
+not what a compromised account can do to itself.
+
+**A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
+Loopback ports are first-come, first-served on macOS; there is no ownership. A
+squatter cannot authenticate your hosts — it does not have the token hashes,
+which never leave the 0600 host file — but it does receive whatever the remote
+sends, including the bearer token itself, before anything rejects it. The app
+therefore treats a bind conflict as a condition to *report*, not to route
+around: Settings says the port is in use and offers Retry, rather than quietly
+sliding to another port where you would never learn a squatter was there. If you
+see that status, find the process (`lsof -nP -iTCP:8473 -sTCP:LISTEN`) before
+assuming it is a stale copy of the app, and rotate the tokens of any host that
+connected meanwhile.
+
+**Anyone who can write your `~/.ssh/config`.** They can point the forward
+somewhere else. That is true of every use of that file and is why the app will
+not write it for you.
 
 ## Plain SSH still works exactly as before
 

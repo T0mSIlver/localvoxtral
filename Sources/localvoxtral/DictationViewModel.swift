@@ -343,6 +343,17 @@ final class DictationViewModel {
     @ObservationIgnored
     var claudeSessionJoinResolver: ClaudeSessionJoinResolver?
 
+    /// Settings surface for the two Claude Code integrations.
+    ///
+    /// Installed by `AppDelegate`, which owns the host registry and the listener
+    /// — the same reason the resolver above is installed rather than
+    /// constructed: those live for the app's lifetime, not a dictation's. Nil
+    /// only when the app delegate never ran (previews, unit tests), and the
+    /// Settings rows simply do not render.
+    ///
+    /// NOT `@ObservationIgnored`: the pane re-renders when the model swaps in.
+    var claudeIntegrationSettings: ClaudeIntegrationSettingsModel?
+
     /// THE session join for the current dictation, resolved once at start.
     ///
     /// Read by three consumers — raw screen attachment, the session block, and

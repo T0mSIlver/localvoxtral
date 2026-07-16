@@ -60,6 +60,10 @@ public final class ClaudeContextBroker: Sendable {
         var activeConnections = 0
         /// Write end of the self-pipe that wakes a blocked accept loop.
         var wakeWriteFD: Int32 = -1
+        /// Signalled by the accept loop's `defer` on EVERY exit — requested or
+        /// spontaneous. `stop()` waits on it so a caller that stops and
+        /// immediately restarts cannot race the outgoing loop for the socket.
+        var loopExit: DispatchSemaphore?
     }
 
     private let state = Mutex(State())
@@ -102,6 +106,10 @@ public final class ClaudeContextBroker: Sendable {
         case bindFailed(errno: Int32)
         case listenFailed(errno: Int32)
         case alreadyRunning
+        /// Another live process of ours already owns this socket. Distinct from
+        /// `bindFailed(EADDRINUSE)`, which cannot tell a live owner from a
+        /// leftover file — and the two demand opposite responses.
+        case socketOwnedByLiveInstance(String)
     }
 
     public var socketURL: URL { URL(fileURLWithPath: socketPath) }
@@ -130,24 +138,56 @@ public final class ClaudeContextBroker: Sendable {
             let fd = socket(AF_UNIX, SOCK_STREAM, 0)
             guard fd >= 0 else { throw StartFailure.socketCreationFailed(errno: errno) }
 
-            // A stale socket from a crashed run would make bind fail with
-            // EADDRINUSE. Removing it is safe: the directory is verified ours
-            // and private, so nothing else can have legitimately put a file here.
-            unlink(socketPath)
-
             // Bind under a restrictive umask so the socket is never briefly
             // world-reachable between bind() and chmod().
-            let previousMask = umask(0o177)
-            let bound = withUnsafePointer(to: &address) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                    bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            //
+            // Returns errno ALONGSIDE the result rather than leaving the caller
+            // to read it: `umask` runs between the bind and the return, and a
+            // caller reading `errno` afterwards is reading whatever the last
+            // syscall left there, not the bind's. That is the same trap
+            // `ClaudeSocketGuard.prepareDirectory` documents, and EADDRINUSE
+            // getting lost here would mean silently unlinking a live instance's
+            // socket — the exact failure this code exists to prevent.
+            func attemptBind() -> (result: Int32, code: Int32) {
+                let previousMask = umask(0o177)
+                let result = withUnsafePointer(to: &address) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                        bind(fd, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+                    }
                 }
-            }
-            umask(previousMask)
-            guard bound == 0 else {
                 let code = errno
+                umask(previousMask)
+                return (result, code)
+            }
+
+            // Bind FIRST; only investigate if the path is taken.
+            //
+            // The previous code unlinked unconditionally, reasoning that the
+            // directory is ours and private so nothing else could have put a
+            // file there. True — but WE could have: a second live localvoxtral
+            // running as the same user owns a perfectly legitimate socket at
+            // this path, and unlinking it silently severed that instance from
+            // every hook publisher on the machine. It kept accepting on an
+            // unlinked inode, publishers connected to our new socket, and
+            // nothing anywhere reported a problem.
+            //
+            // So: EADDRINUSE is ambiguous, and the way to disambiguate is to ask
+            // the socket. A live owner accepts a connection; a leftover file
+            // from a crashed run refuses it (ECONNREFUSED — nothing is
+            // listening). Only the latter is ours to remove.
+            var bound = attemptBind()
+            if bound.result != 0, bound.code == EADDRINUSE {
+                if Self.isSocketLive(atPath: socketPath) {
+                    close(fd)
+                    throw StartFailure.socketOwnedByLiveInstance(socketPath)
+                }
+                Log.claudeContext.info("Removing stale Claude broker socket")
+                unlink(socketPath)
+                bound = attemptBind()
+            }
+            guard bound.result == 0 else {
                 close(fd)
-                throw StartFailure.bindFailed(errno: code)
+                throw StartFailure.bindFailed(errno: bound.code)
             }
             // Belt and braces: umask should have produced 0600 already, but
             // macOS has historically been inconsistent about umask on AF_UNIX
@@ -181,9 +221,11 @@ public final class ClaudeContextBroker: Sendable {
             // exited would kill the whole app with SIGPIPE.
             _ = fcntl(wakePipe[1], F_SETNOSIGPIPE, 1)
             state.wakeWriteFD = wakePipe[1]
+            state.loopExit = DispatchSemaphore(value: 0)
             state.isRunning = true
             return (fd, wakePipe[0])
         }
+        let exitSignal = state.withLock { $0.loopExit }
 
         // Started OUTSIDE the lock: the accept loop's first act is to read
         // `isRunning`, and this mutex is not reentrant. Spawning it while still
@@ -191,7 +233,7 @@ public final class ClaudeContextBroker: Sendable {
         // harmless today, but exactly the kind of ordering that becomes a
         // deadlock the moment someone adds a join or a synchronous handshake.
         let thread = Thread { [weak self] in
-            self?.acceptLoop(listenerFD: listenerFD, wakeReadFD: wakeReadFD)
+            self?.acceptLoop(listenerFD: listenerFD, wakeReadFD: wakeReadFD, exitSignal: exitSignal)
         }
         thread.name = "com.localvoxtral.claude-broker"
         thread.stackSize = 512 * 1024
@@ -200,41 +242,118 @@ public final class ClaudeContextBroker: Sendable {
         Log.claudeContext.info("Claude context broker listening")
     }
 
-    /// Stop accepting and remove the socket.
+    /// Stop accepting, and do not return until the accept loop is gone.
     ///
-    /// The listener fd is NOT closed here — the accept loop owns it and closes
-    /// it on its way out once the wake byte tells it to leave. Closing it from
-    /// this thread would race the loop's next accept().
+    /// The listener fd and the socket file are NOT touched here — the accept
+    /// loop owns both and releases them in its `defer`, on every exit path. That
+    /// keeps cleanup in ONE place: a stop-driven exit and a spontaneous one (a
+    /// failed poll, a dead listener) previously cleaned up differently, so a
+    /// loop that died on its own left the socket file on disk and the wake pipe's
+    /// write end open forever.
+    ///
+    /// Waiting is what makes `stop(); start()` safe. Without it, start() can bind
+    /// while the outgoing loop is still between its last accept() and its unlink
+    /// — and that unlink then deletes the NEW socket, leaving a running broker
+    /// nobody can reach.
     public func stop() {
-        let wakeFD: Int32 = state.withLock { state in
-            guard state.isRunning else { return -1 }
+        let (wakeFD, exitSignal): (Int32, DispatchSemaphore?) = state.withLock { state in
+            guard state.isRunning else { return (-1, nil) }
             state.isRunning = false
             let wakeFD = state.wakeWriteFD
+            // Taken under the lock so the loop's defer sees -1 and does not
+            // close it a second time. Exactly one of us owns this fd.
             state.wakeWriteFD = -1
-            return wakeFD
+            let exitSignal = state.loopExit
+            state.loopExit = nil
+            return (wakeFD, exitSignal)
         }
         guard wakeFD >= 0 else { return }
         var byte: UInt8 = 1
         _ = retryingOnEINTRInt { write(wakeFD, &byte, 1) }
         close(wakeFD)
-        unlink(socketPath)
+        exitSignal?.wait()
         Log.claudeContext.info("Claude context broker stopped")
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
 
+    /// Is something actually listening on this socket path?
+    ///
+    /// The only reliable answer is to connect. `stat` tells us a file exists,
+    /// which is true of both a live socket and the corpse of a crashed run;
+    /// those need opposite handling, and guessing wrong either steals a live
+    /// instance's socket or refuses to ever start again.
+    ///
+    /// Connecting to our own broker is harmless: it accepts, we send nothing, and
+    /// the connection closes. The serve thread reads EOF and exits.
+    static func isSocketLive(atPath path: String) -> Bool {
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(path.utf8)
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: pathBytes)
+            raw[pathBytes.count] = 0
+        }
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+
+        let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard probe >= 0 else { return false }
+        defer { close(probe) }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                retryingOnEINTRInt32 {
+                    connect(probe, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+        }
+        guard connected != 0 else { return true }
+        let code = errno
+        switch code {
+        case ECONNREFUSED:
+            // The file is there but nobody is home: a corpse from a crashed run.
+            // This is the one answer that licenses removing it.
+            return false
+        case ENOENT:
+            // Nothing is there at all. Not live, and nothing to remove either.
+            return false
+        default:
+            // Anything else (EACCES, a timeout, EPERM) is a state we do not
+            // understand, and the safe reading of "I do not understand" is
+            // "assume it is live and do not delete it". Refusing to start is
+            // recoverable; deleting a live instance's socket is not.
+            return true
+        }
+    }
+
     // MARK: - Accept
 
-    private func acceptLoop(listenerFD: Int32, wakeReadFD: Int32) {
+    private func acceptLoop(listenerFD: Int32, wakeReadFD: Int32, exitSignal: DispatchSemaphore?) {
         defer {
-            // Clear `isRunning` on EVERY exit, not just a stop() request. The
-            // loop can also leave on a failed poll or a dead listener, and a
-            // broker that reports `isRunning == true` with no loop behind it
-            // rejects start() forever — and worse, lets stop() write to a wake
-            // pipe whose read end this defer just closed.
-            state.withLock { $0.isRunning = false }
+            // The loop owns every resource start() handed it, and releases them
+            // all here — on EVERY exit, not just a stop() request. The loop can
+            // also leave on a failed poll or a dead listener, and that path used
+            // to clear `isRunning` and nothing else: the wake pipe's write end
+            // stayed open for the life of the process, and the socket file
+            // stayed on disk advertising a broker that no longer existed.
+            let wakeWriteFD: Int32 = state.withLock { state in
+                state.isRunning = false
+                let fd = state.wakeWriteFD
+                state.wakeWriteFD = -1
+                state.loopExit = nil
+                return fd
+            }
+            // Non-negative only on a SPONTANEOUS exit: stop() takes this fd
+            // under the same lock before writing to it, so exactly one of us
+            // ever closes it.
+            if wakeWriteFD >= 0 { close(wakeWriteFD) }
             close(listenerFD)
             close(wakeReadFD)
+            // Ours to remove: we bound it, and stop() deliberately waits for
+            // this defer rather than unlinking itself, so this cannot delete a
+            // socket a subsequent start() has already bound.
+            unlink(socketPath)
+            exitSignal?.signal()
         }
         /// Consecutive accept() failures we could not attribute. Used only to
         /// stop a hard-failing listener from becoming a hot loop.

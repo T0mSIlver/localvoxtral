@@ -80,6 +80,10 @@ public final class ClaudeRemoteContextListener: Sendable {
         var isRunning = false
         var activeConnections = 0
         var wakeWriteFD: Int32 = -1
+        /// Signalled by the accept loop's `defer` on every exit. `stop()` waits
+        /// on it, so a rebind after a revoke/enroll cannot race the outgoing
+        /// loop for the port.
+        var loopExit: DispatchSemaphore?
     }
 
     private let state = Mutex(State())
@@ -87,6 +91,7 @@ public final class ClaudeRemoteContextListener: Sendable {
     private let hosts: ClaudeRemoteHostRegistry
     private let limits: ClaudeRemoteListenerLimits
     private let now: @Sendable () -> Date
+    private let uptimeNanos: @Sendable () -> UInt64
 
     public enum StartFailure: Error, Equatable {
         case alreadyRunning
@@ -98,18 +103,31 @@ public final class ClaudeRemoteContextListener: Sendable {
         case noEnrolledHosts
     }
 
-    /// - Parameter now: injected clock, so record timestamps are testable
-    ///   (AGENTS: no wall-clock in tests).
+    /// - Parameters:
+    ///   - now: injected wall clock, for the TIMESTAMP stamped on a record —
+    ///     which must be a real date, because it is compared against the
+    ///     registry's other records.
+    ///   - uptimeNanos: injected monotonic source, for the connection DEADLINE.
+    ///     Deliberately a second, separate seam. These are two different
+    ///     questions and one clock cannot answer both: `now` is settable (NTP,
+    ///     a DST change, the user fixing their clock), and a deadline built on a
+    ///     settable clock either fires instantly or never when it steps. It is
+    ///     also frozen in tests — a test that pins `now` to inspect a record's
+    ///     timestamp would otherwise pin every connection's deadline to "never
+    ///     expires", quietly disabling the slowloris bound in exactly the suite
+    ///     meant to prove it.
     public init(
         registry: ClaudeSessionRegistry,
         hosts: ClaudeRemoteHostRegistry,
         limits: ClaudeRemoteListenerLimits = .default,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
         self.registry = registry
         self.hosts = hosts
         self.limits = limits
         self.now = now
+        self.uptimeNanos = uptimeNanos
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
@@ -171,14 +189,16 @@ public final class ClaudeRemoteContextListener: Sendable {
             }
             _ = fcntl(wakePipe[1], F_SETNOSIGPIPE, 1)
             state.wakeWriteFD = wakePipe[1]
+            state.loopExit = DispatchSemaphore(value: 0)
             state.isRunning = true
             return (fd, wakePipe[0])
         }
+        let exitSignal = state.withLock { $0.loopExit }
 
         // Outside the lock: the accept loop's first act is to read `isRunning`,
         // and this mutex is not reentrant.
         let thread = Thread { [weak self] in
-            self?.acceptLoop(listenerFD: listenerFD, wakeReadFD: wakeReadFD)
+            self?.acceptLoop(listenerFD: listenerFD, wakeReadFD: wakeReadFD, exitSignal: exitSignal)
         }
         thread.name = "com.localvoxtral.claude-remote"
         thread.stackSize = 512 * 1024
@@ -189,28 +209,54 @@ public final class ClaudeRemoteContextListener: Sendable {
         )
     }
 
+    /// Stop accepting, and do not return until the accept loop is gone.
+    ///
+    /// Waiting is what makes the enroll/revoke rebind deterministic: a caller
+    /// that revokes the last host and immediately re-enrolls one calls
+    /// `stop(); start()` back to back, and without the wait `start()` can reach
+    /// `bind` while the outgoing loop still holds the port — an intermittent
+    /// EADDRINUSE that looks exactly like a real port conflict.
     public func stop() {
-        let wakeFD: Int32 = state.withLock { state in
-            guard state.isRunning else { return -1 }
+        let (wakeFD, exitSignal): (Int32, DispatchSemaphore?) = state.withLock { state in
+            guard state.isRunning else { return (-1, nil) }
             state.isRunning = false
             let wakeFD = state.wakeWriteFD
+            // Taken under the lock, so the loop's defer sees -1 and cannot close
+            // it a second time.
             state.wakeWriteFD = -1
-            return wakeFD
+            let exitSignal = state.loopExit
+            state.loopExit = nil
+            return (wakeFD, exitSignal)
         }
         guard wakeFD >= 0 else { return }
         var byte: UInt8 = 1
         _ = retryingOnEINTRInt { write(wakeFD, &byte, 1) }
         close(wakeFD)
+        exitSignal?.wait()
         Log.claudeContext.info("Claude remote context listener stopped")
     }
 
     // MARK: - Accept
 
-    private func acceptLoop(listenerFD: Int32, wakeReadFD: Int32) {
+    private func acceptLoop(listenerFD: Int32, wakeReadFD: Int32, exitSignal: DispatchSemaphore?) {
         defer {
-            state.withLock { $0.isRunning = false }
+            // Release everything start() handed us, on EVERY exit — including a
+            // spontaneous one (failed poll, dead listener, repeated accept
+            // errors). That path used to clear `isRunning` and leave the wake
+            // pipe's write end open for the life of the process.
+            let wakeWriteFD: Int32 = state.withLock { state in
+                state.isRunning = false
+                let fd = state.wakeWriteFD
+                state.wakeWriteFD = -1
+                state.loopExit = nil
+                return fd
+            }
+            // Non-negative only on a spontaneous exit; stop() takes it under the
+            // same lock. Exactly one of us closes it.
+            if wakeWriteFD >= 0 { close(wakeWriteFD) }
             close(listenerFD)
             close(wakeReadFD)
+            exitSignal?.signal()
         }
         var stickyErrors = 0
 
@@ -308,7 +354,8 @@ public final class ClaudeRemoteContextListener: Sendable {
 
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-        let deadline = now().addingTimeInterval(limits.connectionTimeout)
+        // Monotonic, not wall clock. See `init(uptimeNanos:)`.
+        let deadline = uptimeNanos() &+ UInt64(limits.connectionTimeout * 1_000_000_000)
 
         var buffer = Data()
         var request: ClaudeRemoteHTTPRequest?
@@ -330,20 +377,28 @@ public final class ClaudeRemoteContextListener: Sendable {
         }
         guard let request else { return }
 
-        guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
-            respond(fd: fd, status: 404)
-            return
-        }
-
-        // Phase 2: authenticate on the HEAD ALONE.
+        // Phase 2: authenticate on the HEAD ALONE, before ANY other judgement
+        // about the request.
         //
         // This is the ordering that matters most in the file. An unauthenticated
         // peer never gets to hand us a body — not to parse, not to buffer, not
         // to log. `Content-Length` was already bounded by the head parser, so
         // even a rejected request never sized an allocation.
+        //
+        // The path check used to run FIRST, which made this endpoint an oracle:
+        // 404 versus 401 told an unauthenticated caller exactly which event
+        // paths exist, enumerable without a credential. It says nothing an
+        // attacker could not guess from the public plugin manifest — but "the
+        // answer is currently harmless" is not a reason to answer. Nothing is
+        // discriminated on until the token is known good.
         guard let token = request.bearerToken, let host = hosts.authenticate(token: token) else {
             Log.claudeContext.error("Rejected unauthenticated connection to the remote listener")
             respond(fd: fd, status: 401)
+            return
+        }
+
+        guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
+            respond(fd: fd, status: 404)
             return
         }
 
@@ -434,11 +489,18 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// deadline is for the WHOLE connection, so a peer that dribbles one byte
     /// per timeout period — the classic slowloris — makes no progress against it.
     /// A per-read timeout would reset with every byte and let that run forever.
-    private func readMore(fd: Int32, into buffer: inout Data, deadline: Date) -> Bool {
-        let remaining = deadline.timeIntervalSince(now())
-        guard remaining > 0 else { return false }
+    ///
+    /// - Parameter deadline: an absolute `uptimeNanos()` value.
+    private func readMore(fd: Int32, into buffer: inout Data, deadline: UInt64) -> Bool {
+        let current = uptimeNanos()
+        guard current < deadline else { return false }
+        let remainingMillis = (deadline - current) / 1_000_000
         var descriptorPoll = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        let ready = retryingOnEINTRInt32 { poll(&descriptorPoll, 1, Int32(remaining * 1000)) }
+        // Clamped: a deadline further out than ~24 days would overflow Int32 and
+        // poll(2) reads a negative timeout as "block forever" — the one
+        // behaviour this function exists to prevent.
+        let timeout = Int32(min(remainingMillis, UInt64(Int32.max)))
+        let ready = retryingOnEINTRInt32 { poll(&descriptorPoll, 1, timeout) }
         guard ready > 0 else { return false } // Timed out or failed: done either way.
 
         var chunk = [UInt8](repeating: 0, count: 8 * 1024)
@@ -446,11 +508,19 @@ public final class ClaudeRemoteContextListener: Sendable {
         guard count > 0 else { return false } // EOF or error.
         buffer.append(contentsOf: chunk[0..<count])
 
-        // Hard ceiling independent of the phase we are in: head cap plus body
-        // cap is the most a well-formed request can ever be, so anything past it
-        // is a peer that is not going to stop on its own.
-        guard buffer.count <= limits.http.maxHeadBytes + limits.http.maxBodyBytes else { return false }
+        // Hard ceiling independent of the phase we are in: the most a
+        // well-formed request can ever be. That is head + separator + body —
+        // the CRLFCRLF terminating the head lives in this buffer too, and
+        // omitting it made the ceiling one separator TIGHTER than a legitimate
+        // maximum-sized request, so the largest requests we advertise as valid
+        // were dropped mid-body.
+        guard buffer.count <= Self.maxBufferedBytes(for: limits.http) else { return false }
         return true
+    }
+
+    /// The largest buffer a well-formed request can legitimately occupy.
+    static func maxBufferedBytes(for http: ClaudeRemoteHTTPLimits) -> Int {
+        http.maxHeadBytes + ClaudeRemoteHTTPCodec.headTerminator.count + http.maxBodyBytes
     }
 }
 

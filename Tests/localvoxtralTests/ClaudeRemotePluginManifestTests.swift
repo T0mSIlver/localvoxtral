@@ -133,7 +133,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     func testDeclaresEveryRequiredEvent() throws {
         XCTAssertEqual(
             Set(try hooksByEvent().keys),
-            ["SessionStart", "UserPromptSubmit", "CwdChanged", "PostToolUse", "Stop", "SessionEnd"]
+            ["UserPromptSubmit", "CwdChanged", "PostToolUse", "Stop", "SessionEnd"]
         )
     }
 
@@ -222,23 +222,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    /// The async split is the latency budget: a hook that needs the marker back
-    /// must block for the response; one that only ships data must not.
-    func testOnlyMarkerBearingEventsWaitForAResponse() throws {
-        let markerEvents: Set<String> = ["SessionStart", "UserPromptSubmit", "Stop"]
+    /// Claude Code supports `async` only for command hooks. The remote plugin is
+    /// declarative HTTP, so every handler remains synchronous with a one-second
+    /// fail-open ceiling.
+    func testHTTPHooksDoNotDeclareCommandOnlyAsync() throws {
         for (event, entry) in try allHookEntries() {
-            let isAsync = entry["async"] as? Bool ?? false
-            if markerEvents.contains(event) {
-                XCTAssertFalse(
-                    isAsync,
-                    "\(event) must read the broker's terminalSequence back, so it cannot be async"
-                )
-            } else {
-                XCTAssertTrue(
-                    isAsync,
-                    "\(event) is data-only and fires often; it must not put a round trip on the turn"
-                )
-            }
+            XCTAssertNil(entry["async"], "\(event): async is command-hook-only")
+            XCTAssertEqual(entry["timeout"] as? Int, 1)
         }
     }
 
@@ -253,7 +243,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     func testEventsThatCarryNoToolUseDeclareNoMatcher() throws {
-        for event in ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"] {
+        for event in ["UserPromptSubmit", "Stop", "SessionEnd"] {
             let matchers = try XCTUnwrap(try hooksByEvent()[event])
             XCTAssertNil(matchers.first?["matcher"], "\(event) needs no tool matcher")
         }

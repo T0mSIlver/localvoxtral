@@ -383,4 +383,155 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
     }
 }
 
+/// Lifecycle: binding, stopping, and the stale-vs-live socket question.
+///
+/// Deterministic without a wall clock. `stop()` waits for the accept loop to
+/// exit, so every assertion below is about a state that has actually settled —
+/// there is nothing to sleep for and nothing to poll.
+final class ClaudeContextBrokerLifecycleTests: XCTestCase {
+    private var directory: URL!
+    private var brokers: [ClaudeContextBroker] = []
+
+    private var socketPath: String { directory.appendingPathComponent("ctx.sock").path }
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        // /tmp, not NSTemporaryDirectory(): sun_path is 104 bytes on Darwin.
+        directory = URL(fileURLWithPath: "/tmp/lvx-\(UUID().uuidString.prefix(8))")
+    }
+
+    override func tearDownWithError() throws {
+        for broker in brokers { broker.stop() }
+        brokers = []
+        try? FileManager.default.removeItem(at: directory)
+        try super.tearDownWithError()
+    }
+
+    private func makeBroker() -> ClaudeContextBroker {
+        let broker = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: ClaudeSessionRegistry(
+                now: { Date(timeIntervalSince1970: 5_000_000) },
+                isProcessAlive: { _ in true },
+                allocateMarkerValue: { "lvx-deadbeef" }
+            )
+        )
+        brokers.append(broker)
+        return broker
+    }
+
+    func testStartBindsAndStopRemovesTheSocket() throws {
+        let broker = makeBroker()
+        try broker.start()
+        XCTAssertTrue(broker.isRunning)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+
+        broker.stop()
+
+        XCTAssertFalse(broker.isRunning)
+        // stop() waits for the accept loop's defer, which is what unlinks. If it
+        // did not wait, this would be a race rather than an assertion.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+    }
+
+    func testStopThenStartRebindsWithoutLosingTheSocket() throws {
+        let broker = makeBroker()
+        try broker.start()
+        broker.stop()
+
+        try broker.start()
+
+        // The regression: without stop() waiting for the loop, the outgoing
+        // loop's unlink lands AFTER the new bind and deletes the socket out from
+        // under a broker that reports itself running. Publishers then get
+        // ENOENT forever and nothing logs a thing.
+        XCTAssertTrue(broker.isRunning)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+    }
+
+    func testStartIsRefusedWhileAlreadyRunning() throws {
+        let broker = makeBroker()
+        try broker.start()
+        XCTAssertThrowsError(try broker.start()) { error in
+            XCTAssertEqual(error as? ClaudeContextBroker.StartFailure, .alreadyRunning)
+        }
+    }
+
+    func testStopIsIdempotent() throws {
+        let broker = makeBroker()
+        try broker.start()
+        broker.stop()
+        broker.stop() // Must not double-close the wake fd or hang on the semaphore.
+        XCTAssertFalse(broker.isRunning)
+    }
+
+    func testASecondLiveInstanceIsRefusedRatherThanHavingItsSocketStolen() throws {
+        let first = makeBroker()
+        try first.start()
+
+        let second = makeBroker()
+
+        // The bug this replaces: the old code unlinked unconditionally, so the
+        // second instance silently severed the first from every publisher on the
+        // machine. The first kept accepting on an unlinked inode and nothing
+        // reported a problem.
+        XCTAssertThrowsError(try second.start()) { error in
+            XCTAssertEqual(
+                error as? ClaudeContextBroker.StartFailure,
+                .socketOwnedByLiveInstance(socketPath)
+            )
+        }
+        XCTAssertFalse(second.isRunning)
+        XCTAssertTrue(first.isRunning, "the live instance must be untouched")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+    }
+
+    func testAStaleSocketFromACrashedRunIsReplaced() throws {
+        // A crashed run leaves the file with nothing listening — connect gets
+        // ECONNREFUSED. That, and only that, licenses removing it.
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        let stale = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(stale, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(socketPath.utf8)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: pathBytes)
+            raw[pathBytes.count] = 0
+        }
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+                bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(bound, 0)
+        // Bound but never listen()ed, then closed: the file survives, nothing
+        // answers. Exactly the corpse a crash leaves.
+        close(stale)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
+
+        let broker = makeBroker()
+        try broker.start()
+
+        XCTAssertTrue(broker.isRunning, "a stale socket must not block startup forever")
+    }
+
+    func testIsSocketLiveDistinguishesALiveBrokerFromAnAbsentPath() throws {
+        XCTAssertFalse(
+            ClaudeContextBroker.isSocketLive(atPath: socketPath),
+            "nothing bound yet — ENOENT is not a live owner"
+        )
+        let broker = makeBroker()
+        try broker.start()
+        XCTAssertTrue(ClaudeContextBroker.isSocketLive(atPath: socketPath))
+        broker.stop()
+        XCTAssertFalse(ClaudeContextBroker.isSocketLive(atPath: socketPath))
+    }
+}
+
 #endif

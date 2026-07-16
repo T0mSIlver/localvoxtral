@@ -326,10 +326,14 @@ Key subsystems:
   Code. Two plugins in one marketplace, structurally separate — never modes of
   each other. Both declare hooks only (no skill/command/agent/statusLine —
   nothing that spends the user's tokens).
-  - **Local** (`localvoxtral`): each hook execs `localvoxtral-claude-hook`,
-    which publishes one bounded NDJSON line to a private AF_UNIX socket and
+  - **Local** (`localvoxtral`): each hook runs `localvoxtral-claude-hook` as a
+    CHILD (never `exec` — the shim must outlive a publisher that cannot start,
+    or the exec failure becomes the hook's exit code and fail-open stops being
+    open). It publishes one bounded NDJSON line to a private AF_UNIX socket and
     fails open (silent exit 0) whenever the app is absent. In-app,
-    `ClaudeContextBroker` verifies peer UID *before reading*.
+    `ClaudeContextBroker` verifies peer UID *before reading*, and only ever
+    unlinks a socket it has PROVED stale by connect-probe — a second live
+    instance owns its socket legitimately.
   - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): declares
     `type: "http"` hooks, so Claude Code itself POSTs to
     `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH `RemoteForward` — no
@@ -413,13 +417,28 @@ Key subsystems:
   them, so hosts cannot collide or forge each other's sessions. Bounded,
   sanitized remote prompt/file/tool excerpts may feed the same context budget,
   but there is no remote repository collector.
-- **Remote enrollment has a service but no UI, and no host is ever mutated.**
+- **Remote enrollment is copy-only: no host is ever mutated.**
   `ClaudeRemoteEnrollmentService` generates a copyable plan (idempotent ssh
   config block, `claude plugin` commands, verify/uninstall steps, caveats); its
   `executeRemoteSetup` throws `.executionNotConfigured` unless a runner is
-  injected, and the app injects none. Enrolling a host therefore needs a
-  relaunch before the listener binds — acceptable only while there is no UI to
-  enroll from. The UI that lands next owns both: the pane and the rebind.
+  injected, and the app injects none — Settings shows the plan with Copy
+  buttons and runs nothing. Keep it that way: the install command carries the
+  token in argv, so any runner that spawns a process exposes it in the REMOTE
+  host's process list. `executeRemoteSetup` takes the token only to redact it
+  back out of what it throws; it cannot redact a runner's own argv. A runner
+  that must exist feeds the token via stdin/environment, not argv.
+  `ClaudeIntegrationSettingsModel` (`@MainActor @Observable`, all seams
+  injected) owns the pane's logic, and `ClaudeRemoteListenerCoordinator` owns
+  the bind/unbind decision — enrolling the first host binds immediately and
+  revoking the last one closes the port, with no relaunch. Adding a host to an
+  already-bound listener rebinds NOTHING (it authenticates against the registry
+  live), so a second enrollment cannot drop the first host's tunnel.
+  A bind conflict is reported, never routed around onto another port: a
+  squatter on 8473 receives the remote's bearer token before anything rejects
+  it, so the user must learn it is there. Note also what is NOT defensible: a
+  malicious process running as the user on the REMOTE host can read
+  `~/.claude/` and therefore the plugin's token no matter what we do. Say so
+  rather than implying the token bounds it.
 
 ## Conventions
 

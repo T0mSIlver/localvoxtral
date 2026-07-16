@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Identifies each Settings tab so navigation can be driven programmatically
@@ -808,6 +809,13 @@ private struct TextProcessingSettingsPane: View {
                             )
                         }
                     }
+
+                    // Rows in the EXISTING group, never a new one: pane group
+                    // structure is constant (owner rule, 2026-07-04).
+                    if let claude = viewModel.claudeIntegrationSettings {
+                        ClaudePluginSettingsRow(model: claude)
+                        ClaudeRemoteHostsSettingsRow(model: claude)
+                    }
                 }
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
@@ -850,6 +858,254 @@ private struct TextProcessingSettingsPane: View {
                         ),
                     ])
                 }
+            }
+        }
+    }
+}
+
+/// Install/update the LOCAL Claude Code plugin.
+///
+/// One explicit action, never anything at launch: putting a plugin into someone
+/// else's Claude Code is their decision. The result is one short line here; the
+/// CLI's actual output goes to an alert and the log (owner rule: no long text in
+/// the pane).
+private struct ClaudePluginSettingsRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        SettingsFieldRow(title: "Claude Code plugin (this Mac)") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Button("Install or Update") {
+                        Task { await model.updatePlugin() }
+                    }
+                    .disabled(model.isPerformingPluginAction)
+
+                    Button("Remove") {
+                        Task { await model.uninstallPlugin() }
+                    }
+                    .disabled(model.isPerformingPluginAction)
+
+                    if model.isPerformingPluginAction {
+                        ProgressView().controlSize(.small)
+                    }
+
+                    if let result = model.pluginResult {
+                        Text(result)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                SettingsHelpText(
+                    "Lets localvoxtral see which Claude Code session owns your terminal, so dictation lands in the right one. Runs `claude plugin` — nothing is installed until you press this."
+                )
+            }
+        }
+    }
+}
+
+/// Enrolled SSH hosts, and the copyable setup for each.
+///
+/// The pane never touches the user's `~/.ssh/config`, and never runs anything on
+/// a remote host. It hands over text. That is a deliberate limit, not an
+/// unfinished one: those files are load-bearing for work that has nothing to do
+/// with dictation.
+private struct ClaudeRemoteHostsSettingsRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        SettingsFieldRow(title: "Remote Claude Code over SSH") {
+            VStack(alignment: .leading, spacing: 8) {
+                if !model.isRemoteAvailable {
+                    SettingsInlineMessage(
+                        "The enrolled-host list could not be read. See Console for details.",
+                        color: .orange
+                    )
+                } else {
+                    hostList
+                    enrollmentForm
+                    listenerStatus
+                }
+
+                SettingsHelpText(
+                    "Dictate into Claude Code running on another machine. Each host gets its own token; revoking one takes effect immediately."
+                )
+            }
+        }
+        .sheet(item: Binding(get: { model.presentedPlan }, set: { if $0 == nil { model.dismissPlan() } })) { plan in
+            ClaudeRemoteEnrollmentSheet(presentation: plan) { model.dismissPlan() }
+        }
+        // The current API, not `alert(item:)` — that one is deprecated and the
+        // repo builds warning-free. The detail lives HERE and never in the pane
+        // (owner rule: no long text there).
+        .alert(
+            model.alert?.title ?? "",
+            isPresented: Binding(
+                get: { model.alert != nil },
+                set: { if !$0 { model.alert = nil } }
+            ),
+            presenting: model.alert
+        ) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { alert in
+            Text(alert.detail)
+        }
+    }
+
+    @ViewBuilder
+    private var hostList: some View {
+        if model.hosts.isEmpty {
+            Text("No hosts enrolled.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(model.hosts) { host in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(host.label).font(.callout)
+                            HStack(spacing: 3) {
+                                Text(host.statusText)
+                                // Self-updating, and no formatter to cache.
+                                if let lastSeenAt = host.lastSeenAt, !host.isRevoked {
+                                    Text(lastSeenAt, style: .relative)
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Rotate Token") { Task { await model.rotate(hostID: host.id) } }
+                            .controlSize(.small)
+                        if !host.isRevoked {
+                            Button("Revoke") { Task { await model.revoke(hostID: host.id) } }
+                                .controlSize(.small)
+                        }
+                        Button("Remove") { Task { await model.remove(hostID: host.id) } }
+                            .controlSize(.small)
+                    }
+                }
+            }
+        }
+    }
+
+    private var enrollmentForm: some View {
+        HStack(spacing: 8) {
+            TextField("Name", text: $model.enrollLabel)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 140)
+            TextField("SSH host alias", text: $model.enrollSSHAlias)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 160)
+            Button("Enroll…") { Task { await model.enroll() } }
+                .disabled(!model.canEnroll)
+        }
+    }
+
+    @ViewBuilder
+    private var listenerStatus: some View {
+        HStack(spacing: 8) {
+            Text(model.listenerStatus.text)
+                .font(.caption)
+                .foregroundStyle(model.listenerStatus.isFailure ? .orange : .secondary)
+                .lineLimit(2)
+            if model.listenerStatus.isFailure {
+                Button("Retry") { model.retryListener() }
+                    .controlSize(.small)
+            }
+        }
+        if let remedy = model.listenerStatus.remedy {
+            Text(remedy)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+        }
+    }
+}
+
+/// The token, shown exactly once.
+///
+/// The registry stores only hashes, so this sheet is genuinely the user's one
+/// chance to copy the credential — there is no "show it again". The copy says so
+/// plainly, and the recovery path (rotate) is one button away in the pane behind
+/// it.
+private struct ClaudeRemoteEnrollmentSheet: View {
+    let presentation: ClaudeIntegrationSettingsModel.EnrollmentPresentation
+    let onDismiss: () -> Void
+
+    private var plan: ClaudeRemoteEnrollmentService.SetupPlan { presentation.plan }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(presentation.isRotation ? "New token for \(presentation.host.label)" : "Enroll \(presentation.host.label)")
+                .font(.headline)
+
+            if presentation.isRotation {
+                Text("The previous token stopped working immediately. This host has no access until you run the install command below with the new token.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    section(
+                        "Token — copy it now",
+                        body: presentation.token,
+                        note: "It is not stored and cannot be shown again. If you lose it, rotate."
+                    )
+                    section(
+                        "1. Add to ~/.ssh/config on this Mac",
+                        body: plan.sshConfigSnippet,
+                        note: "localvoxtral does not edit this file for you."
+                    )
+                    section(
+                        "2. Run on the remote host",
+                        body: plan.remoteCommands.joined(separator: "\n"),
+                        note: "The leading space keeps the token out of your shell history."
+                    )
+                    section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
+                    section("Uninstall", body: plan.uninstallCommands.joined(separator: "\n"), note: nil)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Notes").font(.subheadline).bold()
+                        ForEach(Array(plan.notes.enumerated()), id: \.offset) { _, note in
+                            Text("• \(note)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .frame(minHeight: 260)
+
+            HStack {
+                Spacer()
+                Button("Done", action: onDismiss).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 560, height: 520)
+    }
+
+    private func section(_ title: String, body: String, note: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.subheadline).bold()
+                Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(body, forType: .string)
+                }
+                .controlSize(.small)
+            }
+            Text(body)
+                .font(.system(.caption, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            if let note {
+                Text(note).font(.caption2).foregroundStyle(.secondary)
             }
         }
     }

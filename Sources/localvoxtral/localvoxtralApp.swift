@@ -140,7 +140,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// listener are lazy and optional: a user who has never enrolled a host has
     /// no file to read and no port bound.
     private var claudeRemoteHosts: ClaudeRemoteHostRegistry?
-    private var claudeRemoteListener: ClaudeRemoteContextListener?
+    /// Owns the listener and the bind/unbind decision. Settings reconciles
+    /// through it on every enroll/revoke, so the port follows enrollment without
+    /// a relaunch.
+    private var claudeRemoteListenerCoordinator: ClaudeRemoteListenerCoordinator?
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -179,9 +182,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudeContextBroker?.stop()
         claudeContextBroker = nil
         // Closes the port, so a hook from a surviving remote session gets a
-        // connection refused through the tunnel and fails open.
-        claudeRemoteListener?.stop()
-        claudeRemoteListener = nil
+        // connection refused through the tunnel and fails open. Quitting says
+        // nothing about enrollment — the hosts stay enrolled for next launch.
+        claudeRemoteListenerCoordinator?.shutdown()
+        claudeRemoteListenerCoordinator = nil
+        viewModel.claudeIntegrationSettings = nil
         TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
         // The resolver holds the registry; the view model must not keep
         // resolving joins against sessions nothing is feeding any more.
@@ -243,29 +248,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// property — reading (and failing to read) a file nobody has is not
     /// something to do at init.
     ///
-    /// Failure is non-fatal and loud, matching the local broker. Enrolling a
-    /// host in a running app does not bind the port until the next launch;
-    /// there is no UI to enroll from yet, so nothing today can hit that.
+    /// Failure is non-fatal and loud, matching the local broker. The coordinator
+    /// — not this method — owns the bind/unbind decision from here on, so
+    /// enrolling the first host in Settings binds the port immediately and
+    /// revoking the last one closes it. There is no relaunch step.
     private func startClaudeRemoteListener() {
-        let registry: ClaudeRemoteHostRegistry
+        let registry: ClaudeRemoteHostRegistry?
         do {
             registry = try ClaudeRemoteHostRegistry()
         } catch {
+            // The list exists but is unreadable — a state the user must be able
+            // to SEE, not just one we log. The Settings row says the list could
+            // not be read rather than offering an Enroll button that would
+            // silently fail.
             Log.claudeContext.error(
                 "Claude remote host registry unreadable: \(String(describing: error), privacy: .public)"
             )
-            return
+            registry = nil
         }
         claudeRemoteHosts = registry
-        guard registry.hasActiveHosts else { return }
 
-        let listener = ClaudeRemoteContextListener(
-            registry: claudeSessionRegistry,
-            hosts: registry
+        let coordinator = registry.map { hosts in
+            ClaudeRemoteListenerCoordinator(hosts: hosts, sessions: claudeSessionRegistry)
+        }
+        claudeRemoteListenerCoordinator = coordinator
+
+        viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: coordinator,
+            pluginService: { ClaudePluginInstallService.live() }
         )
+
         do {
-            try listener.start()
-            claudeRemoteListener = listener
+            // No-op when nothing is enrolled: reconcile binds only if a host is
+            // active.
+            try coordinator?.reconcile()
         } catch {
             Log.claudeContext.error(
                 "Claude remote listener failed to start: \(String(describing: error), privacy: .public)"

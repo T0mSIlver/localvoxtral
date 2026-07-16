@@ -51,6 +51,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         /// opt-in a caller makes deliberately, never a fallback this type
         /// reaches for.
         case executionNotConfigured
+        /// `command` and `message` are REDACTED (`ClaudeRemoteTokenRedaction`)
+        /// before they reach this case. An `Error` is the single most-copied
+        /// string in any app: it lands in alerts, in `Log`, in the user's bug
+        /// report, and — because `localizedDescription` is free — in places
+        /// nobody audited. A token that reaches an error is a token that leaks,
+        /// so it never reaches one.
         case commandFailed(command: [String], exitCode: Int32, message: String)
         case invalidHostAlias
     }
@@ -272,20 +278,38 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// Run the plan's remote commands through the injected runner.
     ///
     /// Throws `.executionNotConfigured` when no runner was supplied, which is
-    /// the default and the state the app ships in. The SSH config snippet is
-    /// never applied here — it is the user's file, and the plan hands them the
-    /// text.
-    public func executeRemoteSetup(_ plan: SetupPlan, sshHostAlias: String) throws {
+    /// the default and the state the app ships in — the shipped Settings UI
+    /// hands the user copyable commands and executes nothing. The SSH config
+    /// snippet is never applied here either: it is the user's file, and the plan
+    /// hands them the text.
+    ///
+    /// **Process-argv exposure — read before injecting a runner.** The install
+    /// command carries the token as an argument, so any runner that spawns a
+    /// process makes that token visible in the REMOTE host's process list
+    /// (`ps`, `/proc/<pid>/cmdline`) for the lifetime of the command, to every
+    /// process on that host. `token` is passed separately rather than being
+    /// read back out of the plan so that this type can scrub it from anything it
+    /// throws; it cannot scrub the runner's own argv, which is why nothing in
+    /// the app supplies a runner. A runner that must exist should feed the token
+    /// over the child's stdin or environment instead of its argv, and take
+    /// `remoteCommands(token:)`'s output apart rather than shelling the string.
+    ///
+    /// - Parameter token: the plaintext, used ONLY to redact it back out of any
+    ///   failure. Nothing here logs or stores it.
+    public func executeRemoteSetup(_ plan: SetupPlan, sshHostAlias: String, token: String) throws {
         guard let runner else { throw ServiceError.executionNotConfigured }
         guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
         for command in plan.remoteCommands {
             let argv = ["ssh", sshHostAlias, command.trimmingCharacters(in: .whitespaces)]
             let result = try runner(argv)
             guard result.succeeded else {
+                // Redact BOTH halves. The argv contains the token by
+                // construction, and the runner's message is remote output that
+                // routinely echoes the command that failed.
                 throw ServiceError.commandFailed(
-                    command: argv,
+                    command: argv.map { ClaudeRemoteTokenRedaction.redact($0, token: token) },
                     exitCode: result.exitCode,
-                    message: result.message
+                    message: ClaudeRemoteTokenRedaction.redact(result.message, token: token)
                 )
             }
         }

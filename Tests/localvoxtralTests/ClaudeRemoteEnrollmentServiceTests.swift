@@ -313,7 +313,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // The default. Nothing in the app supplies a runner, so no code path can
         // reach a real host by accident.
         let service = ClaudeRemoteEnrollmentService()
-        XCTAssertThrowsError(try service.executeRemoteSetup(try plan(), sshHostAlias: "builder")) { error in
+        XCTAssertThrowsError(
+            try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
+        ) { error in
             XCTAssertEqual(
                 error as? ClaudeRemoteEnrollmentService.ServiceError,
                 .executionNotConfigured
@@ -327,7 +329,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             calls.withLock { $0.append(argv) }
             return .init(exitCode: 0, message: "")
         }
-        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder")
+        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
 
         XCTAssertEqual(calls.withLock { $0 }, [
             [
@@ -347,7 +349,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             calls.withLock { $0.append(argv) }
             return .init(exitCode: 1, message: "marketplace not found")
         }
-        XCTAssertThrowsError(try service.executeRemoteSetup(try plan(), sshHostAlias: "builder")) { error in
+        XCTAssertThrowsError(
+            try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
+        ) { error in
             guard case .commandFailed(_, let exitCode, let message)? =
                 error as? ClaudeRemoteEnrollmentService.ServiceError
             else {
@@ -357,6 +361,74 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             XCTAssertEqual(message, "marketplace not found")
         }
         XCTAssertEqual(calls.withLock { $0 }.count, 1, "an install after a failed marketplace add is noise")
+    }
+
+    func testAFailureNeverCarriesTheTokenIntoTheError() throws {
+        // The install command embeds the token by construction, and a remote's
+        // stderr routinely echoes the command it was given. An Error is the most
+        // freely-copied string in the app — it reaches alerts, `Log`, and the
+        // user's bug report via a free `localizedDescription`. So the token has
+        // to be gone before it is thrown, not merely handled carefully by every
+        // present and future catch site.
+        // Bound locally: capturing `self.token` would drag a non-Sendable
+        // XCTestCase into a @Sendable runner closure.
+        let token = token
+        let service = ClaudeRemoteEnrollmentService { _ in
+            .init(exitCode: 1, message: "failed running: claude plugin install --config 'token=\(token)'")
+        }
+        XCTAssertThrowsError(
+            try service.executeRemoteSetup(
+                ClaudeRemoteEnrollmentService.SetupPlan(
+                    sshConfigSnippet: "",
+                    remoteCommands: ClaudeRemoteEnrollmentService.remoteCommands(token: token),
+                    verifyCommands: [], uninstallCommands: [], notes: []
+                ),
+                sshHostAlias: "builder",
+                token: token
+            )
+        ) { error in
+            guard case .commandFailed(let command, _, let message)? =
+                error as? ClaudeRemoteEnrollmentService.ServiceError
+            else {
+                return XCTFail("expected commandFailed, got \(error)")
+            }
+            XCTAssertFalse(
+                command.joined(separator: " ").contains(token),
+                "the argv we throw must not carry the plaintext token"
+            )
+            XCTAssertFalse(
+                message.contains(token),
+                "remote output that echoes the token must be redacted before it is thrown"
+            )
+            // Redacted, not merely truncated: the surrounding text has to
+            // survive or the error stops being diagnosable.
+            XCTAssertTrue(message.contains(ClaudeRemoteTokenRedaction.placeholder))
+            XCTAssertTrue(message.contains("failed running"))
+        }
+    }
+
+    func testAFailureDescriptionNeverCarriesTheToken() throws {
+        // The catch-all: whatever else an error grows, interpolating it must
+        // never print the secret.
+        let token = token
+        let service = ClaudeRemoteEnrollmentService { _ in
+            .init(exitCode: 1, message: "boom: token=\(token)")
+        }
+        do {
+            try service.executeRemoteSetup(
+                ClaudeRemoteEnrollmentService.SetupPlan(
+                    sshConfigSnippet: "",
+                    remoteCommands: ClaudeRemoteEnrollmentService.remoteCommands(token: token),
+                    verifyCommands: [], uninstallCommands: [], notes: []
+                ),
+                sshHostAlias: "builder",
+                token: token
+            )
+            XCTFail("expected a failure")
+        } catch {
+            XCTAssertFalse(String(describing: error).contains(token))
+            XCTAssertFalse(error.localizedDescription.contains(token))
+        }
     }
 
     func testExecutionRefusesAnInvalidAlias() {
@@ -370,7 +442,8 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                     sshConfigSnippet: "", remoteCommands: ["echo hi"], verifyCommands: [],
                     uninstallCommands: [], notes: []
                 ),
-                sshHostAlias: "a b"
+                sshHostAlias: "a b",
+                token: token
             )
         )
     }
@@ -382,7 +455,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             calls.withLock { $0.append(argv) }
             return .init(exitCode: 0, message: "")
         }
-        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder")
+        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
         for argv in calls.withLock({ $0 }) {
             XCTAssertFalse(argv.joined(separator: " ").contains(".ssh/config"))
         }
