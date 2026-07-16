@@ -279,15 +279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             pluginService: { ClaudePluginInstallService.live() }
         )
 
-        do {
-            // No-op when nothing is enrolled: reconcile binds only if a host is
-            // active.
-            try coordinator?.reconcile()
-        } catch {
-            Log.claudeContext.error(
-                "Claude remote listener failed to start: \(String(describing: error), privacy: .public)"
-            )
-        }
+        // Route launch through the same model that owns the Settings status.
+        // Calling the coordinator directly would bind successfully while the
+        // pane stayed at `.idle`, and would make a launch-time port conflict
+        // log-only with no Retry action.
+        viewModel.claudeIntegrationSettings?.retryListener()
     }
 
     /// Brings existing installs up to date with this build's bundled config

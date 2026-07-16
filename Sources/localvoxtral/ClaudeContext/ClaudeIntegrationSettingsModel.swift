@@ -277,7 +277,7 @@ public final class ClaudeIntegrationSettingsModel {
         }
     }
 
-    private func refreshListenerStatus() {
+    public func refreshListenerStatus() {
         guard let listener else { return }
         if listener.isListening {
             listenerStatus = .listening(port: listener.boundPort)
@@ -444,6 +444,20 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     static func registryFailureDetail(_ error: any Error) -> String {
+        if let pathFailure = error as? ClaudeSocketGuard.PreconditionFailure {
+            switch pathFailure {
+            case .permissive(let path, _):
+                return "The private host-list folder at \(path) has unsafe permissions."
+            case .isSymlink(let path):
+                return "The host-list path at \(path) is a symbolic link and was refused."
+            case .wrongOwner(let path, _, _):
+                return "The host-list path at \(path) is owned by another user."
+            case .notADirectory(let path):
+                return "The host-list folder path at \(path) is not a directory."
+            case .cannotCreate(let path, _):
+                return "localvoxtral could not prepare the private host-list folder at \(path)."
+            }
+        }
         switch error as? ClaudeRemoteHostRegistry.StoreError {
         case .invalidLabel:
             return "The name needs at least one letter or digit."

@@ -809,16 +809,19 @@ private struct TextProcessingSettingsPane: View {
                             )
                         }
                     }
-
-                    // Rows in the EXISTING group, never a new one: pane group
-                    // structure is constant (owner rule, 2026-07-04).
-                    if let claude = viewModel.claudeIntegrationSettings {
-                        ClaudePluginSettingsRow(model: claude)
-                        ClaudeRemoteHostsSettingsRow(model: claude)
-                    }
                 }
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
+
+                // These remain usable even without an Overlay Buffer shortcut:
+                // revocation is the security off switch for an already-bound
+                // listener, and plugin/session setup is independent of the
+                // current hotkey configuration. They are still rows in the same
+                // constant Polishing group.
+                if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudePluginSettingsRow(model: claude)
+                    ClaudeRemoteHostsSettingsRow(model: claude)
+                }
             }
 
             SettingsGroup(title: "Configuration") {
@@ -951,6 +954,10 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             Button("OK", role: .cancel) {}
         } message: { alert in
             Text(alert.detail)
+        }
+        .onAppear {
+            model.refreshHosts()
+            model.refreshListenerStatus()
         }
     }
 

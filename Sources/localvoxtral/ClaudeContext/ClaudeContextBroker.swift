@@ -121,8 +121,9 @@ public final class ClaudeContextBroker: Sendable {
         let directory = (socketPath as NSString).deletingLastPathComponent
         try ClaudeSocketGuard.prepareDirectory(at: directory)
 
-        let (listenerFD, wakeReadFD): (Int32, Int32) = try state.withLock { state in
-            guard !state.isRunning else { throw StartFailure.alreadyRunning }
+        let (listenerFD, wakeReadFD, exitSignal): (Int32, Int32, DispatchSemaphore) =
+            try state.withLock { state in
+                guard !state.isRunning else { throw StartFailure.alreadyRunning }
 
             var address = sockaddr_un()
             address.sun_family = sa_family_t(AF_UNIX)
@@ -221,11 +222,11 @@ public final class ClaudeContextBroker: Sendable {
             // exited would kill the whole app with SIGPIPE.
             _ = fcntl(wakePipe[1], F_SETNOSIGPIPE, 1)
             state.wakeWriteFD = wakePipe[1]
-            state.loopExit = DispatchSemaphore(value: 0)
+            let exitSignal = DispatchSemaphore(value: 0)
+            state.loopExit = exitSignal
             state.isRunning = true
-            return (fd, wakePipe[0])
-        }
-        let exitSignal = state.withLock { $0.loopExit }
+                return (fd, wakePipe[0], exitSignal)
+            }
 
         // Started OUTSIDE the lock: the accept loop's first act is to read
         // `isRunning`, and this mutex is not reentrant. Spawning it while still

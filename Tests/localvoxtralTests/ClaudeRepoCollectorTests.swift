@@ -285,20 +285,38 @@ final class ClaudeRepoCollectorTests: XCTestCase {
     // A symlink is not a regular file. Lexical containment says where the NAME
     // points, not the inode — a tracked link to ~/.ssh/id_rsa is legal to have.
     func testSymlinksAreNotFollowed() async throws {
-        let files = FakeFileSystem()
-        // Present in neither `files` (so not a regular file) — the fake models
-        // a symlink exactly as `attributesOfItem` would report one.
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-repo-symlink-\(UUID().uuidString)", isDirectory: true)
+        let repo = parent.appendingPathComponent("repo", isDirectory: true)
+        let secret = parent.appendingPathComponent("secret.txt")
+        let link = repo.appendingPathComponent("link.swift")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try Data("never-attach-this-secret".utf8).write(to: secret)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: secret)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
         let git = FakeGit()
         git.setData("ls-files", Data("link.swift\0".utf8))
+        let collector = ClaudeRepoCollector(
+            files: ClaudeLocalFileSystem(),
+            runGit: git.run,
+            findGitRoot: { _ in repo.path }
+        )
 
-        let snapshot = await makeCollector(files: files, git: git).collect(
-            workspace: try workspace(),
+        let snapshot = await collector.collect(
+            workspace: try workspace(repo.path),
             recentFiles: [
-                ClaudeRecentFile(path: "/repo/link.swift", kind: .read, lastTouched: epoch)
+                ClaudeRecentFile(path: link.path, kind: .read, lastTouched: epoch)
             ],
             transcript: ""
         )
         XCTAssertEqual(snapshot?.activeFiles ?? [], [])
+        if let snapshot {
+            XCTAssertFalse(
+                ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+                    .contains("never-attach-this-secret")
+            )
+        }
     }
 
     // MARK: - Caps

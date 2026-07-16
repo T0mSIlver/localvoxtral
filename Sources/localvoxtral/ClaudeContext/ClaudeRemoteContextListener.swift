@@ -140,8 +140,9 @@ public final class ClaudeRemoteContextListener: Sendable {
     public func start() throws {
         guard hosts.hasActiveHosts else { throw StartFailure.noEnrolledHosts }
 
-        let (listenerFD, wakeReadFD): (Int32, Int32) = try state.withLock { state in
-            guard !state.isRunning else { throw StartFailure.alreadyRunning }
+        let (listenerFD, wakeReadFD, exitSignal): (Int32, Int32, DispatchSemaphore) =
+            try state.withLock { state in
+                guard !state.isRunning else { throw StartFailure.alreadyRunning }
 
             let fd = socket(AF_INET, SOCK_STREAM, 0)
             guard fd >= 0 else { throw StartFailure.socketCreationFailed(errno: errno) }
@@ -189,11 +190,11 @@ public final class ClaudeRemoteContextListener: Sendable {
             }
             _ = fcntl(wakePipe[1], F_SETNOSIGPIPE, 1)
             state.wakeWriteFD = wakePipe[1]
-            state.loopExit = DispatchSemaphore(value: 0)
+            let exitSignal = DispatchSemaphore(value: 0)
+            state.loopExit = exitSignal
             state.isRunning = true
-            return (fd, wakePipe[0])
-        }
-        let exitSignal = state.withLock { $0.loopExit }
+                return (fd, wakePipe[0], exitSignal)
+            }
 
         // Outside the lock: the accept loop's first act is to read `isRunning`,
         // and this mutex is not reentrant.

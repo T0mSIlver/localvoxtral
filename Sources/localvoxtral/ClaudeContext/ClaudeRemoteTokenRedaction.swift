@@ -32,31 +32,4 @@ public enum ClaudeRemoteTokenRedaction {
         return text.replacingOccurrences(of: token, with: placeholder)
     }
 
-    /// Redact without knowing the token.
-    ///
-    /// For text whose provenance is unclear — remote command output, a caught
-    /// error from some layer that never saw the plaintext. Matches the *shape*
-    /// of the places a token is known to travel (`--config 'token=…'`, an
-    /// `Authorization: Bearer …` header) rather than the value, because at these
-    /// call sites the value is genuinely unavailable.
-    ///
-    /// Shape-matching is strictly weaker than value-matching: it cannot catch a
-    /// token that appears bare, with no surrounding syntax. Prefer
-    /// `redact(_:token:)` whenever the value is in hand.
-    public static func redactKnownShapes(_ text: String) -> String {
-        var result = text
-        for pattern in [
-            // --config 'token=…'  /  --config token=…  /  --config "token=…"
-            #"(--config\s+['"]?\#(ClaudeRemoteEnrollmentService.tokenConfigKey)=)[^'"\s]+"#,
-            // Authorization: Bearer …
-            #"([Bb]earer\s+)[A-Za-z0-9\-_]{16,}"#,
-        ] {
-            result = result.replacingOccurrences(
-                of: pattern,
-                with: "$1\(placeholder)",
-                options: [.regularExpression]
-            )
-        }
-        return result
-    }
 }

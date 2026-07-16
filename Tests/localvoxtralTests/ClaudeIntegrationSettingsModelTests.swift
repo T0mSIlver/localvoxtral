@@ -154,6 +154,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // hits a closed port and the hook fails open.
         XCTAssertTrue(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .listening(port: 8473))
+        XCTAssertEqual(listener.reconcileCount, 1)
     }
 
     func testRevokingTheLastHostStopsListening() async throws {
@@ -171,6 +172,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // be listening on one.
         XCTAssertFalse(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .idle)
+        XCTAssertEqual(listener.reconcileCount, 2)
     }
 
     func testRevokingOneOfTwoHostsKeepsListening() async throws {
@@ -187,6 +189,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         await model.revoke(hostID: try XCTUnwrap(model.hosts.first).id)
 
         XCTAssertTrue(listener.isListening, "the surviving host still needs the port")
+        XCTAssertEqual(listener.reconcileCount, 3, "every registry mutation must reconcile")
     }
 
     func testRemovingTheLastHostStopsListening() async throws {

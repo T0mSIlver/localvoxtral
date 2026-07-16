@@ -316,6 +316,12 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(try send(raw)?.status, 404)
     }
 
+    func testUnknownPathDoesNotRevealRoutingBeforeAuthentication() throws {
+        try startListener()
+        let raw = Data("POST /admin HTTP/1.1\r\nContent-Length: 0\r\n\r\n".utf8)
+        XCTAssertEqual(try send(raw)?.status, 401)
+    }
+
     func testNonPOSTIsRejected() throws {
         try startListener()
         let raw = Data("GET /v1/hook/SessionStart HTTP/1.1\r\nContent-Length: 0\r\n\r\n".utf8)

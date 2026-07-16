@@ -163,5 +163,6 @@ final class ClaudeRemoteSnippetContextTests: XCTestCase {
             text.contains("/srv/checkout"),
             "a remote path is a description of someone else's filesystem, not context"
         )
+        XCTAssertTrue(text.contains("workspace: checkout"))
     }
 }

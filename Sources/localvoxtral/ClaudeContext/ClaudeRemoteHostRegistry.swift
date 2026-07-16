@@ -392,6 +392,11 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         ).first!
         return applicationSupport
             .appendingPathComponent("localvoxtral", isDirectory: true)
+            // The shared app-support directory already exists as 0755 on
+            // normal installs. The hardened store requires a leaf it alone
+            // owns at 0700; never try to tighten permissions on the shared
+            // parent and surprise unrelated app data.
+            .appendingPathComponent("claude", isDirectory: true)
             .appendingPathComponent("claude-remote-hosts.json")
     }
 

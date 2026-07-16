@@ -417,6 +417,23 @@ final class ClaudeRemoteHostFileStoreIOTests: XCTestCase {
         XCTAssertEqual(try mode(of: fileURL), 0o600)
     }
 
+    func testWriteCreatesAPrivateLeafBelowAPermissiveSharedParent() throws {
+        let sharedParent = directory.appendingPathComponent("shared-app-support", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: sharedParent,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o755))]
+        )
+        let privateLeaf = sharedParent.appendingPathComponent("claude", isDirectory: true)
+        let nestedStore = privateLeaf.appendingPathComponent("claude-remote-hosts.json")
+
+        try io.write(Data("payload".utf8), to: nestedStore)
+
+        XCTAssertEqual(try mode(of: sharedParent), 0o755, "shared app data is not chmodded")
+        XCTAssertEqual(try mode(of: privateLeaf), 0o700)
+        XCTAssertEqual(try mode(of: nestedStore), 0o600)
+    }
+
     func testWriteReplacesAnExistingTargetInPlace() throws {
         try io.write(Data("first".utf8), to: fileURL)
         try io.write(Data("second".utf8), to: fileURL)
