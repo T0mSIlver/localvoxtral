@@ -33,9 +33,15 @@ let package = Package(
         // The Voxtral Realtime engine, consumed as a dependency (was vendored+patched before
         // #226). Pinned to a full-SHA revision, not a tag, so the exact reviewed tree is
         // reproducible — see DEPENDENCY.md for the upgrade procedure.
+        //
+        // TEMPORARY FORK PIN: our fork's `localvoxtral-pin-e1-e2` = upstream 3b0b114 plus two
+        // streaming-performance fixes staged for upstream (fork PRs; see DEPENDENCY.md):
+        // cache-clear cadence (per-step -> per-256-tokens + finish) and the incremental
+        // mel/conv front end (O(N^2) -> O(N) per utterance). Switch the URL back to
+        // Blaizzy/mlx-audio-swift once both merge upstream.
         .package(
-            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "3b0b114fc7d98dd000bb7f631588a172b5c61823"
+            url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
+            revision: "03890317975a2371fe0a0a9b13ad6a790f929814"
         ),
     ],
     targets: [
