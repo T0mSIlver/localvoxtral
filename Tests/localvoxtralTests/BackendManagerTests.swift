@@ -108,11 +108,9 @@ final class BackendManagerTests: XCTestCase {
     private func speechdConfiguration(
         cacheLimitMB: Int?
     ) async throws -> BackendProcessConfiguration {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             speechdCacheLimitProvider: { cacheLimitMB },
             supervisorFactory: supervisorFactory
         )
