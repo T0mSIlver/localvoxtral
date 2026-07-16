@@ -2,6 +2,7 @@
 __pycache__/
 /.build
 /PolishHelper/.build
+/SpeechHelper/.build
 /Packages
 xcuserdata/
 DerivedData/
@@ -22,7 +23,8 @@ DerivedData/
 .opencode/
 
 # Transient enable markers written by remote-build.sh eval-llm /
-# integration-polishd / eval-e2e
+# integration-polishd / integration-speechd / eval-e2e
 /.llm-polish-eval-enable.json
 /.polishd-integration-enable.json
+/.speechd-integration-enable.json
 /.agent-eval-e2e-enable.json

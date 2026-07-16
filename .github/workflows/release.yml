@@ -134,10 +134,12 @@ jobs:
             "localvoxtral" "dist/localvoxtral-$TAG.dmg"
           ditto -c -k --keepParent \
             "dist/localvoxtral.dSYM" "dist/localvoxtral-$TAG.dSYM.zip"
-          # Helper dSYM: MLX C++/Metal crashes in the polishing helper are
-          # the likeliest field crashes; releases must carry its symbols.
+          # Helper dSYMs: MLX C++/Metal crashes are the likeliest helper field
+          # crashes; releases must carry both helpers' symbols.
           ditto -c -k --keepParent \
             "dist/localvoxtral-polishd.dSYM" "dist/localvoxtral-polishd-$TAG.dSYM.zip"
+          ditto -c -k --keepParent \
+            "dist/localvoxtral-speechd.dSYM" "dist/localvoxtral-speechd-$TAG.dSYM.zip"
           (
             cd dist
             shasum -a 256 "localvoxtral-$TAG.zip" > "localvoxtral-$TAG.zip.sha256"
@@ -166,3 +168,4 @@ jobs:
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dmg.sha256
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.dSYM.zip
             dist/localvoxtral-polishd-${{ steps.meta.outputs.tag }}.dSYM.zip
+            dist/localvoxtral-speechd-${{ steps.meta.outputs.tag }}.dSYM.zip

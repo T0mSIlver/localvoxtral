@@ -18,7 +18,6 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .executable(name: "localvoxtral-speechd", targets: ["localvoxtral-speechd"]),
-        .library(name: "SpeechEngineText", targets: ["SpeechEngineText"]),
     ],
     dependencies: [
         // Pinned to mlx-audio-swift's own resolved graph (its Package.resolved): mlx-swift

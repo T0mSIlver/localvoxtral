@@ -381,6 +381,122 @@ cp -R "$HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-polishd.dSYM"
 fi # LOCALVOXTRAL_SKIP_POLISHD
 # ---------------------------------------------------------------------------
 
+# --- Bundled speech helper (localvoxtral-speechd, SpeechHelper/) ----------
+# MUST build with xcodebuild for the same reason as PolishHelper above: the
+# SwiftPM CLI build cannot produce working mlx-swift Metal kernels. Xcode
+# compiles them into mlx-swift_Cmlx.bundle, shipped with the executable.
+#
+# LOCALVOXTRAL_SKIP_SPEECHD=1 is for GitHub-hosted fork-PR runners only. A
+# bundle built this way keeps the existing Python managed-ASR path but cannot
+# run the bundled Swift speech helper (the production swap is a later part).
+if [[ "${LOCALVOXTRAL_SKIP_SPEECHD:-0}" == "1" ]]; then
+  echo "WARNING: skipping speech helper (LOCALVOXTRAL_SKIP_SPEECHD=1);"
+  echo "this bundle cannot run the bundled Swift speech helper."
+  rm -rf "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
+else
+
+SPEECH_HELPER_DERIVED_DATA="$ROOT_DIR/SpeechHelper/.build/xcode"
+SPEECH_HELPER_BUILD_LOG="$ROOT_DIR/SpeechHelper/.build/xcodebuild.log"
+SPEECH_HELPER_PRODUCTS_DIR="$SPEECH_HELPER_DERIVED_DATA/Build/Products/Release"
+SPEECH_HELPER_BINARY="$SPEECH_HELPER_PRODUCTS_DIR/localvoxtral-speechd"
+SPEECH_HELPER_DSYM_SOURCE="$SPEECH_HELPER_PRODUCTS_DIR/localvoxtral-speechd.dSYM"
+SPEECH_HELPER_FINGERPRINT_FILE="$SPEECH_HELPER_DERIVED_DATA/.localvoxtral-helper-fingerprint"
+mkdir -p "$ROOT_DIR/SpeechHelper/.build"
+
+# Avoid xcodebuild's planning cost when the helper inputs and Xcode toolchain
+# are byte-identical to the last successful build. Package.resolved is part of
+# the fingerprint because it pins mlx-audio-swift and the full MLX graph.
+SPEECH_HELPER_FINGERPRINT="$(
+  {
+    xcodebuild -version
+    find "$ROOT_DIR/SpeechHelper/Sources" \
+      "$ROOT_DIR/SpeechHelper/Package.swift" \
+      "$ROOT_DIR/SpeechHelper/Package.resolved" \
+      -type f -print0 | sort -z | xargs -0 shasum -a 256
+  } | shasum -a 256 | awk '{print $1}'
+)"
+
+if [[ -f "$SPEECH_HELPER_FINGERPRINT_FILE" \
+  && "$(cat "$SPEECH_HELPER_FINGERPRINT_FILE")" == "$SPEECH_HELPER_FINGERPRINT" \
+  && -f "$SPEECH_HELPER_BINARY" \
+  && -d "$SPEECH_HELPER_PRODUCTS_DIR/mlx-swift_Cmlx.bundle" \
+  && -d "$SPEECH_HELPER_DSYM_SOURCE" ]]; then
+  echo "Speech helper unchanged (fingerprint match) — reusing products in $SPEECH_HELPER_PRODUCTS_DIR"
+else
+
+rm -f "$SPEECH_HELPER_FINGERPRINT_FILE"
+
+# Probe by invoking metal: on Xcode 26+ `xcrun --find metal` succeeds even
+# when the separately-downloaded MetalToolchain component is unavailable.
+if ! xcrun metal --version >/dev/null 2>&1; then
+  echo "Metal toolchain not available. On Xcode 26+ it is a separate component:"
+  echo "  xcodebuild -downloadComponent MetalToolchain"
+  echo "(catalog fetch can fail transiently; retry once before debugging)"
+  exit 1
+fi
+
+echo "Building speech helper (xcodebuild; full log: $SPEECH_HELPER_BUILD_LOG)"
+(
+  cd "$ROOT_DIR/SpeechHelper"
+  # Xcode auto-generates the package aggregate scheme `SpeechHelper`; the
+  # committed resolution file is the dependency contract, so never float it.
+  xcodebuild \
+    -scheme SpeechHelper \
+    -destination 'platform=macOS,arch=arm64' \
+    -configuration Release \
+    -derivedDataPath "$SPEECH_HELPER_DERIVED_DATA" \
+    -disableAutomaticPackageResolution \
+    build > "$SPEECH_HELPER_BUILD_LOG" 2>&1
+) || {
+  echo "Speech helper xcodebuild failed; compiler errors:"
+  grep -n 'error:' "$SPEECH_HELPER_BUILD_LOG" | tail -n 20 || true
+  echo "Last 40 log lines:"
+  tail -n 40 "$SPEECH_HELPER_BUILD_LOG"
+  echo "SpeechHelper workspace schemes:"
+  (
+    cd "$ROOT_DIR/SpeechHelper"
+    xcodebuild -list -disableAutomaticPackageResolution 2>&1 | tail -n 80
+  ) || true
+  exit 1
+}
+
+if [[ ! -f "$SPEECH_HELPER_BINARY" ]]; then
+  echo "Speech helper build reported success but produced no binary at:"
+  echo "  $SPEECH_HELPER_BINARY"
+  tail -n 40 "$SPEECH_HELPER_BUILD_LOG"
+  exit 1
+fi
+
+printf '%s\n' "$SPEECH_HELPER_FINGERPRINT" > "$SPEECH_HELPER_FINGERPRINT_FILE"
+
+fi # speech helper fingerprint match
+
+cp "$SPEECH_HELPER_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-speechd"
+chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-speechd"
+
+# Copy every package resource bundle (Metal kernels, tokenizer/model assets)
+# beside the app resources, matching the proven PolishHelper layout above.
+while IFS= read -r speech_helper_bundle; do
+  cp -R "$speech_helper_bundle" "$APP_DIR/Contents/Resources/$(basename "$speech_helper_bundle")"
+done < <(find "$SPEECH_HELPER_PRODUCTS_DIR" -maxdepth 1 -type d -name "*.bundle" -print)
+
+if [[ ! -d "$APP_DIR/Contents/Resources/mlx-swift_Cmlx.bundle" ]]; then
+  echo "mlx-swift_Cmlx.bundle missing from speech helper build products; the"
+  echo "helper would abort at runtime loading Metal kernels."
+  exit 1
+fi
+
+if [[ ! -d "$SPEECH_HELPER_DSYM_SOURCE" ]]; then
+  echo "Speech helper dSYM missing at $SPEECH_HELPER_DSYM_SOURCE — the Release"
+  echo "config should always emit one (DWARF with dSYM)."
+  exit 1
+fi
+rm -rf "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
+cp -R "$SPEECH_HELPER_DSYM_SOURCE" "$ROOT_DIR/dist/localvoxtral-speechd.dSYM"
+
+fi # LOCALVOXTRAL_SKIP_SPEECHD
+# ---------------------------------------------------------------------------
+
 # Remove filesystem metadata from copied assets (e.g. FinderInfo/resource fork)
 # because codesign rejects bundles containing that detritus.
 chmod -R u+w "$APP_DIR"
