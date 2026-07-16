@@ -29,15 +29,23 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
     /// cache limit and loads from an HF id or a local directory.
     public static func load(
         modelID: String?,
+        modelRevision: String?,
         modelDirectory: String?,
         port: UInt16,
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int
     ) async throws -> RealtimeSpeechServer {
-        MLX.GPU.set(cacheLimit: cacheLimitMB * 1024 * 1024)
+        Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let model: VoxtralRealtimeModel
         if let dir = modelDirectory {
             model = try VoxtralRealtimeModel.fromDirectory(URL(fileURLWithPath: dir))
+        } else if let id = modelID, let revision = modelRevision {
+            let directory = try SpeechHFCacheModelLocator.locate(
+                repoID: id,
+                revision: revision,
+                cacheRoot: SpeechHFCacheModelLocator.defaultCacheRoot()
+            )
+            model = try VoxtralRealtimeModel.fromDirectory(directory)
         } else if let id = modelID {
             model = try await VoxtralRealtimeModel.fromPretrained(id)
         } else {
