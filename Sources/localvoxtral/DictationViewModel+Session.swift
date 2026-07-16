@@ -647,6 +647,7 @@ extension DictationViewModel {
                 // is never read (privacy).
                 let capturedClipboardContext: PolishClipboardContext?
                 let capturedScreenDecision: TerminalScreenContextDecision
+                let capturedClaudeJoin: ClaudeSessionJoin?
                 if let endpointURL = polishingConfig?.endpointURL {
                     capturedClipboardContext = polishClipboardContextIfEnabled(
                         endpointURL: endpointURL
@@ -659,12 +660,20 @@ extension DictationViewModel {
                     capturedScreenDecision = terminalScreenContextDecision(
                         endpointURL: endpointURL
                     )
+                    // AFTER the screen decision, never before: that call is what
+                    // asks the authorizer about the join, and consuming it first
+                    // would clear it out from under the question and silently
+                    // withdraw every raw screen attachment.
+                    capturedClaudeJoin = consumeClaudeSessionJoin()
                 } else {
                     capturedClipboardContext = nil
                     capturedScreenDecision = .drop(reason: .noStartCapture)
-                    // No endpoint: nothing to ground for, and the capture must
-                    // not survive into a later session's reconciliation.
+                    capturedClaudeJoin = nil
+                    // No endpoint: nothing to ground for, and neither the
+                    // capture nor the join must survive into a later session's
+                    // reconciliation.
                     terminalScreenStartCapture = nil
+                    claudeSessionJoin = nil
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -737,12 +746,77 @@ extension DictationViewModel {
                         guard case let .render(excerpt) = capturedScreenDecision else { return 0 }
                         return excerpt.count
                     }()
+
+                    // The joined Claude session's repository. Collected inside
+                    // the Task, like the repo vocabulary above and for the same
+                    // reason: its git subprocesses and file reads run OFF the
+                    // main actor under their own deadline, so a slow repo yields
+                    // a smaller snapshot rather than a late commit. Every gate
+                    // (setting, loopback endpoint, live join, LOCAL workspace)
+                    // is inside `claudeRepoSnapshotIfEnabled`, ahead of the
+                    // collector — an unjoined pane means no filesystem call at
+                    // all, not a collector that reads and then discards.
+                    var claudeRepoSnapshot: ClaudeRepoSnapshot?
+                    if let endpointURL = polishingConfig?.endpointURL {
+                        claudeRepoSnapshot = await self.claudeRepoSnapshotIfEnabled(
+                            join: capturedClaudeJoin,
+                            endpointURL: endpointURL,
+                            transcript: workingText
+                        )
+                    }
+                    guard !Task.isCancelled else { return }
+
+                    // The session block's text (workspace, the PRIOR prompt, the
+                    // files the agent touched) is flat, so it rides the shared
+                    // preparation like the clipboard and the screen. It is gated
+                    // on the same setting as the repo block: both attach the
+                    // session's content, and consenting to one is consenting to
+                    // both.
+                    let claudeSessionText: String = {
+                        guard settings.claudeRepoContextEnabled,
+                              let join = capturedClaudeJoin
+                        else { return "" }
+                        return ClaudeSessionContextText.text(for: join.snapshot)
+                    }()
+
                     let allocation = PolishContextBudget.allocate(demands: [
+                        .repository: claudeRepoSnapshot.map {
+                            ClaudeRepoContextSelection.groundingText(snapshot: $0).count
+                        } ?? 0,
                         .terminal: screenRenderDemand,
+                        .claude: claudeSessionText.count,
                         .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
                     ])
                     let clipboardRenderBudget = allocation[.clipboard] ?? 0
                     let screenRenderBudget = allocation[.terminal] ?? 0
+                    let repoRenderBudget = allocation[.repository] ?? 0
+                    let claudeRenderBudget = allocation[.claude] ?? 0
+
+                    // Prepared exactly like every other source: matching over
+                    // the COMPLETE harvest, rendering within the grant. The gap
+                    // is widest here — a monorepo's tracked path list alone can
+                    // exceed the whole prompt budget — which is precisely why
+                    // grounding must not inherit the render budget. Every
+                    // harvested term votes; only what fits is shown.
+                    var claudeRepoPreparation = ClaudeRepoContextPreparation.empty
+                    if let claudeRepoSnapshot {
+                        claudeRepoPreparation = await ClaudeRepoContextPreparation.prepared(
+                            snapshot: claudeRepoSnapshot,
+                            transcript: workingText,
+                            renderBudget: repoRenderBudget
+                        )
+                    }
+                    let claudeRepoOutcome = claudeRepoPreparation.grounding
+
+                    var claudeSessionPreparation = PolishContextPreparation.empty
+                    if !claudeSessionText.isEmpty {
+                        claudeSessionPreparation = await PolishContextPreparation.prepared(
+                            text: claudeSessionText,
+                            transcript: workingText,
+                            renderBudget: claudeRenderBudget
+                        )
+                    }
+                    let claudeSessionOutcome = claudeSessionPreparation.grounding
 
                     var clipboardPreparation = PolishContextPreparation.empty
                     if let clipboardContext = capturedClipboardContext {
@@ -794,6 +868,20 @@ extension DictationViewModel {
                     // opted out of both rules and pre-applies its own reading of
                     // a contested span unopposed — editing words the user did not
                     // say.
+                    //
+                    // The Claude repo and session sources vote HERE too, in the
+                    // same single merge, for exactly the reason the terminal
+                    // does. They are the strongest sources on the list — a file
+                    // the agent just edited is better evidence of a spelling
+                    // than anything on the clipboard — but "strongest" is not
+                    // "unopposed": when the repo and the clipboard read the same
+                    // heard span as two DIFFERENT terms, neither is pre-applied,
+                    // because pre-applying the wrong bytes edits the user's words
+                    // into something they did not say. Both `.repository`
+                    // candidates share one bucket by design: the terminal-cwd
+                    // vocabulary and the joined session's repo are both "the repo
+                    // the speaker is working in", and they render under one
+                    // header.
                     let merged = PolishContextGrounding.merge([
                         PolishContextGrounding.Candidate(
                             source: .repository,
@@ -801,9 +889,19 @@ extension DictationViewModel {
                             isFallbackOnly: repoVocabularyOutcome.isFallbackOnly
                         ),
                         PolishContextGrounding.Candidate(
+                            source: .repository,
+                            entries: claudeRepoOutcome.entries,
+                            isFallbackOnly: claudeRepoOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
                             source: .terminal,
                             entries: screenVocabularyOutcome.entries,
                             isFallbackOnly: screenVocabularyOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .claude,
+                            entries: claudeSessionOutcome.entries,
+                            isFallbackOnly: claudeSessionOutcome.isFallbackOnly
                         ),
                         PolishContextGrounding.Candidate(
                             source: .clipboard,
@@ -814,9 +912,11 @@ extension DictationViewModel {
                     let repoVocabularyEntries = merged.entries(from: .repository)
                     let clipboardVocabularyEntries = merged.entries(from: .clipboard)
                     let screenVocabularyEntries = merged.entries(from: .terminal)
+                    let claudeVocabularyEntries = merged.entries(from: .claude)
                     let repoVocabularyCount = repoVocabularyEntries.count
                     let clipboardVocabularyCount = clipboardVocabularyEntries.count
                     let screenVocabularyCount = screenVocabularyEntries.count
+                    let claudeVocabularyCount = claudeVocabularyEntries.count
 
                     // Sections are rendered from the MERGED entries, never the
                     // per-source matches: a span the merge abstained on must
@@ -869,6 +969,21 @@ extension DictationViewModel {
                         )
                     }
 
+                    if !claudeVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: claudeVocabularyEntries,
+                                header: RepoVocabularyMatcher.claudeSessionVocabularyHeader
+                            )
+                    }
+                    if claudeVocabularyCount > 0 {
+                        // Counts only — entity content is session content.
+                        Log.polishing.info(
+                            "Claude session vocabulary attached: claude-vocab:\(claudeVocabularyCount, privacy: .public)"
+                        )
+                    }
+
                     guard !Task.isCancelled else { return }
 
                     // Exact repo/clipboard bytes and their ASR spans have
@@ -910,7 +1025,7 @@ extension DictationViewModel {
                     }
                     if groundedWorkingText != workingText {
                         Log.polishing.info(
-                            "Technical grounding pre-applied: repo=\(repoVocabularyCount, privacy: .public), terminal=\(screenVocabularyCount, privacy: .public), clipboard=\(clipboardVocabularyCount, privacy: .public)"
+                            "Technical grounding pre-applied: repo=\(repoVocabularyCount, privacy: .public), terminal=\(screenVocabularyCount, privacy: .public), claude=\(claudeVocabularyCount, privacy: .public), clipboard=\(clipboardVocabularyCount, privacy: .public)"
                         )
                     }
 
@@ -944,15 +1059,26 @@ extension DictationViewModel {
                     // to one live Claude session — so plain, unjoined Ghostty
                     // scrollback contributes vocabulary only and never an
                     // excerpt.
+                    let repoBlock = claudeRepoSnapshot?.contextBlock(
+                        excerpt: claudeRepoPreparation.excerpt,
+                        renderBudget: repoRenderBudget
+                    )
                     let screenBlock = capturedScreenDecision.contextBlock(
                         excerpt: screenPreparation.excerpt,
                         renderBudget: screenRenderBudget
+                    )
+                    let claudeBlock = capturedClaudeJoin?.snapshot.claudeContextBlock(
+                        excerpt: claudeSessionPreparation.excerpt,
+                        renderBudget: claudeRenderBudget
                     )
                     let clipboardBlock = capturedClipboardContext?.contextBlock(
                         excerpt: clipboardPreparation.excerpt,
                         renderBudget: clipboardRenderBudget
                     )
-                    let contextBlocks = [screenBlock, clipboardBlock].compactMap { $0 }
+                    // Ordered by `allocationRank` — repository, terminal, claude,
+                    // clipboard — the same fixed order the budget allocated in.
+                    let contextBlocks = [repoBlock, screenBlock, claudeBlock, clipboardBlock]
+                        .compactMap { $0 }
                     if !contextBlocks.isEmpty {
                         userPrompts = PolishContextBlock.attaching(contextBlocks, to: userPrompts)
                     }
@@ -964,6 +1090,19 @@ extension DictationViewModel {
                     if let screenBlock {
                         Log.polishing.info(
                             "Polish terminal screen context attached: \(screenBlock.summary, privacy: .public)"
+                        )
+                    }
+                    if let repoBlock {
+                        // Count-only by construction: the summary is the
+                        // collector's provenance line, which is numbers and
+                        // fixed slugs. Repository contents never reach a log.
+                        Log.polishing.info(
+                            "Polish Claude repository context attached: \(repoBlock.summary, privacy: .public)"
+                        )
+                    }
+                    if let claudeBlock {
+                        Log.polishing.info(
+                            "Polish Claude session context attached: \(claudeBlock.summary, privacy: .public)"
                         )
                     }
 

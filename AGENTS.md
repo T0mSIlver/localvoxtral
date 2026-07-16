@@ -360,15 +360,32 @@ Key subsystems:
   used by clipboard vocabulary and by focused unit coverage; do not infer that
   it runs at commit.
 
-- **Claude Code context is collected but not yet consumed.** The transport,
-  broker, registry, and marker focus join are real and tested; nothing reads
-  them into a prompt yet, and `ClaudeLocalRepoCollecting` has no implementation.
-  Two invariants to keep: trust is transport-derived (the wire has no origin
-  field, and `LocalWorkspacePath` has no public initializer, so "remote cwd
-  reaches the filesystem" is a compile error — do not add one); and lookups
-  abstain rather than guess. The LLM lanes intentionally do not match these
-  paths — the PR that first feeds this context into a prompt must add them to
-  `scripts/ci/llm-lane-filter.sh` in the same change.
+- **Claude Code context reaches the prompt only through a positive marker
+  join.** The joined session's repository (status, uncommitted diffs, contents
+  of files the agent just touched) and its prior user prompt are attached as
+  untrusted reference blocks, behind `claudeRepoContextEnabled` (default off)
+  and loopback endpoints only. Invariants to keep:
+  - Trust is transport-derived. The wire has no origin field, and
+    `LocalWorkspacePath` has no public initializer, so "remote cwd reaches the
+    filesystem" is a compile error — do not add one. Its only derivations
+    (`ancestor`, `descendant`) preserve that, and `ClaudeRepoCollecting` takes
+    it rather than a `String` for exactly this reason.
+  - The join is resolved ONCE per dictation, at start, from the marker in the
+    PID-pinned window title (`ClaudeSessionJoinResolver`), and every consumer —
+    raw screen attachment, the session block, repo collection — shares that one
+    answer. Three resolutions could each answer honestly about a different
+    moment; that is how one session's screen ends up next to another's repo.
+  - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
+    means no context. There is deliberately no sole-session or cwd heuristic —
+    it is wrong precisely when it matters.
+  - Transcripts are never scraped (the publisher drops `transcript_path`) and
+    tool output is never attached: for a local session the files are readable
+    directly and are the better source.
+  - Everything harvested feeds GROUNDING even when the rendered excerpt is cut
+    to nothing — matching is input-side and free; only rendering pays the
+    budget.
+  These paths are in `scripts/ci/llm-lane-filter.sh`: they change what reaches
+  the model, so the LLM lanes run on them.
 
 ## Conventions
 

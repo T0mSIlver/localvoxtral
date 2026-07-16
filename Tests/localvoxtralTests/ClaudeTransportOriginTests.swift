@@ -91,22 +91,27 @@ final class ClaudeWorkspaceReferenceTests: XCTestCase {
 
 // MARK: - Remote records cannot reach the filesystem
 
-/// Records every workspace a collector was asked to touch. Since the protocol
-/// takes `LocalWorkspacePath` — a type only constructible inside
-/// `ClaudeContextWire`, and only for a local origin — a remote record has no
-/// way to reach this at all. The test proves the runtime half; the compiler
-/// enforces the rest (there is no public initializer to call).
-final class SpyRepoCollector: ClaudeLocalRepoCollecting, @unchecked Sendable {
+/// Records every workspace a collector was asked to touch. Since
+/// `ClaudeRepoCollecting` takes `LocalWorkspacePath` — a type only
+/// constructible inside `ClaudeContextWire`, and only for a local origin — a
+/// remote record has no way to reach this at all. The test proves the runtime
+/// half; the compiler enforces the rest (there is no public initializer to
+/// call).
+final class SpyRepoCollector: ClaudeRepoCollecting, @unchecked Sendable {
     private(set) var collectedPaths: [String] = []
 
-    func collectRepositoryContext(for workspace: LocalWorkspacePath) -> [String] {
+    func collect(
+        workspace: LocalWorkspacePath,
+        recentFiles: [ClaudeRecentFile],
+        transcript: String
+    ) async -> ClaudeRepoSnapshot? {
         collectedPaths.append(workspace.path)
-        return []
+        return nil
     }
 }
 
 final class ClaudeRemotePathIsolationTests: XCTestCase {
-    func testRemoteWorkspaceCannotBeHandedToACollector() throws {
+    func testRemoteWorkspaceCannotBeHandedToACollector() async throws {
         let collector = SpyRepoCollector()
         let workspace = try XCTUnwrap(
             ClaudeWorkspaceReference.make(rawCwd: "/remote/repo", origin: .remote(channel: "ssh"))
@@ -116,7 +121,7 @@ final class ClaudeRemotePathIsolationTests: XCTestCase {
         // for a remote workspace it is nil. There is no other accessor, and
         // `LocalWorkspacePath` cannot be constructed from outside the module.
         if let path = workspace.localPath {
-            _ = collector.collectRepositoryContext(for: path)
+            _ = await collector.collect(workspace: path, recentFiles: [], transcript: "")
         }
 
         XCTAssertTrue(
@@ -125,7 +130,7 @@ final class ClaudeRemotePathIsolationTests: XCTestCase {
         )
     }
 
-    func testLocalWorkspaceReachesTheCollector() throws {
+    func testLocalWorkspaceReachesTheCollector() async throws {
         let collector = SpyRepoCollector()
         let workspace = try XCTUnwrap(
             ClaudeWorkspaceReference.make(
@@ -133,7 +138,45 @@ final class ClaudeRemotePathIsolationTests: XCTestCase {
             )
         )
         let path = try XCTUnwrap(workspace.localPath)
-        _ = collector.collectRepositoryContext(for: path)
+        _ = await collector.collect(workspace: path, recentFiles: [], transcript: "")
         XCTAssertEqual(collector.collectedPaths, ["/local/repo"])
+    }
+
+    // MARK: - Derivations preserve the boundary
+
+    /// `ancestor` and `descendant` are the only ways a `LocalWorkspacePath`
+    /// makes another one. If either accepted an arbitrary string, the type would
+    /// stop being a proof — a caller could launder any path through a workspace
+    /// it legitimately holds.
+    func testAncestorOnlyAcceptsARealAncestor() throws {
+        let workspace = try XCTUnwrap(
+            ClaudeWorkspaceReference.make(
+                rawCwd: "/local/repo/sub/dir", origin: .localAuthenticated(peerUID: 501)
+            ).flatMap(\.localPath)
+        )
+        XCTAssertEqual(workspace.ancestor(atPath: "/local/repo")?.path, "/local/repo")
+        XCTAssertEqual(workspace.ancestor(atPath: "/local/repo/sub/dir")?.path, "/local/repo/sub/dir")
+        XCTAssertNil(workspace.ancestor(atPath: "/etc"))
+        XCTAssertNil(workspace.ancestor(atPath: "/local/other"))
+        // Prefix-but-not-ancestor: `/local/rep` is a string prefix of
+        // `/local/repo/...` and must not pass as a parent directory.
+        XCTAssertNil(workspace.ancestor(atPath: "/local/rep"))
+    }
+
+    func testDescendantRejectsEscapes() throws {
+        let workspace = try XCTUnwrap(
+            ClaudeWorkspaceReference.make(
+                rawCwd: "/local/repo", origin: .localAuthenticated(peerUID: 501)
+            ).flatMap(\.localPath)
+        )
+        XCTAssertEqual(workspace.descendant(relativePath: "a/b.swift")?.path, "/local/repo/a/b.swift")
+        XCTAssertEqual(workspace.descendant(relativePath: "./a.swift")?.path, "/local/repo/a.swift")
+        // Every one of these is a hook record or a tracked filename aiming a
+        // read outside the workspace.
+        XCTAssertNil(workspace.descendant(relativePath: "../secrets"))
+        XCTAssertNil(workspace.descendant(relativePath: "a/../../secrets"))
+        XCTAssertNil(workspace.descendant(relativePath: "/etc/passwd"))
+        XCTAssertNil(workspace.descendant(relativePath: ""))
+        XCTAssertNil(workspace.descendant(relativePath: "a\0b"))
     }
 }

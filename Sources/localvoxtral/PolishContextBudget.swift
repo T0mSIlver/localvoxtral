@@ -83,27 +83,56 @@ enum PolishContextBudget {
         demands: [PolishContextSource: Int],
         total: Int = totalCharacterBudget
     ) -> [PolishContextSource: Int] {
+        allocate(
+            demands: demands,
+            order: PolishContextSource.allCases,
+            floor: sourceFloorCharacters,
+            total: total
+        )
+    }
+
+    /// The same allocation, over any ranked key.
+    ///
+    /// Generic because the repository source has to solve this problem a second
+    /// time INSIDE its own grant: active files, diff hunks, status, and tracked
+    /// snippets compete for the characters `.repository` won, under exactly the
+    /// invariants above (fits ⇒ verbatim; on overflow, floors then water-fill;
+    /// deterministic). That is the same function, not a similar one — and a
+    /// second copy would be a second place for the odd-leftover-character rule
+    /// and the floors-exceed-total case to drift.
+    ///
+    /// - Parameter order: the allocation order. Position in this array is the
+    ///   rank, so it decides who wins the odd leftover character and who keeps
+    ///   its floor when the floors alone exceed `total`. A key absent from
+    ///   `order` is dropped: an unranked key has no defined place in a
+    ///   deterministic split.
+    static func allocate<Key: Hashable>(
+        demands: [Key: Int],
+        order: [Key],
+        floor: Int,
+        total: Int
+    ) -> [Key: Int] {
         // Clamp first: a negative demand is a caller bug, not a credit.
-        var demand: [PolishContextSource: Int] = [:]
-        for source in PolishContextSource.allCases {
-            let value = max(0, demands[source] ?? 0)
-            if value > 0 { demand[source] = value }
+        var demand: [Key: Int] = [:]
+        for key in order {
+            let value = max(0, demands[key] ?? 0)
+            if value > 0 { demand[key] = value }
         }
         guard total > 0, !demand.isEmpty else { return [:] }
 
         // Fixed order — never dictionary order, which is not deterministic
         // across runs.
-        let populated = demand.keys.sorted { $0.allocationRank < $1.allocationRank }
+        let populated = order.filter { demand[$0] != nil }
 
         let totalDemand = populated.reduce(0) { $0 + demand[$1]! }
         if totalDemand <= total {
             return demand
         }
 
-        var granted: [PolishContextSource: Int] = [:]
+        var granted: [Key: Int] = [:]
         var remaining = total
         for source in populated {
-            let floorGrant = min(demand[source]!, sourceFloorCharacters, remaining)
+            let floorGrant = min(demand[source]!, floor, remaining)
             granted[source] = floorGrant
             remaining -= floorGrant
         }

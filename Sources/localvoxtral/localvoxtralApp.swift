@@ -173,6 +173,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudeContextBroker?.stop()
         claudeContextBroker = nil
         TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
+        // The resolver holds the registry; the view model must not keep
+        // resolving joins against sessions nothing is feeding any more.
+        viewModel.claudeSessionJoinResolver = nil
+        viewModel.claudeSessionJoin = nil
     }
 
     /// Binds the hook socket and installs the pane authorizer that depends on it.
@@ -193,6 +197,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try broker.start()
             claudeContextBroker = broker
+            // ONE resolver, shared by the view model (which resolves the join at
+            // dictation start) and the attachment authorizer (which consults
+            // that join at commit). Sharing it is what makes the screen excerpt,
+            // the session's prior prompt, and the repository context describe the
+            // same session — three resolvers would each answer honestly about a
+            // different moment.
+            let resolver = ClaudeSessionJoinResolver(registry: claudeSessionRegistry)
+            viewModel.claudeSessionJoinResolver = resolver
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to
@@ -200,7 +212,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // keeps "no broker ⇒ no raw attachment" true by construction rather
             // than by coincidence.
             TerminalScreenRawAttachmentPolicy.configure(
-                authorizer: TerminalScreenClaudeJoinAuthorizer(registry: claudeSessionRegistry)
+                authorizer: TerminalScreenClaudeJoinAuthorizer(
+                    resolver: resolver,
+                    currentJoin: { [weak viewModel] in viewModel?.claudeSessionJoin }
+                )
             )
         } catch {
             Log.claudeContext.error(

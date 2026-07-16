@@ -751,6 +751,25 @@ private struct TextProcessingSettingsPane: View {
                         }
                     }
 
+                    // A row in the EXISTING group, never a new group: pane group
+                    // structure is constant (owner rule, 2026-07-04).
+                    SettingsFieldRow(title: "Use Claude Code project files as polish context") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.claudeRepoContextEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            // Says what is SENT, not just what is gained: this
+                            // toggle attaches file contents and diffs, which the
+                            // vocabulary toggle above does not. Someone who
+                            // agreed to "spell my filenames right" has not
+                            // thereby agreed to this.
+                            SettingsHelpText(
+                                "Sends your uncommitted changes and the contents of files Claude Code recently touched to the polisher, so it can spell code and file names exactly. Requires a Claude Code session in Ghostty; local polishing endpoints only."
+                            )
+                        }
+                    }
+
                     SettingsFieldRow(title: "Use clipboard as polish context") {
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle("", isOn: $settings.polishClipboardContextEnabled)

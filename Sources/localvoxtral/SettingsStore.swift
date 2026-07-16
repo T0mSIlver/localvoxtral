@@ -183,6 +183,7 @@ final class SettingsStore {
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
+        static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -378,6 +379,29 @@ final class SettingsStore {
     var repoVocabularyEnabled: Bool {
         didSet {
             defaults.set(repoVocabularyEnabled, forKey: Keys.repoVocabularyEnabled)
+        }
+    }
+
+    /// When true, and the polishing endpoint is loopback, and the focused
+    /// terminal pane positively joins to one live Claude Code session, that
+    /// session's repository CONTENT — status, uncommitted diffs, and the
+    /// contents of files the agent just read or edited — plus the previous
+    /// request the user sent that agent are attached to the polish prompt as
+    /// untrusted reference material.
+    ///
+    /// A separate toggle from `repoVocabularyEnabled`, deliberately, because it
+    /// is a materially different consent. That one harvests NAMES — file
+    /// basenames, path components, a branch — and injects the transcript-
+    /// relevant ones as spelling hints. This one sends file CONTENTS and diff
+    /// hunks: the user's actual source code, and a prompt they typed. Someone
+    /// who agreed to "spell my filenames right" has not thereby agreed to "send
+    /// the body of the file I am editing", so reusing the existing toggle would
+    /// silently widen a consent they already gave. Opt-in (default false),
+    /// loopback endpoints only — repository contents must never ride to a
+    /// remote endpoint. See `ClaudeRepoCollector`.
+    var claudeRepoContextEnabled: Bool {
+        didSet {
+            defaults.set(claudeRepoContextEnabled, forKey: Keys.claudeRepoContextEnabled)
         }
     }
 
@@ -595,6 +619,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.terminalScreenContextEnabled, fallback: false)
         repoVocabularyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
+        claudeRepoContextEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
         modifierOnlyHotKeyEnabled = Self.loadBool(

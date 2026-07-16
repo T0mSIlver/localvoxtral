@@ -49,6 +49,73 @@ public struct LocalWorkspacePath: Sendable, Equatable, Hashable {
     }
 
     public var fileURL: URL { URL(fileURLWithPath: path) }
+
+    /// An ANCESTOR directory of this path, as a `LocalWorkspacePath`.
+    ///
+    /// A repo root is found by walking UP from the session's cwd, so the root
+    /// is always an ancestor of a path we already verified as local. That makes
+    /// this derivation total for the collector's needs while keeping the
+    /// invariant intact: the result is provably inside the same locally
+    /// authenticated filesystem the cwd came from, so it inherits its trust
+    /// rather than laundering a fresh string into the type.
+    ///
+    /// Returns nil unless `candidate` really is self or a parent of self —
+    /// a caller cannot pass an arbitrary path and get a usable one back.
+    public func ancestor(atPath candidate: String) -> LocalWorkspacePath? {
+        let normalized = LocalWorkspacePath.normalize(candidate)
+        let mine = LocalWorkspacePath.normalize(path)
+        guard normalized == mine || mine.hasPrefix(normalized + "/") else { return nil }
+        return LocalWorkspacePath(verifiedLocal: normalized)
+    }
+
+    /// A path INSIDE this one, named by a repo-relative path.
+    ///
+    /// This is the only way the collector turns a hook-reported or
+    /// `git ls-files`-reported relative path into something it may open, and it
+    /// is deliberately strict: the result must lexically resolve to a strict
+    /// descendant. `..` traversal, absolute paths, and empty components are all
+    /// rejected rather than normalized into something surprising, so neither a
+    /// crafted `files` entry on the wire nor a hostile filename in a repo can
+    /// aim a read outside the workspace.
+    ///
+    /// Lexical containment is not a defense against symlinks — a tracked
+    /// symlink can still point out of the tree. The collector handles that
+    /// separately by refusing to follow links; this function's job is the
+    /// lexical half.
+    public func descendant(relativePath: String) -> LocalWorkspacePath? {
+        guard !relativePath.isEmpty, !relativePath.hasPrefix("/") else { return nil }
+        guard !relativePath.contains("\0") else { return nil }
+        var components: [String] = []
+        for component in relativePath.split(separator: "/", omittingEmptySubsequences: true) {
+            let value = String(component)
+            if value == "." { continue }
+            // Never resolve `..` by popping: a path that climbs at all is a
+            // path we decline to reason about.
+            if value == ".." { return nil }
+            components.append(value)
+        }
+        guard !components.isEmpty else { return nil }
+        let base = LocalWorkspacePath.normalize(path)
+        return LocalWorkspacePath(verifiedLocal: base + "/" + components.joined(separator: "/"))
+    }
+
+    /// `relativePath`'s position under this path, or nil when it is not inside.
+    /// Used to report paths repo-relative rather than leaking the user's home
+    /// directory layout into a prompt.
+    public func relativePath(of other: LocalWorkspacePath) -> String? {
+        let base = LocalWorkspacePath.normalize(path)
+        let candidate = LocalWorkspacePath.normalize(other.path)
+        guard candidate.hasPrefix(base + "/") else { return nil }
+        return String(candidate.dropFirst(base.count + 1))
+    }
+
+    /// Collapses duplicate and trailing separators so prefix comparisons above
+    /// mean what they read as (`/a//b/` and `/a/b` are the same directory, and
+    /// `/a/bc` must not count as a child of `/a/b`).
+    static func normalize(_ path: String) -> String {
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        return "/" + components.joined(separator: "/")
+    }
 }
 
 /// A session's workspace, in whichever form its origin permits.
@@ -116,10 +183,28 @@ public enum ClaudeWorkspaceReference: Sendable, Equatable, Hashable {
     }
 }
 
-/// Read-only local repository collection, gated on `LocalWorkspacePath`.
+/// Read-only local filesystem access, gated on `LocalWorkspacePath`.
 ///
 /// Implementations may touch the filesystem. They cannot be handed a remote
-/// workspace: there is no way to construct the parameter type from one.
-public protocol ClaudeLocalRepoCollecting: Sendable {
-    func collectRepositoryContext(for workspace: LocalWorkspacePath) -> [String]
+/// workspace: there is no way to construct the parameter type from one, and
+/// `LocalWorkspacePath`'s only derivations (`ancestor`, `descendant`) preserve
+/// that. This is the seam the repo collector's file reads go through, and the
+/// reason `ClaudeRepoCollector` is testable against an in-memory tree.
+///
+/// Every method returns an Optional rather than throwing: an unreadable file is
+/// a fact about the tree, not an error worth propagating through a best-effort
+/// context path.
+public protocol ClaudeLocalFileReading: Sendable {
+    /// True when the path exists and is a directory (never following a final
+    /// symlink — see `ClaudeRepoCollector` on why links are not traversed).
+    func isDirectory(_ path: LocalWorkspacePath) -> Bool
+    /// True when the path exists and is a regular file, again without
+    /// following a final symlink.
+    func isRegularFile(_ path: LocalWorkspacePath) -> Bool
+    /// Size in bytes, used to skip an oversized file before reading it.
+    func fileSize(_ path: LocalWorkspacePath) -> Int?
+    /// At most `maxBytes` of the file's raw bytes. Raw, not `String`: binary
+    /// detection has to happen on bytes, and decoding first would silently turn
+    /// a PNG into replacement characters.
+    func readFile(_ path: LocalWorkspacePath, maxBytes: Int) -> Data?
 }
