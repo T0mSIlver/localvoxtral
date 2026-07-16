@@ -321,6 +321,16 @@ Key subsystems:
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
+- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral/ClaudeContext/`,
+  `integrations/claude-code/`): off-screen context for dictation into Claude
+  Code. A plugin declares hooks only (no skill/command/agent — nothing that
+  spends the user's tokens); each hook execs `localvoxtral-claude-hook`, which
+  publishes one bounded NDJSON line to a private AF_UNIX socket and fails open
+  (silent exit 0) whenever the app is absent. In-app, `ClaudeContextBroker`
+  verifies peer UID *before reading* and `ClaudeSessionRegistry` (Mutex,
+  injected clock) holds the prior prompt, cwd, recent files, and a
+  broker-allocated marker. See "Known tradeoffs" for what is deliberately
+  not wired up yet.
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed
   mode, the bundled `localvoxtral-polishd` helper (`PolishHelper/` package:
   MLX Swift inference + a minimal loopback OpenAI server + parent-pid
@@ -349,6 +359,16 @@ Key subsystems:
   remains active for both profiles. The token guard type remains as a recognizer
   used by clipboard vocabulary and by focused unit coverage; do not infer that
   it runs at commit.
+
+- **Claude Code context is collected but not yet consumed.** The transport,
+  broker, registry, and marker focus join are real and tested; nothing reads
+  them into a prompt yet, and `ClaudeLocalRepoCollecting` has no implementation.
+  Two invariants to keep: trust is transport-derived (the wire has no origin
+  field, and `LocalWorkspacePath` has no public initializer, so "remote cwd
+  reaches the filesystem" is a compile error — do not add one); and lookups
+  abstain rather than guess. The LLM lanes intentionally do not match these
+  paths — the PR that first feeds this context into a prompt must add them to
+  `scripts/ci/llm-lane-filter.sh` in the same change.
 
 ## Conventions
 

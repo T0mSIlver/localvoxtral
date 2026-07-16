@@ -28,6 +28,10 @@ MARKER='[run-llm-eval]'
 # "When must the LLM lanes run?". Some patterns are forward-looking for
 # in-flight branches (EvalCorpus, RepoVocabulary, clipboard context); an
 # unmatched pattern costs nothing.
+#
+# Deliberately ABSENT: the Claude Code context transport (ClaudeContext*,
+# ClaudeHook*, integrations/claude-code) — a data channel with no consumer on
+# the polish path yet. The PR that first feeds it into a prompt must add it.
 PATTERNS=(
   'PolishHelper/*'                                   # helper engine, server, its own package
   'Sources/localvoxtral/Resources/Config/llm_*.toml' # bundled polish prompts

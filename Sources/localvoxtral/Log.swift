@@ -29,4 +29,8 @@ enum Log {
     static let target = Logger(subsystem: subsystem, category: "Target")
     static let modifierKeys = Logger(subsystem: subsystem, category: "ModifierKeys")
     static let diagnostics = Logger(subsystem: subsystem, category: "Diagnostics")
+    /// Claude Code context ingest: broker lifecycle, rejected connections and
+    /// records. NEVER logs hook content — a record carries the user's prompt
+    /// and their file paths. Only event names, counts, and failure reasons.
+    static let claudeContext = Logger(subsystem: subsystem, category: "ClaudeContext")
 }
