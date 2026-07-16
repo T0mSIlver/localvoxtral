@@ -1243,7 +1243,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             transcript: "open use auth dot t s please",
             cache: RepoVocabularyCache()
         )
-        XCTAssertEqual(titleEntries?.first?.replaceWith, "useAuth.ts")
+        XCTAssertEqual(titleEntries?.entries.first?.replaceWith, "useAuth.ts")
 
         // A usable focused-window title disambiguates the focused tab and must
         // stay tier 1 even when descendant inspection would fail closed.
@@ -1255,7 +1255,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
             processSnapshot: { [.init(pid: 701, parentPID: 700)] },
             workingDirectoryForPID: { _ in nil }
         )
-        XCTAssertEqual(titlePreferredEntries?.first?.replaceWith, "useAuth.ts")
+        XCTAssertEqual(titlePreferredEntries?.entries.first?.replaceWith, "useAuth.ts")
     }
 
     func testTitleClobberedAgentResolvesRepoFromTerminalDescendant() async throws {
@@ -1292,7 +1292,7 @@ final class RepoVocabularyIndexerEndToEndTests: XCTestCase {
                 [401, 402].contains(pid) ? repo.path : nil
             }
         )
-        XCTAssertEqual(entries?.first?.replaceWith, "useAuth.ts")
+        XCTAssertEqual(entries?.entries.first?.replaceWith, "useAuth.ts")
     }
 
     /// Fail-closed at the `entries()` level: an unusable (nil) title plus a

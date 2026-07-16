@@ -837,7 +837,7 @@ enum RepoVocabularyService {
         workingDirectoryForPID: @Sendable (pid_t) -> String? = {
             TerminalDescendantProcessResolver.liveWorkingDirectory(forPID: $0)
         }
-    ) async -> [ReplacementEntry]? {
+    ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         var gitRoot: String?
         if let title,
            let titleDirectory = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
@@ -891,10 +891,15 @@ enum RepoVocabularyService {
         ) else {
             return nil
         }
-        let entries = RepoVocabularyMatcher.groundedCandidateEntries(
+        // Carries provenance, not just entries: whether these came from the
+        // exact / edit-distance-one tiers or from the bounded aligned fallback
+        // decides who yields when another context source covers the same heard
+        // span (`PolishContextGrounding`). Collapsing that to a bare array here
+        // is what forced the merge to assume every repo entry was solid.
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript, vocabulary: vocabulary
         )
-        if entries.isEmpty {
+        if outcome.entries.isEmpty {
             // Static string + no content: the LAST silent skip on this path.
             // Every skip reason is .info — .debug is not persisted by the
             // unified log store, which made a field no-attach undiagnosable
@@ -902,7 +907,7 @@ enum RepoVocabularyService {
             Log.polishing.info("Repo vocabulary: no transcript-relevant matches")
             return nil
         }
-        return entries
+        return outcome
     }
 }
 
@@ -1043,6 +1048,30 @@ enum RepoVocabularyMatcher {
         transcript: String,
         vocabulary: RepoVocabulary
     ) -> [ReplacementEntry] {
+        groundedCandidates(transcript: transcript, vocabulary: vocabulary).entries
+    }
+
+    /// One source's grounding decision, carrying HOW it was reached.
+    ///
+    /// `isFallbackOnly` distinguishes "the exact / edit-distance-one tiers
+    /// approved these" from "those tiers found nothing and the bounded aligned
+    /// matcher guessed once". Within a single source that difference is already
+    /// spent; across sources it decides who yields — see
+    /// `PolishContextGrounding`.
+    struct GroundingOutcome: Equatable, Sendable {
+        let entries: [ReplacementEntry]
+        let isFallbackOnly: Bool
+
+        /// Not `none`: a static of that name on a non-Optional type shadows
+        /// `Optional.none` at any use site that wraps it.
+        static let empty = GroundingOutcome(entries: [], isFallbackOnly: false)
+    }
+
+    /// `groundedCandidateEntries` with its provenance retained.
+    static func groundedCandidates(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> GroundingOutcome {
         let approved = candidateEntries(transcript: transcript, vocabulary: vocabulary)
         var termsByHeard: [String: Set<String>] = [:]
         for entry in approved {
@@ -1060,12 +1089,14 @@ enum RepoVocabularyMatcher {
             guard !matches.isEmpty else { return nil }
             return ReplacementEntry(replaceWith: entry.replaceWith, matches: matches)
         }
-        guard unambiguous.isEmpty else { return unambiguous }
+        guard unambiguous.isEmpty else {
+            return GroundingOutcome(entries: unambiguous, isFallbackOnly: false)
+        }
         guard let fallback = alignedFallbackEntry(
             transcript: transcript,
             vocabulary: vocabulary
-        ) else { return [] }
-        return [fallback]
+        ) else { return .empty }
+        return GroundingOutcome(entries: [fallback], isFallbackOnly: true)
     }
 
     /// Places exact vocabulary bytes into only the literal ASR spans already
@@ -1583,10 +1614,24 @@ enum ClipboardVocabulary {
         transcript: String,
         excerpt: String
     ) -> [ReplacementEntry] {
-        let terms = entities(inExcerpt: excerpt)
-        guard !terms.isEmpty else { return [] }
+        candidateOutcome(transcript: transcript, clipboardText: excerpt).entries
+    }
+
+    /// `candidateEntries` with its provenance retained, over the COMPLETE
+    /// retained clipboard text.
+    ///
+    /// `clipboardText` is deliberately not called `excerpt`: matching runs over
+    /// everything capture retained, not over the smaller block the budget
+    /// renders into the prompt. A term is groundable when the user copied it —
+    /// not when it happened to survive excerpt selection.
+    static func candidateOutcome(
+        transcript: String,
+        clipboardText: String
+    ) -> RepoVocabularyMatcher.GroundingOutcome {
+        let terms = entities(inExcerpt: clipboardText)
+        guard !terms.isEmpty else { return .empty }
         let vocabulary = RepoVocabulary(terms: terms, branch: nil)
-        return RepoVocabularyMatcher.groundedCandidateEntries(
+        return RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript,
             vocabulary: vocabulary
         )

@@ -446,7 +446,7 @@ final class DictationViewModel {
     var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
-    /// `repoVocabularyEntriesIfEnabled` with a closure returning the entries for
+    /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
     /// a given transcript, so VM tests exercise the setting + loopback gates
     /// without touching live AX or a git subprocess. Consulted only AFTER those
     /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
@@ -454,13 +454,15 @@ final class DictationViewModel {
     /// pipeline/deadline-sleep seams below instead. `@MainActor` so ordering
     /// tests can read main-actor stub state inside it.
     @ObservationIgnored
-    var debugRepoVocabularyEntriesOverride: (@MainActor (String) -> [ReplacementEntry]?)?
+    var debugRepoVocabularyEntriesOverride:
+        (@MainActor (String) -> RepoVocabularyMatcher.GroundingOutcome?)?
     /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
     /// process cwd + git index + match) while keeping the deadline race in
     /// play, so tests can inject a never-completing pipeline and prove the
     /// commit still proceeds (without vocabulary) when the deadline expires.
     @ObservationIgnored
-    var debugRepoVocabularyPipelineOverride: (@Sendable (String) async -> [ReplacementEntry]?)?
+    var debugRepoVocabularyPipelineOverride:
+        (@Sendable (String) async -> RepoVocabularyMatcher.GroundingOutcome?)?
     /// Test seam: replaces the deadline sleep of the vocabulary race (repo
     /// reference pattern: injected clock/sleep seams, no wall-clock in tests).
     /// An immediately-returning closure makes the deadline expire instantly.

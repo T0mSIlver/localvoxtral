@@ -37,6 +37,10 @@ PATTERNS=(
   '*PolishTokenGuard*'                               # token-protection repair semantics
   '*PolishPromptWarmup*'                             # prompt-prefix warmup path
   '*PolishContextClipboardReader*'                   # clipboard-as-context attachment
+  '*PolishContextBudget*'                            # how many context chars reach the model (+ the message composer)
+  '*PolishContextExcerptSelector*'                   # WHICH context lines reach the model
+  '*PolishContextGrounding*'                         # cross-source grounding merge: what gets pre-applied
+  '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
   '*DictationViewModel+Session.swift'                # polish-and-commit path

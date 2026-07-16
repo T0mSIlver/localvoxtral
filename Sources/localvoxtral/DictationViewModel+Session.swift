@@ -669,60 +669,115 @@ extension DictationViewModel {
                     // timeout / no repo / feature off it is a fast no-op and the
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
-                    var repoVocabularyCount = 0
-                    var repoVocabularyEntries: [ReplacementEntry] = []
-                    if templateCarriesDictionarySlot,
-                       let endpointURL = polishingConfig?.endpointURL,
-                       let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
+                    // Fetched regardless of the dictionary slot. Repo grounding
+                    // is not only a prompt hint — it is a VOTE in the
+                    // cross-source merge, and its absence changes what the
+                    // clipboard is allowed to pre-apply. Gating the fetch on the
+                    // slot meant a template without `{{replacement_dictionary}}`
+                    // silently disabled conflict detection: the clipboard's
+                    // reading of a contested span would be pre-applied unopposed,
+                    // editing words the user did not say. Only RENDERING may
+                    // depend on the slot; safety may not.
+                    var repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome.empty
+                    if let endpointURL = polishingConfig?.endpointURL,
+                       let outcome = await self.repoVocabularyGroundingIfEnabled(
                            endpointURL: endpointURL,
                            transcript: workingText
                        )
                     {
-                        // Append to the replacement-dictionary section string so
-                        // the entries land in the `{{replacement_dictionary}}`
-                        // slot both profiles already carry — dynamic-suffix side
-                        // of the prompt-cache split, never the cached prefix.
-                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
-                            base: replacementDictionarySection,
-                            entries: vocabularyEntries
-                        )
-                        repoVocabularyEntries = vocabularyEntries
-                        repoVocabularyCount = vocabularyEntries.count
-                        Log.polishing.info(
-                            "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
-                        )
+                        repoVocabularyOutcome = outcome
                     }
 
                     // Clipboard vocabulary is grounded in the already
-                    // privacy-gated clipboard excerpt
-                    // (feature toggle ON + loopback endpoint + never concealed/
-                    // transient — all enforced when the excerpt was captured;
-                    // nil context means none of it runs). Without this, the
-                    // context excerpt lets the model produce the exact copied
-                    // spelling. Hint entries need the dictionary slot.
-                    var clipboardVocabularyCount = 0
-                    var clipboardVocabularyEntries: [ReplacementEntry] = []
+                    // privacy-gated clipboard text (feature toggle ON + loopback
+                    // endpoint + never concealed/transient — all enforced when
+                    // it was captured; nil context means none of it runs).
+                    //
+                    // Matching runs over the COMPLETE retained text, never the
+                    // rendered excerpt: a term the user copied grounds the
+                    // transcript whether or not it survived excerpt selection.
+                    // Grounding is input-side and costs no prompt characters,
+                    // so it has no reason to inherit the render budget.
+                    //
+                    // Both the matching and the excerpt selection happen here,
+                    // together, and move OFF the main actor when the buffer is
+                    // large enough to be worth the hop — see
+                    // `PolishContextPreparation`. The render budget is resolved
+                    // first because it is also the inline/detached threshold.
+                    var clipboardPreparation = PolishContextPreparation.empty
+                    var clipboardRenderBudget = 0
                     if let clipboardContext = capturedClipboardContext {
-                        let clipboardEntries = ClipboardVocabulary.candidateEntries(
-                            transcript: workingText,
-                            excerpt: clipboardContext.excerpt
+                        // Clipboard is the only wired source today, so it can be
+                        // granted the whole budget; declaring the demand through
+                        // the allocator anyway is what makes adding the terminal
+                        // / Claude / repo sources a matter of adding a demand.
+                        let allocation = PolishContextBudget.allocate(
+                            demands: [.clipboard: clipboardContext.retainedCharacterCount]
                         )
-                        if !clipboardEntries.isEmpty {
-                            clipboardVocabularyEntries = clipboardEntries
-                            if templateCarriesDictionarySlot {
-                                replacementDictionarySection =
-                                    RepoVocabularyMatcher.appendedPromptSection(
-                                        base: replacementDictionarySection,
-                                        entries: clipboardEntries,
-                                        header: RepoVocabularyMatcher.clipboardVocabularyHeader
-                                    )
-                            }
-                            clipboardVocabularyCount = clipboardEntries.count
-                            // Counts only — entity content is clipboard content.
-                            Log.polishing.info(
-                                "Clipboard vocabulary attached: clipboard-vocab:\(clipboardEntries.count, privacy: .public)"
+                        clipboardRenderBudget = allocation[.clipboard] ?? 0
+                        clipboardPreparation = await PolishContextPreparation.prepared(
+                            clipboardText: clipboardContext.retainedText,
+                            transcript: workingText,
+                            renderBudget: clipboardRenderBudget
+                        )
+                    }
+                    let clipboardVocabularyOutcome = clipboardPreparation.grounding
+
+                    guard !Task.isCancelled else { return }
+
+                    // Sources matched independently; the merge is what resolves
+                    // them against each other (agreement collapses, conflicting
+                    // spans abstain, a fallback guess yields to a solid hit).
+                    // Both sides carry REAL provenance — a repo aligned-fallback
+                    // guess yields to a clipboard exact hit on the same span,
+                    // and vice versa.
+                    let merged = PolishContextGrounding.merge([
+                        PolishContextGrounding.Candidate(
+                            source: .repository,
+                            entries: repoVocabularyOutcome.entries,
+                            isFallbackOnly: repoVocabularyOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .clipboard,
+                            entries: clipboardVocabularyOutcome.entries,
+                            isFallbackOnly: clipboardVocabularyOutcome.isFallbackOnly
+                        ),
+                    ])
+                    let repoVocabularyEntries = merged.entries(from: .repository)
+                    let clipboardVocabularyEntries = merged.entries(from: .clipboard)
+                    let repoVocabularyCount = repoVocabularyEntries.count
+                    let clipboardVocabularyCount = clipboardVocabularyEntries.count
+
+                    // Sections are rendered from the MERGED entries, never the
+                    // per-source matches: a span the merge abstained on must
+                    // not survive as a prompt hint the model could apply by
+                    // hand. Appended to the replacement-dictionary section so
+                    // the entries land in the `{{replacement_dictionary}}` slot
+                    // both profiles already carry — dynamic-suffix side of the
+                    // prompt-cache split, never the cached prefix.
+                    if !repoVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
+                            base: replacementDictionarySection,
+                            entries: repoVocabularyEntries
+                        )
+                        Log.polishing.info(
+                            "Repo vocabulary attached: \(repoVocabularyCount, privacy: .public) entries"
+                        )
+                    }
+
+                    if !clipboardVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: clipboardVocabularyEntries,
+                                header: RepoVocabularyMatcher.clipboardVocabularyHeader
                             )
-                        }
+                    }
+                    if clipboardVocabularyCount > 0 {
+                        // Counts only — entity content is clipboard content.
+                        Log.polishing.info(
+                            "Clipboard vocabulary attached: clipboard-vocab:\(clipboardVocabularyCount, privacy: .public)"
+                        )
                     }
 
                     guard !Task.isCancelled else { return }
@@ -735,7 +790,7 @@ extension DictationViewModel {
                     // prompt as provenance/context. Boundary checks make this
                     // a no-op if a recorded span is no longer independently
                     // replaceable.
-                    let groundingEntries = repoVocabularyEntries + clipboardVocabularyEntries
+                    let groundingEntries = merged.all
                     let groundedWorkingText: String
                     if clipboardPayload != nil {
                         // The payload placeholder is a commit-control token,
@@ -774,24 +829,34 @@ extension DictationViewModel {
                     // user copied).
                     var capturedPolishContextSummary: String? = nil
                     if let clipboardContext = capturedClipboardContext {
-                        // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
-                        // messages as its single-slot prefix cache, so per-request
-                        // context must ride INSIDE the last message — a separate
-                        // context message between prefix and suffix invalidated
-                        // the checkpoint on every request and a cold 4B re-prefill
-                        // blew the polish client timeout (field, 2026-07-11).
-                        // Prepended, never appended: the working text stays LAST
-                        // in the message (this model family echoes instructions
-                        // placed after the input text).
-                        let lastIndex = userPrompts.count - 1
-                        userPrompts[lastIndex] =
-                            PolishContextClipboardReader.contextMessage(
-                                excerpt: clipboardContext.excerpt
-                            ) + "\n\n" + userPrompts[lastIndex]
-                        capturedPolishContextSummary = clipboardContext.provenanceSummary
-                        Log.polishing.info(
-                            "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
-                        )
+                        // Already selected, off-actor, above: at or below the
+                        // budget the clipboard is attached VERBATIM; above it,
+                        // this is the transcript-relevant selection rather than
+                        // the head of the buffer.
+                        let excerpt = clipboardPreparation.excerpt
+                        if !excerpt.isEmpty {
+                            // Prompt-cache safety lives in the composer: context
+                            // rides INSIDE the last message (a separate message
+                            // between prefix and suffix invalidated polishd's
+                            // single-slot checkpoint on every request, and the
+                            // cold 4B re-prefill blew the polish client timeout
+                            // — field, 2026-07-11), prepended so the working
+                            // text stays LAST.
+                            userPrompts = PolishContextComposer.prepending(
+                                contextMessage: PolishContextClipboardReader.contextMessage(
+                                    excerpt: excerpt,
+                                    characterCap: clipboardRenderBudget
+                                ),
+                                to: userPrompts
+                            )
+                            let summary = clipboardContext.provenanceSummary(
+                                renderedCharacterCount: excerpt.count
+                            )
+                            capturedPolishContextSummary = summary
+                            Log.polishing.info(
+                                "Polish clipboard context attached: \(summary, privacy: .public)"
+                            )
+                        }
                     }
 
                     let polishingRequest = LLMPolishingRequest(
@@ -1250,10 +1315,10 @@ extension DictationViewModel {
     /// Returns nil (silent skip) when off, remote, no trustworthy terminal
     /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
     /// skip.
-    func repoVocabularyEntriesIfEnabled(
+    func repoVocabularyGroundingIfEnabled(
         endpointURL: URL,
         transcript: String
-    ) async -> [ReplacementEntry]? {
+    ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         guard settings.repoVocabularyEnabled else { return nil }
         guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
             Log.polishing.info("Repo vocabulary skipped: polishing endpoint is not local")
@@ -1337,7 +1402,7 @@ extension DictationViewModel {
     /// the detached section (keeping the race in play for deadline tests).
     private func makeRepoVocabularyPipelineTask(
         transcript: String
-    ) -> Task<[ReplacementEntry]?, Never>? {
+    ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never>? {
         #if DEBUG
         if let override = debugRepoVocabularyPipelineOverride {
             return Task.detached(priority: .utility) { await override(transcript) }
@@ -1872,10 +1937,10 @@ extension DictationViewModel {
     }
 }
 
-/// Winner of the repo-vocabulary race in `repoVocabularyEntriesIfEnabled`:
+/// Winner of the repo-vocabulary race in `repoVocabularyGroundingIfEnabled`:
 /// either the detached pipeline finished (with or without entries) or the
 /// deadline expired first and the pipeline was abandoned.
 private enum RepoVocabularyRaceOutcome: Sendable {
-    case pipeline([ReplacementEntry]?)
+    case pipeline(RepoVocabularyMatcher.GroundingOutcome?)
     case deadlineExpired
 }
