@@ -46,8 +46,8 @@ final class DiagnosticsExporterTests: XCTestCase {
 
     private func makeSnapshot(
         settings: SettingsStore,
-        speechdStatus: ManagedBackendStatus = .notInstalled,
-        polishdStatus: ManagedBackendStatus = .notInstalled,
+        speechdStatus: ManagedBackendStatus = .stopped,
+        polishdStatus: ManagedBackendStatus = .stopped,
         speechdRecentOutput: [String] = [],
         polishdRecentOutput: [String] = []
     ) -> DiagnosticsSnapshot {
@@ -78,8 +78,8 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("realtime endpoint: ws://127.0.0.1:8000/v1/realtime"))
         XCTAssertTrue(report.contains("realtime API key: not set"))
         XCTAssertTrue(report.contains("LLM polishing: <disabled>"))
-        XCTAssertTrue(report.contains("dictation engine (localvoxtral-speechd): not installed"))
-        XCTAssertTrue(report.contains("polishing engine (localvoxtral-polishd): not installed"))
+        XCTAssertTrue(report.contains("dictation engine (localvoxtral-speechd): stopped"))
+        XCTAssertTrue(report.contains("polishing engine (localvoxtral-polishd): stopped"))
     }
 
     func testReportIncludesSupervisorOutputWhenPresent() {
@@ -161,14 +161,11 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertEqual(DiagnosticsExporter.describe(.ready), "ready")
         XCTAssertEqual(DiagnosticsExporter.describe(.starting), "starting")
         XCTAssertEqual(DiagnosticsExporter.describe(.stopped), "stopped")
-        XCTAssertEqual(DiagnosticsExporter.describe(.notInstalled), "not installed")
         XCTAssertEqual(DiagnosticsExporter.describe(.failed(summary: "boom", detail: nil)), "failed: boom")
         XCTAssertEqual(
             DiagnosticsExporter.describe(.failed(summary: "boom", detail: "stderr: trace")),
             "failed: boom — stderr: trace"
         )
-        XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .verifying)).contains("installing"))
-        XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .downloading(fraction: 0.5))).contains("50%"))
         XCTAssertTrue(
             DiagnosticsExporter
                 .describe(.preparingModel(progress: ModelDownloadProgress(downloadedBytes: 50, totalBytes: 100)))

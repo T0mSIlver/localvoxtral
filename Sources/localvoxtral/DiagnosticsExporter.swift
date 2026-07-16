@@ -207,10 +207,6 @@ enum DiagnosticsExporter {
     /// Human-readable, single-line description of a managed-backend status.
     static func describe(_ status: ManagedBackendStatus) -> String {
         switch status {
-        case .notInstalled:
-            return "not installed"
-        case .installing(let progress):
-            return "installing (\(describe(progress)))"
         case .preparingModel(let progress):
             return "preparing model (\(describe(progress)))"
         case .starting:
@@ -226,22 +222,6 @@ enum DiagnosticsExporter {
                 return "failed: \(summary) — \(detail)"
             }
             return "failed: \(summary)"
-        }
-    }
-
-    private static func describe(_ progress: BackendInstallProgress) -> String {
-        switch progress {
-        case .downloading(let fraction):
-            if let fraction {
-                return String(format: "downloading %.0f%%", fraction * 100)
-            }
-            return "downloading"
-        case .verifying:
-            return "verifying"
-        case .installing(let logLine):
-            return "installing: \(logLine)"
-        case .finished:
-            return "finished"
         }
     }
 

@@ -294,7 +294,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
         XCTAssertNil(viewModel.sessionProvider, "connection must not start until the managed backend is ready")
-        XCTAssertEqual(viewModel.statusText, "Installing dictation backend...")
+        XCTAssertEqual(viewModel.statusText, "Starting dictation backend...")
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
 
         backendManager.resumeEnsure()
@@ -432,7 +432,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitUntilEnsureStarted()
 
         XCTAssertTrue(viewModel.isConnectingRealtimeSession)
-        XCTAssertEqual(viewModel.statusText, "Installing polishing backend...")
+        XCTAssertEqual(viewModel.statusText, "Starting polishing backend...")
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
 
         backendManager.resumeEnsure()
@@ -1087,8 +1087,8 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorIgnoresManagedBackendReadinessUntilOnboardingCompletes() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.speechdStatus = .notInstalled
-        backendManager.polishdStatus = .notInstalled
+        backendManager.speechdStatus = .stopped
+        backendManager.polishdStatus = .stopped
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .managedLocal
@@ -1391,8 +1391,8 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         var polishing: Bool
     }
 
-    var speechdStatus: ManagedBackendStatus = .notInstalled
-    var polishdStatus: ManagedBackendStatus = .notInstalled
+    var speechdStatus: ManagedBackendStatus = .stopped
+    var polishdStatus: ManagedBackendStatus = .stopped
     private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
         let id = UUID()
