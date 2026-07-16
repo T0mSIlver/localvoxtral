@@ -83,7 +83,7 @@ enum BackendMode: String, CaseIterable, Identifiable {
     var dictationDescription: String {
         switch self {
         case .managedLocal:
-            return "Installs and runs voxmlx on this Mac."
+            return "Runs the bundled dictation engine on this Mac."
         case .externalURL:
             return "Use an OpenAI Realtime-compatible endpoint you run yourself."
         }
@@ -905,9 +905,11 @@ final class SettingsStore {
 
     func effectiveModelName(for provider: RealtimeProvider) -> String {
         if dictationBackendMode == .managedLocal {
-            // Managed mode always serves the managed default model; a
-            // user-typed override in external-mode fields is ignored.
-            return RealtimeProvider.realtimeAPI.defaultModelName
+            // The bundled Swift engine needs its dedicated HF-layout pin.
+            // Keep the external provider's placeholder/default independent:
+            // user-typed external values remain ignored in managed mode, but
+            // an existing external endpoint still sees its historical model.
+            return SpeechModelCatalog.defaultOption.repoID
         }
         let normalized = Self.normalizedModelName(from: modelName(for: provider))
         return normalized.isEmpty ? provider.defaultModelName : normalized

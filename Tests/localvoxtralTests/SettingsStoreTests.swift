@@ -275,13 +275,18 @@ final class SettingsStoreTests: XCTestCase {
         )
     }
 
-    func testEffectiveModelName_managedLocal_returnsManagedDefaultIgnoringOverride() {
+    func testEffectiveModelName_managedLocal_returnsSpeechdModelIgnoringExternalOverride() {
         let store = makeStore()
         store.realtimeAPIModelName = "user-typed-override"
 
         XCTAssertEqual(
             store.effectiveModelName,
-            SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
+            SpeechModelCatalog.defaultOption.repoID
+        )
+        XCTAssertEqual(
+            store.modelPlaceholder,
+            "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit",
+            "external endpoint placeholder remains independent from managed speechd"
         )
     }
 
@@ -403,7 +408,7 @@ final class SettingsStoreTests: XCTestCase {
             XCTAssertEqual(
                 store.effectiveModelName,
                 dictationMode == .managedLocal
-                    ? SettingsStore.RealtimeProvider.realtimeAPI.defaultModelName
+                    ? SpeechModelCatalog.defaultOption.repoID
                     : "external-realtime-model"
             )
             XCTAssertEqual(

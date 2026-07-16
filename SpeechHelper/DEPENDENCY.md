@@ -5,6 +5,10 @@ VoxtralRealtime engine as an **upstream SwiftPM dependency** (product `MLXAudioS
 It used to be vendored into `Sources/SpeechEngine/` with local patches; those patches were
 upstreamed (see below), so we depend instead of vendor.
 
+The app now consumes this package as its production managed ASR backend:
+`BackendCatalog.speechd` launches the bundled `localvoxtral-speechd`, and the
+app pre-downloads the catalog-pinned HF snapshot that the helper loads exactly.
+
 Attribution: the dependency ships its own `LICENSE` (MIT, © 2025 Prince Canuma) in its SwiftPM
 checkout — we no longer keep a copy here.
 

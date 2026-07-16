@@ -247,7 +247,7 @@ private struct ConnectionSettingsPane: View {
                 case .managedLocal:
                     ManagedBackendStatusRow(
                         title: "Status",
-                        status: backendManager.voxmlxStatus
+                        status: backendManager.speechdStatus
                     )
                 }
             }

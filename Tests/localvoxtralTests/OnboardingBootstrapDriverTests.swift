@@ -103,7 +103,7 @@ final class OnboardingItemStateMappingTests: XCTestCase {
 final class LiveOnboardingBootstrapDriverTests: XCTestCase {
     func testStart_seedsItemStatesFromCurrentBackendStatus() {
         let manager = OnboardingTestBackendManager()
-        manager.voxmlxStatus = .installing(progress: .downloading(fraction: 0.5))
+        manager.speechdStatus = .installing(progress: .downloading(fraction: 0.5))
         manager.polishdStatus = .notInstalled
         let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
 
@@ -140,7 +140,7 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
 
     func testObservation_reflectsBackendStatusChanges() async {
         let manager = OnboardingTestBackendManager()
-        manager.voxmlxStatus = .starting
+        manager.speechdStatus = .starting
         let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
 
         driver.start(dictation: true, polishing: false)
@@ -150,7 +150,7 @@ final class LiveOnboardingBootstrapDriverTests: XCTestCase {
         )
 
         let states = await awaitReadyStateChange(from: driver) {
-            manager.voxmlxStatus = .ready
+            manager.speechdStatus = .ready
         }
 
         XCTAssertEqual(states[.dictation], .ready)
@@ -243,7 +243,7 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
         var polishing: Bool
     }
 
-    var voxmlxStatus: ManagedBackendStatus = .notInstalled
+    var speechdStatus: ManagedBackendStatus = .notInstalled
     var polishdStatus: ManagedBackendStatus = .notInstalled
     @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {

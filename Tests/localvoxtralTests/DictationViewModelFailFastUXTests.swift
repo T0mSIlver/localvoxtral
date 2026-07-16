@@ -278,7 +278,9 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testStartDictationInManagedModeAwaitsBackendManagerAndSurfacesFailure() async {
         let backendManager = FakeManagedBackendManager()
-        backendManager.ensureError = FakeManagedBackendFailure(message: "voxmlx failed: missing wheel")
+        backendManager.ensureError = FakeManagedBackendFailure(
+            message: "Dictation engine failed: model unavailable"
+        )
         backendManager.suspendEnsure = true
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
@@ -355,7 +357,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
         await emitStatusAndAwaitMirror(
             backendManager, viewModel: viewModel,
-            spec: BackendCatalog.voxmlx,
+            spec: BackendCatalog.speechd,
             status: .preparingModel(progress: ModelDownloadProgress(downloadedBytes: 36, totalBytes: 100))
         )
 
@@ -591,7 +593,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.applyDictationBackendModeChange(.managedLocal)
         await backendManager.waitUntilEnsureStarted()
 
-        // Turning polishing off must stop polishd only — the voxmlx warmup keeps
+        // Turning polishing off must stop polishd only — the speechd warmup keeps
         // its own task slot and must survive (regression: a shared slot let this
         // cancel the in-flight dictation warmup).
         viewModel.llmPolishingEnabledDidChange(false)
@@ -619,7 +621,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await backendManager.waitForStopDictationCallCount(1)
 
         // Flip back while the stop is still executing: the warmup must wait for
-        // the stop to finish, or the stale stop kills the fresh voxmlx process
+        // the stop to finish, or the stale stop kills the fresh speechd process
         // (review finding on rapid managed→external→managed flips).
         viewModel.applyDictationBackendModeChange(.managedLocal)
         await Task.yield()
@@ -1027,7 +1029,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorShowsFailureWhenManagedDictationBackendIsNotReady() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .starting
+        backendManager.speechdStatus = .starting
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.polishingBackendMode = .externalURL
@@ -1040,7 +1042,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorShowsIdleWhenRequiredManagedBackendsAreReady() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .ready
+        backendManager.speechdStatus = .ready
         backendManager.polishdStatus = .ready
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
@@ -1055,7 +1057,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorShowsIdleForExternalModesEvenWhenManagedBackendsAreStopped() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .stopped
+        backendManager.speechdStatus = .stopped
         backendManager.polishdStatus = .failed(summary: "mlx-lm failed to start.", detail: "trace")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .externalURL
@@ -1070,7 +1072,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorShowsFailureWhenRequiredManagedPolishingBackendFailed() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .ready
+        backendManager.speechdStatus = .ready
         backendManager.polishdStatus = .failed(summary: "mlx-lm failed to start.", detail: "trace")
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .externalURL
@@ -1085,7 +1087,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorIgnoresManagedBackendReadinessUntilOnboardingCompletes() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .notInstalled
+        backendManager.speechdStatus = .notInstalled
         backendManager.polishdStatus = .notInstalled
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
@@ -1100,7 +1102,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorSessionConnectedWinsOverUnreadyManagedBackend() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .starting
+        backendManager.speechdStatus = .starting
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.onboardingCompleted = true
@@ -1113,7 +1115,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
 
     func testMenuBarIndicatorRecentFailureWinsOverReadyManagedBackends() {
         let backendManager = FakeManagedBackendManager()
-        backendManager.voxmlxStatus = .ready
+        backendManager.speechdStatus = .ready
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .managedLocal
         viewModel.settings.onboardingCompleted = true
@@ -1389,7 +1391,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         var polishing: Bool
     }
 
-    var voxmlxStatus: ManagedBackendStatus = .notInstalled
+    var speechdStatus: ManagedBackendStatus = .notInstalled
     var polishdStatus: ManagedBackendStatus = .notInstalled
     private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
@@ -1432,7 +1434,7 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
         }
 
         if dictation {
-            emitStatus(spec: BackendCatalog.voxmlx, status: .ready)
+            emitStatus(spec: BackendCatalog.speechd, status: .ready)
         }
         if polishing {
             emitStatus(spec: BackendCatalog.polishd, status: .ready)
@@ -1467,8 +1469,8 @@ private final class FakeManagedBackendManager: ManagedBackendManaging {
 
     func emitStatus(spec: ManagedBackendSpec, status: ManagedBackendStatus) {
         switch spec.id {
-        case BackendCatalog.voxmlx.id:
-            voxmlxStatus = status
+        case BackendCatalog.speechd.id:
+            speechdStatus = status
         case BackendCatalog.polishd.id:
             polishdStatus = status
         default:
