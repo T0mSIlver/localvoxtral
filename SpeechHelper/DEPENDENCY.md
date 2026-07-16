@@ -61,7 +61,7 @@ casts; `VoxtralRealtimeStreamSession.swift` differed only in the delta routing b
   that makes the engine a drop-in for the Python `voxmlx` process. Original code, never
   upstream.
 - **Watchdog / CLI** — `SpeechEngineText/ParentProcessWatchdog.swift`,
-  `Sources/localvoxtral-speechd/main.swift`.
+  `Sources/localvoxtral-speechd/SpeechdMain.swift`.
 
 ## Version constraints (both risky deps pinned exact)
 
@@ -91,5 +91,6 @@ full transitive closure.
    we depend on regressed, and that the delta-routing assumption still holds (upstream's
    `session.text` is the full transcript; its raw `Delta` is not append-only).
 3. Run the lanes: `./scripts/remote-build.sh test --package-path SpeechHelper` (Metal-free unit
-   tier — the verification tier for a manifest/wrapper change) and, for any behavior change, the
-   part-2 real-model integration lane (Metal) before wiring anything into the app.
+   tier) and `./scripts/remote-build.sh package` followed by
+   `./scripts/remote-build.sh integration-speechd` (the packaged real-model Metal gate for the
+   upstream engine, append-only wire contract, and parent tether).

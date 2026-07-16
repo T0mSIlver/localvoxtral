@@ -18,20 +18,24 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
 ./scripts/remote-build.sh integration     # realtime pipeline vs live voxmlx
 ./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
-./scripts/remote-build.sh package         # build the .app bundle (also builds the polishing helper)
+./scripts/remote-build.sh package         # build the .app bundle (also builds both MLX helpers)
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first); optional repo = per-model gate for PolishModelCatalog additions (self-provisions weights)
+./scripts/remote-build.sh integration-speechd [hf-repo]  # packaged speech helper vs real audio/model: accuracy + append-only deltas + parent tether (run package first)
 ./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval: human WAVs (optional) or TTS -> voxmlx -> polishd (run package first)
 ./scripts/run-agent-eval-local.sh [EvalRecordings/agent-dictation/<set>]   # same eval directly from a Mac checkout (run package_app.sh first)
 ./scripts/ablate-agent-eval.py .build/agent-eval-local.log                 # reuse one E2E log to compare pre/post-processing, prompts, and models without rerunning audio
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
+./scripts/remote-build.sh test  --package-path SpeechHelper   # speech helper unit tests (Metal-free)
 ```
 
-The polishing helper (`PolishHelper/`, product `localvoxtral-polishd`) is a
-SEPARATE SwiftPM package so the root build never compiles the MLX C++ core.
+The MLX helpers (`PolishHelper/` / `SpeechHelper/`, products
+`localvoxtral-polishd` / `localvoxtral-speechd`) are SEPARATE SwiftPM packages
+so the root build never compiles the MLX C++ core.
 Two hard rules learned setting it up: (1) `swift build` of the helper
 compiles but CANNOT produce working Metal kernels — only the xcodebuild lane
-in `package_app.sh` can (aggregate scheme `PolishHelper`); a swift-build
+in `package_app.sh` can (package aggregate schemes `PolishHelper` /
+`SpeechHelper`); a swift-build
 binary fails at runtime loading the metallib. (2) On Xcode 26+ the Metal
 compiler is a separate ~700 MB component — one-time host setup is
 `xcodebuild -downloadComponent MetalToolchain` (the catalog fetch fails
@@ -133,9 +137,10 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 | Tier | What | When | Cost |
 |---|---|---|---|
-| 0 | Unit suite (500+ tests) + PolishHelper unit suite + packaging + launch smoke | every PR/push, CI (helper unit suite: self-hosted lanes only) | ~1 min |
+| 0 | Unit suite (500+ tests) + PolishHelper/SpeechHelper unit suites + packaging + launch smoke | every PR/push, CI (helper unit suites: self-hosted lanes only) | ~1 min |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
+| 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
@@ -204,6 +209,11 @@ filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
 remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
+
+The speechd live-model lane follows the same owner constraint: it runs only for
+`scripts/ci/speechd-lane-filter.sh` matches or `[run-speechd-integration]`.
+SpeechHelper engine/pin, packaging, or integration-contract changes must run it;
+the Metal-free SpeechHelper unit suite remains per-push on self-hosted CI.
 
 Agent-dictation E2E eval (`AgentDictationE2EEvalTests`, nightly `eval-e2e.yml`
 + `remote-build.sh eval-e2e`): model/prompt/feature-pipeline changes — anything

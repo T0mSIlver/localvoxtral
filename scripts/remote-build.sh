@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
@@ -14,6 +14,10 @@ set -euo pipefail
 #                  spawn the bundled polishing helper (built by `package`)
 #                  with the real model and score it against the polish eval
 #                  baseline + parent-pid tether
+#     integration-speechd
+#                  spawn the packaged speech helper (built by `package`),
+#                  transcribe real audio through the production websocket
+#                  client, and assert accuracy + delta + parent-pid contracts
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
@@ -162,7 +166,8 @@ case "$CMD" in
 esac
 
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
-  --skip PolishHelperIntegrationTests --skip AgentDictationE2EEvalTests)
+  --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
+  --skip AgentDictationE2EEvalTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's voxmlx/mlxlm launchd services are launch-on-demand to keep their
@@ -206,6 +211,29 @@ case "$CMD" in
         >"$POLISHD_MARKER"
     fi
     REMOTE_CMD=(swift test --filter PolishHelperIntegrationTests)
+    ;;
+  integration-speechd)
+    # Enablement travels in the rsynced tree because the SSH gate cannot pass
+    # arbitrary env prefixes. Requires the packaged binary and resources from
+    # a prior `./scripts/remote-build.sh package` run; dist survives rsync.
+    if [[ $# -gt 1 ]]; then
+      echo "integration-speechd accepts at most one argument (HF model repo)" >&2
+      exit 1
+    fi
+    SPEECHD_MODEL="${1:-}"
+    SPEECHD_MARKER="$ROOT_DIR/.speechd-integration-enable.json"
+    trap 'cleanup_transient_marker "$SPEECHD_MARKER"' EXIT
+    if [[ -n "$SPEECHD_MODEL" ]]; then
+      printf '{"helperPath": "%s", "model": "%s"}\n' \
+        "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
+        "$SPEECHD_MODEL" \
+        >"$SPEECHD_MARKER"
+    else
+      printf '{"helperPath": "%s"}\n' \
+        "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
+        >"$SPEECHD_MARKER"
+    fi
+    REMOTE_CMD=(swift test --filter SpeechHelperIntegrationTests)
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):

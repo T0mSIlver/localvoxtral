@@ -25,7 +25,7 @@ jobs:
           fetch-depth: 0
           # Keep gitignored build state between runs on the persistent
           # self-hosted runner. The default `git clean -ffdx` wiped .build/ and
-          # PolishHelper/.build/ (including the helper's xcodebuild
+          # PolishHelper/.build/ and SpeechHelper/.build/ (including helper xcodebuild
           # DerivedData) at the start of EVERY run, forcing a cold MLX C++ +
           # Metal rebuild twice per run — ~4.5 min of a ~7.5 min job. Releases
           # keep the pristine-tree guarantee (release.yml checks out with the
@@ -52,7 +52,7 @@ jobs:
           # pattern): clean: false preserves them across runs, and a stray one
           # would flip a marker-gated live suite ON in the plain unit step.
           rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
-            .polishd-integration-enable.json
+            .polishd-integration-enable.json .speechd-integration-enable.json
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
@@ -119,6 +119,52 @@ jobs:
             echo "LLM eval lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Decide speechd integration lane (path filter + [run-speechd-integration] marker)
+        # Real speechd inference loads the multi-GB Voxtral model on the
+        # personal-Mac runner, so keep it conditional just like polishd.
+        id: speechd_lane
+        if: runner.environment == 'self-hosted'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          FILES="$RUNNER_TEMP/speechd-lane-changed-files.txt"
+          MARKER_TEXT="$RUNNER_TEMP/speechd-lane-marker-text.txt"
+
+          BASE=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            BASE="$(git merge-base "origin/$BASE_REF" HEAD || true)"
+          elif git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+            BASE="$PUSH_BEFORE_SHA"
+          fi
+          if [[ -z "$BASE" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Speechd integration lane: RUNNING (diff unavailable — failing open)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git diff --name-only "$BASE" HEAD > "$FILES"
+
+          printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git log -1 --format=%B "$PR_HEAD_SHA" >> "$MARKER_TEXT" || true
+          else
+            printf '%s\n' "$PUSH_HEAD_MESSAGE" >> "$MARKER_TEXT"
+          fi
+
+          DECISION="$(./scripts/ci/speechd-lane-filter.sh "$FILES" "$MARKER_TEXT")"
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+            echo "Speechd integration lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Speechd integration lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Setup Swift
         if: runner.environment == 'github-hosted'
         uses: swift-actions/setup-swift@v2
@@ -160,6 +206,7 @@ jobs:
           # many-minute live-inference run.
           swift test \
             --skip RealtimeAPIVLLMIntegrationTests \
+            --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
             --enable-code-coverage
 
@@ -221,6 +268,13 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: swift test --package-path PolishHelper
 
+      - name: Speech helper unit tests (SpeechHelper package)
+        # Self-hosted only, matching PolishHelper: this is the per-push,
+        # Metal-free codec/delta/watchdog suite. Real Metal inference is the
+        # conditional post-packaging lane below.
+        if: runner.environment == 'self-hosted'
+        run: swift test --package-path SpeechHelper
+
       - name: Ensure Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate component, and its
         # activation is per-user — installing it for the SSH build user does
@@ -246,12 +300,13 @@ jobs:
         # The self-hosted runner's keychain holds the stable localvoxtral-dev
         # signing cert, keeping TCC grants valid across builds; anywhere the
         # identity is absent (hosted runners), packaging falls back to ad-hoc.
-        # Hosted runners skip the bundled polishing helper (no MetalToolchain
-        # component + cold MLX C++ build would dominate fork-PR CI); every
-        # self-hosted lane (same-repo PRs, main, releases) builds it.
+        # Hosted runners skip both bundled MLX helpers (no MetalToolchain
+        # component + cold MLX C++ builds would dominate fork-PR CI); every
+        # self-hosted lane (same-repo PRs, main, releases) builds them.
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_SKIP_POLISHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
+          LOCALVOXTRAL_SKIP_SPEECHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
           # Self-hosted lanes (same-repo PRs, main) MUST ship an identity-signed
           # bundle so try-pr.sh leaves the signature untouched and the owner's
           # Accessibility (TCC) grant survives across builds. Fail the build
@@ -260,6 +315,16 @@ jobs:
           # cert and are expected to be ad-hoc, so the requirement is off there.
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ runner.environment == 'github-hosted' && '0' || '1' }}
         run: ./scripts/package_app.sh release
+
+      - name: Speech helper integration (real audio + live model)
+        # Runs packaged speechd through RealtimeAPIWebSocketClient with the
+        # tier-1 spoken fixture. Conditional because it loads the multi-GB
+        # Voxtral model. Local equivalent: remote-build.sh integration-speechd.
+        if: runner.environment == 'self-hosted' && steps.speechd_lane.outputs.run == 'true'
+        env:
+          SPEECHD_INTEGRATION_TEST_ENABLE: "1"
+          SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
+        run: swift test --filter SpeechHelperIntegrationTests
 
       - name: Polishing helper integration (live model + eval baseline)
         # Spawns the helper built by the packaging step with the real pinned
@@ -288,13 +353,16 @@ jobs:
           retention-days: 7
 
       - name: Zip dSYM for artifact upload
-        # Includes the polishing helper's dSYM when present (self-hosted
-        # lanes) — helper crashes (MLX C++/Metal) are the likeliest field
+        # Includes helper dSYMs when present (self-hosted lanes) — helper
+        # crashes (MLX C++/Metal) are the likeliest field
         # crashes, and a dSYM that never leaves the runner symbolizes nothing.
         run: |
           ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
           if [[ -d dist/localvoxtral-polishd.dSYM ]]; then
             ditto -c -k --keepParent dist/localvoxtral-polishd.dSYM dist/localvoxtral-polishd-dSYM.zip
+          fi
+          if [[ -d dist/localvoxtral-speechd.dSYM ]]; then
+            ditto -c -k --keepParent dist/localvoxtral-speechd.dSYM dist/localvoxtral-speechd-dSYM.zip
           fi
 
       - name: Upload dSYM artifact
@@ -306,6 +374,7 @@ jobs:
           path: |
             dist/localvoxtral-dSYM.zip
             dist/localvoxtral-polishd-dSYM.zip
+            dist/localvoxtral-speechd-dSYM.zip
           retention-days: 30
 
       - name: Smoke test packaged app launch (end-user simulation)
@@ -351,7 +420,7 @@ jobs:
         if: ${{ always() && runner.environment == 'self-hosted' }}
         run: |
           survivors="$(ps -axo pid,etime,ucomm \
-            | grep -iE 'localvoxtral|polishd|xctest|swiftpm-testing|XCBBuildService' \
+            | grep -iE 'localvoxtral|polishd|speechd|xctest|swiftpm-testing|XCBBuildService' \
             | grep -v grep || true)"
           if [[ -n "$survivors" ]]; then
             echo "candidate processes still alive at job end:"
