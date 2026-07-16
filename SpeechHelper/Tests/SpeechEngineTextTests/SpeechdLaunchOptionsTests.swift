@@ -10,12 +10,90 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
             "--model-revision", "0123456789abcdef0123456789abcdef01234567",
             "--port", "8471",
             "--parent-pid", "4321",
+            "--step-ms", "240",
         ])
 
         XCTAssertEqual(options.modelID, "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
         XCTAssertEqual(options.modelRevision, "0123456789abcdef0123456789abcdef01234567")
         XCTAssertEqual(options.port, 8471)
         XCTAssertEqual(options.parentPID, 4321)
+        XCTAssertEqual(options.stepMilliseconds, 240)
+    }
+
+    func testStepCadenceDefaultsToModelNativeCadence() throws {
+        let options = try SpeechdOptionParser.parse(["--model", "example/model"])
+
+        XCTAssertEqual(options.stepMilliseconds, 480)
+    }
+
+    func testStepCadenceAllowsSmallPositiveValues() throws {
+        let options = try SpeechdOptionParser.parse([
+            "--model", "example/model", "--step-ms", "1",
+        ])
+
+        XCTAssertEqual(options.stepMilliseconds, 1)
+    }
+
+    func testStepCadenceRejectsNonPositiveAndNonNumericValues() {
+        for value in ["0", "-1", "nope"] {
+            XCTAssertThrowsError(
+                try SpeechdOptionParser.parse([
+                    "--model", "example/model", "--step-ms", value,
+                ])
+            ) { error in
+                XCTAssertEqual(error as? SpeechdOptionError, .invalidValue("--step-ms"))
+            }
+        }
+    }
+
+    func testParsesBenchmarkOptions() throws {
+        let options = try SpeechdOptionParser.parse([
+            "--model", "example/model",
+            "--bench", "--seconds", "60", "--cadence-ms", "100",
+            "--wav", "/tmp/example.wav",
+        ])
+
+        XCTAssertEqual(
+            options.benchmark,
+            SpeechdBenchmarkOptions(
+                seconds: 60,
+                cadenceMilliseconds: 100,
+                wavPath: "/tmp/example.wav"
+            )
+        )
+    }
+
+    func testBenchmarkCadenceDefaultsToNativeCadence() throws {
+        let options = try SpeechdOptionParser.parse([
+            "--model", "example/model", "--bench", "--seconds", "5",
+        ])
+
+        XCTAssertEqual(options.benchmark?.cadenceMilliseconds, 480)
+    }
+
+    func testBenchmarkRequiresPositiveSeconds() {
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse(["--model", "example/model", "--bench"])
+        ) { error in
+            XCTAssertEqual(error as? SpeechdOptionError, .missingValue("--seconds"))
+        }
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse([
+                "--model", "example/model", "--bench", "--seconds", "0",
+            ])
+        ) { error in
+            XCTAssertEqual(error as? SpeechdOptionError, .invalidValue("--seconds"))
+        }
+    }
+
+    func testBenchmarkOnlyFlagsRequireBenchMode() {
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse([
+                "--model", "example/model", "--seconds", "60",
+            ])
+        ) { error in
+            XCTAssertEqual(error as? SpeechdOptionError, .invalidValue("--seconds"))
+        }
     }
 
     func testPinnedRevisionLocatorNeverFallsBackToMain() throws {

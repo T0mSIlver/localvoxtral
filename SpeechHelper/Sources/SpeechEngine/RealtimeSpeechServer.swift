@@ -16,6 +16,7 @@ import Synchronization
 public final class RealtimeSpeechServer: @unchecked Sendable {
     private let model: VoxtralRealtimeModel
     private let transcriptionDelayMs: Int?
+    private let stepMilliseconds: Int
     private let listener: NWListener
     private let netQueue = DispatchQueue(label: "localvoxtral.speechd.net")
     private let inferenceQueue = DispatchQueue(label: "localvoxtral.speechd.inference")
@@ -33,33 +34,34 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         modelDirectory: String?,
         port: UInt16,
         transcriptionDelayMs: Int?,
-        cacheLimitMB: Int
+        cacheLimitMB: Int,
+        stepMilliseconds: Int = 480
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
-        let model: VoxtralRealtimeModel
-        if let dir = modelDirectory {
-            model = try VoxtralRealtimeModel.fromDirectory(URL(fileURLWithPath: dir))
-        } else if let id = modelID, let revision = modelRevision {
-            let directory = try SpeechHFCacheModelLocator.locate(
-                repoID: id,
-                revision: revision,
-                cacheRoot: SpeechHFCacheModelLocator.defaultCacheRoot()
-            )
-            model = try VoxtralRealtimeModel.fromDirectory(directory)
-        } else if let id = modelID {
-            model = try await VoxtralRealtimeModel.fromPretrained(id)
-        } else {
-            throw ServerError.noModelSpecified
-        }
+        let model = try await SpeechModelLoader.load(
+            modelID: modelID,
+            modelRevision: modelRevision,
+            modelDirectory: modelDirectory
+        )
         return try RealtimeSpeechServer(
-            model: model, port: port, transcriptionDelayMs: transcriptionDelayMs)
+            model: model,
+            port: port,
+            transcriptionDelayMs: transcriptionDelayMs,
+            stepMilliseconds: stepMilliseconds
+        )
     }
 
     public enum ServerError: Error { case noModelSpecified }
 
-    init(model: VoxtralRealtimeModel, port: UInt16, transcriptionDelayMs: Int?) throws {
+    init(
+        model: VoxtralRealtimeModel,
+        port: UInt16,
+        transcriptionDelayMs: Int?,
+        stepMilliseconds: Int
+    ) throws {
         self.model = model
         self.transcriptionDelayMs = transcriptionDelayMs
+        self.stepMilliseconds = stepMilliseconds
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
@@ -120,17 +122,22 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         var phase: Phase = .http
         var buffer = Data()
         var session: VoxtralRealtimeStreamSession?
+        var stepBatcher: StepBatcher
         // Append-only delta contract lives in OUR layer now (the engine is an upstream
         // dependency whose raw `Delta` re-emits the whole transcript on a non-prefix step).
         // Feed it the session's full-transcript snapshot after each step/finish; emit only
         // its append-only delta. Touched only on the inference queue, like `session`.
         var deltas = TranscriptDeltaEmitter()
         enum Phase { case http, webSocket }
+
+        init(stepMilliseconds: Int) {
+            self.stepBatcher = StepBatcher(cadenceMilliseconds: stepMilliseconds)
+        }
     }
 
     private func accept(_ connection: NWConnection) {
         connection.start(queue: netQueue)
-        receive(connection, Connection())
+        receive(connection, Connection(stepMilliseconds: stepMilliseconds))
     }
 
     private func receive(_ connection: NWConnection, _ ctx: Connection) {
@@ -218,16 +225,20 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                     self.sendServer(connection, .error(message: "Invalid PCM16 payload"))
                     return
                 }
-                let session = self.ensureSession(ctx)
-                session.step(samples)
-                // Emit the append-only delta from the full transcript snapshot, NOT the
-                // engine's raw `Delta` (which re-emits the whole transcript on a non-prefix
-                // step — our no-backspace insertion path would duplicate it).
-                let delta = ctx.deltas.emit(fullText: session.text)
-                if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
+                for batch in ctx.stepBatcher.append(samples) {
+                    let session = self.ensureSession(ctx)
+                    session.step(batch)
+                    // Emit the append-only delta from the full transcript snapshot, NOT the
+                    // engine's raw `Delta` (which re-emits the whole transcript on a non-prefix
+                    // step — our no-backspace insertion path would duplicate it).
+                    let delta = ctx.deltas.emit(fullText: session.text)
+                    if !delta.isEmpty { self.sendServer(connection, .transcriptDelta(delta)) }
+                }
             case .commit(let final):
                 guard final else { return }  // non-final commit is a no-op, matching voxmlx
                 let session = self.ensureSession(ctx)
+                let remainder = ctx.stepBatcher.flushRemainder()
+                if !remainder.isEmpty { session.step(remainder) }
                 session.finish()
                 let tail = ctx.deltas.emit(fullText: session.text)
                 if !tail.isEmpty { self.sendServer(connection, .transcriptDelta(tail)) }
@@ -236,9 +247,11 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 self.sendServer(connection, .transcriptDone(text: ctx.deltas.emittedText))
                 ctx.session = nil  // ready for the next utterance
                 ctx.deltas = TranscriptDeltaEmitter()
+                ctx.stepBatcher.clear()
             case .clear:
                 ctx.session = nil
                 ctx.deltas = TranscriptDeltaEmitter()
+                ctx.stepBatcher.clear()
             case .ignored:
                 break
             }
@@ -264,5 +277,29 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             content: data,
             completion: .contentProcessed { _ in if thenClose { connection.cancel() } }
         )
+    }
+}
+
+enum SpeechModelLoader {
+    static func load(
+        modelID: String?,
+        modelRevision: String?,
+        modelDirectory: String?
+    ) async throws -> VoxtralRealtimeModel {
+        if let dir = modelDirectory {
+            return try VoxtralRealtimeModel.fromDirectory(URL(fileURLWithPath: dir))
+        }
+        if let id = modelID, let revision = modelRevision {
+            let directory = try SpeechHFCacheModelLocator.locate(
+                repoID: id,
+                revision: revision,
+                cacheRoot: SpeechHFCacheModelLocator.defaultCacheRoot()
+            )
+            return try VoxtralRealtimeModel.fromDirectory(directory)
+        }
+        if let id = modelID {
+            return try await VoxtralRealtimeModel.fromPretrained(id)
+        }
+        throw RealtimeSpeechServer.ServerError.noModelSpecified
     }
 }

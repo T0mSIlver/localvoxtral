@@ -19,6 +19,11 @@ struct SpeechdMain {
     }
 
     static func run(_ options: SpeechdLaunchOptions) async throws {
+        if options.benchmark != nil {
+            try await StreamingSpeechBenchmark.run(options)
+            return
+        }
+
         // Load BEFORE binding the listener so /health only answers once inference is ready.
         let server = try await RealtimeSpeechServer.load(
             modelID: options.modelID,
@@ -26,7 +31,8 @@ struct SpeechdMain {
             modelDirectory: options.modelDirectory,
             port: options.port,
             transcriptionDelayMs: options.transcriptionDelayMs,
-            cacheLimitMB: options.cacheLimitMB
+            cacheLimitMB: options.cacheLimitMB,
+            stepMilliseconds: options.stepMilliseconds
         )
 
         // Exit if the supervising app dies, so a killed app never orphans the model.
