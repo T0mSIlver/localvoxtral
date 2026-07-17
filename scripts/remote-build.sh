@@ -60,7 +60,9 @@ TREE_SLUG="${TREE_SLUG%-}"
 TREE_HASH="$(printf '%s' "$ROOT_DIR" | md5sum | cut -c1-8)"
 DIR="${LV_BUILD_DIR:-work/localvoxtral-${TREE_SLUG}-${TREE_HASH}}"
 
-REMOTE_LOG="$ROOT_DIR/.build/last-remote.log"
+REMOTE_LOG="${LOCALVOXTRAL_REMOTE_LOG:-$ROOT_DIR/.build/last-remote.log}"
+REMOTE_PAYLOAD_ACTIVE=0
+REMOTE_REAP_ATTEMPTED=0
 
 run_remote() {
   local remote_command="$1"
@@ -71,6 +73,47 @@ run_remote() {
   echo "==> Full output: $REMOTE_LOG"
   return "$status"
 }
+
+reap_remote_workdir() {
+  [[ "$REMOTE_REAP_ATTEMPTED" == "0" ]] || return 0
+  REMOTE_REAP_ATTEMPTED=1
+  echo "==> Reaping interrupted test processes in $HOST:$DIR"
+  if ! ssh -o BatchMode=yes -o ConnectTimeout=10 \
+    "$HOST" "reap $(printf '%q' "$DIR")"; then
+    echo "==> WARN: remote process cleanup unavailable; install the current" \
+      "build gate + reaper from scripts/mac/README.md." >&2
+  fi
+}
+
+handle_remote_signal() {
+  local status="$1"
+  # A second Ctrl-C while the best-effort reap SSH is running must not skip
+  # existing EXIT traps that remove transient eval markers.
+  trap '' HUP INT TERM
+  if [[ "$REMOTE_PAYLOAD_ACTIVE" == "1" ]]; then
+    reap_remote_workdir
+  fi
+  exit "$status"
+}
+
+run_remote_payload() {
+  local remote_command="$1" status=0
+  REMOTE_PAYLOAD_ACTIVE=1
+  if run_remote "$remote_command"; then
+    status=0
+  else
+    status=$?
+  fi
+  REMOTE_PAYLOAD_ACTIVE=0
+  if (( status != 0 )); then
+    reap_remote_workdir
+  fi
+  return "$status"
+}
+
+trap 'handle_remote_signal 129' HUP
+trap 'handle_remote_signal 130' INT
+trap 'handle_remote_signal 143' TERM
 
 # Bring an on-demand test server up (and warm) before a suite that needs it.
 # The build host's voxmlx (8000) and mlxlm (8080) launchd services are
@@ -342,4 +385,4 @@ rsync -az --delete \
 # cleanup rsync now has something to delete.
 TREE_SYNCED=1
 
-run_remote "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")"
+run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")"

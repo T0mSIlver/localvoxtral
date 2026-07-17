@@ -225,7 +225,7 @@ When capture happens in a Mac checkout, `scripts/run-agent-eval-local.sh`
 runs the same env-gated suite directly and avoids copying the voice set through
 another source checkout.
 
-## `localvoxtral-build-gate.sh` — SSH build gate (v2)
+## `localvoxtral-build-gate.sh` — SSH build gate (v3)
 
 Forced command for the Linux dev box's build key on the Mac build host. It
 allowlists the `remote-build.sh` loop (rsync in, `swift build|test`,
@@ -233,8 +233,17 @@ allowlists the `remote-build.sh` loop (rsync in, `swift build|test`,
 `applog [minutes]`, `voxlog [lines]`, `svc-status`, and the on-demand
 test-server verb `ensure <voxmlx|mlxlm|all>` (touches a trigger file in the
 world-writable run dir and polls the port until warm — see the on-demand
-section above). Everything else is denied and logged to
-`~/Library/Logs/localvoxtral-build-gate.log`.
+section above). The `reap work/localvoxtral-<id>` recovery verb accepts one
+validated work directory and terminates only stale test processes proven by
+UID plus cwd/mapped-text evidence to belong to it. Everything else is denied
+and logged to `~/Library/Logs/localvoxtral-build-gate.log`.
+
+Allowed build payloads run in a dedicated process group. Whenever the payload
+leader exits — including a SIGPIPE after its SSH output channel closes — the
+gate sends TERM to any remaining group members, waits a bounded grace period,
+then sends KILL. `remote-build.sh` also requests an explicit scoped reap when
+the SSH payload fails. Both boundaries are one invocation/workdir: neither
+uses a global `pkill`, so parallel worktrees and unrelated tests survive.
 
 ### Installing / upgrading the gate
 
@@ -249,10 +258,16 @@ sudo install -d -m 0755 -o "$GATE_ACCOUNT" "/Users/$GATE_ACCOUNT/bin"
 sudo install -m 0755 -o "$GATE_ACCOUNT" \
   scripts/mac/localvoxtral-build-gate.sh \
   "/Users/$GATE_ACCOUNT/bin/localvoxtral-build-gate.sh"
+sudo install -m 0755 -o "$GATE_ACCOUNT" \
+  scripts/ci/cleanup-stale-test-processes.sh \
+  "/Users/$GATE_ACCOUNT/bin/localvoxtral-cleanup-stale-test-processes.sh"
 ```
 
 No `authorized_keys` change is needed — the entry already points at
 `$HOME/bin/localvoxtral-build-gate.sh`; this replaces the script in place.
+Upgrading the installed gate is required to gain interrupted-build teardown;
+merging the repository copy alone does not change the forced command already
+installed under the dedicated account.
 
 ### Machine-local config (`~/.localvoxtral-gate.conf` in the gate account)
 
@@ -293,6 +308,7 @@ fiddlier and breaks when the log file is rotated/recreated.)
 ./scripts/remote-build.sh voxlog 100  # voxmlx log tail
 ./scripts/remote-build.sh svc-status  # voxmlx service/process/port status
 ssh <gate-destination> 'ensure voxmlx' # warm the on-demand STT server
+ssh <gate-destination> 'reap work/localvoxtral-<id>' # scoped stale-test cleanup
 ssh <gate-destination> 'echo pwned'   # must print "denied command"
 ```
 

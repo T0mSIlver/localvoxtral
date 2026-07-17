@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# localvoxtral build gate v2.
+# localvoxtral build gate v3.
 #
 # This script is intended to be installed as the forced command for the Mac
 # build-host SSH key. It keeps the existing build/test/package allowlist and
-# adds read-only diagnostics without granting an interactive shell.
+# adds read-only diagnostics and scoped interrupted-test recovery without
+# granting an interactive shell.
 #
 # Gate v2 install notes: see scripts/mac/README.md. Install from a trusted
 # owner session, not through this gate. New diagnostic verbs allowed through
@@ -15,6 +16,7 @@ set -euo pipefail
 #   voxlog [lines]      # integer, clamped to 1..500, default 80
 #   svc-status
 #   ensure <voxmlx|mlxlm|all>   # warm an on-demand test server (touch + poll)
+#   reap work/localvoxtral-<id>  # terminate stale tests in one exact work dir
 
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
 VOXLOG_FILE="$HOME/Library/Logs/voxmlx.log"
@@ -32,6 +34,7 @@ VOXMLX_GUI_UID="$(id -u)"
 LV_RUN_DIR="/Users/Shared/localvoxtral/run"
 LV_ENSURE_READY_TIMEOUT=180
 LV_ENSURE_PROBE_TIMEOUT=2
+REAPER="$HOME/bin/localvoxtral-cleanup-stale-test-processes.sh"
 
 # Machine-local overrides (never committed): the gate account is separate
 # from the GUI owner account, so voxmlx's log path and GUI uid differ per
@@ -349,6 +352,88 @@ run_ensure_command() {
   esac
 }
 
+run_reap_command() {
+  local dir="$1"
+  validate_work_dir "$dir" || deny
+  if [[ ! -x "$REAPER" ]]; then
+    printf 'reap: installed helper missing: %s\n' "$REAPER" >&2
+    return 1
+  fi
+  "$REAPER" "$HOME/${dir%/}"
+}
+
+# The forced-command SSH session used to `exec bash -c` directly. When the
+# client disappeared (Ctrl-C, agent output ceiling, network loss), SwiftPM's
+# xctest descendants could outlive ssh for hours on the persistent Mac. Run
+# every allowed payload in its own process group so the gate can terminate
+# exactly that invocation without touching the owner's tests or another
+# agent's worktree.
+LV_GATE_PAYLOAD_PID=""
+LV_GATE_PAYLOAD_PGID=""
+
+payload_group_is_alive() {
+  [[ -n "$LV_GATE_PAYLOAD_PGID" ]] \
+    && kill -0 -- "-$LV_GATE_PAYLOAD_PGID" 2>/dev/null
+}
+
+terminate_payload_group() {
+  local polls="${LOCALVOXTRAL_GATE_TERM_POLLS:-50}"
+  local poll_seconds="${LOCALVOXTRAL_GATE_TERM_POLL_SECONDS:-0.1}"
+  local poll=0
+
+  if payload_group_is_alive; then
+    kill -TERM -- "-$LV_GATE_PAYLOAD_PGID" 2>/dev/null || true
+    while (( poll < polls )) && payload_group_is_alive; do
+      sleep "$poll_seconds"
+      poll=$((poll + 1))
+    done
+    if payload_group_is_alive; then
+      kill -KILL -- "-$LV_GATE_PAYLOAD_PGID" 2>/dev/null || true
+    fi
+  fi
+  if [[ -n "$LV_GATE_PAYLOAD_PID" ]]; then
+    wait "$LV_GATE_PAYLOAD_PID" 2>/dev/null || true
+  fi
+  LV_GATE_PAYLOAD_PID=""
+  LV_GATE_PAYLOAD_PGID=""
+}
+
+run_payload_with_cleanup() {
+  local payload="$1" status=0 monitor_was_enabled=0
+
+  [[ "${LOCALVOXTRAL_GATE_TERM_POLLS:-50}" =~ ^[0-9]+$ ]] || deny
+  case "$-" in
+    *m*) monitor_was_enabled=1 ;;
+  esac
+
+  # Monitor mode gives each background job a distinct process group even in
+  # this non-interactive Bash 3.2 shell. The PGID is the first child's PID.
+  set -m
+  /bin/bash -c "$payload" &
+  LV_GATE_PAYLOAD_PID=$!
+  LV_GATE_PAYLOAD_PGID=$LV_GATE_PAYLOAD_PID
+  (( monitor_was_enabled == 1 )) || set +m
+
+  # Signal handlers exit with conventional shell statuses; EXIT owns the one
+  # cleanup path. PIPE matters because stdout is `ssh | tee` on the client.
+  trap 'status=$?; trap - EXIT HUP INT TERM PIPE; terminate_payload_group; exit "$status"' EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 141' PIPE
+
+  if wait "$LV_GATE_PAYLOAD_PID"; then
+    status=0
+  else
+    status=$?
+  fi
+  # The leader can exit on SIGPIPE while an xctest grandchild remains in the
+  # group. Always drain the group, even when the leader reported success.
+  terminate_payload_group
+  trap - EXIT HUP INT TERM PIPE
+  return "$status"
+}
+
 # Fail-closed metacharacter blocklist. Note the glob subtlety: a `]` inside
 # the bracket expression terminates the set early, so part of this pattern
 # matches as literal text — empirically ALL listed characters still block
@@ -407,7 +492,7 @@ run_cd_command() {
   allow_build_payload "$payload" || deny
 
   cd "$HOME/${dir%/}"
-  exec /bin/bash -c "$payload"
+  run_payload_with_cleanup "$payload"
 }
 
 run_bash_lc_command() {
@@ -462,6 +547,16 @@ run_rsync_command() {
   exec rsync "${argv[@]:1}"
 }
 
+# Shell regression tests source the reviewed implementation directly. This
+# variable cannot cross the forced-command SSH boundary, where the environment
+# is fixed by sshd; it only suppresses dispatch in a local test process.
+if [[ "${LOCALVOXTRAL_BUILD_GATE_SOURCE_ONLY:-0}" == "1" ]]; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+  fi
+  exit 0
+fi
+
 case "$original_command" in
   diag)
     run_diag
@@ -489,6 +584,11 @@ case "$original_command" in
     arg="${original_command#ensure }"
     [[ "$arg" != *" "* && -n "$arg" ]] || deny
     run_ensure_command "$arg"
+    ;;
+  reap\ work/localvoxtral-*)
+    arg="${original_command#reap }"
+    [[ "$arg" != *" "* && -n "$arg" ]] || deny
+    run_reap_command "$arg"
     ;;
   mkdir\ -p\ work/localvoxtral-*)
     run_mkdir_command "$original_command"

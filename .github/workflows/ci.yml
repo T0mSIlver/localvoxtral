@@ -54,6 +54,24 @@ jobs:
           rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
             .polishd-integration-enable.json .speechd-integration-enable.json
 
+      - name: Clean abandoned test processes in this workspace
+        # A cancelled self-hosted job can outlive the Actions process cookie
+        # and leave swift-package/xctest running in this persistent checkout.
+        # Scope by current user + lsof cwd/mapped text; never pkill globally
+        # because the owner and parallel worktrees may run legitimate tests.
+        if: runner.environment == 'self-hosted'
+        run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
+
+      - name: Process-cleanup regression tests
+        # Pure shell tests for the workspace selector and the SSH build gate's
+        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        run: |
+          ./scripts/ci/test-cleanup-stale-test-processes.sh
+          ./scripts/ci/test-build-gate-process-cleanup.sh
+          ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-remote-build-reap.sh
+          ./scripts/ci/test-run-supervised-command.sh
+
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
         # every push: the polishd live-model integration step below runs only
@@ -198,17 +216,34 @@ jobs:
         # old standalone `swift build` step built plain-debug products that
         # nothing downstream consumed (tests rebuild with coverage flags,
         # packaging builds release), so it was pure duplicate compilation.
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
           # AgentDictationE2EEvalTests is skipped explicitly (belt) on top of
           # the marker cleanup above (suspenders): it is the nightly
           # eval-e2e.yml lane, never tier 0, and a leftover enable marker in
           # this persistent workspace must not turn the unit step into a
           # many-minute live-inference run.
-          swift test \
+          timeout_seconds=900
+          if [[ "$RUNNER_ENVIRONMENT" == "self-hosted" ]]; then
+            timeout_seconds=300
+          fi
+          ./scripts/ci/run-supervised-command.sh \
+            "$timeout_seconds" "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
+            swift test \
             --skip RealtimeAPIVLLMIntegrationTests \
             --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
             --enable-code-coverage
+
+      - name: Upload complete unit-test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-log-${{ runner.os }}
+          path: ${{ runner.temp }}/localvoxtral-unit-tests.log
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Coverage summary
         # Visibility, not a gate: lets a PR's Proof section cite real coverage
@@ -414,12 +449,12 @@ jobs:
         # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up
         # orphan processes" phase, and the Worker logs don't name what it
         # reaps. Snapshot candidate survivors at job end so any future
-        # occurrence identifies itself. Short process names only (ucomm, no
-        # paths or arguments): this log is public. Informational — never
-        # fails the job.
+        # occurrence identifies itself. UID/state distinguish another account
+        # and harmless zombies; names stay ucomm-only (no paths or arguments)
+        # because this log is public. Informational — never fails the job.
         if: ${{ always() && runner.environment == 'self-hosted' }}
         run: |
-          survivors="$(ps -axo pid,etime,ucomm \
+          survivors="$(ps -axo pid,uid,etime,state,ucomm \
             | grep -iE 'localvoxtral|polishd|speechd|xctest|swiftpm-testing|XCBBuildService' \
             | grep -v grep || true)"
           if [[ -n "$survivors" ]]; then
