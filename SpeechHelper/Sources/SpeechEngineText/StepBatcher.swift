@@ -1,8 +1,11 @@
 /// Accumulates 16 kHz audio and yields fixed-cadence batches for streaming inference.
 ///
-/// The realtime client normally appends 100 ms chunks, while Voxtral's native streaming
-/// cadence is 480 ms. Batching here avoids rerunning the model front end for every network
-/// append without changing the audio presented to the stream session.
+/// The realtime client normally appends 100 ms chunks; batching to a fixed step cadence
+/// avoids rerunning the model front end for every network append without changing the
+/// audio presented to the stream session. The production default is 100 ms (owner decision
+/// 2026-07-17: snappiest appearance, bench-proven to fit at 74-80 ms/step); larger values
+/// such as 480 ms (the model's native transcription delay) trade appearance latency for
+/// per-step compute headroom.
 public struct StepBatcher: Sendable {
     public let samplesPerStep: Int
     private var bufferedSamples: [Float] = []

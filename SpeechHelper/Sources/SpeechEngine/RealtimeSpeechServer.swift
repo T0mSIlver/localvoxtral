@@ -35,7 +35,7 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
         port: UInt16,
         transcriptionDelayMs: Int?,
         cacheLimitMB: Int,
-        stepMilliseconds: Int = 480
+        stepMilliseconds: Int = 100
     ) async throws -> RealtimeSpeechServer {
         Memory.cacheLimit = cacheLimitMB * 1024 * 1024
         let model = try await SpeechModelLoader.load(

@@ -10,7 +10,7 @@ public struct SpeechdLaunchOptions: Equatable {
     public var parentPID: pid_t?
     public var transcriptionDelayMs: Int?
     public var cacheLimitMB = 4096
-    public var stepMilliseconds = 480
+    public var stepMilliseconds = 100
     public var benchmark: SpeechdBenchmarkOptions?
 
     public init() {}
@@ -52,7 +52,7 @@ public enum SpeechdOptionParser {
         var options = SpeechdLaunchOptions()
         var benchmarkEnabled = false
         var benchmarkSeconds: Int?
-        var benchmarkCadenceMilliseconds = 480
+        var benchmarkCadenceMilliseconds = 100
         var benchmarkWAVPath: String?
         var sawBenchmarkOnlyFlag: String?
         var iterator = arguments.makeIterator()
