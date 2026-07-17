@@ -14,7 +14,6 @@
     "ssh",
     "remote"
   ],
-  "hooks": "./hooks/hooks.json",
   "userConfig": {
     "token": {
       "type": "string",

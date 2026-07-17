@@ -20,8 +20,6 @@ public struct ClaudePluginInstallService: Sendable {
         case addMarketplace
         /// Install the plugin from the registered marketplace.
         case install
-        /// Refresh the marketplace, then update the plugin.
-        case update
         /// Remove the plugin.
         case uninstall
         /// Deregister the marketplace.
@@ -161,8 +159,6 @@ public struct ClaudePluginInstallService: Sendable {
             return ["plugin", "marketplace", "add", marketplacePath]
         case .install:
             return ["plugin", "install", pluginReference] + configArguments(publisherPath: publisherPath)
-        case .update:
-            return ["plugin", "update", pluginReference] + configArguments(publisherPath: publisherPath)
         case .uninstall:
             return ["plugin", "uninstall", pluginReference]
         case .removeMarketplace:
@@ -212,9 +208,18 @@ public struct ClaudePluginInstallService: Sendable {
         try perform(.removeMarketplace)
     }
 
+    /// The user-facing "Install or Update".
+    ///
+    /// There is no `plugin update` here because the CLI rejects `--config` on
+    /// that verb, and an update that cannot re-pin `publisher_path` strands the
+    /// shim on a stale path whenever the app moved — which the try-pr loop does
+    /// on every artifact. Uninstall + install refreshes both the plugin files
+    /// and the pin. The uninstall is best-effort so the same button serves the
+    /// first-ever install (uninstalling a not-installed plugin exits 1).
     public func updatePlugin() throws {
         try perform(.addMarketplace)
-        try perform(.update)
+        try? perform(.uninstall)
+        try perform(.install)
     }
 }
 

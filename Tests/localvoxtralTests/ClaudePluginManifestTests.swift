@@ -147,12 +147,16 @@ final class ClaudePluginManifestTests: XCTestCase {
 
     // MARK: Plugin
 
-    func testPluginManifestIsValidAndNamesItsHooks() throws {
+    func testPluginManifestIsValidAndLeavesTheStandardHooksFileImplicit() throws {
         let manifest = try json(at: pluginRoot.appendingPathComponent(".claude-plugin/plugin.json"))
         XCTAssertEqual(manifest["name"] as? String, ClaudePluginAssets.pluginName)
         XCTAssertNotNil(manifest["description"] as? String)
         XCTAssertNotNil(manifest["version"] as? String)
-        XCTAssertEqual(manifest["hooks"] as? String, "./hooks/hooks.json")
+        // Claude Code loads hooks/hooks.json by convention and rejects a
+        // manifest that names it again as a duplicate hooks file — the plugin
+        // installs but lands "failed to load" (field bug, #150 hand test).
+        // manifest.hooks may only reference ADDITIONAL hook files.
+        XCTAssertNil(manifest["hooks"], "naming the standard hooks file makes the CLI refuse to load the plugin")
     }
 
     func testPluginDeclaresNoTokenConsumingSurfaces() throws {

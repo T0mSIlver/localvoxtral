@@ -49,12 +49,15 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     // MARK: Plugin
 
-    func testPluginManifestIsValidAndNamesItsHooks() throws {
+    func testPluginManifestIsValidAndLeavesTheStandardHooksFileImplicit() throws {
         let manifest = try manifest()
         XCTAssertEqual(manifest["name"] as? String, ClaudePluginAssets.remotePluginName)
         XCTAssertNotNil(manifest["description"] as? String)
         XCTAssertNotNil(manifest["version"] as? String)
-        XCTAssertEqual(manifest["hooks"] as? String, "./hooks/hooks.json")
+        // Same duplicate-hooks rejection as the local plugin: the standard
+        // hooks/hooks.json loads by convention, so naming it in the manifest
+        // makes the CLI refuse to load the plugin.
+        XCTAssertNil(manifest["hooks"], "naming the standard hooks file makes the CLI refuse to load the plugin")
     }
 
     func testPluginDeclaresNoTokenConsumingSurfaces() throws {

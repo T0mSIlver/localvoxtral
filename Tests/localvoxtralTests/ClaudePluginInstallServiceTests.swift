@@ -23,10 +23,6 @@ final class ClaudePluginInstallServiceArgumentsTests: XCTestCase {
         XCTAssertEqual(arguments(.install), ["plugin", "install", "localvoxtral@localvoxtral"])
     }
 
-    func testUpdateCommand() {
-        XCTAssertEqual(arguments(.update), ["plugin", "update", "localvoxtral@localvoxtral"])
-    }
-
     // MARK: publisher_path userConfig
 
     func testInstallPassesPublisherPathAsUserConfig() {
@@ -43,17 +39,6 @@ final class ClaudePluginInstallServiceArgumentsTests: XCTestCase {
                 "--config",
                 "publisher_path=/Volumes/Dev/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook",
             ]
-        )
-    }
-
-    func testUpdateAlsoRefreshesPublisherPath() {
-        // An app that moved between versions must not leave the plugin pointing
-        // at the old location.
-        XCTAssertEqual(
-            ClaudePluginInstallService.arguments(
-                for: .update, marketplacePath: path, publisherPath: "/A/hook"
-            ),
-            ["plugin", "update", "localvoxtral@localvoxtral", "--config", "publisher_path=/A/hook"]
         )
     }
 
@@ -95,7 +80,7 @@ final class ClaudePluginInstallServiceArgumentsTests: XCTestCase {
     func testEveryCommandTargetsOnlyOurOwnPlugin() {
         // A qualified reference is what keeps `uninstall` from ever matching a
         // same-named plugin from someone else's marketplace.
-        for action: ClaudePluginInstallService.Action in [.install, .update, .uninstall] {
+        for action: ClaudePluginInstallService.Action in [.install, .uninstall] {
             XCTAssertTrue(arguments(action).contains("localvoxtral@localvoxtral"))
         }
     }
@@ -104,7 +89,7 @@ final class ClaudePluginInstallServiceArgumentsTests: XCTestCase {
         // The load-bearing rule: settings.json is the user's and Claude Code
         // owns its schema. We drive the CLI; we never write that file.
         let actions: [ClaudePluginInstallService.Action] = [
-            .addMarketplace, .install, .update, .uninstall, .removeMarketplace,
+            .addMarketplace, .install, .uninstall, .removeMarketplace,
         ]
         for action in actions {
             for argument in arguments(action) {
@@ -122,12 +107,15 @@ private final class RecordingRunner: @unchecked Sendable {
     private let lock = NSLock()
     private(set) var invocations: [ClaudePluginInstallService.Invocation] = []
     var result: ClaudePluginInstallService.RunResult = .init(exitCode: 0, message: "ok")
+    /// When set, wins over `result` — lets one step in a flow fail while the
+    /// others succeed.
+    var resultFor: ((ClaudePluginInstallService.Invocation) -> ClaudePluginInstallService.RunResult)?
 
     var runner: ClaudePluginInstallService.Runner {
         { [self] invocation in
             lock.lock()
             invocations.append(invocation)
-            let result = self.result
+            let result = self.resultFor?(invocation) ?? self.result
             lock.unlock()
             return result
         }
@@ -171,13 +159,35 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         ])
     }
 
-    func testUpdateRefreshesMarketplaceThenUpdates() throws {
+    func testUpdateReinstallsAndNeverRunsThePluginUpdateVerb() throws {
+        // Field bug from the #150 hand test: `claude plugin update --config …`
+        // fails with "unknown option '--config'" (probed on Claude Code
+        // 2.1.212), and an update WITHOUT --config leaves a stale
+        // publisher_path, which the shim silently skips — every hook dies for
+        // an app outside /Applications. Update is therefore marketplace
+        // refresh + uninstall + install.
         let runner = RecordingRunner()
-        try makeService(runner: runner).updatePlugin()
+        let publisher = URL(fileURLWithPath: "/A/hook")
+        try makeService(runner: runner, publisherURL: publisher).updatePlugin()
         XCTAssertEqual(runner.argumentLists, [
             ["plugin", "marketplace", "add", marketplace.path],
-            ["plugin", "update", "localvoxtral@localvoxtral"],
+            ["plugin", "uninstall", "localvoxtral@localvoxtral"],
+            ["plugin", "install", "localvoxtral@localvoxtral", "--config", "publisher_path=/A/hook"],
         ])
+    }
+
+    func testUpdateToleratesUninstallFailureSoTheFirstPressInstalls() throws {
+        // The "Install or Update" button's first-ever press has nothing to
+        // uninstall (the CLI exits 1 for that); the flow must carry on to
+        // install rather than surface the error.
+        let runner = RecordingRunner()
+        runner.resultFor = { invocation in
+            invocation.arguments.first == "plugin" && invocation.arguments[1] == "uninstall"
+                ? .init(exitCode: 1, message: "Plugin \"localvoxtral\" is not installed")
+                : .init(exitCode: 0, message: "ok")
+        }
+        try makeService(runner: runner).updatePlugin()
+        XCTAssertEqual(runner.argumentLists.last, ["plugin", "install", "localvoxtral@localvoxtral"])
     }
 
     func testUninstallRemovesPluginThenMarketplace() throws {

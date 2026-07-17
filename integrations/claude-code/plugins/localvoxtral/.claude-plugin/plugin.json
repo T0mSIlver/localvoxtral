@@ -12,7 +12,6 @@
     "context",
     "voice"
   ],
-  "hooks": "./hooks/hooks.json",
   "userConfig": {
     "publisher_path": {
       "type": "string",

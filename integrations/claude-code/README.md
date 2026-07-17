@@ -87,11 +87,15 @@ claude plugin marketplace add ./integrations/claude-code
 claude plugin install localvoxtral@localvoxtral
 ```
 
-Update (re-reads the marketplace, then updates the plugin):
+Update (re-reads the marketplace, then reinstalls). This is a reinstall rather
+than `claude plugin update` because `update` accepts no `--config`, and an
+update that cannot re-pin `publisher_path` strands the shim on a stale path
+whenever the app has moved:
 
 ```sh
 claude plugin marketplace add "/Applications/localvoxtral.app/Contents/Resources/claude-code-marketplace"
-claude plugin update localvoxtral@localvoxtral \
+claude plugin uninstall localvoxtral@localvoxtral
+claude plugin install localvoxtral@localvoxtral \
   --config 'publisher_path=/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook'
 ```
 
