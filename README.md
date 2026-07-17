@@ -107,10 +107,10 @@ The config folder at `~/Library/Application Support/localvoxtral/config` holds `
 
 In **Managed local** mode (the default), localvoxtral launches and supervises two inference engines for you — no terminal required:
 
-- **Dictation — a bundled native speech engine** built on [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift), streaming [Voxtral Mini 4B Realtime in 4-bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) through the app's OpenAI Realtime-compatible server.
-- **Polishing — a bundled native engine** built on Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), running [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) by default (a lighter 0.8B and a larger 9B are one click away in Settings). A warm prompt cache keeps polish latency low, and the engine runs as a supervised helper process, so turning polishing off frees its memory immediately.
+- **Dictation — `localvoxtral-speechd`**, a bundled Swift helper built on [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift), streams [mlx-community's Voxtral Mini 4B Realtime 4-bit model](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) through the app's OpenAI Realtime-compatible server.
+- **Polishing — `localvoxtral-polishd`**, a bundled Swift helper built on Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), runs [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) by default (a lighter 0.8B and a larger 9B are one click away in Settings). A warm prompt cache keeps polish latency low, and turning polishing off frees its memory immediately.
 
-Both engines ship inside the app bundle; the legacy voxmlx installation machinery remains under `~/Library/Application Support/localvoxtral` pending retirement. Model weights download from Hugging Face at exact pinned commits, so an upstream edit to a model repo can never change what your install runs. Neither engine ever outlives the app (a watchdog stops them even after a crash), and uninstalling means deleting the app and that one folder.
+Both helpers ship inside the app bundle. Their model weights download from Hugging Face at exact pinned commits, so an upstream edit to a model repo can never change what your install runs. The app supervises both helpers, and a watchdog stops them even if the app crashes.
 
 Prefer your own hardware? Switch Dictation or Polishing to **External URL** in **Settings → Endpoints**: any OpenAI Realtime-compatible server works for dictation, any chat-completions server for polishing.
 

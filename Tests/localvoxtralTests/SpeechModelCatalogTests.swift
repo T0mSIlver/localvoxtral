@@ -3,13 +3,12 @@ import XCTest
 @testable import localvoxtral
 
 final class SpeechModelCatalogTests: XCTestCase {
-    func testManagedCatalogUsesBundledSpeechdAndRetainsVoxmlxOnlyForRetirement() {
+    func testManagedCatalogContainsOnlyBundledHelpers() {
         XCTAssertEqual(BackendCatalog.speechd.displayName, "Dictation engine")
-        XCTAssertEqual(BackendCatalog.speechd.installKind, .bundledExecutable)
         XCTAssertEqual(BackendCatalog.speechd.executableName, "localvoxtral-speechd")
         XCTAssertEqual(BackendCatalog.speechd.port, 8471)
         XCTAssertEqual(BackendCatalog.all.map(\.id), ["speechd", "polishd"])
-        XCTAssertFalse(BackendCatalog.all.contains { $0.id == BackendCatalog.voxmlx.id })
+        XCTAssertEqual(BackendCatalog.polishd.executableName, "localvoxtral-polishd")
     }
 
     func testSpeechModelCatalogPinsFullCommitSHA() {

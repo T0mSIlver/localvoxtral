@@ -53,7 +53,7 @@ protocol OnboardingBootstrapDriving: AnyObject {
     /// Observable per-item state. Empty until `start` is called.
     var itemStates: [OnboardingItemID: OnboardingItemState] { get }
 
-    /// Kick off install + model download for the requested items. Nothing runs
+    /// Kick off model download for the requested items. Nothing runs
     /// until this is called (preserves the app's lazy-bootstrap invariant).
     func start(dictation: Bool, polishing: Bool)
 
@@ -66,15 +66,8 @@ extension OnboardingItemState {
     /// the single seam that absorbs backend-status shape changes.
     init(managedStatus status: ManagedBackendStatus) {
         switch status {
-        case .notInstalled, .stopped:
-            // Not started yet (fresh) or idle after a stop — both read as
-            // "waiting to begin" on the Downloads page.
+        case .stopped:
             self = .pending
-        case .installing(let progress):
-            self = .working(
-                detail: Self.installingDetail(progress),
-                fraction: Self.installingFraction(progress)
-            )
         case .preparingModel(let progress):
             self = .working(
                 detail: Self.modelDownloadDetail(progress),
@@ -88,26 +81,6 @@ extension OnboardingItemState {
             self = .ready
         case .failed(let summary, _):
             self = .failed(summary: summary)
-        }
-    }
-
-    private static func installingFraction(_ progress: BackendInstallProgress) -> Double? {
-        guard case .downloading(let fraction) = progress else { return nil }
-        return fraction
-    }
-
-    private static func installingDetail(_ progress: BackendInstallProgress) -> String {
-        switch progress {
-        case .downloading(let fraction):
-            guard let fraction else { return "Downloading…" }
-            return "Downloading \(Int((fraction * 100).rounded()))%"
-        case .verifying:
-            return "Verifying…"
-        case .installing(let logLine):
-            let trimmed = logLine.trimmed
-            return trimmed.isEmpty ? "Installing…" : "Installing: \(trimmed)"
-        case .finished:
-            return "Installed"
         }
     }
 

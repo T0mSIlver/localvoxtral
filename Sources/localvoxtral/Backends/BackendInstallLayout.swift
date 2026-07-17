@@ -17,24 +17,8 @@ struct BackendInstallLayout: Equatable, Sendable {
         }
     }
 
-    var uvCache: URL {
-        root.appendingPathComponent("uv-cache", isDirectory: true)
-    }
-
-    var uvBinaryDirectory: URL {
-        root
-            .appendingPathComponent("uv", isDirectory: true)
-            .appendingPathComponent(UVDistribution.pinned.version, isDirectory: true)
-    }
-
-    var managedUVBinary: URL {
-        uvBinaryDirectory.appendingPathComponent("uv")
-    }
-
-    var pythonInstalls: URL {
-        root.appendingPathComponent("python", isDirectory: true)
-    }
-
+    // The remaining child paths describe only legacy installs swept at launch.
+    // Bundled executables and Hugging Face snapshots never live under root.
     var tools: URL {
         root.appendingPathComponent("tools", isDirectory: true)
     }
@@ -45,14 +29,5 @@ struct BackendInstallLayout: Equatable, Sendable {
 
     var downloads: URL {
         root.appendingPathComponent("downloads", isDirectory: true)
-    }
-
-    var environment: [String: String] {
-        [
-            "UV_CACHE_DIR": uvCache.path,
-            "UV_PYTHON_INSTALL_DIR": pythonInstalls.path,
-            "UV_TOOL_DIR": tools.path,
-            "UV_TOOL_BIN_DIR": toolBin.path,
-        ]
     }
 }

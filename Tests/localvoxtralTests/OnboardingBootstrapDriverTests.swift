@@ -6,10 +6,6 @@ import XCTest
 
 @MainActor
 final class OnboardingItemStateMappingTests: XCTestCase {
-    func testNotInstalled_isPending() {
-        XCTAssertEqual(OnboardingItemState(managedStatus: .notInstalled), .pending)
-    }
-
     func testStopped_isPending() {
         XCTAssertEqual(OnboardingItemState(managedStatus: .stopped), .pending)
     }
@@ -29,48 +25,6 @@ final class OnboardingItemStateMappingTests: XCTestCase {
         XCTAssertEqual(
             OnboardingItemState(managedStatus: .failed(summary: "boom", detail: "trace")),
             .failed(summary: "boom")
-        )
-    }
-
-    func testInstalling_downloadingWithFraction_isDeterminateWorking() {
-        XCTAssertEqual(
-            OnboardingItemState(managedStatus: .installing(progress: .downloading(fraction: 0.42))),
-            .working(detail: "Downloading 42%", fraction: 0.42)
-        )
-    }
-
-    func testInstalling_downloadingWithoutFraction_isIndeterminateWorking() {
-        XCTAssertEqual(
-            OnboardingItemState(managedStatus: .installing(progress: .downloading(fraction: nil))),
-            .working(detail: "Downloading…", fraction: nil)
-        )
-    }
-
-    func testInstalling_verifying() {
-        XCTAssertEqual(
-            OnboardingItemState(managedStatus: .installing(progress: .verifying)),
-            .working(detail: "Verifying…", fraction: nil)
-        )
-    }
-
-    func testInstalling_installingWithLogLine() {
-        XCTAssertEqual(
-            OnboardingItemState(managedStatus: .installing(progress: .installing(logLine: "step 3"))),
-            .working(detail: "Installing: step 3", fraction: nil)
-        )
-    }
-
-    func testInstalling_installingWithEmptyLogLine() {
-        XCTAssertEqual(
-            OnboardingItemState(managedStatus: .installing(progress: .installing(logLine: "   "))),
-            .working(detail: "Installing…", fraction: nil)
-        )
-    }
-
-    func testInstalling_finished() {
-        XCTAssertEqual(
-            OnboardingItemState(managedStatus: .installing(progress: .finished)),
-            .working(detail: "Installed", fraction: nil)
         )
     }
 
@@ -103,15 +57,17 @@ final class OnboardingItemStateMappingTests: XCTestCase {
 final class LiveOnboardingBootstrapDriverTests: XCTestCase {
     func testStart_seedsItemStatesFromCurrentBackendStatus() {
         let manager = OnboardingTestBackendManager()
-        manager.speechdStatus = .installing(progress: .downloading(fraction: 0.5))
-        manager.polishdStatus = .notInstalled
+        manager.speechdStatus = .preparingModel(
+            progress: ModelDownloadProgress(downloadedBytes: 50, totalBytes: 100)
+        )
+        manager.polishdStatus = .stopped
         let driver = LiveOnboardingBootstrapDriver(backendManager: manager)
 
         driver.start(dictation: true, polishing: true)
 
         XCTAssertEqual(
             driver.itemStates[.dictation],
-            .working(detail: "Downloading 50%", fraction: 0.5)
+            .working(detail: "Downloading model 50%", fraction: 0.5)
         )
         XCTAssertEqual(driver.itemStates[.polishing], .pending)
     }
@@ -243,8 +199,8 @@ final class OnboardingTestBackendManager: ManagedBackendManaging {
         var polishing: Bool
     }
 
-    var speechdStatus: ManagedBackendStatus = .notInstalled
-    var polishdStatus: ManagedBackendStatus = .notInstalled
+    var speechdStatus: ManagedBackendStatus = .stopped
+    var polishdStatus: ManagedBackendStatus = .stopped
     @ObservationIgnored private var statusUpdateContinuations: [UUID: AsyncStream<ManagedBackendStatusUpdate>.Continuation] = [:]
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
         let id = UUID()

@@ -71,7 +71,7 @@ casts; `VoxtralRealtimeStreamSession.swift` differed only in the delta routing b
   (`SpeechEngineTextTests`). `transcript.done` carries `emitter.emittedText` (== the sum of
   every delta) so the final payload can never contradict the streamed wire output.
 - **Our loopback server** — `RealtimeSpeechServer.swift`: the OpenAI-Realtime websocket subset
-  that makes the engine a drop-in for the Python `voxmlx` process. Original code, never
+  consumed by the app's production realtime client. Original code, never
   upstream.
 - **Watchdog / CLI** — `SpeechEngineText/ParentProcessWatchdog.swift`,
   `Sources/localvoxtral-speechd/SpeechdMain.swift`.

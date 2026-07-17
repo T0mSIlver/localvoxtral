@@ -42,55 +42,76 @@ jobs:
             --predicate 'subsystem == "com.localvoxtral" AND process == "localvoxtral"' 2>/dev/null \
             | sed "s|$HOME|~|g" | tail -150 || echo "log query failed"
 
-      - name: Reproduce the app's model pre-download command (mlx-lm repo)
+      - name: Reproduce the app's model pre-download command (native HTTPS)
         run: |
-          B="$HOME/Library/Application Support/localvoxtral/backends"
-          echo "--- downloads dir:"
-          ls -la "$B/downloads" 2>/dev/null | sed "s|$HOME|~|g" || echo "<no downloads dir: prepareModel never ran>"
-          UV="$B/uv/0.11.26/uv"
-          SCRIPT="$B/downloads/hf_model_download.py"
-          if [ ! -x "$UV" ]; then echo "managed uv missing at $UV" | sed "s|$HOME|~|g"; exit 0; fi
-          if [ ! -f "$SCRIPT" ]; then echo "downloader script absent"; exit 0; fi
-          echo "--- running the exact app command (90s cap):"
-          export UV_CACHE_DIR="$B/uv-cache" UV_PYTHON_INSTALL_DIR="$B/python" \
-                 UV_TOOL_DIR="$B/tools" UV_TOOL_BIN_DIR="$B/bin" \
-                 LOCALVOXTRAL_HF_EMIT_INTERVAL=0
-          # The SCRIPT on disk was written by whatever app build last ran
-          # prepareModel: a pre-pin build's argparse rejects --revision and
-          # would fail the probe on exactly the machine we came here to
-          # diagnose. Pass the pin only if that script understands it, and read
-          # the pin from the catalog so it can't drift from what the app runs.
-          REVISION_ARGS=()
-          if grep -q -- '--revision' "$SCRIPT"; then
-            PIN="$(awk '/repoID: "mlx-community\/Qwen3.5-4B-OptiQ-4bit"/{found=1} found && /revision: "/{gsub(/.*revision: "|".*/, ""); print; exit}' \
-              Sources/localvoxtral/Backends/PolishModelCatalog.swift)"
-            if [ -n "$PIN" ]; then
-              REVISION_ARGS=(--revision "$PIN")
-              echo "pinned revision: $PIN"
-            fi
+          set +e
+          catalog_default_repo() {
+            awk '/static let defaultOption/{found=1} found && /forRepoID: "/{
+              sub(/.*forRepoID: "/, ""); sub(/".*/, ""); print; exit
+            }' "$1"
+          }
+          catalog_revision() {
+            awk -v repo="$2" 'index($0, "repoID: \"" repo "\""){found=1}
+              found && /revision: "/{
+                sub(/.*revision: "/, ""); sub(/".*/, ""); print; exit
+              }' "$1"
+          }
+
+          if [ -n "${HF_HUB_CACHE:-}" ]; then
+            HF_CACHE_ROOT="$HF_HUB_CACHE"
+          elif [ -n "${HF_HOME:-}" ]; then
+            HF_CACHE_ROOT="$HF_HOME/hub"
           else
-            echo "on-disk downloader predates the revision pin: probing without --revision"
+            HF_CACHE_ROOT="$HOME/.cache/huggingface/hub"
           fi
-          # Faithful to the app: minimal env (PATH/HOME + UV vars only) and
-          # the full mlx-lm include pattern set.
-          env -i PATH="$PATH" HOME="$HOME" \
-            UV_CACHE_DIR="$UV_CACHE_DIR" UV_PYTHON_INSTALL_DIR="$UV_PYTHON_INSTALL_DIR" \
-            UV_TOOL_DIR="$UV_TOOL_DIR" UV_TOOL_BIN_DIR="$UV_TOOL_BIN_DIR" \
-            "$UV" run --python 3.12 \
-            --with 'huggingface_hub<2' --with 'tqdm<5' \
-            python -u "$SCRIPT" mlx-community/Qwen3.5-4B-OptiQ-4bit \
-            "${REVISION_ARGS[@]}" \
-            --include '*.json' --include 'model*.safetensors' --include '*.py' \
-            --include 'tokenizer.model' --include '*.tiktoken' --include 'tiktoken.model' \
-            --include '*.txt' --include '*.jsonl' --include '*.jinja' \
-            > /tmp/dlprobe.out 2>&1 &
-          pid=$!
-          (sleep 90 && kill "$pid" 2>/dev/null) &
-          watchdog=$!
-          wait "$pid"; code=$?
-          kill "$watchdog" 2>/dev/null || true
-          echo "downloader exit code: $code"
-          sed "s|$HOME|~|g" /tmp/dlprobe.out | tail -40
+
+          probe_model() {
+            label="$1"
+            repo="$2"
+            revision="$3"
+            echo "--- $label model:"
+            if [ -z "$repo" ] || [ -z "$revision" ]; then
+              echo "catalog repo/revision unresolved; skipping"
+              return 0
+            fi
+
+            echo "repo: $repo"
+            echo "pinned revision: $revision"
+            api_url="https://huggingface.co/api/models/$repo/revision/$revision"
+            echo "--- curl HF revision API:"
+            echo "curl --disable --fail --silent --show-error --location --max-time 30 '$api_url'"
+            curl_error="/tmp/localvoxtral-${label}-hf-api.err"
+            /usr/bin/curl --disable --fail --silent --show-error --location --max-time 30 \
+              "$api_url" -o "/tmp/localvoxtral-${label}-hf-api.json" \
+              2>"$curl_error"
+            code=$?
+            echo "curl exit code: $code"
+            if [ "$code" -eq 0 ]; then
+              bytes="$(wc -c < "/tmp/localvoxtral-${label}-hf-api.json" | tr -d ' ')"
+              echo "API response bytes: $bytes"
+            else
+              sed "s|$HOME|~|g" "$curl_error" | tail -20
+            fi
+
+            repo_cache_name="models--${repo//\//--}"
+            snapshot="$HF_CACHE_ROOT/$repo_cache_name/snapshots/$revision"
+            echo "--- expected snapshot dir:"
+            echo "$snapshot" | sed "s|$HOME|~|g"
+            ls -la "$snapshot" 2>&1 | sed "s|$HOME|~|g" || echo "<snapshot absent>"
+          }
+
+          SPEECH_CATALOG="Sources/localvoxtral/Backends/SpeechModelCatalog.swift"
+          POLISH_CATALOG="Sources/localvoxtral/Backends/PolishModelCatalog.swift"
+          speech_repo="$(catalog_default_repo "$SPEECH_CATALOG")"
+          speech_revision="$(catalog_revision "$SPEECH_CATALOG" "$speech_repo")"
+          polish_repo="$(catalog_default_repo "$POLISH_CATALOG")"
+          polish_revision="$(catalog_revision "$POLISH_CATALOG" "$polish_repo")"
+
+          echo "--- Hugging Face cache root:"
+          echo "$HF_CACHE_ROOT" | sed "s|$HOME|~|g"
+          probe_model "speechd" "$speech_repo" "$speech_revision"
+          probe_model "polishd" "$polish_repo" "$polish_revision"
+          exit 0
 
       - name: List running localvoxtral instances
         run: |

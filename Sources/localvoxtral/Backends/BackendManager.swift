@@ -8,22 +8,11 @@ struct ManagedBackendStatusUpdate: Equatable, Sendable {
 }
 
 enum ManagedBackendStatus: Equatable, Sendable {
-    case notInstalled
-    case installing(progress: BackendInstallProgress)
     case preparingModel(progress: ModelDownloadProgress)
     case starting
     case ready
     case stopped
     case failed(summary: String, detail: String?)
-
-    var requiresInstallProgressText: Bool {
-        switch self {
-        case .notInstalled, .installing:
-            return true
-        case .preparingModel, .starting, .ready, .stopped, .failed:
-            return false
-        }
-    }
 }
 
 enum ManagedBackendManagerError: LocalizedError {
@@ -97,9 +86,8 @@ final class BackendManager: ManagedBackendManaging {
     private(set) var speechdStatus: ManagedBackendStatus
     private(set) var polishdStatus: ManagedBackendStatus
 
-    @ObservationIgnored private let installer: any BackendInstalling
     @ObservationIgnored private let modelPreparer: any ModelPreparing
-    @ObservationIgnored private let layout: BackendInstallLayout
+    @ObservationIgnored private let legacyPortDefense: any LegacyVoxmlxPortDefending
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
     @ObservationIgnored private let speechdCacheLimitProvider: SpeechdCacheLimitProvider
@@ -120,9 +108,9 @@ final class BackendManager: ManagedBackendManaging {
     #endif
 
     init(
-        installer: any BackendInstalling = BackendInstaller(),
         modelPreparer: (any ModelPreparing)? = nil,
         layout: BackendInstallLayout = BackendInstallLayout(),
+        legacyPortDefense: (any LegacyVoxmlxPortDefending)? = nil,
         polishingModelProvider: @escaping PolishingModelProvider = {
             SettingsStore.defaultLLMPolishingModel
         },
@@ -131,18 +119,13 @@ final class BackendManager: ManagedBackendManaging {
             BackendProcessSupervisor(configuration: configuration)
         }
     ) {
-        self.installer = installer
-        self.layout = layout
-        self.modelPreparer = modelPreparer ?? HFModelDownloader(layout: layout)
+        self.modelPreparer = modelPreparer ?? HFModelDownloader()
+        self.legacyPortDefense = legacyPortDefense ?? LegacyVoxmlxPortDefense(layout: layout)
         self.polishingModelProvider = polishingModelProvider
         self.speechdCacheLimitProvider = speechdCacheLimitProvider
         self.supervisorFactory = supervisorFactory
-        self.speechdStatus = installer.needsInstallOrUpdate(BackendCatalog.speechd)
-            ? .notInstalled
-            : .stopped
-        self.polishdStatus = installer.needsInstallOrUpdate(BackendCatalog.polishd)
-            ? .notInstalled
-            : .stopped
+        self.speechdStatus = .stopped
+        self.polishdStatus = .stopped
     }
 
     var statusUpdates: AsyncStream<ManagedBackendStatusUpdate> {
@@ -313,30 +296,21 @@ final class BackendManager: ManagedBackendManaging {
             return
         }
 
-        // Structural, not just data-driven: a bundled backend must never enter
-        // the uv install path regardless of what an installer claims (the real
-        // installer preconditionFailures on bundled installs).
-        if case .uvWheel = spec.installKind, installer.needsInstallOrUpdate(spec) {
-            setStatus(.installing(progress: .downloading(fraction: nil)), for: spec)
-            do {
-                try await installer.install(spec) { [weak self] progress in
-                    guard let self else { return }
-                    self.setStatus(.installing(progress: progress), for: spec)
-                }
-            } catch {
-                let detail = error.localizedDescription
-                setStatus(.failed(summary: detail, detail: nil), for: spec)
+        try await prepareModel(for: spec)
+        try Task.checkCancellation()
+
+        if spec.id == BackendCatalog.speechd.id {
+            let outcome = await legacyPortDefense.clearLegacyOccupantIfNeeded(port: spec.port)
+            if case .occupiedByOther = outcome {
+                let summary = "\(spec.displayName) port already in use; refusing to adopt an existing backend process."
+                setStatus(.failed(summary: summary, detail: nil), for: spec)
                 throw ManagedBackendManagerError.backendFailed(
                     name: spec.displayName,
-                    summary: detail,
+                    summary: summary,
                     detail: nil
                 )
             }
-            try Task.checkCancellation()
         }
-
-        try await prepareModel(for: spec)
-        try Task.checkCancellation()
 
         setStatus(.starting, for: spec)
         try Task.checkCancellation()
@@ -452,24 +426,15 @@ final class BackendManager: ManagedBackendManaging {
     }
 
     private func executableURL(for spec: ManagedBackendSpec) -> URL {
-        switch spec.installKind {
-        case .uvWheel:
-            return layout.toolBin.appendingPathComponent(spec.executableName)
-        case .bundledExecutable:
-            // Packaged app: Contents/MacOS next to the main binary (that is
-            // where package_app.sh copies the helper). Integration tests
-            // spawn the helper binary directly and never route through here.
-            if let auxiliary = Bundle.main.url(forAuxiliaryExecutable: spec.executableName) {
-                return auxiliary
-            }
-            // Dev runs outside a packaged bundle: sibling of the main binary.
-            // (`swift run` has no bundled helpers — managed startup fails at
-            // spawn with a visible supervisor error there; use a packaged
-            // build for hand-testing managed engines.)
-            return (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
-                .deletingLastPathComponent()
-                .appendingPathComponent(spec.executableName)
+        // Packaged app: Contents/MacOS next to the main binary (where
+        // package_app.sh copies both helpers).
+        if let auxiliary = Bundle.main.url(forAuxiliaryExecutable: spec.executableName) {
+            return auxiliary
         }
+        // Dev runs outside a packaged bundle: sibling of the main binary.
+        return (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
+            .deletingLastPathComponent()
+            .appendingPathComponent(spec.executableName)
     }
 
     private func arguments(for spec: ManagedBackendSpec) -> [String] {
@@ -572,10 +537,8 @@ final class BackendManager: ManagedBackendManaging {
                 environment[key] = value
             }
         }
-        // Deliberately leave Hugging Face cache variables unset: managed
-        // backends share the user's already-downloaded weights, while uninstall
-        // only owns the app-managed backends/ tree documented in README.
-        environment.merge(layout.environment) { _, new in new }
+        // Deliberately leave Hugging Face cache variables unset: both helpers
+        // resolve the same default shared cache populated by HFModelDownloader.
         return environment
     }
 

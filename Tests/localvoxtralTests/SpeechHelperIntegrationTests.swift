@@ -189,12 +189,56 @@ final class SpeechHelperIntegrationTests: XCTestCase {
 
     static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
         let fileManager = FileManager.default
-        return fileManager.fileExists(
+        let hasRequiredMetadata = fileManager.fileExists(
             atPath: snapshot.appendingPathComponent(provisionedSentinel).path
         )
             && fileManager.fileExists(atPath: snapshot.appendingPathComponent("config.json").path)
             && fileManager.fileExists(atPath: snapshot.appendingPathComponent("tekken.json").path)
-            && fileManager.fileExists(atPath: snapshot.appendingPathComponent("model.safetensors").path)
+        guard hasRequiredMetadata else { return false }
+        if fileManager.fileExists(atPath: snapshot.appendingPathComponent("model.safetensors").path) {
+            return true
+        }
+        guard fileManager.fileExists(
+            atPath: snapshot.appendingPathComponent("model.safetensors.index.json").path
+        ) else { return false }
+        let names = (try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? []
+        return names.contains { fnmatch("model-*-of-*.safetensors", $0, 0) == 0 }
+    }
+
+    func testSnapshotProvisioningSentinelAcceptsShardedCheckpoint() throws {
+        let snapshot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-sharded-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for name in [
+            Self.provisionedSentinel,
+            "config.json",
+            "tekken.json",
+            "model.safetensors.index.json",
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+        ] {
+            try Data().write(to: snapshot.appendingPathComponent(name))
+        }
+
+        XCTAssertTrue(Self.snapshotIsProvisioned(snapshot))
+    }
+
+    func testSnapshotProvisioningSentinelRejectsIndexWithoutShard() throws {
+        let snapshot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-incomplete-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for name in [
+            Self.provisionedSentinel,
+            "config.json",
+            "tekken.json",
+            "model.safetensors.index.json",
+        ] {
+            try Data().write(to: snapshot.appendingPathComponent(name))
+        }
+
+        XCTAssertFalse(Self.snapshotIsProvisioned(snapshot))
     }
 
     private func launchHelper(

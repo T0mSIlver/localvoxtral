@@ -165,15 +165,6 @@ extension DictationViewModel {
         if polishing, case .preparingModel(let progress) = backendManager.polishdStatus {
             return modelDownloadStartupText(kind: "polishing", progress: progress)
         }
-        if shouldShowManagedBackendInstallStatus(
-            speechdStatus: dictation ? backendManager.speechdStatus : nil,
-            polishdStatus: polishing ? backendManager.polishdStatus : nil
-        ) {
-            if !dictation, polishing {
-                return "Installing polishing backend..."
-            }
-            return "Installing dictation backend..."
-        }
         if !dictation, polishing {
             return "Starting polishing backend..."
         }
@@ -186,16 +177,6 @@ extension DictationViewModel {
             return "Preparing \(kind) model..."
         }
         return "Downloading \(kind) model (\(Int((fraction * 100).rounded()))%)..."
-    }
-
-    private func shouldShowManagedBackendInstallStatus(
-        speechdStatus: ManagedBackendStatus?,
-        polishdStatus: ManagedBackendStatus?
-    ) -> Bool {
-        if speechdStatus?.requiresInstallProgressText == true {
-            return true
-        }
-        return polishdStatus?.requiresInstallProgressText == true
     }
 
     private func handleManagedBackendStartupFailure(_ error: Error) {

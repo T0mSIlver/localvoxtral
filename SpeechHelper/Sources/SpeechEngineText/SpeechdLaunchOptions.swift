@@ -33,6 +33,7 @@ public enum SpeechdOptionError: Error, CustomStringConvertible, Equatable {
     case invalidValue(String)
     case unknownFlag(String)
     case missingModel
+    case mutuallyExclusive(String, String)
 
     public var description: String {
         switch self {
@@ -40,6 +41,8 @@ public enum SpeechdOptionError: Error, CustomStringConvertible, Equatable {
         case .invalidValue(let flag): return "invalid value for \(flag)"
         case .unknownFlag(let flag): return "unknown flag \(flag)"
         case .missingModel: return "one of --model or --model-dir is required"
+        case .mutuallyExclusive(let first, let second):
+            return "\(first) and \(second) are mutually exclusive"
         }
     }
 }
@@ -136,6 +139,9 @@ public enum SpeechdOptionParser {
             throw SpeechdOptionError.invalidValue(sawBenchmarkOnlyFlag)
         }
 
+        if options.modelID != nil, options.modelDirectory != nil {
+            throw SpeechdOptionError.mutuallyExclusive("--model", "--model-dir")
+        }
         guard options.modelID != nil || options.modelDirectory != nil else {
             throw SpeechdOptionError.missingModel
         }

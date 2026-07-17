@@ -364,16 +364,7 @@ private struct ManagedBackendStatusLabel: View {
             // indeterminate case is a circular spinner, which must NOT get
             // the bar's fixed width (it centers inside it, reading as a big
             // blob of horizontal padding next to the caption text).
-            if case .installing(let progress) = status {
-                if let fraction = installFraction(from: progress) {
-                    ProgressView(value: fraction)
-                        .controlSize(.small)
-                        .frame(width: 54)
-                } else {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-            } else if case .preparingModel(let progress) = status {
+            if case .preparingModel(let progress) = status {
                 if let fraction = progress.fraction {
                     ProgressView(value: fraction)
                         .controlSize(.small)
@@ -393,10 +384,6 @@ private struct ManagedBackendStatusLabel: View {
 
     private var statusText: String {
         switch status {
-        case .notInstalled:
-            return "Not installed"
-        case .installing(let progress):
-            return installingText(progress)
         case .preparingModel(let progress):
             return modelDownloadText(progress)
         case .starting:
@@ -414,31 +401,12 @@ private struct ManagedBackendStatusLabel: View {
         switch status {
         case .ready:
             return .green
-        case .installing, .preparingModel, .starting:
+        case .preparingModel, .starting:
             return .orange
         case .failed:
             return .red
-        case .notInstalled, .stopped:
+        case .stopped:
             return .secondary
-        }
-    }
-
-    private func installFraction(from progress: BackendInstallProgress) -> Double? {
-        guard case .downloading(let fraction) = progress else { return nil }
-        return fraction
-    }
-
-    private func installingText(_ progress: BackendInstallProgress) -> String {
-        switch progress {
-        case .downloading(let fraction):
-            guard let fraction else { return "Downloading" }
-            return "Downloading \(Int((fraction * 100).rounded()))%"
-        case .verifying:
-            return "Verifying"
-        case .installing(let logLine):
-            return logLine.trimmed.isEmpty ? "Installing" : "Installing: \(logLine)"
-        case .finished:
-            return "Installed"
         }
     }
 

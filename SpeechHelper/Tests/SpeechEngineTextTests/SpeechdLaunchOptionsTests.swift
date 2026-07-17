@@ -127,4 +127,22 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
             )
         )
     }
+
+    func testModelAndModelDirectoryAreMutuallyExclusive() throws {
+        XCTAssertThrowsError(
+            try SpeechdOptionParser.parse([
+                "--model", "mlx-community/model",
+                "--model-dir", "/tmp/model",
+            ])
+        ) { error in
+            XCTAssertEqual(
+                error as? SpeechdOptionError,
+                .mutuallyExclusive("--model", "--model-dir")
+            )
+            XCTAssertEqual(
+                String(describing: error),
+                "--model and --model-dir are mutually exclusive"
+            )
+        }
+    }
 }

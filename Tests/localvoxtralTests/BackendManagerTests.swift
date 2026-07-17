@@ -6,15 +6,14 @@ import XCTest
 
 @MainActor
 final class BackendManagerTests: XCTestCase {
-    func testBundledDictationBackendNeverEntersInstallPathAndRecordsStartSequence() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [BackendCatalog.speechd.id])
+    func testBundledDictationBackendRecordsStartSequence() async throws {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [
             .launching,
             .waitingForReady,
             .running,
         ]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
         var speechdStatuses: [ManagedBackendStatus] = []
         manager.debugStatusChangeSink = { spec, status in
             guard spec.id == BackendCatalog.speechd.id else { return }
@@ -23,7 +22,6 @@ final class BackendManagerTests: XCTestCase {
 
         try await manager.ensureReady(dictation: true, polishing: false)
 
-        XCTAssertTrue(installer.installCalls.isEmpty)
         XCTAssertEqual(manager.speechdStatus, .ready)
         XCTAssertTrue(speechdStatuses.contains {
             if case .preparingModel = $0 { return true }
@@ -34,19 +32,16 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testSpeechdConfigurationUsesBundlePathPinnedModelRevisionAndHFFileSet() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
 
         try await manager.ensureReady(dictation: true, polishing: false)
 
-        XCTAssertTrue(installer.installCalls.isEmpty)
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
         XCTAssertEqual(supervisorFactory.createdConfigurations.map(\.name), [BackendCatalog.speechd.displayName])
         XCTAssertEqual(manager.speechdStatus, .ready)
@@ -113,11 +108,9 @@ final class BackendManagerTests: XCTestCase {
     private func speechdConfiguration(
         cacheLimitMB: Int?
     ) async throws -> BackendProcessConfiguration {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             speechdCacheLimitProvider: { cacheLimitMB },
             supervisorFactory: supervisorFactory
         )
@@ -130,29 +123,12 @@ final class BackendManagerTests: XCTestCase {
         )
     }
 
-    func testBundledDictationBackendIgnoresInstallerFailureClaim() async throws {
-        let installer = FakeBackendInstaller(
-            needsInstall: [BackendCatalog.speechd.id],
-            installFailures: [BackendCatalog.speechd.id: FakeBackendError(message: "wheel unavailable")]
-        )
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
-
-        try await manager.ensureReady(dictation: true, polishing: false)
-
-        XCTAssertTrue(installer.installCalls.isEmpty)
-        XCTAssertEqual(manager.speechdStatus, .ready)
-    }
-
     func testPolishingFlagControlsWhetherPolishdIsTouched() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -203,12 +179,10 @@ final class BackendManagerTests: XCTestCase {
     /// every polish start died on a weight file we never fetch. Download and
     /// load must name the SAME pinned commit.
     func testPolishdDownloadsAndLoadsThePinnedModelRevision() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -231,29 +205,11 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(arguments[arguments.index(after: flagIndex)], pin)
     }
 
-    func testBundledPolishingBackendNeverEntersInstallPathEvenIfInstallerClaimsNeed() async throws {
-        // The guard must be structural (installKind), not data-driven: even a
-        // (mis)configured installer that claims the bundled backend needs an
-        // install must never be invoked for it — the real installer traps on
-        // bundled installs.
-        let installer = FakeBackendInstaller(needsInstall: [BackendCatalog.polishd.id])
-        let supervisorFactory = FakeSupervisorFactory()
-        supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
-
-        try await manager.ensureReady(dictation: false, polishing: true)
-
-        XCTAssertTrue(installer.installCalls.isEmpty)
-        XCTAssertEqual(manager.polishdStatus, .ready)
-    }
-
     func testPolishingOnlyEnsureReadyDoesNotTouchSpeechd() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -267,12 +223,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testConcurrentEnsureReadyDoesNotDoublePrepareOrStartSpeechd() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -287,7 +241,6 @@ final class BackendManagerTests: XCTestCase {
         }
         await Task.yield()
 
-        XCTAssertTrue(installer.installCalls.isEmpty)
         XCTAssertEqual(modelPreparer.prepareCalls.map(\.backendID), [BackendCatalog.speechd.id])
         XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
 
@@ -301,11 +254,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testStopAllStopsBothSupervisors() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         try await manager.ensureReady(dictation: true, polishing: true)
         await manager.stopAll()
@@ -317,11 +269,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testStopPolishingStopsOnlyPolishd() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         try await manager.ensureReady(dictation: true, polishing: true)
         XCTAssertEqual(manager.speechdStatus, .ready)
@@ -336,7 +287,6 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testModelChangeStopsSupervisorAndNextEnsureUsesNewModel() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
@@ -344,7 +294,6 @@ final class BackendManagerTests: XCTestCase {
             defaults: UserDefaults(suiteName: UUID().uuidString)!
         )
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             polishingModelProvider: { settings.managedLLMPolishingModel },
             supervisorFactory: supervisorFactory
@@ -385,12 +334,10 @@ final class BackendManagerTests: XCTestCase {
         // a second downloader process while the first was still terminating —
         // both writing the same HF cache blob. Stop must not return until the
         // cancelled ensure (and its downloader) fully unwound.
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.polishd.id])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -413,11 +360,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testStopDictationStopsOnlySpeechd() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         try await manager.ensureReady(dictation: true, polishing: true)
         XCTAssertEqual(manager.speechdStatus, .ready)
@@ -432,10 +378,9 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testSupervisorStateMirrorMarksLaterFailureAndNextEnsureDoesNotShortCircuit() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         try await manager.ensureReady(dictation: true, polishing: false)
         let supervisor = try XCTUnwrap(supervisorFactory.supervisors[BackendCatalog.speechd.displayName])
@@ -465,11 +410,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testBundledBackendConfigurationsUseModelLoadReadinessTimeouts() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         try await manager.ensureReady(dictation: true, polishing: true)
 
@@ -488,7 +432,6 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testEnsureReadySurfacesModelPreparationBeforeStarting() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer(
             scriptedProgress: [
                 BackendCatalog.speechd.id: [
@@ -500,7 +443,6 @@ final class BackendManagerTests: XCTestCase {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -526,13 +468,11 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testEnsureReadyWithPolishingPreparesBothModels() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -554,13 +494,11 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testEnsureReadyWithoutPolishingPreparesOnlySpeechd() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer()
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -572,12 +510,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testCancellingEnsureReadyDuringModelPreparationTerminatesAndDoesNotMarkReady() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.speechd.id])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -603,12 +539,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testStopPolishingCancelsInFlightEnsureBeforeSupervisorCanStart() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer(suspendBackendIDs: [BackendCatalog.polishd.id])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: supervisorFactory
         )
@@ -635,17 +569,15 @@ final class BackendManagerTests: XCTestCase {
 
     func testModelPreparationFailureMarksBackendFailedWithDetails() async {
         let marker = "HF_TRACE"
-        let installer = FakeBackendInstaller(needsInstall: [])
         let modelPreparer = FakeModelPreparer(
             failures: [
-                BackendCatalog.speechd.id: ModelDownloadError.downloaderReportedError(
+                BackendCatalog.speechd.id: ModelDownloadError.transport(
                     message: "Hugging Face rejected the request.",
-                    stderrTail: "stderr \(marker)"
+                    detail: "stderr \(marker)"
                 ),
             ]
         )
         let manager = makeManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             supervisorFactory: FakeSupervisorFactory()
         )
@@ -671,7 +603,6 @@ final class BackendManagerTests: XCTestCase {
 
     func testSupervisorFailureErrorSplitsSummaryFromTechnicalDetails() async throws {
         let marker = "FAKE_STDERR_TRACEBACK"
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [
@@ -680,7 +611,7 @@ final class BackendManagerTests: XCTestCase {
                 detail: "stderr: traceback \(marker)"
             ),
         ]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         do {
             try await manager.ensureReady(dictation: true, polishing: true)
@@ -706,12 +637,11 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testPolishingEnsureIsNotBlockedByAStuckDictationEnsure() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         // speechd never reaches .running: its ensure blocks awaiting readiness.
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = []
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         let stuckDictation = Task { try await manager.ensureReady(dictation: true, polishing: false) }
         while supervisorFactory.supervisors[BackendCatalog.speechd.displayName]?.startCallCount != 1 {
@@ -732,11 +662,10 @@ final class BackendManagerTests: XCTestCase {
     }
 
     func testSecondEnsureReadyAddsPolishingAfterDictationOnlyRun() async throws {
-        let installer = FakeBackendInstaller(needsInstall: [])
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         supervisorFactory.statesByName[BackendCatalog.polishd.displayName] = [.running]
-        let manager = makeManager(installer: installer, supervisorFactory: supervisorFactory)
+        let manager = makeManager(supervisorFactory: supervisorFactory)
 
         // First dictation: polishing disabled at the time.
         try await manager.ensureReady(dictation: true, polishing: false)
@@ -749,9 +678,31 @@ final class BackendManagerTests: XCTestCase {
         XCTAssertEqual(supervisorFactory.supervisors[BackendCatalog.polishd.displayName]?.startCallCount, 1)
     }
 
+    func testUnownedSpeechdPortOccupantSurfacesNormalConflictWithoutStarting() async {
+        let supervisorFactory = FakeSupervisorFactory()
+        let occupant = ListeningProcess(
+            pid: 999,
+            executableURL: URL(fileURLWithPath: "/Applications/Other.app/Contents/MacOS/server")
+        )
+        let manager = makeManager(
+            legacyPortDefense: FixedLegacyPortDefense(outcome: .occupiedByOther(occupant)),
+            supervisorFactory: supervisorFactory
+        )
+
+        do {
+            try await manager.ensureReady(dictation: true, polishing: false)
+            XCTFail("expected port conflict")
+        } catch let error as ManagedBackendManagerError {
+            XCTAssertTrue(error.localizedDescription.contains("port already in use"))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertTrue(supervisorFactory.createdConfigurations.isEmpty)
+    }
+
     private func makeManager(
-        installer: FakeBackendInstaller,
         modelPreparer: FakeModelPreparer = FakeModelPreparer(),
+        legacyPortDefense: any LegacyVoxmlxPortDefending = FixedLegacyPortDefense(outcome: .available),
         polishingModelProvider: @escaping BackendManager.PolishingModelProvider = {
             SettingsStore.defaultLLMPolishingModel
         },
@@ -759,15 +710,23 @@ final class BackendManagerTests: XCTestCase {
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
-            installer: installer,
             modelPreparer: modelPreparer,
             layout: BackendInstallLayout(root: URL(fileURLWithPath: "/tmp/localvoxtral-backend-manager-tests")),
+            legacyPortDefense: legacyPortDefense,
             polishingModelProvider: polishingModelProvider,
             speechdCacheLimitProvider: speechdCacheLimitProvider,
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }
         )
+    }
+}
+
+private struct FixedLegacyPortDefense: LegacyVoxmlxPortDefending {
+    let outcome: LegacyVoxmlxPortOutcome
+
+    func clearLegacyOccupantIfNeeded(port: Int) async -> LegacyVoxmlxPortOutcome {
+        outcome
     }
 }
 
@@ -868,89 +827,6 @@ private final class FakeModelPreparer: ModelPreparing, @unchecked Sendable {
     }
 }
 
-// Same concurrent-callers shape as FakeModelPreparer: `install` runs off the
-// main actor, so all mutable state sits behind a Mutex.
-private final class FakeBackendInstaller: BackendInstalling, @unchecked Sendable {
-    private struct State {
-        var needsInstall: Set<String>
-        var installCalls: [ManagedBackendSpec] = []
-        var installStartedContinuation: CheckedContinuation<Void, Never>?
-        var installResumeContinuation: CheckedContinuation<Void, Never>?
-    }
-
-    private let installFailures: [String: Error]
-    private let suspendInstalls: Bool
-    private let state: Mutex<State>
-
-    var installCalls: [ManagedBackendSpec] { state.withLock { $0.installCalls } }
-
-    init(
-        needsInstall: Set<String>,
-        installFailures: [String: Error] = [:],
-        suspendInstalls: Bool = false
-    ) {
-        self.installFailures = installFailures
-        self.suspendInstalls = suspendInstalls
-        self.state = Mutex(State(needsInstall: needsInstall))
-    }
-
-    func needsInstallOrUpdate(_ spec: ManagedBackendSpec) -> Bool {
-        state.withLock { $0.needsInstall.contains(spec.id) }
-    }
-
-    func install(
-        _ spec: ManagedBackendSpec,
-        progress: @MainActor @Sendable @escaping (BackendInstallProgress) -> Void
-    ) async throws {
-        let started: CheckedContinuation<Void, Never>? = state.withLock {
-            $0.installCalls.append(spec)
-            let continuation = $0.installStartedContinuation
-            $0.installStartedContinuation = nil
-            return continuation
-        }
-        started?.resume()
-
-        if suspendInstalls {
-            await withCheckedContinuation { continuation in
-                state.withLock { $0.installResumeContinuation = continuation }
-            }
-        }
-
-        if let error = installFailures[spec.id] {
-            throw error
-        }
-
-        await progress(.verifying)
-        await progress(.installing(logLine: "installed \(spec.displayName)"))
-        await progress(.finished)
-        state.withLock { _ = $0.needsInstall.remove(spec.id) }
-    }
-
-    func waitUntilInstallStarted() async {
-        await withCheckedContinuation { continuation in
-            let alreadyStarted: Bool = state.withLock {
-                if $0.installCalls.isEmpty {
-                    $0.installStartedContinuation = continuation
-                    return false
-                }
-                return true
-            }
-            if alreadyStarted {
-                continuation.resume()
-            }
-        }
-    }
-
-    func resumeInstall() {
-        let continuation: CheckedContinuation<Void, Never>? = state.withLock {
-            let continuation = $0.installResumeContinuation
-            $0.installResumeContinuation = nil
-            return continuation
-        }
-        continuation?.resume()
-    }
-}
-
 @MainActor
 private final class FakeSupervisorFactory {
     var statesByName: [String: [BackendProcessSupervisor.State]] = [:]
@@ -1009,13 +885,5 @@ private final class FakeBackendSupervisor: ManagedBackendSupervising {
         for continuation in stateContinuations.values {
             continuation.yield(state)
         }
-    }
-}
-
-private struct FakeBackendError: LocalizedError {
-    let message: String
-
-    var errorDescription: String? {
-        message
     }
 }
