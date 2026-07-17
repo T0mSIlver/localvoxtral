@@ -86,6 +86,12 @@ extension OnboardingItemState {
 
     private static func modelDownloadDetail(_ progress: ModelDownloadProgress) -> String {
         guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            // Bytes moving but no total (CDN sent no length): show movement
+            // rather than pretending we are still checking.
+            if progress.downloadedBytes > 0 {
+                let megabytes = progress.downloadedBytes / 1_048_576
+                return "Downloading model - \(megabytes) MB"
+            }
             return "Checking model..."
         }
         return "Downloading model \(Int(((progress.fraction ?? 0) * 100).rounded()))%"

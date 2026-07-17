@@ -442,6 +442,11 @@ private struct ManagedBackendStatusLabel: View {
 
     private func modelDownloadText(_ progress: ModelDownloadProgress) -> String {
         guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            // Bytes moving but no total (CDN sent no length for some file):
+            // show movement rather than pretending we are still checking.
+            if progress.downloadedBytes > 0 {
+                return "Downloading model - \(Self.byteText(progress.downloadedBytes))"
+            }
             // No total yet: the downloader is still resolving what (if
             // anything) needs fetching — on a warm cache this phase is all
             // the user ever sees, so don't claim a download is happening.

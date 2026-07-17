@@ -78,6 +78,49 @@ final class HFModelDownloaderTests: XCTestCase {
         )
     }
 
+    /// Regression (field-hit 2026-07-17): a single multi-gigabyte file must
+    /// surface in-flight progress. The completion-only transport reported
+    /// bytes only at whole-file boundaries, so the UI sat on "Checking
+    /// model..." for the entire 2.5 GB fetch.
+    func testDownloadReportsInFlightProgressWithinASingleFile() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["model.safetensors"]),
+            payloads: ["model.safetensors": Data("weights-payload".utf8)]
+        )
+        let downloader = HFModelDownloader(
+            cacheRoot: cache,
+            transport: transport,
+            progressByteGranularity: 1
+        )
+        var progress: [ModelDownloadProgress] = []
+
+        try await downloader.prepare(
+            ModelPreparationRequest(
+                backendID: "speechd",
+                displayName: "Dictation engine",
+                repoID: "org/model",
+                revision: pin,
+                includePatterns: ["model*.safetensors"]
+            )
+        ) { progress.append($0) }
+        // In-flight reports hop to the main actor as unstructured tasks;
+        // drain them before asserting.
+        for _ in 0..<10 { await Task.yield() }
+
+        let bytes = progress.map(\.downloadedBytes)
+        XCTAssertEqual(bytes.first, 0)
+        XCTAssertEqual(bytes.last, 15)
+        XCTAssertEqual(bytes, bytes.sorted(), "delivered progress must be monotonic")
+        XCTAssertEqual(Set(bytes).count, bytes.count, "no duplicate deliveries")
+        XCTAssertTrue(
+            bytes.contains { $0 > 0 && $0 < 15 },
+            "expected an in-flight report between 0 and total, got \(bytes)"
+        )
+    }
+
     func testUnpinnedPreparationTracksMainAndWritesResolvedRef() async throws {
         let cache = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: cache) }
@@ -204,12 +247,22 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
         Int64(payloads[url.lastPathComponent]?.count ?? 0)
     }
 
-    func download(from url: URL) async throws -> (temporaryURL: URL, statusCode: Int) {
+    func download(
+        from url: URL,
+        onBytes: @escaping @Sendable (Int64, Int64?) -> Void
+    ) async throws -> (temporaryURL: URL, statusCode: Int) {
         let fileName = url.lastPathComponent
         state.withLock { $0.downloadedFileNames.append(fileName) }
+        let payload = payloads[fileName] ?? Data()
+        // Report the file in two halves so incremental-progress tests can
+        // observe an in-flight (non-boundary) update.
+        if !payload.isEmpty {
+            onBytes(Int64(payload.count / 2), Int64(payload.count))
+            onBytes(Int64(payload.count), Int64(payload.count))
+        }
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("fake-hf-download-\(UUID().uuidString)")
-        try (payloads[fileName] ?? Data()).write(to: temporary)
+        try payload.write(to: temporary)
         return (temporary, 200)
     }
 }
