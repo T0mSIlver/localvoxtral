@@ -215,15 +215,22 @@ final class BackendManager: ManagedBackendManaging {
     func stopAll() async {
         let cancelledDictationEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.speechd)
         let cancelledPolishingEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.polishd)
+        let hadDictationSupervisor = speechdSupervisor != nil
         let hadPolishingSupervisor = polishdSupervisor != nil
         await speechdSupervisor?.stop()
         await polishdSupervisor?.stop()
+        // Drop the supervisors, not just stop them: launch arguments are
+        // captured at supervisor creation, so a kept supervisor would relaunch
+        // with stale settings (cache limit / step cadence) — field-hit
+        // 2026-07-17: changing the memory limit and toggling Managed →
+        // External → Managed silently kept the old argv.
+        speechdSupervisor = nil
         polishdSupervisor = nil
         speechdStateMirrorTask?.cancel()
         speechdStateMirrorTask = nil
         polishdStateMirrorTask?.cancel()
         polishdStateMirrorTask = nil
-        if cancelledDictationEnsure || speechdSupervisor != nil {
+        if cancelledDictationEnsure || hadDictationSupervisor {
             setStatus(.stopped, for: BackendCatalog.speechd)
         }
         if cancelledPolishingEnsure || hadPolishingSupervisor {
@@ -233,10 +240,14 @@ final class BackendManager: ManagedBackendManaging {
 
     func stopDictation() async {
         let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.speechd)
+        let hadSupervisor = speechdSupervisor != nil
         await speechdSupervisor?.stop()
+        // See stopAll(): drop the supervisor so the next ensure rebuilds the
+        // launch arguments from the current settings providers.
+        speechdSupervisor = nil
         speechdStateMirrorTask?.cancel()
         speechdStateMirrorTask = nil
-        if cancelledEnsure || speechdSupervisor != nil {
+        if cancelledEnsure || hadSupervisor {
             setStatus(.stopped, for: BackendCatalog.speechd)
         }
     }
