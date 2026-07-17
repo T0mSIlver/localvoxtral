@@ -76,6 +76,11 @@ enum ModelDownloadError: LocalizedError, Sendable {
 struct HFModelRepositoryInfo: Equatable, Sendable {
     let sha: String
     let fileNames: [String]
+    /// Exact byte sizes from the repo API (`?blobs=true`), keyed by file name.
+    /// The authoritative source for the download total: available before the
+    /// first byte moves, unlike HEAD probes (which the CDN may refuse) or
+    /// transfer-reported sizes (which arrive only as each file starts).
+    let sizesByFileName: [String: Int64]
 }
 
 protocol HFModelDownloadTransport: Sendable {
@@ -208,7 +213,10 @@ private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownl
 
 struct HFModelDownloader: ModelPreparing {
     private struct RepositoryResponse: Decodable {
-        struct Sibling: Decodable { let rfilename: String }
+        struct Sibling: Decodable {
+            let rfilename: String
+            let size: Int64?
+        }
         let sha: String
         let siblings: [Sibling]
     }
@@ -253,8 +261,14 @@ struct HFModelDownloader: ModelPreparing {
                 return !fileManager.fileExists(atPath: destination.path)
             }
 
+            // Prefer the repo API's exact sizes (one call, already made);
+            // HEAD-probe only files the API left sizeless.
             var sizes: [String: Int64] = [:]
             for fileName in missing {
+                if let size = info.sizesByFileName[fileName] {
+                    sizes[fileName] = size
+                    continue
+                }
                 try Task.checkCancellation()
                 if let size = try await transport.contentLength(
                     of: Self.fileURL(repoID: request.repoID, revision: info.sha, fileName: fileName)
@@ -389,7 +403,9 @@ struct HFModelDownloader: ModelPreparing {
     }
 
     static func repositoryInfoURL(repoID: String, revision: String?) -> URL {
-        URL(string: "https://huggingface.co/api/models/\(repoID)/revision/\(revision ?? "main")")!
+        // blobs=true adds exact per-file byte sizes to the sibling list, so
+        // the aggregate download total is known before any transfer starts.
+        URL(string: "https://huggingface.co/api/models/\(repoID)/revision/\(revision ?? "main")?blobs=true")!
     }
 
     static func fileURL(repoID: String, revision: String, fileName: String) -> URL {
@@ -413,9 +429,16 @@ struct HFModelDownloader: ModelPreparing {
                 actual: response.sha
             )
         }
+        var sizesByFileName: [String: Int64] = [:]
+        for sibling in response.siblings {
+            if let size = sibling.size {
+                sizesByFileName[sibling.rfilename] = size
+            }
+        }
         return HFModelRepositoryInfo(
             sha: response.sha,
-            fileNames: response.siblings.map(\.rfilename)
+            fileNames: response.siblings.map(\.rfilename),
+            sizesByFileName: sizesByFileName
         )
     }
 

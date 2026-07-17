@@ -166,6 +166,47 @@ final class HFModelDownloaderTests: XCTestCase {
         )
     }
 
+    /// The repo API (`?blobs=true`) carries exact per-file sizes, so the total
+    /// — and the determinate bar — must be available from the very first
+    /// report, with no per-file HEAD probes at all.
+    func testRepoAPISizesProvideTheTotalUpfrontWithoutHEADProbes() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(
+                sha: pin,
+                files: ["model.safetensors"],
+                sizes: ["model.safetensors": 15]
+            ),
+            payloads: ["model.safetensors": Data("weights-payload".utf8)]
+        )
+        let downloader = HFModelDownloader(
+            cacheRoot: cache,
+            transport: transport,
+            progressByteGranularity: 1
+        )
+        var progress: [ModelDownloadProgress] = []
+
+        try await downloader.prepare(
+            ModelPreparationRequest(
+                backendID: "speechd",
+                displayName: "Dictation engine",
+                repoID: "org/model",
+                revision: pin,
+                includePatterns: ["model*.safetensors"]
+            )
+        ) { progress.append($0) }
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(progress.first, ModelDownloadProgress(downloadedBytes: 0, totalBytes: 15))
+        XCTAssertTrue(
+            transport.contentLengthProbes.isEmpty,
+            "API sizes must make HEAD probes unnecessary, probed \(transport.contentLengthProbes)"
+        )
+        XCTAssertEqual(progress.last, ModelDownloadProgress(downloadedBytes: 15, totalBytes: 15))
+    }
+
     func testUnpinnedPreparationTracksMainAndWritesResolvedRef() async throws {
         let cache = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: cache) }
@@ -259,8 +300,16 @@ final class HFModelDownloaderTests: XCTestCase {
         return url
     }
 
-    private func repositoryJSON(sha: String, files: [String]) -> Data {
-        let siblings = files.map { ["rfilename": $0] }
+    private func repositoryJSON(
+        sha: String,
+        files: [String],
+        sizes: [String: Int64] = [:]
+    ) -> Data {
+        let siblings = files.map { file -> [String: Any] in
+            var sibling: [String: Any] = ["rfilename": file]
+            if let size = sizes[file] { sibling["size"] = size }
+            return sibling
+        }
         return try! JSONSerialization.data(withJSONObject: ["sha": sha, "siblings": siblings])
     }
 }
@@ -268,6 +317,7 @@ final class HFModelDownloaderTests: XCTestCase {
 private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unchecked Sendable {
     private struct State {
         var repositoryInfoURLs: [URL] = []
+        var contentLengthProbes: [String] = []
         var downloadedFileNames: [String] = []
     }
 
@@ -286,6 +336,7 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     }
 
     var repositoryInfoURLs: [URL] { state.withLock { $0.repositoryInfoURLs } }
+    var contentLengthProbes: [String] { state.withLock { $0.contentLengthProbes } }
     var downloadedFileNames: [String] { state.withLock { $0.downloadedFileNames } }
 
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
@@ -295,6 +346,7 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
 
     func contentLength(of url: URL) async throws -> Int64? {
         let fileName = url.lastPathComponent
+        state.withLock { $0.contentLengthProbes.append(fileName) }
         guard !headlessFiles.contains(fileName) else { return nil }
         return Int64(payloads[fileName]?.count ?? 0)
     }
