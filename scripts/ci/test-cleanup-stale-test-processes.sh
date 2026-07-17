@@ -63,10 +63,18 @@ if "$SCRIPT" >/dev/null 2>&1; then
 fi
 
 # Exercise the production ps+lsof+TERM path with a controlled executable whose
-# process name is exactly xctest. `sleep` only keeps the fixture alive; the test
-# synchronizes through the returned PID and never waits on elapsed time.
-cp "$(command -v sleep)" "$TMP_DIR/xctest"
-chmod +x "$TMP_DIR/xctest"
+# process name is exactly xctest. Do not copy a signed macOS system binary under
+# a new name: AMFI kills that with SIGKILL before the test can inspect it.
+# The fixture blocks in pause(); the test synchronizes through its PID and never
+# waits on elapsed time.
+cat >"$TMP_DIR/xctest.c" <<'C'
+#include <signal.h>
+#include <unistd.h>
+int main(void) {
+  for (;;) pause();
+}
+C
+cc "$TMP_DIR/xctest.c" -o "$TMP_DIR/xctest"
 (
   cd "$workspace"
   exec "$TMP_DIR/xctest" 300
