@@ -72,31 +72,63 @@ struct ClaudeSessionJoin: Sendable, Equatable {
 struct ClaudeSessionJoinResolver {
     private let registry: ClaudeSessionRegistry
     private let markerInWindowTitle: (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead?
+    private let focusedTerminalTTY: (String) -> String?
 
-    /// - Parameter markerInWindowTitle: reads the PID-pinned focused window
-    ///   title, parses a marker out of it, and reports which WINDOW it read.
-    ///   Injected so the whole truth table is unit-testable without a live AX
-    ///   tree — the same reason every other live read in this feature is a seam.
+    /// - Parameters:
+    ///   - markerInWindowTitle: reads the PID-pinned focused window title,
+    ///     parses a marker out of it, and reports which WINDOW it read.
+    ///     Injected so the whole truth table is unit-testable without a live
+    ///     AX tree — the same reason every other live read in this feature is
+    ///     a seam.
+    ///   - focusedTerminalTTY: reads the focused pane's controlling TTY for a
+    ///     bundle id (Ghostty ≥ 1.4 over AppleScript). Unlike the AX seam this
+    ///     DEFAULTS TO ABSTAIN, not to the live reader: an Apple event is not
+    ///     an AX read — the first one triggers the Automation consent prompt,
+    ///     and a defaulted live reader would send real events (and hang the
+    ///     suite on that prompt) from any test that forgets to inject. The app
+    ///     wires `GhosttyFocusedTerminalTTYReader` explicitly.
     init(
         registry: ClaudeSessionRegistry,
         markerInWindowTitle: @escaping (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead? = {
             TerminalScreenAXReader.markerInFocusedWindowTitle(applicationPID: $0)
-        }
+        },
+        focusedTerminalTTY: @escaping (String) -> String? = { _ in nil }
     ) {
         self.registry = registry
         self.markerInWindowTitle = markerInWindowTitle
+        self.focusedTerminalTTY = focusedTerminalTTY
     }
 
     /// The join for `target`, or nil on any abstention.
     ///
-    /// This is the ONLY function in the feature that reads a window title, and
-    /// it is called once per dictation, at start.
+    /// TTY first, marker second. The TTY compares the focused pane's device
+    /// against what the hook publisher reported from inside the session — the
+    /// process table cannot be clobbered by whoever wrote the window title
+    /// last, so it keeps joining while Claude Code's own conversation titles
+    /// own the visible one. Any TTY non-answer (old Ghostty, Automation
+    /// denied, no local session on that device, two sessions claiming it)
+    /// falls through to the marker path unchanged; remote sessions can ONLY
+    /// join via marker, because their TTY names another machine's device and
+    /// `resolve(tty:)` refuses remote candidates outright.
+    ///
+    /// This remains the only place a join is resolved, once per dictation, at
+    /// start — whichever mechanism answers.
     func resolve(target: TerminalScreenTarget) -> ClaudeSessionJoin? {
         // The allowlist is re-checked here even though the capture gate already
         // enforced it. This object is reachable independently of that gate, and
         // "only a verified single-AXTextArea grid" is a precondition of reading
         // this app at all — not something to inherit on trust from a caller.
         guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
+
+        if let tty = focusedTerminalTTY(target.bundleID),
+           case .resolved(let snapshot) = registry.resolve(tty: tty) {
+            Log.claudeContext.info(
+                "Terminal pane joined to a live Claude session via focused-pane tty"
+            )
+            return ClaudeSessionJoin(
+                target: target, marker: snapshot.marker, snapshot: snapshot, windowID: nil
+            )
+        }
 
         guard let read = markerInWindowTitle(target.pid) else {
             // No marker on screen: this pane is not a joined Claude session, or
@@ -107,7 +139,7 @@ struct ClaudeSessionJoinResolver {
 
         switch registry.resolve(marker: read.marker) {
         case .resolved(let snapshot):
-            Log.claudeContext.info("Terminal pane joined to a live Claude session")
+            Log.claudeContext.info("Terminal pane joined to a live Claude session via title marker")
             return ClaudeSessionJoin(
                 target: target, marker: read.marker, snapshot: snapshot, windowID: read.windowID
             )

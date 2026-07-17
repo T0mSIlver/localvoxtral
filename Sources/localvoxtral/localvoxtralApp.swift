@@ -220,7 +220,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the session's prior prompt, and the repository context describe the
             // same session — three resolvers would each answer honestly about a
             // different moment.
-            let resolver = ClaudeSessionJoinResolver(registry: claudeSessionRegistry)
+            // The tty seam is wired here, not defaulted: sending Apple events
+            // is a consented capability (Automation prompt), so only the app —
+            // never a test that forgot to inject — constructs the live reader.
+            let ttyReader = GhosttyFocusedTerminalTTYReader()
+            let resolver = ClaudeSessionJoinResolver(
+                registry: claudeSessionRegistry,
+                focusedTerminalTTY: { ttyReader.focusedTerminalTTY(bundleID: $0) }
+            )
             viewModel.claudeSessionJoinResolver = resolver
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
