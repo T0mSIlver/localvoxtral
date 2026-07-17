@@ -54,6 +54,23 @@ jobs:
           rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
             .polishd-integration-enable.json .speechd-integration-enable.json
 
+      - name: Clean abandoned test processes in this workspace
+        # A cancelled self-hosted job can outlive the Actions process cookie
+        # and leave swift-package/xctest running in this persistent checkout.
+        # Scope by current user + lsof cwd/mapped text; never pkill globally
+        # because the owner and parallel worktrees may run legitimate tests.
+        if: runner.environment == 'self-hosted'
+        run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
+
+      - name: Process-cleanup regression tests
+        # Pure shell tests for the workspace selector and the SSH build gate's
+        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        run: |
+          ./scripts/ci/test-cleanup-stale-test-processes.sh
+          ./scripts/ci/test-build-gate-process-cleanup.sh
+          ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-remote-build-reap.sh
+
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
         # every push: the polishd live-model integration step below runs only
@@ -414,12 +431,12 @@ jobs:
         # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up
         # orphan processes" phase, and the Worker logs don't name what it
         # reaps. Snapshot candidate survivors at job end so any future
-        # occurrence identifies itself. Short process names only (ucomm, no
-        # paths or arguments): this log is public. Informational — never
-        # fails the job.
+        # occurrence identifies itself. UID/state distinguish another account
+        # and harmless zombies; names stay ucomm-only (no paths or arguments)
+        # because this log is public. Informational — never fails the job.
         if: ${{ always() && runner.environment == 'self-hosted' }}
         run: |
-          survivors="$(ps -axo pid,etime,ucomm \
+          survivors="$(ps -axo pid,uid,etime,state,ucomm \
             | grep -iE 'localvoxtral|polishd|speechd|xctest|swiftpm-testing|XCBBuildService' \
             | grep -v grep || true)"
           if [[ -n "$survivors" ]]; then
