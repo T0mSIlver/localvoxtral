@@ -159,14 +159,14 @@ extension DictationViewModel {
     }
 
     private func managedBackendStartupStatusText(dictation: Bool, polishing: Bool) -> String {
-        if dictation, case .preparingModel(let progress) = backendManager.voxmlxStatus {
+        if dictation, case .preparingModel(let progress) = backendManager.speechdStatus {
             return modelDownloadStartupText(kind: "dictation", progress: progress)
         }
         if polishing, case .preparingModel(let progress) = backendManager.polishdStatus {
             return modelDownloadStartupText(kind: "polishing", progress: progress)
         }
         if shouldShowManagedBackendInstallStatus(
-            voxmlxStatus: dictation ? backendManager.voxmlxStatus : nil,
+            speechdStatus: dictation ? backendManager.speechdStatus : nil,
             polishdStatus: polishing ? backendManager.polishdStatus : nil
         ) {
             if !dictation, polishing {
@@ -189,10 +189,10 @@ extension DictationViewModel {
     }
 
     private func shouldShowManagedBackendInstallStatus(
-        voxmlxStatus: ManagedBackendStatus?,
+        speechdStatus: ManagedBackendStatus?,
         polishdStatus: ManagedBackendStatus?
     ) -> Bool {
-        if voxmlxStatus?.requiresInstallProgressText == true {
+        if speechdStatus?.requiresInstallProgressText == true {
             return true
         }
         return polishdStatus?.requiresInstallProgressText == true

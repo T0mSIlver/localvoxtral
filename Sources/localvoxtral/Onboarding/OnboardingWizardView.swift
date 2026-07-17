@@ -190,7 +190,7 @@ private struct DownloadsPage: View {
                 systemImage: "arrow.down.circle",
                 title: "Set up the local engine",
                 subtitle:
-                    "localvoxtral will install voxmlx and download the Voxtral dictation model. Nothing downloads until you start it below."
+                    "localvoxtral will prepare the bundled dictation engine and download its Voxtral model. Nothing downloads until you start it below."
             )
 
             Toggle(isOn: $model.polishingConsent) {

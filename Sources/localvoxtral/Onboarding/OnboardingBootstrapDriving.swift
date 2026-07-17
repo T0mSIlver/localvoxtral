@@ -3,7 +3,7 @@ import Foundation
 /// The managed downloads the onboarding wizard can kick off. Each maps to one
 /// managed backend + its model weights.
 enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
-    /// voxmlx + the Voxtral realtime dictation model.
+    /// Bundled speechd + the Voxtral realtime dictation model.
     case dictation
     /// The bundled polishing engine's LLM model.
     case polishing
@@ -23,7 +23,7 @@ enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
     var detail: String {
         switch self {
         case .dictation:
-            return "voxmlx + the Voxtral realtime model"
+            return "the bundled dictation engine + Voxtral model"
         case .polishing:
             return "the polishing LLM (bundled engine)"
         }

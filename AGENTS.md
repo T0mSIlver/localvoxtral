@@ -311,10 +311,11 @@ Key subsystems:
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
 - Backends: `BackendManager` lazily bootstraps app-managed local serving on
-  first dictation start; catalog pinned to fork wheel releases; installer
-  downloads a pinned `uv` on first use, then shells out to it; supervisors
-  spawn/health-check/stop the managed processes; install root lives under
-  Application Support. User-facing backend copy (pinned models, fork
+  first dictation start; managed ASR is the bundled `localvoxtral-speechd`
+  helper on port 8471 with an exact HF model revision, while the legacy
+  managed voxmlx spec remains only for part-4 retirement/cleanup. The installer/downloader keeps
+  pinned `uv` machinery; supervisors spawn/health-check/stop the managed
+  processes. User-facing backend copy (pinned models, fork
   optimizations, vLLM example) lives in the README "Under the hood" section
   (`/docs` is gitignored local notes — nothing user-facing goes there); keep
   it in sync when pins change.

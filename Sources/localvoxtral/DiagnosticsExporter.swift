@@ -23,9 +23,9 @@ struct DiagnosticsSnapshot: Sendable, Equatable {
     var hasRealtimeAPIKey: Bool
     var polishingSummary: String
     var hasPolishingAPIKey: Bool
-    var voxmlxStatus: String
+    var speechdStatus: String
     var polishdStatus: String
-    var voxmlxRecentOutput: [String]
+    var speechdRecentOutput: [String]
     var polishdRecentOutput: [String]
 }
 
@@ -62,9 +62,9 @@ enum DiagnosticsExporter {
     @MainActor
     static func makeSnapshot(
         settings: SettingsStore,
-        voxmlxStatus: ManagedBackendStatus,
+        speechdStatus: ManagedBackendStatus,
         polishdStatus: ManagedBackendStatus,
-        voxmlxRecentOutput: [String],
+        speechdRecentOutput: [String],
         polishdRecentOutput: [String],
         bundle: Bundle = .main,
         processInfo: ProcessInfo = .processInfo
@@ -98,9 +98,9 @@ enum DiagnosticsExporter {
             hasRealtimeAPIKey: !settings.apiKey.trimmed.isEmpty,
             polishingSummary: polishingSummary,
             hasPolishingAPIKey: !settings.llmPolishingAPIKey.trimmed.isEmpty,
-            voxmlxStatus: describe(voxmlxStatus),
+            speechdStatus: describe(speechdStatus),
             polishdStatus: describe(polishdStatus),
-            voxmlxRecentOutput: voxmlxRecentOutput,
+            speechdRecentOutput: speechdRecentOutput,
             polishdRecentOutput: polishdRecentOutput
         )
     }
@@ -138,17 +138,17 @@ enum DiagnosticsExporter {
         lines.append("")
 
         lines.append("== Managed backend status ==")
-        lines.append("voxmlx: \(snapshot.voxmlxStatus)")
+        lines.append("dictation engine (localvoxtral-speechd): \(snapshot.speechdStatus)")
         lines.append("polishing engine (localvoxtral-polishd): \(snapshot.polishdStatus)")
         lines.append("")
 
         lines.append("== Managed backend recent output ==")
-        if snapshot.voxmlxRecentOutput.isEmpty && snapshot.polishdRecentOutput.isEmpty {
+        if snapshot.speechdRecentOutput.isEmpty && snapshot.polishdRecentOutput.isEmpty {
             lines.append("(no supervisor output captured)")
         } else {
-            if !snapshot.voxmlxRecentOutput.isEmpty {
-                lines.append("-- voxmlx --")
-                lines.append(contentsOf: snapshot.voxmlxRecentOutput)
+            if !snapshot.speechdRecentOutput.isEmpty {
+                lines.append("-- localvoxtral-speechd --")
+                lines.append(contentsOf: snapshot.speechdRecentOutput)
             }
             if !snapshot.polishdRecentOutput.isEmpty {
                 lines.append("-- localvoxtral-polishd --")

@@ -34,6 +34,8 @@ struct UVDistribution: Equatable, Sendable {
 }
 
 enum BackendCatalog {
+    /// Retained for installed-backend cleanup and the part-4 retirement work.
+    /// It is no longer part of the managed bootstrap set.
     static let voxmlx = ManagedBackendSpec(
         id: "voxmlx",
         displayName: "voxmlx",
@@ -45,6 +47,19 @@ enum BackendCatalog {
             pythonVersion: "3.12"
         ),
         executableName: "voxmlx-serve",
+        port: 8471
+    )
+
+    /// The dictation engine: localvoxtral-speechd (MLX Swift, see
+    /// SpeechHelper/), bundled inside the .app. It serves the same loopback
+    /// OpenAI Realtime subset and port as voxmlx, so client endpoints stay
+    /// stable while managed bootstrap moves off the Python process.
+    static let speechd = ManagedBackendSpec(
+        id: "speechd",
+        displayName: "Dictation engine",
+        version: "bundled",
+        installKind: .bundledExecutable,
+        executableName: "localvoxtral-speechd",
         port: 8471
     )
 
@@ -62,5 +77,5 @@ enum BackendCatalog {
         port: 8472
     )
 
-    static let all: [ManagedBackendSpec] = [voxmlx, polishd]
+    static let all: [ManagedBackendSpec] = [speechd, polishd]
 }

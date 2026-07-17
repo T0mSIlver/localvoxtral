@@ -83,7 +83,7 @@ enum BackendMode: String, CaseIterable, Identifiable {
     var dictationDescription: String {
         switch self {
         case .managedLocal:
-            return "Installs and runs voxmlx on this Mac."
+            return "Runs the bundled dictation engine on this Mac."
         case .externalURL:
             return "Use an OpenAI Realtime-compatible endpoint you run yourself."
         }
@@ -95,6 +95,41 @@ enum BackendMode: String, CaseIterable, Identifiable {
             return "Runs the bundled polishing engine on this Mac."
         case .externalURL:
             return "Use an OpenAI-compatible chat completions endpoint you run yourself."
+        }
+    }
+}
+
+/// Metal buffer-pool cache limit for the managed dictation helper. `Auto`
+/// omits the `--cache-limit-mb` flag so the helper's built-in default applies;
+/// every other case pins an explicit ceiling.
+enum SpeechdCacheLimit: String, CaseIterable, Identifiable, Sendable {
+    case auto
+    case gb2 = "2gb"
+    case gb4 = "4gb"
+    case gb6 = "6gb"
+    case gb8 = "8gb"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto"
+        case .gb2: return "2 GB"
+        case .gb4: return "4 GB"
+        case .gb6: return "6 GB"
+        case .gb8: return "8 GB"
+        }
+    }
+
+    /// Megabytes to pass via `--cache-limit-mb`, or nil for `Auto` (the flag is
+    /// omitted and the helper's built-in default applies).
+    var megabytes: Int? {
+        switch self {
+        case .auto: return nil
+        case .gb2: return 2048
+        case .gb4: return 4096
+        case .gb6: return 6144
+        case .gb8: return 8192
         }
     }
 }
@@ -160,6 +195,7 @@ final class SettingsStore {
         static let apiKey = "settings.api_key"
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
         static let dictationBackendMode = "settings.dictation_backend_mode"
+        static let speechdCacheLimit = "settings.speechd_cache_limit"
         static let polishingBackendMode = "settings.polishing_backend_mode"
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
@@ -224,6 +260,12 @@ final class SettingsStore {
 
     var polishingBackendMode: BackendMode {
         didSet { defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode) }
+    }
+
+    /// Metal buffer-pool cache limit for the managed dictation helper. Applies
+    /// the next time the managed dictation backend (re)starts.
+    var speechdCacheLimit: SpeechdCacheLimit {
+        didSet { defaults.set(speechdCacheLimit.rawValue, forKey: Keys.speechdCacheLimit) }
     }
 
     /// True once the user has completed (or skipped) the first-launch onboarding
@@ -459,6 +501,14 @@ final class SettingsStore {
         polishingBackendMode = resolvedBackendModes.polishing
         defaults.set(resolvedBackendModes.dictation.rawValue, forKey: Keys.dictationBackendMode)
         defaults.set(resolvedBackendModes.polishing.rawValue, forKey: Keys.polishingBackendMode)
+
+        if let storedCacheLimit = defaults.string(forKey: Keys.speechdCacheLimit),
+            let parsedCacheLimit = SpeechdCacheLimit(rawValue: storedCacheLimit)
+        {
+            speechdCacheLimit = parsedCacheLimit
+        } else {
+            speechdCacheLimit = .auto
+        }
 
         let configuredProvider = Self.loadString(
             defaults: defaults, key: Keys.realtimeProvider,
@@ -905,9 +955,11 @@ final class SettingsStore {
 
     func effectiveModelName(for provider: RealtimeProvider) -> String {
         if dictationBackendMode == .managedLocal {
-            // Managed mode always serves the managed default model; a
-            // user-typed override in external-mode fields is ignored.
-            return RealtimeProvider.realtimeAPI.defaultModelName
+            // The bundled Swift engine needs its dedicated HF-layout pin.
+            // Keep the external provider's placeholder/default independent:
+            // user-typed external values remain ignored in managed mode, but
+            // an existing external endpoint still sees its historical model.
+            return SpeechModelCatalog.defaultOption.repoID
         }
         let normalized = Self.normalizedModelName(from: modelName(for: provider))
         return normalized.isEmpty ? provider.defaultModelName : normalized

@@ -5,10 +5,10 @@ import Foundation
 /// replaced it (2026-07). Idempotent: once everything is gone, running it
 /// again is a silent no-op, so it runs on every launch.
 ///
-/// Deliberately untouched: the voxmlx tool (still uv-installed), the managed
-/// uv binary and its caches (voxmlx installs/updates still need them), and
-/// the downloaded model weights (the bundled helper reads the same HF cache
-/// the old engine populated).
+/// Deliberately untouched: the legacy voxmlx tool and its installed marker
+/// (retirement belongs to part 4), the managed uv binary and caches (still
+/// used for HF model preparation), and downloaded model weights (the bundled
+/// helpers read the same shared HF cache).
 struct LegacyMLXLMCleanup {
     private let layout: BackendInstallLayout
     private let fileManager: FileManager

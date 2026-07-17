@@ -211,7 +211,7 @@ final class DictationViewModel {
     var requiredManagedBackendsReady: Bool {
         guard settings.onboardingCompleted else { return true }
         if settings.dictationBackendMode == .managedLocal,
-           !isReady(backendManager.voxmlxStatus)
+           !isReady(backendManager.speechdStatus)
         {
             return false
         }
@@ -351,7 +351,7 @@ final class DictationViewModel {
     // watches inline progress in Settings instead of waiting for dictation.
     // One slot per backend (mirroring BackendManager's per-backend single-flight
     // rationale): a polishing toggle/mode flip must never cancel an in-flight
-    // voxmlx warmup, and vice versa. Kept awaitable for tests.
+    // speechd warmup, and vice versa. Kept awaitable for tests.
     @ObservationIgnored
     var dictationWarmupTask: Task<Void, Never>?
     @ObservationIgnored
@@ -535,7 +535,8 @@ final class DictationViewModel {
         self.backendManager =
             backendManager
             ?? BackendManager(
-                polishingModelProvider: { settings.resolvedManagedLLMPolishingModel }
+                polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
+                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
             )
         self.managesRuntimeServices = startRuntimeServices
         if let overlayBufferCoordinator {
@@ -1011,7 +1012,7 @@ final class DictationViewModel {
         }
 
         if previousMode == .managedLocal, mode == .externalURL {
-            Log.backends.info("dictation backend mode switched to external; stopping managed voxmlx")
+            Log.backends.info("dictation backend mode switched to external; stopping managed speechd")
             cancelManagedStartupTask()
             dictationWarmupTask?.cancel()
             if isConnectingRealtimeSession {
@@ -1191,9 +1192,9 @@ final class DictationViewModel {
     func exportDiagnostics() {
         let snapshot = DiagnosticsExporter.makeSnapshot(
             settings: settings,
-            voxmlxStatus: backendManager.voxmlxStatus,
+            speechdStatus: backendManager.speechdStatus,
             polishdStatus: backendManager.polishdStatus,
-            voxmlxRecentOutput: backendManager.recentOutput(for: BackendCatalog.voxmlx),
+            speechdRecentOutput: backendManager.recentOutput(for: BackendCatalog.speechd),
             polishdRecentOutput: backendManager.recentOutput(for: BackendCatalog.polishd)
         )
 
