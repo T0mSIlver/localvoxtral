@@ -296,14 +296,16 @@ final class SettingsStore {
         didSet { defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode) }
     }
 
-    /// Metal buffer-pool cache limit for the managed dictation helper. Applies
-    /// the next time the managed dictation backend (re)starts.
+    /// Metal buffer-pool cache limit for the managed dictation helper. Changing
+    /// it from Settings restarts the engine so the new argv applies immediately
+    /// (`DictationViewModel.applySpeechdCacheLimitChange`); direct writes apply
+    /// on the next (re)start.
     var speechdCacheLimit: SpeechdCacheLimit {
         didSet { defaults.set(speechdCacheLimit.rawValue, forKey: Keys.speechdCacheLimit) }
     }
 
-    /// Streaming step cadence for the managed dictation helper. Applies the
-    /// next time the managed dictation backend (re)starts.
+    /// Streaming step cadence for the managed dictation helper. Same restart
+    /// contract as `speechdCacheLimit`.
     var speechdStepCadence: SpeechdStepCadence {
         didSet { defaults.set(speechdStepCadence.rawValue, forKey: Keys.speechdStepCadence) }
     }

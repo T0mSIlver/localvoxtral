@@ -207,6 +207,20 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
+    private var speechdCacheLimitBinding: Binding<SpeechdCacheLimit> {
+        Binding(
+            get: { settings.speechdCacheLimit },
+            set: { viewModel.applySpeechdCacheLimitChange($0) }
+        )
+    }
+
+    private var speechdStepCadenceBinding: Binding<SpeechdStepCadence> {
+        Binding(
+            get: { settings.speechdStepCadence },
+            set: { viewModel.applySpeechdStepCadenceChange($0) }
+        )
+    }
+
     private var managedPolishingModelEntries: [PolishModelPickerEntry] {
         PolishModelPickerSupport.entries(storedRepoID: settings.resolvedManagedLLMPolishingModel)
     }
@@ -246,7 +260,7 @@ private struct ConnectionSettingsPane: View {
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Memory limit") {
-                        Picker("", selection: $settings.speechdCacheLimit) {
+                        Picker("", selection: speechdCacheLimitBinding) {
                             ForEach(SpeechdCacheLimit.allCases) { limit in
                                 Text(limit.displayName).tag(limit)
                             }
@@ -257,7 +271,7 @@ private struct ConnectionSettingsPane: View {
 
                     SettingsFieldRow(title: "Step interval") {
                         VStack(alignment: .leading, spacing: 6) {
-                            Picker("", selection: $settings.speechdStepCadence) {
+                            Picker("", selection: speechdStepCadenceBinding) {
                                 ForEach(SpeechdStepCadence.allCases) { cadence in
                                     Text(cadence.displayName).tag(cadence)
                                 }
