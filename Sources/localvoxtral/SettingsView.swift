@@ -255,6 +255,22 @@ private struct ConnectionSettingsPane: View {
                         .labelsHidden()
                     }
 
+                    SettingsFieldRow(title: "Step interval") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: $settings.speechdStepCadence) {
+                                ForEach(SpeechdStepCadence.allCases) { cadence in
+                                    Text(cadence.displayName).tag(cadence)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+
+                            SettingsHelpText(
+                                "Lower values show words sooner; higher values use less compute."
+                            )
+                        }
+                    }
+
                     ManagedBackendStatusRow(
                         title: "Status",
                         status: backendManager.speechdStatus

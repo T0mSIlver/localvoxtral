@@ -536,7 +536,8 @@ final class DictationViewModel {
             backendManager
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
+                speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
         if let overlayBufferCoordinator {

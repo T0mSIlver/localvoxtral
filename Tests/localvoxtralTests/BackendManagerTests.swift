@@ -74,9 +74,10 @@ final class BackendManagerTests: XCTestCase {
             configuration.arguments.firstIndex(of: "--model-revision")
         )
         XCTAssertEqual(configuration.arguments[revisionIndex + 1], option.revision)
-        // Default provider is Auto: the cache-limit flag is omitted so the
-        // helper's built-in default applies.
+        // Default providers are Auto: the cache-limit and step-cadence flags
+        // are omitted so the helper's built-in defaults apply.
         XCTAssertFalse(configuration.arguments.contains("--cache-limit-mb"))
+        XCTAssertFalse(configuration.arguments.contains("--step-ms"))
     }
 
     func testSpeechdCacheLimitAutoOmitsFlagAndPresetsAppendMegabytes() async throws {
@@ -103,15 +104,41 @@ final class BackendManagerTests: XCTestCase {
         }
     }
 
-    /// Starts speechd with the given cache-limit provider and returns the
-    /// supervisor configuration it was launched with.
+    func testSpeechdStepCadenceAutoOmitsFlagAndPresetsAppendMilliseconds() async throws {
+        let option = SpeechModelCatalog.defaultOption
+        let baseArguments = [
+            "--model", option.repoID,
+            "--model-revision", option.revision,
+            "--port", "8471",
+            "--parent-pid", "\(Darwin.getpid())",
+        ]
+
+        // Auto: identical to the base argument list, no step-cadence flag.
+        let autoConfiguration = try await speechdConfiguration(stepCadenceMs: nil)
+        XCTAssertEqual(autoConfiguration.arguments, baseArguments)
+
+        // Each preset appends exactly `--step-ms <value>` and leaves the
+        // model / revision / port / parent-pid arguments untouched.
+        for milliseconds in [100, 240, 480] {
+            let configuration = try await speechdConfiguration(stepCadenceMs: milliseconds)
+            XCTAssertEqual(
+                configuration.arguments,
+                baseArguments + ["--step-ms", "\(milliseconds)"]
+            )
+        }
+    }
+
+    /// Starts speechd with the given cache-limit / step-cadence providers and
+    /// returns the supervisor configuration it was launched with.
     private func speechdConfiguration(
-        cacheLimitMB: Int?
+        cacheLimitMB: Int? = nil,
+        stepCadenceMs: Int? = nil
     ) async throws -> BackendProcessConfiguration {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
             speechdCacheLimitProvider: { cacheLimitMB },
+            speechdStepCadenceProvider: { stepCadenceMs },
             supervisorFactory: supervisorFactory
         )
 
@@ -707,6 +734,7 @@ final class BackendManagerTests: XCTestCase {
             SettingsStore.defaultLLMPolishingModel
         },
         speechdCacheLimitProvider: @escaping BackendManager.SpeechdCacheLimitProvider = { nil },
+        speechdStepCadenceProvider: @escaping BackendManager.SpeechdStepCadenceProvider = { nil },
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
@@ -715,6 +743,7 @@ final class BackendManagerTests: XCTestCase {
             legacyPortDefense: legacyPortDefense,
             polishingModelProvider: polishingModelProvider,
             speechdCacheLimitProvider: speechdCacheLimitProvider,
+            speechdStepCadenceProvider: speechdStepCadenceProvider,
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }
