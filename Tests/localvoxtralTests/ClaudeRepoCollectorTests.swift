@@ -11,18 +11,44 @@ private final class FakeFileSystem: ClaudeLocalFileReading, @unchecked Sendable 
     /// Absolute path -> contents.
     var files: [String: Data] = [:]
     var directories: Set<String> = []
+    /// Paths that a real `attributesOfItem` would report as `typeSymbolicLink`
+    /// rather than a directory — the collector must refuse to walk THROUGH one.
+    var symlinkedDirectories: Set<String> = []
     private(set) var reads: [String] = []
 
     func add(_ path: String, _ contents: String) {
         files[path] = Data(contents.utf8)
+        addAncestorDirectories(of: path)
     }
 
     func addBinary(_ path: String, _ bytes: [UInt8]) {
         files[path] = Data(bytes)
+        addAncestorDirectories(of: path)
     }
 
-    func isDirectory(_ path: LocalWorkspacePath) -> Bool { directories.contains(path.path) }
-    func isRegularFile(_ path: LocalWorkspacePath) -> Bool { files[path.path] != nil }
+    /// A real tree has a directory for every path component, and the collector
+    /// now checks that. Registering them here keeps the fake a model of a
+    /// filesystem rather than a flat dictionary that happens to have slashes in
+    /// its keys.
+    private func addAncestorDirectories(of path: String) {
+        var current = ""
+        for component in path.split(separator: "/").dropLast() {
+            current += "/" + component
+            directories.insert(current)
+        }
+    }
+
+    func isDirectory(_ path: LocalWorkspacePath) -> Bool {
+        // Mirrors `ClaudeLocalFileSystem`, which reads attributes WITHOUT
+        // following a final link: a symlink to a directory is not a directory.
+        guard !symlinkedDirectories.contains(path.path) else { return false }
+        return directories.contains(path.path)
+    }
+
+    func isRegularFile(_ path: LocalWorkspacePath) -> Bool {
+        guard !symlinkedDirectories.contains(path.path) else { return false }
+        return files[path.path] != nil
+    }
     func fileSize(_ path: LocalWorkspacePath) -> Int? { files[path.path]?.count }
 
     func readFile(_ path: LocalWorkspacePath, maxBytes: Int) -> Data? {
@@ -109,11 +135,10 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         git.set("diff --cached", "diff --git a/README.md b/README.md\n+staged")
         git.setData("ls-files", Data("Sources/App.swift\0README.md\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(), recentFiles: [], transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(), recentFiles: [], transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.statusLines, [" M Sources/App.swift", "?? Notes.md"])
         XCTAssertTrue(snapshot.unstagedDiff.contains("+new"))
         XCTAssertTrue(snapshot.stagedDiff.contains("+staged"))
@@ -151,16 +176,15 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("Sources/App.swift\0Sources/Model.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(path: "/repo/Sources/Model.swift", kind: .edited, lastTouched: epoch),
-                    ClaudeRecentFile(path: "/repo/Sources/App.swift", kind: .read, lastTouched: epoch),
-                ],
-                transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(path: "/repo/Sources/Model.swift", kind: .edited, lastTouched: epoch),
+                ClaudeRecentFile(path: "/repo/Sources/App.swift", kind: .read, lastTouched: epoch),
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles.map(\.path), ["Sources/Model.swift", "Sources/App.swift"])
         XCTAssertEqual(snapshot.activeFiles.map(\.touch), [.edited, .read])
         XCTAssertEqual(snapshot.activeFiles.first?.contents, "struct Model {}")
@@ -175,15 +199,14 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("Old.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(path: "/repo/New.swift", kind: .edited, lastTouched: epoch)
-                ],
-                transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(path: "/repo/New.swift", kind: .edited, lastTouched: epoch)
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles.map(\.path), ["New.swift"])
     }
 
@@ -213,19 +236,18 @@ final class ClaudeRepoCollectorTests: XCTestCase {
 
     func testBinaryFilesAreExcluded() async throws {
         let files = FakeFileSystem()
-        files.addBinary("/repo/Asset.bin", [0x89, 0x50, 0x00, 0x4E, 0x47])
+        files.addBinary("/repo/tools/hookd", [0xCF, 0xFA, 0xED, 0xFE, 0x00])
         let git = FakeGit()
-        git.setData("ls-files", Data("Asset.bin\0".utf8))
+        git.setData("ls-files", Data("tools/hookd\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(path: "/repo/Asset.bin", kind: .read, lastTouched: epoch)
-                ],
-                transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                    ClaudeRecentFile(path: "/repo/tools/hookd", kind: .read, lastTouched: epoch)
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertEqual(snapshot.provenance.skippedBinary, 1)
     }
@@ -238,19 +260,18 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("App.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(
-                        path: "/repo/node_modules/left-pad/index.js", kind: .read, lastTouched: epoch
-                    ),
-                    ClaudeRecentFile(path: "/repo/.build/debug/App.o", kind: .read, lastTouched: epoch),
-                    ClaudeRecentFile(path: "/repo/Package.resolved", kind: .read, lastTouched: epoch),
-                ],
-                transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(
+                    path: "/repo/node_modules/left-pad/index.js", kind: .read, lastTouched: epoch
+                ),
+                ClaudeRecentFile(path: "/repo/.build/debug/App.o", kind: .read, lastTouched: epoch),
+                ClaudeRecentFile(path: "/repo/Package.resolved", kind: .read, lastTouched: epoch),
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertEqual(snapshot.provenance.skippedGenerated, 3)
         XCTAssertTrue(files.reads.isEmpty, "an excluded path must not even be opened")
@@ -264,15 +285,14 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("App.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(path: "/repo/build.log", kind: .read, lastTouched: epoch)
-                ],
-                transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(path: "/repo/build.log", kind: .read, lastTouched: epoch)
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles, [])
         XCTAssertEqual(snapshot.provenance.skippedLogs, 1)
         XCTAssertTrue(files.reads.isEmpty)
@@ -280,6 +300,39 @@ final class ClaudeRepoCollectorTests: XCTestCase {
             snapshot.provenance.summary.contains("skip-logs:1"),
             "a silent exclusion is indistinguishable from an empty repo in the field"
         )
+    }
+
+    func testSecretActivePathSurvivesAsOnlyFactWithoutReadingBytes() async throws {
+        let files = FakeFileSystem()
+        files.add("/repo/.env.production", "API_TOKEN=never-attach-this")
+        let git = FakeGit()
+
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(
+                    path: "/repo/.env.production", kind: .edited, lastTouched: epoch
+                )
+            ],
+            transcript: "update env production"
+        )
+        let snapshot = try XCTUnwrap(
+            collected,
+            "a content-withheld active path must keep an otherwise-empty snapshot alive"
+        )
+        XCTAssertEqual(snapshot.activeFiles, [])
+        XCTAssertEqual(snapshot.secretPaths, [".env.production"])
+        XCTAssertEqual(snapshot.provenance.skippedSecrets, 1)
+        XCTAssertTrue(snapshot.provenance.summary.contains("skip-secrets:1"))
+        XCTAssertTrue(files.reads.isEmpty, "secret-shaped content must not even be opened")
+
+        let prepared = ClaudeRepoContextPreparation.prepare(
+            snapshot: snapshot,
+            transcript: "update env production",
+            renderBudget: 0
+        )
+        XCTAssertEqual(prepared.grounding.entries.first?.replaceWith, ".env.production")
+        XCTAssertFalse(prepared.grounding.isFallbackOnly)
     }
 
     // A symlink is not a regular file. Lexical containment says where the NAME
@@ -320,6 +373,47 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         )
     }
 
+    func testIntermediateDirectorySymlinkOutsideRepoIsNotFollowed() async throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lvx-repo-dir-symlink-\(UUID().uuidString)", isDirectory: true)
+        let repo = parent.appendingPathComponent("repo", isDirectory: true)
+        let outside = parent.appendingPathComponent("outside", isDirectory: true)
+        let link = repo.appendingPathComponent("linked", isDirectory: true)
+        let outsideFile = outside.appendingPathComponent("OutsideConfig.swift")
+        try FileManager.default.createDirectory(at: repo, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("never-attach-outside-directory-content".utf8).write(to: outsideFile)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        let git = FakeGit()
+        git.setData("ls-files", Data("linked/OutsideConfig.swift\0".utf8))
+        let collector = ClaudeRepoCollector(
+            files: ClaudeLocalFileSystem(),
+            now: TestClock(epoch).now,
+            runGit: git.run,
+            findGitRoot: { _ in repo.path }
+        )
+        let collected = await collector.collect(
+            workspace: try workspace(repo.path),
+            recentFiles: [
+                ClaudeRecentFile(
+                    path: link.appendingPathComponent("OutsideConfig.swift").path,
+                    kind: .read,
+                    lastTouched: epoch
+                )
+            ],
+            transcript: ""
+        )
+        let snapshot = try XCTUnwrap(collected)
+        XCTAssertEqual(snapshot.activeFiles, [])
+        XCTAssertEqual(snapshot.provenance.skippedUncontained, 1)
+        XCTAssertFalse(
+            ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
+                .contains("never-attach-outside-directory-content")
+        )
+    }
+
     // MARK: - Caps
 
     func testOversizedFilesAreTruncatedAndSayThatTheyAre() async throws {
@@ -331,15 +425,14 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("Big.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git, limits: limits).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(path: "/repo/Big.swift", kind: .edited, lastTouched: epoch)
-                ],
-                transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git, limits: limits).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(path: "/repo/Big.swift", kind: .edited, lastTouched: epoch)
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         let file = try XCTUnwrap(snapshot.activeFiles.first)
         XCTAssertEqual(file.contents.count, 20)
         XCTAssertTrue(file.isTruncated)
@@ -364,11 +457,10 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("File0.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git, limits: limits).collect(
-                workspace: try workspace(), recentFiles: recents, transcript: ""
-            )
+        let collected = await makeCollector(files: files, git: git, limits: limits).collect(
+            workspace: try workspace(), recentFiles: recents, transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles.count, 2)
     }
 
@@ -397,15 +489,14 @@ final class ClaudeRepoCollectorTests: XCTestCase {
             },
             findGitRoot: { _ in "/repo" }
         )
-        let snapshot = try XCTUnwrap(
-            await collector.collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(path: "/repo/App.swift", kind: .edited, lastTouched: epoch)
-                ],
-                transcript: ""
-            )
+        let collected = await collector.collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(path: "/repo/App.swift", kind: .edited, lastTouched: epoch)
+            ],
+            transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertTrue(snapshot.provenance.deadlineExpired)
         XCTAssertEqual(
             snapshot.activeFiles, [],
@@ -423,7 +514,7 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         limits.gitTimeout = 5.0
         let git = FakeGit()
         git.set("status", " M App.swift")
-        _ = try? await makeCollector(
+        _ = await makeCollector(
             files: FakeFileSystem(), git: git, clock: clock, limits: limits
         ).collect(workspace: try workspace(), recentFiles: [], transcript: "")
         let first = try XCTUnwrap(git.timeouts.first)
@@ -454,11 +545,10 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.set("status", "fatal: not a git repository", exitCode: 128)
         git.setData("ls-files", Data("App.swift\0".utf8))
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: FakeFileSystem(), git: git).collect(
-                workspace: try workspace(), recentFiles: [], transcript: ""
-            )
+        let collected = await makeCollector(files: FakeFileSystem(), git: git).collect(
+            workspace: try workspace(), recentFiles: [], transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.statusLines, [])
     }
 
@@ -467,11 +557,10 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("diff", Data([0x64, 0x69, 0x66, 0x66, 0x00, 0xFF]))
         git.setData("ls-files", Data("App.swift\0".utf8))
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: FakeFileSystem(), git: git).collect(
-                workspace: try workspace(), recentFiles: [], transcript: ""
-            )
+        let collected = await makeCollector(files: FakeFileSystem(), git: git).collect(
+            workspace: try workspace(), recentFiles: [], transcript: ""
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.unstagedDiff, "")
     }
 
@@ -487,13 +576,12 @@ final class ClaudeRepoCollectorTests: XCTestCase {
             Data("Sources/DictationViewModel.swift\0Sources/Unrelated.swift\0".utf8)
         )
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [],
-                transcript: "please fix the dictation view model so it stops crashing"
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [],
+            transcript: "please fix the dictation view model so it stops crashing"
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.trackedFiles.map(\.path), ["Sources/DictationViewModel.swift"])
         XCTAssertEqual(
             snapshot.trackedFiles.first?.contents, "final class DictationViewModel {}"
@@ -508,17 +596,16 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         let git = FakeGit()
         git.setData("ls-files", Data("DictationViewModel.swift\0".utf8))
 
-        let snapshot = try XCTUnwrap(
-            await makeCollector(files: files, git: git).collect(
-                workspace: try workspace(),
-                recentFiles: [
-                    ClaudeRecentFile(
-                        path: "/repo/DictationViewModel.swift", kind: .edited, lastTouched: epoch
-                    )
-                ],
-                transcript: "the dictation view model"
-            )
+        let collected = await makeCollector(files: files, git: git).collect(
+            workspace: try workspace(),
+            recentFiles: [
+                ClaudeRecentFile(
+                    path: "/repo/DictationViewModel.swift", kind: .edited, lastTouched: epoch
+                )
+            ],
+            transcript: "the dictation view model"
         )
+        let snapshot = try XCTUnwrap(collected)
         XCTAssertEqual(snapshot.activeFiles.count, 1)
         XCTAssertEqual(snapshot.trackedFiles, [])
     }
@@ -544,6 +631,30 @@ final class ClaudeRepoContentFilterTests: XCTestCase {
         XCTAssertTrue(ClaudeRepoContentFilter.isLogLike("logs/run-1.txt"))
         XCTAssertFalse(ClaudeRepoContentFilter.isLogLike("Sources/Log.swift"))
         XCTAssertFalse(ClaudeRepoContentFilter.isLogLike("Logger.swift"))
+    }
+
+    func testSecretDetectionCoversCredentialConventionsWithoutHidingSourceFiles() {
+        for path in [
+            ".env",
+            ".env.production",
+            ".envrc",
+            "config/apiKey.json",
+            "config/privateKey.toml",
+            "deploy/client-token.yaml",
+            "certs/signing.pem",
+            ".aws/credentials",
+        ] {
+            XCTAssertTrue(ClaudeRepoContentFilter.isSecretLike(path), path)
+        }
+        for path in [
+            ".env.example",
+            "Sources/SecretsManager.swift",
+            "Sources/TokenGuard.swift",
+            "config/tokenizer.json",
+            "config/keyboard.json",
+        ] {
+            XCTAssertFalse(ClaudeRepoContentFilter.isSecretLike(path), path)
+        }
     }
 
     func testBinaryDetectionUsesNulBytes() {

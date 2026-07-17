@@ -10,7 +10,8 @@ import Foundation
 /// are flat buffers where "which lines" is the whole question, while a repo has
 /// sections with different priorities (`ClaudeRepoContextSelection`), so the
 /// render is a section allocation rather than a line selection over one string.
-/// The grounding half is identical, which is why it delegates.
+/// Grounding also preserves that structure: paths are decomposed into basenames
+/// and technical directory components before the remaining text is scanned.
 ///
 /// The work is pure and potentially large (a monorepo's tracked path list runs
 /// to hundreds of thousands of characters), and the stop-commit path runs on
@@ -52,8 +53,8 @@ struct ClaudeRepoContextPreparation: Sendable, Equatable {
         transcript: String,
         renderBudget: Int
     ) -> ClaudeRepoContextPreparation {
-        let groundingText = ClaudeRepoContextSelection.groundingText(snapshot: snapshot)
-        guard !groundingText.isEmpty else { return .empty }
+        let sources = groundingSources(snapshot: snapshot)
+        guard !sources.isEmpty else { return .empty }
 
         // Grounding sees the whole harvest; rendering is what pays the budget.
         // Deliberately NOT gated on `renderBudget`: a repo whose excerpt was cut
@@ -62,9 +63,10 @@ struct ClaudeRepoContextPreparation: Sendable, Equatable {
         // grounding even when the rendered excerpt is reduced — the tracked path
         // list alone routinely exceeds the entire prompt budget, and it is
         // exactly the vocabulary the feature exists to spell correctly.
-        let grounding = ClipboardVocabulary.candidateOutcome(
+        let vocabulary = RepoVocabulary(terms: terms(from: sources), branch: snapshot.branch)
+        let grounding = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript,
-            clipboardText: groundingText
+            vocabulary: vocabulary
         )
         let excerpt = ClaudeRepoContextSelection.render(
             snapshot: snapshot,
@@ -73,6 +75,82 @@ struct ClaudeRepoContextPreparation: Sendable, Equatable {
             groundingTerms: grounding.entries.map(\.replaceWith)
         )
         return ClaudeRepoContextPreparation(grounding: grounding, excerpt: excerpt)
+    }
+
+    /// The two DISJOINT things a snapshot grounds from.
+    ///
+    /// The split is the point. A path list is already structured — the harvest
+    /// knows precisely which strings are paths — so it goes to
+    /// `RepoIndexing.buildVocabulary`, which decomposes each one into the
+    /// basename and directory components a speaker can actually utter. Text is
+    /// unstructured, so it goes to `ClipboardVocabulary.entities`, which
+    /// RECOGNIZES identifiers in prose.
+    ///
+    /// Running the recognizer over the path list too — which is what a single
+    /// combined grounding string forced — indexed every path twice, through a
+    /// regex whose whole job is to guess at what a structured list already
+    /// stated. It paid a scan over the largest string in the snapshot (a
+    /// monorepo's tracked list runs to hundreds of thousands of characters) to
+    /// re-derive terms the decomposition had produced exactly.
+    struct GroundingSources: Sendable, Equatable {
+        /// Every harvested path, structured: tracked, retained-file, and
+        /// content-withheld secret paths alike.
+        var paths: [String] = []
+        var branch: String?
+        /// The harvest MINUS the paths: status, diffs, and file contents. Where
+        /// entity recognition earns its scan, because a diff hunk really does
+        /// hide `PolishContextBudget.totalCharacterBudget` in running text.
+        var entityText: String = ""
+
+        var isEmpty: Bool { paths.isEmpty && branch == nil && entityText.isEmpty }
+    }
+
+    /// Splits `snapshot` into its path and non-path grounding material.
+    ///
+    /// Internal rather than private so the separation is directly assertable:
+    /// "the recognizer never sees the path list" is the invariant, and a test
+    /// that could only observe the merged term list would pass just as happily
+    /// with the paths scanned twice.
+    nonisolated static func groundingSources(snapshot: ClaudeRepoSnapshot) -> GroundingSources {
+        var sources = GroundingSources()
+        // Every tracked PATH, not just the retained files: paths are the
+        // vocabulary this feature exists to get right, and they cost nothing to
+        // match over even in a monorepo where almost no contents were read.
+        // Secret paths are here for exactly that reason and no other — the name
+        // grounds, the bytes were never read.
+        sources.paths = snapshot.trackedPaths + snapshot.allFiles.map(\.path) + snapshot.secretPaths
+        sources.branch = snapshot.branch
+
+        var parts: [String] = []
+        if !snapshot.statusLines.isEmpty {
+            parts.append(snapshot.statusLines.joined(separator: "\n"))
+        }
+        if !snapshot.stagedDiff.isEmpty { parts.append(snapshot.stagedDiff) }
+        if !snapshot.unstagedDiff.isEmpty { parts.append(snapshot.unstagedDiff) }
+        // Contents only. A retained file's own path is already in `paths` above,
+        // and re-appending it here is precisely the double indexing this split
+        // exists to remove.
+        for file in snapshot.allFiles where !file.contents.isEmpty {
+            parts.append(file.contents)
+        }
+        sources.entityText = parts.joined(separator: "\n")
+        return sources
+    }
+
+    /// `sources` as one ordered, de-duplicated term list.
+    ///
+    /// Path terms first: they are the exact, structured spellings, and
+    /// `RepoVocabularyMatcher` ranks on the list it is given.
+    nonisolated static func terms(from sources: GroundingSources) -> [String] {
+        var terms = RepoIndexing.buildVocabularyTerms(
+            paths: sources.paths, branch: sources.branch
+        )
+        var seen = Set(terms)
+        for term in ClipboardVocabulary.entities(inExcerpt: sources.entityText)
+        where seen.insert(term).inserted {
+            terms.append(term)
+        }
+        return terms
     }
 }
 

@@ -1,4 +1,5 @@
 import ClaudeContextWire
+import Darwin
 import Foundation
 
 /// What a Claude session's local repository looked like at dictation time.
@@ -40,6 +41,15 @@ struct ClaudeRepoSnapshot: Sendable, Equatable {
     /// Every tracked path, for vocabulary. Cheap and complete even when the
     /// contents above were capped.
     var trackedPaths: [String]
+    /// Paths we saw and deliberately read NO bytes of because the name says the
+    /// contents are credentials (`ClaudeRepoContentFilter.isSecretLike`).
+    ///
+    /// A path, not a file: there is no `contents` field here on purpose, so
+    /// "attach a secret's bytes" has no value to reach for. They are kept
+    /// because the path is the useful half — the user who says "fix the env
+    /// production file" should have it spelled correctly, and that costs
+    /// nothing but the name.
+    var secretPaths: [String] = []
     var provenance: ClaudeRepoProvenance
 
     static let empty = ClaudeRepoSnapshot(
@@ -57,6 +67,7 @@ struct ClaudeRepoSnapshot: Sendable, Equatable {
     var isEmpty: Bool {
         statusLines.isEmpty && stagedDiff.isEmpty && unstagedDiff.isEmpty
             && activeFiles.isEmpty && trackedFiles.isEmpty && trackedPaths.isEmpty
+            && secretPaths.isEmpty
     }
 
     /// Every retained file, active first. The order IS the priority the
@@ -81,6 +92,16 @@ struct ClaudeRepoProvenance: Sendable, Equatable {
     var skippedBinary = 0
     var skippedGenerated = 0
     var skippedLogs = 0
+    /// Files whose contents were withheld as credential-shaped. Counted, and
+    /// counted SEPARATELY from the other skips: "we declined to read your
+    /// `.env`" is the one exclusion a user is most likely to want confirmed,
+    /// and folding it into a generic skip counter is how a privacy promise
+    /// becomes unobservable in the field.
+    var skippedSecrets = 0
+    /// Files whose contents were withheld because reaching them meant
+    /// traversing a symlinked directory — i.e. a read the repo root does not
+    /// actually contain.
+    var skippedUncontained = 0
     /// Files ATTACHED in truncated form — not skipped. Kept separate from the
     /// `skipped*` counters on purpose: reporting a truncation as a skip makes a
     /// field log claim a file was dropped when its head is in the prompt, which
@@ -102,6 +123,8 @@ struct ClaudeRepoProvenance: Sendable, Equatable {
         if skippedBinary > 0 { parts.append("skip-binary:\(skippedBinary)") }
         if skippedGenerated > 0 { parts.append("skip-generated:\(skippedGenerated)") }
         if skippedLogs > 0 { parts.append("skip-logs:\(skippedLogs)") }
+        if skippedSecrets > 0 { parts.append("skip-secrets:\(skippedSecrets)") }
+        if skippedUncontained > 0 { parts.append("skip-uncontained:\(skippedUncontained)") }
         if truncatedFiles > 0 { parts.append("truncated:\(truncatedFiles)") }
         if deadlineExpired { parts.append("deadline-expired") }
         return parts.joined(separator: " ")
@@ -246,24 +269,28 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
         // said the session just read or edited, and they are the reason this
         // feature is worth its latency. Tracked-file snippets are the tail, and
         // only get whatever budget of TIME is left.
-        let (active, activeSkips) = readActiveFiles(
+        let active = readActiveFiles(
             root: root,
             recentFiles: recentFiles,
             deadline: deadline
         )
-        snapshot.activeFiles = active
-        snapshot.provenance.merge(activeSkips)
+        snapshot.activeFiles = active.files
+        snapshot.secretPaths = active.secretPaths
+        snapshot.provenance.merge(active.provenance)
 
-        let activePaths = Set(active.map(\.path))
-        let (snippets, snippetSkips) = readTrackedSnippets(
+        // Secret paths join the exclusion set too: their contents are settled,
+        // and a snippet pass that reconsidered them would spend a candidate slot
+        // to reach the same refusal.
+        let activePaths = Set(active.files.map(\.path)).union(active.secretPaths)
+        let snippets = readTrackedSnippets(
             root: root,
             trackedPaths: tracked,
             excluding: activePaths,
             transcript: transcript,
             deadline: deadline
         )
-        snapshot.trackedFiles = snippets
-        snapshot.provenance.merge(snippetSkips)
+        snapshot.trackedFiles = snippets.files
+        snapshot.provenance.merge(snippets.provenance)
 
         return finish(snapshot, expired: isExpired(deadline))
     }
@@ -326,9 +353,11 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
         root: LocalWorkspacePath,
         recentFiles: [ClaudeRecentFile],
         deadline: Date
-    ) -> ([ClaudeRepoSnapshot.File], ClaudeRepoProvenance) {
-        var result: [ClaudeRepoSnapshot.File] = []
+    ) -> FileHarvest {
+        var harvest = FileHarvest()
         var skips = ClaudeRepoProvenance()
+        var verifiedDirectories = Set<String>()
+        var result: [ClaudeRepoSnapshot.File] = []
         var seen = Set<String>()
 
         for recent in recentFiles {
@@ -349,18 +378,33 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
             // most likely thing the user is about to dictate about. The
             // containment check above plus the filters in `readFile` are what
             // make this safe; being in the index is not part of that argument.
-            guard let file = readFile(root: root, relativePath: relative, skips: &skips) else {
+            switch readFile(
+                root: root,
+                relativePath: relative,
+                skips: &skips,
+                verifiedDirectories: &verifiedDirectories
+            ) {
+            case let .file(file):
+                result.append(ClaudeRepoSnapshot.File(
+                    path: file.path,
+                    contents: file.contents,
+                    touch: recent.kind,
+                    isTruncated: file.isTruncated
+                ))
+            case .pathOnly:
+                // An untracked `.env` the agent just wrote appears NOWHERE else
+                // in the snapshot — not in `trackedPaths`, not in `activeFiles`.
+                // Recording the path here is what keeps "the agent touched the
+                // env file" groundable while its bytes stay unread.
+                harvest.secretPaths.append(relative)
+            case .nothing:
                 continue
             }
-            result.append(ClaudeRepoSnapshot.File(
-                path: file.path,
-                contents: file.contents,
-                touch: recent.kind,
-                isTruncated: file.isTruncated
-            ))
         }
         skips.activeFileCount = result.count
-        return (result, skips)
+        harvest.files = result
+        harvest.provenance = skips
+        return harvest
     }
 
     /// Tracked files the transcript actually mentions.
@@ -376,9 +420,10 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
         excluding: Set<String>,
         transcript: String,
         deadline: Date
-    ) -> ([ClaudeRepoSnapshot.File], ClaudeRepoProvenance) {
+    ) -> FileHarvest {
+        var harvest = FileHarvest()
         var skips = ClaudeRepoProvenance()
-        guard !transcript.isEmpty else { return ([], skips) }
+        guard !transcript.isEmpty else { return harvest }
 
         let candidates = ClaudeRepoContentFilter.transcriptMatchedPaths(
             trackedPaths: trackedPaths,
@@ -386,71 +431,163 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
             transcript: transcript,
             limit: limits.maxSnippetFiles
         )
+        var verifiedDirectories = Set<String>()
         var result: [ClaudeRepoSnapshot.File] = []
         for relative in candidates {
             guard !isExpired(deadline) else {
                 skips.deadlineExpired = true
                 break
             }
-            guard let file = readFile(root: root, relativePath: relative, skips: &skips) else {
-                continue
-            }
+            // A tracked secret needs no `pathOnly` bookkeeping: it is already in
+            // `trackedPaths`, which grounding reads in full. Only the untracked
+            // active case has a path that would otherwise be lost.
+            guard case let .file(file) = readFile(
+                root: root,
+                relativePath: relative,
+                skips: &skips,
+                verifiedDirectories: &verifiedDirectories
+            ) else { continue }
             result.append(file)
         }
         skips.snippetFileCount = result.count
-        return (result, skips)
+        harvest.files = result
+        harvest.provenance = skips
+        return harvest
     }
 
     // MARK: - File reading
 
+    /// What one filtered read produced.
+    private enum FileReadOutcome {
+        case file(ClaudeRepoSnapshot.File)
+        /// Deliberately read no bytes; the path is still worth keeping.
+        case pathOnly
+        case nothing
+    }
+
+    /// One pass's harvested files, the paths it kept without contents, and what
+    /// it counted. A struct rather than a wider tuple because `secretPaths` is a
+    /// third thing a caller must not silently drop.
+    private struct FileHarvest {
+        var files: [ClaudeRepoSnapshot.File] = []
+        var secretPaths: [String] = []
+        var provenance = ClaudeRepoProvenance()
+    }
+
     /// One bounded, filtered file read. Every exclusion the feature promises
-    /// (generated/vendor trees, logs, binaries, oversized files) is enforced
-    /// HERE, so no caller can read a file by a path that skipped a rule.
+    /// (generated/vendor trees, logs, secrets, binaries, oversized files, and
+    /// containment) is enforced HERE, so no caller can read a file by a path
+    /// that skipped a rule.
     private func readFile(
         root: LocalWorkspacePath,
         relativePath: String,
-        skips: inout ClaudeRepoProvenance
-    ) -> ClaudeRepoSnapshot.File? {
+        skips: inout ClaudeRepoProvenance,
+        verifiedDirectories: inout Set<String>
+    ) -> FileReadOutcome {
         if ClaudeRepoContentFilter.isGeneratedOrVendored(relativePath) {
             skips.skippedGenerated += 1
-            return nil
+            return .nothing
         }
         if ClaudeRepoContentFilter.isLogLike(relativePath) {
             // Count-only by design: a log file's CONTENT is the least useful and
             // most sensitive thing in a tree (tokens, hostnames, customer ids),
             // and its name already tells the model everything it needs.
             skips.skippedLogs += 1
-            return nil
+            return .nothing
         }
-        guard let path = root.descendant(relativePath: relativePath) else { return nil }
-        // Symlinks are not followed: lexical containment says where the NAME
-        // points, not where the inode does, and a tracked symlink to
-        // `~/.ssh/id_rsa` is a legal thing to have in a repo.
-        guard files.isRegularFile(path) else { return nil }
+        if ClaudeRepoContentFilter.isSecretLike(relativePath) {
+            // Path-only, not dropped: the name is the context, the contents are
+            // a live credential. See `ClaudeRepoContentFilter.isSecretLike`.
+            skips.skippedSecrets += 1
+            return .pathOnly
+        }
+        guard let path = containedPath(
+            root: root,
+            relativePath: relativePath,
+            verifiedDirectories: &verifiedDirectories
+        ) else {
+            skips.skippedUncontained += 1
+            return .nothing
+        }
+        // A symlink is not a regular file, and `isRegularFile` does not follow a
+        // final link — so this is the last of the components, after
+        // `containedPath` has cleared every directory above it.
+        guard files.isRegularFile(path) else { return .nothing }
 
         let size = files.fileSize(path) ?? 0
         let truncated = size > limits.maxFileBytes
         let readLimit = truncated ? limits.truncatedFileBytes : limits.maxFileBytes
-        guard let data = files.readFile(path, maxBytes: readLimit) else { return nil }
+        guard let data = files.readFile(path, maxBytes: readLimit) else { return .nothing }
         if truncated { skips.truncatedFiles += 1 }
 
         guard !ClaudeRepoContentFilter.looksBinary(data) else {
             skips.skippedBinary += 1
-            return nil
+            return .nothing
         }
         guard let contents = String(data: data, encoding: .utf8), !contents.isEmpty else {
             // Not valid UTF-8 and not caught by the NUL heuristic — some other
             // encoding, or a file that happens to be latin-1. Either way it is
             // not text we can faithfully show a model.
             skips.skippedBinary += 1
-            return nil
+            return .nothing
         }
-        return ClaudeRepoSnapshot.File(
+        return .file(ClaudeRepoSnapshot.File(
             path: relativePath,
             contents: contents,
             touch: nil,
             isTruncated: truncated
-        )
+        ))
+    }
+
+    /// `relativePath` under `root`, proved reachable without traversing a single
+    /// symlink — or nil.
+    ///
+    /// The final-component check (`isRegularFile`, which does not follow a last
+    /// link) was never sufficient on its own, and the gap was not subtle: a
+    /// symlinked DIRECTORY inside the repo makes `exports/current/id_rsa` a
+    /// perfectly ordinary regular file whose bytes live in `~/.ssh`. Lexical
+    /// containment cannot see that, because it reasons about the name and the
+    /// escape happens in the inode.
+    ///
+    /// So every component between the root and the file is required to be a real
+    /// directory. `isDirectory` is backed by `attributesOfItem`, which does NOT
+    /// follow a final symlink — so a symlinked directory answers "not a
+    /// directory" and the walk stops there rather than stepping through it. The
+    /// root itself is not checked: it is the trusted `LocalWorkspacePath` this
+    /// whole containment argument is rooted at, and the derivation
+    /// (`descendant`) is what keeps every step inside it.
+    ///
+    /// This is a pre-read guard, not an atomic one. Between the walk and the
+    /// read, a component could in principle be swapped for a link — but the
+    /// attacker able to do that is a process running as the user, which can read
+    /// the user's files directly and needs none of this. The realistic threat is
+    /// a symlink that is simply THERE (checked into the repo, or left by a build
+    /// tool), and against that this is exact.
+    private func containedPath(
+        root: LocalWorkspacePath,
+        relativePath: String,
+        verifiedDirectories: inout Set<String>
+    ) -> LocalWorkspacePath? {
+        let components = relativePath
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .map(String.init)
+        guard let filename = components.last else { return nil }
+
+        var current = root
+        for component in components.dropLast() {
+            // Re-derived one component at a time so `..`, `.`, and absolute
+            // spellings are rejected by `descendant` at every step rather than
+            // only for the path as a whole.
+            guard let next = current.descendant(relativePath: component) else { return nil }
+            current = next
+            // Cached per pass: 24 snippets under `Sources/localvoxtral/` is the
+            // same three directories twenty-four times, and the answer cannot
+            // change within one pass without the swap described above.
+            if verifiedDirectories.contains(next.path) { continue }
+            guard files.isDirectory(next) else { return nil }
+            verifiedDirectories.insert(next.path)
+        }
+        return current.descendant(relativePath: filename)
     }
 
     /// A hook-reported absolute path reduced to repo-relative, or nil when it
@@ -513,6 +650,8 @@ extension ClaudeRepoProvenance {
         skippedBinary += other.skippedBinary
         skippedGenerated += other.skippedGenerated
         skippedLogs += other.skippedLogs
+        skippedSecrets += other.skippedSecrets
+        skippedUncontained += other.skippedUncontained
         truncatedFiles += other.truncatedFiles
         deadlineExpired = deadlineExpired || other.deadlineExpired
     }
@@ -530,22 +669,16 @@ enum LocalWorkspacePathNormalization {
 /// The live filesystem. Kept trivial on purpose: everything interesting is a
 /// decision, and decisions live in the collector where they can be tested.
 struct ClaudeLocalFileSystem: ClaudeLocalFileReading {
-    private let fileManager: FileManager
-
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
-
     func isDirectory(_ path: LocalWorkspacePath) -> Bool {
-        attributes(path)?[.type] as? FileAttributeType == .typeDirectory
+        metadata(path).map { ($0.st_mode & S_IFMT) == S_IFDIR } ?? false
     }
 
     func isRegularFile(_ path: LocalWorkspacePath) -> Bool {
-        attributes(path)?[.type] as? FileAttributeType == .typeRegular
+        metadata(path).map { ($0.st_mode & S_IFMT) == S_IFREG } ?? false
     }
 
     func fileSize(_ path: LocalWorkspacePath) -> Int? {
-        (attributes(path)?[.size] as? NSNumber)?.intValue
+        metadata(path).map { Int($0.st_size) }
     }
 
     func readFile(_ path: LocalWorkspacePath, maxBytes: Int) -> Data? {
@@ -558,10 +691,11 @@ struct ClaudeLocalFileSystem: ClaudeLocalFileReading {
         return data.count > maxBytes ? data.prefix(maxBytes) : data
     }
 
-    /// `attributesOfItem` does NOT follow a final symlink, which is the
-    /// property both `isRegularFile` and `isDirectory` rely on to keep a
-    /// tracked link out of the tree from being read as a file.
-    private func attributes(_ path: LocalWorkspacePath) -> [FileAttributeKey: Any]? {
-        try? fileManager.attributesOfItem(atPath: path.path)
+    /// `lstat` never follows the final component. That property is what both
+    /// type checks rely on while the collector walks every path component.
+    private func metadata(_ path: LocalWorkspacePath) -> stat? {
+        var result = stat()
+        guard path.path.withCString({ lstat($0, &result) }) == 0 else { return nil }
+        return result
     }
 }

@@ -62,7 +62,7 @@ final class ClaudePluginAssetsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: resources) }
 
         let resolved = ClaudePluginAssets.marketplaceURL(resourcesURL: resources)
-        XCTAssertEqual(resolved?.standardizedFileURL, packaged.standardizedFileURL)
+        XCTAssertEqual(resolved?.path, packaged.path)
     }
 
     func testFallsBackToRepoWhenPackagedCopyIsAbsent() throws {

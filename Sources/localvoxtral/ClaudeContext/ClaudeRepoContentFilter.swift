@@ -98,6 +98,140 @@ enum ClaudeRepoContentFilter {
         return components.dropLast().contains { $0 == "logs" || $0 == "log" }
     }
 
+    /// Path components whose whole subtree is credential material.
+    ///
+    /// Matched as a full PATH COMPONENT for the same reason as
+    /// `excludedComponents`: `Sources/Secrets/` is a secret store, `src/secretsanta/`
+    /// is not.
+    static let secretComponents: Set<String> = [
+        ".aws",
+        ".gcloud",
+        ".gnupg",
+        ".ssh",
+        "secrets",
+    ]
+
+    /// Extensions that ARE key material regardless of what the file is called.
+    /// A `.pem` has exactly one thing in it.
+    static let secretExtensions: Set<String> = [
+        "asc", "gpg", "jks", "kdbx", "key", "keystore", "p12", "pem", "pfx",
+        "pkcs12", "ppk",
+    ]
+
+    /// Exact basenames that are credential stores by convention.
+    static let secretFilenames: Set<String> = [
+        ".git-credentials",
+        ".htpasswd",
+        ".netrc",
+        ".npmrc",
+        ".pgpass",
+        ".pypirc",
+        ".envrc",
+        "credentials",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "id_rsa",
+        "netrc",
+    ]
+
+    /// Basename words that mark a CONFIG file as a credential store.
+    ///
+    /// Matched as whole words after splitting on separators and camel humps —
+    /// never as substrings. `token` must not fire on `tokenizer.json`, and `key`
+    /// must not fire on `keyboard.json`; both are ordinary files that a
+    /// substring test would silently blind the feature to.
+    static let secretNameWords: Set<String> = [
+        "apikey", "credential", "credentials", "key", "keypair", "keys", "passwd",
+        "password", "passwords", "privatekey", "secret", "secrets", "token",
+        "tokens",
+    ]
+
+    /// Extensions where `secretNameWords` is trusted to mean "this file HOLDS
+    /// credentials" rather than "this file is code ABOUT credentials".
+    ///
+    /// This gate is what keeps the rule narrow: `SecretsManager.swift` and
+    /// `token_guard.rs` are source the user dictates about all day, and their
+    /// contents are exactly the context this feature exists to supply. Only a
+    /// config/data-shaped extension (or none at all) turns a name like
+    /// `secrets` into a reason to withhold bytes.
+    static let secretConfigExtensions: Set<String> = [
+        "", "cfg", "conf", "config", "env", "envrc", "ini", "json", "plist",
+        "properties", "toml", "txt", "xml", "yaml", "yml",
+    ]
+
+    /// `.env` suffixes that are checked-in TEMPLATES, not secrets. The whole
+    /// point of `.env.example` is that it holds no values.
+    static let nonSecretEnvSuffixes: Set<String> = [
+        "dist", "example", "sample", "template",
+    ]
+
+    /// True for files whose CONTENTS are credential-shaped: read no bytes, keep
+    /// the path.
+    ///
+    /// Distinct from `isLogLike` in intent, identical in mechanism, and the
+    /// distinction matters. A log is excluded because its content is worthless;
+    /// a `.env` is excluded because its content is a live credential and the
+    /// polish request leaves this machine in the managed case only by the user's
+    /// choice of backend — "the model is local today" is a deployment fact, not
+    /// an invariant, and it is the wrong thing to bet a production token on.
+    ///
+    /// What survives is the PATH, which is the part that carries the context:
+    /// "the agent just edited `.env.production`" is the useful sentence, and it
+    /// is spelled entirely by the filename. This is why the rule is content-only
+    /// and never drops the path from vocabulary or provenance.
+    static func isSecretLike(_ relativePath: String) -> Bool {
+        let components = relativePath.split(separator: "/").map(String.init)
+        guard let filename = components.last else { return false }
+        for component in components.dropLast()
+        where secretComponents.contains(component.lowercased()) {
+            return true
+        }
+        let lowercased = filename.lowercased()
+        if secretComponents.contains(lowercased) { return true }
+        if secretFilenames.contains(lowercased) { return true }
+
+        // `.env`, `.env.local`, `.env.production` — but not `.env.example`.
+        if lowercased == ".env" || lowercased == "env" { return true }
+        if lowercased.hasPrefix(".env.") || lowercased.hasPrefix("env.") {
+            let suffix = String(lowercased.split(separator: ".").last ?? "")
+            return !nonSecretEnvSuffixes.contains(suffix)
+        }
+
+        let ext = (lowercased as NSString).pathExtension
+        if !ext.isEmpty, secretExtensions.contains(ext) { return true }
+        guard secretConfigExtensions.contains(ext) else { return false }
+        return !basenameWords(filename).isDisjoint(with: secretNameWords)
+    }
+
+    /// A basename's lowercased words, split on separators AND camel humps.
+    ///
+    /// Both axes are needed: `api-keys.json` and `apiKeys.json` name the same
+    /// file, and a rule that only understood one of them would be a rule the
+    /// next repo walks straight past.
+    static func basenameWords(_ filename: String) -> Set<String> {
+        var words: Set<String> = []
+        var current = ""
+        func flush() {
+            if !current.isEmpty { words.insert(current.lowercased()) }
+            current = ""
+        }
+        for character in filename {
+            if character == "." || character == "_" || character == "-" || character == " " {
+                flush()
+            } else if character.isUppercase, current.contains(where: \.isLowercase) {
+                // A hump only ENDS a word when one was actually building, so
+                // `RSAKey` yields `rsakey` rather than `r`/`s`/`a`/`key`.
+                flush()
+                current.append(character)
+            } else {
+                current.append(character)
+            }
+        }
+        flush()
+        return words
+    }
+
     /// Binary heuristic: a NUL byte in the head.
     ///
     /// The same rule `git` itself uses to decide a file is binary, and it is
@@ -197,7 +331,13 @@ enum ClaudeRepoContentFilter {
         var matches: [Match] = []
         for (index, path) in trackedPaths.enumerated() {
             guard !excluding.contains(path) else { continue }
-            guard !isGeneratedOrVendored(path), !isLogLike(path) else { continue }
+            // A file whose contents can never be attached must not spend one of
+            // the `limit` candidate slots — the same reason generated and
+            // log-like paths are excluded here rather than only at the read.
+            // Nothing is lost by it: a tracked secret's PATH is already in
+            // `trackedPaths`, which grounding reads whole.
+            guard !isGeneratedOrVendored(path), !isLogLike(path), !isSecretLike(path)
+            else { continue }
             // Longest-first, so this is the most specific form the speaker could
             // have used, and its length is what ranks the file below.
             guard let matched = basenameMatchForms(path).first(where: {

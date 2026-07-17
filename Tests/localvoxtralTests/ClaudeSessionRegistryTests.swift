@@ -454,4 +454,77 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertTrue(registry.liveSessions().isEmpty)
         XCTAssertEqual(registry.resolve(marker: ClaudeSessionMarker(value: "lvx-2")), .unknown)
     }
+
+    // MARK: Remote host eviction
+
+    /// Sessions for four origins: two SSH hosts, another remote transport, and
+    /// a local peer-authenticated process.
+    private func makeMixedOriginRegistry() -> ClaudeSessionRegistry {
+        let registry = makeRegistry(
+            markers: TestMarkers(["lvx-gone", "lvx-kept", "lvx-relay", "lvx-local"])
+        )
+        registry.ingest(record(.sessionStart, session: "remote:hgone:s1"), origin: .remote(channel: "ssh:hgone"))
+        registry.ingest(record(.sessionStart, session: "remote:hkeep:s1"), origin: .remote(channel: "ssh:hkeep"))
+        registry.ingest(record(.sessionStart, session: "relay:s1"), origin: .remote(channel: "relay"))
+        registry.ingest(record(.sessionStart, session: "local-1"), origin: local)
+        return registry
+    }
+
+    func testEvictingARemoteHostTakesItsSessionsAndItsMarkers() {
+        let registry = makeMixedOriginRegistry()
+
+        let evicted = registry.evictRemoteSessions(notIn: ["ssh:hkeep"])
+
+        XCTAssertEqual(evicted, 1)
+        XCTAssertNil(registry.snapshot(sessionID: "remote:hgone:s1"))
+        // The marker matters as much as the session: it is the ONLY way context
+        // is joined, so a marker left pointing at an evicted session — or worse,
+        // dangling for a later session to collide with — is the bug, not
+        // bookkeeping.
+        XCTAssertEqual(registry.resolve(marker: ClaudeSessionMarker(value: "lvx-gone")), .unknown)
+    }
+
+    func testEvictingOneRemoteHostLeavesSiblingsAndLocalSessionsAlone() throws {
+        let registry = makeMixedOriginRegistry()
+
+        registry.evictRemoteSessions(notIn: ["ssh:hkeep"])
+
+        let sibling = try XCTUnwrap(
+            registry.snapshot(sessionID: "remote:hkeep:s1"),
+            "a sibling host's session is not collateral"
+        )
+        XCTAssertEqual(registry.resolve(marker: ClaudeSessionMarker(value: "lvx-kept")), .resolved(sibling))
+        XCTAssertEqual(
+            Set(registry.liveSessions().map(\.sessionID)),
+            ["remote:hkeep:s1", "relay:s1", "local-1"]
+        )
+    }
+
+    func testEvictingEveryRemoteHostNeverTouchesLocalSessions() throws {
+        // The 1→0 case: the last host is revoked, so no channel is active. Local
+        // sessions are authenticated by peer credentials on our own socket and
+        // have nothing to do with host enrollment — they must survive an empty
+        // host registry.
+        let registry = makeMixedOriginRegistry()
+
+        XCTAssertEqual(registry.evictRemoteSessions(notIn: []), 2)
+
+        XCTAssertEqual(Set(registry.liveSessions().map(\.sessionID)), ["relay:s1", "local-1"])
+        let survivor = try XCTUnwrap(registry.snapshot(sessionID: "local-1"))
+        XCTAssertEqual(registry.resolve(marker: ClaudeSessionMarker(value: "lvx-local")), .resolved(survivor))
+        XCTAssertNotEqual(
+            registry.resolve(marker: ClaudeSessionMarker(value: "lvx-relay")),
+            .unknown,
+            "another remote transport is not governed by SSH host enrollment"
+        )
+    }
+
+    func testEvictingRemoteSessionsIsIdempotent() {
+        // reconcile() calls this on every enrollment change, so it runs far more
+        // often than it has work to do.
+        let registry = makeMixedOriginRegistry()
+        XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 1)
+        XCTAssertEqual(registry.evictRemoteSessions(notIn: ["ssh:hkeep"]), 0, "nothing left to evict")
+        XCTAssertNotNil(registry.snapshot(sessionID: "remote:hkeep:s1"))
+    }
 }

@@ -320,7 +320,9 @@ enum LLMPolishEvalSupport {
         endpointURL: URL,
         apiKey: String,
         model: String,
-        requestShapeModel: String? = nil
+        requestShapeModel: String? = nil,
+        thinkingBudgetTokens: Int? = nil,
+        passthroughExtraParameters: Bool = false
     ) -> LLMPolishingConfiguration {
         let option = PolishModelCatalog.option(forRepoID: requestShapeModel ?? model)
         return LLMPolishingConfiguration(
@@ -328,7 +330,9 @@ enum LLMPolishEvalSupport {
             apiKey: apiKey,
             model: model,
             samplingDefaults: option?.samplingDefaults,
-            chatTemplateArguments: option?.chatTemplateArguments
+            chatTemplateArguments: option?.chatTemplateArguments,
+            thinkingBudgetTokens: thinkingBudgetTokens,
+            passthroughExtraParameters: passthroughExtraParameters
         )
     }
 

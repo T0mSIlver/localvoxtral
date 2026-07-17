@@ -32,13 +32,21 @@ public enum ClaudeSocketGuard {
     public struct PathMetadata: Sendable, Equatable {
         public var isDirectory: Bool
         public var isSymlink: Bool
+        public var isSocket: Bool
         public var ownerUID: UInt32
         /// Permission bits only (mode & 0o7777).
         public var mode: UInt16
 
-        public init(isDirectory: Bool, isSymlink: Bool, ownerUID: UInt32, mode: UInt16) {
+        public init(
+            isDirectory: Bool,
+            isSymlink: Bool,
+            isSocket: Bool = false,
+            ownerUID: UInt32,
+            mode: UInt16
+        ) {
             self.isDirectory = isDirectory
             self.isSymlink = isSymlink
+            self.isSocket = isSocket
             self.ownerUID = ownerUID
             self.mode = mode
         }
@@ -71,6 +79,7 @@ public enum ClaudeSocketGuard {
         return PathMetadata(
             isDirectory: (info.st_mode & S_IFMT) == S_IFDIR,
             isSymlink: (info.st_mode & S_IFMT) == S_IFLNK,
+            isSocket: (info.st_mode & S_IFMT) == S_IFSOCK,
             ownerUID: UInt32(info.st_uid),
             mode: UInt16(info.st_mode & 0o7777)
         )

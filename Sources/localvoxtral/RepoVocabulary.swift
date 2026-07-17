@@ -528,6 +528,13 @@ enum RepoIndexing {
     /// words, plus the branch name — each admitted only when it carries a
     /// technical signal (`isTechnicalTerm`). Deduped, first-appearance order.
     static func buildVocabulary(paths: [String], branch: String?) -> RepoVocabulary {
+        RepoVocabulary(terms: buildVocabularyTerms(paths: paths, branch: branch), branch: branch)
+    }
+
+    /// Builds only the ordered term list, without constructing matcher indexes.
+    /// Callers that need to merge another structured source can do that first,
+    /// then initialize `RepoVocabulary` once for the final combined terms.
+    static func buildVocabularyTerms(paths: [String], branch: String?) -> [String] {
         var terms: [String] = []
         var seen = Set<String>()
         func add(_ value: String) {
@@ -543,7 +550,7 @@ enum RepoIndexing {
             for component in components.dropLast() { add(component) }
         }
         if let branch { add(branch) }
-        return RepoVocabulary(terms: terms, branch: branch)
+        return terms
     }
 
     /// Technical-signal gate: common-word path components (`Tests`,

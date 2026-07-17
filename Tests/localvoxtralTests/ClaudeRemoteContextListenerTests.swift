@@ -53,19 +53,18 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         super.tearDown()
     }
 
-    /// - Parameter now: injected clock. Nothing here sleeps or polls a wall
-    ///   clock to observe a deadline (AGENTS: no wall-clock in tests) — a test
-    ///   that needs the deadline to expire hands over a clock that has already
-    ///   passed it.
+    /// - Parameter uptimeNanos: injected monotonic clock. Nothing here sleeps
+    ///   or polls a wall clock to observe a deadline (AGENTS: no wall-clock in
+    ///   tests) — a test that needs expiry advances this seam immediately.
     private func startListener(
         limits: ClaudeRemoteListenerLimits? = nil,
-        now: (@Sendable () -> Date)? = nil
+        uptimeNanos: (@Sendable () -> UInt64)? = nil
     ) throws {
         listener = ClaudeRemoteContextListener(
             registry: sessions,
             hosts: hosts,
             limits: limits ?? ClaudeRemoteListenerLimits(port: port),
-            now: now ?? { Date() }
+            uptimeNanos: uptimeNanos ?? { DispatchTime.now().uptimeNanoseconds }
         )
         try listener.start()
     }
@@ -384,17 +383,17 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     /// slot, not hold a thread until it feels like finishing.
     ///
     /// The deadline is proven by handing the listener a clock that has already
-    /// passed it, rather than by sleeping: `now()` answers `T` once (when the
+    /// passed it, rather than by sleeping: `uptimeNanos()` answers `T` once (when the
     /// connection's deadline is computed) and `T + 100 s` forever after, so the
     /// first read finds no budget left and the connection is dropped. Same code
     /// path, no wall clock, no flake under load.
     func testAPeerThatOutlastsTheDeadlineIsDropped() throws {
         let calls = Mutex(0)
-        let base = Date(timeIntervalSince1970: 1_700_000_000)
-        try startListener(now: {
+        let base: UInt64 = 1_000_000_000
+        try startListener(uptimeNanos: {
             calls.withLock { count in
                 count += 1
-                return count == 1 ? base : base.addingTimeInterval(100)
+                return count == 1 ? base : base + 100_000_000_000
             }
         })
 

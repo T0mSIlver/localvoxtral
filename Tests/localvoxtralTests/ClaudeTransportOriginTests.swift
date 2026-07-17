@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import ClaudeContextWire
+@testable import localvoxtral
 
 // MARK: - Transport-derived origin
 
@@ -97,7 +98,7 @@ final class ClaudeWorkspaceReferenceTests: XCTestCase {
 /// remote record has no way to reach this at all. The test proves the runtime
 /// half; the compiler enforces the rest (there is no public initializer to
 /// call).
-final class SpyRepoCollector: ClaudeRepoCollecting, @unchecked Sendable {
+final class TransportOriginSpyRepoCollector: ClaudeRepoCollecting, @unchecked Sendable {
     private(set) var collectedPaths: [String] = []
 
     func collect(
@@ -112,7 +113,7 @@ final class SpyRepoCollector: ClaudeRepoCollecting, @unchecked Sendable {
 
 final class ClaudeRemotePathIsolationTests: XCTestCase {
     func testRemoteWorkspaceCannotBeHandedToACollector() async throws {
-        let collector = SpyRepoCollector()
+        let collector = TransportOriginSpyRepoCollector()
         let workspace = try XCTUnwrap(
             ClaudeWorkspaceReference.make(rawCwd: "/remote/repo", origin: .remote(channel: "ssh"))
         )
@@ -131,7 +132,7 @@ final class ClaudeRemotePathIsolationTests: XCTestCase {
     }
 
     func testLocalWorkspaceReachesTheCollector() async throws {
-        let collector = SpyRepoCollector()
+        let collector = TransportOriginSpyRepoCollector()
         let workspace = try XCTUnwrap(
             ClaudeWorkspaceReference.make(
                 rawCwd: "/local/repo", origin: .localAuthenticated(peerUID: 501)

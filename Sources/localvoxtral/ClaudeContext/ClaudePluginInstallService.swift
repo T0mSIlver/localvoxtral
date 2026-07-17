@@ -1,3 +1,5 @@
+import Dispatch
+import Darwin
 import Foundation
 
 /// Drives `claude plugin …` on the user's behalf.
@@ -69,6 +71,45 @@ public struct ClaudePluginInstallService: Sendable {
 
     /// Cap on captured CLI output. We only ever show a short failure summary.
     static let maxCapturedOutputBytes = 64 * 1024
+
+    /// How long a child gets to honour SIGTERM before it is SIGKILLed.
+    ///
+    /// Bounded because SIGTERM is advisory. A child that installs a handler and
+    /// ignores it — or that is blocked writing into a pipe nobody drains any
+    /// more, which is exactly what the output cap creates — would otherwise hold
+    /// the caller forever on the wait that follows, reinstating the wedge the
+    /// timeout exists to prevent.
+    public static let terminationGracePeriod: TimeInterval = 2
+
+    /// What it took to stop a child.
+    enum TerminationOutcome: Sendable, Equatable {
+        /// Exited inside the grace period after SIGTERM. Nothing was killed.
+        case exitedOnTerminate
+        /// Outlived SIGTERM; SIGKILL ended it and it was reaped.
+        case killed
+        /// Still not gone after SIGKILL and a second grace period (a child stuck
+        /// in an uninterruptible wait). We stop waiting — blocking past this
+        /// point is the wedge, and the OS finishes the kill without us.
+        case abandonedAfterKill
+    }
+
+    /// SIGTERM, bounded wait, SIGKILL, bounded wait. No unbounded wait anywhere.
+    ///
+    /// Every seam is injected so the TERM-ignoring path is provable without a
+    /// real process or a real clock: `waitForExit` returns true when the child
+    /// exited inside the window it was given.
+    static func terminateBounded(
+        gracePeriod: TimeInterval,
+        terminate: () -> Void,
+        kill: () -> Void,
+        waitForExit: (TimeInterval) -> Bool
+    ) -> TerminationOutcome {
+        terminate()
+        if waitForExit(gracePeriod) { return .exitedOnTerminate }
+        kill()
+        if waitForExit(gracePeriod) { return .killed }
+        return .abandonedAfterKill
+    }
 
     /// userConfig key the plugin declares, and the publisher path we pass for
     /// it at install time.
@@ -246,9 +287,16 @@ public extension ClaudePluginInstallService {
     ///   — waiting on a network fetch, or on a prompt we did not anticipate —
     ///   would wedge the caller with no way out. The child is terminated and
     ///   the failure reported instead.
+    /// * **Every wait is bounded, including the teardown's.** `terminate()` only
+    ///   sends SIGTERM, which a child is free to ignore — and one that does,
+    ///   while blocked writing into the pipe we stopped draining at the output
+    ///   cap, never comes back. So the wait after it is a grace period, not
+    ///   `waitUntilExit()`, and SIGKILL follows. Exit is observed through
+    ///   `terminationHandler`, so no path here waits without a deadline.
     static func processRunner(
         executableURL: URL?,
-        timeout: TimeInterval = defaultCommandTimeout
+        timeout: TimeInterval = defaultCommandTimeout,
+        gracePeriod: TimeInterval = terminationGracePeriod
     ) -> Runner {
         { invocation in
             guard let executableURL else { throw ServiceError.claudeCLINotFound }
@@ -259,7 +307,31 @@ public extension ClaudePluginInstallService {
             let output = Pipe()
             process.standardOutput = output
             process.standardError = output
+            // Armed before run() so the exit can never be missed, and read
+            // through a semaphore so every wait below can carry a deadline.
+            let exited = DispatchSemaphore(value: 0)
+            process.terminationHandler = { _ in exited.signal() }
             try process.run()
+
+            /// True when the child exited inside `window`.
+            func waitForExit(_ window: TimeInterval) -> Bool {
+                exited.wait(timeout: .now() + max(window, 0)) == .success
+            }
+
+            func stopChild() {
+                _ = terminateBounded(
+                    gracePeriod: gracePeriod,
+                    terminate: { process.terminate() },
+                    kill: {
+                        // Only signal a child Foundation has not reaped yet:
+                        // once reaped, the pid can be recycled onto an innocent
+                        // process. isRunning is false only after collection.
+                        let pid = process.processIdentifier
+                        if pid > 0, process.isRunning { _ = Darwin.kill(pid, SIGKILL) }
+                    },
+                    waitForExit: waitForExit
+                )
+            }
 
             let descriptor = output.fileHandleForReading.fileDescriptor
             let deadline = Date().addingTimeInterval(timeout)
@@ -293,22 +365,28 @@ public extension ClaudePluginInstallService {
                 if chunk.isEmpty { break } // EOF or read error: both mean stop.
                 collected.append(chunk)
                 if collected.count > maxCapturedOutputBytes {
-                    // Stop reading, but do NOT fall through to waitUntilExit():
-                    // a child still writing would block forever on a full pipe
-                    // with no reader, defeating the timeout entirely.
+                    // Stop reading and tear the child down. Nothing drains the
+                    // pipe after this, so a child that keeps writing blocks in
+                    // the kernel on a full buffer — and if it also ignores
+                    // SIGTERM it stays there. Hence the SIGKILL escalation.
                     timedOut = true
                     break
                 }
             }
 
+            if !timedOut {
+                // EOF is not proof of exit — a child can close its pipes and
+                // live on — so this wait carries the same deadline as the drain
+                // rather than blocking on waitUntilExit().
+                timedOut = !waitForExit(deadline.timeIntervalSinceNow)
+            }
+
             if timedOut {
-                process.terminate()
-                process.waitUntilExit() // Reap it; a zombie would outlive us.
+                stopChild()
                 throw ServiceError.commandTimedOut(
                     action: nil, arguments: invocation.arguments, seconds: timeout
                 )
             }
-            process.waitUntilExit()
 
             let raw = String(decoding: collected, as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)

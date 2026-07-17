@@ -14,6 +14,10 @@ import Foundation
 /// path — the trap behind #87, where a same-machine CI smoke masked a lookup
 /// that `fatalError`s on every other machine.
 public enum ClaudePluginAssets {
+    /// This declaration's path, captured here rather than in a default
+    /// argument. `#filePath` in a default argument expands at the call site,
+    /// where a test file at a different depth would walk past the repo root.
+    static let assetsSourceFile = #filePath
     /// Directory name inside `Contents/Resources`.
     public static let packagedDirectoryName = "claude-code-marketplace"
     /// Repo-relative source of truth.
@@ -62,7 +66,9 @@ public enum ClaudePluginAssets {
     }
 
     /// Repo checkout fallback, for `swift run`/`swift test`.
-    static func developmentMarketplaceURL(sourceFile: String = #filePath) -> URL? {
+    static func developmentMarketplaceURL(
+        sourceFile: String = ClaudePluginAssets.assetsSourceFile
+    ) -> URL? {
         repositoryRootURL(sourceFile: sourceFile)?
             .appendingPathComponent(repositoryRelativePath)
     }
@@ -77,11 +83,11 @@ public enum ClaudePluginAssets {
     /// that GitHub serves. They list the same two plugins with paths rewritten
     /// for their own depth; the manifest test pins them to each other so they
     /// cannot drift.
-    static func rootMarketplaceURL(sourceFile: String = #filePath) -> URL? {
+    static func rootMarketplaceURL(sourceFile: String = ClaudePluginAssets.assetsSourceFile) -> URL? {
         repositoryRootURL(sourceFile: sourceFile)
     }
 
-    static func repositoryRootURL(sourceFile: String = #filePath) -> URL? {
+    static func repositoryRootURL(sourceFile: String) -> URL? {
         // .../Sources/localvoxtral/ClaudeContext/ClaudePluginAssets.swift
         URL(fileURLWithPath: sourceFile)
             .deletingLastPathComponent() // ClaudeContext

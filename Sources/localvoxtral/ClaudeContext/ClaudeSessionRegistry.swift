@@ -207,6 +207,45 @@ public final class ClaudeSessionRegistry: Sendable {
         state.withLock { removeLocked(&$0, sessionID: sessionID) }
     }
 
+    /// Forget every SSH-remote session whose transport channel is not in `channels`.
+    ///
+    /// This is how a revoked or removed host stops having cached context here.
+    /// Revocation is immediate at the door — `ClaudeRemoteHostRegistry` refuses
+    /// the token on the next request — but that only stops NEW records; whatever
+    /// the host already published would otherwise sit in this registry until TTL
+    /// expired it, joinable by its marker the whole time. A user who revokes a
+    /// host means "that machine's context is no longer mine to use", not "no
+    /// more of it, but keep the last four hours".
+    ///
+    /// The channel is the transport's own answer (`ClaudeRemoteSessionScope.channel`,
+    /// set by the listener from the token that authenticated the connection), so
+    /// this identifies a host's sessions without consulting anything on the wire.
+    ///
+    /// `.localAuthenticated` sessions and remote sessions from any other
+    /// transport are never candidates, whatever `channels` says. Their trust
+    /// and lifecycle have nothing to do with SSH host enrollment.
+    ///
+    /// Eviction of a session and of its marker index entry happens under one
+    /// hold of the state mutex — a reader must never observe a marker pointing
+    /// at a session that is already gone, nor a session reachable by a marker
+    /// that was supposed to die with it.
+    ///
+    /// - Returns: how many sessions were evicted.
+    @discardableResult
+    public func evictRemoteSessions(notIn channels: Set<String>) -> Int {
+        let sshPrefix = ClaudeRemoteSessionScope.channel(hostID: "")
+        return state.withLock { state in
+            let doomed = state.sessions.values.filter { snapshot in
+                guard case .remote(let channel) = snapshot.origin else { return false }
+                return channel.hasPrefix(sshPrefix) && !channels.contains(channel)
+            }.map(\.sessionID)
+            for sessionID in doomed {
+                removeLocked(&state, sessionID: sessionID)
+            }
+            return doomed.count
+        }
+    }
+
     public func removeAll() {
         state.withLock { state in
             state.sessions.removeAll()

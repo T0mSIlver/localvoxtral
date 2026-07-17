@@ -39,19 +39,29 @@ struct LLMPolishingConfiguration: Sendable {
     let model: String
     let samplingDefaults: PolishSamplingDefaults?
     let chatTemplateArguments: [String: Bool]?
+    /// llama.cpp per-request reasoning cap. Nil preserves the normal OpenAI
+    /// request shape; zero disables reasoning when the server supports it.
+    let thinkingBudgetTokens: Int?
+    /// Bifrost drops provider-specific body fields unless this opt-in header
+    /// is present. Other OpenAI-compatible servers harmlessly ignore it.
+    let passthroughExtraParameters: Bool
 
     init(
         endpointURL: URL,
         apiKey: String,
         model: String,
         samplingDefaults: PolishSamplingDefaults? = nil,
-        chatTemplateArguments: [String: Bool]? = nil
+        chatTemplateArguments: [String: Bool]? = nil,
+        thinkingBudgetTokens: Int? = nil,
+        passthroughExtraParameters: Bool = false
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
         self.model = model
         self.samplingDefaults = samplingDefaults
         self.chatTemplateArguments = chatTemplateArguments
+        self.thinkingBudgetTokens = thinkingBudgetTokens
+        self.passthroughExtraParameters = passthroughExtraParameters
     }
 }
 
@@ -160,6 +170,9 @@ struct LLMPolishingService: LLMPolishingServicing {
         if !configuration.apiKey.isEmpty {
             urlRequest.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         }
+        if configuration.passthroughExtraParameters {
+            urlRequest.setValue("true", forHTTPHeaderField: "x-bf-passthrough-extra-params")
+        }
         urlRequest.timeoutInterval = Self.requestTimeoutInterval
         urlRequest.httpBody = try requestBody(
             request: request,
@@ -201,6 +214,9 @@ struct LLMPolishingService: LLMPolishingServicing {
         }
         if let chatTemplateArguments = configuration.chatTemplateArguments {
             body["chat_template_kwargs"] = chatTemplateArguments
+        }
+        if let thinkingBudgetTokens = configuration.thinkingBudgetTokens {
+            body["thinking_budget_tokens"] = thinkingBudgetTokens
         }
         return try JSONSerialization.data(withJSONObject: body)
     }

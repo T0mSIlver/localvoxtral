@@ -335,7 +335,11 @@ final class ClaudePluginManifestTests: XCTestCase {
             "must not exec the publisher — an exec failure would escape as a hook error"
         )
         let lines = source.split(separator: "\n").map(String.init)
-        let invocation = try XCTUnwrap(lines.firstIndex { $0.hasPrefix("\"$BIN\"") })
+        let invocation = try XCTUnwrap(lines.firstIndex { $0.contains("\"$BIN\" --event") })
+        XCTAssertTrue(
+            lines[invocation].hasPrefix("LOCALVOXTRAL_CLAUDE_PPID="),
+            "the child must receive Claude Code's stable parent pid, not the short-lived shim pid"
+        )
         let remainder = lines[invocation...].joined(separator: "\n")
         XCTAssertTrue(
             remainder.contains("exit 0"),

@@ -288,10 +288,21 @@ public final class ClaudeContextBroker: Sendable {
     /// Connecting to our own broker is harmless: it accepts, we send nothing, and
     /// the connection closes. The serve thread reads EOF and exits.
     static func isSocketLive(atPath path: String) -> Bool {
+        guard let metadata = ClaudeSocketGuard.metadata(ofPath: path) else {
+            // Only a definite absence licenses cleanup. Any other lstat error
+            // is indeterminate, so assume a live owner and do not unlink.
+            return errno != ENOENT
+        }
+        // A symlink is never ours to follow or unlink. A non-socket inode in
+        // this already-validated private directory cannot belong to a live
+        // broker, so it is stale junk and may be replaced.
+        if metadata.isSymlink { return true }
+        guard metadata.isSocket else { return false }
+
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(path.utf8)
-        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return false }
+        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else { return true }
         withUnsafeMutableBytes(of: &address.sun_path) { raw in
             raw.copyBytes(from: pathBytes)
             raw[pathBytes.count] = 0
@@ -299,7 +310,7 @@ public final class ClaudeContextBroker: Sendable {
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
 
         let probe = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard probe >= 0 else { return false }
+        guard probe >= 0 else { return true }
         defer { close(probe) }
         let connected = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in

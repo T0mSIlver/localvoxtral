@@ -142,13 +142,11 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
 
     private func makeService(
         runner: RecordingRunner,
-        claudeURL: URL? = nil,
-        marketplaceURL: URL? = nil,
         publisherURL: URL? = nil
     ) -> ClaudePluginInstallService {
         ClaudePluginInstallService(
-            claudeExecutableURL: claudeURL ?? claude,
-            marketplaceURL: marketplaceURL ?? marketplace,
+            claudeExecutableURL: claude,
+            marketplaceURL: marketplace,
             publisherURL: publisherURL,
             runner: runner.runner
         )
@@ -201,7 +199,9 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
 
     func testMissingCLIIsReportedAndRunsNothing() {
         let runner = RecordingRunner()
-        let service = makeService(runner: runner, claudeURL: nil)
+        let service = ClaudePluginInstallService(
+            claudeExecutableURL: nil, marketplaceURL: marketplace, runner: runner.runner
+        )
         XCTAssertThrowsError(try service.installPlugin()) { error in
             XCTAssertEqual(error as? ClaudePluginInstallService.ServiceError, .claudeCLINotFound)
         }
@@ -242,6 +242,59 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
     func testRunResultSuccessPredicate() {
         XCTAssertTrue(ClaudePluginInstallService.RunResult(exitCode: 0, message: "").succeeded)
         XCTAssertFalse(ClaudePluginInstallService.RunResult(exitCode: 1, message: "").succeeded)
+    }
+
+    // MARK: Bounded teardown
+    //
+    // Every seam is injected, so these prove the escalation ordering without a
+    // process and without a clock: no signals are sent, no time passes.
+
+    /// Records the teardown steps in the order they were taken.
+    private func recordTeardown(
+        gracePeriod: TimeInterval = 2,
+        exitsAfterWait: Int?
+    ) -> (outcome: ClaudePluginInstallService.TerminationOutcome, steps: [String], windows: [TimeInterval]) {
+        var steps: [String] = []
+        var windows: [TimeInterval] = []
+        var waits = 0
+        let outcome = ClaudePluginInstallService.terminateBounded(
+            gracePeriod: gracePeriod,
+            terminate: { steps.append("terminate") },
+            kill: { steps.append("kill") },
+            waitForExit: { window in
+                waits += 1
+                steps.append("wait")
+                windows.append(window)
+                return waits == exitsAfterWait
+            }
+        )
+        return (outcome, steps, windows)
+    }
+
+    func testTeardownStopsAtSIGTERMWhenTheChildHonoursIt() {
+        // A well-behaved CLI must never be killed: SIGTERM lets it clean up.
+        let run = recordTeardown(exitsAfterWait: 1)
+        XCTAssertEqual(run.outcome, .exitedOnTerminate)
+        XCTAssertEqual(run.steps, ["terminate", "wait"])
+        XCTAssertFalse(run.steps.contains("kill"))
+    }
+
+    func testTeardownEscalatesToSIGKILLWhenSIGTERMIsIgnored() {
+        // The regression this guards: SIGTERM is advisory, so the wait after it
+        // is a grace period. Waiting on a TERM-ignoring child forever is how the
+        // runner used to wedge the app.
+        let run = recordTeardown(gracePeriod: 0.25, exitsAfterWait: 2)
+        XCTAssertEqual(run.outcome, .killed)
+        XCTAssertEqual(run.steps, ["terminate", "wait", "kill", "wait"])
+        XCTAssertEqual(run.windows, [0.25, 0.25], "both waits are bounded by the grace period")
+    }
+
+    func testTeardownGivesUpRatherThanWaitingForeverOnAChildThatSurvivesSIGKILL() {
+        // Uninterruptible sleep. Nothing we can send helps, so the one thing
+        // that must not happen is blocking the caller indefinitely.
+        let run = recordTeardown(exitsAfterWait: nil)
+        XCTAssertEqual(run.outcome, .abandonedAfterKill)
+        XCTAssertEqual(run.steps, ["terminate", "wait", "kill", "wait"], "exactly two bounded waits, then return")
     }
 
     #if canImport(Darwin)

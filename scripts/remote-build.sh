@@ -345,10 +345,16 @@ case "$CMD" in
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
     trap 'cleanup_transient_marker "$EVAL_MARKER"' EXIT
-    if [[ -n "$EVAL_MODEL" ]]; then
+    if [[ "$EVAL_MODEL" == llamacpp/* ]]; then
+      # Bifrost requires the passthrough opt-in for llama.cpp-specific fields;
+      # current llama.cpp disables Qwen 3.5 reasoning per request with a zero
+      # thinking budget. Keep the production catalog's enable_thinking=false
+      # kwargs too, so this remains the same prompt/sampling request shape.
+      printf '{"endpoint": "%s", "model": "%s", "useDefaultRequestShape": true, "thinkingBudgetTokens": 0, "passthroughExtraParameters": true}\n' \
+        "$EVAL_ENDPOINT" "$EVAL_MODEL" >"$EVAL_MARKER"
+    elif [[ -n "$EVAL_MODEL" ]]; then
       printf '{"endpoint": "%s", "model": "%s", "useDefaultRequestShape": true}\n' \
-        "$EVAL_ENDPOINT" "$EVAL_MODEL" \
-        >"$EVAL_MARKER"
+        "$EVAL_ENDPOINT" "$EVAL_MODEL" >"$EVAL_MARKER"
     else
       printf '{"endpoint": "%s"}\n' "$EVAL_ENDPOINT" >"$EVAL_MARKER"
     fi

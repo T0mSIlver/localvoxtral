@@ -52,12 +52,21 @@ public enum ClaudeRemoteTokenDigest {
         return token.allSatisfy { allowedCharacters.contains($0) }
     }
 
-    /// SHA-256 over `salt || token`, hex.
+    /// HMAC-SHA256 keyed by the per-host salt, hex.
     ///
     /// The salt is per host and not itself a secret; it is here so that two
     /// hosts issued (improbably) the same token do not share a stored hash, and
     /// so the file cannot be attacked with one precomputed table across users.
     public static func hash(token: String, salt: String) -> String {
+        HMAC<SHA256>.authenticationCode(
+            for: Data(token.utf8),
+            using: SymmetricKey(data: Data(salt.utf8))
+        ).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Verify-only compatibility for registries written before hashes were
+    /// framed. Never use this for a newly issued or rotated credential.
+    static func legacyHash(token: String, salt: String) -> String {
         var hasher = SHA256()
         hasher.update(data: Data(salt.utf8))
         hasher.update(data: Data(token.utf8))
@@ -286,6 +295,9 @@ public struct ClaudeRemoteHostFileStoreIO: ClaudeRemoteHostStoreIO {
 ///   hosts**, so neither the token nor which host owns it leaks through timing.
 /// * **Revocation is immediate** — `authenticate` consults `revokedAt` on every
 ///   call rather than pruning lazily.
+/// * **Every mutation is transactional with the file** — see `transact`. A
+///   write that fails leaves memory exactly as it was, so the registry never
+///   authenticates against a state the next launch will not read back.
 ///
 /// `Mutex` + `Sendable`, per repo convention: the listener's connection threads
 /// authenticate while the main actor may be enrolling.
@@ -300,6 +312,9 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         var revokedAt: Date?
         var tokenSalt: String
         var tokenHash: String
+        /// Absent means the legacy unframed SHA-256 construction. New and
+        /// rotated credentials are HMAC v2; legacy hosts migrate on rotation.
+        var hashVersion: Int? = nil
 
         var publicView: ClaudeRemoteHost {
             ClaudeRemoteHost(
@@ -336,14 +351,15 @@ public final class ClaudeRemoteHostRegistry: Sendable {
 
     /// Bump on any incompatible change to `StoredFile`.
     static let fileVersion = 1
+    static let currentHashVersion = 2
 
     /// Cap on enrolled hosts. Not a security boundary — a bound on a file we
     /// read on every listener start.
     public static let maxHosts = 32
 
     private let state: Mutex<[StoredHost]>
-    /// Serializes snapshot+write. See `persist()` for why `state` alone is not
-    /// enough to keep memory and disk coherent.
+    /// Serializes each mutate+write TRANSACTION. See `transact` for why `state`
+    /// alone is not enough to keep memory and disk coherent.
     private let persistLock = Mutex<Int>(0)
     private let fileURL: URL
     private let io: any ClaudeRemoteHostStoreIO
@@ -432,7 +448,18 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         return state.withLock { hosts in
             var matched: StoredHost?
             for host in hosts {
-                let candidate = ClaudeRemoteTokenDigest.hash(token: token, salt: host.tokenSalt)
+                let candidate: String
+                switch host.hashVersion ?? 1 {
+                case 1:
+                    candidate = ClaudeRemoteTokenDigest.legacyHash(
+                        token: token, salt: host.tokenSalt
+                    )
+                case Self.currentHashVersion:
+                    candidate = ClaudeRemoteTokenDigest.hash(token: token, salt: host.tokenSalt)
+                default:
+                    // Still perform a fixed-length comparison for every host.
+                    candidate = String(repeating: "0", count: 64)
+                }
                 let equal = ClaudeRemoteTokenDigest.constantTimeEquals(candidate, host.tokenHash)
                 if equal, host.revokedAt == nil {
                     matched = host
@@ -447,9 +474,11 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// steady write amplification. It is persisted on the next mutation.
     public func noteActivity(hostID: String) {
         let timestamp = now()
-        state.withLock { hosts in
-            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
-            hosts[index].lastSeenAt = timestamp
+        persistLock.withLock { _ in
+            state.withLock { hosts in
+                guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+                hosts[index].lastSeenAt = timestamp
+            }
         }
     }
 
@@ -466,7 +495,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         let salt = makeToken()
         let timestamp = now()
 
-        let host: StoredHost = try state.withLock { hosts in
+        let host: StoredHost = try transact { hosts in
             guard hosts.count < Self.maxHosts else { throw StoreError.tooManyHosts(limit: Self.maxHosts) }
             var id = makeHostID()
             var attempts = 0
@@ -482,12 +511,12 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 lastSeenAt: nil,
                 revokedAt: nil,
                 tokenSalt: salt,
-                tokenHash: ClaudeRemoteTokenDigest.hash(token: token, salt: salt)
+                tokenHash: ClaudeRemoteTokenDigest.hash(token: token, salt: salt),
+                hashVersion: Self.currentHashVersion
             )
             hosts.append(host)
             return host
         }
-        try persist()
         Log.claudeContext.info("Enrolled Claude remote host \(host.id, privacy: .public)")
         return ClaudeRemoteEnrollment(host: host.publicView, token: token)
     }
@@ -498,18 +527,18 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     public func rotateToken(hostID: String) throws -> ClaudeRemoteEnrollment {
         let token = makeToken()
         let salt = makeToken()
-        let host: StoredHost = try state.withLock { hosts in
+        let host: StoredHost = try transact { hosts in
             guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
                 throw StoreError.unknownHost(hostID)
             }
             hosts[index].tokenSalt = salt
             hosts[index].tokenHash = ClaudeRemoteTokenDigest.hash(token: token, salt: salt)
+            hosts[index].hashVersion = Self.currentHashVersion
             // Rotating an enrolled-then-revoked host reinstates it: the user is
             // handing out a new credential, which is the same act as enrolling.
             hosts[index].revokedAt = nil
             return hosts[index]
         }
-        try persist()
         Log.claudeContext.info("Rotated token for Claude remote host \(hostID, privacy: .public)")
         return ClaudeRemoteEnrollment(host: host.publicView, token: token)
     }
@@ -518,7 +547,7 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// host existed and rotate it back if the revocation was a mistake.
     public func revoke(hostID: String) throws {
         let timestamp = now()
-        try state.withLock { hosts in
+        try transact { hosts in
             guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
                 throw StoreError.unknownHost(hostID)
             }
@@ -529,40 +558,54 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             hosts[index].tokenHash = ""
             hosts[index].tokenSalt = ""
         }
-        try persist()
         Log.claudeContext.info("Revoked Claude remote host \(hostID, privacy: .public)")
     }
 
     public func remove(hostID: String) throws {
-        try state.withLock { hosts in
+        try transact { hosts in
             guard hosts.contains(where: { $0.id == hostID }) else {
                 throw StoreError.unknownHost(hostID)
             }
             hosts.removeAll { $0.id == hostID }
         }
-        try persist()
     }
 
     // MARK: - Persistence
 
-    /// Snapshot and write, serialized against every other persist.
+    /// Mutate the registry and persist the result, as one transaction.
     ///
-    /// The `persistLock` is not redundant with `state`'s mutex. Mutations release
-    /// `state` before persisting, so two concurrent callers can interleave as:
-    /// A snapshots {A}, B snapshots {A,B}, B writes {A,B}, A writes {A} — and the
-    /// disk ends up behind memory, having silently un-enrolled B. Holding this
-    /// lock across BOTH the snapshot and the write makes disk order match memory
-    /// order, so the last write is always the newest state.
+    /// A mutation that memory accepted and the disk refused is a lie with a
+    /// delay on it: the UI shows the host enrolled, the listener authenticates
+    /// it, and the next launch reads a file that never heard of it. So `body`
+    /// mutates a private candidate copy. The candidate is installed into memory
+    /// only after its write succeeds; a throw leaves the live state untouched.
     ///
-    /// Lock order is always persistLock → state, and nothing takes them the other
-    /// way round, so this cannot deadlock.
-    private func persist() throws {
-        try persistLock.withLock { _ in
-            let hosts = state.withLock { $0 }
-            let file = StoredFile(version: Self.fileVersion, hosts: hosts)
-            let encoder = JSONEncoder.claudeRemote
-            let data = try encoder.encode(file)
+    /// **Lock order is always persistLock → state, never the reverse**, so this
+    /// cannot deadlock. Two properties come out of holding `persistLock` across
+    /// the whole transaction rather than only the write:
+    ///
+    /// * **Disk cannot fall behind memory.** Mutations release `state` before
+    ///   writing, so unserialized callers can interleave as: A snapshots {A}, B
+    ///   snapshots {A,B}, B writes {A,B}, A writes {A} — the last writer puts a
+    ///   STALE snapshot on disk, silently un-enrolling B.
+    /// * **A failed write is never observable as live state.** Authentication
+    ///   and queries keep seeing the previous state while I/O is in flight.
+    ///   There is no optimistic enrollment or revocation to roll back later.
+    ///
+    /// `state`'s mutex is deliberately NOT held across the I/O. Authentication
+    /// runs on listener connection threads and continues against the last
+    /// committed state instead of blocking on disk. `noteActivity` does take
+    /// `persistLock` (without doing I/O), so installing the candidate cannot
+    /// overwrite a concurrent `lastSeenAt` update.
+    private func transact<Outcome>(_ body: (inout [StoredHost]) throws -> Outcome) throws -> Outcome {
+        try persistLock.withLock { _ -> Outcome in
+            var proposed = state.withLock { $0 }
+            let result = try body(&proposed)
+            let file = StoredFile(version: Self.fileVersion, hosts: proposed)
+            let data = try JSONEncoder.claudeRemote.encode(file)
             try io.write(data, to: fileURL)
+            state.withLock { $0 = proposed }
+            return result
         }
     }
 

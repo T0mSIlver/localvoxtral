@@ -206,6 +206,22 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertNoThrow(try broker.start())
     }
 
+    func testStartNeverUnlinksASymlinkAtTheSocketPath() throws {
+        try ClaudeSocketGuard.prepareDirectory(at: directory.path)
+        let target = directory.appendingPathComponent("target")
+        XCTAssertTrue(FileManager.default.createFile(atPath: target.path, contents: Data()))
+        try FileManager.default.createSymbolicLink(atPath: socketPath, withDestinationPath: target.path)
+
+        XCTAssertThrowsError(try broker.start()) { error in
+            XCTAssertEqual(
+                error as? ClaudeContextBroker.StartFailure,
+                .socketOwnedByLiveInstance(socketPath)
+            )
+        }
+        let destination = try FileManager.default.destinationOfSymbolicLink(atPath: socketPath)
+        XCTAssertEqual(destination, target.path, "a suspicious link must never be unlinked")
+    }
+
     // MARK: Ingest
 
     func testPublisherRecordReachesRegistryWithLocalOrigin() throws {
@@ -506,7 +522,7 @@ final class ClaudeContextBrokerLifecycleTests: XCTestCase {
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
         let bound = withUnsafePointer(to: &address) { pointer in
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+                Darwin.bind(stale, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
         XCTAssertEqual(bound, 0)

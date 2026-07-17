@@ -13,7 +13,8 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
         unstaged: String = "",
         active: [ClaudeRepoSnapshot.File] = [],
         tracked: [ClaudeRepoSnapshot.File] = [],
-        trackedPaths: [String] = []
+        trackedPaths: [String] = [],
+        secretPaths: [String] = []
     ) -> ClaudeRepoSnapshot {
         ClaudeRepoSnapshot(
             workspaceName: "repo",
@@ -24,6 +25,7 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
             activeFiles: active,
             trackedFiles: tracked,
             trackedPaths: trackedPaths,
+            secretPaths: secretPaths,
             provenance: .empty
         )
     }
@@ -115,7 +117,7 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
         // would trade one bug for a worse one.
         let prepared = ClaudeRepoContextPreparation.prepare(
             snapshot: repo,
-            transcript: "please open \(target) now",
+            transcript: "please open retry budget calculator dot swift now",
             renderBudget: allocation[.repository] ?? 0
         )
         XCTAssertTrue(
@@ -327,6 +329,38 @@ final class ClaudeRepoContextSelectionTests: XCTestCase {
             prepared.grounding.entries.isEmpty,
             "grounding is input-side and costs no prompt characters; it must not inherit the render budget"
         )
+        XCTAssertEqual(prepared.grounding.entries.first?.replaceWith, "UserSessionManager.swift")
+        XCTAssertFalse(
+            prepared.grounding.isFallbackOnly,
+            "a structured repo path should hit the exact basename tier without a file cue"
+        )
+    }
+
+    func testPreparationIndexesStructuredPathsOnceAndScansOnlyNonPathText() {
+        let snap = snapshot(
+            branch: "fix/session-grounding",
+            status: [" M README.md"],
+            unstaged: "+PolishContextBudget.totalCharacterBudget",
+            active: [file("Sources/ActiveWorker.swift", "let type = ActiveWorker.self")],
+            trackedPaths: ["Sources/UserSessionManager.swift"],
+            secretPaths: [".env.production"]
+        )
+        let sources = ClaudeRepoContextPreparation.groundingSources(snapshot: snap)
+        XCTAssertEqual(
+            sources.paths,
+            ["Sources/UserSessionManager.swift", "Sources/ActiveWorker.swift", ".env.production"]
+        )
+        XCTAssertFalse(sources.entityText.contains("Sources/UserSessionManager.swift"))
+        XCTAssertFalse(sources.entityText.contains("Sources/ActiveWorker.swift"))
+        XCTAssertFalse(sources.entityText.contains(".env.production"))
+        XCTAssertTrue(sources.entityText.contains("PolishContextBudget.totalCharacterBudget"))
+        XCTAssertTrue(sources.entityText.contains("ActiveWorker"))
+
+        let terms = ClaudeRepoContextPreparation.terms(from: sources)
+        XCTAssertEqual(terms.filter { $0 == "UserSessionManager.swift" }.count, 1)
+        XCTAssertEqual(terms.filter { $0 == "ActiveWorker.swift" }.count, 1)
+        XCTAssertEqual(terms.filter { $0 == ".env.production" }.count, 1)
+        XCTAssertTrue(terms.contains("PolishContextBudget.totalCharacterBudget"))
     }
 }
 

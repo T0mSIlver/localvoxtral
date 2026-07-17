@@ -26,15 +26,31 @@ private final class MemoryStoreIO: ClaudeRemoteHostStoreIO {
     }
 }
 
+private final class RemoteHostTestClock: Sendable {
+    private let value = Mutex(Date(timeIntervalSince1970: 1_000_000))
+
+    func reset() {
+        value.withLock { $0 = Date(timeIntervalSince1970: 1_000_000) }
+    }
+
+    func now() -> Date {
+        value.withLock { $0 }
+    }
+
+    func advance(_ seconds: TimeInterval) {
+        value.withLock { $0 = $0.addingTimeInterval(seconds) }
+    }
+}
+
 final class ClaudeRemoteHostRegistryTests: XCTestCase {
     private var io: MemoryStoreIO!
     private let fileURL = URL(fileURLWithPath: "/tmp/lvx-test/claude-remote-hosts.json")
-    private let clock = Mutex(Date(timeIntervalSince1970: 1_000_000))
+    private let clock = RemoteHostTestClock()
 
     override func setUp() {
         super.setUp()
         io = MemoryStoreIO()
-        clock.withLock { $0 = Date(timeIntervalSince1970: 1_000_000) }
+        clock.reset()
     }
 
     private func makeRegistry(
@@ -43,10 +59,11 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
     ) throws -> ClaudeRemoteHostRegistry {
         let tokenQueue = Mutex(tokens)
         let idQueue = Mutex(hostIDs)
+        let clock = self.clock
         return try ClaudeRemoteHostRegistry(
             fileURL: fileURL,
             io: io,
-            now: { [clock] in clock.withLock { $0 } },
+            now: { [clock] in clock.now() },
             makeToken: {
                 tokenQueue.withLock { queue in
                     queue.isEmpty ? ClaudeRemoteTokenDigest.makeToken() : queue.removeFirst()
@@ -61,7 +78,7 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
     }
 
     private func advance(_ seconds: TimeInterval) {
-        clock.withLock { $0 = $0.addingTimeInterval(seconds) }
+        clock.advance(seconds)
     }
 
     // MARK: Enrollment
@@ -72,7 +89,7 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
 
         XCTAssertEqual(enrollment.host.label, "buildhost")
         XCTAssertNil(enrollment.host.revokedAt)
-        XCTAssertEqual(enrollment.host.createdAt, clock.withLock { $0 })
+        XCTAssertEqual(enrollment.host.createdAt, clock.now())
         XCTAssertTrue(ClaudeRemoteTokenDigest.isWellFormed(enrollment.token))
         XCTAssertEqual(registry.authenticate(token: enrollment.token)?.id, enrollment.host.id)
         XCTAssertTrue(registry.hasActiveHosts)
@@ -87,6 +104,44 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         let second = try makeRegistry()
         XCTAssertEqual(second.hosts().map(\.id), [enrollment.host.id])
         XCTAssertEqual(second.authenticate(token: enrollment.token)?.id, enrollment.host.id)
+    }
+
+    func testLegacyHashStillAuthenticatesAndRotationMigratesItToHMAC() throws {
+        let legacyToken = "legacyToken_1234567890"
+        let legacySalt = "legacySalt_1234567890"
+        let storedHost = ClaudeRemoteHostRegistry.StoredHost(
+            id: "hlegacy01",
+            label: "legacy",
+            createdAt: clock.now(),
+            lastSeenAt: nil,
+            revokedAt: nil,
+            tokenSalt: legacySalt,
+            tokenHash: ClaudeRemoteTokenDigest.legacyHash(
+                token: legacyToken, salt: legacySalt
+            ),
+            hashVersion: nil
+        )
+        let storedFile = ClaudeRemoteHostRegistry.StoredFile(
+            version: ClaudeRemoteHostRegistry.fileVersion,
+            hosts: [storedHost]
+        )
+        io.seed(try JSONEncoder.claudeRemote.encode(storedFile), at: fileURL)
+
+        let newToken = "rotatedToken_1234567890"
+        let newSalt = "rotatedSalt_12345678901"
+        let registry = try makeRegistry(tokens: [newToken, newSalt])
+        XCTAssertEqual(registry.authenticate(token: legacyToken)?.id, storedHost.id)
+
+        let rotated = try registry.rotateToken(hostID: storedHost.id)
+        XCTAssertEqual(rotated.token, newToken)
+        XCTAssertNil(registry.authenticate(token: legacyToken))
+        XCTAssertEqual(registry.authenticate(token: newToken)?.id, storedHost.id)
+
+        let persisted = try JSONDecoder.claudeRemote.decode(
+            ClaudeRemoteHostRegistry.StoredFile.self,
+            from: try XCTUnwrap(io.written(at: fileURL))
+        )
+        XCTAssertEqual(persisted.hosts.first?.hashVersion, ClaudeRemoteHostRegistry.currentHashVersion)
     }
 
     func testLabelIsSanitized() throws {
@@ -217,7 +272,7 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         XCTAssertFalse(registry.hasActiveHosts, "a revoked host must not keep the port open")
         // The entry stays, so the user can see it existed and rotate it back.
         let host = try XCTUnwrap(registry.host(id: enrollment.host.id))
-        XCTAssertEqual(host.revokedAt, clock.withLock { $0 })
+        XCTAssertEqual(host.revokedAt, clock.now())
         XCTAssertTrue(host.isRevoked)
     }
 
@@ -295,7 +350,7 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
 
         advance(300)
         registry.noteActivity(hostID: enrollment.host.id)
-        XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.withLock { $0 })
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.lastSeenAt, clock.now())
     }
 
     func testNoteActivityDoesNotWriteToDisk() throws {
@@ -347,6 +402,12 @@ private final class FailingStoreIO: ClaudeRemoteHostStoreIO {
 
     func failAfter(_ successfulWrites: Int) {
         writesUntilFailure.withLock { $0 = successfulWrites }
+    }
+
+    /// Undo a `failAfter`, so a test can prove the retry after a transient
+    /// failure lands — a full disk that the user then cleared.
+    func stopFailing() {
+        writesUntilFailure.withLock { $0 = .max }
     }
 
     func read(from url: URL) throws -> Data? {
@@ -595,6 +656,197 @@ final class ClaudeRemoteHostRegistryPersistenceTests: XCTestCase {
         for token in tokens.withLock({ $0 }) {
             XCTAssertFalse(text.contains(token), "the store must hold hashes, never a plaintext token")
         }
+    }
+
+    // MARK: - Transactionality
+    //
+    // A mutation memory accepted and the disk refused is a lie with a delay on
+    // it: the UI shows the change, the listener acts on it, and the next launch
+    // reads a file that never heard of it. Each of the four mutations is checked
+    // for the same contract — a failed write leaves the registry EXACTLY as it
+    // was, by every question a caller can ask of it.
+
+    func testAFailedEnrollLeavesTheRegistryUnchangedInMemoryToo() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let first = try registry.enroll(label: "first")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.enroll(label: "second"))
+
+        XCTAssertEqual(registry.hosts().map(\.label), ["first"], "the rejected host is not in memory either")
+        XCTAssertEqual(registry.authenticate(token: first.token)?.id, first.host.id, "and the existing one is intact")
+        XCTAssertTrue(registry.hasActiveHosts)
+    }
+
+    func testAFailedEnrollDoesNotLeaveAnAuthenticatableHostBehind() throws {
+        // The sharpest form of the bug: a token the file does not know about,
+        // which the listener would nonetheless accept until the next launch
+        // silently stopped it.
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.enroll(label: "ghost"))
+
+        XCTAssertTrue(registry.hosts().isEmpty)
+        XCTAssertFalse(registry.hasActiveHosts, "no host means no port is bound")
+    }
+
+    func testARetriedEnrollSucceedsAfterATransientWriteFailure() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.enroll(label: "builder"))
+        io.stopFailing()
+        let retry = try registry.enroll(label: "builder")
+
+        XCTAssertEqual(registry.hosts().map(\.label), ["builder"], "the rolled-back attempt left no duplicate")
+        XCTAssertEqual(registry.authenticate(token: retry.token)?.id, retry.host.id)
+        XCTAssertEqual(try decode(XCTUnwrap(io.written(at: fileURL))).hosts.map(\.id), [retry.host.id])
+    }
+
+    func testAFailedRotationKeepsTheOldTokenWorking() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let original = try registry.enroll(label: "builder")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.rotateToken(hostID: original.host.id))
+
+        // Rotation has no grace period by design, so a half-applied one is the
+        // worst case available: the old token dead in memory, the new one absent
+        // from disk, and the host locked out with nothing left to authenticate.
+        XCTAssertEqual(
+            registry.authenticate(token: original.token)?.id,
+            original.host.id,
+            "a rotation that did not persist did not happen"
+        )
+    }
+
+    func testARetriedRotationSucceedsAndInvalidatesTheOldToken() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let original = try registry.enroll(label: "builder")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.rotateToken(hostID: original.host.id))
+        io.stopFailing()
+        let rotated = try registry.rotateToken(hostID: original.host.id)
+
+        XCTAssertEqual(registry.authenticate(token: rotated.token)?.id, original.host.id)
+        XCTAssertNil(registry.authenticate(token: original.token), "the retry is a real rotation")
+        let stored = try decode(XCTUnwrap(io.written(at: fileURL)))
+        XCTAssertEqual(stored.hosts.map(\.id), [original.host.id])
+    }
+
+    func testAFailedRevokeLeavesTheHostActive() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let enrollment = try registry.enroll(label: "builder")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.revoke(hostID: enrollment.host.id))
+
+        // Revoke erases the stored hash as well as setting revokedAt, so the
+        // the failed candidate must publish neither — a host whose hash was
+        // dropped in memory could never authenticate again, revoked flag or not.
+        XCTAssertEqual(registry.host(id: enrollment.host.id)?.isRevoked, false)
+        XCTAssertEqual(registry.authenticate(token: enrollment.token)?.id, enrollment.host.id)
+        XCTAssertTrue(registry.hasActiveHosts, "the listener must not close a port on a revoke that failed")
+    }
+
+    func testARetriedRevokeTakesEffect() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let enrollment = try registry.enroll(label: "builder")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.revoke(hostID: enrollment.host.id))
+        io.stopFailing()
+        try registry.revoke(hostID: enrollment.host.id)
+
+        XCTAssertNil(registry.authenticate(token: enrollment.token))
+        XCTAssertFalse(registry.hasActiveHosts)
+        let stored = try decode(XCTUnwrap(io.written(at: fileURL)))
+        XCTAssertEqual(stored.hosts.first?.tokenHash, "", "the persisted revoke erased the hash")
+    }
+
+    func testAFailedRemoveKeepsTheHostEnrolled() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let kept = try registry.enroll(label: "keeper")
+        let target = try registry.enroll(label: "target")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.remove(hostID: target.host.id))
+
+        // A set, not an array: this class pins the clock, so both hosts share a
+        // createdAt and `hosts()`'s sort has no defined order between them.
+        XCTAssertEqual(Set(registry.hosts().map(\.label)), ["keeper", "target"])
+        XCTAssertEqual(registry.authenticate(token: target.token)?.id, target.host.id)
+        XCTAssertEqual(registry.authenticate(token: kept.token)?.id, kept.host.id, "the bystander is untouched")
+    }
+
+    func testARetriedRemoveForgetsTheHost() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let kept = try registry.enroll(label: "keeper")
+        let target = try registry.enroll(label: "target")
+
+        io.failAfter(0)
+        XCTAssertThrowsError(try registry.remove(hostID: target.host.id))
+        io.stopFailing()
+        try registry.remove(hostID: target.host.id)
+
+        XCTAssertEqual(registry.hosts().map(\.label), ["keeper"])
+        XCTAssertNil(registry.authenticate(token: target.token))
+        XCTAssertEqual(registry.authenticate(token: kept.token)?.id, kept.host.id)
+        XCTAssertEqual(try decode(XCTUnwrap(io.written(at: fileURL))).hosts.map(\.id), [kept.host.id])
+    }
+
+    func testAFailedConcurrentMutationDoesNotEraseASuccessfulOne() throws {
+        // Each candidate is serialized through its write. A failed candidate
+        // must never replace the last committed state or erase a later success.
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        let existing = try (0..<4).map { try registry.enroll(label: "host\($0)") }
+
+        // Half the writers hit a failing disk. Whichever they are, every caller
+        // that was told "enrolled" must still be enrolled at the end.
+        io.failAfter(4)
+        let succeeded = Mutex<[String]>([])
+        DispatchQueue.concurrentPerform(iterations: 8) { index in
+            if let enrollment = try? registry.enroll(label: "concurrent\(index)") {
+                succeeded.withLock { $0.append(enrollment.host.id) }
+            }
+        }
+
+        let inMemory = Set(registry.hosts().map(\.id))
+        for id in succeeded.withLock({ $0 }) {
+            XCTAssertTrue(inMemory.contains(id), "an enroll that returned success was rolled back by another's failure")
+        }
+        for enrollment in existing {
+            XCTAssertTrue(inMemory.contains(enrollment.host.id), "a pre-existing host was rolled away")
+        }
+        XCTAssertEqual(inMemory.count, 4 + succeeded.withLock { $0.count })
+    }
+
+    func testMemoryAndDiskStillAgreeWhenSomeWritesFail() throws {
+        let io = FailingStoreIO()
+        let registry = try makeRegistry(io: io)
+        _ = try (0..<4).map { try registry.enroll(label: "host\($0)") }
+
+        io.failAfter(4)
+        DispatchQueue.concurrentPerform(iterations: 8) { index in
+            _ = try? registry.enroll(label: "concurrent\(index)")
+        }
+
+        // The whole point of the transaction: whatever the mix of successes and
+        // failures, the file is a faithful copy of memory when the dust settles.
+        let onDisk = try Set(decode(XCTUnwrap(io.written(at: fileURL))).hosts.map(\.id))
+        XCTAssertEqual(onDisk, Set(registry.hosts().map(\.id)))
     }
 }
 

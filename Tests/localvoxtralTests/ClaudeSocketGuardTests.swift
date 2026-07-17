@@ -101,6 +101,7 @@ final class ClaudeSocketGuardFilesystemTests: XCTestCase {
         try ClaudeSocketGuard.prepareDirectory(at: path)
         let metadata = try XCTUnwrap(ClaudeSocketGuard.metadata(ofPath: path))
         XCTAssertTrue(metadata.isDirectory)
+        XCTAssertFalse(metadata.isSocket)
         XCTAssertEqual(metadata.mode, 0o700)
         XCTAssertEqual(metadata.ownerUID, UInt32(geteuid()))
     }

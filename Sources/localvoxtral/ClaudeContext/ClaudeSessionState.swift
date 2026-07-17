@@ -69,7 +69,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     ///
     /// Only ever populated for a REMOTE session, because only the remote
     /// transport carries them: a local session's files are on this machine, and
-    /// `ClaudeLocalRepoCollecting` can read them properly rather than settle for
+    /// `ClaudeRepoCollecting` can read them properly rather than settle for
     /// whatever a hook happened to quote. This is not a second local collector —
     /// it is the only thing we will ever know about a remote tree.
     public var recentSnippets: [ClaudeContentSnippet]

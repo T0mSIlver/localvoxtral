@@ -6,17 +6,21 @@ import XCTest
 
 /// A collector that records every call and touches nothing.
 ///
-/// The point is the counter. `ClaudeLocalRepoCollecting` takes a
+/// The point is the counter. `ClaudeRepoCollecting` takes a
 /// `LocalWorkspacePath`, whose initializer is internal to `ClaudeContextWire`
 /// and constructed in exactly one place — so a remote workspace physically
 /// cannot be handed to one. This spy is how we prove the consequence rather than
 /// only the mechanism.
-private final class SpyRepoCollector: ClaudeLocalRepoCollecting {
+private final class SpyRepoCollector: ClaudeRepoCollecting, @unchecked Sendable {
     let calls = Mutex<[String]>([])
 
-    func collectRepositoryContext(for workspace: LocalWorkspacePath) -> [String] {
+    func collect(
+        workspace: LocalWorkspacePath,
+        recentFiles: [ClaudeRecentFile],
+        transcript: String
+    ) async -> ClaudeRepoSnapshot? {
         calls.withLock { $0.append(workspace.path) }
-        return []
+        return nil
     }
 
     var callCount: Int { calls.withLock { $0.count } }
@@ -132,7 +136,7 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
     }
 
     /// The end-to-end statement of the whole feature's safety property.
-    func testARemoteRecordCausesZeroLocalFilesystemCalls() throws {
+    func testARemoteRecordCausesZeroLocalFilesystemCalls() async throws {
         let collector = SpyRepoCollector()
         let registry = makeRegistry()
 
@@ -150,7 +154,9 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
             ))
             // This is the only door to the collector, and it is shut.
             if let workspace = snapshot.localWorkspacePath {
-                _ = collector.collectRepositoryContext(for: workspace)
+                _ = await collector.collect(
+                    workspace: workspace, recentFiles: [], transcript: ""
+                )
             }
         }
 
@@ -161,14 +167,14 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
         )
     }
 
-    func testALocalRecordDoesReachTheCollector() throws {
+    func testALocalRecordDoesReachTheCollector() async throws {
         // The negative test above is only meaningful if the positive one works —
         // otherwise it would pass with the collector wired to nothing.
         let collector = SpyRepoCollector()
         let registry = makeRegistry()
         let snapshot = try XCTUnwrap(registry.ingest(record(sessionID: "s-local"), origin: local))
         let workspace = try XCTUnwrap(snapshot.localWorkspacePath)
-        _ = collector.collectRepositoryContext(for: workspace)
+        _ = await collector.collect(workspace: workspace, recentFiles: [], transcript: "")
         XCTAssertEqual(collector.calls.withLock { $0 }, ["/home/dev/work/service"])
     }
 
