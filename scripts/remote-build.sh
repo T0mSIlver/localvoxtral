@@ -20,7 +20,7 @@ set -euo pipefail
 #                  client, and assert accuracy + delta + parent-pid contracts
 #     speechd-bench run the packaged speech helper's streaming benchmark;
 #                  optional args = seconds (default 60) and cadence ms
-#                  (default 480); requires a prior `package`
+#                  (default 100 = the production step cadence); requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
@@ -289,7 +289,7 @@ case "$CMD" in
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
-    SPEECHD_BENCH_CADENCE="${2:-480}"
+    SPEECHD_BENCH_CADENCE="${2:-100}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1

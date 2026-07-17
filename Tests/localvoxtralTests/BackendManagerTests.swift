@@ -74,9 +74,10 @@ final class BackendManagerTests: XCTestCase {
             configuration.arguments.firstIndex(of: "--model-revision")
         )
         XCTAssertEqual(configuration.arguments[revisionIndex + 1], option.revision)
-        // Default provider is Auto: the cache-limit flag is omitted so the
-        // helper's built-in default applies.
+        // Default providers are Auto: the cache-limit and step-cadence flags
+        // are omitted so the helper's built-in defaults apply.
         XCTAssertFalse(configuration.arguments.contains("--cache-limit-mb"))
+        XCTAssertFalse(configuration.arguments.contains("--step-ms"))
     }
 
     func testSpeechdCacheLimitAutoOmitsFlagAndPresetsAppendMegabytes() async throws {
@@ -103,15 +104,100 @@ final class BackendManagerTests: XCTestCase {
         }
     }
 
-    /// Starts speechd with the given cache-limit provider and returns the
-    /// supervisor configuration it was launched with.
+    func testSpeechdStepCadenceAutoOmitsFlagAndPresetsAppendMilliseconds() async throws {
+        let option = SpeechModelCatalog.defaultOption
+        let baseArguments = [
+            "--model", option.repoID,
+            "--model-revision", option.revision,
+            "--port", "8471",
+            "--parent-pid", "\(Darwin.getpid())",
+        ]
+
+        // Auto: identical to the base argument list, no step-cadence flag.
+        let autoConfiguration = try await speechdConfiguration(stepCadenceMs: nil)
+        XCTAssertEqual(autoConfiguration.arguments, baseArguments)
+
+        // Each preset appends exactly `--step-ms <value>` and leaves the
+        // model / revision / port / parent-pid arguments untouched.
+        for milliseconds in [100, 240, 480] {
+            let configuration = try await speechdConfiguration(stepCadenceMs: milliseconds)
+            XCTAssertEqual(
+                configuration.arguments,
+                baseArguments + ["--step-ms", "\(milliseconds)"]
+            )
+        }
+    }
+
+    /// Regression: launch arguments are captured at supervisor creation, so a
+    /// stop must DROP the supervisor — a kept one would relaunch with stale
+    /// settings (field-hit 2026-07-17: changing the memory limit and toggling
+    /// Managed → External → Managed silently kept the old argv).
+    func testStopDictationDropsSupervisorSoNextEnsureRebuildsArguments() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let stepCadenceMs = ProvidedValueBox()
+        let manager = makeManager(
+            speechdStepCadenceProvider: { stepCadenceMs.value },
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: true, polishing: false)
+        await manager.stopDictation()
+        stepCadenceMs.value = 100
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        let configurations = supervisorFactory.createdConfigurations
+            .filter { $0.name == BackendCatalog.speechd.displayName }
+        XCTAssertEqual(
+            configurations.count, 2,
+            "stopDictation must drop the supervisor so the next ensure rebuilds it"
+        )
+        XCTAssertFalse(try XCTUnwrap(configurations.first).arguments.contains("--step-ms"))
+        XCTAssertEqual(
+            Array(try XCTUnwrap(configurations.last).arguments.suffix(2)),
+            ["--step-ms", "100"]
+        )
+    }
+
+    /// Same contract for the full-stop path used when the app switches the
+    /// dictation backend mode away from Managed.
+    func testStopAllDropsSupervisorsSoNextEnsureRebuildsArguments() async throws {
+        let supervisorFactory = FakeSupervisorFactory()
+        supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
+        let cacheLimitMB = ProvidedValueBox()
+        let manager = makeManager(
+            speechdCacheLimitProvider: { cacheLimitMB.value },
+            supervisorFactory: supervisorFactory
+        )
+
+        try await manager.ensureReady(dictation: true, polishing: false)
+        await manager.stopAll()
+        cacheLimitMB.value = 2048
+        try await manager.ensureReady(dictation: true, polishing: false)
+
+        let configurations = supervisorFactory.createdConfigurations
+            .filter { $0.name == BackendCatalog.speechd.displayName }
+        XCTAssertEqual(
+            configurations.count, 2,
+            "stopAll must drop the supervisors so the next ensure rebuilds them"
+        )
+        XCTAssertEqual(
+            Array(try XCTUnwrap(configurations.last).arguments.suffix(2)),
+            ["--cache-limit-mb", "2048"]
+        )
+    }
+
+    /// Starts speechd with the given cache-limit / step-cadence providers and
+    /// returns the supervisor configuration it was launched with.
     private func speechdConfiguration(
-        cacheLimitMB: Int?
+        cacheLimitMB: Int? = nil,
+        stepCadenceMs: Int? = nil
     ) async throws -> BackendProcessConfiguration {
         let supervisorFactory = FakeSupervisorFactory()
         supervisorFactory.statesByName[BackendCatalog.speechd.displayName] = [.running]
         let manager = makeManager(
             speechdCacheLimitProvider: { cacheLimitMB },
+            speechdStepCadenceProvider: { stepCadenceMs },
             supervisorFactory: supervisorFactory
         )
 
@@ -707,6 +793,7 @@ final class BackendManagerTests: XCTestCase {
             SettingsStore.defaultLLMPolishingModel
         },
         speechdCacheLimitProvider: @escaping BackendManager.SpeechdCacheLimitProvider = { nil },
+        speechdStepCadenceProvider: @escaping BackendManager.SpeechdStepCadenceProvider = { nil },
         supervisorFactory: FakeSupervisorFactory
     ) -> BackendManager {
         BackendManager(
@@ -715,11 +802,19 @@ final class BackendManagerTests: XCTestCase {
             legacyPortDefense: legacyPortDefense,
             polishingModelProvider: polishingModelProvider,
             speechdCacheLimitProvider: speechdCacheLimitProvider,
+            speechdStepCadenceProvider: speechdStepCadenceProvider,
             supervisorFactory: { configuration in
                 supervisorFactory.makeSupervisor(configuration: configuration)
             }
         )
     }
+}
+
+/// Mutable value for settings-provider closures in tests. The providers are
+/// `@MainActor` and the tests mutate on the main actor too, but a captured
+/// `var` still trips the sendable-capture warning — box it instead.
+private final class ProvidedValueBox: @unchecked Sendable {
+    var value: Int?
 }
 
 private struct FixedLegacyPortDefense: LegacyVoxmlxPortDefending {

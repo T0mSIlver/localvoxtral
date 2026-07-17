@@ -536,7 +536,8 @@ final class DictationViewModel {
             backendManager
             ?? BackendManager(
                 polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
-                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes }
+                speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
+                speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
         if let overlayBufferCoordinator {
@@ -1047,6 +1048,39 @@ final class DictationViewModel {
                 guard !Task.isCancelled else { return }
                 await backendManager.stopPolishing()
             }
+        }
+    }
+
+    /// Managed speechd's launch arguments carry this setting; a running engine
+    /// keeps its argv, so apply a change by restarting it (same eager UX as
+    /// `applyLLMPolishingModelChange`: stop, then warm back up with progress
+    /// in the status row). Outside Managed local mode only the stored value
+    /// changes — the next managed start reads current settings.
+    func applySpeechdCacheLimitChange(_ limit: SpeechdCacheLimit) {
+        guard settings.speechdCacheLimit != limit else { return }
+        settings.speechdCacheLimit = limit
+        restartManagedDictationEngineForSettingChange(reason: "memory limit changed")
+    }
+
+    /// See `applySpeechdCacheLimitChange` — same restart contract.
+    func applySpeechdStepCadenceChange(_ cadence: SpeechdStepCadence) {
+        guard settings.speechdStepCadence != cadence else { return }
+        settings.speechdStepCadence = cadence
+        restartManagedDictationEngineForSettingChange(reason: "step interval changed")
+    }
+
+    private func restartManagedDictationEngineForSettingChange(reason: String) {
+        guard settings.dictationBackendMode == .managedLocal else { return }
+        Log.backends.info(
+            "managed dictation setting changed (\(reason, privacy: .public)); restarting dictation engine"
+        )
+        dictationWarmupTask?.cancel()
+        dictationShutdownTask?.cancel()
+        dictationShutdownTask = Task { @MainActor [weak self, backendManager] in
+            guard !Task.isCancelled else { return }
+            await backendManager.stopDictation()
+            guard !Task.isCancelled, let self else { return }
+            self.startManagedBackendWarmup(dictation: true, polishing: false)
         }
     }
 

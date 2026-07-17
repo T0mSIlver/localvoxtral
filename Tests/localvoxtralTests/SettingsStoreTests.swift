@@ -74,6 +74,31 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(makeStore().speechdCacheLimit, .auto)
     }
 
+    // MARK: - speechd step cadence
+
+    func testSpeechdStepCadence_defaultsToAuto() {
+        XCTAssertEqual(makeStore().speechdStepCadence, .auto)
+        // Auto omits the flag: the helper's built-in default applies.
+        XCTAssertNil(SpeechdStepCadence.auto.milliseconds)
+    }
+
+    func testSpeechdStepCadence_persistsAcrossStores() {
+        let store = makeStore()
+        store.speechdStepCadence = .ms100
+        XCTAssertEqual(makeStore().speechdStepCadence, .ms100)
+    }
+
+    func testSpeechdStepCadence_unknownStoredValueFallsBackToAuto() {
+        defaults.set("garbage", forKey: "settings.speechd_step_cadence")
+        XCTAssertEqual(makeStore().speechdStepCadence, .auto)
+    }
+
+    func testSpeechdStepCadence_millisecondsForEachPreset() {
+        XCTAssertEqual(SpeechdStepCadence.ms100.milliseconds, 100)
+        XCTAssertEqual(SpeechdStepCadence.ms240.milliseconds, 240)
+        XCTAssertEqual(SpeechdStepCadence.ms480.milliseconds, 480)
+    }
+
     func testSpeechdCacheLimit_megabytesForEachPreset() {
         XCTAssertEqual(SpeechdCacheLimit.gb2.megabytes, 2048)
         XCTAssertEqual(SpeechdCacheLimit.gb4.megabytes, 4096)

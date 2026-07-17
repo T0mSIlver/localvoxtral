@@ -23,7 +23,7 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
     func testStepCadenceDefaultsToModelNativeCadence() throws {
         let options = try SpeechdOptionParser.parse(["--model", "example/model"])
 
-        XCTAssertEqual(options.stepMilliseconds, 480)
+        XCTAssertEqual(options.stepMilliseconds, 100)
     }
 
     func testStepCadenceAllowsSmallPositiveValues() throws {
@@ -68,7 +68,7 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
             "--model", "example/model", "--bench", "--seconds", "5",
         ])
 
-        XCTAssertEqual(options.benchmark?.cadenceMilliseconds, 480)
+        XCTAssertEqual(options.benchmark?.cadenceMilliseconds, 100)
     }
 
     func testBenchmarkRequiresPositiveSeconds() {

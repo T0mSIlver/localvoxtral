@@ -82,6 +82,9 @@ final class BackendManager: ManagedBackendManaging {
     /// Megabytes for the speechd `--cache-limit-mb` flag, or nil to omit it and
     /// let the helper apply its built-in default.
     typealias SpeechdCacheLimitProvider = @MainActor () -> Int?
+    /// Milliseconds for the speechd `--step-ms` flag, or nil to omit it and
+    /// let the helper apply its built-in default.
+    typealias SpeechdStepCadenceProvider = @MainActor () -> Int?
 
     private(set) var speechdStatus: ManagedBackendStatus
     private(set) var polishdStatus: ManagedBackendStatus
@@ -91,6 +94,7 @@ final class BackendManager: ManagedBackendManaging {
     @ObservationIgnored private let supervisorFactory: SupervisorFactory
     @ObservationIgnored private let polishingModelProvider: PolishingModelProvider
     @ObservationIgnored private let speechdCacheLimitProvider: SpeechdCacheLimitProvider
+    @ObservationIgnored private let speechdStepCadenceProvider: SpeechdStepCadenceProvider
     @ObservationIgnored private var speechdSupervisor: (any ManagedBackendSupervising)?
     @ObservationIgnored private var polishdSupervisor: (any ManagedBackendSupervising)?
     // Per-backend single-flight slots. A global shared slot (the previous
@@ -115,6 +119,7 @@ final class BackendManager: ManagedBackendManaging {
             SettingsStore.defaultLLMPolishingModel
         },
         speechdCacheLimitProvider: @escaping SpeechdCacheLimitProvider = { nil },
+        speechdStepCadenceProvider: @escaping SpeechdStepCadenceProvider = { nil },
         supervisorFactory: @escaping SupervisorFactory = { configuration in
             BackendProcessSupervisor(configuration: configuration)
         }
@@ -123,6 +128,7 @@ final class BackendManager: ManagedBackendManaging {
         self.legacyPortDefense = legacyPortDefense ?? LegacyVoxmlxPortDefense(layout: layout)
         self.polishingModelProvider = polishingModelProvider
         self.speechdCacheLimitProvider = speechdCacheLimitProvider
+        self.speechdStepCadenceProvider = speechdStepCadenceProvider
         self.supervisorFactory = supervisorFactory
         self.speechdStatus = .stopped
         self.polishdStatus = .stopped
@@ -209,15 +215,22 @@ final class BackendManager: ManagedBackendManaging {
     func stopAll() async {
         let cancelledDictationEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.speechd)
         let cancelledPolishingEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.polishd)
+        let hadDictationSupervisor = speechdSupervisor != nil
         let hadPolishingSupervisor = polishdSupervisor != nil
         await speechdSupervisor?.stop()
         await polishdSupervisor?.stop()
+        // Drop the supervisors, not just stop them: launch arguments are
+        // captured at supervisor creation, so a kept supervisor would relaunch
+        // with stale settings (cache limit / step cadence) — field-hit
+        // 2026-07-17: changing the memory limit and toggling Managed →
+        // External → Managed silently kept the old argv.
+        speechdSupervisor = nil
         polishdSupervisor = nil
         speechdStateMirrorTask?.cancel()
         speechdStateMirrorTask = nil
         polishdStateMirrorTask?.cancel()
         polishdStateMirrorTask = nil
-        if cancelledDictationEnsure || speechdSupervisor != nil {
+        if cancelledDictationEnsure || hadDictationSupervisor {
             setStatus(.stopped, for: BackendCatalog.speechd)
         }
         if cancelledPolishingEnsure || hadPolishingSupervisor {
@@ -227,10 +240,14 @@ final class BackendManager: ManagedBackendManaging {
 
     func stopDictation() async {
         let cancelledEnsure = await cancelEnsureTaskAndAwaitCompletion(for: BackendCatalog.speechd)
+        let hadSupervisor = speechdSupervisor != nil
         await speechdSupervisor?.stop()
+        // See stopAll(): drop the supervisor so the next ensure rebuilds the
+        // launch arguments from the current settings providers.
+        speechdSupervisor = nil
         speechdStateMirrorTask?.cancel()
         speechdStateMirrorTask = nil
-        if cancelledEnsure || speechdSupervisor != nil {
+        if cancelledEnsure || hadSupervisor {
             setStatus(.stopped, for: BackendCatalog.speechd)
         }
     }
@@ -455,6 +472,10 @@ final class BackendManager: ManagedBackendManaging {
             // Auto (nil) omits the flag so the helper's built-in default applies.
             if let cacheLimitMB = speechdCacheLimitProvider() {
                 arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
+            }
+            // Same Auto contract as the cache limit.
+            if let stepMilliseconds = speechdStepCadenceProvider() {
+                arguments.append(contentsOf: ["--step-ms", "\(stepMilliseconds)"])
             }
             return arguments
         case BackendCatalog.polishd.id:

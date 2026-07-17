@@ -564,6 +564,72 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: false, polishing: true)])
     }
 
+    func testSpeechdCacheLimitChangeRestartsDictationEngineEagerly() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applySpeechdCacheLimitChange(.gb2)
+        await viewModel.dictationShutdownTask?.value
+        await viewModel.dictationWarmupTask?.value
+
+        // Owner rule (2026-07-17): changing the memory limit or step interval
+        // must not require a Managed -> External -> Managed round trip.
+        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb2)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 1)
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
+    }
+
+    func testSpeechdStepCadenceChangeRestartsDictationEngineEagerly() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applySpeechdStepCadenceChange(.ms100)
+        await viewModel.dictationShutdownTask?.value
+        await viewModel.dictationWarmupTask?.value
+
+        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms100)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 1)
+        XCTAssertEqual(backendManager.ensureCalls, [.init(dictation: true, polishing: false)])
+    }
+
+    func testSpeechdSettingChangeOutsideManagedModePersistsWithoutRestart() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applySpeechdCacheLimitChange(.gb2)
+        viewModel.applySpeechdStepCadenceChange(.ms100)
+
+        XCTAssertNil(viewModel.dictationShutdownTask)
+        XCTAssertEqual(viewModel.settings.speechdCacheLimit, .gb2)
+        XCTAssertEqual(viewModel.settings.speechdStepCadence, .ms100)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 0)
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
+    func testSpeechdSettingChangeToSameValueIsNoOp() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.onboardingCompleted = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.applySpeechdCacheLimitChange(viewModel.settings.speechdCacheLimit)
+        viewModel.applySpeechdStepCadenceChange(viewModel.settings.speechdStepCadence)
+
+        XCTAssertNil(viewModel.dictationShutdownTask)
+        XCTAssertEqual(backendManager.stopDictationCallCount, 0)
+        XCTAssertTrue(backendManager.ensureCalls.isEmpty)
+    }
+
     func testDictationModeSwitchToManagedStartsDictationWarmup() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)

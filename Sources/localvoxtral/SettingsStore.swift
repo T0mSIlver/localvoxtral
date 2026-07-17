@@ -134,6 +134,39 @@ enum SpeechdCacheLimit: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Streaming step cadence for the managed dictation helper: how much audio is
+/// batched before each incremental transcription step. Lower values show words
+/// sooner; higher values leave more compute headroom. `Auto` omits the
+/// `--step-ms` flag so the helper's built-in default applies.
+enum SpeechdStepCadence: String, CaseIterable, Identifiable, Sendable {
+    case auto
+    case ms100 = "100ms"
+    case ms240 = "240ms"
+    case ms480 = "480ms"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto"
+        case .ms100: return "100 ms"
+        case .ms240: return "240 ms"
+        case .ms480: return "480 ms"
+        }
+    }
+
+    /// Milliseconds to pass via `--step-ms`, or nil for `Auto` (the flag is
+    /// omitted and the helper's built-in default applies).
+    var milliseconds: Int? {
+        switch self {
+        case .auto: return nil
+        case .ms100: return 100
+        case .ms240: return 240
+        case .ms480: return 480
+        }
+    }
+}
+
 enum DictationShortcutValidation {
     static let allowedModifierFlagsMask = UInt32(cmdKey | optionKey | shiftKey | controlKey)
 
@@ -196,6 +229,7 @@ final class SettingsStore {
         static let realtimeAPIModelName = "settings.realtime_api_model_name"
         static let dictationBackendMode = "settings.dictation_backend_mode"
         static let speechdCacheLimit = "settings.speechd_cache_limit"
+        static let speechdStepCadence = "settings.speechd_step_cadence"
         static let polishingBackendMode = "settings.polishing_backend_mode"
         // Legacy global backend mode. Read only for one-time migration.
         static let backendMode = "settings.backend_mode"
@@ -262,10 +296,18 @@ final class SettingsStore {
         didSet { defaults.set(polishingBackendMode.rawValue, forKey: Keys.polishingBackendMode) }
     }
 
-    /// Metal buffer-pool cache limit for the managed dictation helper. Applies
-    /// the next time the managed dictation backend (re)starts.
+    /// Metal buffer-pool cache limit for the managed dictation helper. Changing
+    /// it from Settings restarts the engine so the new argv applies immediately
+    /// (`DictationViewModel.applySpeechdCacheLimitChange`); direct writes apply
+    /// on the next (re)start.
     var speechdCacheLimit: SpeechdCacheLimit {
         didSet { defaults.set(speechdCacheLimit.rawValue, forKey: Keys.speechdCacheLimit) }
+    }
+
+    /// Streaming step cadence for the managed dictation helper. Same restart
+    /// contract as `speechdCacheLimit`.
+    var speechdStepCadence: SpeechdStepCadence {
+        didSet { defaults.set(speechdStepCadence.rawValue, forKey: Keys.speechdStepCadence) }
     }
 
     /// True once the user has completed (or skipped) the first-launch onboarding
@@ -508,6 +550,14 @@ final class SettingsStore {
             speechdCacheLimit = parsedCacheLimit
         } else {
             speechdCacheLimit = .auto
+        }
+
+        if let storedStepCadence = defaults.string(forKey: Keys.speechdStepCadence),
+            let parsedStepCadence = SpeechdStepCadence(rawValue: storedStepCadence)
+        {
+            speechdStepCadence = parsedStepCadence
+        } else {
+            speechdStepCadence = .auto
         }
 
         let configuredProvider = Self.loadString(
