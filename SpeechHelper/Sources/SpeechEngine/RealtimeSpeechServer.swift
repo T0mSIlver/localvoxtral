@@ -198,6 +198,14 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
             rawSend(connection, WebSocketFrameCodec.pong(frame.payload))
         case .close:
             rawSend(connection, WebSocketFrameCodec.close(), thenClose: true)
+            // A client that disconnects without a final commit (mid-utterance
+            // cancel) would otherwise release its session's buffers into the
+            // pool with no clear behind them. Serial queue: this lands after
+            // any already-queued steps for this connection.
+            inferenceQueue.async {
+                ctx.session = nil
+                Memory.clearCache()
+            }
         case .pong, .continuation:
             break
         case .text, .binary:
@@ -248,10 +256,20 @@ public final class RealtimeSpeechServer: @unchecked Sendable {
                 ctx.session = nil  // ready for the next utterance
                 ctx.deltas = TranscriptDeltaEmitter()
                 ctx.stepBatcher.clear()
+                // The engine's finish() clears the buffer pool, but at that point the
+                // session's KV caches and encoder state are still live — dropping the
+                // session afterwards releases them INTO the pool, which then sits at
+                // `Memory.cacheLimit` for as long as the helper idles (field-hit
+                // 2026-07-17: ~5 GB resident between dictations at a 2 GB cap). Clear
+                // AFTER the drop so idle footprint returns to the weight floor; the
+                // next utterance re-warms the pool while it streams.
+                Memory.clearCache()
             case .clear:
                 ctx.session = nil
                 ctx.deltas = TranscriptDeltaEmitter()
                 ctx.stepBatcher.clear()
+                // Same idle-footprint contract as the commit path above.
+                Memory.clearCache()
             case .ignored:
                 break
             }
