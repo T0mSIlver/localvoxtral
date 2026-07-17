@@ -390,11 +390,20 @@ Key subsystems:
     filesystem" is a compile error — do not add one. Its only derivations
     (`ancestor`, `descendant`) preserve that, and `ClaudeRepoCollecting` takes
     it rather than a `String` for exactly this reason.
-  - The join is resolved ONCE per dictation, at start, from the marker in the
-    PID-pinned window title (`ClaudeSessionJoinResolver`), and every consumer —
-    raw screen attachment, the session block, repo collection — shares that one
-    answer. Three resolutions could each answer honestly about a different
-    moment; that is how one session's screen ends up next to another's repo.
+  - The join is resolved ONCE per dictation, at start
+    (`ClaudeSessionJoinResolver`), and every consumer — raw screen attachment,
+    the session block, repo collection — shares that one answer. Three
+    resolutions could each answer honestly about a different moment; that is
+    how one session's screen ends up next to another's repo. Resolution is
+    TTY-first: the focused Ghostty pane's controlling TTY (AppleScript,
+    Ghostty ≥ 1.4) matched exactly against the hook-reported session TTY,
+    LOCAL sessions only — the title is a fought-over channel (Claude Code's
+    own conversation titles clobber the marker mid-turn), the process table is
+    not. Any TTY non-answer falls through to the marker in the PID-pinned
+    window title, which remains the ONLY join for SSH-remote sessions: a
+    remote TTY names another machine's device, and `resolve(tty:)` refuses
+    remote candidates so an SSH host can never claim a local pane by echoing
+    its TTY.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

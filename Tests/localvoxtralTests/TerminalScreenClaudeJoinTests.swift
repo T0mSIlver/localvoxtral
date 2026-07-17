@@ -48,7 +48,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
 
     private func record(
         session: String = "s1",
-        claudePID: Int32? = 9001
+        claudePID: Int32? = 9001,
+        tty: String? = nil
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: .sessionStart,
@@ -57,7 +58,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             rawCwd: "/repo",
             prompt: nil,
             files: [],
-            process: claudePID.map { ClaudeHookProcessInfo(hookPID: 777, claudePID: $0) }
+            process: claudePID.map { ClaudeHookProcessInfo(hookPID: 777, claudePID: $0, tty: tty) }
         )
     }
 
@@ -81,13 +82,15 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
 
     private func resolver(
         registry: ClaudeSessionRegistry,
-        title: String?
+        title: String?,
+        focusedTTY: String? = nil
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
             markerInWindowTitle: { _ in
                 title.flatMap { ClaudeMarkerTitleParser.marker(inTitle: $0) }
-            }
+            },
+            focusedTerminalTTY: { _ in focusedTTY }
         )
     }
 
@@ -148,6 +151,138 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             join.localWorkspacePath,
             "a remote session must never hand a filesystem path to the collector"
         )
+    }
+
+    // MARK: - TTY join
+
+    // The title-war case this mechanism exists for: Claude Code's own
+    // conversation title has clobbered the marker, so the title read answers
+    // nothing — but the focused pane's device still names the session.
+    func testTTYJoinsWhenTheTitleCarriesNoMarker() throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(record(tty: "/dev/ttys003"), origin: local)
+        )
+        let joinResolver = resolver(
+            registry: registry, title: "Fixing the flaky supervisor test", focusedTTY: "/dev/ttys003"
+        )
+        let join = try XCTUnwrap(joinResolver.resolve(target: ghostty))
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertEqual(join.marker, ClaudeSessionMarker(value: "lvx-abcd"))
+        // The tty-joined session revalidates at stop through the same
+        // marker-keyed liveness path as a title join.
+        XCTAssertTrue(joinResolver.isStillLive(join))
+    }
+
+    func testTTYJoinDoesNotReadTheTitleAtAll() throws {
+        // Precedence is observable: when the device answers, the title is not
+        // even consulted — a stale marker in it cannot compete.
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        var titleReads = 0
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in
+                titleReads += 1
+                return nil
+            },
+            focusedTerminalTTY: { _ in "/dev/ttys003" }
+        )
+        XCTAssertNotNil(joinResolver.resolve(target: ghostty))
+        XCTAssertEqual(titleReads, 0)
+    }
+
+    func testTTYJoinWinsOverAStaleMarkerNamingAnotherSession() throws {
+        // Pane recycling: claude #1 ended, its marker lingers in the title;
+        // claude #2 runs in the same pane on the same device. The process
+        // table is current, the title is history — the device must win.
+        let registry = makeRegistry(markers: ["lvx-aaaa", "lvx-bbbb"])
+        XCTAssertNotNil(
+            registry.ingest(record(session: "old", tty: "/dev/ttys009"), origin: local)
+        )
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "new", claudePID: 9002, tty: "/dev/ttys003"), origin: local
+            )
+        )
+        let join = try XCTUnwrap(
+            resolver(registry: registry, title: "lvx-aaaa", focusedTTY: "/dev/ttys003")
+                .resolve(target: ghostty)
+        )
+        XCTAssertEqual(join.snapshot.sessionID, "new")
+    }
+
+    func testUnmatchedTTYFallsBackToTheTitleMarker() throws {
+        // Old Ghostty answers no tty; a device with no session answers
+        // `.unknown`. Either way the marker path must still join — the tty
+        // mechanism only ever adds joins, never removes one.
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        let join = try XCTUnwrap(
+            resolver(registry: registry, title: "lvx-abcd", focusedTTY: "/dev/ttys777")
+                .resolve(target: ghostty)
+        )
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+    }
+
+    func testAmbiguousTTYFallsBackToTheTitleMarker() throws {
+        // Two local sessions on one device abstain at the registry; the
+        // marker — which names exactly one of them — may still disambiguate.
+        let registry = makeRegistry(markers: ["lvx-aaaa", "lvx-bbbb"])
+        XCTAssertNotNil(
+            registry.ingest(record(session: "s1", tty: "/dev/ttys003"), origin: local)
+        )
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "s2", claudePID: 9002, tty: "/dev/ttys003"), origin: local
+            )
+        )
+        let join = try XCTUnwrap(
+            resolver(registry: registry, title: "lvx-bbbb", focusedTTY: "/dev/ttys003")
+                .resolve(target: ghostty)
+        )
+        XCTAssertEqual(join.snapshot.sessionID, "s2")
+    }
+
+    func testRemoteSessionNeverJoinsViaTTY() {
+        // End-to-end shape of the registry's remote refusal: an SSH session
+        // publishing the local pane's device must not claim the pane. With no
+        // marker in the title either, there is no join at all.
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(
+                record(tty: "/dev/ttys003"), origin: .remote(channel: "ssh")
+            )
+        )
+        XCTAssertNil(
+            resolver(registry: registry, title: nil, focusedTTY: "/dev/ttys003")
+                .resolve(target: ghostty)
+        )
+    }
+
+    // MARK: - TTY reply validation
+
+    func testValidatedTTYAcceptsOnlyPlausibleDevicePaths() {
+        XCTAssertEqual(
+            GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys000"), "/dev/ttys000"
+        )
+        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY(nil))
+        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY(""))
+        XCTAssertNil(
+            GhosttyFocusedTerminalTTYReader.validatedTTY("ttys000"),
+            "a bare name is not a device path"
+        )
+        XCTAssertNil(
+            GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys0 00"),
+            "whitespace means this is a title, not a device"
+        )
+        XCTAssertNil(
+            GhosttyFocusedTerminalTTYReader.validatedTTY(
+                "/dev/tty" + String(repeating: "s", count: 64)
+            ),
+            "a reply longer than any real pty path is not a device"
+        )
+        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys00é"))
     }
 
     // MARK: - Abstentions
