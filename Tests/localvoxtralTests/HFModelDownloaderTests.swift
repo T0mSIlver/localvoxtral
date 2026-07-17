@@ -121,6 +121,51 @@ final class HFModelDownloaderTests: XCTestCase {
         )
     }
 
+    /// When the HEAD probe returns no Content-Length (CDN behavior), the
+    /// total — and therefore the determinate progress bar — must still become
+    /// available from the transfer's own expected-size callback.
+    func testTotalIsLearnedFromTransferWhenHEADProbeHasNoLength() async throws {
+        let cache = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: cache) }
+        let pin = "0123456789abcdef0123456789abcdef01234567"
+        let transport = FakeHFModelDownloadTransport(
+            repositoryJSON: repositoryJSON(sha: pin, files: ["model.safetensors"]),
+            payloads: ["model.safetensors": Data("weights-payload".utf8)],
+            headlessFiles: ["model.safetensors"]
+        )
+        let downloader = HFModelDownloader(
+            cacheRoot: cache,
+            transport: transport,
+            progressByteGranularity: 1
+        )
+        var progress: [ModelDownloadProgress] = []
+
+        try await downloader.prepare(
+            ModelPreparationRequest(
+                backendID: "speechd",
+                displayName: "Dictation engine",
+                repoID: "org/model",
+                revision: pin,
+                includePatterns: ["model*.safetensors"]
+            )
+        ) { progress.append($0) }
+        for _ in 0..<10 { await Task.yield() }
+
+        // The pre-download report cannot know a total (HEAD gave none)...
+        XCTAssertEqual(progress.first, ModelDownloadProgress(downloadedBytes: 0, totalBytes: nil))
+        // ...but every report from the transfer onward carries the learned
+        // total, and the final report is exact.
+        XCTAssertEqual(progress.last, ModelDownloadProgress(downloadedBytes: 15, totalBytes: 15))
+        XCTAssertTrue(
+            progress.dropFirst().allSatisfy { $0.totalBytes == 15 },
+            "expected all post-start reports to carry the learned total, got \(progress)"
+        )
+        XCTAssertTrue(
+            progress.contains { $0.downloadedBytes > 0 && $0.downloadedBytes < 15 && $0.fraction != nil },
+            "expected an in-flight report with a computable fraction, got \(progress)"
+        )
+    }
+
     func testUnpinnedPreparationTracksMainAndWritesResolvedRef() async throws {
         let cache = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: cache) }
@@ -228,11 +273,16 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
 
     private let repositoryJSON: Data
     private let payloads: [String: Data]
+    /// Files whose HEAD probe returns no Content-Length (the CDN behavior
+    /// behind HF `resolve/` redirects); their size is only learned from the
+    /// transfer itself via `onBytes`.
+    private let headlessFiles: Set<String>
     private let state = Mutex(State())
 
-    init(repositoryJSON: Data, payloads: [String: Data]) {
+    init(repositoryJSON: Data, payloads: [String: Data], headlessFiles: Set<String> = []) {
         self.repositoryJSON = repositoryJSON
         self.payloads = payloads
+        self.headlessFiles = headlessFiles
     }
 
     var repositoryInfoURLs: [URL] { state.withLock { $0.repositoryInfoURLs } }
@@ -244,7 +294,9 @@ private final class FakeHFModelDownloadTransport: HFModelDownloadTransport, @unc
     }
 
     func contentLength(of url: URL) async throws -> Int64? {
-        Int64(payloads[url.lastPathComponent]?.count ?? 0)
+        let fileName = url.lastPathComponent
+        guard !headlessFiles.contains(fileName) else { return nil }
+        return Int64(payloads[fileName]?.count ?? 0)
     }
 
     func download(

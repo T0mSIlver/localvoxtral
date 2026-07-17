@@ -262,7 +262,20 @@ struct HFModelDownloader: ModelPreparing {
                     sizes[fileName] = size
                 }
             }
-            let total = sizes.count == missing.count ? sizes.values.reduce(0, +) : nil
+            // Dynamic total: the HEAD probe can come back without a length
+            // (HF `resolve/` redirects to a CDN), which would leave the UI
+            // bar-less for the whole fetch. Each file's expected size also
+            // arrives from the transfer itself the moment its download
+            // starts, so fold that in — the total (and the determinate
+            // progress bar) becomes available as soon as every missing file
+            // has a size from either source.
+            let missingCount = missing.count
+            let knownSizes = Mutex<[String: Int64]>(sizes)
+            let effectiveTotal: @Sendable () -> Int64? = {
+                knownSizes.withLock { known in
+                    known.count == missingCount ? known.values.reduce(0, +) : nil
+                }
+            }
             // Monotonic delivery gate, checked at delivery time on the main
             // actor: throttled in-flight reports hop over as unstructured
             // tasks, so without the gate a stale lower value could land after
@@ -276,7 +289,10 @@ struct HFModelDownloader: ModelPreparing {
                 }
                 if shouldDeliver { progress(snapshot) }
             }
-            await Self.report(ModelDownloadProgress(downloadedBytes: 0, totalBytes: total), deliver)
+            await Self.report(
+                ModelDownloadProgress(downloadedBytes: 0, totalBytes: effectiveTotal()),
+                deliver
+            )
 
             var downloaded: Int64 = 0
             for fileName in missing {
@@ -289,7 +305,12 @@ struct HFModelDownloader: ModelPreparing {
                 let completedBase = downloaded
                 let granularity = progressByteGranularity
                 let lastReported = Mutex<Int64>(0)
-                let result = try await transport.download(from: source) { received, _ in
+                let result = try await transport.download(from: source) { received, expected in
+                    if let expected {
+                        knownSizes.withLock { known in
+                            if known[fileName] == nil { known[fileName] = expected }
+                        }
+                    }
                     let shouldReport = lastReported.withLock { last in
                         guard received - last >= granularity else { return false }
                         last = received
@@ -298,7 +319,7 @@ struct HFModelDownloader: ModelPreparing {
                     guard shouldReport else { return }
                     let snapshot = ModelDownloadProgress(
                         downloadedBytes: completedBase + received,
-                        totalBytes: total
+                        totalBytes: effectiveTotal()
                     )
                     Task { @MainActor in deliver(snapshot) }
                 }
@@ -317,9 +338,14 @@ struct HFModelDownloader: ModelPreparing {
                     try fileManager.removeItem(at: destination)
                 }
                 try fileManager.moveItem(at: result.temporaryURL, to: destination)
-                downloaded += sizes[fileName] ?? fileSize(at: destination)
+                // The on-disk size is authoritative once the file landed; it
+                // also completes the dynamic total for files whose transfer
+                // reported no expected length.
+                let actualSize = sizes[fileName] ?? fileSize(at: destination)
+                knownSizes.withLock { $0[fileName] = actualSize }
+                downloaded += actualSize
                 await Self.report(
-                    ModelDownloadProgress(downloadedBytes: downloaded, totalBytes: total),
+                    ModelDownloadProgress(downloadedBytes: downloaded, totalBytes: effectiveTotal()),
                     deliver
                 )
             }
