@@ -288,6 +288,18 @@ final class DictationViewModel {
         hasInitializedMicrophone = true
         return MicrophoneCaptureService()
     }()
+
+    /// A failed/cancelled connection can end before audio capture ever starts.
+    /// Do not instantiate the lazy CoreAudio service merely to stop it: doing
+    /// so registers device listeners that an app-lifetime view model then owns.
+    func stopMicrophoneIfInitialized() {
+        guard hasInitializedMicrophone else { return }
+        microphone.stop()
+    }
+
+    #if DEBUG
+    var debugHasInitializedMicrophoneForTesting: Bool { hasInitializedMicrophone }
+    #endif
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
     @ObservationIgnored

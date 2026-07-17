@@ -684,6 +684,16 @@ extension DictationViewModel {
                 // template can't carry it.
                 let templateCarriesDictionarySlot =
                     promptTemplates.supportsReplacementDictionary
+                // A repo match also votes against every other grounding source.
+                // Even without a render slot, keep that vote when another source
+                // can pre-apply an exact spelling; otherwise a contested span can
+                // be edited unopposed. With no slot and no independent source,
+                // the repo result has no consumer and the expensive pipeline is
+                // skipped entirely.
+                let needsRepoGroundingForConflictSafety =
+                    capturedClipboardContext != nil
+                    || capturedScreenDecision.vocabularyGroundingText != nil
+                    || capturedClaudeJoin != nil
 
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -695,17 +705,9 @@ extension DictationViewModel {
                     // timeout / no repo / feature off it is a fast no-op and the
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
-                    // Fetched regardless of the dictionary slot. Repo grounding
-                    // is not only a prompt hint — it is a VOTE in the
-                    // cross-source merge, and its absence changes what the
-                    // clipboard is allowed to pre-apply. Gating the fetch on the
-                    // slot meant a template without `{{replacement_dictionary}}`
-                    // silently disabled conflict detection: the clipboard's
-                    // reading of a contested span would be pre-applied unopposed,
-                    // editing words the user did not say. Only RENDERING may
-                    // depend on the slot; safety may not.
                     var repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome.empty
-                    if let endpointURL = polishingConfig?.endpointURL,
+                    if (templateCarriesDictionarySlot || needsRepoGroundingForConflictSafety),
+                       let endpointURL = polishingConfig?.endpointURL,
                        let outcome = await self.repoVocabularyGroundingIfEnabled(
                            endpointURL: endpointURL,
                            transcript: workingText
@@ -1847,7 +1849,7 @@ extension DictationViewModel {
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
-        microphone.stop()
+        stopMicrophoneIfInitialized()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         textInsertion.endLiveReplacementSession()

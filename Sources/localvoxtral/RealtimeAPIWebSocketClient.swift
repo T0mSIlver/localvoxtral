@@ -25,6 +25,9 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
         var finalCommitCompletionGate: FinalCommitCompletionGate = .idle
         var pendingMessages: [String] = []
         var pendingModelName = ""
+        #if DEBUG
+        var skipsSocketCreationForTesting = false
+        #endif
     }
 
     private let state = Mutex(State())
@@ -46,6 +49,12 @@ final class RealtimeAPIWebSocketClient: BaseRealtimeWebSocketClient, @unchecked 
     func connect(configuration: RealtimeSessionConfiguration) throws {
         try validateWebSocketScheme(
             configuration.endpoint, errorDomain: "localvoxtral.realtime.websocket")
+
+        #if DEBUG
+        if state.withLock({ $0.skipsSocketCreationForTesting }) {
+            return
+        }
+        #endif
 
         var request = URLRequest(url: configuration.endpoint)
         request.timeoutInterval = 30
@@ -467,6 +476,12 @@ extension RealtimeAPIWebSocketClient {
         let pendingMessageCount: Int
         let hasUncommittedAudio: Bool
         let isGenerationInProgress: Bool
+    }
+
+    /// Keeps view-model unit tests on the complete session-start path without
+    /// creating a process-retained URLSession or touching a live backend.
+    func debugSkipSocketCreationForTesting() {
+        state.withLock { $0.skipsSocketCreationForTesting = true }
     }
 
     func debugPrimeConnectedStateForTesting(
