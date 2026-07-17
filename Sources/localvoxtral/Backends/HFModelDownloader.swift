@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 struct ModelDownloadProgress: Equatable, Sendable {
     var downloadedBytes: Int64
@@ -75,12 +76,25 @@ enum ModelDownloadError: LocalizedError, Sendable {
 struct HFModelRepositoryInfo: Equatable, Sendable {
     let sha: String
     let fileNames: [String]
+    /// Exact byte sizes from the repo API (`?blobs=true`), keyed by file name.
+    /// The authoritative source for the download total: available before the
+    /// first byte moves, unlike HEAD probes (which the CDN may refuse) or
+    /// transfer-reported sizes (which arrive only as each file starts).
+    let sizesByFileName: [String: Int64]
 }
 
 protocol HFModelDownloadTransport: Sendable {
     func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int)
     func contentLength(of url: URL) async throws -> Int64?
-    func download(from url: URL) async throws -> (temporaryURL: URL, statusCode: Int)
+    /// Download one file. `onBytes(received, expected)` reports cumulative
+    /// bytes received for THIS file as the transfer runs (expected is nil when
+    /// the server sends no length); required for live progress on multi-GB
+    /// checkpoints, where a completion-only API would leave the UI frozen on
+    /// "Checking model..." for the whole fetch (field-hit 2026-07-17).
+    func download(
+        from url: URL,
+        onBytes: @escaping @Sendable (Int64, Int64?) -> Void
+    ) async throws -> (temporaryURL: URL, statusCode: Int)
 }
 
 struct URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
@@ -99,15 +113,110 @@ struct URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
         return response.expectedContentLength > 0 ? response.expectedContentLength : nil
     }
 
-    func download(from url: URL) async throws -> (temporaryURL: URL, statusCode: Int) {
-        let (temporaryURL, response) = try await URLSession.shared.download(from: url)
-        return (temporaryURL, (response as? HTTPURLResponse)?.statusCode ?? 0)
+    func download(
+        from url: URL,
+        onBytes: @escaping @Sendable (Int64, Int64?) -> Void
+    ) async throws -> (temporaryURL: URL, statusCode: Int) {
+        let delegate = ProgressReportingDownloadDelegate(onBytes: onBytes)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                delegate.begin(session: session, url: url, continuation: continuation)
+            }
+        } onCancel: {
+            delegate.cancel()
+        }
+    }
+}
+
+/// Delegate for one download task: relays byte-level progress and hands the
+/// finished file back through a continuation. `didFinishDownloadingTo`'s file
+/// is deleted the moment that callback returns, so it is moved to a stable
+/// temporary path synchronously inside the callback.
+private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<(temporaryURL: URL, statusCode: Int), Error>?
+        var task: URLSessionDownloadTask?
+        var movedURL: URL?
+        var moveError: Error?
+    }
+
+    private let onBytes: @Sendable (Int64, Int64?) -> Void
+    private let state = Mutex(State())
+
+    init(onBytes: @escaping @Sendable (Int64, Int64?) -> Void) {
+        self.onBytes = onBytes
+    }
+
+    func begin(
+        session: URLSession,
+        url: URL,
+        continuation: CheckedContinuation<(temporaryURL: URL, statusCode: Int), Error>
+    ) {
+        let task = session.downloadTask(with: url)
+        state.withLock {
+            $0.continuation = continuation
+            $0.task = task
+        }
+        task.resume()
+    }
+
+    func cancel() {
+        state.withLock { $0.task }?.cancel()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        onBytes(totalBytesWritten, totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localvoxtral-hf-download-\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: location, to: destination)
+            state.withLock { $0.movedURL = destination }
+        } catch {
+            state.withLock { $0.moveError = error }
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let (continuation, movedURL, moveError) = state.withLock {
+            let values = ($0.continuation, $0.movedURL, $0.moveError)
+            $0.continuation = nil
+            return values
+        }
+        guard let continuation else { return }
+        if let error {
+            continuation.resume(throwing: error)
+        } else if let moveError {
+            continuation.resume(throwing: moveError)
+        } else if let movedURL {
+            let statusCode = (task.response as? HTTPURLResponse)?.statusCode ?? 0
+            continuation.resume(returning: (movedURL, statusCode))
+        } else {
+            continuation.resume(throwing: URLError(.cannotWriteToFile))
+        }
     }
 }
 
 struct HFModelDownloader: ModelPreparing {
     private struct RepositoryResponse: Decodable {
-        struct Sibling: Decodable { let rfilename: String }
+        struct Sibling: Decodable {
+            let rfilename: String
+            let size: Int64?
+        }
         let sha: String
         let siblings: [Sibling]
     }
@@ -115,15 +224,21 @@ struct HFModelDownloader: ModelPreparing {
     private let cacheRoot: URL
     private let transport: any HFModelDownloadTransport
     private let fileManager: FileManager
+    /// Minimum received-byte delta between in-flight progress reports for one
+    /// file. Bounds MainActor hops to a few hundred over a multi-GB fetch;
+    /// tests inject 1 to observe every callback.
+    private let progressByteGranularity: Int64
 
     init(
         cacheRoot: URL? = nil,
         transport: any HFModelDownloadTransport = URLSessionHFModelDownloadTransport(),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        progressByteGranularity: Int64 = 8_388_608
     ) {
         self.cacheRoot = cacheRoot ?? Self.defaultCacheRoot()
         self.transport = transport
         self.fileManager = fileManager
+        self.progressByteGranularity = progressByteGranularity
     }
 
     func prepare(
@@ -146,8 +261,14 @@ struct HFModelDownloader: ModelPreparing {
                 return !fileManager.fileExists(atPath: destination.path)
             }
 
+            // Prefer the repo API's exact sizes (one call, already made);
+            // HEAD-probe only files the API left sizeless.
             var sizes: [String: Int64] = [:]
             for fileName in missing {
+                if let size = info.sizesByFileName[fileName] {
+                    sizes[fileName] = size
+                    continue
+                }
                 try Task.checkCancellation()
                 if let size = try await transport.contentLength(
                     of: Self.fileURL(repoID: request.repoID, revision: info.sha, fileName: fileName)
@@ -155,8 +276,37 @@ struct HFModelDownloader: ModelPreparing {
                     sizes[fileName] = size
                 }
             }
-            let total = sizes.count == missing.count ? sizes.values.reduce(0, +) : nil
-            await Self.report(ModelDownloadProgress(downloadedBytes: 0, totalBytes: total), progress)
+            // Dynamic total: the HEAD probe can come back without a length
+            // (HF `resolve/` redirects to a CDN), which would leave the UI
+            // bar-less for the whole fetch. Each file's expected size also
+            // arrives from the transfer itself the moment its download
+            // starts, so fold that in — the total (and the determinate
+            // progress bar) becomes available as soon as every missing file
+            // has a size from either source.
+            let missingCount = missing.count
+            let knownSizes = Mutex<[String: Int64]>(sizes)
+            let effectiveTotal: @Sendable () -> Int64? = {
+                knownSizes.withLock { known in
+                    known.count == missingCount ? known.values.reduce(0, +) : nil
+                }
+            }
+            // Monotonic delivery gate, checked at delivery time on the main
+            // actor: throttled in-flight reports hop over as unstructured
+            // tasks, so without the gate a stale lower value could land after
+            // a newer higher one and make the bar jump backwards.
+            let deliveredFloor = Mutex<Int64>(-1)
+            let deliver: @MainActor @Sendable (ModelDownloadProgress) -> Void = { snapshot in
+                let shouldDeliver = deliveredFloor.withLock { floor in
+                    guard snapshot.downloadedBytes > floor else { return false }
+                    floor = snapshot.downloadedBytes
+                    return true
+                }
+                if shouldDeliver { progress(snapshot) }
+            }
+            await Self.report(
+                ModelDownloadProgress(downloadedBytes: 0, totalBytes: effectiveTotal()),
+                deliver
+            )
 
             var downloaded: Int64 = 0
             for fileName in missing {
@@ -166,7 +316,27 @@ struct HFModelDownloader: ModelPreparing {
                     revision: info.sha,
                     fileName: fileName
                 )
-                let result = try await transport.download(from: source)
+                let completedBase = downloaded
+                let granularity = progressByteGranularity
+                let lastReported = Mutex<Int64>(0)
+                let result = try await transport.download(from: source) { received, expected in
+                    if let expected {
+                        knownSizes.withLock { known in
+                            if known[fileName] == nil { known[fileName] = expected }
+                        }
+                    }
+                    let shouldReport = lastReported.withLock { last in
+                        guard received - last >= granularity else { return false }
+                        last = received
+                        return true
+                    }
+                    guard shouldReport else { return }
+                    let snapshot = ModelDownloadProgress(
+                        downloadedBytes: completedBase + received,
+                        totalBytes: effectiveTotal()
+                    )
+                    Task { @MainActor in deliver(snapshot) }
+                }
                 guard (200..<300).contains(result.statusCode) else {
                     throw ModelDownloadError.fileRequestFailed(
                         path: fileName,
@@ -182,10 +352,15 @@ struct HFModelDownloader: ModelPreparing {
                     try fileManager.removeItem(at: destination)
                 }
                 try fileManager.moveItem(at: result.temporaryURL, to: destination)
-                downloaded += sizes[fileName] ?? fileSize(at: destination)
+                // The on-disk size is authoritative once the file landed; it
+                // also completes the dynamic total for files whose transfer
+                // reported no expected length.
+                let actualSize = sizes[fileName] ?? fileSize(at: destination)
+                knownSizes.withLock { $0[fileName] = actualSize }
+                downloaded += actualSize
                 await Self.report(
-                    ModelDownloadProgress(downloadedBytes: downloaded, totalBytes: total),
-                    progress
+                    ModelDownloadProgress(downloadedBytes: downloaded, totalBytes: effectiveTotal()),
+                    deliver
                 )
             }
 
@@ -228,7 +403,9 @@ struct HFModelDownloader: ModelPreparing {
     }
 
     static func repositoryInfoURL(repoID: String, revision: String?) -> URL {
-        URL(string: "https://huggingface.co/api/models/\(repoID)/revision/\(revision ?? "main")")!
+        // blobs=true adds exact per-file byte sizes to the sibling list, so
+        // the aggregate download total is known before any transfer starts.
+        URL(string: "https://huggingface.co/api/models/\(repoID)/revision/\(revision ?? "main")?blobs=true")!
     }
 
     static func fileURL(repoID: String, revision: String, fileName: String) -> URL {
@@ -252,9 +429,16 @@ struct HFModelDownloader: ModelPreparing {
                 actual: response.sha
             )
         }
+        var sizesByFileName: [String: Int64] = [:]
+        for sibling in response.siblings {
+            if let size = sibling.size {
+                sizesByFileName[sibling.rfilename] = size
+            }
+        }
         return HFModelRepositoryInfo(
             sha: response.sha,
-            fileNames: response.siblings.map(\.rfilename)
+            fileNames: response.siblings.map(\.rfilename),
+            sizesByFileName: sizesByFileName
         )
     }
 
