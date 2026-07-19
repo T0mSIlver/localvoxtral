@@ -224,6 +224,11 @@ jobs:
           # eval-e2e.yml lane, never tier 0, and a leftover enable marker in
           # this persistent workspace must not turn the unit step into a
           # many-minute live-inference run.
+          echo "=== port 1 probe ==="
+          lsof -nP -i :1 || echo "lsof: no visible listener on port 1"
+          nc -z -G 3 127.0.0.1 1 && echo "port 1: CONNECT ACCEPTED" || echo "port 1: refused/timeout (exit $?)"
+          time nc -z -G 8 127.0.0.1 1 || true
+          echo "=== end probe ==="
           # DIAGNOSTIC BRANCH ONLY (do not merge): run the suite unsupervised,
           # detect the known output stall, and sample the wedged xctest so the
           # hang's thread stacks land in the artifact.
