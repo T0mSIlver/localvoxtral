@@ -224,24 +224,50 @@ jobs:
           # eval-e2e.yml lane, never tier 0, and a leftover enable marker in
           # this persistent workspace must not turn the unit step into a
           # many-minute live-inference run.
-          timeout_seconds=900
-          if [[ "$RUNNER_ENVIRONMENT" == "self-hosted" ]]; then
-            timeout_seconds=300
-          fi
-          ./scripts/ci/run-supervised-command.sh \
-            "$timeout_seconds" "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
-            swift test \
+          # DIAGNOSTIC BRANCH ONLY (do not merge): run the suite unsupervised,
+          # detect the known output stall, and sample the wedged xctest so the
+          # hang's thread stacks land in the artifact.
+          log="$RUNNER_TEMP/localvoxtral-unit-tests.log"
+          : > "$log"
+          swift test \
             --skip RealtimeAPIVLLMIntegrationTests \
             --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
-            --enable-code-coverage
+            --enable-code-coverage > "$log" 2>&1 &
+          swift_pid=$!
+          deadline=$((SECONDS + 600))
+          while kill -0 "$swift_pid" 2>/dev/null; do
+            sleep 15
+            now_size=$(stat -f %z "$log")
+            if [[ "$now_size" == "${last_size:-}" ]]; then
+              stall=$((stall + 15))
+            else
+              stall=0
+            fi
+            last_size="$now_size"
+            if (( stall >= 90 )) || (( SECONDS > deadline )); then
+              echo "STALL DETECTED (no log growth for ${stall}s) — sampling xctest" >&2
+              xctest_pid=$(pgrep -n xctest || true)
+              ps -ef | grep -i "[x]ctest\|swift" >&2 || true
+              if [[ -n "$xctest_pid" ]]; then
+                sample "$xctest_pid" 5 -file "$RUNNER_TEMP/xctest-hang-sample.txt" || true
+              fi
+              kill -9 "$swift_pid" 2>/dev/null || true
+              pkill -9 xctest 2>/dev/null || true
+              tail -n 5 "$log" >&2
+              exit 124
+            fi
+          done
+          wait "$swift_pid"
 
       - name: Upload complete unit-test log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-log-${{ runner.os }}
-          path: ${{ runner.temp }}/localvoxtral-unit-tests.log
+          path: |
+            ${{ runner.temp }}/localvoxtral-unit-tests.log
+            ${{ runner.temp }}/xctest-hang-sample.txt
           if-no-files-found: error
           retention-days: 7
 
