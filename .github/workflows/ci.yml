@@ -229,41 +229,39 @@ jobs:
           nc -z -G 3 127.0.0.1 1 && echo "port 1: CONNECT ACCEPTED" || echo "port 1: refused/timeout (exit $?)"
           time nc -z -G 8 127.0.0.1 1 || true
           echo "=== end probe ==="
-          # DIAGNOSTIC BRANCH ONLY (do not merge): run the suite unsupervised,
-          # detect the known output stall, and sample the wedged xctest so the
-          # hang's thread stacks land in the artifact.
+          # DIAGNOSTIC BRANCH ONLY (do not merge): reproduce the hang under
+          # the real supervisor, watch the log from OUTSIDE it, and sample the
+          # wedged xctest when output stalls.
           log="$RUNNER_TEMP/localvoxtral-unit-tests.log"
-          : > "$log"
-          swift test \
+          ./scripts/ci/run-supervised-command.sh \
+            600 "$log" -- \
+            swift test \
             --skip RealtimeAPIVLLMIntegrationTests \
             --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
-            --enable-code-coverage > "$log" 2>&1 &
-          swift_pid=$!
-          deadline=$((SECONDS + 600))
-          while kill -0 "$swift_pid" 2>/dev/null; do
+            --enable-code-coverage &
+          sup_pid=$!
+          stall=0
+          while kill -0 "$sup_pid" 2>/dev/null; do
             sleep 15
-            now_size=$(stat -f %z "$log")
+            now_size=$(stat -f %z "$log" 2>/dev/null || echo 0)
             if [[ "$now_size" == "${last_size:-}" ]]; then
               stall=$((stall + 15))
             else
               stall=0
             fi
             last_size="$now_size"
-            if (( stall >= 90 )) || (( SECONDS > deadline )); then
-              echo "STALL DETECTED (no log growth for ${stall}s) — sampling xctest" >&2
+            if (( stall >= 90 )); then
+              echo "STALL DETECTED — sampling xctest" >&2
               xctest_pid=$(pgrep -n xctest || true)
-              ps -ef | grep -i "[x]ctest\|swift" >&2 || true
+              ps -j -ww -A | grep -i "[x]ctest\|swift-package\|osascript" >&2 || true
               if [[ -n "$xctest_pid" ]]; then
                 sample "$xctest_pid" 5 -file "$RUNNER_TEMP/xctest-hang-sample.txt" || true
               fi
-              kill -9 "$swift_pid" 2>/dev/null || true
-              pkill -9 xctest 2>/dev/null || true
-              tail -n 5 "$log" >&2
-              exit 124
+              stall=0
             fi
           done
-          wait "$swift_pid"
+          wait "$sup_pid"
 
       - name: Upload complete unit-test log
         if: always()
