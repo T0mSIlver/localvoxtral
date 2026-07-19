@@ -52,7 +52,7 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
             // quote window titles, and a title is content.
             // -1700: `tty` not in the dictionary (Ghostty < 1.4).
             // -1743: the user declined the Automation prompt.
-            let code = (error[NSAppleScriptErrorNumber] as? Int) ?? 0
+            let code = (error[NSAppleScript.errorNumber] as? Int) ?? 0
             Log.claudeContext.info(
                 "Focused-pane tty unavailable (AppleScript error \(code, privacy: .public))"
             )
