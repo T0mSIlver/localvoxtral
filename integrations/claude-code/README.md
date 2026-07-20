@@ -40,10 +40,25 @@ model touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
-The app allocates a marker per session and replies with it on the socket. The
-publisher then asks Claude Code to write that marker into the window title (an
-OSC 2 sequence), with `suppressOutput` so it never appears in your transcript.
-That is how the app tells two Claude sessions in the same repo apart.
+Two mechanisms, tried in order:
+
+**TTY join (preferred — needs Ghostty 1.4 or a tip build).** The hooks report
+the session's controlling terminal device, and at dictation start the app asks
+Ghostty for the focused pane's `tty` over AppleScript (a one-time Automation
+consent prompt). Device equality is exact, works mid-response, and tells two
+sessions in the same repo apart. On Ghostty ≤ 1.3 this read fails gracefully
+(the `tty` property shipped for 1.4.0) — install Ghostty from tip if you want
+reliable joins while Claude Code is responding.
+
+**Title marker (fallback).** The app allocates a marker per session and replies
+with it on the socket. The publisher then asks Claude Code to write that marker
+into the window title (an OSC 2 sequence), with `suppressOutput` so it never
+appears in your transcript. Know its limits: Claude Code overwrites the title
+with its own conversation-derived text whenever it is responding, so the marker
+usually survives only until the first turn — unless you set
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. It remains the ONLY join for SSH-remote
+sessions (their tty names a device on another machine) and for pre-1.4 Ghostty,
+which is why it stays.
 
 The marker grammar is `lvx-<hex>` and nothing else is ever emitted — an escape
 sequence is code as much as data, so the marker is allowlist-validated and
