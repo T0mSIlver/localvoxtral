@@ -113,6 +113,41 @@ final class TerminalScreenContextTests: XCTestCase {
         XCTAssertEqual(once, once.flatMap { TerminalScreenAXReader.sanitizedScreenText($0) })
     }
 
+    // NBSP is grid padding too: terminals emit U+00A0 for non-wrapping pad
+    // cells, and a trailing run of it is as term-free as trailing spaces.
+    func testCompactionTrimsTrailingNonBreakingSpaces() {
+        let raw = "❯ swift build\u{00A0}\u{00A0}\u{00A0}\n\u{00A0}\u{00A0}\n\u{00A0}\t \nBuild complete! \u{00A0}\t"
+        XCTAssertEqual(
+            TerminalScreenAXReader.sanitizedScreenText(raw),
+            "❯ swift build\n\nBuild complete!"
+        )
+    }
+
+    // Compaction runs BEFORE the cap — the order is load-bearing. A padded
+    // grid can exceed the 24k cap on padding alone; capping first would evict
+    // the real text at the tail (exactly the term a user is most likely to be
+    // talking about: the latest output) in favor of retained pad bytes.
+    func testCompactionBeforeCapKeepsTailTermsPaddingWouldHaveEvicted() throws {
+        // ~30 real lines, each padded to 1000 characters with trailing spaces:
+        // raw is ~30k (over the cap), compacted content is ~1k (far under it).
+        var lines: [String] = []
+        for index in 0..<29 {
+            lines.append("line \(index)".padding(toLength: 1_000, withPad: " ", startingAt: 0))
+        }
+        lines.append("NeedleTailTerm.swift".padding(toLength: 1_000, withPad: " ", startingAt: 0))
+        let raw = lines.joined(separator: "\n")
+        XCTAssertGreaterThan(
+            raw.count, TerminalScreenAXReader.screenCharacterCap,
+            "precondition: the raw grid alone would blow the cap"
+        )
+        let sanitized = try XCTUnwrap(TerminalScreenAXReader.sanitizedScreenText(raw))
+        XCTAssertLessThanOrEqual(sanitized.count, TerminalScreenAXReader.screenCharacterCap)
+        XCTAssertTrue(
+            sanitized.contains("NeedleTailTerm.swift"),
+            "the tail term survives only because compaction runs before the cap"
+        )
+    }
+
     func testSanitizationCapsAtAbsoluteCap() {
         let raw = String(repeating: "x", count: TerminalScreenAXReader.screenCharacterCap + 500)
         let sanitized = TerminalScreenAXReader.sanitizedScreenText(raw)

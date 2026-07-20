@@ -254,7 +254,10 @@ enum TerminalScreenAXReader {
         var pendingBlank = false
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             var trimmed = line
-            while let last = trimmed.last, last == " " || last == "\t" {
+            // NBSP (U+00A0) alongside space/tab: terminal grids use it for
+            // padding that must not wrap, and a trailing run of it is padding
+            // like any other.
+            while let last = trimmed.last, last == " " || last == "\t" || last == "\u{00A0}" {
                 trimmed = trimmed.dropLast()
             }
             if trimmed.isEmpty {

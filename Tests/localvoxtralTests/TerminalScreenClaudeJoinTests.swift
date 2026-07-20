@@ -573,6 +573,29 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertEqual(decision, .render(excerpt: "swift build"))
     }
 
+    // "Unchanged" means unchanged AFTER the deterministic whitespace
+    // compaction, not byte-identical raw AX payloads: a redraw that only
+    // changed row padding or blank-row runs still renders, because both reads
+    // pass through the same sanitize seam before comparison. This pins the
+    // `.render` contract's wording.
+    func testWhitespaceOnlyRedrawStillRendersThroughTheLiveSource() {
+        TerminalScreenRawAttachmentPolicy.debugAuthorizationOverride = {
+            $0 == self.ghostty && $1 == self.windowA
+        }
+        TerminalScreenContextSource.debugTargetForPIDOverride = { _ in self.ghostty }
+        // The stop-time raw grid re-padded the rows and grew a trailing blank
+        // run; the compacted form is identical to the start capture.
+        TerminalScreenAXReader.debugScreenReadOverride = { _ in "swift build   \u{00A0}\n\n\n\n" }
+        TerminalScreenAXReader.debugScreenWindowIDOverride = { _ in self.windowA }
+        let decision = TerminalScreenContextSource.reconcileAtStop(
+            start: TerminalScreenCapture(text: "swift build", target: ghostty, windowID: windowA),
+            settingEnabled: true,
+            endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
+            isAccessibilityTrusted: true
+        )
+        XCTAssertEqual(decision, .render(excerpt: "swift build"))
+    }
+
     // The stop-time confirmation read must describe the pane captured at
     // start. A different window of the same app can show byte-identical text
     // (two idle panes), and the text compare alone would then "confirm" a
