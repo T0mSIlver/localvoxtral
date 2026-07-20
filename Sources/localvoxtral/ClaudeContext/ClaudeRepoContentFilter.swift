@@ -232,6 +232,128 @@ enum ClaudeRepoContentFilter {
         return words
     }
 
+    /// A diff with its sensitive per-file sections removed, and how many were.
+    struct FilteredDiff: Equatable {
+        var text: String
+        var withheldFileCount: Int
+    }
+
+    /// Removes from a `git diff` every per-file section whose path is one the
+    /// READ path refuses to attach (`isSecretLike` / `isLogLike`).
+    ///
+    /// The read filter alone is not the promise: a tracked, modified `.env`
+    /// never has its file read, but its changed lines — the credential —
+    /// arrive anyway inside `git diff` output. So the same path rules are
+    /// applied here, per section rather than to the whole diff, because one
+    /// secret file must not cost the prompt every ordinary hunk beside it.
+    ///
+    /// Candidate paths come from the `---`/`+++`/`rename`/`copy` lines plus
+    /// the `diff --git` header, and ANY sensitive candidate withholds the
+    /// section. Two asymmetries are deliberate and both fail safe:
+    ///
+    /// * A section whose paths cannot be parsed at all (exotic quoting with no
+    ///   body lines) is withheld, never trusted.
+    /// * File CONTENT can mimic `---`/`+++` lines (a deleted line reading
+    ///   `-- a/.env` renders as `--- a/.env`) and at worst over-withholds.
+    ///   It cannot forge a section BOUNDARY: content lines always carry a
+    ///   `+`/`-`/space prefix, so `diff --git ` at column zero is git's own.
+    ///
+    /// Anything before the first header (rare git-level notices, e.g. unmerged
+    /// paths) is kept: it is git's prose, not file content.
+    static func withholdingSensitiveDiffSections(_ diff: String) -> FilteredDiff {
+        guard !diff.isEmpty else { return FilteredDiff(text: diff, withheldFileCount: 0) }
+        let lines = diff.split(separator: "\n", omittingEmptySubsequences: false)
+        var kept: [Substring] = []
+        var section: [Substring] = []
+        var inSection = false
+        var withheld = 0
+
+        func flushSection() {
+            guard !section.isEmpty else { return }
+            if shouldWithholdDiffSection(section) {
+                withheld += 1
+            } else {
+                kept.append(contentsOf: section)
+            }
+            section = []
+        }
+
+        for line in lines {
+            if line.hasPrefix("diff --git ") {
+                flushSection()
+                inSection = true
+            }
+            if inSection {
+                section.append(line)
+            } else {
+                kept.append(line)
+            }
+        }
+        flushSection()
+        return FilteredDiff(
+            text: kept.joined(separator: "\n"),
+            withheldFileCount: withheld
+        )
+    }
+
+    private static func shouldWithholdDiffSection(_ lines: [Substring]) -> Bool {
+        let paths = diffSectionCandidatePaths(lines)
+        // No parseable path is not a license, it is a parse failure.
+        guard !paths.isEmpty else { return true }
+        return paths.contains { isSecretLike($0) || isLogLike($0) }
+    }
+
+    /// Every repo-relative path a diff section names. Over-collection is fine
+    /// (a bogus candidate can only withhold more); under-collection is what
+    /// the fail-closed guard above exists for.
+    private static func diffSectionCandidatePaths(_ lines: [Substring]) -> [String] {
+        var paths: [String] = []
+        func add(_ raw: Substring) {
+            var path = String(raw)
+            // `--- "a/path with specials"` — strip the quotes; any C-escapes
+            // left inside only make the name unmatchable, never secret-blind:
+            // git quotes for non-ASCII/controls, not for plain ASCII names
+            // like `.env`.
+            if path.hasPrefix("\""), path.hasSuffix("\""), path.count >= 2 {
+                path = String(path.dropFirst().dropLast())
+            }
+            if path.hasPrefix("a/") || path.hasPrefix("b/") {
+                path = String(path.dropFirst(2))
+            }
+            guard !path.isEmpty, path != "/dev/null" else { return }
+            paths.append(path)
+        }
+
+        for line in lines {
+            if line.hasPrefix("--- ") || line.hasPrefix("+++ ") {
+                add(line.dropFirst(4))
+            } else if line.hasPrefix("rename from ") {
+                add(line.dropFirst("rename from ".count))
+            } else if line.hasPrefix("rename to ") {
+                add(line.dropFirst("rename to ".count))
+            } else if line.hasPrefix("copy from ") {
+                add(line.dropFirst("copy from ".count))
+            } else if line.hasPrefix("copy to ") {
+                add(line.dropFirst("copy to ".count))
+            }
+        }
+        // Body lines settle it for any section that has them. The header is
+        // the fallback for body-less sections (mode-only changes): unquoted
+        // `diff --git a/X b/X` splits unambiguously at the LAST ` b/`; a
+        // quoted header is left unparsed on purpose — those sections carry no
+        // content lines to lose, and guessing at C-quoting is how a filter
+        // grows a bypass.
+        if paths.isEmpty, let header = lines.first, header.hasPrefix("diff --git ") {
+            let content = header.dropFirst("diff --git ".count)
+            if !content.hasPrefix("\""),
+               let split = content.range(of: " b/", options: .backwards) {
+                add(content[..<split.lowerBound])
+                add(content[content.index(after: split.lowerBound)...])
+            }
+        }
+        return paths
+    }
+
     /// Binary heuristic: a NUL byte in the head.
     ///
     /// The same rule `git` itself uses to decide a file is binary, and it is

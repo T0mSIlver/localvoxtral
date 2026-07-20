@@ -102,6 +102,12 @@ struct ClaudeRepoProvenance: Sendable, Equatable {
     /// traversing a symlinked directory — i.e. a read the repo root does not
     /// actually contain.
     var skippedUncontained = 0
+    /// Whole per-file diff sections withheld because a path they name is
+    /// credential- or log-shaped — the diff-side mirror of `skippedSecrets` /
+    /// `skippedLogs`. Counted per SECTION (staged and unstaged separately):
+    /// the question a field log answers is "how much of the diff did we
+    /// decline", not "how many distinct files".
+    var withheldDiffFiles = 0
     /// Files ATTACHED in truncated form — not skipped. Kept separate from the
     /// `skipped*` counters on purpose: reporting a truncation as a skip makes a
     /// field log claim a file was dropped when its head is in the prompt, which
@@ -125,6 +131,7 @@ struct ClaudeRepoProvenance: Sendable, Equatable {
         if skippedLogs > 0 { parts.append("skip-logs:\(skippedLogs)") }
         if skippedSecrets > 0 { parts.append("skip-secrets:\(skippedSecrets)") }
         if skippedUncontained > 0 { parts.append("skip-uncontained:\(skippedUncontained)") }
+        if withheldDiffFiles > 0 { parts.append("diff-withheld:\(withheldDiffFiles)") }
         if truncatedFiles > 0 { parts.append("truncated:\(truncatedFiles)") }
         if deadlineExpired { parts.append("deadline-expired") }
         return parts.joined(separator: " ")
@@ -256,10 +263,14 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
         snapshot.statusLines = await status(root: root, deadline: deadline)
 
         guard !isExpired(deadline), !Task.isCancelled else { return finish(snapshot, expired: true) }
-        snapshot.stagedDiff = await diff(root: root, staged: true, deadline: deadline)
+        let staged = await diff(root: root, staged: true, deadline: deadline)
+        snapshot.stagedDiff = staged.text
+        snapshot.provenance.withheldDiffFiles += staged.withheldFileCount
 
         guard !isExpired(deadline), !Task.isCancelled else { return finish(snapshot, expired: true) }
-        snapshot.unstagedDiff = await diff(root: root, staged: false, deadline: deadline)
+        let unstaged = await diff(root: root, staged: false, deadline: deadline)
+        snapshot.unstagedDiff = unstaged.text
+        snapshot.provenance.withheldDiffFiles += unstaged.withheldFileCount
 
         guard !isExpired(deadline), !Task.isCancelled else { return finish(snapshot, expired: true) }
         let tracked = await trackedPaths(root: root, deadline: deadline)
@@ -318,19 +329,26 @@ struct ClaudeRepoCollector: ClaudeRepoCollecting {
             .map { String($0) }
     }
 
-    private func diff(root: LocalWorkspacePath, staged: Bool, deadline: Date) async -> String {
+    private func diff(
+        root: LocalWorkspacePath, staged: Bool, deadline: Date
+    ) async -> ClaudeRepoContentFilter.FilteredDiff {
+        let none = ClaudeRepoContentFilter.FilteredDiff(text: "", withheldFileCount: 0)
         var arguments = ["diff", "--no-color", "--no-ext-diff"]
         if staged { arguments.append("--cached") }
         guard let output = await runGit(
             arguments, root.path, gitTimeout(before: deadline), limits.maxDiffBytes
-        ) else { return "" }
-        guard isUsable(output) else { return "" }
+        ) else { return none }
+        guard isUsable(output) else { return none }
         // A diff can legitimately contain a binary blob (`git diff` says
         // "Binary files ... differ" for most, but not for every custom
         // textconv-free case). Bail on non-text rather than paste bytes into a
         // prompt.
-        guard !ClaudeRepoContentFilter.looksBinary(output.data) else { return "" }
-        return String(decoding: output.data, as: UTF8.self)
+        guard !ClaudeRepoContentFilter.looksBinary(output.data) else { return none }
+        // The read path refuses a secret file's bytes; the diff of that same
+        // file is those bytes by another route. Same rules, per section.
+        return ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+            String(decoding: output.data, as: UTF8.self)
+        )
     }
 
     private func trackedPaths(root: LocalWorkspacePath, deadline: Date) async -> [String] {
@@ -652,6 +670,7 @@ extension ClaudeRepoProvenance {
         skippedLogs += other.skippedLogs
         skippedSecrets += other.skippedSecrets
         skippedUncontained += other.skippedUncontained
+        withheldDiffFiles += other.withheldDiffFiles
         truncatedFiles += other.truncatedFiles
         deadlineExpired = deadlineExpired || other.deadlineExpired
     }

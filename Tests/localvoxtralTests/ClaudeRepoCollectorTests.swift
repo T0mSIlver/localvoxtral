@@ -564,6 +564,127 @@ final class ClaudeRepoCollectorTests: XCTestCase {
         XCTAssertEqual(snapshot.unstagedDiff, "")
     }
 
+    // The read path refuses a secret file's BYTES, but a tracked, modified
+    // `.env` reaches the prompt anyway through `git diff` — the diff carries
+    // the same contents the read filter exists to withhold. The secret file's
+    // section must be dropped while an ordinary file's diff survives.
+    func testSecretFileDiffSectionsAreWithheldWhileNormalDiffSurvives() async throws {
+        let git = FakeGit()
+        git.set(
+            "diff",
+            """
+            diff --git a/Sources/App.swift b/Sources/App.swift
+            index 1111111..2222222 100644
+            --- a/Sources/App.swift
+            +++ b/Sources/App.swift
+            @@ -1 +1 @@
+            -old
+            +new
+            diff --git a/.env b/.env
+            index 3333333..4444444 100644
+            --- a/.env
+            +++ b/.env
+            @@ -1 +1 @@
+            -API_TOKEN=old-secret
+            +API_TOKEN=new-secret
+            """
+        )
+        git.set(
+            "diff --cached",
+            """
+            diff --git a/config/.env.production b/config/.env.production
+            index 5555555..6666666 100644
+            --- a/config/.env.production
+            +++ b/config/.env.production
+            @@ -1 +1 @@
+            -DB_PASSWORD=old
+            +DB_PASSWORD=hunter2
+            """
+        )
+        git.setData("ls-files", Data("Sources/App.swift\0.env\0config/.env.production\0".utf8))
+
+        let collected = await makeCollector(files: FakeFileSystem(), git: git).collect(
+            workspace: try workspace(), recentFiles: [], transcript: ""
+        )
+        let snapshot = try XCTUnwrap(collected)
+        XCTAssertTrue(snapshot.unstagedDiff.contains("+new"), "the ordinary diff must survive")
+        XCTAssertFalse(snapshot.unstagedDiff.contains("API_TOKEN"))
+        XCTAssertFalse(snapshot.unstagedDiff.contains(".env"))
+        XCTAssertEqual(snapshot.stagedDiff, "", "a diff that is ALL secret withholds everything")
+        XCTAssertEqual(snapshot.provenance.withheldDiffFiles, 2)
+        XCTAssertTrue(
+            snapshot.provenance.summary.contains("diff-withheld:2"),
+            "a silent exclusion is indistinguishable from an empty repo in the field"
+        )
+    }
+
+    // The pure section filter: renames carry the secret's contents under the
+    // NEW name, logs are content-withheld for the same reason as reads, and a
+    // section whose paths cannot be parsed at all is withheld rather than
+    // trusted.
+    func testDiffSectionWithholdingCoversRenamesLogsAndFailsClosed() {
+        // A rename FROM a secret path leaks old contents under the new name.
+        let renamed = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+            """
+            diff --git a/.env b/config/settings.txt
+            similarity index 90%
+            rename from .env
+            rename to config/settings.txt
+            --- a/.env
+            +++ b/config/settings.txt
+            @@ -1 +1 @@
+            -API_TOKEN=leak
+            +API_TOKEN=leak
+            """
+        )
+        XCTAssertEqual(renamed.withheldFileCount, 1)
+        XCTAssertFalse(renamed.text.contains("API_TOKEN"))
+
+        // A log's diff is log content — the read path never attaches it either.
+        let log = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+            """
+            diff --git a/build.log b/build.log
+            --- a/build.log
+            +++ b/build.log
+            @@ -1 +1 @@
+            +token=abc host=customer-db
+            diff --git a/README.md b/README.md
+            --- a/README.md
+            +++ b/README.md
+            @@ -1 +1 @@
+            +hello
+            """
+        )
+        XCTAssertEqual(log.withheldFileCount, 1)
+        XCTAssertFalse(log.text.contains("customer-db"))
+        XCTAssertTrue(log.text.contains("hello"))
+
+        // No parseable path in a section: withhold it, never guess.
+        let unparseable = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+            """
+            diff --git "a/\\303\\251 b" "b/\\303\\251 b"
+            old mode 100644
+            new mode 100755
+            """
+        )
+        XCTAssertEqual(unparseable.withheldFileCount, 1)
+        XCTAssertEqual(unparseable.text, "")
+
+        // A file whose CONTENT quotes diff-like lines cannot forge a section
+        // boundary: content lines always carry a +/-/space prefix.
+        let quoted = ClaudeRepoContentFilter.withholdingSensitiveDiffSections(
+            """
+            diff --git a/Notes.md b/Notes.md
+            --- a/Notes.md
+            +++ b/Notes.md
+            @@ -1 +1 @@
+            +diff --git a/.env b/.env
+            """
+        )
+        XCTAssertEqual(quoted.withheldFileCount, 0)
+        XCTAssertTrue(quoted.text.contains("+diff --git a/.env b/.env"))
+    }
+
     // MARK: - Transcript-matched snippets
 
     func testTranscriptMatchedTrackedFilesAreRead() async throws {
