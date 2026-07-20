@@ -82,6 +82,42 @@ is_live_non_zombie "$stubborn_pid" && fail "descendant survived its leader"
 fixture_pid=""
 stubborn_pid=""
 
+# On timeout, the watchdog samples the wedged group into the log BEFORE
+# killing it (2026-07-20 hang forensics). `sample` is stubbed on PATH so the
+# test is deterministic and runs on non-macOS too; the stub proves the
+# sampled pid belongs to the command's group and its output lands in the log.
+pid_fifo="$TMP_DIR/forensics-pids"
+timeout_fifo="$TMP_DIR/forensics-trigger"
+mkfifo "$pid_fifo" "$timeout_fifo"
+mkdir -p "$TMP_DIR/bin"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-of-pid-$1"
+STUB
+chmod +x "$TMP_DIR/bin/sample"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+  "$SUPERVISOR" 999 "$TMP_DIR/forensics.log" -- "$FIXTURE" "$pid_fifo" &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid <"$pid_fifo"
+printf 'fire\n' >"$timeout_fifo"
+if wait "$supervisor_pid"; then
+  fail "forensics-run command unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+[[ "$status" == "124" ]] || fail "forensics run: timeout status changed from 124 to $status"
+grep -q 'supervisor timeout forensics' "$TMP_DIR/forensics.log" \
+  || fail "timeout log is missing the forensics marker"
+grep -qE "stub-sample-of-pid-($fixture_pid|$stubborn_pid)" "$TMP_DIR/forensics.log" \
+  || fail "no group member was sampled into the log"
+is_live_non_zombie "$fixture_pid" && fail "forensics run: leader survived"
+is_live_non_zombie "$stubborn_pid" && fail "forensics run: descendant survived"
+fixture_pid=""
+stubborn_pid=""
+
 # Signal cancellation preserves the conventional status and drains the tree.
 pid_fifo="$TMP_DIR/signal-pids"
 mkfifo "$pid_fifo"

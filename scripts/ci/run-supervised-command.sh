@@ -36,6 +36,35 @@ group_is_alive() {
   [[ -n "$pgid" ]] && kill -0 -- "-$pgid" 2>/dev/null
 }
 
+# On timeout, capture WHERE the command is stuck before killing it: the
+# 2026-07-19/20 tier-0 hangs cost a blind rerun each because the group was
+# killed with no stack evidence (the 07-19 NSAlert.runModal culprit was only
+# found by hand-sampling a wedged xctest). Samples land in the log file,
+# which CI already uploads as an artifact even on failure. xctest is sampled
+# first (the interesting process for test hangs), then remaining group
+# members, capped so forensics never delay the kill by more than ~10 s.
+sample_group_for_forensics() {
+  local pgid="$1" sampled=0 pid
+  [[ -n "$pgid" ]] || return 0
+  command -v sample >/dev/null 2>&1 || return 0
+  {
+    echo ""
+    echo "=== supervisor timeout forensics: sampling process group $pgid ==="
+  } >>"$log_file"
+  for pid in $(pgrep -g "$pgid" -x xctest 2>/dev/null; pgrep -g "$pgid" 2>/dev/null); do
+    (( sampled >= 3 )) && break
+    kill -0 "$pid" 2>/dev/null || continue
+    case " ${seen_pids:-} " in *" $pid "*) continue ;; esac
+    seen_pids="${seen_pids:-} $pid"
+    {
+      echo "--- sample pid $pid ($(ps -o ucomm= -p "$pid" 2>/dev/null || echo unknown)) ---"
+      sample "$pid" 2 -mayDie 2>&1
+    } >>"$log_file" || true
+    sampled=$((sampled + 1))
+  done
+  return 0
+}
+
 terminate_group() {
   local pgid="$1" poll=0
   [[ -n "$pgid" ]] || return 0
@@ -88,6 +117,7 @@ command_pgid=$command_pid
     sleep "$timeout_seconds"
   fi
   : >"$timeout_marker"
+  sample_group_for_forensics "$command_pgid"
   terminate_group "$command_pgid"
 ) &
 watchdog_pid=$!
