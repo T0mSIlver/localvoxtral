@@ -35,10 +35,40 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+
+
+def resolve_out_dir(out_dir: str) -> str:
+    """Anchor a relative --out-dir at the REPO ROOT, never the cwd.
+
+    The privacy guarantee rests on the root-anchored `/EvalRecordings/`
+    .gitignore rule; a cwd-relative default run from a subdirectory (e.g.
+    scripts/) would write transcript-derived JSON to an UNIGNORED path.
+    Fails hard when the repo root cannot be determined.
+    """
+    if os.path.isabs(out_dir):
+        return out_dir
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(
+            "error: cannot resolve the repo root (git rev-parse "
+            f"--show-toplevel failed: {error}); refusing to write "
+            "transcript-derived data to a cwd-relative path",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not top:
+        print("error: empty repo root from git rev-parse", file=sys.stderr)
+        sys.exit(1)
+    return os.path.join(top, out_dir)
 
 # --------------------------------------------------------------------------
 # Transcript loading
@@ -441,7 +471,12 @@ def main() -> int:
                     help="inventory size used for sentence matching")
     ap.add_argument("--per-term-cap", type=int, default=6,
                     help="max sentences dominated by the same top term")
+    ap.add_argument("--print-terms", action="store_true",
+                    help="print the top-30 term inventory to stdout "
+                    "(transcript-derived content; off by default so terminal "
+                    "scrollback/logs stay clean)")
     args = ap.parse_args()
+    args.out_dir = resolve_out_dir(args.out_dir)
 
     if not os.path.isdir(args.projects_dir):
         print(f"error: no transcripts at {args.projects_dir}", file=sys.stderr)
@@ -528,8 +563,17 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    # 5) Emit.
+    # 5) Emit. cases.json is the file that travels to the Mac for mining, so
+    # it carries only a short HASH of the session path — the home-dir-shaped
+    # transcript paths stay in session-map.json, which never leaves this box.
     os.makedirs(args.out_dir, exist_ok=True)
+    session_map: dict[str, str] = {}
+
+    def session_hash(path: str) -> str:
+        digest = hashlib.sha256(path.encode()).hexdigest()[:12]
+        session_map[digest] = path
+        return digest
+
     cases = []
     for i, c in enumerate(sorted(selected, key=lambda c: (c.session, c.text))):
         cases.append(
@@ -541,7 +585,7 @@ def main() -> int:
                     t: term_provenance.get(t, {"count": 0, "sessions": 0})
                     for t in c.terms
                 },
-                "source_session": c.session,
+                "source_session_hash": session_hash(c.session),
                 "context_hint": c.context,
             }
         )
@@ -582,11 +626,28 @@ def main() -> int:
         )
         fh.write("\n")
 
+    map_path = os.path.join(args.out_dir, "session-map.json")
+    with open(map_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "schemaVersion": 1,
+                "private": True,
+                "note": "hash -> transcript session path. LOCAL ONLY: never copy off this machine (cases.json carries only the hashes).",
+                "sessions": session_map,
+            },
+            fh,
+            indent=2,
+            ensure_ascii=False,
+        )
+        fh.write("\n")
+
     print(f"cases written: {len(cases)} -> {cases_path}")
     print(f"terms written: {min(len(ranked), 1000)} -> {terms_path}")
-    print("top 30 terms:")
-    for term, st, sc in ranked[:30]:
-        print(f"  {st.count:5d}x  {len(st.sessions):3d} sessions  {term}")
+    print(f"session map:   {len(session_map)} entries -> {map_path} (local only)")
+    if args.print_terms:
+        print("top 30 terms:")
+        for term, st, sc in ranked[:30]:
+            print(f"  {st.count:5d}x  {len(st.sessions):3d} sessions  {term}")
     return 0
 
 

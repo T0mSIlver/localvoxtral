@@ -49,7 +49,9 @@ struct Options {
     var minedPath = "EvalRecordings/term-recall/mined.jsonl"
     var corruptionsPath = "EvalRecordings/term-recall/asr-corruptions.json"
     var endpoint = "ws://127.0.0.1:8000/v1/realtime"
-    var model = "mistralai/Voxtral-Mini-4B-Realtime-2602"
+    // The repo-wide ASR pin (SettingsStore / AgentDictationE2EEvalSupport /
+    // the tier-1 integration lane) — the launchd voxmlx serves exactly this.
+    var model = "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit"
     var voice: String?  // nil = system default voice, keyed as "default"
     var limit: Int?
     var caseIDs: [String] = []
@@ -205,7 +207,10 @@ final class RealtimeTranscriber: NSObject, URLSessionWebSocketDelegate {
     init(endpoint: URL) {
         let configuration = URLSessionConfiguration.ephemeral
         session = URLSession(configuration: configuration)
-        task = session.webSocketTask(with: endpoint)
+        var request = URLRequest(url: endpoint)
+        // Production sets this unconditionally (RealtimeAPIWebSocketClient).
+        request.setValue("realtime=v1", forHTTPHeaderField: "OpenAI-Beta")
+        task = session.webSocketTask(with: request)
         super.init()
     }
 
@@ -229,10 +234,18 @@ final class RealtimeTranscriber: NSObject, URLSessionWebSocketDelegate {
             ])
             offset = end
         }
+        // Mirror the E2E harness wire sequence: a non-final commit followed
+        // by the final one.
+        try send(json: ["type": "input_audio_buffer.commit"])
         try send(json: ["type": "input_audio_buffer.commit", "final": true])
         guard finalized.wait(timeout: .now() + timeout) == .success else {
             throw MiningError("timed out waiting for transcription.done")
         }
+        // Short grace so trailing final segments of a longer utterance land —
+        // the E2E harness sleeps 1 s after the first final before joining;
+        // without it, multi-segment utterances get truncated and falsely
+        // mined as corruptions.
+        Thread.sleep(forTimeInterval: 1)
         task.cancel(with: .normalClosure, reason: nil)
         session.finishTasksAndInvalidate()
         lock.lock()
@@ -288,15 +301,20 @@ final class RealtimeTranscriber: NSObject, URLSessionWebSocketDelegate {
         case "transcription.done",
             "response.audio_transcript.done",
             "conversation.item.input_audio_transcription.completed":
-            if let text = firstString(in: json, keys: ["text", "transcript", "delta"]) {
-                lock.lock()
-                finals.append(text)
-                lock.unlock()
+            // Mirror the E2E harness: only non-empty trimmed finals count,
+            // and the first-final gate fires only for those.
+            if let text = findString(in: json, matching: ["text", "transcript", "delta"]) {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    lock.lock()
+                    finals.append(trimmed)
+                    lock.unlock()
+                    finalized.signal()
+                }
             }
-            finalized.signal()
         case "error":
             lock.lock()
-            lastError = firstString(in: json, keys: ["message", "error", "detail"])
+            lastError = findString(in: json, matching: ["message", "error", "detail"])
                 ?? "unknown realtime error"
             lock.unlock()
             sessionCreated.signal()
@@ -306,13 +324,29 @@ final class RealtimeTranscriber: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
-    private func firstString(in json: [String: Any], keys: [String]) -> String? {
-        for key in keys {
-            if let value = json[key] as? String { return value }
-            if let nested = json[key] as? [String: Any],
-                let value = firstString(in: nested, keys: keys)
-            {
-                return value
+    /// Same semantics as the production client's findString: reject empty
+    /// strings, prefer matching keys at this level, then walk every nested
+    /// dictionary and array.
+    private func findString(in value: Any, matching keys: [String]) -> String? {
+        if let dict = value as? [String: Any] {
+            for key in keys {
+                if let stringValue = dict[key] as? String, !stringValue.isEmpty {
+                    return stringValue
+                }
+            }
+            for (_, nestedValue) in dict {
+                if nestedValue is [String: Any] || nestedValue is [Any] {
+                    if let found = findString(in: nestedValue, matching: keys) {
+                        return found
+                    }
+                }
+            }
+        }
+        if let array = value as? [Any] {
+            for nestedValue in array {
+                if let found = findString(in: nestedValue, matching: keys) {
+                    return found
+                }
             }
         }
         return nil
@@ -339,9 +373,18 @@ func termPreserved(term: String, inASR asrTokens: [String]) -> Bool {
             return true
         }
     }
-    // Glued match ("SwiftPM" heard as "swift pm" or vice versa).
+    // Glued match on token boundaries: some window of 1...termTokens.count
+    // ADJACENT ASR tokens joins to exactly the glued term ("mlx-lm" heard as
+    // one token "mlxlm"). Windowed EQUALITY, never substring containment —
+    // a boundary-less `joined().contains(...)` would let "tty" match inside
+    // glued unrelated words and silently exclude real corruptions.
     let glued = termTokens.joined()
-    if asrTokens.joined().contains(glued) { return true }
+    for window in 1...termTokens.count where asrTokens.count >= window {
+        for i in 0...(asrTokens.count - window)
+        where asrTokens[i..<i + window].joined() == glued {
+            return true
+        }
+    }
     return false
 }
 
@@ -400,8 +443,9 @@ func heardSpan(term: String, spokenText: String, asrTokens: [String]) -> String 
     guard let start else { return "" }
     let end = start + termTokens.count
     let pairs = exactAlignmentPairs(spoken: spoken, asr: asrTokens)
-    let left = pairs.filter { $0.0 < start }.map(\.1).max() ?? -1
-    let right = pairs.filter { $0.0 >= end }.map(\.1).min() ?? asrTokens.count
+    // Closures, not key paths: Swift key paths cannot reference tuple elements.
+    let left = pairs.filter { $0.0 < start }.map { $0.1 }.max() ?? -1
+    let right = pairs.filter { $0.0 >= end }.map { $0.1 }.min() ?? asrTokens.count
     guard left + 1 <= right - 1 else { return "" }
     return asrTokens[(left + 1)...(right - 1)].joined(separator: " ")
 }
@@ -458,7 +502,7 @@ do {
     casesData = try Data(contentsOf: URL(fileURLWithPath: options.casesPath))
 } catch {
     FileHandle.standardError.write(
-        Data("cannot read \(options.casesPath): \(error)\nRun scripts/harvest-term-recall-cases.py on the transcript box first, then copy EvalRecordings/term-recall/ here (it is gitignored; never commit it).\n".utf8))
+        Data("cannot read \(options.casesPath): \(error)\nRun scripts/harvest-term-recall-cases.py on the transcript box first, then copy ONLY cases.json into EvalRecordings/term-recall/ here (gitignored; session-map.json stays on the transcript box).\n".utf8))
     exit(1)
 }
 let harvest: HarvestFile
