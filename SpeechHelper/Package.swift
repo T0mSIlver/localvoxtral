@@ -41,7 +41,7 @@ let package = Package(
         // Blaizzy/mlx-audio-swift once both merge upstream.
         .package(
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "03890317975a2371fe0a0a9b13ad6a790f929814"
+            revision: "23c2c3b3357fbd454b9beb778a66022cb7f86963"
         ),
     ],
     targets: [

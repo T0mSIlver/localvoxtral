@@ -7,12 +7,13 @@
 
 The pinned mlx-community conversion stores `decoder.tok_embeddings.weight` as
 unquantized fp16 (768 MiB): its converter skips embeddings, so the tied LM head
-pays an fp16 gemv per decoded token and every install downloads 768 MiB that
-the engine now re-quantizes at load anyway (mlx-audio-swift fork PR #11).
-This script produces the checkpoint-side fix: the same snapshot with ONLY the
-tied embedding quantized (same affine scheme and group/bits as the rest of the
-checkpoint), ready to upload as a fork repo. ~540 MiB smaller; the engine
-loads it directly once fork PR `perf/quantized-head-checkpoint` is in the pin.
+pays a 768 MiB fp16 gemv per decoded token — measured ~30 ms of every 100 ms
+live-streaming step. The quantized head ships in the CHECKPOINT (the engine
+deliberately does no on-the-fly quantization): this script produces that
+checkpoint — the same snapshot with ONLY the tied embedding quantized (same
+affine scheme and group/bits as the rest), ready to upload as a fork repo.
+~540 MiB smaller; the engine loads it directly once mlx-audio-swift fork
+PR #13 (`fix/load-quantized-tied-embedding`) is in the pin.
 
 Run on a Mac (Apple Silicon; uv self-provisions Python + mlx):
 
@@ -21,9 +22,10 @@ Run on a Mac (Apple Silicon; uv self-provisions Python + mlx):
         --upload T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
 
 Upload uses your cached Hugging Face credentials (`hf auth login`).
-The quantization is deterministic: the produced scales/biases/packed weight
-are identical to what the engine's load-time conversion computes, so the
-PR #11 bench + eval evidence applies to this checkpoint unchanged.
+The quantization is deterministic, so the bench + eval evidence recorded on
+mlx-audio-swift PR #11 (closed; measured with identical tensors) applies to
+this checkpoint unchanged: lm-head 30 -> 3 ms/step, eval-e2e level-to-better
+vs the fp16-head nightly.
 """
 
 import argparse
