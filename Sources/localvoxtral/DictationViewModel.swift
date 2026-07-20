@@ -1774,7 +1774,8 @@ final class DictationViewModel {
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
-            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = resolveClaudeSessionJoin(endpointURL: endpointURL)
     }
@@ -1799,11 +1800,16 @@ final class DictationViewModel {
         guard settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled else {
             return nil
         }
-        // Loopback only. Repository contents and a prior prompt must never ride
-        // to a remote endpoint, and this is the gate that guarantees no
-        // filesystem read even STARTS for one — the collector is downstream of
-        // the join, so an unresolved join means no git subprocess, no file read.
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else { return nil }
+        // Permitted endpoints only (loopback, or any endpoint under the
+        // explicit trusted-endpoint opt-in). Repository contents and a prior
+        // prompt must never ride to an endpoint the user has not consented to,
+        // and this is the gate that guarantees no filesystem read even STARTS
+        // for one — the collector is downstream of the join, so an unresolved
+        // join means no git subprocess, no file read.
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else { return nil }
         guard textInsertion.isAccessibilityTrusted else { return nil }
         guard let target = TerminalScreenContextSource.frontmostTarget() else { return nil }
         return resolver.resolve(target: target)
@@ -1835,7 +1841,8 @@ final class DictationViewModel {
             start: start,
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
-            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
     }
 
@@ -1866,7 +1873,10 @@ final class DictationViewModel {
         transcript: String
     ) async -> ClaudeRepoSnapshot? {
         guard settings.claudeRepoContextEnabled else { return nil }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else {
             Log.claudeContext.info("Claude repo context skipped: polishing endpoint is not loopback")
             return nil
         }
@@ -1921,7 +1931,10 @@ final class DictationViewModel {
     /// prior prompt's words reach the model as replacement entries.
     func claudeSessionTextIfEnabled(join: ClaudeSessionJoin?, endpointURL: URL) -> String {
         guard settings.claudeRepoContextEnabled else { return "" }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else {
             Log.claudeContext.info(
                 "Claude session context skipped: polishing endpoint is not loopback"
             )

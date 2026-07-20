@@ -231,6 +231,21 @@ enum PolishContextClipboardReader {
         return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
+    /// The ONE endpoint gate shared by every polish-context surface (clipboard,
+    /// terminal screen, repo vocabulary, Claude repo/session blocks): loopback
+    /// always passes, and anything else passes only when the user has
+    /// explicitly opted in to trusting their configured polishing endpoint
+    /// with context (`SettingsStore.polishContextTrustedEndpointEnabled`,
+    /// default off — e.g. a LAN inference box, or a provider they trust).
+    /// Every surface must route through this rather than calling
+    /// `isLoopbackEndpoint` directly, so the opt-in cannot apply to some
+    /// surfaces and not others.
+    static func isPermittedContextEndpoint(
+        _ url: URL, trustedEndpointEnabled: Bool
+    ) -> Bool {
+        trustedEndpointEnabled || isLoopbackEndpoint(url)
+    }
+
     /// The pasteboard's plain string with the sensitive-type and empty-content
     /// rules applied and NUL/control scalars stripped (newline/tab kept), or nil
     /// when the source marked the payload concealed/transient or there is

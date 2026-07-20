@@ -236,17 +236,21 @@ enum TerminalScreenContext {
     /// non-Ghostty app means the app's screen is never touched at all.
     ///
     /// Order is deliberate and cheapest-first: the user's explicit opt-out wins
-    /// over everything, then the endpoint promise (screen text must never leave
-    /// this Mac), then the app allowlist, then trust — the only one that can
+    /// over everything, then the endpoint promise (screen text stays on this
+    /// Mac unless the trusted-endpoint opt-in relaxes it — default off, fails
+    /// closed), then the app allowlist, then trust — the only one that can
     /// prompt or vary at runtime.
     static func shouldAttemptRead(
         settingEnabled: Bool,
         endpointURL: URL,
         bundleID: String?,
-        isAccessibilityTrusted: Bool
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool = false
     ) -> Bool {
         guard settingEnabled else { return false }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else { return false }
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL, trustedEndpointEnabled: trustedEndpointEnabled
+        ) else { return false }
         guard TerminalScreenAllowlist.isSupported(bundleID) else { return false }
         return isAccessibilityTrusted
     }

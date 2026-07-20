@@ -313,6 +313,26 @@ final class PolishContextClipboardReaderTests: XCTestCase {
         XCTAssertFalse(PolishContextClipboardReader.isLoopbackEndpoint(url))
     }
 
+    // The shared endpoint policy every context surface routes through:
+    // loopback always passes; anything else passes only under the explicit
+    // trusted-endpoint opt-in (default off).
+    func testPermittedContextEndpointTruthTable() {
+        let loopback = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
+        let lan = URL(string: "http://192.168.1.183:8080/v1/chat/completions")!
+        let cloud = URL(string: "https://api.example.com/v1/chat/completions")!
+
+        XCTAssertTrue(PolishContextClipboardReader.isPermittedContextEndpoint(
+            loopback, trustedEndpointEnabled: false))
+        XCTAssertFalse(PolishContextClipboardReader.isPermittedContextEndpoint(
+            lan, trustedEndpointEnabled: false))
+        XCTAssertFalse(PolishContextClipboardReader.isPermittedContextEndpoint(
+            cloud, trustedEndpointEnabled: false))
+        XCTAssertTrue(PolishContextClipboardReader.isPermittedContextEndpoint(
+            lan, trustedEndpointEnabled: true))
+        XCTAssertTrue(PolishContextClipboardReader.isPermittedContextEndpoint(
+            cloud, trustedEndpointEnabled: true))
+    }
+
     // MARK: - Experimental leak detector
 
     /// A verbatim clipboard echo (>= 24 normalized chars, absent from the

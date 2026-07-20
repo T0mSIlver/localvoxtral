@@ -811,6 +811,27 @@ private struct TextProcessingSettingsPane: View {
                         }
                     }
 
+                    // A row in the EXISTING group, never a new group: pane group
+                    // structure is constant (owner rule, 2026-07-04).
+                    SettingsFieldRow(title: "Send polish context to non-local endpoints") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+
+                            // Names the trade in full: every "local polishing
+                            // endpoints only" promise above is exactly what
+                            // this toggle relaxes, so the help text says which
+                            // content classes ride and where they go. "You
+                            // trust" puts the judgment where it now lives —
+                            // with the user — instead of implying the app can
+                            // vouch for their endpoint.
+                            SettingsHelpText(
+                                "Off: clipboard, screen, and project context are only ever sent to a polisher on this Mac. On: the context enabled above is also sent to the polishing endpoint you configured — enable only for an endpoint you trust, such as a server on your own network."
+                            )
+                        }
+                    }
+
                     SettingsFieldRow(title: "Spoken clipboard paste") {
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)

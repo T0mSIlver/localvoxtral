@@ -168,6 +168,40 @@ final class TerminalScreenContextTests: XCTestCase {
         ))
     }
 
+    // The trusted-endpoint opt-in admits a non-loopback endpoint — and ONLY
+    // relaxes the endpoint condition: every other gate condition still holds.
+    func testGateAcceptsLANEndpointUnderTrustedEndpointOptIn() {
+        XCTAssertTrue(TerminalScreenContext.shouldAttemptRead(
+            settingEnabled: true,
+            endpointURL: URL(string: "http://192.168.1.183:8080/v1/chat/completions")!,
+            bundleID: TerminalScreenAllowlist.ghosttyBundleID,
+            isAccessibilityTrusted: true,
+            trustedEndpointEnabled: true
+        ))
+    }
+
+    func testTrustedEndpointOptInRelaxesOnlyTheEndpointCondition() {
+        let lan = URL(string: "http://192.168.1.183:8080/v1/chat/completions")!
+        let cases: [(String, Bool, String?, Bool)] = [
+            ("setting off", false, TerminalScreenAllowlist.ghosttyBundleID, true),
+            ("unsupported app", true, "com.apple.Terminal", true),
+            ("no bundle", true, nil, true),
+            ("untrusted", true, TerminalScreenAllowlist.ghosttyBundleID, false),
+        ]
+        for (name, enabled, bundleID, trusted) in cases {
+            XCTAssertFalse(
+                TerminalScreenContext.shouldAttemptRead(
+                    settingEnabled: enabled,
+                    endpointURL: lan,
+                    bundleID: bundleID,
+                    isAccessibilityTrusted: trusted,
+                    trustedEndpointEnabled: true
+                ),
+                "trusted endpoint must not bypass: \(name)"
+            )
+        }
+    }
+
     // MARK: - Gate ordering: a rejected gate must make NO AX call
 
     /// Pins the AX seam to a counting stub and returns a reader for the count,

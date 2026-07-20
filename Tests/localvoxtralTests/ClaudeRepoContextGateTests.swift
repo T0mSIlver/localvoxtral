@@ -182,6 +182,37 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         )
     }
 
+    // The trusted-endpoint opt-in is the ONE way a non-loopback endpoint may
+    // receive repository content — explicit, default off, and it does not
+    // bypass any other gate (the setting itself still gates below).
+    func testTrustedEndpointOptInAdmitsRemoteEndpoint() async {
+        let (viewModel, collector, join) = wired()
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.settings.polishContextTrustedEndpointEnabled = true
+        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+            join: join, endpointURL: remote, transcript: "hello"
+        )
+        XCTAssertNotNil(snapshot)
+        XCTAssertFalse(
+            collector.collectedPaths.isEmpty,
+            "the explicit opt-in is consent for this exact ride"
+        )
+    }
+
+    func testTrustedEndpointOptInDoesNotBypassTheFeatureToggle() async {
+        let (viewModel, collector, join) = wired()
+        viewModel.settings.claudeRepoContextEnabled = false
+        viewModel.settings.polishContextTrustedEndpointEnabled = true
+        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+            join: join, endpointURL: remote, transcript: "hello"
+        )
+        XCTAssertNil(snapshot)
+        XCTAssertTrue(
+            collector.collectedPaths.isEmpty,
+            "trusting an endpoint is not consent to collect anything"
+        )
+    }
+
     // MARK: - Join gate
 
     // The common case: a plain terminal with no marker. No join, no read.

@@ -1478,7 +1478,10 @@ extension DictationViewModel {
     /// provider, which must never receive clipboard content.
     func polishClipboardContextIfEnabled(endpointURL: URL) -> PolishClipboardContext? {
         guard settings.polishClipboardContextEnabled else { return nil }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else {
             Log.polishing.info(
                 "Polish clipboard context skipped: polishing endpoint is not local"
             )
@@ -1593,7 +1596,10 @@ extension DictationViewModel {
         transcript: String
     ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         guard settings.repoVocabularyEnabled else { return nil }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else {
             Log.polishing.info("Repo vocabulary skipped: polishing endpoint is not local")
             return nil
         }
