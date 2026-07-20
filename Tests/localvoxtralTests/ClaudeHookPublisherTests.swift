@@ -1,5 +1,7 @@
 import ClaudeContextWire
+import Darwin
 import Foundation
+import Synchronization
 import XCTest
 @testable import ClaudeHookPublisherCore
 
@@ -14,7 +16,7 @@ final class ClaudeHookPublisherTests: XCTestCase {
             now: { 1_700_000_000 },
             pid: { 4242 },
             ppid: { 99 },
-            ttyName: { tty },
+            ttyName: { _ in tty },
             variables: variables
         )
     }
@@ -47,6 +49,31 @@ final class ClaudeHookPublisherTests: XCTestCase {
     func testEmptyTermProgramIsTreatedAsAbsent() {
         let info = publisher(variables: ["HOME": "/h", "TERM_PROGRAM": ""]).processInfo()
         XCTAssertNil(info.termProgram)
+    }
+
+    // The published claudePID and the tty resolution consume the SAME pid,
+    // from one `ppid()` call: the tty seam receives the pid the ppid seam
+    // yielded, so the two fields can never describe different processes (the
+    // old default re-resolved `claudeAncestorPID()` inside the tty closure,
+    // which let an injected ppid and the published tty silently diverge).
+    func testTTYResolutionConsumesTheSamePIDTheEnvironmentPublishes() {
+        let receivedPIDs = Mutex<[Int32]>([])
+        let environment = ClaudeHookPublisher.Environment(
+            now: { 1_700_000_000 },
+            pid: { 4242 },
+            ppid: { 31_337 },
+            ttyName: { pid in
+                receivedPIDs.withLock { $0.append(pid) }
+                return "/dev/ttys009"
+            },
+            variables: ["HOME": "/h"]
+        )
+        let info = ClaudeHookPublisher(environment: environment).processInfo()
+        XCTAssertEqual(info.claudePID, 31_337)
+        XCTAssertEqual(
+            receivedPIDs.withLock { $0 }, [31_337], "one ppid resolution feeds both fields"
+        )
+        XCTAssertEqual(info.tty, "/dev/ttys009")
     }
 
     // MARK: Fail-open
@@ -189,9 +216,10 @@ final class ClaudeHookSocketPathTests: XCTestCase {
 final class ClaudeHookControllingTTYTests: XCTestCase {
     // Claude Code wires all three hook fds to pipes, so the field capture
     // depends on the /dev/tty and process-table fallbacks — these pin the
-    // process-table read's refusal cases deterministically (a positive read
-    // needs a controlling terminal, which CI runners don't have; the live
-    // proof is the hand-tested join).
+    // process-table read's refusal cases deterministically, and the pty test
+    // below covers the positive path (as an invariant that tolerates a
+    // sandbox refusing the acquisition; the live end-to-end proof remains the
+    // hand-tested Ghostty join).
     func testProcessTableLookupRefusesInvalidPIDs() {
         XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: 0))
         XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: -1))
@@ -210,6 +238,72 @@ final class ClaudeHookControllingTTYTests: XCTestCase {
         try? process.run()
         process.waitUntilExit()
         XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: process.processIdentifier))
+    }
+
+    // The positive half: a child spawned into its own session with a pty we
+    // allocated as fd 0 acquires that pty as its controlling terminal, and the
+    // process-table read must name exactly that device. Structured as a
+    // refusal-vs-agreement invariant rather than a hard positive: a sandbox
+    // that denies pty allocation or controlling-terminal acquisition yields
+    // nil (a refusal, same as launchd's), and that is tolerated — but a
+    // NON-nil answer naming any device other than our pty is a lie and fails.
+    func testPTYAttachedChildProcessTableReadNamesThatPTYOrRefuses() throws {
+        var master: Int32 = -1
+        var slave: Int32 = -1
+        var nameBuffer = [CChar](repeating: 0, count: 128)
+        guard openpty(&master, &slave, &nameBuffer, nil, nil) == 0 else {
+            // No pty allocatable in this sandbox: there is no positive
+            // evidence to check and no device to be wrong about. The refusal
+            // cases stay covered by the sibling tests above.
+            return
+        }
+        let slavePath = String(cString: nameBuffer)
+        defer {
+            close(master)
+            close(slave)
+        }
+
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        // Opened IN THE CHILD, after it became a session leader: the first
+        // tty a session leader opens without O_NOCTTY becomes its controlling
+        // terminal — the exact chain a real terminal emulator sets up.
+        slavePath.withCString {
+            _ = posix_spawn_file_actions_addopen(&actions, 0, $0, O_RDWR, 0)
+        }
+
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        // POSIX_SPAWN_SETSID (spawn.h): the child starts its own session, so
+        // it CAN acquire a controlling terminal of its own.
+        posix_spawnattr_setflags(&attributes, Int16(0x0400))
+
+        var childPID: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("30"), nil]
+        defer { argv.compactMap { $0 }.forEach { free($0) } }
+        guard posix_spawn(&childPID, "/bin/sleep", &actions, &attributes, argv, nil) == 0 else {
+            return // Same tolerance as openpty: nothing spawned, nothing to lie.
+        }
+        defer {
+            kill(childPID, SIGKILL)
+            var status: Int32 = 0
+            waitpid(childPID, &status, 0)
+        }
+
+        // posix_spawn is one syscall on Darwin: the file actions (and with
+        // them the controlling-terminal acquisition) completed before it
+        // returned, so no polling is needed.
+        if let reported = ClaudeHookPublisher.ttyDevicePath(forProcess: childPID) {
+            XCTAssertEqual(
+                reported, slavePath,
+                "a positive process-table answer must name the pty we allocated, never another device"
+            )
+        }
+        // nil is the tolerated refusal (sandbox denied the acquisition) —
+        // deliberate: absence must stay deterministic here, and the live
+        // positive proof remains the hand-tested Ghostty join.
     }
 
     func testControllingTTYAgreesWithItsOwnProcessTableEntry() {

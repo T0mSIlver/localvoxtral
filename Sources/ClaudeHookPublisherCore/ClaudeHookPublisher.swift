@@ -7,6 +7,10 @@ import Darwin
 import Glibc
 #endif
 
+#if canImport(os)
+import os
+#endif
+
 /// Reads bounded stdin once, enriches with safe process/TTY metadata, and
 /// publishes one NDJSON line. Pure logic lives here so the executable's `main`
 /// stays a three-liner and every branch below is unit-testable.
@@ -20,17 +24,22 @@ public struct ClaudeHookPublisher: Sendable {
         public var now: @Sendable () -> Double
         public var pid: @Sendable () -> Int32
         public var ppid: @Sendable () -> Int32
-        public var ttyName: @Sendable () -> String?
+        /// The controlling-tty resolution for a GIVEN Claude pid. The pid is
+        /// an argument — supplied from `ppid()` at `processInfo()` time —
+        /// rather than re-resolved inside the default closure, so an injected
+        /// `ppid` seam and the published tty always describe the same process.
+        /// (The default used to call `claudeAncestorPID()` itself, which let a
+        /// test's injected ppid and the tty's process-table fallback silently
+        /// diverge.)
+        public var ttyName: @Sendable (Int32) -> String?
         public var variables: [String: String]
 
         public init(
             now: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
             pid: @escaping @Sendable () -> Int32 = { getpid() },
             ppid: @escaping @Sendable () -> Int32 = { ClaudeHookPublisher.claudeAncestorPID() },
-            ttyName: @escaping @Sendable () -> String? = {
-                ClaudeHookPublisher.controllingTTY(
-                    claudePID: ClaudeHookPublisher.claudeAncestorPID()
-                )
+            ttyName: @escaping @Sendable (Int32) -> String? = {
+                ClaudeHookPublisher.controllingTTY(claudePID: $0)
             },
             variables: [String: String] = ProcessInfo.processInfo.environment
         ) {
@@ -119,10 +128,13 @@ public struct ClaudeHookPublisher: Sendable {
     /// Safe metadata only: identity and location of the terminal, never its
     /// contents and never argv/env beyond `$TERM_PROGRAM`.
     func processInfo() -> ClaudeHookProcessInfo {
-        ClaudeHookProcessInfo(
+        // ONE ppid resolution feeds both fields: the published claudePID and
+        // the tty's process-table fallback must describe the same process.
+        let claudePID = environment.ppid()
+        return ClaudeHookProcessInfo(
             hookPID: environment.pid(),
-            claudePID: environment.ppid(),
-            tty: environment.ttyName(),
+            claudePID: claudePID,
+            tty: environment.ttyName(claudePID),
             termProgram: environment.variables["TERM_PROGRAM"].flatMap { $0.isEmpty ? nil : $0 }
         )
     }
@@ -176,9 +188,19 @@ public struct ClaudeHookPublisher: Sendable {
                 return String(cString: name)
             }
         }
-        if let claudePID {
-            return ttyDevicePath(forProcess: claudePID)
+        if let claudePID, let device = ttyDevicePath(forProcess: claudePID) {
+            return device
         }
+        // Outcome-only, never a path or pid: a silent nil here made a broken
+        // hook-side capture indistinguishable from a failed pane read in the
+        // field (2026-07-20) — the join's tty half simply never matched and
+        // nothing said why. Unified log only; stdout/stderr stay silent per
+        // the hook contract.
+        #if canImport(os)
+        Logger(subsystem: "com.localvoxtral", category: "ClaudeHook").info(
+            "controlling tty unresolved: fds piped, /dev/tty unanswering, process table has no device"
+        )
+        #endif
         return nil
     }
 
