@@ -185,7 +185,7 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
                 now: { 1 },
                 pid: { 31_337 },
                 ppid: { getpid() },
-                ttyName: { nil },
+                ttyName: { _ in nil },
                 variables: [ClaudeHookSocketPath.environmentKey: socketPath]
             )
         ).run(stdin: Data(json.utf8), fallbackEvent: nil)
