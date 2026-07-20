@@ -210,13 +210,48 @@ enum TerminalScreenAXReader {
     /// head is capped. Returns nil for text that is empty or whitespace-only —
     /// a freshly cleared terminal is not context.
     static func sanitizedScreenText(_ raw: String) -> String? {
-        let sanitized = PolishContextClipboardReader.sanitizeControlCharacters(raw)
+        let sanitized = compactedGridWhitespace(
+            PolishContextClipboardReader.sanitizeControlCharacters(raw)
+        )
         guard !sanitized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
         return sanitized.count > screenCharacterCap
             ? String(sanitized.prefix(screenCharacterCap))
             : sanitized
+    }
+
+    /// The AX grid pads rows toward the pane width and reports every blank
+    /// viewport row, so a mostly-empty pane arrives as kilobytes of spaces
+    /// (field report 2026-07-20: an idle pane rendered ~40 blank padded lines
+    /// into the polish prompt). Trailing whitespace carries no term to ground
+    /// and a run of blank rows no structure worth more than one line, so both
+    /// are compacted — and BEFORE the cap, where padding could otherwise evict
+    /// real text from the capped head. Applied at the single sanitization seam
+    /// so matching, start/stop comparison, and the rendered excerpt all see
+    /// the same form (compaction is deterministic: identical screens stay
+    /// identical).
+    static func compactedGridWhitespace(_ text: String) -> String {
+        var lines: [Substring] = []
+        var pendingBlank = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            var trimmed = line
+            while let last = trimmed.last, last == " " || last == "\t" {
+                trimmed = trimmed.dropLast()
+            }
+            if trimmed.isEmpty {
+                // Leading and trailing blank runs vanish entirely (pending is
+                // only flushed when a later non-blank line arrives).
+                pendingBlank = !lines.isEmpty
+            } else {
+                if pendingBlank {
+                    lines.append("")
+                    pendingBlank = false
+                }
+                lines.append(trimmed)
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// The AX round trip. Returns the raw (unsanitized) `AXValue` string of the

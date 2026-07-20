@@ -77,11 +77,40 @@ final class TerminalScreenContextTests: XCTestCase {
     // NUL, BEL, and escape scalars — which a terminal screen is full of — do
     // not.
     func testSanitizationStripsControlScalarsButKeepsLineStructure() {
+        // The trailing newline (a trailing blank grid row) is compacted away —
+        // see the whitespace tests below.
         let raw = "$ swift build\u{0}\u{7}\n\tCompiling \u{1B}[32mlocalvoxtral\u{1B}[0m\n"
         XCTAssertEqual(
             TerminalScreenAXReader.sanitizedScreenText(raw),
-            "$ swift build\n\tCompiling [32mlocalvoxtral[0m\n"
+            "$ swift build\n\tCompiling [32mlocalvoxtral[0m"
         )
+    }
+
+    // The AX grid pads rows and reports blank viewport rows; an idle pane
+    // arrived as ~40 blank padded lines in the polish prompt (field report
+    // 2026-07-20). Compaction: trailing spaces/tabs trimmed per line, interior
+    // blank runs collapse to ONE blank line, leading/trailing blank runs drop.
+    func testGridWhitespaceCompaction() {
+        let raw = "\n\n❯ hi   \n\n\n\n⏺ Hi! Test received.\t\n\n\n───\n\n\n"
+        XCTAssertEqual(
+            TerminalScreenAXReader.sanitizedScreenText(raw),
+            "❯ hi\n\n⏺ Hi! Test received.\n\n───"
+        )
+    }
+
+    func testCompactionPreservesInteriorSingleBlankLinesAndIndentation() {
+        let raw = "func a() {\n    body\n}\n\nfunc b() {}"
+        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(raw), raw)
+    }
+
+    func testCompactionIsDeterministicSoIdenticalScreensStayIdentical() {
+        // Start/stop reconciliation compares sanitized text; compaction must
+        // map equal inputs to equal outputs (and it is a pure function of the
+        // input, so re-sanitizing the sanitized form changes nothing).
+        let raw = "line   \n\n\nnext\n"
+        let once = TerminalScreenAXReader.sanitizedScreenText(raw)
+        XCTAssertEqual(once, TerminalScreenAXReader.sanitizedScreenText(raw))
+        XCTAssertEqual(once, once.flatMap { TerminalScreenAXReader.sanitizedScreenText($0) })
     }
 
     func testSanitizationCapsAtAbsoluteCap() {
