@@ -224,9 +224,14 @@ final class ClaudePluginManifestTests: XCTestCase {
         let commands = try allCommands()
         XCTAssertEqual(commands.count, 6, "one command per event")
         for command in commands {
+            // QUOTED (F7): hook commands run through a shell, and the plugin
+            // root lives under "~/.claude" today but is an implementation
+            // detail — an unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on any
+            // space in the path (e.g. an "Application Support" install) and
+            // the hook dies silently.
             XCTAssertTrue(
-                command.hasPrefix("${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh"),
-                "hook command must resolve through ${CLAUDE_PLUGIN_ROOT}: \(command)"
+                command.hasPrefix("\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" "),
+                "hook command must resolve through a QUOTED ${CLAUDE_PLUGIN_ROOT}: \(command)"
             )
         }
     }

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh SessionStart",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" SessionStart",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh UserPromptSubmit",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" UserPromptSubmit",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh CwdChanged",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" CwdChanged",
             "timeout": 5
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh PostToolUse",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" PostToolUse",
             "timeout": 5
           }
         ]
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh Stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" Stop",
             "timeout": 5
           }
         ]
@@ -61,7 +61,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh SessionEnd",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/publish.sh\" SessionEnd",
             "timeout": 5
           }
         ]
