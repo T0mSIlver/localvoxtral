@@ -105,8 +105,8 @@ final class TerminalScreenContextTests: XCTestCase {
     // single door, and the DEBUG seam's text goes through it too.
     func testSeamSuppliedTextIsSanitizedBeforeCrossingTheBoundary() {
         TerminalScreenAXReader.debugScreenReadOverride = { _ in "ok\u{0}\u{1B}[31mred" }
-        let text = TerminalScreenAXReader.readVisibleScreen(applicationPID: 4242)
-        XCTAssertEqual(text, "ok[31mred")
+        let read = TerminalScreenAXReader.readVisibleScreen(applicationPID: 4242)
+        XCTAssertEqual(read?.text, "ok[31mred")
     }
 
     // MARK: - Test-mode AX suppression
@@ -442,7 +442,7 @@ final class TerminalScreenContextTests: XCTestCase {
         TerminalScreenRawAttachmentPolicy.debugAuthorizationOverride = nil
         TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
         XCTAssertFalse(
-            TerminalScreenRawAttachmentPolicy.isAuthorized(target: ghostty),
+            TerminalScreenRawAttachmentPolicy.isAuthorized(target: ghostty, windowID: 101),
             "raw screen attachment must stay off unless an authorizer positively joins the pane"
         )
     }

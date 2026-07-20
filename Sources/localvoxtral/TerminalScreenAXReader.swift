@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import ClaudeContextWire
+import Darwin
 import Foundation
 
 /// Reads the visible screen text of a Ghostty terminal window over
@@ -38,6 +39,27 @@ import Foundation
 /// live handle into another process and never escapes.
 @MainActor
 enum TerminalScreenAXReader {
+    /// One screen read: the sanitized text plus the identity of the WINDOW the
+    /// focused grid belonged to.
+    ///
+    /// The window identity exists because `TerminalScreenTarget` (pid + bundle
+    /// ID) cannot tell two windows of one Ghostty process apart, and the screen
+    /// capture and the Claude-session join are two separate AX reads — a window
+    /// switch between them would otherwise pair one window's SCREEN with
+    /// another window's AUTHORIZATION (review F2). Nil means the identity could
+    /// not be established; consumers treat that as "not the same window".
+    struct VisibleScreenRead: Sendable, Equatable {
+        let text: String
+        let windowID: CGWindowID?
+    }
+
+    /// One focused-window title read: the parsed marker plus the identity of
+    /// the window the title was read from. Same rationale as
+    /// `VisibleScreenRead.windowID`.
+    struct FocusedWindowMarkerRead: Sendable, Equatable {
+        let marker: ClaudeSessionMarker
+        let windowID: CGWindowID?
+    }
     /// Absolute character cap on a screen read. A tall Ghostty window on a
     /// 6K display is ~200×80 ≈ 16k characters, so this admits the full visible
     /// screen with headroom while bounding both the AX payload we retain and
@@ -56,12 +78,13 @@ enum TerminalScreenAXReader {
     /// `AXUIElementSetMessagingTimeout` is per-element, and the app-element
     /// timeout does NOT inherit to elements copied out of it — hence both.
     ///
-    /// This is PER MESSAGE, not per read. A read sends three
-    /// (`kAXFocusedUIElement` → `kAXRole` → `kAXValue`; `AXUIElementGetPid` is
-    /// local and free), so the worst case is `3 × timeout` against a wedged
+    /// This is PER MESSAGE, not per read. A read sends four
+    /// (`kAXFocusedUIElement` → `kAXRole` → `kAXValue` → `kAXWindow` for the
+    /// window identity; `AXUIElementGetPid` and `_AXUIElementGetWindow` are
+    /// local and free), so the worst case is `4 × timeout` against a wedged
     /// Ghostty, and a session pays it twice — once at start, once at stop:
     ///
-    ///   0.1 s × 3 messages × 2 reads = 0.6 s worst case per session.
+    ///   0.1 s × 4 messages × 2 reads = 0.8 s worst case per session.
     ///
     /// Both reads are on the main actor (start blocks the socket opening; stop
     /// blocks the commit), so that number is a user-visible stall ceiling, not
@@ -80,13 +103,13 @@ enum TerminalScreenAXReader {
     /// (`TerminalScreenContext.shouldAttemptRead`) — this function does not
     /// re-check the setting or the endpoint. Trust is re-checked here anyway
     /// because it can drop between the gate and the read.
-    static func readVisibleScreen(applicationPID pid: pid_t) -> String? {
+    static func readVisibleScreen(applicationPID pid: pid_t) -> VisibleScreenRead? {
         #if DEBUG
         if let override = debugScreenReadOverride {
             // Canned text takes the same sanitization path as live text, so a
             // test cannot assert against a form production never produces.
-            guard let raw = override(pid) else { return nil }
-            return sanitizedScreenText(raw)
+            guard let raw = override(pid), let text = sanitizedScreenText(raw) else { return nil }
+            return VisibleScreenRead(text: text, windowID: debugScreenWindowIDOverride?(pid))
         }
         // Under XCTest an unpinned read would query whatever the HOST's AX
         // tree happens to hold (the same class of live-state flake that made
@@ -99,8 +122,10 @@ enum TerminalScreenAXReader {
             Log.target.info("Terminal screen context skipped: Accessibility not trusted")
             return nil
         }
-        guard let raw = copyFocusedTextAreaValue(applicationPID: pid) else { return nil }
-        return sanitizedScreenText(raw)
+        guard let raw = copyFocusedTextAreaValue(applicationPID: pid),
+              let text = sanitizedScreenText(raw.text)
+        else { return nil }
+        return VisibleScreenRead(text: text, windowID: raw.windowID)
     }
 
     /// The marker Claude Code wrote into the focused window's title for `pid`,
@@ -119,21 +144,29 @@ enum TerminalScreenAXReader {
     /// that changed owners yields nil instead of another app's title.
     ///
     /// Callers must treat nil as "we do not know", never as a cue to guess.
-    static func markerInFocusedWindowTitle(applicationPID pid: pid_t) -> ClaudeSessionMarker? {
+    static func markerInFocusedWindowTitle(applicationPID pid: pid_t) -> FocusedWindowMarkerRead? {
         #if DEBUG
         if let override = debugWindowTitleOverride {
-            return override(pid).flatMap { ClaudeMarkerTitleParser.marker(inTitle: $0) }
+            guard let marker = override(pid).flatMap({ ClaudeMarkerTitleParser.marker(inTitle: $0) })
+            else { return nil }
+            return FocusedWindowMarkerRead(
+                marker: marker, windowID: debugTitleWindowIDOverride?(pid)
+            )
         }
         if TerminalTargetDetector.isRunningUnderXCTest { return nil }
         #endif
         guard AXIsProcessTrusted() else { return nil }
-        guard let title = copyFocusedWindowTitle(applicationPID: pid) else { return nil }
-        return ClaudeMarkerTitleParser.marker(inTitle: title)
+        guard let read = copyFocusedWindowTitle(applicationPID: pid),
+              let marker = ClaudeMarkerTitleParser.marker(inTitle: read.title)
+        else { return nil }
+        return FocusedWindowMarkerRead(marker: marker, windowID: read.windowID)
     }
 
-    /// The AX round trip for the title. Returns the focused window's `AXTitle`,
-    /// only if that window is still owned by `pid`.
-    private static func copyFocusedWindowTitle(applicationPID pid: pid_t) -> String? {
+    /// The AX round trip for the title. Returns the focused window's `AXTitle`
+    /// and window identity, only if that window is still owned by `pid`.
+    private static func copyFocusedWindowTitle(
+        applicationPID pid: pid_t
+    ) -> (title: String, windowID: CGWindowID?)? {
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, messagingTimeoutSeconds)
 
@@ -165,7 +198,7 @@ enum TerminalScreenAXReader {
             &titleObject
         )
         guard titleStatus == .success, let title = titleObject as? String else { return nil }
-        return title
+        return (title: title, windowID: windowID(ofWindow: window))
     }
 
     /// Sanitizes and caps a raw AX string. Split out so tests can exercise the
@@ -187,9 +220,11 @@ enum TerminalScreenAXReader {
     }
 
     /// The AX round trip. Returns the raw (unsanitized) `AXValue` string of the
-    /// focused element, only if that element is an `AXTextArea` still owned by
-    /// `pid`.
-    private static func copyFocusedTextAreaValue(applicationPID pid: pid_t) -> String? {
+    /// focused element plus the identity of the window containing it, only if
+    /// that element is an `AXTextArea` still owned by `pid`.
+    private static func copyFocusedTextAreaValue(
+        applicationPID pid: pid_t
+    ) -> (text: String, windowID: CGWindowID?)? {
         let appElement = AXUIElementCreateApplication(pid)
         // Bound the app-element round trip before making one.
         AXUIElementSetMessagingTimeout(appElement, messagingTimeoutSeconds)
@@ -241,7 +276,58 @@ enum TerminalScreenAXReader {
             &valueObject
         )
         guard valueStatus == .success, let text = valueObject as? String else { return nil }
-        return text
+        return (text: text, windowID: windowID(containing: element))
+    }
+
+    // MARK: - Window identity
+
+    /// `_AXUIElementGetWindow`, resolved at runtime. It is the only stable
+    /// VALUE identity for a window macOS exposes over AX (there is no public
+    /// AXWindowNumber attribute), it has been unchanged for over a decade, and
+    /// resolving via `dlsym` means a macOS that finally drops it degrades this
+    /// feature to "window identity unknown" instead of failing to launch.
+    /// "Unknown" is safe by construction downstream: every consumer refuses raw
+    /// attachment rather than assuming two unknowns are the same window.
+    private static let getWindowIDFunction: (@convention(c) (
+        AXUIElement, UnsafeMutablePointer<CGWindowID>
+    ) -> AXError)? = {
+        guard let symbol = dlsym(
+            dlopen(nil, RTLD_LAZY), "_AXUIElementGetWindow"
+        ) else { return nil }
+        return unsafeBitCast(
+            symbol,
+            to: (@convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError).self
+        )
+    }()
+
+    /// The `CGWindowID` of a window element, or nil when it cannot be
+    /// established. Local call, no AX message.
+    private static func windowID(ofWindow window: AXUIElement) -> CGWindowID? {
+        guard let function = getWindowIDFunction else { return nil }
+        var id: CGWindowID = 0
+        guard function(window, &id) == .success, id != 0 else { return nil }
+        return id
+    }
+
+    /// The `CGWindowID` of the window containing `element`: one extra bounded
+    /// AX message (`kAXWindowAttribute`) plus the local ID lookup. The screen
+    /// read is therefore four messages, not three — the timeout math on
+    /// `messagingTimeoutSeconds` still holds at 0.1 s × 4 × 2 = 0.8 s worst
+    /// case per session.
+    private static func windowID(containing element: AXUIElement) -> CGWindowID? {
+        var windowObject: AnyObject?
+        let status = AXUIElementCopyAttributeValue(
+            element,
+            kAXWindowAttribute as CFString,
+            &windowObject
+        )
+        guard status == .success,
+              let windowObject,
+              CFGetTypeID(windowObject) == AXUIElementGetTypeID()
+        else {
+            return nil
+        }
+        return windowID(ofWindow: unsafeDowncast(windowObject, to: AXUIElement.self))
     }
 
     #if DEBUG
@@ -254,5 +340,12 @@ enum TerminalScreenAXReader {
     /// same parse path as live ones, so a test cannot assert against a form
     /// production never produces.
     static var debugWindowTitleOverride: ((pid_t) -> String?)?
+
+    /// Window-identity seams, one per read path so a test can script the F2
+    /// race: the screen read and the title read landing on DIFFERENT windows
+    /// of one process. Defaulting to nil mirrors live identity failure, which
+    /// every consumer must treat as "not provably the same window".
+    static var debugScreenWindowIDOverride: ((pid_t) -> CGWindowID?)?
+    static var debugTitleWindowIDOverride: ((pid_t) -> CGWindowID?)?
     #endif
 }

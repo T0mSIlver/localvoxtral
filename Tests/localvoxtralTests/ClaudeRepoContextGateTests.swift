@@ -102,7 +102,11 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in ClaudeSessionMarker(value: "lvx-abcd") }
+            markerInWindowTitle: { _ in
+                TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
+                )
+            }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = resolver.resolve(target: ghostty)
@@ -220,7 +224,11 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in ClaudeSessionMarker(value: "lvx-abcd") }
+            markerInWindowTitle: { _ in
+                TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
+                )
+            }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = resolver.resolve(target: ghostty)
@@ -339,7 +347,11 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         }
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in ClaudeSessionMarker(value: "lvx-abcd") }
+            markerInWindowTitle: { _ in
+                TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
+                )
+            }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = resolver.resolve(target: ghostty)
@@ -411,7 +423,11 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in ClaudeSessionMarker(value: "lvx-abcd") }
+            markerInWindowTitle: { _ in
+                TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
+                )
+            }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = resolver.resolve(target: ghostty)
@@ -470,7 +486,9 @@ final class ClaudeRepoContextGateTests: XCTestCase {
             registry: registry(),
             markerInWindowTitle: { _ in
                 reads.withLock { $0 += 1 }
-                return ClaudeSessionMarker(value: "lvx-abcd")
+                return TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
+                )
             }
         )
         viewModel.settings.terminalScreenContextEnabled = false

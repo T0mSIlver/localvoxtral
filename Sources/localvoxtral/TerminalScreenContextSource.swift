@@ -68,14 +68,14 @@ enum TerminalScreenContextSource {
         ) else {
             return nil
         }
-        guard let text = TerminalScreenAXReader.readVisibleScreen(applicationPID: target.pid) else {
+        guard let read = TerminalScreenAXReader.readVisibleScreen(applicationPID: target.pid) else {
             return nil
         }
         // Count-only: screen text is user content and never reaches a log.
         Log.target.info(
-            "Terminal screen context captured at start: \(text.count, privacy: .public)ch"
+            "Terminal screen context captured at start: \(read.text.count, privacy: .public)ch"
         )
-        return TerminalScreenCapture(text: text, target: target)
+        return TerminalScreenCapture(text: read.text, target: target, windowID: read.windowID)
     }
 
     /// Stop-time reconciliation for a start capture. Re-reads ONLY the start
@@ -121,7 +121,9 @@ enum TerminalScreenContextSource {
         // commit time may be our own overlay.
         var rawAuthorized = false
         if case .read = sample, let start {
-            rawAuthorized = TerminalScreenRawAttachmentPolicy.isAuthorized(target: start.target)
+            rawAuthorized = TerminalScreenRawAttachmentPolicy.isAuthorized(
+                target: start.target, windowID: start.windowID
+            )
         }
         let decision = TerminalScreenContext.reconcile(
             start: start,
@@ -167,12 +169,28 @@ enum TerminalScreenContextSource {
             return .policyRejected
         }
 
-        guard let text = TerminalScreenAXReader.readVisibleScreen(
+        guard let read = TerminalScreenAXReader.readVisibleScreen(
             applicationPID: start.target.pid
         ) else {
             return .readFailed
         }
-        return .read(text)
+        // The re-read must describe the WINDOW captured at start, not merely
+        // the same app: two panes of one Ghostty can show byte-identical text
+        // (both idle), and the text compare alone would then "confirm" a
+        // screen nobody re-read (review F2). A definite mismatch is treated as
+        // a failed confirmation — the start text stays valid for matching (the
+        // user did see it while speaking), but nothing may claim it is still
+        // on screen. Unknown identity on either side falls through: rendering
+        // is separately refused at the authorization step, which requires two
+        // established identities.
+        if let startWindow = start.windowID, let stopWindow = read.windowID,
+           startWindow != stopWindow {
+            Log.target.info(
+                "Terminal screen stop re-read landed on a different window of the target app; treating as a failed confirmation"
+            )
+            return .readFailed
+        }
+        return .read(read.text)
     }
 
     #if DEBUG

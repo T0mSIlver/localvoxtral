@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Bundle IDs whose visible screen text may be read as polish context.
@@ -58,6 +59,19 @@ struct TerminalScreenCapture: Equatable, Sendable {
     /// Sanitized, capped screen text.
     let text: String
     let target: TerminalScreenTarget
+    /// The identity of the WINDOW the text was read from. `target` cannot
+    /// distinguish two windows of one Ghostty process (pid + bundle ID are
+    /// identical), and raw attachment is authorized per pane — so the window,
+    /// not the app, is the unit the authorization must be about (review F2).
+    /// Nil means the identity could not be established, which every consumer
+    /// treats as "not provably the same window".
+    var windowID: CGWindowID?
+
+    init(text: String, target: TerminalScreenTarget, windowID: CGWindowID? = nil) {
+        self.text = text
+        self.target = target
+        self.windowID = windowID
+    }
 }
 
 /// What the stop-time re-read established. The distinction between the last
@@ -102,7 +116,11 @@ enum TerminalScreenStopSample: Equatable, Sendable {
 /// `false` merely withholds an excerpt the matcher already covered.
 @MainActor
 protocol TerminalScreenRawAttachmentAuthorizing {
-    func isAuthorized(target: TerminalScreenTarget) -> Bool
+    /// `windowID` is the identity of the window the CAPTURE came from.
+    /// Implementations must refuse when it does not provably match the window
+    /// their own evidence is about — pid + bundle ID cannot tell two windows
+    /// of one process apart.
+    func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool
 }
 
 /// Whether a RAW screen excerpt may be rendered into the prompt.
@@ -129,21 +147,21 @@ enum TerminalScreenRawAttachmentPolicy {
     /// False unless a configured authorizer positively joins `target` to one
     /// live Claude session. Tests pin the seam explicitly; nothing else can
     /// turn this on.
-    static func isAuthorized(target: TerminalScreenTarget) -> Bool {
+    static func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool {
         #if DEBUG
         if let override = debugAuthorizationOverride {
-            return override(target)
+            return override(target, windowID)
         }
         #endif
         guard let authorizer else { return false }
-        return authorizer.isAuthorized(target: target)
+        return authorizer.isAuthorized(target: target, windowID: windowID)
     }
 
     #if DEBUG
     /// Test seam. Absent (nil) means the configured authorizer decides, and
     /// with none configured that is unauthorized — so a test that forgets to
     /// pin it gets production behavior rather than an accidental attachment.
-    static var debugAuthorizationOverride: ((TerminalScreenTarget) -> Bool)?
+    static var debugAuthorizationOverride: ((TerminalScreenTarget, CGWindowID?) -> Bool)?
     #endif
 }
 

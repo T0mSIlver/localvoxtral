@@ -1,4 +1,5 @@
 import ClaudeContextWire
+import CoreGraphics
 import Foundation
 
 /// One dictation's answer to "which Claude Code session is the user talking
@@ -21,6 +22,12 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     let marker: ClaudeSessionMarker
     /// The session as the registry described it at start.
     let snapshot: ClaudeSessionSnapshot
+    /// The identity of the WINDOW the marker was read from. `target` cannot
+    /// tell two windows of one Ghostty process apart, and the screen capture is
+    /// a SEPARATE read that can land on a different window if focus moves
+    /// between the two — so authorization compares windows, not just targets
+    /// (review F2). Nil means unknown, which never authorizes.
+    let windowID: CGWindowID?
 
     /// The workspace path, non-nil only for a locally authenticated session.
     /// The type is what keeps a remote session's cwd away from the filesystem;
@@ -64,15 +71,15 @@ struct ClaudeSessionJoin: Sendable, Equatable {
 @MainActor
 struct ClaudeSessionJoinResolver {
     private let registry: ClaudeSessionRegistry
-    private let markerInWindowTitle: (pid_t) -> ClaudeSessionMarker?
+    private let markerInWindowTitle: (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead?
 
     /// - Parameter markerInWindowTitle: reads the PID-pinned focused window
-    ///   title and parses a marker out of it. Injected so the whole truth table
-    ///   is unit-testable without a live AX tree — the same reason every other
-    ///   live read in this feature is a seam.
+    ///   title, parses a marker out of it, and reports which WINDOW it read.
+    ///   Injected so the whole truth table is unit-testable without a live AX
+    ///   tree — the same reason every other live read in this feature is a seam.
     init(
         registry: ClaudeSessionRegistry,
-        markerInWindowTitle: @escaping (pid_t) -> ClaudeSessionMarker? = {
+        markerInWindowTitle: @escaping (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead? = {
             TerminalScreenAXReader.markerInFocusedWindowTitle(applicationPID: $0)
         }
     ) {
@@ -91,17 +98,19 @@ struct ClaudeSessionJoinResolver {
         // this app at all — not something to inherit on trust from a caller.
         guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
 
-        guard let marker = markerInWindowTitle(target.pid) else {
+        guard let read = markerInWindowTitle(target.pid) else {
             // No marker on screen: this pane is not a joined Claude session, or
             // we cannot tell. Either way there is nothing to resolve.
             Log.claudeContext.info("Terminal pane carries no Claude session marker")
             return nil
         }
 
-        switch registry.resolve(marker: marker) {
+        switch registry.resolve(marker: read.marker) {
         case .resolved(let snapshot):
             Log.claudeContext.info("Terminal pane joined to a live Claude session")
-            return ClaudeSessionJoin(target: target, marker: marker, snapshot: snapshot)
+            return ClaudeSessionJoin(
+                target: target, marker: read.marker, snapshot: snapshot, windowID: read.windowID
+            )
         case .unknown, .stale, .ambiguous:
             // Count-only: the marker itself is not logged. It is a live handle
             // to a session's context, and a log is the wrong place for it.
@@ -148,7 +157,7 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
         self.currentJoin = currentJoin
     }
 
-    func isAuthorized(target: TerminalScreenTarget) -> Bool {
+    func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool {
         guard let join = currentJoin() else { return false }
         // The join must be about THIS pane. A join resolved for one target
         // says nothing about another, and a recycled PID must not inherit the
@@ -157,6 +166,20 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
         guard join.target == target else {
             Log.claudeContext.info(
                 "Claude join does not describe the captured pane; raw screen attachment withheld"
+            )
+            return false
+        }
+        // The target compare above cannot tell two windows of one Ghostty
+        // process apart (same pid, same bundle ID), and the capture and the
+        // join are two separate AX reads — a focus change between them pairs
+        // one window's screen with another window's session (review F2). Only
+        // two ESTABLISHED, equal identities authorize; an unknown on either
+        // side is an abstention, never a match.
+        guard let joinWindow = join.windowID, let captureWindow = windowID,
+              joinWindow == captureWindow
+        else {
+            Log.claudeContext.info(
+                "Claude join and screen capture do not name the same window of the target app; raw screen attachment withheld"
             )
             return false
         }
