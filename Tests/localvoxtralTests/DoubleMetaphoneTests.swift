@@ -16,14 +16,18 @@ final class DoubleMetaphoneTests: XCTestCase {
             ("knight", "NT", "NT"),
             ("pneumonia", "NMN", "NMN"),
             ("psalm", "SLM", "SLM"),
-            ("Xavier", "SFR", "SFR"),
+            // Final-R rule: a terminal R preceded by "IE" (French-style
+            // ending) is dropped from the primary and kept in the secondary.
+            ("Xavier", "SF", "SFR"),
             ("whale", "AL", "AL"),
             ("jose", "HS", "HS"),
             ("cabrillo", "KPRL", "KPR"),
             ("ghost", "KST", "KST"),
             ("caesar", "SSR", "SSR"),
             ("chianti", "KNT", "KNT"),
-            ("michael", "MXL", "MKL"),
+            // The CH in "michael" is hard: K primary, X (SH) alternate —
+            // matches the Apache Commons reference implementation.
+            ("michael", "MKL", "MXL"),
             ("aggie", "AJ", "AK"),
             ("edge", "AJ", "AJ"),
             ("gnome", "NM", "NM"),
