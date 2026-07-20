@@ -220,8 +220,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the session's prior prompt, and the repository context describe the
             // same session — three resolvers would each answer honestly about a
             // different moment.
-            let resolver = ClaudeSessionJoinResolver(registry: claudeSessionRegistry)
+            // The tty seam is wired here, not defaulted: sending Apple events
+            // is a consented capability (Automation prompt), so only the app —
+            // never a test that forgot to inject — constructs the live reader.
+            let ttyReader = GhosttyFocusedTerminalTTYReader()
+            let resolver = ClaudeSessionJoinResolver(
+                registry: claudeSessionRegistry,
+                focusedTerminalTTY: { ttyReader.focusedTerminalTTY(bundleID: $0) }
+            )
             viewModel.claudeSessionJoinResolver = resolver
+            // Pre-warm the Automation consent sheet OFF the dictation-start
+            // path: the first Apple event to Ghostty blocks in TCC until the
+            // user answers, and that freeze must not land mid-dictation. Only
+            // for users who opted into a context feature — the pre-warm is
+            // itself the consent prompt, and an opted-out user must never see
+            // it.
+            if viewModel.settings.terminalScreenContextEnabled
+                || viewModel.settings.claudeRepoContextEnabled
+            {
+                GhosttyAutomationConsentPrewarm.fireOnceWhenGhosttyIsAvailable()
+            }
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to

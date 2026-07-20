@@ -7,6 +7,10 @@ import Darwin
 import Glibc
 #endif
 
+#if canImport(os)
+import os
+#endif
+
 /// Reads bounded stdin once, enriches with safe process/TTY metadata, and
 /// publishes one NDJSON line. Pure logic lives here so the executable's `main`
 /// stays a three-liner and every branch below is unit-testable.
@@ -20,14 +24,23 @@ public struct ClaudeHookPublisher: Sendable {
         public var now: @Sendable () -> Double
         public var pid: @Sendable () -> Int32
         public var ppid: @Sendable () -> Int32
-        public var ttyName: @Sendable () -> String?
+        /// The controlling-tty resolution for a GIVEN Claude pid. The pid is
+        /// an argument — supplied from `ppid()` at `processInfo()` time —
+        /// rather than re-resolved inside the default closure, so an injected
+        /// `ppid` seam and the published tty always describe the same process.
+        /// (The default used to call `claudeAncestorPID()` itself, which let a
+        /// test's injected ppid and the tty's process-table fallback silently
+        /// diverge.)
+        public var ttyName: @Sendable (Int32) -> String?
         public var variables: [String: String]
 
         public init(
             now: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
             pid: @escaping @Sendable () -> Int32 = { getpid() },
             ppid: @escaping @Sendable () -> Int32 = { ClaudeHookPublisher.claudeAncestorPID() },
-            ttyName: @escaping @Sendable () -> String? = { ClaudeHookPublisher.controllingTTY() },
+            ttyName: @escaping @Sendable (Int32) -> String? = {
+                ClaudeHookPublisher.controllingTTY(claudePID: $0)
+            },
             variables: [String: String] = ProcessInfo.processInfo.environment
         ) {
             self.now = now
@@ -115,10 +128,13 @@ public struct ClaudeHookPublisher: Sendable {
     /// Safe metadata only: identity and location of the terminal, never its
     /// contents and never argv/env beyond `$TERM_PROGRAM`.
     func processInfo() -> ClaudeHookProcessInfo {
-        ClaudeHookProcessInfo(
+        // ONE ppid resolution feeds both fields: the published claudePID and
+        // the tty's process-table fallback must describe the same process.
+        let claudePID = environment.ppid()
+        return ClaudeHookProcessInfo(
             hookPID: environment.pid(),
-            claudePID: environment.ppid(),
-            tty: environment.ttyName(),
+            claudePID: claudePID,
+            tty: environment.ttyName(claudePID),
             termProgram: environment.variables["TERM_PROGRAM"].flatMap { $0.isEmpty ? nil : $0 }
         )
     }
@@ -149,13 +165,61 @@ public struct ClaudeHookPublisher: Sendable {
     /// The controlling TTY of this hook process, if any. Claude Code runs hooks
     /// as children of the session, so this is the session's terminal device —
     /// the eventual join point for a focus probe.
-    public static func controllingTTY() -> String? {
+    ///
+    /// Three sources, cheapest first, because the first one is a lie in the
+    /// field: Claude Code wires ALL THREE hook fds to pipes (stdin carries the
+    /// hook JSON, stdout carries the response), so `isatty` never fires and
+    /// every session published `tty: nil` — the focus join could not match
+    /// anything (field finding, 2026-07-20). The controlling terminal still
+    /// exists; `/dev/tty` names it without needing any fd to be it. The
+    /// process-table read is the true last resort: it reports CLAUDE's terminal
+    /// rather than ours, so it answers even for a hook fully detached from the
+    /// controlling terminal (setsid), and claude always sits on the pane's tty.
+    public static func controllingTTY(claudePID: Int32? = nil) -> String? {
         for fd in [Int32(0), 1, 2] where isatty(fd) == 1 {
             if let name = ttyname(fd) {
                 return String(cString: name)
             }
         }
+        let fd = open("/dev/tty", O_RDONLY | O_NONBLOCK | O_NOCTTY)
+        if fd >= 0 {
+            defer { close(fd) }
+            if let name = ttyname(fd) {
+                return String(cString: name)
+            }
+        }
+        if let claudePID, let device = ttyDevicePath(forProcess: claudePID) {
+            return device
+        }
+        // Outcome-only, never a path or pid: a silent nil here made a broken
+        // hook-side capture indistinguishable from a failed pane read in the
+        // field (2026-07-20) — the join's tty half simply never matched and
+        // nothing said why. Unified log only; stdout/stderr stay silent per
+        // the hook contract.
+        #if canImport(os)
+        Logger(subsystem: "com.localvoxtral", category: "ClaudeHook").info(
+            "controlling tty unresolved: fds piped, /dev/tty unanswering, process table has no device"
+        )
+        #endif
         return nil
+    }
+
+    /// The `/dev/…` path of `pid`'s controlling terminal from the process
+    /// table (`kinfo_proc.kp_eproc.e_tdev`), or nil when the process does not
+    /// exist or has no terminal. Reads metadata about a pid we already hold —
+    /// no fds, no signals, no assumptions about our own session.
+    static func ttyDevicePath(forProcess pid: pid_t) -> String? {
+        guard pid > 0 else { return nil }
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0,
+              size > 0,
+              info.kp_proc.p_pid == pid
+        else { return nil }
+        let tdev = info.kp_eproc.e_tdev
+        guard tdev != -1, tdev != 0, let name = devname(tdev, S_IFCHR) else { return nil }
+        return "/dev/" + String(cString: name)
     }
 
     /// Write to stdout with raw `write(2)`, looping over partial writes.

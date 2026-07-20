@@ -73,6 +73,9 @@ final class SettingsStoreOutOfBoxDefaultsTests: XCTestCase {
 
         XCTAssertFalse(store.repoVocabularyEnabled)
         XCTAssertFalse(store.polishClipboardContextEnabled)
+        // The endpoint trade is its own opt-in on top of those: fresh installs
+        // keep every context surface loopback-only.
+        XCTAssertFalse(store.polishContextTrustedEndpointEnabled)
     }
 
     func testFreshInstall_neverOverwritesAChoiceTheUserAlreadyMade() {

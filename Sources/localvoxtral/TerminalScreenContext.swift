@@ -89,8 +89,9 @@ enum TerminalScreenStopSample: Equatable, Sendable {
     /// only our ability to confirm the screen is gone.
     case readFailed
     /// The gate REJECTED at stop: the setting was turned off, the endpoint is
-    /// no longer loopback, or Accessibility trust was revoked mid-session. The
-    /// user has withdrawn consent; nothing captured under it may be used.
+    /// no longer permitted (not loopback, and the trusted-endpoint opt-in is
+    /// off or was withdrawn), or Accessibility trust was revoked mid-session.
+    /// The user has withdrawn consent; nothing captured under it may be used.
     case policyRejected
     /// The start PID is gone, or now resolves to a different bundle ID.
     case targetChanged
@@ -168,8 +169,13 @@ enum TerminalScreenRawAttachmentPolicy {
 /// What to do with a terminal screen capture at commit time, after comparing
 /// the start-of-dictation sample against a stop-time re-read.
 enum TerminalScreenContextDecision: Equatable, Sendable {
-    /// The screen is byte-identical to what the user was looking at when they
-    /// started speaking. Safe to put the excerpt in the prompt AND use it for
+    /// The screen is identical — after the deterministic whitespace compaction
+    /// every read passes through (`TerminalScreenAXReader.sanitizedScreenText`)
+    /// — to what the user was looking at when they started speaking. NOT
+    /// byte-identical to the raw AX payload: a redraw that only changed row
+    /// padding or blank-row runs intentionally still renders, because the
+    /// compacted form is what both captures, the comparison, and the excerpt
+    /// all see. Safe to put the excerpt in the prompt AND use it for
     /// vocabulary grounding.
     case render(excerpt: String)
 
@@ -197,7 +203,8 @@ enum TerminalScreenContextDecision: Equatable, Sendable {
         /// with the commit is unsound.
         case targetChanged = "target-changed"
         /// The gate that authorized the start capture no longer holds: setting
-        /// off, endpoint no longer loopback, or trust revoked. Consent was
+        /// off, endpoint no longer permitted (loopback-only unless the
+        /// trusted-endpoint opt-in still holds), or trust revoked. Consent was
         /// withdrawn mid-session, so the capture taken under it is discarded
         /// entirely — not downgraded to matching-only.
         case policyRejected = "policy-rejected"
@@ -236,17 +243,21 @@ enum TerminalScreenContext {
     /// non-Ghostty app means the app's screen is never touched at all.
     ///
     /// Order is deliberate and cheapest-first: the user's explicit opt-out wins
-    /// over everything, then the endpoint promise (screen text must never leave
-    /// this Mac), then the app allowlist, then trust — the only one that can
+    /// over everything, then the endpoint promise (screen text stays on this
+    /// Mac unless the trusted-endpoint opt-in relaxes it — default off, fails
+    /// closed), then the app allowlist, then trust — the only one that can
     /// prompt or vary at runtime.
     static func shouldAttemptRead(
         settingEnabled: Bool,
         endpointURL: URL,
         bundleID: String?,
-        isAccessibilityTrusted: Bool
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool = false
     ) -> Bool {
         guard settingEnabled else { return false }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else { return false }
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL, trustedEndpointEnabled: trustedEndpointEnabled
+        ) else { return false }
         guard TerminalScreenAllowlist.isSupported(bundleID) else { return false }
         return isAccessibilityTrusted
     }

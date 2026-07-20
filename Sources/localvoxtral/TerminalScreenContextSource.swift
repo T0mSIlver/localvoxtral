@@ -57,14 +57,16 @@ enum TerminalScreenContextSource {
     static func captureAtStart(
         settingEnabled: Bool,
         endpointURL: URL,
-        isAccessibilityTrusted: Bool
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool = false
     ) -> TerminalScreenCapture? {
         guard let target = frontmostTarget() else { return nil }
         guard TerminalScreenContext.shouldAttemptRead(
             settingEnabled: settingEnabled,
             endpointURL: endpointURL,
             bundleID: target.bundleID,
-            isAccessibilityTrusted: isAccessibilityTrusted
+            isAccessibilityTrusted: isAccessibilityTrusted,
+            trustedEndpointEnabled: trustedEndpointEnabled
         ) else {
             return nil
         }
@@ -89,7 +91,8 @@ enum TerminalScreenContextSource {
         start: TerminalScreenCapture?,
         settingEnabled: Bool,
         endpointURL: URL,
-        isAccessibilityTrusted: Bool
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool = false
     ) -> TerminalScreenContextDecision {
         // ORDER IS LOAD-BEARING: sample first, authorize second.
         //
@@ -99,7 +102,7 @@ enum TerminalScreenContextSource {
         // knows whether that gate still holds. Authorizing first would:
         //
         // - read a title after the user turned the setting off, repointed the
-        //   endpoint off-loopback, or revoked trust — i.e. after consent was
+        //   endpoint no longer permitted, or revoked trust — i.e. after consent was
         //   withdrawn (`.policyRejected`);
         // - read the title of a RECYCLED PID's new owner (`.targetChanged`).
         //   The authorizer allowlist-checks the START capture's bundle ID, so a
@@ -114,7 +117,8 @@ enum TerminalScreenContextSource {
             start: start,
             settingEnabled: settingEnabled,
             endpointURL: endpointURL,
-            isAccessibilityTrusted: isAccessibilityTrusted
+            isAccessibilityTrusted: isAccessibilityTrusted,
+            trustedEndpointEnabled: trustedEndpointEnabled
         )
         // Asked about the START capture's target — the pane the user was
         // actually looking at while speaking — never the frontmost app, which by
@@ -144,7 +148,8 @@ enum TerminalScreenContextSource {
         start: TerminalScreenCapture?,
         settingEnabled: Bool,
         endpointURL: URL,
-        isAccessibilityTrusted: Bool
+        isAccessibilityTrusted: Bool,
+        trustedEndpointEnabled: Bool
     ) -> TerminalScreenStopSample {
         // Irrelevant when start is nil (reconcile drops first); keeps the
         // signature total.
@@ -164,7 +169,8 @@ enum TerminalScreenContextSource {
             settingEnabled: settingEnabled,
             endpointURL: endpointURL,
             bundleID: stopTarget.bundleID,
-            isAccessibilityTrusted: isAccessibilityTrusted
+            isAccessibilityTrusted: isAccessibilityTrusted,
+            trustedEndpointEnabled: trustedEndpointEnabled
         ) else {
             return .policyRejected
         }

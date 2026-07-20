@@ -65,6 +65,7 @@ PATTERNS=(
   '*ClaudeHookInputParser*'                          # which hook fields become session state
   'integrations/claude-code/*'                       # the plugin that publishes those hooks
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
+  '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
   '*DictationViewModel+Session.swift'                # polish-and-commit path
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite

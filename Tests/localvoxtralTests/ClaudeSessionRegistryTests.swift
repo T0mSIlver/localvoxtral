@@ -60,7 +60,8 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         prompt: String? = nil,
         files: [ClaudeFileTouch] = [],
         claudePID: Int32? = nil,
-        hookPID: Int32 = 777
+        hookPID: Int32 = 777,
+        tty: String? = nil
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: event,
@@ -69,7 +70,7 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             rawCwd: cwd,
             prompt: prompt,
             files: files,
-            process: claudePID.map { ClaudeHookProcessInfo(hookPID: hookPID, claudePID: $0) }
+            process: claudePID.map { ClaudeHookProcessInfo(hookPID: hookPID, claudePID: $0, tty: tty) }
         )
     }
 
@@ -324,6 +325,65 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         guard case .resolved = registry.resolve(marker: ClaudeSessionMarker(value: "lvx-1")) else {
             return XCTFail("remote sessions rely on TTL, not local pid liveness")
         }
+    }
+
+    // MARK: TTY lookup — the focus join
+
+    func testTTYLookupResolvesTheLocalSessionOnThatDevice() throws {
+        let registry = makeRegistry()
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
+        )
+        guard case .resolved(let snapshot) = registry.resolve(tty: "/dev/ttys003") else {
+            return XCTFail("expected the session on that device")
+        }
+        XCTAssertEqual(snapshot.sessionID, "s1")
+    }
+
+    func testTTYLookupNeverMatchesARemoteSession() {
+        // The spoof this closes: a remote session's TTY names a device on
+        // ANOTHER machine. If an SSH host could publish "/dev/ttys003" and
+        // match a local pane, it would claim that pane's dictations — so
+        // remote candidates are refused outright, even on exact match.
+        let registry = makeRegistry()
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"),
+            origin: .remote(channel: "ssh")
+        )
+        XCTAssertEqual(registry.resolve(tty: "/dev/ttys003"), .unknown)
+    }
+
+    func testTwoLocalSessionsOnOneTTYAbstainAsAmbiguous() {
+        // A suspended Claude beneath a new one in the same pane. Guessing
+        // would attribute one session's repo to the other's dictation.
+        let registry = makeRegistry(markers: TestMarkers(["lvx-1", "lvx-2"]))
+        registry.ingest(
+            record(.sessionStart, session: "s1", claudePID: 9001, tty: "/dev/ttys003"),
+            origin: local
+        )
+        registry.ingest(
+            record(.sessionStart, session: "s2", claudePID: 9002, tty: "/dev/ttys003"),
+            origin: local
+        )
+        XCTAssertEqual(registry.resolve(tty: "/dev/ttys003"), .ambiguous)
+    }
+
+    func testTTYLookupReportsStaleWhenTheOnlyMatchIsDead() {
+        let liveness = TestLiveness()
+        let registry = makeRegistry(liveness: liveness)
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
+        )
+        liveness.kill(9001)
+        XCTAssertEqual(registry.resolve(tty: "/dev/ttys003"), .stale)
+    }
+
+    func testTTYLookupIsUnknownForAnUnseenDevice() {
+        let registry = makeRegistry()
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
+        )
+        XCTAssertEqual(registry.resolve(tty: "/dev/ttys007"), .unknown)
     }
 
     // MARK: Workspace lookup — ambiguity

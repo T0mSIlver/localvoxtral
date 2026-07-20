@@ -183,6 +183,36 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Look up by the focused pane's controlling TTY — the focus join.
+    ///
+    /// Only LOCAL sessions are candidates: a remote session's TTY names a
+    /// device on another machine, where it can collide with an unrelated local
+    /// pane — matching it here would let an SSH host claim a local pane by
+    /// publishing that pane's TTY. Abstains `.ambiguous` when two live local
+    /// sessions claim one TTY (a suspended Claude beneath a new one in the same
+    /// pane); the caller's marker fallback may still disambiguate.
+    public func resolve(tty: String) -> ClaudeMarkerResolution {
+        let timestamp = now()
+        return state.withLock { state in
+            let matches = state.sessions.values.filter { snapshot in
+                snapshot.origin.isLocalAuthenticated
+                    && snapshot.process?.tty == tty
+                    && isFresh(snapshot, now: timestamp)
+            }
+            switch matches.count {
+            case 0:
+                let hadStale = state.sessions.values.contains {
+                    $0.origin.isLocalAuthenticated && $0.process?.tty == tty
+                }
+                return hadStale ? .stale : .unknown
+            case 1:
+                return .resolved(matches[0])
+            default:
+                return .ambiguous
+            }
+        }
+    }
+
     public func snapshot(sessionID: String) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         return state.withLock { state in

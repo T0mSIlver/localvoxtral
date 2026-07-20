@@ -818,6 +818,29 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         XCTAssertNil(record?.polishContextSummary)
     }
 
+    /// The trusted-endpoint opt-in is the ONE way a non-loopback endpoint may
+    /// receive clipboard context: with the toggle ON and the opt-in ON, the
+    /// same remote endpoint that just skipped the pasteboard now reads it and
+    /// attaches the context message (mirror of
+    /// `testRemoteEndpointNeverReadsPasteboardAndSkipsContext`).
+    func testTrustedEndpointOptInAdmitsClipboardContextToRemoteEndpoint() async throws {
+        let pasteboard = PasteboardStub(string: "UserSessionManager.swift")
+        let (record, request) = await runClipboardContextSession(
+            clipboardEnabled: true,
+            pasteboard: pasteboard,
+            endpointURL: "https://example.com/v1/chat/completions",
+            trustedEndpointEnabled: true
+        )
+
+        XCTAssertGreaterThan(pasteboard.stringCallCount, 0, "the opt-in admits the read")
+        let prompts = try XCTUnwrap(request?.userPrompts)
+        XCTAssertTrue(
+            prompts.contains { $0.contains(PolishContextClipboardReader.contextMessageInstruction) }
+        )
+        XCTAssertTrue(prompts.contains { $0.contains("UserSessionManager.swift") })
+        XCTAssertNotNil(record?.polishContextSummary)
+    }
+
     /// Clipboard context is a model hint, not a reason to rewrite or reject
     /// the model response after inference.
     func testStandardProfileCommitsClipboardDerivedModelOutput() async {
@@ -937,7 +960,8 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     private func runClipboardContextSession(
         clipboardEnabled: Bool,
         pasteboard: PasteboardStub,
-        endpointURL: String = "http://127.0.0.1:8472/v1/chat/completions"
+        endpointURL: String = "http://127.0.0.1:8472/v1/chat/completions",
+        trustedEndpointEnabled: Bool = false
     ) async -> (record: DictationSessionRecord?, request: LLMPolishingRequest?) {
         let settings = makeSettings(outputMode: .overlayBuffer)
         settings.llmPolishingEnabled = true
@@ -948,6 +972,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         settings.polishingBackendMode = .externalURL
         settings.llmPolishingEndpointURL = endpointURL
         settings.polishClipboardContextEnabled = clipboardEnabled
+        settings.polishContextTrustedEndpointEnabled = trustedEndpointEnabled
 
         let mockConfig = MockAppConfigStore(
             promptTemplates: LLMPromptTemplates(
@@ -1340,6 +1365,29 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         let prompts = try XCTUnwrap(request?.userPrompts)
         XCTAssertFalse(prompts.contains { $0.contains("Repository vocabulary") })
         XCTAssertNil(record?.polishContextSummary)
+    }
+
+    /// The trusted-endpoint opt-in admits repo vocabulary to a remote
+    /// endpoint: the same configuration that just skipped the seam now reaches
+    /// it and injects the section (mirror of
+    /// `testRepoVocabularyRemoteEndpointSkipsInjection`).
+    func testTrustedEndpointOptInAdmitsRepoVocabularyToRemoteEndpoint() async throws {
+        let counter = RepoVocabularyOverrideCounter()
+        let (record, request) = await runRepoVocabularySession(
+            repoVocabularyEnabled: true,
+            endpointURL: "https://example.com/v1/chat/completions",
+            trustedEndpointEnabled: true,
+            vocabularyEntries: [
+                ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot t s"]),
+            ],
+            overrideCounter: counter
+        )
+
+        XCTAssertEqual(counter.count, 1, "the opt-in admits the vocabulary pipeline")
+        let joined = try XCTUnwrap(request?.userPrompts).joined(separator: "\n")
+        XCTAssertTrue(joined.contains("Repository vocabulary"))
+        XCTAssertTrue(joined.contains("useAuth.ts"))
+        XCTAssertEqual(record?.polishContextSummary, "vocab:1")
     }
 
     /// The user removed `{{replacement_dictionary}}` from their template
@@ -1741,6 +1789,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
     private func runRepoVocabularySession(
         repoVocabularyEnabled: Bool,
         endpointURL: String = "http://127.0.0.1:8472/v1/chat/completions",
+        trustedEndpointEnabled: Bool = false,
         templateUserContent: String =
             "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}",
         vocabularyEntries: [ReplacementEntry]?,
@@ -1751,6 +1800,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         settings.polishingBackendMode = .externalURL
         settings.llmPolishingEndpointURL = endpointURL
         settings.repoVocabularyEnabled = repoVocabularyEnabled
+        settings.polishContextTrustedEndpointEnabled = trustedEndpointEnabled
 
         // Both profiles use the same template so the injected section (or its
         // absence) is observable regardless of the agent/standard switch.

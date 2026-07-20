@@ -71,9 +71,11 @@ struct SystemPasteboardReader: PasteboardReading {
 
 /// A capped, sanitized excerpt of the user's clipboard, fed to the polish LLM as
 /// reference context so it can ground near-miss STT of technical terms (file
-/// names, identifiers, URLs, error names) to their exact spelling. Opt-in and
-/// fully local — context is only ever attached when the polishing endpoint is
-/// loopback (`isLoopbackEndpoint`), so the excerpt never leaves this Mac.
+/// names, identifiers, URLs, error names) to their exact spelling. Opt-in, and
+/// local by default — context is only ever attached when the polishing endpoint
+/// is permitted (`isPermittedContextEndpoint`): loopback always, and any other
+/// endpoint only under the explicit trusted-endpoint opt-in
+/// (`SettingsStore.polishContextTrustedEndpointEnabled`, default off).
 struct PolishClipboardContext: Equatable {
     /// The COMPLETE sanitized clipboard text (bounded only by the safety cap),
     /// not the excerpt that gets rendered into the prompt.
@@ -215,20 +217,37 @@ enum PolishContextClipboardReader {
     }
 
     /// True when `url`'s host is a loopback destination — "127.0.0.1",
-    /// "localhost", or "::1". This is the privacy gate for clipboard context:
-    /// the polishing endpoint is user-configurable and may point at a cloud
-    /// provider, and the Settings copy promises the clipboard never leaves this
-    /// Mac, so context is only ever attached to loopback endpoints (the managed
-    /// polishd endpoint is 127.0.0.1). LAN IPs are deliberately NOT local for
-    /// this purpose — another machine is off-Mac. Foundation has returned IPv6
-    /// literal hosts both bare ("::1") and bracketed ("[::1]") across versions;
-    /// brackets are normalized away before comparing.
+    /// "localhost", or "::1". This is the DEFAULT half of the context privacy
+    /// gate (`isPermittedContextEndpoint`): the polishing endpoint is
+    /// user-configurable and may point at a cloud provider, so without the
+    /// explicit trusted-endpoint opt-in, context is only ever attached to
+    /// loopback endpoints (the managed polishd endpoint is 127.0.0.1). LAN IPs
+    /// are deliberately NOT loopback for this purpose — another machine is
+    /// off-Mac, and sending context there is exactly what the opt-in exists to
+    /// consent to. Foundation has returned IPv6 literal hosts both bare
+    /// ("::1") and bracketed ("[::1]") across versions; brackets are
+    /// normalized away before comparing.
     static func isLoopbackEndpoint(_ url: URL) -> Bool {
         guard var host = url.host?.lowercased() else { return false }
         if host.hasPrefix("["), host.hasSuffix("]") {
             host = String(host.dropFirst().dropLast())
         }
         return host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
+
+    /// The ONE endpoint gate shared by every polish-context surface (clipboard,
+    /// terminal screen, repo vocabulary, Claude repo/session blocks): loopback
+    /// always passes, and anything else passes only when the user has
+    /// explicitly opted in to trusting their configured polishing endpoint
+    /// with context (`SettingsStore.polishContextTrustedEndpointEnabled`,
+    /// default off — e.g. a LAN inference box, or a provider they trust).
+    /// Every surface must route through this rather than calling
+    /// `isLoopbackEndpoint` directly, so the opt-in cannot apply to some
+    /// surfaces and not others.
+    static func isPermittedContextEndpoint(
+        _ url: URL, trustedEndpointEnabled: Bool
+    ) -> Bool {
+        trustedEndpointEnabled || isLoopbackEndpoint(url)
     }
 
     /// The pasteboard's plain string with the sensitive-type and empty-content

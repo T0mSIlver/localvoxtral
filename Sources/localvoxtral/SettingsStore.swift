@@ -254,6 +254,8 @@ final class SettingsStore {
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
         static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
+        static let polishContextTrustedEndpointEnabled =
+            "settings.polish_context_trusted_endpoint_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -405,10 +407,11 @@ final class SettingsStore {
     /// polish LLM as reference context so it can ground near-miss STT of
     /// technical terms (file names, identifiers, URLs, error names) to their
     /// exact spelling. Opt-in (default false), and applied only when the
-    /// polishing endpoint is loopback
-    /// (`PolishContextClipboardReader.isLoopbackEndpoint`) — a remote endpoint
-    /// must never receive clipboard content. When off or remote, the pasteboard
-    /// is never read at all.
+    /// polishing endpoint is permitted (`PolishContextClipboardReader
+    /// .isPermittedContextEndpoint`: loopback, or any endpoint under the
+    /// explicit `polishContextTrustedEndpointEnabled` opt-in) — an endpoint the
+    /// user has not consented to must never receive clipboard content. When off
+    /// or the endpoint is not permitted, the pasteboard is never read at all.
     var polishClipboardContextEnabled: Bool {
         didSet {
             defaults.set(polishClipboardContextEnabled, forKey: Keys.polishClipboardContextEnabled)
@@ -433,11 +436,12 @@ final class SettingsStore {
     /// see while speaking. Opt-in (default false), Ghostty only
     /// (`TerminalScreenAllowlist` — NOT the broad terminal insertion allowlist,
     /// which spans editors like VS Code / Cursor), and applied only when the
-    /// polishing endpoint is loopback
-    /// (`PolishContextClipboardReader.isLoopbackEndpoint`) — a remote endpoint
-    /// must never receive screen content. When off, remote, or a non-Ghostty
-    /// app is focused, the screen is never read at all
-    /// (`TerminalScreenContext.shouldAttemptRead`).
+    /// polishing endpoint is permitted (`PolishContextClipboardReader
+    /// .isPermittedContextEndpoint`: loopback, or any endpoint under the
+    /// explicit `polishContextTrustedEndpointEnabled` opt-in) — an endpoint the
+    /// user has not consented to must never receive screen content. When off,
+    /// the endpoint is not permitted, or a non-Ghostty app is focused, the
+    /// screen is never read at all (`TerminalScreenContext.shouldAttemptRead`).
     ///
     /// Scope, in two tiers — and the help text must state the second one,
     /// because it is the one that SENDS text:
@@ -458,21 +462,23 @@ final class SettingsStore {
         }
     }
 
-    /// When true, and the polishing endpoint is loopback
-    /// (`PolishContextClipboardReader.isLoopbackEndpoint`), file names / path
+    /// When true, and the polishing endpoint is permitted
+    /// (`PolishContextClipboardReader.isPermittedContextEndpoint`), file names / path
     /// components / the branch name from the git repo in the focused terminal
     /// are harvested and the transcript-relevant ones injected into the polish
     /// prompt's replacement-dictionary section, so the model spells technical
     /// terms exactly. Opt-in (default false), prompt-context only (no
-    /// deterministic replacement), local endpoints only — repo file names must
-    /// never ride to a remote endpoint. See `RepoVocabulary`.
+    /// deterministic replacement), permitted endpoints only — repo file names
+    /// must never ride to an endpoint the user has not consented to. See
+    /// `RepoVocabulary`.
     var repoVocabularyEnabled: Bool {
         didSet {
             defaults.set(repoVocabularyEnabled, forKey: Keys.repoVocabularyEnabled)
         }
     }
 
-    /// When true, and the polishing endpoint is loopback, and the focused
+    /// When true, and the polishing endpoint is permitted (loopback, or any
+    /// endpoint under the `polishContextTrustedEndpointEnabled` opt-in), and the focused
     /// terminal pane positively joins to one live Claude Code session, that
     /// session's repository CONTENT — status, uncommitted diffs, and the
     /// contents of files the agent just read or edited — plus the previous
@@ -495,11 +501,34 @@ final class SettingsStore {
     /// who agreed to "spell my filenames right" has not thereby agreed to "send
     /// the body of the file I am editing", so reusing the existing toggle would
     /// silently widen a consent they already gave. Opt-in (default false),
-    /// loopback endpoints only — repository contents must never ride to a
-    /// remote endpoint. See `ClaudeRepoCollector`.
+    /// permitted endpoints only — repository contents must never ride to an
+    /// endpoint the user has not consented to. See `ClaudeRepoCollector`.
     var claudeRepoContextEnabled: Bool {
         didSet {
             defaults.set(claudeRepoContextEnabled, forKey: Keys.claudeRepoContextEnabled)
+        }
+    }
+
+    /// When true, the loopback-only endpoint gate that every polish-context
+    /// surface shares (clipboard, terminal screen, repo vocabulary, Claude
+    /// repo/session blocks — `PolishContextClipboardReader
+    /// .isPermittedContextEndpoint`) also admits the configured polishing
+    /// endpoint when it is NOT on this Mac: a machine on the user's LAN, or a
+    /// remote provider they trust with that content.
+    ///
+    /// Opt-in (default false), and deliberately a SEPARATE consent from each
+    /// context toggle: those decide WHAT may be collected, this decides WHERE
+    /// it may be sent. Off, the per-surface promises ("local polishing
+    /// endpoints only") hold unconditionally; on, the user has explicitly
+    /// traded them for their chosen endpoint, and the Settings row's help text
+    /// names exactly that trade. Each surface's own toggle still gates
+    /// collection — this flag alone never causes a read.
+    var polishContextTrustedEndpointEnabled: Bool {
+        didSet {
+            defaults.set(
+                polishContextTrustedEndpointEnabled,
+                forKey: Keys.polishContextTrustedEndpointEnabled
+            )
         }
     }
 
@@ -735,6 +764,8 @@ final class SettingsStore {
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
         claudeRepoContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
+        polishContextTrustedEndpointEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
         modifierOnlyHotKeyEnabled = Self.loadBool(

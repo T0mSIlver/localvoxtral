@@ -162,6 +162,24 @@ enum TerminalScreenAXReader {
         return FocusedWindowMarkerRead(marker: marker, windowID: read.windowID)
     }
 
+    /// The identity of `pid`'s focused window, or nil when it cannot be
+    /// established.
+    ///
+    /// This exists for the TTY join: the marker read reports the window it
+    /// parsed the marker from, but a tty-resolved join never touches the
+    /// marker — the title has typically been clobbered by Claude Code's own
+    /// conversation title — so the window the user was focused on is
+    /// identified by this separate bounded AX read. Nil abstains at the
+    /// authorizer, exactly like a nil marker-read identity (review F2).
+    static func focusedWindowIdentity(applicationPID pid: pid_t) -> CGWindowID? {
+        #if DEBUG
+        if let override = debugTitleWindowIDOverride { return override(pid) }
+        if TerminalTargetDetector.isRunningUnderXCTest { return nil }
+        #endif
+        guard AXIsProcessTrusted() else { return nil }
+        return copyFocusedWindowTitle(applicationPID: pid)?.windowID
+    }
+
     /// The AX round trip for the title. Returns the focused window's `AXTitle`
     /// and window identity, only if that window is still owned by `pid`.
     private static func copyFocusedWindowTitle(
@@ -210,13 +228,51 @@ enum TerminalScreenAXReader {
     /// head is capped. Returns nil for text that is empty or whitespace-only —
     /// a freshly cleared terminal is not context.
     static func sanitizedScreenText(_ raw: String) -> String? {
-        let sanitized = PolishContextClipboardReader.sanitizeControlCharacters(raw)
+        let sanitized = compactedGridWhitespace(
+            PolishContextClipboardReader.sanitizeControlCharacters(raw)
+        )
         guard !sanitized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
         return sanitized.count > screenCharacterCap
             ? String(sanitized.prefix(screenCharacterCap))
             : sanitized
+    }
+
+    /// The AX grid pads rows toward the pane width and reports every blank
+    /// viewport row, so a mostly-empty pane arrives as kilobytes of spaces
+    /// (field report 2026-07-20: an idle pane rendered ~40 blank padded lines
+    /// into the polish prompt). Trailing whitespace carries no term to ground
+    /// and a run of blank rows no structure worth more than one line, so both
+    /// are compacted — and BEFORE the cap, where padding could otherwise evict
+    /// real text from the capped head. Applied at the single sanitization seam
+    /// so matching, start/stop comparison, and the rendered excerpt all see
+    /// the same form (compaction is deterministic: identical screens stay
+    /// identical).
+    static func compactedGridWhitespace(_ text: String) -> String {
+        var lines: [Substring] = []
+        var pendingBlank = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            var trimmed = line
+            // NBSP (U+00A0) alongside space/tab: terminal grids use it for
+            // padding that must not wrap, and a trailing run of it is padding
+            // like any other.
+            while let last = trimmed.last, last == " " || last == "\t" || last == "\u{00A0}" {
+                trimmed = trimmed.dropLast()
+            }
+            if trimmed.isEmpty {
+                // Leading and trailing blank runs vanish entirely (pending is
+                // only flushed when a later non-blank line arrives).
+                pendingBlank = !lines.isEmpty
+            } else {
+                if pendingBlank {
+                    lines.append("")
+                    pendingBlank = false
+                }
+                lines.append(trimmed)
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// The AX round trip. Returns the raw (unsanitized) `AXValue` string of the

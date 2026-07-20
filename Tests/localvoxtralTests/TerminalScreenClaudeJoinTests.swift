@@ -52,7 +52,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
 
     private func record(
         session: String = "s1",
-        claudePID: Int32? = 9001
+        claudePID: Int32? = 9001,
+        tty: String? = nil
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: .sessionStart,
@@ -61,7 +62,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             rawCwd: "/repo",
             prompt: nil,
             files: [],
-            process: claudePID.map { ClaudeHookProcessInfo(hookPID: 777, claudePID: $0) }
+            process: claudePID.map { ClaudeHookProcessInfo(hookPID: 777, claudePID: $0, tty: tty) }
         )
     }
 
@@ -86,7 +87,9 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
     private func resolver(
         registry: ClaudeSessionRegistry,
         title: String?,
-        titleWindowID: CGWindowID? = 101
+        focusedTTY: String? = nil,
+        titleWindowID: CGWindowID? = 101,
+        ttyWindowID: CGWindowID? = 101
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
@@ -96,7 +99,9 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
                         marker: $0, windowID: titleWindowID
                     )
                 }
-            }
+            },
+            focusedTerminalTTY: { _ in focusedTTY },
+            focusedWindowID: { _ in ttyWindowID }
         )
     }
 
@@ -158,6 +163,180 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             join.localWorkspacePath,
             "a remote session must never hand a filesystem path to the collector"
         )
+    }
+
+    // MARK: - TTY join
+
+    // The title-war case this mechanism exists for: Claude Code's own
+    // conversation title has clobbered the marker, so the title read answers
+    // nothing — but the focused pane's device still names the session.
+    func testTTYJoinsWhenTheTitleCarriesNoMarker() throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(record(tty: "/dev/ttys003"), origin: local)
+        )
+        let joinResolver = resolver(
+            registry: registry, title: "Fixing the flaky supervisor test", focusedTTY: "/dev/ttys003"
+        )
+        let join = try XCTUnwrap(joinResolver.resolve(target: ghostty))
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertEqual(join.marker, ClaudeSessionMarker(value: "lvx-abcd"))
+        // The tty-joined session revalidates at stop through the same
+        // marker-keyed liveness path as a title join.
+        XCTAssertTrue(joinResolver.isStillLive(join))
+    }
+
+    func testTTYJoinDoesNotReadTheTitleAtAll() throws {
+        // Precedence is observable: when the device answers, the title is not
+        // even consulted — a stale marker in it cannot compete.
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        var titleReads = 0
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in
+                titleReads += 1
+                return nil
+            },
+            focusedTerminalTTY: { _ in "/dev/ttys003" },
+            focusedWindowID: { _ in self.windowA }
+        )
+        XCTAssertNotNil(joinResolver.resolve(target: ghostty))
+        XCTAssertEqual(titleReads, 0)
+    }
+
+    func testTTYJoinWinsOverAStaleMarkerNamingAnotherSession() throws {
+        // Pane recycling: claude #1 ended, its marker lingers in the title;
+        // claude #2 runs in the same pane on the same device. The process
+        // table is current, the title is history — the device must win.
+        let registry = makeRegistry(markers: ["lvx-aaaa", "lvx-bbbb"])
+        XCTAssertNotNil(
+            registry.ingest(record(session: "old", tty: "/dev/ttys009"), origin: local)
+        )
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "new", claudePID: 9002, tty: "/dev/ttys003"), origin: local
+            )
+        )
+        let join = try XCTUnwrap(
+            resolver(registry: registry, title: "lvx-aaaa", focusedTTY: "/dev/ttys003")
+                .resolve(target: ghostty)
+        )
+        XCTAssertEqual(join.snapshot.sessionID, "new")
+    }
+
+    func testUnmatchedTTYFallsBackToTheTitleMarker() throws {
+        // Old Ghostty answers no tty; a device with no session answers
+        // `.unknown`. Either way the marker path must still join — the tty
+        // mechanism only ever adds joins, never removes one.
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        let join = try XCTUnwrap(
+            resolver(registry: registry, title: "lvx-abcd", focusedTTY: "/dev/ttys777")
+                .resolve(target: ghostty)
+        )
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+    }
+
+    func testAmbiguousTTYFallsBackToTheTitleMarker() throws {
+        // Two local sessions on one device abstain at the registry; the
+        // marker — which names exactly one of them — may still disambiguate.
+        let registry = makeRegistry(markers: ["lvx-aaaa", "lvx-bbbb"])
+        XCTAssertNotNil(
+            registry.ingest(record(session: "s1", tty: "/dev/ttys003"), origin: local)
+        )
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "s2", claudePID: 9002, tty: "/dev/ttys003"), origin: local
+            )
+        )
+        let join = try XCTUnwrap(
+            resolver(registry: registry, title: "lvx-bbbb", focusedTTY: "/dev/ttys003")
+                .resolve(target: ghostty)
+        )
+        XCTAssertEqual(join.snapshot.sessionID, "s2")
+    }
+
+    // The tty join carries the focused window's identity exactly like the
+    // marker join carries the title read's — and the authorizer holds both to
+    // the same compare. Without it, a tty join would either always refuse raw
+    // attachment (nil identity) or bypass the F2 window check entirely.
+    func testTTYJoinCarriesTheFocusedWindowIdentity() throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        let joinResolver = resolver(
+            registry: registry, title: nil, focusedTTY: "/dev/ttys003", ttyWindowID: windowB
+        )
+        let join = joinResolver.resolve(target: ghostty)
+        XCTAssertEqual(join?.windowID, windowB)
+        let gate = TerminalScreenClaudeJoinAuthorizer(resolver: joinResolver, currentJoin: { join })
+        XCTAssertTrue(
+            gate.isAuthorized(target: ghostty, windowID: windowB),
+            "precondition: the tty-joined window itself authorizes"
+        )
+        XCTAssertFalse(
+            gate.isAuthorized(target: ghostty, windowID: windowA),
+            "a capture from another window of the same app must not inherit a tty join"
+        )
+    }
+
+    // A tty join whose window identity could not be established still joins —
+    // hook state and repo context remain usable — but raw screen attachment
+    // refuses, same as an unknown marker-read identity.
+    func testTTYJoinWithUnknownWindowIdentityRefusesRawAttachment() throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        let joinResolver = resolver(
+            registry: registry, title: nil, focusedTTY: "/dev/ttys003", ttyWindowID: nil
+        )
+        let join = try XCTUnwrap(joinResolver.resolve(target: ghostty))
+        XCTAssertNil(join.windowID)
+        let gate = TerminalScreenClaudeJoinAuthorizer(
+            resolver: joinResolver, currentJoin: { join }
+        )
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: nil))
+    }
+
+    func testRemoteSessionNeverJoinsViaTTY() {
+        // End-to-end shape of the registry's remote refusal: an SSH session
+        // publishing the local pane's device must not claim the pane. With no
+        // marker in the title either, there is no join at all.
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(
+                record(tty: "/dev/ttys003"), origin: .remote(channel: "ssh")
+            )
+        )
+        XCTAssertNil(
+            resolver(registry: registry, title: nil, focusedTTY: "/dev/ttys003")
+                .resolve(target: ghostty)
+        )
+    }
+
+    // MARK: - TTY reply validation
+
+    func testValidatedTTYAcceptsOnlyPlausibleDevicePaths() {
+        XCTAssertEqual(
+            GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys000"), "/dev/ttys000"
+        )
+        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY(nil))
+        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY(""))
+        XCTAssertNil(
+            GhosttyFocusedTerminalTTYReader.validatedTTY("ttys000"),
+            "a bare name is not a device path"
+        )
+        XCTAssertNil(
+            GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys0 00"),
+            "whitespace means this is a title, not a device"
+        )
+        XCTAssertNil(
+            GhosttyFocusedTerminalTTYReader.validatedTTY(
+                "/dev/tty" + String(repeating: "s", count: 64)
+            ),
+            "a reply longer than any real pty path is not a device"
+        )
+        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys00é"))
     }
 
     // MARK: - Abstentions
@@ -384,6 +563,29 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         }
         TerminalScreenContextSource.debugTargetForPIDOverride = { _ in self.ghostty }
         TerminalScreenAXReader.debugScreenReadOverride = { _ in "swift build" }
+        TerminalScreenAXReader.debugScreenWindowIDOverride = { _ in self.windowA }
+        let decision = TerminalScreenContextSource.reconcileAtStop(
+            start: TerminalScreenCapture(text: "swift build", target: ghostty, windowID: windowA),
+            settingEnabled: true,
+            endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
+            isAccessibilityTrusted: true
+        )
+        XCTAssertEqual(decision, .render(excerpt: "swift build"))
+    }
+
+    // "Unchanged" means unchanged AFTER the deterministic whitespace
+    // compaction, not byte-identical raw AX payloads: a redraw that only
+    // changed row padding or blank-row runs still renders, because both reads
+    // pass through the same sanitize seam before comparison. This pins the
+    // `.render` contract's wording.
+    func testWhitespaceOnlyRedrawStillRendersThroughTheLiveSource() {
+        TerminalScreenRawAttachmentPolicy.debugAuthorizationOverride = {
+            $0 == self.ghostty && $1 == self.windowA
+        }
+        TerminalScreenContextSource.debugTargetForPIDOverride = { _ in self.ghostty }
+        // The stop-time raw grid re-padded the rows and grew a trailing blank
+        // run; the compacted form is identical to the start capture.
+        TerminalScreenAXReader.debugScreenReadOverride = { _ in "swift build   \u{00A0}\n\n\n\n" }
         TerminalScreenAXReader.debugScreenWindowIDOverride = { _ in self.windowA }
         let decision = TerminalScreenContextSource.reconcileAtStop(
             start: TerminalScreenCapture(text: "swift build", target: ghostty, windowID: windowA),

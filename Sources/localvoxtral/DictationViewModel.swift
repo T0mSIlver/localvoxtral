@@ -482,7 +482,7 @@ final class DictationViewModel {
     /// Test seam: injects the pasteboard the polish-context reader consults,
     /// replacing `SystemPasteboardReader` over `NSPasteboard.general` (global /
     /// unavailable in unit tests). Only resolved when the clipboard-context
-    /// setting is on AND the polishing endpoint is loopback, so a stub whose
+    /// setting is on AND the polishing endpoint is permitted, so a stub whose
     /// read methods were never called proves the no-read privacy guarantee for
     /// both the disabled toggle and a remote endpoint.
     @ObservationIgnored
@@ -497,7 +497,7 @@ final class DictationViewModel {
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
     /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
-    /// a given transcript, so VM tests exercise the setting + loopback gates
+    /// a given transcript, so VM tests exercise the setting + endpoint gates
     /// without touching live AX or a git subprocess. Consulted only AFTER those
     /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
     /// Bypasses the deadline race entirely — to exercise that, use the
@@ -1774,7 +1774,8 @@ final class DictationViewModel {
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
-            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = resolveClaudeSessionJoin(endpointURL: endpointURL)
     }
@@ -1799,11 +1800,16 @@ final class DictationViewModel {
         guard settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled else {
             return nil
         }
-        // Loopback only. Repository contents and a prior prompt must never ride
-        // to a remote endpoint, and this is the gate that guarantees no
-        // filesystem read even STARTS for one — the collector is downstream of
-        // the join, so an unresolved join means no git subprocess, no file read.
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else { return nil }
+        // Permitted endpoints only (loopback, or any endpoint under the
+        // explicit trusted-endpoint opt-in). Repository contents and a prior
+        // prompt must never ride to an endpoint the user has not consented to,
+        // and this is the gate that guarantees no filesystem read even STARTS
+        // for one — the collector is downstream of the join, so an unresolved
+        // join means no git subprocess, no file read.
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else { return nil }
         guard textInsertion.isAccessibilityTrusted else { return nil }
         guard let target = TerminalScreenContextSource.frontmostTarget() else { return nil }
         return resolver.resolve(target: target)
@@ -1835,7 +1841,8 @@ final class DictationViewModel {
             start: start,
             settingEnabled: settings.terminalScreenContextEnabled,
             endpointURL: endpointURL,
-            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
     }
 
@@ -1866,8 +1873,13 @@ final class DictationViewModel {
         transcript: String
     ) async -> ClaudeRepoSnapshot? {
         guard settings.claudeRepoContextEnabled else { return nil }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
-            Log.claudeContext.info("Claude repo context skipped: polishing endpoint is not loopback")
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else {
+            Log.claudeContext.info(
+                "Claude repo context skipped: polishing endpoint is not permitted (loopback-only without the trusted-endpoint opt-in)"
+            )
             return nil
         }
         guard let join else { return nil }
@@ -1898,14 +1910,14 @@ final class DictationViewModel {
     }
 
     /// The Claude session block's text, re-gated at commit exactly like
-    /// `claudeRepoSnapshotIfEnabled` — current setting, current loopback
+    /// `claudeRepoSnapshotIfEnabled` — current setting, currently permitted
     /// endpoint, this exact join still live.
     ///
     /// The same three gates because it carries the same kind of thing: the
     /// session's workspace name, the PRIOR PROMPT the user typed to the agent,
     /// the paths it touched, and (remote only) bounded tool excerpts. That is
     /// the session's content, which is what the setting consents to and what a
-    /// non-loopback endpoint must never receive. The block previously checked
+    /// unpermitted endpoint must never receive. The block previously checked
     /// only the setting, so a session that died mid-sentence still had its
     /// prompt attached, and a Settings change to a remote endpoint sent it
     /// there.
@@ -1921,9 +1933,12 @@ final class DictationViewModel {
     /// prior prompt's words reach the model as replacement entries.
     func claudeSessionTextIfEnabled(join: ClaudeSessionJoin?, endpointURL: URL) -> String {
         guard settings.claudeRepoContextEnabled else { return "" }
-        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+        guard PolishContextClipboardReader.isPermittedContextEndpoint(
+            endpointURL,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        ) else {
             Log.claudeContext.info(
-                "Claude session context skipped: polishing endpoint is not loopback"
+                "Claude session context skipped: polishing endpoint is not permitted (loopback-only without the trusted-endpoint opt-in)"
             )
             return ""
         }
