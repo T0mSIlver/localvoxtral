@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Reads the controlling TTY of the FOCUSED terminal pane, so the Claude join
@@ -26,11 +27,16 @@ protocol TerminalFocusedTTYReading {
 /// The live reader: one bounded AppleScript question to Ghostty.
 @MainActor
 struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
-    /// `with timeout` bounds the Apple event wait so a wedged Ghostty cannot
-    /// hold dictation start hostage — the same budget discipline as the AX
-    /// reader's per-message timeouts. `tell application id` of the frontmost
-    /// app never launches anything: the caller only asks about an app it just
-    /// observed as frontmost.
+    /// `with timeout` bounds GHOSTTY'S REPLY, so a wedged terminal cannot hold
+    /// dictation start hostage — the same budget discipline as the AX reader's
+    /// per-message timeouts. It does NOT bound TCC: the first Apple event ever
+    /// sent to Ghostty parks in the Automation consent sheet for as long as
+    /// the user leaves it open, timeout or no timeout. That first-run freeze
+    /// belongs at app launch, not mid-dictation, which is what
+    /// `GhosttyAutomationConsentPrewarm` exists for — by the time a session
+    /// start runs this read, the sheet has already come and gone.
+    /// `tell application id` of the frontmost app never launches anything: the
+    /// caller only asks about an app it just observed as frontmost.
     private static let source = """
     with timeout of 1 second
         tell application id "\(TerminalScreenAllowlist.ghosttyBundleID)"
@@ -39,12 +45,30 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
     end timeout
     """
 
+    /// Compiled once, reused for every session start. A fresh `NSAppleScript`
+    /// recompiles the (constant) source on each call — avoidable milliseconds
+    /// on the dictation-start hot path. The per-start call itself stays
+    /// synchronous-but-bounded by design: a true off-main hop would make the
+    /// join resolution async and restructure session start, so it is
+    /// deliberately deferred.
+    private static var cachedScript: NSAppleScript?
+
+    private static func compiledScript() -> NSAppleScript? {
+        if let cachedScript { return cachedScript }
+        guard let script = NSAppleScript(source: source) else { return nil }
+        // Compile eagerly so later executes reuse the compiled form; a compile
+        // error is reported by executeAndReturnError below either way.
+        script.compileAndReturnError(nil)
+        cachedScript = script
+        return script
+    }
+
     func focusedTerminalTTY(bundleID: String) -> String? {
         // Ghostty-only, exact match: the script is Ghostty's dictionary, and
         // sending it anywhere else is at best an error and at worst a prompt
         // to automate an app the user never pointed us at.
         guard bundleID == TerminalScreenAllowlist.ghosttyBundleID else { return nil }
-        guard let script = NSAppleScript(source: Self.source) else { return nil }
+        guard let script = Self.compiledScript() else { return nil }
         var error: NSDictionary?
         let result = script.executeAndReturnError(&error)
         if let error {
@@ -53,9 +77,15 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
             // -1700: `tty` not in the dictionary (Ghostty < 1.4).
             // -1743: the user declined the Automation prompt.
             let code = (error[NSAppleScript.errorNumber] as? Int) ?? 0
-            Log.claudeContext.info(
-                "Focused-pane tty unavailable (AppleScript error \(code, privacy: .public))"
-            )
+            if code == -1743 {
+                Log.claudeContext.info(
+                    "Automation permission denied — grant localvoxtral → Ghostty in System Settings > Privacy > Automation"
+                )
+            } else {
+                Log.claudeContext.info(
+                    "Focused-pane tty unavailable (AppleScript error \(code, privacy: .public))"
+                )
+            }
             return nil
         }
         return Self.validatedTTY(result.stringValue)
@@ -73,4 +103,89 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
         else { return nil }
         return raw
     }
+}
+
+/// One-shot Automation consent pre-warm for the Ghostty tty read.
+///
+/// The first Apple event this app ever sends to Ghostty raises the TCC
+/// Automation consent sheet, and the send BLOCKS until the user answers — the
+/// script's `with timeout` bounds Ghostty's reply, not TCC. Left to happen
+/// naturally, that block lands in the middle of the user's first dictation
+/// into a Claude pane. So the app fires the same read once, at launch (or as
+/// soon as Ghostty launches), with the result discarded: the sheet appears at
+/// a moment when nothing is in flight, and every later per-start read finds
+/// consent already settled.
+///
+/// Fires at most once per app run, and only when Ghostty is actually running —
+/// `tell application id` would otherwise LAUNCH Ghostty, which a background
+/// pre-warm must never do. The caller gates on the context features being
+/// enabled, so an opted-out user is never prompted; a user who enables the
+/// feature mid-run gets pre-warmed on the next launch (a Settings-toggle
+/// pre-warm is deferred until someone hits it).
+@MainActor
+enum GhosttyAutomationConsentPrewarm {
+    private static var fired = false
+    private static var launchObserver: (any NSObjectProtocol)?
+    private static var observedCenter: NotificationCenter?
+
+    /// Fires the pre-warm now when Ghostty is running, otherwise arms a
+    /// one-shot launch observer that fires it when Ghostty appears.
+    static func fireOnceWhenGhosttyIsAvailable(
+        isGhosttyRunning: @escaping @MainActor @Sendable () -> Bool = {
+            !NSRunningApplication.runningApplications(
+                withBundleIdentifier: TerminalScreenAllowlist.ghosttyBundleID
+            ).isEmpty
+        },
+        execute: @escaping @MainActor @Sendable () -> Void = {
+            _ = GhosttyFocusedTerminalTTYReader().focusedTerminalTTY(
+                bundleID: TerminalScreenAllowlist.ghosttyBundleID
+            )
+        },
+        notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
+        guard !fired, launchObserver == nil else { return }
+        if isGhosttyRunning() {
+            fire(execute)
+            return
+        }
+        observedCenter = notificationCenter
+        launchObserver = notificationCenter.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                guard !fired, isGhosttyRunning() else { return }
+                removeObserver()
+                fire(execute)
+            }
+        }
+    }
+
+    private static func fire(_ execute: @escaping @MainActor @Sendable () -> Void) {
+        fired = true
+        // A Task, not an inline call: the pre-warm can park in the consent
+        // sheet, and the caller (broker startup) must not wait on that.
+        Task { @MainActor in
+            Log.claudeContext.info("Pre-warming Ghostty Automation consent (result discarded)")
+            execute()
+        }
+    }
+
+    private static func removeObserver() {
+        if let launchObserver, let observedCenter {
+            observedCenter.removeObserver(launchObserver)
+        }
+        launchObserver = nil
+        observedCenter = nil
+    }
+
+    #if DEBUG
+    /// Test-only: restore the untouched state so each test observes its own
+    /// one-shot semantics.
+    static func debugReset() {
+        removeObserver()
+        fired = false
+    }
+    #endif
 }

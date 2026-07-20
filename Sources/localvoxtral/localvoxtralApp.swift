@@ -229,6 +229,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 focusedTerminalTTY: { ttyReader.focusedTerminalTTY(bundleID: $0) }
             )
             viewModel.claudeSessionJoinResolver = resolver
+            // Pre-warm the Automation consent sheet OFF the dictation-start
+            // path: the first Apple event to Ghostty blocks in TCC until the
+            // user answers, and that freeze must not land mid-dictation. Only
+            // for users who opted into a context feature — the pre-warm is
+            // itself the consent prompt, and an opted-out user must never see
+            // it.
+            if viewModel.settings.terminalScreenContextEnabled
+                || viewModel.settings.claudeRepoContextEnabled
+            {
+                GhosttyAutomationConsentPrewarm.fireOnceWhenGhosttyIsAvailable()
+            }
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to
