@@ -26,6 +26,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Keep gitignored build state between runs on the persistent
+          # self-hosted runner (same rationale as ci.yml/eval-e2e.yml). The
+          # workspace is shared with ci.yml, so the default `git clean -ffdx`
+          # here wiped .build and both helper DerivedData trees every night —
+          # the first CI run each morning then paid ~7 min of cold MLX C++ +
+          # Metal helper rebuilds (observed run 29763957545, 2026-07-20).
+          clean: false
+
+      - name: Clean stale outputs (keep build caches)
+        # Same repair-and-clean as ci.yml/eval-e2e.yml: clean: false skips git
+        # clean entirely, so outputs a previous run generated are removed by
+        # hand — but NOT the build caches. The .build.smoke-hidden rename is
+        # ci.yml's launch-smoke hideaway; restore it if a cancelled run died
+        # mid-smoke.
+        run: |
+          if [[ -d .build.smoke-hidden ]]; then
+            rm -rf .build
+            mv .build.smoke-hidden .build
+          fi
+          rm -rf dist logs
+          rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
+            .polishd-integration-enable.json .speechd-integration-enable.json
 
       - name: Package app bundle
         env:
