@@ -359,7 +359,11 @@ jobs:
         env:
           SPEECHD_INTEGRATION_TEST_ENABLE: "1"
           SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
-        run: swift test --filter SpeechHelperIntegrationTests
+        # --enable-code-coverage matches the unit step's build flags (same
+        # rationale as the voxmlx step above): without it this step rebuilds
+        # the whole app+test module without coverage (~17 s), and the next
+        # run's unit step rebuilds it back again.
+        run: swift test --filter SpeechHelperIntegrationTests --enable-code-coverage
 
       - name: Polishing helper integration (live model + eval baseline)
         # Spawns the helper built by the packaging step with the real pinned
@@ -373,7 +377,9 @@ jobs:
         env:
           LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
           LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
-        run: swift test --filter PolishHelperIntegrationTests
+        # --enable-code-coverage: same flag-matching rationale as the speechd
+        # step above.
+        run: swift test --filter PolishHelperIntegrationTests --enable-code-coverage
 
       - name: Zip app for artifact upload
         # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip
