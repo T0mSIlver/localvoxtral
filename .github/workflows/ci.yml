@@ -38,21 +38,10 @@ jobs:
       - name: Clean stale outputs (keep build caches)
         # clean: false above skips git clean entirely, so outputs a previous
         # run generated must be removed by hand — but NOT the build caches.
-        # Also repair the smoke test's .build rename if a cancelled run died
-        # mid-smoke (its EXIT trap doesn't run on SIGKILL): a leftover
-        # .build.smoke-hidden would make the next run's `mv` nest one dir
-        # inside the other and silently corrupt the cache.
-        run: |
-          if [[ -d .build.smoke-hidden ]]; then
-            rm -rf .build
-            mv .build.smoke-hidden .build
-          fi
-          rm -rf dist format-lint.txt default.profraw
-          # Transient eval enable markers (gitignored, marker-through-the-tree
-          # pattern): clean: false preserves them across runs, and a stray one
-          # would flip a marker-gated live suite ON in the plain unit step.
-          rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
-            .polishd-integration-enable.json .speechd-integration-enable.json
+        # Shared with ui-smoke.yml/eval-e2e.yml (same persistent workspace);
+        # the removal list and the .build.smoke-hidden repair rationale live
+        # in the script.
+        run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Clean abandoned test processes in this workspace
         # A cancelled self-hosted job can outlive the Actions process cookie
@@ -72,6 +61,7 @@ jobs:
           ./scripts/ci/test-remote-build-reap.sh
           ./scripts/ci/test-run-supervised-command.sh
           ./scripts/ci/test-ui-smoke-guard.sh
+          ./scripts/ci/test-clean-stale-outputs.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
