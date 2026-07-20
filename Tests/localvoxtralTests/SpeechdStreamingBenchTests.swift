@@ -16,6 +16,7 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         let seconds: Int
         let cadenceMilliseconds: Int
         let wavPath: String?
+        let cacheLimitMB: Int?
     }
 
     private var repoRoot: URL {
@@ -57,6 +58,9 @@ final class SpeechdStreamingBenchTests: XCTestCase {
         ]
         if let wavPath = config.wavPath, !wavPath.isEmpty {
             arguments.append(contentsOf: ["--wav", wavPath])
+        }
+        if let cacheLimitMB = config.cacheLimitMB {
+            arguments.append(contentsOf: ["--cache-limit-mb", "\(cacheLimitMB)"])
         }
 
         let process = Process()
