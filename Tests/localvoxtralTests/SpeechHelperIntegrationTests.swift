@@ -22,11 +22,8 @@ final class SpeechHelperIntegrationTests: XCTestCase {
     private static let markerFileName = ".speechd-integration-enable.json"
     private static let defaultHelperPath =
         "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd"
-    /// The upstream engine's documented 4-bit conversion. The app's current
-    /// realtime default remains the Python-backend model until the part-3
-    /// backend/catalog swap.
-    private static let defaultModel =
-        "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+    /// The same pinned managed model the app downloads and launches.
+    private static let defaultModel = SpeechModelCatalog.defaultOption.repoID
 
     /// Dedicated integration-only port, intentionally outside the app's
     /// production speechd/polishd ports (8471/8472).
@@ -91,6 +88,159 @@ final class SpeechHelperIntegrationTests: XCTestCase {
         return (binary, model?.isEmpty == false ? model! : Self.defaultModel)
     }
 
+    private struct ModelProvisioningError: Error, CustomStringConvertible {
+        let description: String
+    }
+
+    /// The helper deliberately never downloads weights. Provision the exact
+    /// managed revision in the shared Hugging Face cache before launching it,
+    /// using the same file set as BackendManager's progress-reporting download.
+    /// Failures are failures rather than skips because this suite is explicitly
+    /// enabled and a green skip would conceal broken first-run infrastructure.
+    private func ensureModelCached(_ repoID: String) async throws {
+        let cacheRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/huggingface/hub")
+        let repoDir = cacheRoot.appendingPathComponent(
+            "models--" + repoID.replacingOccurrences(of: "/", with: "--")
+        )
+        let snapshotsDir = repoDir.appendingPathComponent("snapshots")
+        let pinnedRevision = SpeechModelCatalog.option(forRepoID: repoID)?.revision
+
+        if let pinnedRevision {
+            if Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(pinnedRevision)) {
+                return
+            }
+        } else if let revision = try? String(
+            contentsOf: repoDir.appendingPathComponent("refs/main"),
+            encoding: .utf8
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+            !revision.isEmpty,
+            Self.snapshotIsProvisioned(snapshotsDir.appendingPathComponent(revision))
+        {
+            return
+        }
+
+        print("speechd integration: downloading \(repoID) into \(cacheRoot.path)")
+        struct RepoInfo: Decodable {
+            struct Sibling: Decodable { let rfilename: String }
+            let sha: String
+            let siblings: [Sibling]
+        }
+        let apiURL = URL(
+            string:
+                "https://huggingface.co/api/models/\(repoID)/revision/\(pinnedRevision ?? "main")"
+        )!
+        let (infoData, infoResponse) = try await URLSession.shared.data(from: apiURL)
+        guard (infoResponse as? HTTPURLResponse)?.statusCode == 200 else {
+            throw ModelProvisioningError(
+                description: "HF API unreachable for \(repoID): \(infoResponse)"
+            )
+        }
+        let info = try JSONDecoder().decode(RepoInfo.self, from: infoData)
+        if let pinnedRevision, info.sha != pinnedRevision {
+            throw ModelProvisioningError(
+                description:
+                    "HF resolved \(repoID)@\(pinnedRevision) to sha \(info.sha) — pin is not a commit"
+            )
+        }
+
+        let patterns = [
+            "config.json", "tekken.json", "tokenizer*.json",
+            "model*.safetensors", "model.safetensors.index.json",
+        ]
+        let wanted = info.siblings.map(\.rfilename).filter { name in
+            patterns.contains { fnmatch($0, name, 0) == 0 }
+        }
+        guard !wanted.isEmpty else {
+            throw ModelProvisioningError(description: "HF listing for \(repoID) matched no files")
+        }
+
+        let snapshotDir = snapshotsDir.appendingPathComponent(info.sha)
+        try FileManager.default.createDirectory(
+            at: snapshotDir, withIntermediateDirectories: true
+        )
+        for name in wanted {
+            let destination = snapshotDir.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: destination.path) { continue }
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            let source = URL(
+                string: "https://huggingface.co/\(repoID)/resolve/\(info.sha)/\(name)"
+            )!
+            let (temporary, response) = try await URLSession.shared.download(from: source)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw ModelProvisioningError(description: "download failed for \(name): \(response)")
+            }
+            try FileManager.default.moveItem(at: temporary, to: destination)
+        }
+
+        if pinnedRevision == nil {
+            let refsDir = repoDir.appendingPathComponent("refs")
+            try FileManager.default.createDirectory(at: refsDir, withIntermediateDirectories: true)
+            try Data("\(info.sha)\n".utf8).write(to: repoDir.appendingPathComponent("refs/main"))
+        }
+        try Data().write(to: snapshotDir.appendingPathComponent(Self.provisionedSentinel))
+        print("speechd integration: model provisioned (\(wanted.count) files)")
+    }
+
+    static let provisionedSentinel = ".localvoxtral-provisioned"
+
+    static func snapshotIsProvisioned(_ snapshot: URL) -> Bool {
+        let fileManager = FileManager.default
+        let hasRequiredMetadata = fileManager.fileExists(
+            atPath: snapshot.appendingPathComponent(provisionedSentinel).path
+        )
+            && fileManager.fileExists(atPath: snapshot.appendingPathComponent("config.json").path)
+            && fileManager.fileExists(atPath: snapshot.appendingPathComponent("tekken.json").path)
+        guard hasRequiredMetadata else { return false }
+        if fileManager.fileExists(atPath: snapshot.appendingPathComponent("model.safetensors").path) {
+            return true
+        }
+        guard fileManager.fileExists(
+            atPath: snapshot.appendingPathComponent("model.safetensors.index.json").path
+        ) else { return false }
+        let names = (try? fileManager.contentsOfDirectory(atPath: snapshot.path)) ?? []
+        return names.contains { fnmatch("model-*-of-*.safetensors", $0, 0) == 0 }
+    }
+
+    func testSnapshotProvisioningSentinelAcceptsShardedCheckpoint() throws {
+        let snapshot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-sharded-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for name in [
+            Self.provisionedSentinel,
+            "config.json",
+            "tekken.json",
+            "model.safetensors.index.json",
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+        ] {
+            try Data().write(to: snapshot.appendingPathComponent(name))
+        }
+
+        XCTAssertTrue(Self.snapshotIsProvisioned(snapshot))
+    }
+
+    func testSnapshotProvisioningSentinelRejectsIndexWithoutShard() throws {
+        let snapshot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("speechd-incomplete-snapshot-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+        for name in [
+            Self.provisionedSentinel,
+            "config.json",
+            "tekken.json",
+            "model.safetensors.index.json",
+        ] {
+            try Data().write(to: snapshot.appendingPathComponent(name))
+        }
+
+        XCTAssertFalse(Self.snapshotIsProvisioned(snapshot))
+    }
+
     private func launchHelper(
         binary: URL,
         model: String,
@@ -98,10 +248,14 @@ final class SpeechHelperIntegrationTests: XCTestCase {
     ) async throws -> (process: Process, stderrLog: LineLog) {
         let process = Process()
         process.executableURL = binary
-        process.arguments = [
+        var arguments = [
             "--model", model,
             "--port", "\(Self.testPort)",
-        ] + extraArguments
+        ]
+        if let revision = SpeechModelCatalog.option(forRepoID: model)?.revision {
+            arguments.append(contentsOf: ["--model-revision", revision])
+        }
+        process.arguments = arguments + extraArguments
 
         let stderr = Pipe()
         process.standardError = stderr
@@ -158,6 +312,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
 
     func testRealAudioMeetsAccuracyAndAppendOnlyDeltaContract() async throws {
         let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
         let (process, _) = try await launchHelper(binary: binary, model: model)
 
         let healthURL = URL(string: "http://127.0.0.1:\(Self.testPort)/health")!
@@ -268,6 +423,7 @@ final class SpeechHelperIntegrationTests: XCTestCase {
 
     func testHelperExitsWhenParentPIDDies() async throws {
         let (binary, model) = try helperConfiguration()
+        try await ensureModelCached(model)
 
         let decoyParent = Process()
         decoyParent.executableURL = URL(fileURLWithPath: "/bin/cat")

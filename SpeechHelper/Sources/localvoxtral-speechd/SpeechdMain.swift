@@ -9,77 +9,30 @@ import SpeechEngineText
 /// supervisor's readinessURL contract).
 @main
 struct SpeechdMain {
-    struct Options {
-        var modelID: String?
-        var modelDirectory: String?
-        var port: UInt16 = 8471  // matches BackendCatalog.voxmlx.port
-        var parentPID: pid_t?
-        var transcriptionDelayMs: Int?
-        var cacheLimitMB = 4096
-    }
-
-    enum OptionError: Error, CustomStringConvertible {
-        case missingValue(String), invalidValue(String), unknownFlag(String), missingModel
-        var description: String {
-            switch self {
-            case .missingValue(let f): return "missing value for \(f)"
-            case .invalidValue(let f): return "invalid value for \(f)"
-            case .unknownFlag(let f): return "unknown flag \(f)"
-            case .missingModel: return "one of --model or --model-dir is required"
-            }
-        }
-    }
-
     static func main() async {
         do {
-            try await run(parse(Array(CommandLine.arguments.dropFirst())))
+            try await run(SpeechdOptionParser.parse(Array(CommandLine.arguments.dropFirst())))
         } catch {
             FileHandle.standardError.write(Data("speechd: \(error)\n".utf8))
             exit(1)
         }
     }
 
-    static func parse(_ arguments: [String]) throws -> Options {
-        var options = Options()
-        var it = arguments.makeIterator()
-        func value(_ flag: String) throws -> String {
-            guard let v = it.next() else { throw OptionError.missingValue(flag) }
-            return v
+    static func run(_ options: SpeechdLaunchOptions) async throws {
+        if options.benchmark != nil {
+            try await StreamingSpeechBenchmark.run(options)
+            return
         }
-        while let flag = it.next() {
-            switch flag {
-            case "--model": options.modelID = try value(flag)
-            case "--model-dir": options.modelDirectory = try value(flag)
-            case "--port":
-                guard let p = UInt16(try value(flag)) else { throw OptionError.invalidValue(flag) }
-                options.port = p
-            case "--parent-pid":
-                guard let pid = pid_t(try value(flag)) else { throw OptionError.invalidValue(flag) }
-                options.parentPID = pid
-            case "--transcription-delay-ms":
-                guard let ms = Int(try value(flag)), ms > 0 else { throw OptionError.invalidValue(flag) }
-                options.transcriptionDelayMs = ms
-            case "--cache-limit-mb":
-                guard let mb = Int(try value(flag)), mb >= 0 else { throw OptionError.invalidValue(flag) }
-                options.cacheLimitMB = mb
-            default:
-                throw OptionError.unknownFlag(flag)
-            }
-        }
-        guard options.modelID != nil || options.modelDirectory != nil else {
-            throw OptionError.missingModel
-        }
-        return options
-    }
 
-    static func run(_ options: Options) async throws {
         // Load BEFORE binding the listener so /health only answers once inference is ready.
         let server = try await RealtimeSpeechServer.load(
             modelID: options.modelID,
+            modelRevision: options.modelRevision,
             modelDirectory: options.modelDirectory,
             port: options.port,
             transcriptionDelayMs: options.transcriptionDelayMs,
-            cacheLimitMB: options.cacheLimitMB
+            cacheLimitMB: options.cacheLimitMB,
+            stepMilliseconds: options.stepMilliseconds
         )
 
         // Exit if the supervising app dies, so a killed app never orphans the model.

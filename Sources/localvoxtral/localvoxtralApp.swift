@@ -151,7 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override init() {
         let settings = SettingsStore()
         let manager = BackendManager(
-            polishingModelProvider: { settings.resolvedManagedLLMPolishingModel }
+            polishingModelProvider: { settings.resolvedManagedLLMPolishingModel },
+            speechdCacheLimitProvider: { settings.speechdCacheLimit.megabytes },
+            speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
         )
         settingsStore = settings
         backendManager = manager
@@ -163,10 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The bundled polishd helper replaced the uv-installed mlx-lm tool
-        // (2026-07); sweep the orphaned install off existing user Macs.
+        // Sweep both retired Python backend installs off existing user Macs.
         Task.detached(priority: .utility) {
             LegacyMLXLMCleanup().run()
+            LegacyVoxmlxCleanup().run()
         }
         startClaudeContextBroker()
         startClaudeRemoteListener()

@@ -208,6 +208,20 @@ private struct ConnectionSettingsPane: View {
         )
     }
 
+    private var speechdCacheLimitBinding: Binding<SpeechdCacheLimit> {
+        Binding(
+            get: { settings.speechdCacheLimit },
+            set: { viewModel.applySpeechdCacheLimitChange($0) }
+        )
+    }
+
+    private var speechdStepCadenceBinding: Binding<SpeechdStepCadence> {
+        Binding(
+            get: { settings.speechdStepCadence },
+            set: { viewModel.applySpeechdStepCadenceChange($0) }
+        )
+    }
+
     private var managedPolishingModelEntries: [PolishModelPickerEntry] {
         PolishModelPickerSupport.entries(storedRepoID: settings.resolvedManagedLLMPolishingModel)
     }
@@ -246,9 +260,35 @@ private struct ConnectionSettingsPane: View {
                             .textFieldStyle(.roundedBorder)
                     }
                 case .managedLocal:
+                    SettingsFieldRow(title: "Memory limit") {
+                        Picker("", selection: speechdCacheLimitBinding) {
+                            ForEach(SpeechdCacheLimit.allCases) { limit in
+                                Text(limit.displayName).tag(limit)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
+                    }
+
+                    SettingsFieldRow(title: "Step interval") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Picker("", selection: speechdStepCadenceBinding) {
+                                ForEach(SpeechdStepCadence.allCases) { cadence in
+                                    Text(cadence.displayName).tag(cadence)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+
+                            SettingsHelpText(
+                                "Lower values show words sooner; higher values use less compute."
+                            )
+                        }
+                    }
+
                     ManagedBackendStatusRow(
                         title: "Status",
-                        status: backendManager.voxmlxStatus
+                        status: backendManager.speechdStatus
                     )
                 }
             }
@@ -355,16 +395,7 @@ private struct ManagedBackendStatusLabel: View {
             // indeterminate case is a circular spinner, which must NOT get
             // the bar's fixed width (it centers inside it, reading as a big
             // blob of horizontal padding next to the caption text).
-            if case .installing(let progress) = status {
-                if let fraction = installFraction(from: progress) {
-                    ProgressView(value: fraction)
-                        .controlSize(.small)
-                        .frame(width: 54)
-                } else {
-                    ProgressView()
-                        .controlSize(.mini)
-                }
-            } else if case .preparingModel(let progress) = status {
+            if case .preparingModel(let progress) = status {
                 if let fraction = progress.fraction {
                     ProgressView(value: fraction)
                         .controlSize(.small)
@@ -384,10 +415,6 @@ private struct ManagedBackendStatusLabel: View {
 
     private var statusText: String {
         switch status {
-        case .notInstalled:
-            return "Not installed"
-        case .installing(let progress):
-            return installingText(progress)
         case .preparingModel(let progress):
             return modelDownloadText(progress)
         case .starting:
@@ -405,36 +432,22 @@ private struct ManagedBackendStatusLabel: View {
         switch status {
         case .ready:
             return .green
-        case .installing, .preparingModel, .starting:
+        case .preparingModel, .starting:
             return .orange
         case .failed:
             return .red
-        case .notInstalled, .stopped:
+        case .stopped:
             return .secondary
-        }
-    }
-
-    private func installFraction(from progress: BackendInstallProgress) -> Double? {
-        guard case .downloading(let fraction) = progress else { return nil }
-        return fraction
-    }
-
-    private func installingText(_ progress: BackendInstallProgress) -> String {
-        switch progress {
-        case .downloading(let fraction):
-            guard let fraction else { return "Downloading" }
-            return "Downloading \(Int((fraction * 100).rounded()))%"
-        case .verifying:
-            return "Verifying"
-        case .installing(let logLine):
-            return logLine.trimmed.isEmpty ? "Installing" : "Installing: \(logLine)"
-        case .finished:
-            return "Installed"
         }
     }
 
     private func modelDownloadText(_ progress: ModelDownloadProgress) -> String {
         guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            // Bytes moving but no total (CDN sent no length for some file):
+            // show movement rather than pretending we are still checking.
+            if progress.downloadedBytes > 0 {
+                return "Downloading model - \(Self.byteText(progress.downloadedBytes))"
+            }
             // No total yet: the downloader is still resolving what (if
             // anything) needs fetching — on a warm cache this phase is all
             // the user ever sees, so don't claim a download is happening.

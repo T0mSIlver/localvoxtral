@@ -1,14 +1,13 @@
 import Foundation
 
-/// Best-effort removal of the uv-installed mlx-lm polishing backend left
+/// Best-effort removal of the former mlx-lm polishing backend left
 /// behind on user Macs after the bundled `localvoxtral-polishd` helper
 /// replaced it (2026-07). Idempotent: once everything is gone, running it
 /// again is a silent no-op, so it runs on every launch.
 ///
-/// Deliberately untouched: the voxmlx tool (still uv-installed), the managed
-/// uv binary and its caches (voxmlx installs/updates still need them), and
-/// the downloaded model weights (the bundled helper reads the same HF cache
-/// the old engine populated).
+/// The part-3 transition deliberately left voxmlx and the shared installer
+/// support for part 4. `LegacyVoxmlxCleanup` now owns that final sweep.
+/// Downloaded model weights remain untouched in the shared HF cache.
 struct LegacyMLXLMCleanup {
     private let layout: BackendInstallLayout
     private let fileManager: FileManager

@@ -141,7 +141,7 @@ This is a real app with daily users. Nothing ships on "it compiles".
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
-| 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | nightly + manual on the self-hosted GUI runner | — |
+| 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the screen is locked or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
@@ -310,11 +310,12 @@ Key subsystems:
   before typing — see "Known tradeoffs" below for the latency it costs
 - Overlay: `OverlayBufferSessionCoordinator` (session + hold-before-dismiss
   timing), `OverlayBufferStateMachine`, `DictationOverlayController` (NSPanel)
-- Backends: `BackendManager` lazily bootstraps app-managed local serving on
-  first dictation start; catalog pinned to fork wheel releases; installer
-  downloads a pinned `uv` on first use, then shells out to it; supervisors
-  spawn/health-check/stop the managed processes; install root lives under
-  Application Support. User-facing backend copy (pinned models, fork
+- Backends: `BackendManager` lazily prepares pinned Hugging Face snapshots and
+  starts the bundled Swift helpers: `localvoxtral-speechd` for ASR on port
+  8471 and `localvoxtral-polishd` for polishing on port 8472. Supervisors
+  spawn, health-check, and stop both managed processes; launch cleanup removes
+  retired app-managed backend artifacts from existing installs. User-facing
+  backend copy (pinned models, fork
   optimizations, vLLM example) lives in the README "Under the hood" section
   (`/docs` is gitignored local notes — nothing user-facing goes there); keep
   it in sync when pins change.
@@ -354,8 +355,8 @@ Key subsystems:
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed
   mode, the bundled `localvoxtral-polishd` helper (`PolishHelper/` package:
   MLX Swift inference + a minimal loopback OpenAI server + parent-pid
-  watchdog), supervised like any managed backend on port 8472. Replaced the
-  uv-installed mlx-lm fork wheel (upstream mlx-lm unmaintained, 2026-07).
+  watchdog), supervised like any managed backend on port 8472. It replaced the
+  former mlx-lm helper after upstream became unmaintained (2026-07).
 
 ## Known tradeoffs — deliberate, not bugs
 

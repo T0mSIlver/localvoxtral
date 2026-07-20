@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 struct ModelDownloadProgress: Equatable, Sendable {
     var downloadedBytes: Int64
@@ -42,587 +43,440 @@ protocol ModelPreparing: Sendable {
 }
 
 enum ModelDownloadError: LocalizedError, Sendable {
-    case uvNotFound(URL)
-    case downloaderReportedError(message: String, stderrTail: String)
-    case noProgress(timeoutSeconds: Int, stderrTail: String)
-    case processExited(code: Int32, stderrTail: String)
+    case repositoryRequestFailed(repoID: String, statusCode: Int)
+    case resolvedRevisionMismatch(expected: String, actual: String)
+    case noMatchingFiles(repoID: String)
+    case invalidRepositoryPath(String)
+    case fileRequestFailed(path: String, statusCode: Int)
+    case transport(message: String, detail: String?)
 
     var errorDescription: String? {
         switch self {
-        case .uvNotFound(let url):
-            return "Managed uv is missing at \(url.path)."
-        case .downloaderReportedError(let message, _):
+        case .repositoryRequestFailed(let repoID, let statusCode):
+            return "Model repository request failed for \(repoID) (HTTP \(statusCode))."
+        case .resolvedRevisionMismatch(let expected, let actual):
+            return "Model revision mismatch: expected \(expected), resolved \(actual)."
+        case .noMatchingFiles(let repoID):
+            return "Model repository \(repoID) contains none of the required files."
+        case .invalidRepositoryPath(let path):
+            return "Model repository returned an unsafe file path: \(path)."
+        case .fileRequestFailed(let path, let statusCode):
+            return "Model file download failed for \(path) (HTTP \(statusCode))."
+        case .transport(let message, _):
             return message.trimmed.isEmpty ? "Model download failed." : message
-        case .noProgress(let timeoutSeconds, _):
-            return "Model download made no progress for \(timeoutSeconds) seconds."
-        case .processExited(let code, _):
-            return "Model downloader exited with status \(code)."
         }
     }
 
     var technicalDetails: String? {
-        switch self {
-        case .uvNotFound:
-            return nil
-        case .downloaderReportedError(_, let stderrTail),
-             .noProgress(_, let stderrTail),
-             .processExited(_, let stderrTail):
-            return stderrTail.trimmed.isEmpty ? nil : stderrTail
+        if case .transport(_, let detail) = self { return detail }
+        return errorDescription
+    }
+}
+
+struct HFModelRepositoryInfo: Equatable, Sendable {
+    let sha: String
+    let fileNames: [String]
+    /// Exact byte sizes from the repo API (`?blobs=true`), keyed by file name.
+    /// The authoritative source for the download total: available before the
+    /// first byte moves, unlike HEAD probes (which the CDN may refuse) or
+    /// transfer-reported sizes (which arrive only as each file starts).
+    let sizesByFileName: [String: Int64]
+}
+
+protocol HFModelDownloadTransport: Sendable {
+    func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int)
+    func contentLength(of url: URL) async throws -> Int64?
+    /// Download one file. `onBytes(received, expected)` reports cumulative
+    /// bytes received for THIS file as the transfer runs (expected is nil when
+    /// the server sends no length); required for live progress on multi-GB
+    /// checkpoints, where a completion-only API would leave the UI frozen on
+    /// "Checking model..." for the whole fetch (field-hit 2026-07-17).
+    func download(
+        from url: URL,
+        onBytes: @escaping @Sendable (Int64, Int64?) -> Void
+    ) async throws -> (temporaryURL: URL, statusCode: Int)
+}
+
+struct URLSessionHFModelDownloadTransport: HFModelDownloadTransport {
+    func repositoryInfo(from url: URL) async throws -> (data: Data, statusCode: Int) {
+        let (data, response) = try await URLSession.shared.data(from: url)
+        return (data, (response as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    func contentLength(of url: URL) async throws -> Int64? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse,
+              (200..<300).contains(response.statusCode)
+        else { return nil }
+        return response.expectedContentLength > 0 ? response.expectedContentLength : nil
+    }
+
+    func download(
+        from url: URL,
+        onBytes: @escaping @Sendable (Int64, Int64?) -> Void
+    ) async throws -> (temporaryURL: URL, statusCode: Int) {
+        let delegate = ProgressReportingDownloadDelegate(onBytes: onBytes)
+        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                delegate.begin(session: session, url: url, continuation: continuation)
+            }
+        } onCancel: {
+            delegate.cancel()
+        }
+    }
+}
+
+/// Delegate for one download task: relays byte-level progress and hands the
+/// finished file back through a continuation. `didFinishDownloadingTo`'s file
+/// is deleted the moment that callback returns, so it is moved to a stable
+/// temporary path synchronously inside the callback.
+private final class ProgressReportingDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<(temporaryURL: URL, statusCode: Int), Error>?
+        var task: URLSessionDownloadTask?
+        var movedURL: URL?
+        var moveError: Error?
+    }
+
+    private let onBytes: @Sendable (Int64, Int64?) -> Void
+    private let state = Mutex(State())
+
+    init(onBytes: @escaping @Sendable (Int64, Int64?) -> Void) {
+        self.onBytes = onBytes
+    }
+
+    func begin(
+        session: URLSession,
+        url: URL,
+        continuation: CheckedContinuation<(temporaryURL: URL, statusCode: Int), Error>
+    ) {
+        let task = session.downloadTask(with: url)
+        state.withLock {
+            $0.continuation = continuation
+            $0.task = task
+        }
+        task.resume()
+    }
+
+    func cancel() {
+        state.withLock { $0.task }?.cancel()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        onBytes(totalBytesWritten, totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("localvoxtral-hf-download-\(UUID().uuidString)")
+        do {
+            try FileManager.default.moveItem(at: location, to: destination)
+            state.withLock { $0.movedURL = destination }
+        } catch {
+            state.withLock { $0.moveError = error }
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let (continuation, movedURL, moveError) = state.withLock {
+            let values = ($0.continuation, $0.movedURL, $0.moveError)
+            $0.continuation = nil
+            return values
+        }
+        guard let continuation else { return }
+        if let error {
+            continuation.resume(throwing: error)
+        } else if let moveError {
+            continuation.resume(throwing: moveError)
+        } else if let movedURL {
+            let statusCode = (task.response as? HTTPURLResponse)?.statusCode ?? 0
+            continuation.resume(returning: (movedURL, statusCode))
+        } else {
+            continuation.resume(throwing: URLError(.cannotWriteToFile))
         }
     }
 }
 
 struct HFModelDownloader: ModelPreparing {
-    private let layout: BackendInstallLayout
-    private let uvLocator: any UVBinaryLocating
+    private struct RepositoryResponse: Decodable {
+        struct Sibling: Decodable {
+            let rfilename: String
+            let size: Int64?
+        }
+        let sha: String
+        let siblings: [Sibling]
+    }
+
+    private let cacheRoot: URL
+    private let transport: any HFModelDownloadTransport
     private let fileManager: FileManager
-    private let livenessTimeoutSeconds: Int
+    /// Minimum received-byte delta between in-flight progress reports for one
+    /// file. Bounds MainActor hops to a few hundred over a multi-GB fetch;
+    /// tests inject 1 to observe every callback.
+    private let progressByteGranularity: Int64
 
     init(
-        layout: BackendInstallLayout = BackendInstallLayout(),
-        uvLocator: (any UVBinaryLocating)? = nil,
+        cacheRoot: URL? = nil,
+        transport: any HFModelDownloadTransport = URLSessionHFModelDownloadTransport(),
         fileManager: FileManager = .default,
-        livenessTimeoutSeconds: Int = 120
+        progressByteGranularity: Int64 = 8_388_608
     ) {
-        self.layout = layout
-        self.uvLocator = uvLocator ?? UVBinaryLocator(layout: layout)
+        self.cacheRoot = cacheRoot ?? Self.defaultCacheRoot()
+        self.transport = transport
         self.fileManager = fileManager
-        self.livenessTimeoutSeconds = livenessTimeoutSeconds
+        self.progressByteGranularity = progressByteGranularity
     }
 
     func prepare(
         _ request: ModelPreparationRequest,
         progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
     ) async throws {
-        try fileManager.createDirectory(at: layout.downloads, withIntermediateDirectories: true)
-        // Resolve uv the same way BackendInstaller does (managed download,
-        // then Homebrew/usr-local fallbacks) — machines that installed the
-        // backends with a system uv never provision the managed binary.
-        guard let uvBinary = uvLocator.uvBinaryURL() else {
-            throw ModelDownloadError.uvNotFound(layout.managedUVBinary)
-        }
+        do {
+            let info = try await repositoryInfo(for: request)
+            let wanted = info.fileNames.filter { fileName in
+                request.includePatterns.contains { fnmatch($0, fileName, 0) == 0 }
+            }
+            guard !wanted.isEmpty else {
+                throw ModelDownloadError.noMatchingFiles(repoID: request.repoID)
+            }
 
-        let scriptURL = layout.downloads.appendingPathComponent("hf_model_download.py")
-        try Self.pythonDownloaderScript.write(to: scriptURL, atomically: true, encoding: .utf8)
+            let snapshot = snapshotDirectory(repoID: request.repoID, revision: info.sha)
+            try fileManager.createDirectory(at: snapshot, withIntermediateDirectories: true)
+            let missing = try wanted.filter { fileName in
+                let destination = try safeDestination(for: fileName, under: snapshot)
+                return !fileManager.fileExists(atPath: destination.path)
+            }
 
-        let result = try await ModelDownloadProcess.run(
-            executableURL: uvBinary,
-            arguments: Self.downloaderArguments(scriptPath: scriptURL.path, request: request),
-            environment: processEnvironment(),
-            livenessTimeoutSeconds: livenessTimeoutSeconds,
-            progress: progress
-        )
-        if result.exitCode != 0 {
-            throw ModelDownloadError.processExited(
-                code: result.exitCode,
-                stderrTail: result.stderrTail
+            // Prefer the repo API's exact sizes (one call, already made);
+            // HEAD-probe only files the API left sizeless.
+            var sizes: [String: Int64] = [:]
+            for fileName in missing {
+                if let size = info.sizesByFileName[fileName] {
+                    sizes[fileName] = size
+                    continue
+                }
+                try Task.checkCancellation()
+                if let size = try await transport.contentLength(
+                    of: Self.fileURL(repoID: request.repoID, revision: info.sha, fileName: fileName)
+                ) {
+                    sizes[fileName] = size
+                }
+            }
+            // Dynamic total: the HEAD probe can come back without a length
+            // (HF `resolve/` redirects to a CDN), which would leave the UI
+            // bar-less for the whole fetch. Each file's expected size also
+            // arrives from the transfer itself the moment its download
+            // starts, so fold that in — the total (and the determinate
+            // progress bar) becomes available as soon as every missing file
+            // has a size from either source.
+            let missingCount = missing.count
+            let knownSizes = Mutex<[String: Int64]>(sizes)
+            let effectiveTotal: @Sendable () -> Int64? = {
+                knownSizes.withLock { known in
+                    known.count == missingCount ? known.values.reduce(0, +) : nil
+                }
+            }
+            // Monotonic delivery gate, checked at delivery time on the main
+            // actor: throttled in-flight reports hop over as unstructured
+            // tasks, so without the gate a stale lower value could land after
+            // a newer higher one and make the bar jump backwards.
+            let deliveredFloor = Mutex<Int64>(-1)
+            let deliver: @MainActor @Sendable (ModelDownloadProgress) -> Void = { snapshot in
+                let shouldDeliver = deliveredFloor.withLock { floor in
+                    guard snapshot.downloadedBytes > floor else { return false }
+                    floor = snapshot.downloadedBytes
+                    return true
+                }
+                if shouldDeliver { progress(snapshot) }
+            }
+            await Self.report(
+                ModelDownloadProgress(downloadedBytes: 0, totalBytes: effectiveTotal()),
+                deliver
+            )
+
+            var downloaded: Int64 = 0
+            for fileName in missing {
+                try Task.checkCancellation()
+                let source = Self.fileURL(
+                    repoID: request.repoID,
+                    revision: info.sha,
+                    fileName: fileName
+                )
+                let completedBase = downloaded
+                let granularity = progressByteGranularity
+                let lastReported = Mutex<Int64>(0)
+                let result = try await transport.download(from: source) { received, expected in
+                    if let expected {
+                        knownSizes.withLock { known in
+                            if known[fileName] == nil { known[fileName] = expected }
+                        }
+                    }
+                    let shouldReport = lastReported.withLock { last in
+                        guard received - last >= granularity else { return false }
+                        last = received
+                        return true
+                    }
+                    guard shouldReport else { return }
+                    let snapshot = ModelDownloadProgress(
+                        downloadedBytes: completedBase + received,
+                        totalBytes: effectiveTotal()
+                    )
+                    Task { @MainActor in deliver(snapshot) }
+                }
+                guard (200..<300).contains(result.statusCode) else {
+                    throw ModelDownloadError.fileRequestFailed(
+                        path: fileName,
+                        statusCode: result.statusCode
+                    )
+                }
+                let destination = try safeDestination(for: fileName, under: snapshot)
+                try fileManager.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if fileManager.fileExists(atPath: destination.path) {
+                    try fileManager.removeItem(at: destination)
+                }
+                try fileManager.moveItem(at: result.temporaryURL, to: destination)
+                // The on-disk size is authoritative once the file landed; it
+                // also completes the dynamic total for files whose transfer
+                // reported no expected length.
+                let actualSize = sizes[fileName] ?? fileSize(at: destination)
+                knownSizes.withLock { $0[fileName] = actualSize }
+                downloaded += actualSize
+                await Self.report(
+                    ModelDownloadProgress(downloadedBytes: downloaded, totalBytes: effectiveTotal()),
+                    deliver
+                )
+            }
+
+            if request.revision == nil {
+                let refs = repositoryDirectory(repoID: request.repoID)
+                    .appendingPathComponent("refs", isDirectory: true)
+                try fileManager.createDirectory(at: refs, withIntermediateDirectories: true)
+                try Data("\(info.sha)\n".utf8).write(
+                    to: refs.appendingPathComponent("main"),
+                    options: .atomic
+                )
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ModelDownloadError {
+            throw error
+        } catch {
+            throw ModelDownloadError.transport(
+                message: "Model download failed.",
+                detail: error.localizedDescription
             )
         }
     }
 
-    /// The uv argv that fetches a model. Extracted so the pin is testable
-    /// without a network download: dropping `--revision` here would leave
-    /// every unit and eval lane green (the lanes provision the HF cache
-    /// themselves) while shipping an app that downloads one revision and
-    /// launches the helper against another.
-    static func downloaderArguments(
-        scriptPath: String,
-        request: ModelPreparationRequest
-    ) -> [String] {
-        var arguments = [
-            "run",
-            "--python",
-            "3.12",
-            // Ceiling pins: deps resolve at run time per machine, and an
-            // unbounded transitive resolve is how transformers 5.13 broke
-            // mlx-lm in the field (2026-07-04). Raise deliberately.
-            "--with",
-            "huggingface_hub<2",
-            "--with",
-            "tqdm<5",
-            "python",
-            "-u",
-            scriptPath,
-            request.repoID,
-        ]
-        for pattern in request.includePatterns {
-            arguments.append("--include")
-            arguments.append(pattern)
+    static func defaultCacheRoot(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> URL {
+        if let hubCache = environment["HF_HUB_CACHE"], !hubCache.isEmpty {
+            return URL(fileURLWithPath: hubCache, isDirectory: true)
         }
-        if let revision = request.revision {
-            arguments.append("--revision")
-            arguments.append(revision)
+        if let hfHome = environment["HF_HOME"], !hfHome.isEmpty {
+            return URL(fileURLWithPath: hfHome, isDirectory: true)
+                .appendingPathComponent("hub", isDirectory: true)
         }
-        return arguments
+        return home
+            .appendingPathComponent(".cache", isDirectory: true)
+            .appendingPathComponent("huggingface", isDirectory: true)
+            .appendingPathComponent("hub", isDirectory: true)
     }
 
-    private func processEnvironment() -> [String: String] {
-        let inherited = ProcessInfo.processInfo.environment
-        var environment: [String: String] = [:]
-        for key in ["PATH", "HOME"] {
-            if let value = inherited[key] {
-                environment[key] = value
+    static func repositoryInfoURL(repoID: String, revision: String?) -> URL {
+        // blobs=true adds exact per-file byte sizes to the sibling list, so
+        // the aggregate download total is known before any transfer starts.
+        URL(string: "https://huggingface.co/api/models/\(repoID)/revision/\(revision ?? "main")?blobs=true")!
+    }
+
+    static func fileURL(repoID: String, revision: String, fileName: String) -> URL {
+        URL(string: "https://huggingface.co/\(repoID)/resolve/\(revision)/\(fileName)")!
+    }
+
+    private func repositoryInfo(for request: ModelPreparationRequest) async throws -> HFModelRepositoryInfo {
+        let result = try await transport.repositoryInfo(
+            from: Self.repositoryInfoURL(repoID: request.repoID, revision: request.revision)
+        )
+        guard result.statusCode == 200 else {
+            throw ModelDownloadError.repositoryRequestFailed(
+                repoID: request.repoID,
+                statusCode: result.statusCode
+            )
+        }
+        let response = try JSONDecoder().decode(RepositoryResponse.self, from: result.data)
+        if let revision = request.revision, response.sha != revision {
+            throw ModelDownloadError.resolvedRevisionMismatch(
+                expected: revision,
+                actual: response.sha
+            )
+        }
+        var sizesByFileName: [String: Int64] = [:]
+        for sibling in response.siblings {
+            if let size = sibling.size {
+                sizesByFileName[sibling.rfilename] = size
             }
         }
-        // Deliberately leave Hugging Face cache variables unset so model
-        // weights stay in the user's global HF cache, shared with other tools.
-        environment.merge(layout.environment) { _, new in new }
-        return environment
+        return HFModelRepositoryInfo(
+            sha: response.sha,
+            fileNames: response.siblings.map(\.rfilename),
+            sizesByFileName: sizesByFileName
+        )
     }
 
-    static let pythonDownloaderScript = #"""
-import argparse
-import json
-import os
-import sys
-import threading
-import time
+    private func repositoryDirectory(repoID: String) -> URL {
+        cacheRoot.appendingPathComponent(
+            "models--" + repoID.replacingOccurrences(of: "/", with: "--"),
+            isDirectory: true
+        )
+    }
 
-from huggingface_hub import snapshot_download
-from tqdm.auto import tqdm
+    private func snapshotDirectory(repoID: String, revision: String) -> URL {
+        repositoryDirectory(repoID: repoID)
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .appendingPathComponent(revision, isDirectory: true)
+    }
 
+    private func safeDestination(for fileName: String, under snapshot: URL) throws -> URL {
+        let root = snapshot.standardizedFileURL
+        let destination = root.appendingPathComponent(fileName).standardizedFileURL
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard destination.path.hasPrefix(rootPrefix) else {
+            throw ModelDownloadError.invalidRepositoryPath(fileName)
+        }
+        return destination
+    }
 
-def emit(payload):
-    # Single write keeps concurrent download threads from interleaving lines.
-    sys.stdout.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    private func fileSize(at url: URL) -> Int64 {
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
 
-
-def should_count_for_download(info):
-    will_download = getattr(info, "will_download", None)
-    if will_download is not None:
-        return bool(will_download)
-    is_cached = getattr(info, "is_cached", None)
-    if is_cached is not None:
-        return not bool(is_cached)
-    return True
-
-
-# snapshot_download runs one byte-unit tqdm bar per file, on worker threads.
-# Reporting a single bar's n/total made the UI fraction bounce between files
-# and let a per-file total stomp the aggregate from resolve_total, so the bar
-# jumped around. The aggregate is POSITION-based and keyed per FILE (the
-# bar's desc, which hf_hub sets to the filename): each bar reports its
-# current position (self.n, which includes tqdm's `initial=` for resumed
-# files), and the reported value is the sum of per-file positions. A pure
-# delta counter double-counted whenever hf_hub restarted a file (e.g. a
-# partial blob invalidated by an interrupted earlier run, or an in-run
-# retry), inflating the UI past the total ("6 GB / 3.3 GB" in the field);
-# with per-file keys a restarted file's new bar REPLACES its old position.
-_AGGREGATE_LOCK = threading.Lock()
-_AGGREGATE = {"positions": {}, "last_emit_at": 0.0}
-
-
-class JSONTqdm(tqdm):
-    def __init__(self, *args, **kwargs):
-        self._localvoxtral_reports_bytes = kwargs.get("unit") == "B"
-        self._localvoxtral_emit_interval = self._emit_interval()
-        kwargs["file"] = _NullTqdmFile()
-        super().__init__(*args, **kwargs)
-        if self._localvoxtral_reports_bytes:
-            # Record silently: a resumed bar starts at initial=resume_size and
-            # a restarted bar resets its file's position to 0 — both must be
-            # reflected in the sum, but only real byte updates emit events.
-            self._localvoxtral_record_position(emit_allowed=False, force_emit=False)
-
-    def _emit_interval(self):
-        value = os.environ.get("LOCALVOXTRAL_HF_EMIT_INTERVAL")
-        if value is None:
-            return 0.5
-        try:
-            return max(0.0, float(value))
-        except ValueError:
-            return 0.5
-
-    def refresh(self, *args, **kwargs):
-        return True
-
-    def display(self, *args, **kwargs):
-        return None
-
-    def update(self, n=1):
-        result = super().update(n)
-        if not self._localvoxtral_reports_bytes:
-            return result
-        total = self.total
-        bar_finished = total is not None and self.n >= total
-        self._localvoxtral_record_position(emit_allowed=True, force_emit=bar_finished)
-        return result
-
-    def _localvoxtral_record_position(self, emit_allowed, force_emit):
-        now = time.monotonic()
-        key = getattr(self, "desc", None) or id(self)
-        with _AGGREGATE_LOCK:
-            _AGGREGATE["positions"][key] = int(self.n or 0)
-            if not emit_allowed:
-                return
-            if (
-                force_emit
-                or self._localvoxtral_emit_interval == 0
-                or now - _AGGREGATE["last_emit_at"] >= self._localvoxtral_emit_interval
-            ):
-                _AGGREGATE["last_emit_at"] = now
-                emit({
-                    "event": "progress",
-                    "repo": ARGS.repo,
-                    "downloaded": sum(_AGGREGATE["positions"].values()),
-                    "total": None,
-                })
-
-
-class _NullTqdmFile:
-    def write(self, value):
-        return len(value)
-
-    def flush(self):
-        pass
-
-
-def resolve_total(repo, include_patterns, revision):
-    dry_run = snapshot_download(
-        repo,
-        allow_patterns=include_patterns,
-        revision=revision,
-        dry_run=True,
-    )
-    total = 0
-    for info in dry_run:
-        if should_count_for_download(info):
-            total += int(getattr(info, "file_size", 0) or 0)
-    return total
-
-
-def main():
-    total = resolve_total(ARGS.repo, ARGS.include, ARGS.revision)
-    emit({"event": "total", "repo": ARGS.repo, "total": total})
-    snapshot_download(
-        ARGS.repo,
-        allow_patterns=ARGS.include,
-        revision=ARGS.revision,
-        tqdm_class=JSONTqdm,
-    )
-    emit({"event": "done", "repo": ARGS.repo})
-
-
-parser = argparse.ArgumentParser()
-parser.add_argument("repo")
-parser.add_argument("--include", action="append", default=[])
-# Absent => track main (custom repo ids); a commit sha pins the snapshot.
-parser.add_argument("--revision", default=None)
-ARGS = parser.parse_args()
-
-try:
-    main()
-except Exception as exc:
-    emit({"event": "error", "message": str(exc)})
-    raise
-"""#
+    @MainActor
+    private static func report(
+        _ event: ModelDownloadProgress,
+        _ progress: @MainActor @Sendable (ModelDownloadProgress) -> Void
+    ) {
+        progress(event)
+    }
 }
 
 extension HFModelDownloader: @unchecked Sendable {}
-
-enum ModelDownloadJSONEvent: Equatable, Sendable {
-    case total(repo: String, totalBytes: Int64)
-    case progress(repo: String, downloadedBytes: Int64, totalBytes: Int64?)
-    case done(repo: String)
-    case error(message: String)
-}
-
-enum ModelDownloadJSONParser {
-    static func parse(_ line: String) -> ModelDownloadJSONEvent? {
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let event = object["event"] as? String
-        else { return nil }
-
-        switch event {
-        case "total":
-            guard let repo = object["repo"] as? String,
-                  let total = int64Value(object["total"])
-            else { return nil }
-            return .total(repo: repo, totalBytes: total)
-        case "progress":
-            guard let repo = object["repo"] as? String,
-                  let downloaded = int64Value(object["downloaded"])
-            else { return nil }
-            return .progress(
-                repo: repo,
-                downloadedBytes: downloaded,
-                totalBytes: int64Value(object["total"])
-            )
-        case "done":
-            guard let repo = object["repo"] as? String else { return nil }
-            return .done(repo: repo)
-        case "error":
-            guard let message = object["message"] as? String else { return nil }
-            return .error(message: message)
-        default:
-            return nil
-        }
-    }
-
-    private static func int64Value(_ value: Any?) -> Int64? {
-        switch value {
-        case let value as Int:
-            return Int64(value)
-        case let value as Int64:
-            return value
-        case let value as Double where value.isFinite:
-            return Int64(value)
-        case let value as NSNumber:
-            return value.int64Value
-        default:
-            return nil
-        }
-    }
-}
-
-struct ModelDownloadProcessResult: Equatable, Sendable {
-    let exitCode: Int32
-    let stderrTail: String
-}
-
-final class ModelDownloadProcess {
-    static func run(
-        executableURL: URL,
-        arguments: [String],
-        environment: [String: String],
-        livenessTimeoutSeconds: Int,
-        progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void
-    ) async throws -> ModelDownloadProcessResult {
-        let processBox = CancellableProcessBox()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                let thread = Thread {
-                    do {
-                        let result = try runSynchronously(
-                            executableURL: executableURL,
-                            arguments: arguments,
-                            environment: environment,
-                            livenessTimeoutSeconds: livenessTimeoutSeconds,
-                            progress: progress,
-                            processBox: processBox
-                        )
-                        continuation.resume(returning: result)
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                }
-                thread.name = "localvoxtral-model-download"
-                thread.start()
-            }
-        } onCancel: {
-            processBox.requestCancel()
-        }
-    }
-
-    private static func runSynchronously(
-        executableURL: URL,
-        arguments: [String],
-        environment: [String: String],
-        livenessTimeoutSeconds: Int,
-        progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void,
-        processBox: CancellableProcessBox
-    ) throws -> ModelDownloadProcessResult {
-        let process = Process()
-        process.executableURL = executableURL
-        process.arguments = arguments
-        process.environment = environment
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        let collector = ModelDownloadLineCollector(progress: progress)
-        let stdoutReader = PipeLineReader(fileHandle: stdout.fileHandleForReading) { line in
-            collector.recordStdout(line)
-        }
-        let stderrReader = PipeLineReader(fileHandle: stderr.fileHandleForReading) { line in
-            collector.recordStderr(line)
-        }
-
-        try process.run()
-        processBox.set(process)
-        stdoutReader.start()
-        stderrReader.start()
-
-        while process.isRunning {
-            if processBox.wasCancelled {
-                processBox.terminateRunningProcess()
-                break
-            }
-            if let message = collector.downloaderErrorMessage() {
-                processBox.terminateRunningProcess()
-                process.waitUntilExit()
-                finishReaders(stdoutReader: stdoutReader, stderrReader: stderrReader)
-                throw ModelDownloadError.downloaderReportedError(
-                    message: message,
-                    stderrTail: collector.stderrTail()
-                )
-            }
-            if collector.secondsSinceLastEvent() >= livenessTimeoutSeconds {
-                processBox.terminateRunningProcess()
-                process.waitUntilExit()
-                finishReaders(stdoutReader: stdoutReader, stderrReader: stderrReader)
-                throw ModelDownloadError.noProgress(
-                    timeoutSeconds: livenessTimeoutSeconds,
-                    stderrTail: collector.stderrTail()
-                )
-            }
-            Thread.sleep(forTimeInterval: 0.25)
-        }
-
-        process.waitUntilExit()
-        finishReaders(stdoutReader: stdoutReader, stderrReader: stderrReader)
-        processBox.clear(process)
-
-        if processBox.wasCancelled {
-            throw CancellationError()
-        }
-        if let message = collector.downloaderErrorMessage() {
-            throw ModelDownloadError.downloaderReportedError(
-                message: message,
-                stderrTail: collector.stderrTail()
-            )
-        }
-
-        return ModelDownloadProcessResult(
-            exitCode: process.terminationStatus,
-            stderrTail: collector.stderrTail()
-        )
-    }
-
-    private static func finishReaders(
-        stdoutReader: PipeLineReader,
-        stderrReader: PipeLineReader
-    ) {
-        stdoutReader.waitUntilFinished()
-        stderrReader.waitUntilFinished()
-    }
-}
-
-private final class CancellableProcessBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var process: Process?
-    private var cancelled = false
-
-    var wasCancelled: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return cancelled
-    }
-
-    func set(_ process: Process) {
-        lock.lock()
-        self.process = process
-        lock.unlock()
-    }
-
-    func clear(_ process: Process) {
-        lock.lock()
-        if self.process === process {
-            self.process = nil
-        }
-        lock.unlock()
-    }
-
-    func requestCancel() {
-        lock.lock()
-        cancelled = true
-        lock.unlock()
-    }
-
-    func terminateRunningProcess() {
-        lock.lock()
-        let process = process
-        lock.unlock()
-
-        guard let process, process.isRunning else { return }
-        process.terminate()
-        for _ in 0..<20 where process.isRunning {
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        if process.isRunning {
-            Darwin.kill(process.processIdentifier, SIGKILL)
-        }
-    }
-}
-
-private final class ModelDownloadLineCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private let progress: @MainActor @Sendable (ModelDownloadProgress) -> Void
-    private var stderrLines: [String] = []
-    private var lastEventAt = Date()
-    private var lastTotalBytes: Int64?
-    private var errorMessage: String?
-
-    init(progress: @MainActor @Sendable @escaping (ModelDownloadProgress) -> Void) {
-        self.progress = progress
-    }
-
-    func recordStdout(_ line: String) {
-        guard let event = ModelDownloadJSONParser.parse(line) else { return }
-        markEvent()
-        switch event {
-        case .total(_, let totalBytes):
-            lastTotalBytes = totalBytes
-            emit(ModelDownloadProgress(downloadedBytes: 0, totalBytes: totalBytes))
-        case .progress(_, let downloadedBytes, let totalBytes):
-            if let totalBytes {
-                lastTotalBytes = totalBytes
-            }
-            emit(ModelDownloadProgress(downloadedBytes: downloadedBytes, totalBytes: totalBytes ?? lastTotalBytes))
-        case .done:
-            if let lastTotalBytes {
-                emit(ModelDownloadProgress(downloadedBytes: lastTotalBytes, totalBytes: lastTotalBytes))
-            }
-        case .error(let message):
-            lock.lock()
-            errorMessage = message
-            lock.unlock()
-        }
-    }
-
-    func recordStderr(_ line: String) {
-        lock.lock()
-        stderrLines.append(line)
-        if stderrLines.count > 20 {
-            stderrLines.removeFirst(stderrLines.count - 20)
-        }
-        lock.unlock()
-    }
-
-    func stderrTail() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return stderrLines.joined(separator: "\n")
-    }
-
-    func downloaderErrorMessage() -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return errorMessage
-    }
-
-    func secondsSinceLastEvent() -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return Int(Date().timeIntervalSince(lastEventAt))
-    }
-
-    private func markEvent() {
-        lock.lock()
-        lastEventAt = Date()
-        lock.unlock()
-    }
-
-    private func emit(_ event: ModelDownloadProgress) {
-        let semaphore = DispatchSemaphore(value: 0)
-        Task { @MainActor [progress] in
-            progress(event)
-            semaphore.signal()
-        }
-        semaphore.wait()
-    }
-}

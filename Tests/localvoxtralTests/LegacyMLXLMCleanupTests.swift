@@ -50,7 +50,7 @@ final class LegacyMLXLMCleanupTests: XCTestCase {
             .appendingPathComponent("mlx_lm-0.31.3.post4-py3-none-any.whl")
         try Data("wheel".utf8).write(to: legacyWheel)
 
-        // Still-managed voxmlx install — must survive untouched.
+        // Legacy voxmlx install is deliberately preserved for part-4 cleanup.
         let voxmlxVenv = layout.tools.appendingPathComponent("voxmlx", isDirectory: true)
         try fileManager.createDirectory(at: voxmlxVenv, withIntermediateDirectories: true)
         let voxmlxBin = layout.toolBin.appendingPathComponent("voxmlx-serve")

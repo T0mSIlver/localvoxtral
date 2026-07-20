@@ -21,11 +21,15 @@ set -euo pipefail
 MARKER='[run-speechd-integration]'
 
 # Changes here can alter the helper binary, its pinned mlx-audio-swift graph,
-# the packaged resource layout, or the live-model contract asserted by the
-# integration suite. SpeechHelper/* includes Package.swift + Package.resolved,
-# which are the mlx-audio-swift pin surface.
+# the managed launch/model-download contract, the packaged resource layout,
+# or the live-model contract asserted by the integration suite.
+# SpeechHelper/* includes Package.swift + Package.resolved, which are the
+# mlx-audio-swift pin surface.
 PATTERNS=(
   'SpeechHelper/*'
+  'Sources/localvoxtral/Backends/BackendCatalog.swift'
+  'Sources/localvoxtral/Backends/BackendManager.swift'
+  'Sources/localvoxtral/Backends/SpeechModelCatalog.swift'
   'scripts/package_app.sh'
   'scripts/ci/speechd-lane-filter.sh'
   'Tests/localvoxtralTests/SpeechHelperIntegrationTests.swift'

@@ -46,16 +46,16 @@ final class DiagnosticsExporterTests: XCTestCase {
 
     private func makeSnapshot(
         settings: SettingsStore,
-        voxmlxStatus: ManagedBackendStatus = .notInstalled,
-        polishdStatus: ManagedBackendStatus = .notInstalled,
-        voxmlxRecentOutput: [String] = [],
+        speechdStatus: ManagedBackendStatus = .stopped,
+        polishdStatus: ManagedBackendStatus = .stopped,
+        speechdRecentOutput: [String] = [],
         polishdRecentOutput: [String] = []
     ) -> DiagnosticsSnapshot {
         DiagnosticsExporter.makeSnapshot(
             settings: settings,
-            voxmlxStatus: voxmlxStatus,
+            speechdStatus: speechdStatus,
             polishdStatus: polishdStatus,
-            voxmlxRecentOutput: voxmlxRecentOutput,
+            speechdRecentOutput: speechdRecentOutput,
             polishdRecentOutput: polishdRecentOutput
         )
     }
@@ -78,22 +78,25 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertTrue(report.contains("realtime endpoint: ws://127.0.0.1:8000/v1/realtime"))
         XCTAssertTrue(report.contains("realtime API key: not set"))
         XCTAssertTrue(report.contains("LLM polishing: <disabled>"))
-        XCTAssertTrue(report.contains("voxmlx: not installed"))
-        XCTAssertTrue(report.contains("polishing engine (localvoxtral-polishd): not installed"))
+        XCTAssertTrue(report.contains("dictation engine (localvoxtral-speechd): stopped"))
+        XCTAssertTrue(report.contains("polishing engine (localvoxtral-polishd): stopped"))
     }
 
     func testReportIncludesSupervisorOutputWhenPresent() {
         let store = makeExternalStore()
         let snapshot = makeSnapshot(
             settings: store,
-            voxmlxRecentOutput: ["[voxmlx stdout] INFO started", "[voxmlx stderr] listening"],
+            speechdRecentOutput: [
+                "[localvoxtral-speechd stdout] INFO started",
+                "[localvoxtral-speechd stderr] listening",
+            ],
             polishdRecentOutput: ["[localvoxtral-polishd stdout] ready"]
         )
         let report = DiagnosticsExporter.makeReport(snapshot: snapshot, now: Date())
 
-        XCTAssertTrue(report.contains("-- voxmlx --"))
-        XCTAssertTrue(report.contains("[voxmlx stdout] INFO started"))
-        XCTAssertTrue(report.contains("[voxmlx stderr] listening"))
+        XCTAssertTrue(report.contains("-- localvoxtral-speechd --"))
+        XCTAssertTrue(report.contains("[localvoxtral-speechd stdout] INFO started"))
+        XCTAssertTrue(report.contains("[localvoxtral-speechd stderr] listening"))
         XCTAssertTrue(report.contains("-- localvoxtral-polishd --"))
         XCTAssertTrue(report.contains("[localvoxtral-polishd stdout] ready"))
     }
@@ -158,14 +161,11 @@ final class DiagnosticsExporterTests: XCTestCase {
         XCTAssertEqual(DiagnosticsExporter.describe(.ready), "ready")
         XCTAssertEqual(DiagnosticsExporter.describe(.starting), "starting")
         XCTAssertEqual(DiagnosticsExporter.describe(.stopped), "stopped")
-        XCTAssertEqual(DiagnosticsExporter.describe(.notInstalled), "not installed")
         XCTAssertEqual(DiagnosticsExporter.describe(.failed(summary: "boom", detail: nil)), "failed: boom")
         XCTAssertEqual(
             DiagnosticsExporter.describe(.failed(summary: "boom", detail: "stderr: trace")),
             "failed: boom — stderr: trace"
         )
-        XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .verifying)).contains("installing"))
-        XCTAssertTrue(DiagnosticsExporter.describe(.installing(progress: .downloading(fraction: 0.5))).contains("50%"))
         XCTAssertTrue(
             DiagnosticsExporter
                 .describe(.preparingModel(progress: ModelDownloadProgress(downloadedBytes: 50, totalBytes: 100)))
@@ -213,7 +213,7 @@ final class DiagnosticsExporterTests: XCTestCase {
         let store = makeExternalStore()
         let snapshot = makeSnapshot(
             settings: store,
-            voxmlxRecentOutput: ["[voxmlx stdout] up"]
+            speechdRecentOutput: ["[localvoxtral-speechd stdout] up"]
         )
         let now = Date(timeIntervalSince1970: 1_750_000_000)
 

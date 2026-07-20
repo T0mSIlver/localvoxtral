@@ -3,7 +3,7 @@ import Foundation
 /// The managed downloads the onboarding wizard can kick off. Each maps to one
 /// managed backend + its model weights.
 enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
-    /// voxmlx + the Voxtral realtime dictation model.
+    /// Bundled speechd + the Voxtral realtime dictation model.
     case dictation
     /// The bundled polishing engine's LLM model.
     case polishing
@@ -23,7 +23,7 @@ enum OnboardingItemID: String, CaseIterable, Identifiable, Sendable {
     var detail: String {
         switch self {
         case .dictation:
-            return "voxmlx + the Voxtral realtime model"
+            return "the bundled dictation engine + Voxtral model"
         case .polishing:
             return "the polishing LLM (bundled engine)"
         }
@@ -53,7 +53,7 @@ protocol OnboardingBootstrapDriving: AnyObject {
     /// Observable per-item state. Empty until `start` is called.
     var itemStates: [OnboardingItemID: OnboardingItemState] { get }
 
-    /// Kick off install + model download for the requested items. Nothing runs
+    /// Kick off model download for the requested items. Nothing runs
     /// until this is called (preserves the app's lazy-bootstrap invariant).
     func start(dictation: Bool, polishing: Bool)
 
@@ -66,15 +66,8 @@ extension OnboardingItemState {
     /// the single seam that absorbs backend-status shape changes.
     init(managedStatus status: ManagedBackendStatus) {
         switch status {
-        case .notInstalled, .stopped:
-            // Not started yet (fresh) or idle after a stop — both read as
-            // "waiting to begin" on the Downloads page.
+        case .stopped:
             self = .pending
-        case .installing(let progress):
-            self = .working(
-                detail: Self.installingDetail(progress),
-                fraction: Self.installingFraction(progress)
-            )
         case .preparingModel(let progress):
             self = .working(
                 detail: Self.modelDownloadDetail(progress),
@@ -91,28 +84,14 @@ extension OnboardingItemState {
         }
     }
 
-    private static func installingFraction(_ progress: BackendInstallProgress) -> Double? {
-        guard case .downloading(let fraction) = progress else { return nil }
-        return fraction
-    }
-
-    private static func installingDetail(_ progress: BackendInstallProgress) -> String {
-        switch progress {
-        case .downloading(let fraction):
-            guard let fraction else { return "Downloading…" }
-            return "Downloading \(Int((fraction * 100).rounded()))%"
-        case .verifying:
-            return "Verifying…"
-        case .installing(let logLine):
-            let trimmed = logLine.trimmed
-            return trimmed.isEmpty ? "Installing…" : "Installing: \(trimmed)"
-        case .finished:
-            return "Installed"
-        }
-    }
-
     private static func modelDownloadDetail(_ progress: ModelDownloadProgress) -> String {
         guard let totalBytes = progress.totalBytes, totalBytes > 0 else {
+            // Bytes moving but no total (CDN sent no length): show movement
+            // rather than pretending we are still checking.
+            if progress.downloadedBytes > 0 {
+                let megabytes = progress.downloadedBytes / 1_048_576
+                return "Downloading model - \(megabytes) MB"
+            }
             return "Checking model..."
         }
         return "Downloading model \(Int(((progress.fraction ?? 0) * 100).rounded()))%"

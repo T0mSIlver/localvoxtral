@@ -2,7 +2,7 @@ import Foundation
 import Observation
 
 /// Production onboarding driver: kicks off `BackendManager.ensureReady` and
-/// mirrors the observable `voxmlxStatus` / `polishdStatus` into `itemStates`.
+/// mirrors the observable `speechdStatus` / `polishdStatus` into `itemStates`.
 ///
 /// It only ever CALLS existing backend API from main — it never mutates the
 /// backend beyond the single `ensureReady` request, and the status → item-state
@@ -62,7 +62,7 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
     /// next main-actor hop keeps `itemStates` current for the whole run.
     private func observeStatuses() {
         withObservationTracking {
-            _ = backendManager.voxmlxStatus
+            _ = backendManager.speechdStatus
             _ = backendManager.polishdStatus
         } onChange: { [weak self] in
             Task { @MainActor in
@@ -76,7 +76,7 @@ final class LiveOnboardingBootstrapDriver: OnboardingBootstrapDriving {
     private func recomputeItemStates() {
         var states: [OnboardingItemID: OnboardingItemState] = [:]
         if dictationRequested {
-            states[.dictation] = OnboardingItemState(managedStatus: backendManager.voxmlxStatus)
+            states[.dictation] = OnboardingItemState(managedStatus: backendManager.speechdStatus)
         }
         if polishingRequested {
             states[.polishing] = OnboardingItemState(managedStatus: backendManager.polishdStatus)

@@ -11,8 +11,9 @@ name: Agent Dictation E2E Eval
 on:
   workflow_dispatch:
   schedule:
-    # Nightly, offset from ui-smoke's 04:00 so the two self-hosted GUI/eval
-    # lanes never contend for the runner at the same minute.
+    # Nightly. ui-smoke moved to an evening lock-aware ladder (18:00–21:00
+    # UTC), so 04:45 no longer needs to dodge it — kept overnight because
+    # this lane needs no GUI session and the machine is idle then.
     - cron: "45 4 * * *"
 
 concurrency:
@@ -35,12 +36,9 @@ jobs:
           clean: false
 
       - name: Clean stale outputs (keep build caches)
-        run: |
-          if [[ -d .build.smoke-hidden ]]; then
-            rm -rf .build
-            mv .build.smoke-hidden .build
-          fi
-          rm -rf dist logs
+        # Shared repair-and-clean for the persistent workspace (see the
+        # script for the removal list and .build.smoke-hidden rationale).
+        run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Ensure Metal toolchain
         # Same probe as ci.yml: `xcrun --find metal` succeeding does NOT mean
@@ -81,7 +79,12 @@ jobs:
         run: |
           mkdir -p logs
           set -o pipefail
-          swift test --filter AgentDictationE2EEvalTests 2>&1 | tee logs/eval-e2e.log
+          # --enable-code-coverage matches ci.yml's build flags in the SHARED
+          # .build (clean: false): without it this nightly rebuilt the whole
+          # app+test module uninstrumented, and the next morning's ci.yml
+          # unit step rebuilt it back — the same flag-flip PR #157 fixed
+          # inside ci.yml (PR #157 review finding).
+          swift test --filter AgentDictationE2EEvalTests --enable-code-coverage 2>&1 | tee logs/eval-e2e.log
 
       - name: Scoreboard to step summary
         # Extract the section between the scoreboard markers (kept in sync

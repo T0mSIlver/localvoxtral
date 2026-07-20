@@ -1,3 +1,4 @@
+import AppKit
 import Carbon
 import Foundation
 import XCTest
@@ -542,6 +543,27 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
         XCTAssertNil(viewModel.lastError)
         XCTAssertNotEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
+        viewModel.isShowingConnectionFailureAlert = true
+    }
+
+    func testConnectionFailureAlertNeverRunsModalEvenWithNSAppInitialized() {
+        // Regression: presentConnectionFailureAlert's `NSApp != nil` guard is
+        // not enough in a test process — any earlier test touching
+        // NSApplication.shared initializes NSApp for the rest of the suite,
+        // after which an invalid-endpoint failure ran a REAL modal NSAlert and
+        // parked the whole run in _DPSBlockUntilNextEventMatchingListInMode
+        // (sampled 2026-07-19; hung tier-0 CI and the SSH gate). Returning
+        // from beginDictationSession at all is the proof; the assertions
+        // below just pin the early-exit failure surface it must still reach.
+        _ = NSApplication.shared
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        Self.retainedViewModels.append(viewModel)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = ""
+        viewModel.beginDictationSession()
+
+        XCTAssertFalse(viewModel.isDictating)
+        XCTAssertNotNil(viewModel.lastError, "the failure must still be surfaced")
         viewModel.isShowingConnectionFailureAlert = true
     }
 

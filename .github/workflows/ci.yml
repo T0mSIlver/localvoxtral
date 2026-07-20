@@ -38,21 +38,30 @@ jobs:
       - name: Clean stale outputs (keep build caches)
         # clean: false above skips git clean entirely, so outputs a previous
         # run generated must be removed by hand — but NOT the build caches.
-        # Also repair the smoke test's .build rename if a cancelled run died
-        # mid-smoke (its EXIT trap doesn't run on SIGKILL): a leftover
-        # .build.smoke-hidden would make the next run's `mv` nest one dir
-        # inside the other and silently corrupt the cache.
+        # Shared with ui-smoke.yml/eval-e2e.yml (same persistent workspace);
+        # the removal list and the .build.smoke-hidden repair rationale live
+        # in the script.
+        run: ./scripts/ci/clean-stale-outputs.sh
+
+      - name: Clean abandoned test processes in this workspace
+        # A cancelled self-hosted job can outlive the Actions process cookie
+        # and leave swift-package/xctest running in this persistent checkout.
+        # Scope by current user + lsof cwd/mapped text; never pkill globally
+        # because the owner and parallel worktrees may run legitimate tests.
+        if: runner.environment == 'self-hosted'
+        run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
+
+      - name: Process-cleanup regression tests
+        # Pure shell tests for the workspace selector and the SSH build gate's
+        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
         run: |
-          if [[ -d .build.smoke-hidden ]]; then
-            rm -rf .build
-            mv .build.smoke-hidden .build
-          fi
-          rm -rf dist format-lint.txt default.profraw
-          # Transient eval enable markers (gitignored, marker-through-the-tree
-          # pattern): clean: false preserves them across runs, and a stray one
-          # would flip a marker-gated live suite ON in the plain unit step.
-          rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
-            .polishd-integration-enable.json .speechd-integration-enable.json
+          ./scripts/ci/test-cleanup-stale-test-processes.sh
+          ./scripts/ci/test-build-gate-process-cleanup.sh
+          ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-remote-build-reap.sh
+          ./scripts/ci/test-run-supervised-command.sh
+          ./scripts/ci/test-ui-smoke-guard.sh
+          ./scripts/ci/test-clean-stale-outputs.sh
 
       - name: Clean abandoned test processes in this workspace
         # A cancelled self-hosted job can outlive the Actions process cookie
@@ -359,7 +368,11 @@ jobs:
         env:
           SPEECHD_INTEGRATION_TEST_ENABLE: "1"
           SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
-        run: swift test --filter SpeechHelperIntegrationTests
+        # --enable-code-coverage matches the unit step's build flags (same
+        # rationale as the voxmlx step above): without it this step rebuilds
+        # the whole app+test module without coverage (~17 s), and the next
+        # run's unit step rebuilds it back again.
+        run: swift test --filter SpeechHelperIntegrationTests --enable-code-coverage
 
       - name: Polishing helper integration (live model + eval baseline)
         # Spawns the helper built by the packaging step with the real pinned
@@ -373,7 +386,9 @@ jobs:
         env:
           LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
           LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
-        run: swift test --filter PolishHelperIntegrationTests
+        # --enable-code-coverage: same flag-matching rationale as the speechd
+        # step above.
+        run: swift test --filter PolishHelperIntegrationTests --enable-code-coverage
 
       - name: Zip app for artifact upload
         # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip

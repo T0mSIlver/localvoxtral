@@ -7,6 +7,25 @@ import XCTest
 final class PolishPromptWarmupTests: XCTestCase {
     // MARK: - Fakes
 
+    private final class LockedBool: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: Bool
+
+        init(_ value: Bool) { storage = value }
+
+        var value: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+
+        func set(_ value: Bool) {
+            lock.lock()
+            storage = value
+            lock.unlock()
+        }
+    }
+
     /// Records polish calls and answers from a configurable result. Locked,
     /// not actor-based, matching the repo's locked-fake convention.
     private final class RecordingPolishService: LLMPolishingServicing, @unchecked Sendable {
@@ -164,21 +183,21 @@ final class PolishPromptWarmupTests: XCTestCase {
         XCTAssertEqual(service.requests.count, 3)
     }
 
-    func testWarmupIgnoresVoxmlxUpdates() async {
+    func testWarmupIgnoresSpeechdUpdates() async {
         let service = RecordingPolishService()
         let coordinator = PolishPromptWarmupCoordinator(
             serviceProvider: { service },
             planProvider: { [plan = makePlan()] in plan }
         )
 
-        coordinator.handleStatusUpdate(update(BackendCatalog.voxmlx, .ready))
+        coordinator.handleStatusUpdate(update(BackendCatalog.speechd, .ready))
         await awaitWarmup(coordinator)
         XCTAssertTrue(service.requests.isEmpty)
 
-        // A voxmlx non-ready update must not reset polishd's edge state.
+        // A speechd non-ready update must not reset polishd's edge state.
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
         await awaitWarmup(coordinator)
-        coordinator.handleStatusUpdate(update(BackendCatalog.voxmlx, .stopped))
+        coordinator.handleStatusUpdate(update(BackendCatalog.speechd, .stopped))
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
         await awaitWarmup(coordinator)
         XCTAssertEqual(service.requests.count, 1)
@@ -190,10 +209,10 @@ final class PolishPromptWarmupTests: XCTestCase {
         // coordinator must not fire a request in that case, and must warm
         // normally once a later launch has a plan.
         let service = RecordingPolishService()
-        var planAvailable = false
+        let planAvailable = LockedBool(false)
         let coordinator = PolishPromptWarmupCoordinator(
             serviceProvider: { service },
-            planProvider: { [plan = makePlan()] in planAvailable ? plan : nil }
+            planProvider: { [plan = makePlan()] in planAvailable.value ? plan : nil }
         )
 
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
@@ -201,7 +220,7 @@ final class PolishPromptWarmupTests: XCTestCase {
         XCTAssertNil(coordinator.warmupTask)
         XCTAssertTrue(service.requests.isEmpty)
 
-        planAvailable = true
+        planAvailable.set(true)
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .stopped))
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
         await awaitWarmup(coordinator)

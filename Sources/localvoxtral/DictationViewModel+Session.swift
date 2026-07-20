@@ -159,20 +159,11 @@ extension DictationViewModel {
     }
 
     private func managedBackendStartupStatusText(dictation: Bool, polishing: Bool) -> String {
-        if dictation, case .preparingModel(let progress) = backendManager.voxmlxStatus {
+        if dictation, case .preparingModel(let progress) = backendManager.speechdStatus {
             return modelDownloadStartupText(kind: "dictation", progress: progress)
         }
         if polishing, case .preparingModel(let progress) = backendManager.polishdStatus {
             return modelDownloadStartupText(kind: "polishing", progress: progress)
-        }
-        if shouldShowManagedBackendInstallStatus(
-            voxmlxStatus: dictation ? backendManager.voxmlxStatus : nil,
-            polishdStatus: polishing ? backendManager.polishdStatus : nil
-        ) {
-            if !dictation, polishing {
-                return "Installing polishing backend..."
-            }
-            return "Installing dictation backend..."
         }
         if !dictation, polishing {
             return "Starting polishing backend..."
@@ -186,16 +177,6 @@ extension DictationViewModel {
             return "Preparing \(kind) model..."
         }
         return "Downloading \(kind) model (\(Int((fraction * 100).rounded()))%)..."
-    }
-
-    private func shouldShowManagedBackendInstallStatus(
-        voxmlxStatus: ManagedBackendStatus?,
-        polishdStatus: ManagedBackendStatus?
-    ) -> Bool {
-        if voxmlxStatus?.requiresInstallProgressText == true {
-            return true
-        }
-        return polishdStatus?.requiresInstallProgressText == true
     }
 
     private func handleManagedBackendStartupFailure(_ error: Error) {
@@ -2042,6 +2023,15 @@ extension DictationViewModel {
         // timer SIGTRAPed the test runner mid-suite).
         guard NSApp != nil else {
             Log.dictation.error("connection-failure alert skipped: no NSApplication in this process")
+            return
+        }
+        // The nil guard above is NOT sufficient in a test process: any earlier
+        // test that touches NSApplication.shared initializes NSApp for the rest
+        // of the suite, and runModal() then stops the whole run dead waiting
+        // for a click that never comes (xctest sample 2026-07-19: this frame
+        // parked in _DPSBlockUntilNextEventMatchingListInMode mid-suite).
+        guard NSClassFromString("XCTestCase") == nil else {
+            Log.dictation.error("connection-failure alert skipped: XCTest process")
             return
         }
         NSApp.activate(ignoringOtherApps: true)

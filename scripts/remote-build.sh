@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
@@ -18,6 +18,9 @@ set -euo pipefail
 #                  spawn the packaged speech helper (built by `package`),
 #                  transcribe real audio through the production websocket
 #                  client, and assert accuracy + delta + parent-pid contracts
+#     speechd-bench run the packaged speech helper's streaming benchmark;
+#                  optional args = seconds (default 60) and cadence ms
+#                  (default 100 = the production step cadence); requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
@@ -210,7 +213,7 @@ esac
 
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
   --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
-  --skip AgentDictationE2EEvalTests)
+  --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's voxmlx/mlxlm launchd services are launch-on-demand to keep their
@@ -277,6 +280,32 @@ case "$CMD" in
         >"$SPEECHD_MARKER"
     fi
     REMOTE_CMD=(swift test --filter SpeechHelperIntegrationTests)
+    ;;
+  speechd-bench)
+    # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
+    # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
+    if [[ $# -gt 2 ]]; then
+      echo "speechd-bench accepts optional seconds and cadence-ms arguments" >&2
+      exit 1
+    fi
+    SPEECHD_BENCH_SECONDS="${1:-60}"
+    SPEECHD_BENCH_CADENCE="${2:-100}"
+    if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+      echo "speechd-bench seconds must be a positive integer" >&2
+      exit 1
+    fi
+    if [[ ! "$SPEECHD_BENCH_CADENCE" =~ ^[1-9][0-9]*$ ]]; then
+      echo "speechd-bench cadence-ms must be a positive integer" >&2
+      exit 1
+    fi
+    SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
+    trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
+    printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s}\n' \
+      "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
+      "$SPEECHD_BENCH_SECONDS" \
+      "$SPEECHD_BENCH_CADENCE" \
+      >"$SPEECHD_BENCH_MARKER"
+    REMOTE_CMD=(swift test --filter SpeechdStreamingBenchTests)
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
@@ -369,7 +398,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|integration-polishd|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
