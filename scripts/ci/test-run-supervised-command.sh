@@ -118,6 +118,67 @@ is_live_non_zombie "$stubborn_pid" && fail "forensics run: descendant survived"
 fixture_pid=""
 stubborn_pid=""
 
+# A sampler that hangs must be killed at the cap and never postpone the
+# group kill (PR #160 review: an unbounded `sample` on a badly wedged task
+# would recreate the blind hang the forensics exist to diagnose).
+pid_fifo="$TMP_DIR/hung-sampler-pids"
+timeout_fifo="$TMP_DIR/hung-sampler-trigger"
+mkfifo "$pid_fifo" "$timeout_fifo"
+cat >"$TMP_DIR/bin/sample" <<'STUB'
+#!/usr/bin/env bash
+echo "stub-sample-hanging-on-pid-$1"
+exec sleep 300
+STUB
+chmod +x "$TMP_DIR/bin/sample"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+LOCALVOXTRAL_SUPERVISOR_SAMPLE_POLLS=3 \
+  "$SUPERVISOR" 999 "$TMP_DIR/hung-sampler.log" -- "$FIXTURE" "$pid_fifo" &
+supervisor_pid=$!
+read -r fixture_pid stubborn_pid <"$pid_fifo"
+printf 'fire\n' >"$timeout_fifo"
+if wait "$supervisor_pid"; then
+  fail "hung-sampler run unexpectedly succeeded"
+else
+  status=$?
+fi
+supervisor_pid=""
+[[ "$status" == "124" ]] || fail "hung-sampler run: timeout status changed from 124 to $status"
+grep -q 'killed at the 300 ms cap' "$TMP_DIR/hung-sampler.log" \
+  || fail "hung sampler was not killed at the cap"
+is_live_non_zombie "$fixture_pid" && fail "hung-sampler run: leader survived"
+is_live_non_zombie "$stubborn_pid" && fail "hung-sampler run: descendant survived"
+fixture_pid=""
+stubborn_pid=""
+
+# A command that finishes naturally while forensics are running must keep
+# its real exit status — the timeout marker is only written if the group is
+# still alive after sampling (PR #160 review: the marker used to be written
+# before sampling, widening the 124-mislabel race to seconds).
+timeout_fifo="$TMP_DIR/natural-finish-trigger"
+mkfifo "$timeout_fifo"
+flag_file="$TMP_DIR/natural-finish-flag"
+cat >"$TMP_DIR/bin/sample" <<STUB
+#!/usr/bin/env bash
+echo "stub-sample-releasing-command"
+touch "$flag_file"
+sleep 1
+STUB
+chmod +x "$TMP_DIR/bin/sample"
+PATH="$TMP_DIR/bin:$PATH" \
+LOCALVOXTRAL_SUPERVISOR_TIMEOUT_FIFO="$timeout_fifo" \
+LOCALVOXTRAL_SUPERVISOR_TERM_POLLS=0 \
+LOCALVOXTRAL_SUPERVISOR_SAMPLE_POLLS=50 \
+  "$SUPERVISOR" 999 "$TMP_DIR/natural-finish.log" -- \
+  /bin/bash -c "while [[ ! -f '$flag_file' ]]; do sleep 0.05; done; echo finished-naturally; exit 0" &
+supervisor_pid=$!
+printf 'fire\n' >"$timeout_fifo"
+wait "$supervisor_pid" || fail "natural finish during forensics was mislabeled as status $?"
+supervisor_pid=""
+grep -q '^finished-naturally$' "$TMP_DIR/natural-finish.log" \
+  || fail "natural-finish output missing from the log"
+
 # Signal cancellation preserves the conventional status and drains the tree.
 pid_fifo="$TMP_DIR/signal-pids"
 mkfifo "$pid_fifo"

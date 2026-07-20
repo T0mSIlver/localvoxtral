@@ -18,7 +18,11 @@ shift
 
 term_polls="${LOCALVOXTRAL_SUPERVISOR_TERM_POLLS:-50}"
 poll_seconds="${LOCALVOXTRAL_SUPERVISOR_TERM_POLL_SECONDS:-0.1}"
+# Hard cap on each forensic `sample` (polls x 0.1 s; default 8 s): a sampler
+# stuck on a badly wedged task must never postpone the kill it precedes.
+sample_polls="${LOCALVOXTRAL_SUPERVISOR_SAMPLE_POLLS:-80}"
 [[ "$term_polls" =~ ^[0-9]+$ ]] || usage
+[[ "$sample_polls" =~ ^[1-9][0-9]*$ ]] || usage
 
 mkdir -p "$(dirname "$log_file")"
 : >"$log_file"
@@ -43,10 +47,34 @@ group_is_alive() {
 # which CI already uploads as an artifact even on failure. xctest is sampled
 # first (the interesting process for test hangs), then remaining group
 # members, capped so forensics never delay the kill by more than ~10 s.
+# One bounded sample: run the sampler in its own background group and kill
+# it after sample_polls x 0.1 s. `sample` itself can stall on a badly wedged
+# task, and an unbounded sampler here would postpone terminate_group —
+# recreating the very blind hang this forensics exists to diagnose.
+sample_one_bounded() {
+  local pid="$1" sampler waited=0
+  echo "--- sample pid $pid ($(ps -o ucomm= -p "$pid" 2>/dev/null || echo unknown)) ---" >>"$log_file"
+  ( sample "$pid" 2 -mayDie 2>&1 ) >>"$log_file" 2>&1 &
+  sampler=$!
+  while kill -0 "$sampler" 2>/dev/null && (( waited < sample_polls )); do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if kill -0 "$sampler" 2>/dev/null; then
+    kill -KILL -- "-$sampler" 2>/dev/null || kill -KILL "$sampler" 2>/dev/null || true
+    echo "--- sampler for pid $pid killed at the ${sample_polls}00 ms cap ---" >>"$log_file"
+  fi
+  wait "$sampler" 2>/dev/null || true
+}
+
 sample_group_for_forensics() {
-  local pgid="$1" sampled=0 pid
+  local pgid="$1" sampled=0 pid seen_pids=""
   [[ -n "$pgid" ]] || return 0
   command -v sample >/dev/null 2>&1 || return 0
+  if ! command -v pgrep >/dev/null 2>&1; then
+    echo "=== supervisor timeout forensics skipped: pgrep unavailable ===" >>"$log_file"
+    return 0
+  fi
   {
     echo ""
     echo "=== supervisor timeout forensics: sampling process group $pgid ==="
@@ -54,12 +82,9 @@ sample_group_for_forensics() {
   for pid in $(pgrep -g "$pgid" -x xctest 2>/dev/null; pgrep -g "$pgid" 2>/dev/null); do
     (( sampled >= 3 )) && break
     kill -0 "$pid" 2>/dev/null || continue
-    case " ${seen_pids:-} " in *" $pid "*) continue ;; esac
-    seen_pids="${seen_pids:-} $pid"
-    {
-      echo "--- sample pid $pid ($(ps -o ucomm= -p "$pid" 2>/dev/null || echo unknown)) ---"
-      sample "$pid" 2 -mayDie 2>&1
-    } >>"$log_file" || true
+    case " $seen_pids " in *" $pid "*) continue ;; esac
+    seen_pids="$seen_pids $pid"
+    sample_one_bounded "$pid"
     sampled=$((sampled + 1))
   done
   return 0
@@ -116,8 +141,14 @@ command_pgid=$command_pid
   else
     sleep "$timeout_seconds"
   fi
-  : >"$timeout_marker"
+  # Sample BEFORE the marker/kill, and only mark the run as a timeout if the
+  # group is still alive afterwards: forensics can take seconds, and a
+  # command that finished naturally inside that window must keep its real
+  # exit status instead of a mislabeled 124 (PR #160 review finding).
+  group_is_alive "$command_pgid" || exit 0
   sample_group_for_forensics "$command_pgid"
+  group_is_alive "$command_pgid" || exit 0
+  : >"$timeout_marker"
   terminate_group "$command_pgid"
 ) &
 watchdog_pid=$!
