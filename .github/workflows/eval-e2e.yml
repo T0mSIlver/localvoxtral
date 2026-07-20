@@ -11,8 +11,9 @@ name: Agent Dictation E2E Eval
 on:
   workflow_dispatch:
   schedule:
-    # Nightly, offset from ui-smoke's 04:00 so the two self-hosted GUI/eval
-    # lanes never contend for the runner at the same minute.
+    # Nightly. ui-smoke moved to an evening lock-aware ladder (18:00–21:00
+    # UTC), so 04:45 no longer needs to dodge it — kept overnight because
+    # this lane needs no GUI session and the machine is idle then.
     - cron: "45 4 * * *"
 
 concurrency:

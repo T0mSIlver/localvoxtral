@@ -3,7 +3,20 @@ name: UI Smoke
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 4 * * *"
+    # Evening retry ladder anchored at 20:00 Paris (owner request,
+    # 2026-07-20): the AX drill needs an UNLOCKED GUI session, and the old
+    # 04:00 slot always found the MacBook locked (every window interaction
+    # false-reds — run 29722553773). Each slot runs the guard below and
+    # skips green when the screen is locked or an earlier slot's drill
+    # already ran and passed (a guard-skip does NOT count — it also
+    # concludes `success`, so the guard checks the drill step, not the run),
+    # so at most one real drill runs per day, at whichever slot
+    # finds the Mac unlocked. GitHub cron is UTC: 18:00 UTC = 20:00 Paris
+    # in summer (CEST), 19:00 in winter (CET) — the lane needs "evening,
+    # Mac likely unlocked", not a precise hour, so DST drift is fine.
+    - cron: "0 18 * * *"
+    - cron: "30 19 * * *"
+    - cron: "0 21 * * *"
   # UI-affecting PRs get automated proof on demand: add the needs-ui-smoke
   # label (re-add it to rerun after new pushes).
   pull_request:
@@ -35,12 +48,40 @@ jobs:
           # Metal helper rebuilds (observed run 29763957545, 2026-07-20).
           clean: false
 
+      - name: Decide whether this scheduled slot runs (lock probe + already-covered)
+        # Enforced for schedule events only: workflow_dispatch and the
+        # needs-ui-smoke label are explicit operator intent and always run.
+        # The decision logic lives in scripts/ci/ui-smoke-guard.sh (kept out
+        # of the workflow so it is testable — test-ui-smoke-guard.sh runs in
+        # ci.yml's shell-test step); it fails OPEN on probe errors so a
+        # broken probe can never silently disable the lane.
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DECISION="$(./scripts/ci/ui-smoke-guard.sh)"
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+            echo "UI smoke slot: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "UI smoke slot: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Clean stale outputs (keep build caches)
         # Same repair-and-clean as ci.yml/eval-e2e.yml: clean: false skips git
         # clean entirely, so outputs a previous run generated are removed by
         # hand — but NOT the build caches. The .build.smoke-hidden rename is
         # ci.yml's launch-smoke hideaway; restore it if a cancelled run died
         # mid-smoke.
+        #
+        # The guard condition compares `!= 'false'` (not `== 'true'`) so a
+        # missing output fails OPEN: if the guard ever exits 0 without
+        # emitting run=..., the drill runs rather than every slot silently
+        # skipping green forever. Same condition on the two steps below.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: |
           if [[ -d .build.smoke-hidden ]]; then
             rm -rf .build
@@ -51,11 +92,13 @@ jobs:
             .polishd-integration-enable.json .speechd-integration-enable.json
 
       - name: Package app bundle
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
         run: ./scripts/package_app.sh release
 
       - name: Run AX UI smoke
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: |
           mkdir -p logs
           set -o pipefail

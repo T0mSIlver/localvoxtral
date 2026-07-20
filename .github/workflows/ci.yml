@@ -71,6 +71,7 @@ jobs:
           ./scripts/ci/test-build-gate-reap-command.sh
           ./scripts/ci/test-remote-build-reap.sh
           ./scripts/ci/test-run-supervised-command.sh
+          ./scripts/ci/test-ui-smoke-guard.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
