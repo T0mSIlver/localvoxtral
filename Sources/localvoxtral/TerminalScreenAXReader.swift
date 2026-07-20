@@ -162,6 +162,24 @@ enum TerminalScreenAXReader {
         return FocusedWindowMarkerRead(marker: marker, windowID: read.windowID)
     }
 
+    /// The identity of `pid`'s focused window, or nil when it cannot be
+    /// established.
+    ///
+    /// This exists for the TTY join: the marker read reports the window it
+    /// parsed the marker from, but a tty-resolved join never touches the
+    /// marker — the title has typically been clobbered by Claude Code's own
+    /// conversation title — so the window the user was focused on is
+    /// identified by this separate bounded AX read. Nil abstains at the
+    /// authorizer, exactly like a nil marker-read identity (review F2).
+    static func focusedWindowIdentity(applicationPID pid: pid_t) -> CGWindowID? {
+        #if DEBUG
+        if let override = debugTitleWindowIDOverride { return override(pid) }
+        if TerminalTargetDetector.isRunningUnderXCTest { return nil }
+        #endif
+        guard AXIsProcessTrusted() else { return nil }
+        return copyFocusedWindowTitle(applicationPID: pid)?.windowID
+    }
+
     /// The AX round trip for the title. Returns the focused window's `AXTitle`
     /// and window identity, only if that window is still owned by `pid`.
     private static func copyFocusedWindowTitle(

@@ -88,7 +88,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         registry: ClaudeSessionRegistry,
         title: String?,
         focusedTTY: String? = nil,
-        titleWindowID: CGWindowID? = 101
+        titleWindowID: CGWindowID? = 101,
+        ttyWindowID: CGWindowID? = 101
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
@@ -99,7 +100,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
                     )
                 }
             },
-            focusedTerminalTTY: { _ in focusedTTY }
+            focusedTerminalTTY: { _ in focusedTTY },
+            focusedWindowID: { _ in ttyWindowID }
         )
     }
 
@@ -196,7 +198,8 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
                 titleReads += 1
                 return nil
             },
-            focusedTerminalTTY: { _ in "/dev/ttys003" }
+            focusedTerminalTTY: { _ in "/dev/ttys003" },
+            focusedWindowID: { _ in self.windowA }
         )
         XCTAssertNotNil(joinResolver.resolve(target: ghostty))
         XCTAssertEqual(titleReads, 0)
@@ -252,6 +255,47 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
                 .resolve(target: ghostty)
         )
         XCTAssertEqual(join.snapshot.sessionID, "s2")
+    }
+
+    // The tty join carries the focused window's identity exactly like the
+    // marker join carries the title read's — and the authorizer holds both to
+    // the same compare. Without it, a tty join would either always refuse raw
+    // attachment (nil identity) or bypass the F2 window check entirely.
+    func testTTYJoinCarriesTheFocusedWindowIdentity() throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        let joinResolver = resolver(
+            registry: registry, title: nil, focusedTTY: "/dev/ttys003", ttyWindowID: windowB
+        )
+        let join = joinResolver.resolve(target: ghostty)
+        XCTAssertEqual(join?.windowID, windowB)
+        let gate = TerminalScreenClaudeJoinAuthorizer(resolver: joinResolver, currentJoin: { join })
+        XCTAssertTrue(
+            gate.isAuthorized(target: ghostty, windowID: windowB),
+            "precondition: the tty-joined window itself authorizes"
+        )
+        XCTAssertFalse(
+            gate.isAuthorized(target: ghostty, windowID: windowA),
+            "a capture from another window of the same app must not inherit a tty join"
+        )
+    }
+
+    // A tty join whose window identity could not be established still joins —
+    // hook state and repo context remain usable — but raw screen attachment
+    // refuses, same as an unknown marker-read identity.
+    func testTTYJoinWithUnknownWindowIdentityRefusesRawAttachment() throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(tty: "/dev/ttys003"), origin: local))
+        let joinResolver = resolver(
+            registry: registry, title: nil, focusedTTY: "/dev/ttys003", ttyWindowID: nil
+        )
+        let join = try XCTUnwrap(joinResolver.resolve(target: ghostty))
+        XCTAssertNil(join.windowID)
+        let gate = TerminalScreenClaudeJoinAuthorizer(
+            resolver: joinResolver, currentJoin: { join }
+        )
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: nil))
     }
 
     func testRemoteSessionNeverJoinsViaTTY() {
