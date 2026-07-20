@@ -429,6 +429,20 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         )
     }
 
+    // The trusted-endpoint opt-in admits the session block to a remote
+    // endpoint — the same remote URL that just attached nothing now carries
+    // the prior prompt, because the user explicitly consented to this exact
+    // ride (mirror of `testTrustedEndpointOptInAdmitsRemoteEndpoint`).
+    func testTrustedEndpointOptInAttachesTheSessionBlockToRemoteEndpoint() async {
+        let (viewModel, join) = wiredWithPriorPrompt()
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.settings.polishContextTrustedEndpointEnabled = true
+
+        let outcome = await sessionBlockOutcome(viewModel, join: join, endpointURL: remote)
+        XCTAssertTrue(outcome.text.contains("rewrite the migration script"))
+        XCTAssertNotNil(outcome.block)
+    }
+
     // The session died between start and commit. Its prior prompt is no longer
     // what the user is continuing.
     func testSessionThatEndedSinceStartAttachesNoSessionBlock() async {
@@ -530,6 +544,44 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         XCTAssertNil(viewModel.claudeSessionJoin)
         XCTAssertEqual(reads.withLock { $0 }, 0, "an opted-out user's title must never be read")
+    }
+
+    // The trusted-endpoint opt-in also admits the START-TIME join resolution:
+    // with a remote polishing endpoint, the resolver is consulted only under
+    // the opt-in — same gate, same order, as every commit-time surface. Both
+    // halves in one test so the opt-in is provably what flips the answer.
+    func testStartResolutionOverRemoteEndpointRequiresTheTrustedOptIn() {
+        let viewModel = makeViewModel()
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.settings.llmPolishingEndpointURL = remote.absoluteString
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
+        let reads = Mutex(0)
+        viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry(),
+            markerInWindowTitle: { _ in
+                reads.withLock { $0 += 1 }
+                return TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
+                )
+            }
+        )
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { self.ghostty }
+
+        viewModel.settings.polishContextTrustedEndpointEnabled = false
+        viewModel.captureTerminalScreenContextForSession()
+        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertEqual(
+            reads.withLock { $0 }, 0,
+            "a remote endpoint without the opt-in must not even read the title"
+        )
+
+        viewModel.settings.polishContextTrustedEndpointEnabled = true
+        viewModel.captureTerminalScreenContextForSession()
+        XCTAssertNotNil(viewModel.claudeSessionJoin, "the opt-in admits the join")
+        XCTAssertEqual(reads.withLock { $0 }, 1)
     }
 
     override func tearDown() async throws {
