@@ -8,12 +8,19 @@
 # The lane is therefore scheduled as an evening retry ladder, and each slot
 # decides:
 #
-#   skip — a successful ui-smoke run already completed in the recent window
-#          (the day is covered; later slots stay green no-ops)
+#   skip — a run whose DRILL actually executed and passed completed in the
+#          recent window (the day is covered; later slots stay green no-ops)
 #   skip — the console session is locked, or there is no GUI session
 #   run  — otherwise. Probe/API errors fail OPEN: an uncomputable state must
 #          never silently disable the lane (same philosophy as the CI lane
 #          filters).
+#
+# Run-level status is NOT enough for the first rule: a guard-skipped slot
+# also concludes `success` (skipped steps never fail a job), so counting any
+# `status=success` run would let a locked 18:00 slot suppress the 19:30 and
+# 21:00 retries — the exact failure the ladder exists to avoid (PR #158
+# review finding). Candidate runs therefore only count when their
+# "Run AX UI smoke" step conclusion is `success`.
 #
 # Output (GitHub-output style on stdout):
 #   run=true|false
@@ -29,6 +36,9 @@ set -euo pipefail
 # tomorrow's first slot.
 RECENT_SUCCESS_WINDOW_SECONDS=$((20 * 60 * 60))
 
+# Age in seconds of the most recent run whose drill step actually passed;
+# empty when none is found among the last 10 success-concluded runs (10
+# covers several evenings of pure guard-skips before a real drill).
 last_success_age_seconds() {
   if [[ -n "${UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS:-}" ]]; then
     if [[ "$UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS" == "none" ]]; then
@@ -38,23 +48,42 @@ last_success_age_seconds() {
     fi
     return
   fi
-  local ts
-  ts="$(gh api \
-    "repos/${GITHUB_REPOSITORY}/actions/workflows/ui-smoke.yml/runs?status=success&per_page=1" \
-    --jq '.workflow_runs[0].run_started_at // empty' 2>/dev/null)" || ts=""
-  if [[ -z "$ts" ]]; then
+  local runs
+  runs="$(gh api \
+    "repos/${GITHUB_REPOSITORY}/actions/workflows/ui-smoke.yml/runs?status=success&per_page=10" \
+    --jq '.workflow_runs[] | "\(.id)\t\(.run_started_at)"' 2>/dev/null)" || runs=""
+  if [[ -z "$runs" ]]; then
     echo ""
     return
   fi
-  python3 - "$ts" <<'PY' || echo ""
+  local id ts drill
+  while IFS=$'\t' read -r id ts; do
+    [[ -z "$id" || -z "$ts" ]] && continue
+    # Step name must match ui-smoke.yml's drill step exactly; renaming one
+    # without the other makes every run look like a skip, which fails open
+    # into (at worst) an extra drill — never a silent permanent skip.
+    drill="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/jobs" \
+      --jq '[.jobs[].steps[] | select(.name == "Run AX UI smoke") | .conclusion] | first // empty' \
+      2>/dev/null)" || drill=""
+    if [[ "$drill" == "success" ]]; then
+      python3 - "$ts" <<'PY' || echo ""
 import datetime
 import sys
 
-started = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")
+# GitHub timestamps are usually second-granular, but tolerate a fractional
+# part rather than silently defeating the dedup on a ValueError.
+ts = sys.argv[1]
+if "." in ts:
+    ts = ts.split(".", 1)[0] + "Z"
+started = datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
 started = started.replace(tzinfo=datetime.timezone.utc)
 now = datetime.datetime.now(datetime.timezone.utc)
 print(int((now - started).total_seconds()))
 PY
+      return
+    fi
+  done <<<"$runs"
+  echo ""
 }
 
 lock_state() {
@@ -79,7 +108,7 @@ SWIFT
 age="$(last_success_age_seconds)"
 if [[ -n "$age" && "$age" -lt "$RECENT_SUCCESS_WINDOW_SECONDS" ]]; then
   echo "run=false"
-  echo "reason=successful ui-smoke run $((age / 3600)) h ago — today is already covered"
+  echo "reason=drill ran and passed $((age / 3600)) h ago — today is already covered"
   exit 0
 fi
 

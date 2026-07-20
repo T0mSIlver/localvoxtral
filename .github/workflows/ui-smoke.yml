@@ -7,8 +7,10 @@ on:
     # 2026-07-20): the AX drill needs an UNLOCKED GUI session, and the old
     # 04:00 slot always found the MacBook locked (every window interaction
     # false-reds — run 29722553773). Each slot runs the guard below and
-    # skips green when the screen is locked or an earlier slot already
-    # succeeded, so at most one real drill runs per day, at whichever slot
+    # skips green when the screen is locked or an earlier slot's drill
+    # already ran and passed (a guard-skip does NOT count — it also
+    # concludes `success`, so the guard checks the drill step, not the run),
+    # so at most one real drill runs per day, at whichever slot
     # finds the Mac unlocked. GitHub cron is UTC: 18:00 UTC = 20:00 Paris
     # in summer (CEST), 19:00 in winter (CET) — the lane needs "evening,
     # Mac likely unlocked", not a precise hour, so DST drift is fine.
@@ -74,7 +76,12 @@ jobs:
         # hand — but NOT the build caches. The .build.smoke-hidden rename is
         # ci.yml's launch-smoke hideaway; restore it if a cancelled run died
         # mid-smoke.
-        if: github.event_name != 'schedule' || steps.guard.outputs.run == 'true'
+        #
+        # The guard condition compares `!= 'false'` (not `== 'true'`) so a
+        # missing output fails OPEN: if the guard ever exits 0 without
+        # emitting run=..., the drill runs rather than every slot silently
+        # skipping green forever. Same condition on the two steps below.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: |
           if [[ -d .build.smoke-hidden ]]; then
             rm -rf .build
@@ -85,13 +92,13 @@ jobs:
             .polishd-integration-enable.json .speechd-integration-enable.json
 
       - name: Package app bundle
-        if: github.event_name != 'schedule' || steps.guard.outputs.run == 'true'
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
         run: ./scripts/package_app.sh release
 
       - name: Run AX UI smoke
-        if: github.event_name != 'schedule' || steps.guard.outputs.run == 'true'
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: |
           mkdir -p logs
           set -o pipefail
