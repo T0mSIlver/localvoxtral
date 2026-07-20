@@ -567,6 +567,24 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
+    func testTestProcessDetectionTreatsEitherSignalAsATestProcess() {
+        // The modal guard's truth table: the XCTest class in the runtime OR a
+        // set XCTestConfigurationFilePath env var each independently mean "no
+        // modal UI in this process" — a spawned child of the harness can carry
+        // the env var without linking XCTest.
+        XCTAssertTrue(DictationViewModel.isTestProcess(hasXCTestClass: true, environment: [:]))
+        XCTAssertTrue(
+            DictationViewModel.isTestProcess(
+                hasXCTestClass: false,
+                environment: ["XCTestConfigurationFilePath": "/tmp/config.xctestconfiguration"]
+            )
+        )
+        XCTAssertFalse(DictationViewModel.isTestProcess(hasXCTestClass: false, environment: [:]))
+        // The live defaults must recognize THIS process, whichever signal the
+        // harness happens to provide.
+        XCTAssertTrue(DictationViewModel.isTestProcess())
+    }
+
     func testStaleSecureIconDoesNotMaskEarlyExitFailuresOnNextAttempt() {
         // Codex finding on #90: refused start leaves the icon lit; a next
         // attempt that exits early (missing mic) BEFORE the verdict capture

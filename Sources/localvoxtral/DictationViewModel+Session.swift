@@ -2014,6 +2014,20 @@ extension DictationViewModel {
         )
     }
 
+    /// Whether this process is running as (or under) an XCTest host, decided
+    /// from BOTH available signals: the XCTest runtime being loaded, and the
+    /// `XCTestConfigurationFilePath` environment variable xctest sets for the
+    /// processes it launches. The class check alone misses a child process the
+    /// harness spawned without linking XCTest into it; either signal alone
+    /// means "no modal UI here, ever". Pure and injectable so the truth table
+    /// is assertable from inside a test process (where both signals are live).
+    nonisolated static func isTestProcess(
+        hasXCTestClass: Bool = NSClassFromString("XCTestCase") != nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        hasXCTestClass || environment["XCTestConfigurationFilePath"] != nil
+    }
+
     func presentConnectionFailureAlert(
         title: String = "Realtime Connection Failed",
         message: String,
@@ -2038,7 +2052,7 @@ extension DictationViewModel {
         // of the suite, and runModal() then stops the whole run dead waiting
         // for a click that never comes (xctest sample 2026-07-19: this frame
         // parked in _DPSBlockUntilNextEventMatchingListInMode mid-suite).
-        guard NSClassFromString("XCTestCase") == nil else {
+        guard !Self.isTestProcess() else {
             Log.dictation.error("connection-failure alert skipped: XCTest process")
             return
         }
