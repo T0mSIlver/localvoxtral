@@ -120,16 +120,38 @@ struct ClaudeSessionJoinResolver {
         // this app at all — not something to inherit on trust from a caller.
         guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
 
-        if let tty = focusedTerminalTTY(target.bundleID),
-           case .resolved(let snapshot) = registry.resolve(tty: tty) {
-            Log.claudeContext.info(
-                "Terminal pane joined to a live Claude session via focused-pane tty"
-            )
-            return ClaudeSessionJoin(
-                target: target, marker: snapshot.marker, snapshot: snapshot, windowID: nil
-            )
+        if let tty = focusedTerminalTTY(target.bundleID) {
+            switch registry.resolve(tty: tty) {
+            case .resolved(let snapshot):
+                Log.claudeContext.info(
+                    "Terminal pane joined to a live Claude session via focused-pane tty"
+                )
+                return ClaudeSessionJoin(
+                    target: target, marker: snapshot.marker, snapshot: snapshot, windowID: nil
+                )
+            case .unknown:
+                abstainedTTYJoin(outcome: "no live session on this device")
+            case .stale:
+                abstainedTTYJoin(outcome: "stale")
+            case .ambiguous:
+                abstainedTTYJoin(outcome: "ambiguous")
+            }
         }
 
+        return resolveViaMarker(target: target)
+    }
+
+    /// Outcome only, never the device path. A silent abstention here made a
+    /// broken hook-side tty capture indistinguishable from a failed pane read
+    /// in the field (2026-07-20) — the marker fallback may still answer, but
+    /// the non-answer must say which side of the join went missing.
+    private func abstainedTTYJoin(outcome: String) {
+        Log.claudeContext.info(
+            "Focused-pane tty matched no session (\(outcome, privacy: .public)); trying title marker"
+        )
+    }
+
+    private func resolveViaMarker(target: TerminalScreenTarget) -> ClaudeSessionJoin? {
         guard let read = markerInWindowTitle(target.pid) else {
             // No marker on screen: this pane is not a joined Claude session, or
             // we cannot tell. Either way there is nothing to resolve.

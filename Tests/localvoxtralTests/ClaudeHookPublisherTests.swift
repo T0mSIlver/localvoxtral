@@ -184,6 +184,47 @@ final class ClaudeHookSocketPathTests: XCTestCase {
     #endif
 }
 
+// MARK: - Controlling TTY capture
+
+final class ClaudeHookControllingTTYTests: XCTestCase {
+    // Claude Code wires all three hook fds to pipes, so the field capture
+    // depends on the /dev/tty and process-table fallbacks — these pin the
+    // process-table read's refusal cases deterministically (a positive read
+    // needs a controlling terminal, which CI runners don't have; the live
+    // proof is the hand-tested join).
+    func testProcessTableLookupRefusesInvalidPIDs() {
+        XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: 0))
+        XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: -1))
+    }
+
+    func testProcessTableLookupAnswersNilForATerminallessProcess() {
+        // launchd (pid 1) exists on every macOS system and never has a
+        // controlling terminal — a real process-table read that must answer
+        // "no device", not garbage.
+        XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: 1))
+    }
+
+    func testProcessTableLookupAnswersNilForADeadPID() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try? process.run()
+        process.waitUntilExit()
+        XCTAssertNil(ClaudeHookPublisher.ttyDevicePath(forProcess: process.processIdentifier))
+    }
+
+    func testControllingTTYAgreesWithItsOwnProcessTableEntry() {
+        // Environment-independent invariant: whether this suite runs on a
+        // pty-attached dev shell (fds are the terminal), piped output (only
+        // /dev/tty answers), or a terminal-less CI runner (nothing answers),
+        // the capture chain and the process-table read of OUR OWN pid describe
+        // the same session — same device, or nil on both sides.
+        XCTAssertEqual(
+            ClaudeHookPublisher.controllingTTY(claudePID: getpid()),
+            ClaudeHookPublisher.ttyDevicePath(forProcess: getpid())
+        )
+    }
+}
+
 // MARK: - Timeout plumbing
 
 final class UnixSocketPublisherTimeoutTests: XCTestCase {
