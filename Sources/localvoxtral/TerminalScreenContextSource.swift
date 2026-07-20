@@ -102,7 +102,7 @@ enum TerminalScreenContextSource {
         // knows whether that gate still holds. Authorizing first would:
         //
         // - read a title after the user turned the setting off, repointed the
-        //   endpoint off-loopback, or revoked trust — i.e. after consent was
+        //   endpoint no longer permitted, or revoked trust — i.e. after consent was
         //   withdrawn (`.policyRejected`);
         // - read the title of a RECYCLED PID's new owner (`.targetChanged`).
         //   The authorizer allowlist-checks the START capture's bundle ID, so a

@@ -54,7 +54,7 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 
 ## Privacy
 
-In the default Managed local mode, nothing you say or write is sent anywhere. Audio capture, transcription, and LLM polishing all run as local processes on your Mac, and the only network traffic is the one-time engine and model download. There is no telemetry, no account, and no cloud fallback. The context-aware polishing features (repo vocabulary, clipboard context) are opt-in and only ever talk to a loopback polishing endpoint, never a remote server. If you point localvoxtral at your own External URL server instead, your data goes only where you send it.
+In the default Managed local mode, nothing you say or write is sent anywhere. Audio capture, transcription, and LLM polishing all run as local processes on your Mac, and the only network traffic is the one-time engine and model download. There is no telemetry, no account, and no cloud fallback. The context-aware polishing features (repo vocabulary, clipboard context) are opt-in and by default only ever talk to a loopback polishing endpoint — a non-local endpoint receives context only if you additionally enable the explicit trusted-endpoint opt-in (default off). If you point localvoxtral at your own External URL server instead, your data goes only where you send it.
 
 ## Shortcuts
 

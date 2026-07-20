@@ -624,7 +624,8 @@ extension DictationViewModel {
                 // inside the Task can take up to ~2 s, and a copy landing during
                 // that window must not make the context ground against different
                 // text than the payload macro substitutes. When the setting is
-                // off OR the polishing endpoint is not loopback, the pasteboard
+                // off OR the polishing endpoint is not permitted (loopback-only
+                // without the trusted-endpoint opt-in), the pasteboard
                 // is never read (privacy).
                 let capturedClipboardContext: PolishClipboardContext?
                 let capturedScreenDecision: TerminalScreenContextDecision
@@ -698,7 +699,7 @@ extension DictationViewModel {
                     }
 
                     // Clipboard vocabulary is grounded in the already
-                    // privacy-gated clipboard text (feature toggle ON + loopback
+                    // privacy-gated clipboard text (feature toggle ON + permitted
                     // endpoint + never concealed/transient — all enforced when
                     // it was captured; nil context means none of it runs).
                     //
@@ -735,7 +736,7 @@ extension DictationViewModel {
                     // reason: its git subprocesses and file reads run OFF the
                     // main actor under their own deadline, so a slow repo yields
                     // a smaller snapshot rather than a late commit. Every gate
-                    // (setting, loopback endpoint, live join, LOCAL workspace)
+                    // (setting, permitted endpoint, live join, LOCAL workspace)
                     // is inside `claudeRepoSnapshotIfEnabled`, ahead of the
                     // collector — an unjoined pane means no filesystem call at
                     // all, not a collector that reads and then discards.
@@ -755,7 +756,7 @@ extension DictationViewModel {
                     // the clipboard and the screen.
                     //
                     // Gated through `claudeSessionTextIfEnabled` on ALL THREE of
-                    // the repo block's gates — current setting, current loopback
+                    // the repo block's gates — current setting, currently permitted
                     // endpoint, this exact join still live — not just the
                     // setting. Both blocks attach the session's content, and
                     // consenting to one is consenting to both; it follows that
@@ -1483,7 +1484,7 @@ extension DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         ) else {
             Log.polishing.info(
-                "Polish clipboard context skipped: polishing endpoint is not local"
+                "Polish clipboard context skipped: polishing endpoint is not permitted (loopback-only without the trusted-endpoint opt-in)"
             )
             return nil
         }
@@ -1574,9 +1575,10 @@ extension DictationViewModel {
     /// Opt-in repo-vocabulary grounding: harvests file names / path components /
     /// the branch from the git repo in the focused terminal and returns the
     /// transcript-relevant ones as replacement entries — but ONLY when the
-    /// setting is on AND the polishing endpoint is loopback (repo file names must
-    /// never ride to a remote endpoint, same privacy stance as clipboard
-    /// context). Both gates short-circuit before any AX read or subprocess.
+    /// setting is on AND the polishing endpoint is permitted — loopback, or any
+    /// endpoint under the explicit trusted-endpoint opt-in (repo file names
+    /// never ride to an endpoint the user has not consented to, same privacy
+    /// stance as clipboard context). Both gates short-circuit before any AX read or subprocess.
     /// Only the AX title and captured-app identity reads happen on the main
     /// actor (with a 0.5 s AX messaging timeout); everything blocking-ish — FS
     /// stats on the title/process CWD candidates (possibly a stale network

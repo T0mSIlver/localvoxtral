@@ -482,7 +482,7 @@ final class DictationViewModel {
     /// Test seam: injects the pasteboard the polish-context reader consults,
     /// replacing `SystemPasteboardReader` over `NSPasteboard.general` (global /
     /// unavailable in unit tests). Only resolved when the clipboard-context
-    /// setting is on AND the polishing endpoint is loopback, so a stub whose
+    /// setting is on AND the polishing endpoint is permitted, so a stub whose
     /// read methods were never called proves the no-read privacy guarantee for
     /// both the disabled toggle and a remote endpoint.
     @ObservationIgnored
@@ -497,7 +497,7 @@ final class DictationViewModel {
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
     /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
-    /// a given transcript, so VM tests exercise the setting + loopback gates
+    /// a given transcript, so VM tests exercise the setting + endpoint gates
     /// without touching live AX or a git subprocess. Consulted only AFTER those
     /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
     /// Bypasses the deadline race entirely — to exercise that, use the
@@ -1877,7 +1877,9 @@ final class DictationViewModel {
             endpointURL,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         ) else {
-            Log.claudeContext.info("Claude repo context skipped: polishing endpoint is not loopback")
+            Log.claudeContext.info(
+                "Claude repo context skipped: polishing endpoint is not permitted (loopback-only without the trusted-endpoint opt-in)"
+            )
             return nil
         }
         guard let join else { return nil }
@@ -1908,14 +1910,14 @@ final class DictationViewModel {
     }
 
     /// The Claude session block's text, re-gated at commit exactly like
-    /// `claudeRepoSnapshotIfEnabled` — current setting, current loopback
+    /// `claudeRepoSnapshotIfEnabled` — current setting, currently permitted
     /// endpoint, this exact join still live.
     ///
     /// The same three gates because it carries the same kind of thing: the
     /// session's workspace name, the PRIOR PROMPT the user typed to the agent,
     /// the paths it touched, and (remote only) bounded tool excerpts. That is
     /// the session's content, which is what the setting consents to and what a
-    /// non-loopback endpoint must never receive. The block previously checked
+    /// unpermitted endpoint must never receive. The block previously checked
     /// only the setting, so a session that died mid-sentence still had its
     /// prompt attached, and a Settings change to a remote endpoint sent it
     /// there.
@@ -1936,7 +1938,7 @@ final class DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         ) else {
             Log.claudeContext.info(
-                "Claude session context skipped: polishing endpoint is not loopback"
+                "Claude session context skipped: polishing endpoint is not permitted (loopback-only without the trusted-endpoint opt-in)"
             )
             return ""
         }
