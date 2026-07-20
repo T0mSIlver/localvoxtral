@@ -288,6 +288,18 @@ final class DictationViewModel {
         hasInitializedMicrophone = true
         return MicrophoneCaptureService()
     }()
+
+    /// A failed/cancelled connection can end before audio capture ever starts.
+    /// Do not instantiate the lazy CoreAudio service merely to stop it: doing
+    /// so registers device listeners that an app-lifetime view model then owns.
+    func stopMicrophoneIfInitialized() {
+        guard hasInitializedMicrophone else { return }
+        microphone.stop()
+    }
+
+    #if DEBUG
+    var debugHasInitializedMicrophoneForTesting: Bool { hasInitializedMicrophone }
+    #endif
     @ObservationIgnored
     let networkMonitor = NetworkMonitor()
     @ObservationIgnored
@@ -327,6 +339,44 @@ final class DictationViewModel {
         let decision: TerminalTargetDetector.Decision
         let secureKeyboardEntryEnabled: Bool
     }
+
+    /// The Ghostty screen as it looked when the user started speaking, sampled
+    /// in `beginDictationSession` before the overlay can take focus. Nil
+    /// whenever the opt-in gate rejected (setting off, remote endpoint,
+    /// non-Ghostty app, no Accessibility trust) — in which case no AX call was
+    /// made at all. Consumed at commit by `terminalScreenContextDecision()`.
+    @ObservationIgnored
+    var terminalScreenStartCapture: TerminalScreenCapture?
+
+    /// Resolves the focused pane to a live Claude Code session. Installed by
+    /// `AppDelegate` once the broker is actually listening, and nil otherwise —
+    /// so a build where broker startup failed simply never joins, rather than
+    /// joining against a registry nothing feeds.
+    @ObservationIgnored
+    var claudeSessionJoinResolver: ClaudeSessionJoinResolver?
+
+    /// Settings surface for the two Claude Code integrations.
+    ///
+    /// Installed by `AppDelegate`, which owns the host registry and the listener
+    /// — the same reason the resolver above is installed rather than
+    /// constructed: those live for the app's lifetime, not a dictation's. Nil
+    /// only when the app delegate never ran (previews, unit tests), and the
+    /// Settings rows simply do not render.
+    ///
+    /// NOT `@ObservationIgnored`: the pane re-renders when the model swaps in.
+    var claudeIntegrationSettings: ClaudeIntegrationSettingsModel?
+
+    /// THE session join for the current dictation, resolved once at start.
+    ///
+    /// Read by three consumers — raw screen attachment, the session block, and
+    /// repository collection — which is exactly why it is stored rather than
+    /// re-derived: they must all describe the same session. Nil whenever the
+    /// pane did not positively join (no marker, unknown/stale/ambiguous), which
+    /// is the abstention that keeps an unrelated terminal's repo out of the
+    /// prompt. Cleared on every session exit, like the screen capture.
+    @ObservationIgnored
+    var claudeSessionJoin: ClaudeSessionJoin?
+
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -446,7 +496,7 @@ final class DictationViewModel {
     var debugClipboardPayloadPasteboardReaderOverride: (() -> any PasteboardReading)?
     /// Test seam: replaces the whole AX-title/process-cwd -> git-index -> match
     /// pipeline of
-    /// `repoVocabularyEntriesIfEnabled` with a closure returning the entries for
+    /// `repoVocabularyGroundingIfEnabled` with a closure returning the grounding for
     /// a given transcript, so VM tests exercise the setting + loopback gates
     /// without touching live AX or a git subprocess. Consulted only AFTER those
     /// two gates pass, so "off"/"remote" tests still prove the no-op paths.
@@ -454,13 +504,15 @@ final class DictationViewModel {
     /// pipeline/deadline-sleep seams below instead. `@MainActor` so ordering
     /// tests can read main-actor stub state inside it.
     @ObservationIgnored
-    var debugRepoVocabularyEntriesOverride: (@MainActor (String) -> [ReplacementEntry]?)?
+    var debugRepoVocabularyEntriesOverride:
+        (@MainActor (String) -> RepoVocabularyMatcher.GroundingOutcome?)?
     /// Test seam: replaces only the DETACHED vocabulary pipeline (AX title /
     /// process cwd + git index + match) while keeping the deadline race in
     /// play, so tests can inject a never-completing pipeline and prove the
     /// commit still proceeds (without vocabulary) when the deadline expires.
     @ObservationIgnored
-    var debugRepoVocabularyPipelineOverride: (@Sendable (String) async -> [ReplacementEntry]?)?
+    var debugRepoVocabularyPipelineOverride:
+        (@Sendable (String) async -> RepoVocabularyMatcher.GroundingOutcome?)?
     /// Test seam: replaces the deadline sleep of the vocabulary race (repo
     /// reference pattern: injected clock/sleep seams, no wall-clock in tests).
     /// An immediately-returning closure makes the deadline expire instantly.
@@ -475,6 +527,12 @@ final class DictationViewModel {
     /// commits fast-skip vocabulary instead of stacking more blocked threads.
     @ObservationIgnored
     let repoVocabularyPipelineInFlight = RepoVocabularyFlightGate()
+    /// Collects the joined Claude session's repository. A stored property (not
+    /// a static call) so tests drive the whole commit path against an in-memory
+    /// tree and a stub git runner — the repo conventions' DI seam, not a
+    /// singleton.
+    @ObservationIgnored
+    var claudeRepoCollector: any ClaudeRepoCollecting = ClaudeRepoCollector()
     /// Test seam: invoked after the managed-startup status mirror finishes
     /// handling each status update (including updates its guard skips), so
     /// tests can await mirror processing deterministically instead of
@@ -953,6 +1011,11 @@ final class DictationViewModel {
     func cancelDictation() {
         guard isDictating || isFinalizingStop || isConnectingRealtimeSession else { return }
         wasCancelled = true
+        // A cancelled session never reaches the commit path that consumes the
+        // capture, so without this the user's screen text would sit in memory
+        // until the next session start — text from a session they explicitly
+        // threw away.
+        discardTerminalScreenCapture()
         cancelManagedStartupTask()
         if isDictating {
             stopDictation(reason: "cancelled", finalizeRemainingAudio: false)
@@ -1690,6 +1753,186 @@ final class DictationViewModel {
             decision: TerminalTargetDetector.detectCurrentTarget(userBundleIDs: userBundleIDs),
             secureKeyboardEntryEnabled: TerminalTargetDetector.isSecureKeyboardEntryEnabled()
         )
+    }
+
+    /// Samples the Ghostty screen for polish grounding, at the same moment and
+    /// for the same reason as the verdict above: this is the last point where
+    /// the app the user is dictating INTO is reliably frontmost. The target is
+    /// resolved independently of the overlay (see
+    /// `TerminalScreenContextSource.frontmostTarget`).
+    ///
+    /// Every privacy gate is evaluated inside the source before any AX call, so
+    /// an opted-out user, a remote polishing endpoint, or a non-Ghostty app
+    /// means the screen is never read. A nil polishing configuration also means
+    /// no read: with no endpoint there is nothing to ground for.
+    func captureTerminalScreenContextForSession() {
+        guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
+            terminalScreenStartCapture = nil
+            claudeSessionJoin = nil
+            return
+        }
+        terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
+            settingEnabled: settings.terminalScreenContextEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+        )
+        claudeSessionJoin = resolveClaudeSessionJoin(endpointURL: endpointURL)
+    }
+
+    /// Resolves this dictation's Claude session join, ONCE, here at start.
+    ///
+    /// Start, not commit, for the same reason the screen is sampled here: this
+    /// is the last moment the app the user is dictating INTO is reliably
+    /// frontmost, and by commit time the frontmost app may be our own overlay.
+    /// It also means the join describes the pane the user was looking at while
+    /// choosing their words, which is the only pane whose context is evidence of
+    /// what they meant.
+    ///
+    /// Every gate is checked BEFORE the resolver is asked, because asking is not
+    /// passive — it makes a live AX round trip for the window title. An opted-out
+    /// user, a remote endpoint, or a revoked Accessibility grant means no read.
+    private func resolveClaudeSessionJoin(endpointURL: URL) -> ClaudeSessionJoin? {
+        guard let resolver = claudeSessionJoinResolver else { return nil }
+        // Either context feature can want a join: the screen needs it to
+        // authorize a raw excerpt, the repo/session blocks ARE the join's
+        // content. Neither being enabled means there is nothing to resolve for.
+        guard settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled else {
+            return nil
+        }
+        // Loopback only. Repository contents and a prior prompt must never ride
+        // to a remote endpoint, and this is the gate that guarantees no
+        // filesystem read even STARTS for one — the collector is downstream of
+        // the join, so an unresolved join means no git subprocess, no file read.
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else { return nil }
+        guard textInsertion.isAccessibilityTrusted else { return nil }
+        guard let target = TerminalScreenContextSource.frontmostTarget() else { return nil }
+        return resolver.resolve(target: target)
+    }
+
+    /// Drops any retained screen capture. Idempotent, and safe to call on a
+    /// path that already consumed it. Screen text must not outlive the session
+    /// that captured it: every exit — cancel, connect abort, an early return in
+    /// the commit path — funnels here or through
+    /// `terminalScreenContextDecision(endpointURL:)`, and session start
+    /// reassigns the property unconditionally as a backstop.
+    func discardTerminalScreenCapture() {
+        terminalScreenStartCapture = nil
+        // The join goes with it. It names a session and a pane that belong to
+        // the session being abandoned, and a stale join surviving into the next
+        // dictation is precisely how the wrong repo's context would get
+        // attached to an unrelated sentence.
+        claudeSessionJoin = nil
+    }
+
+    /// Reconciles the start capture against a stop-time re-read of the SAME
+    /// PID/bundle and clears it. See `TerminalScreenContext.reconcile` for the
+    /// truth table. Returns `.drop(.noStartCapture)` when nothing was captured,
+    /// which is also what makes stop-only context unrepresentable.
+    func terminalScreenContextDecision(endpointURL: URL) -> TerminalScreenContextDecision {
+        let start = terminalScreenStartCapture
+        terminalScreenStartCapture = nil
+        return TerminalScreenContextSource.reconcileAtStop(
+            start: start,
+            settingEnabled: settings.terminalScreenContextEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted
+        )
+    }
+
+    /// Takes this dictation's join and clears it.
+    ///
+    /// MUST be called after `terminalScreenContextDecision`, which is what asks
+    /// the authorizer about the join. Consuming first would clear it out from
+    /// under that call and silently withdraw every raw screen attachment.
+    func consumeClaudeSessionJoin() -> ClaudeSessionJoin? {
+        let join = claudeSessionJoin
+        claudeSessionJoin = nil
+        return join
+    }
+
+    /// The repository snapshot for `join`, or nil when any gate rejects.
+    ///
+    /// Re-checks the FULL gate rather than trusting the start-time resolution,
+    /// because consent can be withdrawn mid-session: the user can toggle the
+    /// setting off or repoint the endpoint while they are speaking, and either
+    /// is a withdrawal that must land before a single file is read. The order
+    /// here is the point — every cheap, local check runs before the collector is
+    /// reached, so "no marker ⇒ no filesystem call" and "setting off ⇒ no
+    /// filesystem call" are properties of the control flow, not of the
+    /// collector's manners.
+    func claudeRepoSnapshotIfEnabled(
+        join: ClaudeSessionJoin?,
+        endpointURL: URL,
+        transcript: String
+    ) async -> ClaudeRepoSnapshot? {
+        guard settings.claudeRepoContextEnabled else { return nil }
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+            Log.claudeContext.info("Claude repo context skipped: polishing endpoint is not loopback")
+            return nil
+        }
+        guard let join else { return nil }
+        guard let resolver = claudeSessionJoinResolver, resolver.isStillLive(join) else {
+            Log.claudeContext.info("Claude repo context skipped: session no longer live")
+            return nil
+        }
+        // The type is the gate. A remote session has no `localWorkspacePath` to
+        // hand the collector — not because this checks the origin, but because
+        // `ClaudeWorkspaceReference.make` never built a `LocalWorkspacePath` for
+        // one. There is nothing here to get wrong.
+        guard let workspace = join.localWorkspacePath else {
+            Log.claudeContext.info("Claude repo context skipped: session workspace is not local")
+            return nil
+        }
+        return await claudeRepoCollector.collect(
+            workspace: workspace,
+            // `localRecentFiles`, not `recentFiles`: the collector opens these
+            // paths. The workspace gate above already proves this session is
+            // local, so today the two are the same array — but the accessor is
+            // the documented gate for per-file paths (which are plain strings on
+            // the wire, unlike the cwd, which the type system covers), and a
+            // consumer that touches the filesystem must read it from there. Not
+            // a behavior change; a change to which invariant is load-bearing.
+            recentFiles: join.snapshot.localRecentFiles,
+            transcript: transcript
+        )
+    }
+
+    /// The Claude session block's text, re-gated at commit exactly like
+    /// `claudeRepoSnapshotIfEnabled` — current setting, current loopback
+    /// endpoint, this exact join still live.
+    ///
+    /// The same three gates because it carries the same kind of thing: the
+    /// session's workspace name, the PRIOR PROMPT the user typed to the agent,
+    /// the paths it touched, and (remote only) bounded tool excerpts. That is
+    /// the session's content, which is what the setting consents to and what a
+    /// non-loopback endpoint must never receive. The block previously checked
+    /// only the setting, so a session that died mid-sentence still had its
+    /// prompt attached, and a Settings change to a remote endpoint sent it
+    /// there.
+    ///
+    /// There is deliberately no LOCAL-workspace gate, which is the one place
+    /// this diverges from the repo collector: that gate exists because the
+    /// collector opens files, and this opens nothing. A remote session's
+    /// off-screen facts are exactly what this block is for.
+    ///
+    /// Returns "" rather than a snapshot on purpose. "" produces no
+    /// preparation, which withholds the GROUNDING as well as the rendered
+    /// block — a gate that suppressed only the excerpt would still let the
+    /// prior prompt's words reach the model as replacement entries.
+    func claudeSessionTextIfEnabled(join: ClaudeSessionJoin?, endpointURL: URL) -> String {
+        guard settings.claudeRepoContextEnabled else { return "" }
+        guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
+            Log.claudeContext.info(
+                "Claude session context skipped: polishing endpoint is not loopback"
+            )
+            return ""
+        }
+        guard let join else { return "" }
+        guard let resolver = claudeSessionJoinResolver, resolver.isStillLive(join) else {
+            Log.claudeContext.info("Claude session context skipped: session no longer live")
+            return ""
+        }
+        return ClaudeSessionContextText.text(for: join.snapshot)
     }
 
     /// Consumes the verdict captured at `beginDictationSession` time once

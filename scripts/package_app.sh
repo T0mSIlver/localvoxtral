@@ -212,6 +212,44 @@ cp "$MENUBAR_ICON_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x.png
 cp "$MENUBAR_ICON_CONNECTED_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x_connected.png"
 cp "$MENUBAR_ICON_FAILURE_2X_SOURCE" "$APP_DIR/Contents/Resources/MicIconTemplate@2x_failure.png"
 
+# --- Claude Code integration (marketplace assets + hook publisher) ----------
+# The publisher is a dependency-free SwiftPM product, so a plain `swift build`
+# is enough here — unlike the polishing helper below, it has no Metal kernels
+# and needs no xcodebuild lane.
+swift build -c "$CONFIGURATION" --product localvoxtral-claude-hook -Xswiftc -g
+
+CLAUDE_HOOK_BINARY="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral-claude-hook" | head -n 1)"
+if [[ -z "$CLAUDE_HOOK_BINARY" ]]; then
+  echo "Unable to find built localvoxtral-claude-hook binary under .build."
+  exit 1
+fi
+cp "$CLAUDE_HOOK_BINARY" "$APP_DIR/Contents/MacOS/localvoxtral-claude-hook"
+chmod +x "$APP_DIR/Contents/MacOS/localvoxtral-claude-hook"
+
+# The marketplace is copied whole from the repo — it is NOT a SwiftPM resource
+# (SwiftPM cannot declare a resource outside its target directory, and a
+# duplicated tree would give us two sources of truth for a user-installable
+# artifact). ClaudePluginAssets resolves this location first at runtime, then
+# falls back to the repo checkout for dev builds.
+CLAUDE_MARKETPLACE_SOURCE="$ROOT_DIR/integrations/claude-code"
+if [[ ! -f "$CLAUDE_MARKETPLACE_SOURCE/.claude-plugin/marketplace.json" ]]; then
+  echo "Claude Code marketplace missing at $CLAUDE_MARKETPLACE_SOURCE"
+  exit 1
+fi
+rm -rf "$APP_DIR/Contents/Resources/claude-code-marketplace"
+cp -R "$CLAUDE_MARKETPLACE_SOURCE" "$APP_DIR/Contents/Resources/claude-code-marketplace"
+
+# Claude Code execs the shim directly; without +x every hook errors on the
+# user's turn. `cp -R` preserves the mode, but a checkout that lost it (or a
+# filesystem that does not carry it) would ship a broken plugin silently, so
+# assert rather than hope.
+CLAUDE_HOOK_SHIM="$APP_DIR/Contents/Resources/claude-code-marketplace/plugins/localvoxtral/hooks/publish.sh"
+chmod +x "$CLAUDE_HOOK_SHIM"
+if [[ ! -x "$CLAUDE_HOOK_SHIM" ]]; then
+  echo "Claude Code hook shim is not executable: $CLAUDE_HOOK_SHIM"
+  exit 1
+fi
+
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"

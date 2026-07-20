@@ -110,6 +110,16 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertFalse(TerminalTargetDetector.isTerminalLikeBundleID("dev.warplike.Other"))
     }
 
+    func testFixtureUsesDeadExternalBackendInsteadOfLiveManagedService() {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+
+        XCTAssertEqual(viewModel.settings.dictationBackendMode, .externalURL)
+        XCTAssertEqual(
+            viewModel.settings.resolvedWebSocketURL?.absoluteString,
+            "ws://127.0.0.1:1/realtime"
+        )
+    }
+
     // MARK: - Decision logic (injected AX probe)
 
     func testUnknownBundleWithUnsettableValueIsTerminalLike() {
@@ -266,6 +276,10 @@ final class TerminalTargetDetectorTests: XCTestCase {
         Self.retainedViewModels.append(viewModel)
 
         viewModel.beginDictationSession(outputMode: .overlayBuffer)
+        XCTAssertFalse(
+            viewModel.debugHasInitializedMicrophoneForTesting,
+            "connecting must not eagerly initialize CoreAudio"
+        )
 
         XCTAssertEqual(
             viewModel.preCapturedSessionTargetVerdict,
@@ -276,6 +290,10 @@ final class TerminalTargetDetectorTests: XCTestCase {
         )
 
         viewModel.abortConnectingSession()
+        XCTAssertFalse(
+            viewModel.debugHasInitializedMicrophoneForTesting,
+            "aborting before audio starts must not register CoreAudio listeners"
+        )
     }
 
     func testApplyConsumesPreCapturedVerdictInsteadOfReprobing() {
@@ -749,11 +767,19 @@ final class TerminalTargetDetectorTests: XCTestCase {
         }
         let settings = SettingsStore(defaults: defaults, environment: [:])
         settings.dictationOutputMode = outputMode
+        // Never let a process-global launchd service decide these tests. The
+        // managed default resolves to port 8000 and can be live on the persistent
+        // runner after an integration job, turning a session-start test into a
+        // real websocket/audio lifecycle. Pin the existing dead endpoint through
+        // the mode that actually consults it.
+        settings.dictationBackendMode = .externalURL
+        settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
         let viewModel = DictationViewModel(
             settings: settings,
             overlayBufferCoordinator: coordinator,
             startRuntimeServices: false
         )
+        viewModel.realtimeAPIClient.debugSkipSocketCreationForTesting()
         // Keep tests hermetic: capture reads the terminal-apps config through
         // the store, which must never touch the real config directory here.
         viewModel.appConfigStore = TargetDetectorMockConfigStore(

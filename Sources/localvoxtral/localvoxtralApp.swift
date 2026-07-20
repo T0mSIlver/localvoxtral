@@ -1,4 +1,5 @@
 import AppKit
+import ClaudeContextWire
 import SwiftUI
 
 @main
@@ -124,6 +125,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var onboardingController: OnboardingWindowController?
     private let appConfigStore = AppConfigStore()
+
+    /// Claude Code session context. The registry is the app's memory of live
+    /// sessions; the broker is the socket that feeds it.
+    ///
+    /// Owned HERE rather than by `DictationViewModel` because the hooks fire on
+    /// Claude Code's schedule, not on dictation's: a session's marker and cwd
+    /// are published while the user is typing, long before they press the hotkey.
+    /// A broker that only listened during a dictation session would miss the very
+    /// records it exists to collect.
+    private let claudeSessionRegistry = ClaudeSessionRegistry()
+    private var claudeContextBroker: ClaudeContextBroker?
+    /// Remote (SSH) Claude Code sessions. Both the host registry and the
+    /// listener are lazy and optional: a user who has never enrolled a host has
+    /// no file to read and no port bound.
+    private var claudeRemoteHosts: ClaudeRemoteHostRegistry?
+    /// Owns the listener and the bind/unbind decision. Settings reconciles
+    /// through it on every enroll/revoke, so the port follows enrollment without
+    /// a relaunch.
+    private var claudeRemoteListenerCoordinator: ClaudeRemoteListenerCoordinator?
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -150,9 +170,122 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             LegacyMLXLMCleanup().run()
             LegacyVoxmlxCleanup().run()
         }
+        startClaudeContextBroker()
+        startClaudeRemoteListener()
         reconcileBundledConfigDefaults()
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Unlinks the socket, so a publisher from a surviving Claude Code
+        // session fails open (silent exit 0) instead of blocking on a path
+        // nothing is accepting on.
+        claudeContextBroker?.stop()
+        claudeContextBroker = nil
+        // Closes the port, so a hook from a surviving remote session gets a
+        // connection refused through the tunnel and fails open. Quitting says
+        // nothing about enrollment — the hosts stay enrolled for next launch.
+        claudeRemoteListenerCoordinator?.shutdown()
+        claudeRemoteListenerCoordinator = nil
+        viewModel.claudeIntegrationSettings = nil
+        TerminalScreenRawAttachmentPolicy.configure(authorizer: nil)
+        // The resolver holds the registry; the view model must not keep
+        // resolving joins against sessions nothing is feeding any more.
+        viewModel.claudeSessionJoinResolver = nil
+        viewModel.claudeSessionJoin = nil
+    }
+
+    /// Binds the hook socket and installs the pane authorizer that depends on it.
+    ///
+    /// Failure is non-fatal by design: the app's own dictation does not need the
+    /// broker, and a user who never installed the plugin should not see an error
+    /// about it. But it is LOUD in the log (AGENTS: a silent failure path is how
+    /// the ensureReady bug cost an hour of remote probing), and the authorizer is
+    /// only installed on success — so a build where the broker never bound
+    /// degrades to vocabulary-only screen context rather than to an unguarded
+    /// attachment.
+    private func startClaudeContextBroker() {
+        guard let socketPath = ClaudeHookSocketPath.resolve() else {
+            Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
+            return
+        }
+        let broker = ClaudeContextBroker(socketPath: socketPath, registry: claudeSessionRegistry)
+        do {
+            try broker.start()
+            claudeContextBroker = broker
+            // ONE resolver, shared by the view model (which resolves the join at
+            // dictation start) and the attachment authorizer (which consults
+            // that join at commit). Sharing it is what makes the screen excerpt,
+            // the session's prior prompt, and the repository context describe the
+            // same session — three resolvers would each answer honestly about a
+            // different moment.
+            let resolver = ClaudeSessionJoinResolver(registry: claudeSessionRegistry)
+            viewModel.claudeSessionJoinResolver = resolver
+            // The join gate for raw terminal screen attachment. Installed only
+            // now: without a running broker there are no markers to resolve, and
+            // an authorizer over an empty registry would answer `.unknown` to
+            // everything anyway — but making the dependency explicit is what
+            // keeps "no broker ⇒ no raw attachment" true by construction rather
+            // than by coincidence.
+            TerminalScreenRawAttachmentPolicy.configure(
+                authorizer: TerminalScreenClaudeJoinAuthorizer(
+                    resolver: resolver,
+                    currentJoin: { [weak viewModel] in viewModel?.claudeSessionJoin }
+                )
+            )
+        } catch {
+            Log.claudeContext.error(
+                "Claude context broker failed to start: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+
+    /// Binds the remote (SSH) hook listener, but only for a user who has
+    /// actually enrolled a host.
+    ///
+    /// "No enrollment ⇒ no open port" is the point: everyone else's Mac gets
+    /// exactly what it had before, with nothing listening on 8473. That is also
+    /// why the host registry is constructed here rather than as a stored
+    /// property — reading (and failing to read) a file nobody has is not
+    /// something to do at init.
+    ///
+    /// Failure is non-fatal and loud, matching the local broker. The coordinator
+    /// — not this method — owns the bind/unbind decision from here on, so
+    /// enrolling the first host in Settings binds the port immediately and
+    /// revoking the last one closes it. There is no relaunch step.
+    private func startClaudeRemoteListener() {
+        let registry: ClaudeRemoteHostRegistry?
+        do {
+            registry = try ClaudeRemoteHostRegistry()
+        } catch {
+            // The list exists but is unreadable — a state the user must be able
+            // to SEE, not just one we log. The Settings row says the list could
+            // not be read rather than offering an Enroll button that would
+            // silently fail.
+            Log.claudeContext.error(
+                "Claude remote host registry unreadable: \(String(describing: error), privacy: .public)"
+            )
+            registry = nil
+        }
+        claudeRemoteHosts = registry
+
+        let coordinator = registry.map { hosts in
+            ClaudeRemoteListenerCoordinator(hosts: hosts, sessions: claudeSessionRegistry)
+        }
+        claudeRemoteListenerCoordinator = coordinator
+
+        viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: coordinator,
+            pluginService: { ClaudePluginInstallService.live() }
+        )
+
+        // Route launch through the same model that owns the Settings status.
+        // Calling the coordinator directly would bind successfully while the
+        // pane stayed at `.idle`, and would make a launch-time port conflict
+        // log-only with no Retry action.
+        viewModel.claudeIntegrationSettings?.synchronizeListenerAtLaunch()
     }
 
     /// Brings existing installs up to date with this build's bundled config

@@ -63,6 +63,24 @@ jobs:
           ./scripts/ci/test-ui-smoke-guard.sh
           ./scripts/ci/test-clean-stale-outputs.sh
 
+      - name: Clean abandoned test processes in this workspace
+        # A cancelled self-hosted job can outlive the Actions process cookie
+        # and leave swift-package/xctest running in this persistent checkout.
+        # Scope by current user + lsof cwd/mapped text; never pkill globally
+        # because the owner and parallel worktrees may run legitimate tests.
+        if: runner.environment == 'self-hosted'
+        run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
+
+      - name: Process-cleanup regression tests
+        # Pure shell tests for the workspace selector and the SSH build gate's
+        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        run: |
+          ./scripts/ci/test-cleanup-stale-test-processes.sh
+          ./scripts/ci/test-build-gate-process-cleanup.sh
+          ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-remote-build-reap.sh
+          ./scripts/ci/test-run-supervised-command.sh
+
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
         # every push: the polishd live-model integration step below runs only

@@ -33,6 +33,8 @@ final class LLMPolishPromptEvalTests: XCTestCase {
     private static let endpointEnv = "LLM_POLISH_EVAL_ENDPOINT"
     private static let modelEnv = "LLM_POLISH_EVAL_MODEL"
     private static let requestShapeModelEnv = "LLM_POLISH_EVAL_REQUEST_SHAPE_MODEL"
+    private static let thinkingBudgetTokensEnv = "LLM_POLISH_EVAL_THINKING_BUDGET_TOKENS"
+    private static let passthroughExtraParametersEnv = "LLM_POLISH_EVAL_PASSTHROUGH_EXTRA_PARAMS"
     private static let apiKeyEnv = "LLM_POLISH_EVAL_API_KEY"
     private static let markerFileName = ".llm-polish-eval-enable.json"
     private static let defaultEndpoint = "http://127.0.0.1:8080/v1/chat/completions"
@@ -42,6 +44,8 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         let model: String?
         let requestShapeModel: String?
         let useDefaultRequestShape: Bool?
+        let thinkingBudgetTokens: Int?
+        let passthroughExtraParameters: Bool?
         let apiKey: String?
     }
 
@@ -51,18 +55,24 @@ final class LLMPolishPromptEvalTests: XCTestCase {
         var model: String?
         var requestShapeModel: String?
         var useDefaultRequestShape = false
+        var thinkingBudgetTokens: Int?
+        var passthroughExtraParameters = false
         var apiKey: String?
 
         if env[Self.enableEnv] == "1" {
             endpointString = env[Self.endpointEnv]
             model = env[Self.modelEnv]
             requestShapeModel = env[Self.requestShapeModelEnv]
+            thinkingBudgetTokens = env[Self.thinkingBudgetTokensEnv].flatMap(Int.init)
+            passthroughExtraParameters = env[Self.passthroughExtraParametersEnv] == "1"
             apiKey = env[Self.apiKeyEnv]
         } else if let marker = try loadMarkerConfig() {
             endpointString = marker.endpoint
             model = marker.model
             requestShapeModel = marker.requestShapeModel
             useDefaultRequestShape = marker.useDefaultRequestShape == true
+            thinkingBudgetTokens = marker.thinkingBudgetTokens
+            passthroughExtraParameters = marker.passthroughExtraParameters == true
             apiKey = marker.apiKey
         } else {
             throw XCTSkip(
@@ -94,7 +104,9 @@ final class LLMPolishPromptEvalTests: XCTestCase {
             endpointURL: endpointURL,
             apiKey: apiKey ?? "",
             model: model?.isEmpty == false ? model! : SettingsStore.defaultLLMPolishingModel,
-            requestShapeModel: resolvedRequestShapeModel
+            requestShapeModel: resolvedRequestShapeModel,
+            thinkingBudgetTokens: thinkingBudgetTokens,
+            passthroughExtraParameters: passthroughExtraParameters
         )
     }
 

@@ -528,6 +528,13 @@ enum RepoIndexing {
     /// words, plus the branch name — each admitted only when it carries a
     /// technical signal (`isTechnicalTerm`). Deduped, first-appearance order.
     static func buildVocabulary(paths: [String], branch: String?) -> RepoVocabulary {
+        RepoVocabulary(terms: buildVocabularyTerms(paths: paths, branch: branch), branch: branch)
+    }
+
+    /// Builds only the ordered term list, without constructing matcher indexes.
+    /// Callers that need to merge another structured source can do that first,
+    /// then initialize `RepoVocabulary` once for the final combined terms.
+    static func buildVocabularyTerms(paths: [String], branch: String?) -> [String] {
         var terms: [String] = []
         var seen = Set<String>()
         func add(_ value: String) {
@@ -543,7 +550,7 @@ enum RepoIndexing {
             for component in components.dropLast() { add(component) }
         }
         if let branch { add(branch) }
-        return RepoVocabulary(terms: terms, branch: branch)
+        return terms
     }
 
     /// Technical-signal gate: common-word path components (`Tests`,
@@ -567,9 +574,16 @@ enum RepoIndexing {
 
 // MARK: - git ls-files subprocess
 
-/// Runs `git ls-files -z` off the main actor with hard timeout / output caps.
-/// Piping uses `POSIXPipeRead` (never `FileHandle.availableData`, which raises
-/// an uncatchable ObjC exception on descriptor errors — AGENTS.md, PR #60).
+/// Runs a read-only `git` subcommand off the main actor with hard timeout /
+/// output caps. Piping uses `POSIXPipeRead` (never `FileHandle.availableData`,
+/// which raises an uncatchable ObjC exception on descriptor errors —
+/// AGENTS.md, PR #60).
+///
+/// `run` is the single process entry point: the environment isolation, the
+/// bounded reader thread, the cap/timeout escalation (SIGTERM then SIGKILL),
+/// and the bounded final wait are subtle enough that a second copy would be a
+/// second set of the bugs this one already fixed. `lsFiles` and the Claude
+/// repo collector (`ClaudeRepoCollector`) are both thin argument lists over it.
 enum RepoGitRunner {
     struct Output: Sendable {
         let data: Data
@@ -580,7 +594,12 @@ enum RepoGitRunner {
 
     /// Async wrapper: hops to a background queue so the blocking Process run
     /// never touches the main actor (the caller is the @MainActor polish Task).
-    static func lsFiles(
+    ///
+    /// - Parameter arguments: the subcommand and its flags, WITHOUT the
+    ///   leading `-C <root>` — this adds it, so no caller can accidentally run
+    ///   git against a directory other than the one it named.
+    static func run(
+        arguments: [String],
         root: String,
         timeoutSeconds: TimeInterval = 2.0,
         maxBytes: Int = 2_000_000
@@ -588,28 +607,55 @@ enum RepoGitRunner {
         await withCheckedContinuation { (continuation: CheckedContinuation<Output?, Never>) in
             DispatchQueue.global(qos: .utility).async {
                 continuation.resume(
-                    returning: runBlocking(root: root, timeoutSeconds: timeoutSeconds, maxBytes: maxBytes)
+                    returning: runBlocking(
+                        arguments: arguments,
+                        root: root,
+                        timeoutSeconds: timeoutSeconds,
+                        maxBytes: maxBytes
+                    )
                 )
             }
         }
     }
 
-    private static func runBlocking(root: String, timeoutSeconds: TimeInterval, maxBytes: Int) -> Output? {
+    static func lsFiles(
+        root: String,
+        timeoutSeconds: TimeInterval = 2.0,
+        maxBytes: Int = 2_000_000
+    ) async -> Output? {
+        await run(
+            arguments: ["ls-files", "-z"],
+            root: root,
+            timeoutSeconds: timeoutSeconds,
+            maxBytes: maxBytes
+        )
+    }
+
+    private static func runBlocking(
+        arguments: [String],
+        root: String,
+        timeoutSeconds: TimeInterval,
+        maxBytes: Int
+    ) -> Output? {
         let gitURL = URL(fileURLWithPath: "/usr/bin/git")
         guard FileManager.default.isExecutableFile(atPath: gitURL.path) else {
-            Log.polishing.info("Repo vocabulary: /usr/bin/git not executable")
+            Log.polishing.info("git runner: /usr/bin/git not executable")
             return nil
         }
 
         let process = Process()
         process.executableURL = gitURL
-        process.arguments = ["-C", root, "ls-files", "-z"]
-        // Determinism against user git config: no global/system config (ls-files
-        // runs no hooks/aliases, this pins it) and never a credential prompt.
+        process.arguments = ["-C", root] + arguments
+        // Determinism against user git config: no global/system config (which
+        // also pins out hooks/aliases/pagers/`diff.external` — a user's
+        // configured external differ or textconv filter would otherwise run
+        // arbitrary programs inside what is supposed to be a read-only probe)
+        // and never a credential prompt.
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
         environment["GIT_CONFIG_SYSTEM"] = "/dev/null"
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
         process.environment = environment
         let outPipe = Pipe()
         process.standardOutput = outPipe
@@ -622,7 +668,7 @@ enum RepoGitRunner {
         do {
             try process.run()
         } catch {
-            Log.polishing.info("Repo vocabulary: git ls-files failed to launch")
+            Log.polishing.info("git runner: git failed to launch")
             return nil
         }
 
@@ -683,7 +729,7 @@ enum RepoGitRunner {
         // the commit is not.
         guard exited.wait(timeout: .now() + 2.0) != .timedOut else {
             Log.polishing.info(
-                "Repo vocabulary: git ls-files did not exit after kill; abandoning"
+                "git runner: git did not exit after kill; abandoning"
             )
             return nil
         }
@@ -837,7 +883,7 @@ enum RepoVocabularyService {
         workingDirectoryForPID: @Sendable (pid_t) -> String? = {
             TerminalDescendantProcessResolver.liveWorkingDirectory(forPID: $0)
         }
-    ) async -> [ReplacementEntry]? {
+    ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         var gitRoot: String?
         if let title,
            let titleDirectory = TerminalWorkingDirectoryResolver.resolveWorkingDirectory(
@@ -891,10 +937,15 @@ enum RepoVocabularyService {
         ) else {
             return nil
         }
-        let entries = RepoVocabularyMatcher.groundedCandidateEntries(
+        // Carries provenance, not just entries: whether these came from the
+        // exact / edit-distance-one tiers or from the bounded aligned fallback
+        // decides who yields when another context source covers the same heard
+        // span (`PolishContextGrounding`). Collapsing that to a bare array here
+        // is what forced the merge to assume every repo entry was solid.
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript, vocabulary: vocabulary
         )
-        if entries.isEmpty {
+        if outcome.entries.isEmpty {
             // Static string + no content: the LAST silent skip on this path.
             // Every skip reason is .info — .debug is not persisted by the
             // unified log store, which made a field no-attach undiagnosable
@@ -902,7 +953,7 @@ enum RepoVocabularyService {
             Log.polishing.info("Repo vocabulary: no transcript-relevant matches")
             return nil
         }
-        return entries
+        return outcome
     }
 }
 
@@ -1043,6 +1094,30 @@ enum RepoVocabularyMatcher {
         transcript: String,
         vocabulary: RepoVocabulary
     ) -> [ReplacementEntry] {
+        groundedCandidates(transcript: transcript, vocabulary: vocabulary).entries
+    }
+
+    /// One source's grounding decision, carrying HOW it was reached.
+    ///
+    /// `isFallbackOnly` distinguishes "the exact / edit-distance-one tiers
+    /// approved these" from "those tiers found nothing and the bounded aligned
+    /// matcher guessed once". Within a single source that difference is already
+    /// spent; across sources it decides who yields — see
+    /// `PolishContextGrounding`.
+    struct GroundingOutcome: Equatable, Sendable {
+        let entries: [ReplacementEntry]
+        let isFallbackOnly: Bool
+
+        /// Not `none`: a static of that name on a non-Optional type shadows
+        /// `Optional.none` at any use site that wraps it.
+        static let empty = GroundingOutcome(entries: [], isFallbackOnly: false)
+    }
+
+    /// `groundedCandidateEntries` with its provenance retained.
+    static func groundedCandidates(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> GroundingOutcome {
         let approved = candidateEntries(transcript: transcript, vocabulary: vocabulary)
         var termsByHeard: [String: Set<String>] = [:]
         for entry in approved {
@@ -1060,12 +1135,14 @@ enum RepoVocabularyMatcher {
             guard !matches.isEmpty else { return nil }
             return ReplacementEntry(replaceWith: entry.replaceWith, matches: matches)
         }
-        guard unambiguous.isEmpty else { return unambiguous }
+        guard unambiguous.isEmpty else {
+            return GroundingOutcome(entries: unambiguous, isFallbackOnly: false)
+        }
         guard let fallback = alignedFallbackEntry(
             transcript: transcript,
             vocabulary: vocabulary
-        ) else { return [] }
-        return [fallback]
+        ) else { return .empty }
+        return GroundingOutcome(entries: [fallback], isFallbackOnly: true)
     }
 
     /// Places exact vocabulary bytes into only the literal ASR spans already
@@ -1457,6 +1534,24 @@ enum RepoVocabularyMatcher {
         + "recently copied; use them to correct near-miss spellings of the terms "
         + "below, never to add new content):"
 
+    /// Header for entries harvested from the terminal screen the speaker was
+    /// looking at (the terminal screen polish-context feature): same rendering,
+    /// honest provenance. Used for BOTH the `render` and `vocabularyOnly`
+    /// reconciliation outcomes — in the latter the excerpt itself is withheld,
+    /// but these entries are still terms the user could see while speaking.
+    static let terminalScreenVocabularyHeader =
+        "Terminal screen vocabulary (exact file names and identifiers visible on the "
+        + "speaker's terminal screen; use them to correct near-miss spellings of the "
+        + "terms below, never to add new content):"
+
+    /// Header for entries harvested from the joined Claude Code session's own
+    /// state — the request the speaker previously sent that agent and the files
+    /// it touched. Same rendering, honest provenance.
+    static let claudeSessionVocabularyHeader =
+        "Coding agent session vocabulary (exact file names and identifiers from the "
+        + "speaker's open coding-agent session; use them to correct near-miss spellings "
+        + "of the terms below, never to add new content):"
+
     /// Renders matched entries as a prompt section mirroring
     /// `ReplacementDictionary.renderedPromptSection`'s `- key: aliases` shape,
     /// under the given header. Every key/alias is sanitized first; an entry
@@ -1583,10 +1678,24 @@ enum ClipboardVocabulary {
         transcript: String,
         excerpt: String
     ) -> [ReplacementEntry] {
-        let terms = entities(inExcerpt: excerpt)
-        guard !terms.isEmpty else { return [] }
+        candidateOutcome(transcript: transcript, clipboardText: excerpt).entries
+    }
+
+    /// `candidateEntries` with its provenance retained, over the COMPLETE
+    /// retained clipboard text.
+    ///
+    /// `clipboardText` is deliberately not called `excerpt`: matching runs over
+    /// everything capture retained, not over the smaller block the budget
+    /// renders into the prompt. A term is groundable when the user copied it —
+    /// not when it happened to survive excerpt selection.
+    static func candidateOutcome(
+        transcript: String,
+        clipboardText: String
+    ) -> RepoVocabularyMatcher.GroundingOutcome {
+        let terms = entities(inExcerpt: clipboardText)
+        guard !terms.isEmpty else { return .empty }
         let vocabulary = RepoVocabulary(terms: terms, branch: nil)
-        return RepoVocabularyMatcher.groundedCandidateEntries(
+        return RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript,
             vocabulary: vocabulary
         )

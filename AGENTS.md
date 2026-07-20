@@ -322,6 +322,36 @@ Key subsystems:
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
+- Claude Code session context (`Sources/ClaudeContext*`, `Sources/localvoxtral/ClaudeContext/`,
+  `integrations/claude-code/`): off-screen context for dictation into Claude
+  Code. Two plugins in one marketplace, structurally separate — never modes of
+  each other. Both declare hooks only (no skill/command/agent/statusLine —
+  nothing that spends the user's tokens).
+  - **Local** (`localvoxtral`): each hook runs `localvoxtral-claude-hook` as a
+    CHILD (never `exec` — the shim must outlive a publisher that cannot start,
+    or the exec failure becomes the hook's exit code and fail-open stops being
+    open). It publishes one bounded NDJSON line to a private AF_UNIX socket and
+    fails open (silent exit 0) whenever the app is absent. In-app,
+    `ClaudeContextBroker` verifies peer UID *before reading*, and only ever
+    unlinks a socket it has PROVED stale by connect-probe — a second live
+    instance owns its socket legitimately.
+  - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): declares
+    `type: "http"` hooks, so Claude Code itself POSTs to
+    `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH `RemoteForward` — no
+    binary, no shim, no `jq`/`nc`/Node on that host. `ClaudeRemoteContextListener`
+    (loopback-bound POSIX, dedicated port 8473; 8471/8472 remain the managed
+    backends) authenticates the Bearer token *before retaining a body* against
+    `ClaudeRemoteHostRegistry` (0600 atomic file, token hashes only,
+    constant-time compare, immediate revoke/rotate). No enrolled host ⇒ no port
+    bound. `ClaudeRemoteEnrollmentService` generates the ssh-config snippet and
+    the `claude plugin` commands; it mutates nothing without an injected runner,
+    and nothing supplies one.
+  - Shared: `ClaudeSessionRegistry` (Mutex, injected clock) holds the prior
+    prompt, cwd, recent files, remote snippets, and a broker-allocated marker,
+    returned to the hook as an OSC 2 `terminalSequence` so the marker rides the
+    PTY back into Ghostty. Response keys are allowlisted to
+    `terminalSequence`/`suppressOutput` by `ClaudeHookOutput`'s shape.
+    See "Known tradeoffs" for what is deliberately not wired up yet.
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed
   mode, the bundled `localvoxtral-polishd` helper (`PolishHelper/` package:
   MLX Swift inference + a minimal loopback OpenAI server + parent-pid
@@ -350,6 +380,66 @@ Key subsystems:
   remains active for both profiles. The token guard type remains as a recognizer
   used by clipboard vocabulary and by focused unit coverage; do not infer that
   it runs at commit.
+
+- **Claude Code context reaches the prompt only through a positive marker
+  join.** The joined session's repository (status, uncommitted diffs, contents
+  of files the agent just touched) and its prior user prompt are attached as
+  untrusted reference blocks, behind `claudeRepoContextEnabled` (default off)
+  and loopback endpoints only. Invariants to keep:
+  - Trust is transport-derived. The wire has no origin field, and
+    `LocalWorkspacePath` has no public initializer, so "remote cwd reaches the
+    filesystem" is a compile error — do not add one. Its only derivations
+    (`ancestor`, `descendant`) preserve that, and `ClaudeRepoCollecting` takes
+    it rather than a `String` for exactly this reason.
+  - The join is resolved ONCE per dictation, at start, from the marker in the
+    PID-pinned window title (`ClaudeSessionJoinResolver`), and every consumer —
+    raw screen attachment, the session block, repo collection — shares that one
+    answer. Three resolutions could each answer honestly about a different
+    moment; that is how one session's screen ends up next to another's repo.
+  - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
+    means no context. There is deliberately no sole-session or cwd heuristic —
+    it is wrong precisely when it matters.
+  - Transcripts are never scraped (the publisher drops `transcript_path`), and a
+    LOCAL session never attaches hook-quoted tool excerpts: its files are
+    readable directly and are the better source. A REMOTE session's bounded,
+    sanitized excerpts DO attach (`ClaudeSessionContextText`, gated on the
+    origin) — there is no remote collector, so they are the only thing we will
+    ever know about that tree.
+  - Everything harvested feeds GROUNDING even when the rendered excerpt is cut
+    to nothing — matching is input-side and free; only rendering pays the
+    budget.
+  These paths are in `scripts/ci/llm-lane-filter.sh`: they change what reaches
+  the model, so the LLM lanes run on them.
+- **Remote Claude context is opaque by construction.** The remote listener tags
+  every accepted session `.remote` regardless of its payload; a local process
+  connecting to that listener can only downgrade itself. Remote cwd values are
+  labels, not `LocalWorkspacePath` values, and can never authorize FileManager
+  or git calls. Sessions are namespaced by the host id whose token authenticated
+  them, so hosts cannot collide or forge each other's sessions. Bounded,
+  sanitized remote prompt/file/tool excerpts may feed the same context budget,
+  but there is no remote repository collector.
+- **Remote enrollment is copy-only: no host is ever mutated.**
+  `ClaudeRemoteEnrollmentService` generates a copyable plan (idempotent ssh
+  config block, `claude plugin` commands, verify/uninstall steps, caveats); its
+  `executeRemoteSetup` throws `.executionNotConfigured` unless a runner is
+  injected, and the app injects none — Settings shows the plan with Copy
+  buttons and runs nothing. Keep it that way: the install command carries the
+  token in argv, so any runner that spawns a process exposes it in the REMOTE
+  host's process list. `executeRemoteSetup` takes the token only to redact it
+  back out of what it throws; it cannot redact a runner's own argv. A runner
+  that must exist feeds the token via stdin/environment, not argv.
+  `ClaudeIntegrationSettingsModel` (`@MainActor @Observable`, all seams
+  injected) owns the pane's logic, and `ClaudeRemoteListenerCoordinator` owns
+  the bind/unbind decision — enrolling the first host binds immediately and
+  revoking the last one closes the port, with no relaunch. Adding a host to an
+  already-bound listener rebinds NOTHING (it authenticates against the registry
+  live), so a second enrollment cannot drop the first host's tunnel.
+  A bind conflict is reported, never routed around onto another port: a
+  squatter on 8473 receives the remote's bearer token before anything rejects
+  it, so the user must learn it is there. Note also what is NOT defensible: a
+  malicious process running as the user on the REMOTE host can read
+  `~/.claude/` and therefore the plugin's token no matter what we do. Say so
+  rather than implying the token bounds it.
 
 ## Conventions
 

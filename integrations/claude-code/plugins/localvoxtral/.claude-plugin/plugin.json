@@ -1,0 +1,23 @@
+{
+  "name": "localvoxtral",
+  "description": "Publishes Claude Code session context to the localvoxtral dictation app over a local socket.",
+  "version": "1.0.0",
+  "author": {
+    "name": "localvoxtral"
+  },
+  "homepage": "https://github.com/T0mSIlver/localvoxtral",
+  "license": "MIT",
+  "keywords": [
+    "dictation",
+    "context",
+    "voice"
+  ],
+  "userConfig": {
+    "publisher_path": {
+      "type": "string",
+      "title": "Publisher path",
+      "description": "Absolute path to the localvoxtral-claude-hook publisher. Set automatically when localvoxtral installs the plugin; only needed by hand if the app lives somewhere unusual.",
+      "default": ""
+    }
+  }
+}

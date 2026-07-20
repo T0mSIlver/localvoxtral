@@ -28,6 +28,13 @@ MARKER='[run-llm-eval]'
 # "When must the LLM lanes run?". Some patterns are forward-looking for
 # in-flight branches (EvalCorpus, RepoVocabulary, clipboard context); an
 # unmatched pattern costs nothing.
+#
+# The Claude Code context paths ARE here as of the branch that first fed them
+# into a prompt: the joined session's repository contents, its prior user
+# prompt, and the marker join that decides which session (if any) those come
+# from all now alter what reaches the model. The registry/broker/transport are
+# included with them — they are what the join resolves against, so a change to
+# session liveness or workspace trust changes which repo gets attached.
 PATTERNS=(
   'PolishHelper/*'                                   # helper engine, server, its own package
   'Sources/localvoxtral/Resources/Config/llm_*.toml' # bundled polish prompts
@@ -37,8 +44,27 @@ PATTERNS=(
   '*PolishTokenGuard*'                               # token-protection repair semantics
   '*PolishPromptWarmup*'                             # prompt-prefix warmup path
   '*PolishContextClipboardReader*'                   # clipboard-as-context attachment
+  '*PolishContextBudget*'                            # how many context chars reach the model (+ the message composer)
+  '*PolishContextExcerptSelector*'                   # WHICH context lines reach the model
+  '*PolishContextGrounding*'                         # cross-source grounding merge: what gets pre-applied
+  '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
+  '*ClaudeRepoCollector*'                            # what repository content is harvested for the prompt
+  '*ClaudeRepoContentFilter*'                        # which repo files/dirs are eligible at all
+  '*ClaudeRepoContextSelection*'                     # WHICH repo sections/lines reach the model
+  '*ClaudeRepoContextPreparation*'                   # repo matching + selection over the harvest
+  '*ClaudeContextBlocks*'                            # the repo/session prompt blocks and their framing
+  '*TerminalScreenClaudeJoin*'                       # which session (if any) the context comes from
+  '*ClaudeSessionRegistry*'                          # session liveness: what the join resolves against
+  '*ClaudeSessionState*'                             # the snapshot the session block renders from
+  '*ClaudeTransportOrigin*'                          # workspace trust: whether a cwd can be read at all
+  'Sources/localvoxtral/ClaudeContext/*'             # every gate/collector/renderer feeding the Claude blocks
+  '*ClaudeContextBroker*'                            # the socket that feeds the registry
+  '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from
+  '*ClaudeHookInputParser*'                          # which hook fields become session state
+  'integrations/claude-code/*'                       # the plugin that publishes those hooks
+  '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*DictationViewModel+Session.swift'                # polish-and-commit path
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite

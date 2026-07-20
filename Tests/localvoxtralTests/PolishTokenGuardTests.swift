@@ -4,6 +4,74 @@ import XCTest
 @testable import localvoxtral
 
 final class PolishTokenGuardTests: XCTestCase {
+    // MARK: - Containment sweep
+
+    /// `protectedTokens` dropped contained spans with an all-pairs scan; it now
+    /// does a linear sweep after a sort, because clipboard context retains up
+    /// to `retentionCharacterCap` characters and O(n²) over a code-heavy buffer
+    /// that size is the difference between milliseconds and minutes.
+    ///
+    /// The sweep is only worth anything if it returns the SAME answer, so this
+    /// re-implements the naive rule directly from its specification and demands
+    /// agreement across inputs built to exercise containment: paths swallowing
+    /// filenames, URLs swallowing paths, backticks swallowing both, adjacent
+    /// and identical spans.
+    func testContainmentSweepAgreesWithTheNaiveAllPairsRule() {
+        let fragments = [
+            "see src/app/useAuth.ts now",
+            "open https://example.com/a/b/c.ts here",
+            "run `git diff src/main.swift` twice",
+            "flag --config=conf/app.yaml set",
+            "export API_TOKEN_VALUE=1",
+            "bump v1.2.3 and 4.5.6 today",
+            "hash a1b2c3d4e5f6 landed",
+            "plain prose with no tokens at all",
+            "nested `see src/app/useAuth.ts` inside",
+            "trailing src/foo.ts. and src/foo.ts, again",
+        ]
+        // Every ordering of a few fragments produces different span layouts.
+        for a in fragments {
+            for b in fragments {
+                let text = a + " " + b
+                let actual = PolishTokenGuard.protectedTokens(in: text)
+                let expected = naiveProtectedTokens(in: text)
+                XCTAssertEqual(actual, expected, "disagreement on: \(text)")
+            }
+        }
+    }
+
+    /// The containment rule, transcribed straight from the all-pairs version
+    /// this replaced: drop a span iff some span with a DIFFERENT range starts at
+    /// or before it and ends at or after it. Deliberately quadratic and dumb —
+    /// it is the oracle, not the implementation.
+    private func naiveProtectedTokens(in text: String) -> [String] {
+        let spans = PolishTokenGuard.debugProtectedSpans(in: text)
+        let kept = spans.filter { span in
+            !spans.contains { other in
+                !NSEqualRanges(other.range, span.range)
+                    && other.range.location <= span.range.location
+                    && (span.range.location + span.range.length)
+                        <= (other.range.location + other.range.length)
+            }
+        }
+        var seen = Set<String>()
+        var result: [String] = []
+        for span in kept.sorted(by: { $0.range.location < $1.range.location }) {
+            if seen.insert(span.token).inserted { result.append(span.token) }
+        }
+        return result
+    }
+
+    /// Containment must be resolved regardless of which regex found the span
+    /// first: a path inside a URL inside a backtick span collapses to the
+    /// outermost token only.
+    func testOutermostSpanSwallowsEveryNestedSpan() {
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "run `https://x.dev/a/b.ts` now"),
+            ["`https://x.dev/a/b.ts`"]
+        )
+    }
+
     // MARK: - Recognizer
 
     func testProtectedTokensRecognizesEachClass() {
@@ -1396,7 +1464,10 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.llmPolishingService = service
         viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in
-            [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])]
+            RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["useauth.ts"])],
+                isFallbackOnly: false
+            )
         }
         retainForTestProcessLifetime(viewModel)
 
@@ -1633,7 +1704,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.debugRepoVocabularyDeadlineSleepOverride = {}
 
         let endpoint = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
-        let first = await viewModel.repoVocabularyEntriesIfEnabled(
+        let first = await viewModel.repoVocabularyGroundingIfEnabled(
             endpointURL: endpoint, transcript: "open use auth dot t s"
         )
         // Deadline expired; the wedged pipeline was abandoned holding the gate.
@@ -1641,7 +1712,7 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         var startIterator = pipelineStarted.makeAsyncIterator()
         _ = await startIterator.next()
 
-        let second = await viewModel.repoVocabularyEntriesIfEnabled(
+        let second = await viewModel.repoVocabularyGroundingIfEnabled(
             endpointURL: endpoint, transcript: "open use auth dot t s"
         )
         XCTAssertNil(second)
@@ -1703,7 +1774,9 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
         viewModel.debugRepoVocabularyEntriesOverride = { _ in
             overrideCounter.count += 1
-            return vocabularyEntries
+            return vocabularyEntries.map {
+                RepoVocabularyMatcher.GroundingOutcome(entries: $0, isFallbackOnly: false)
+            }
         }
         var savedRecord: DictationSessionRecord?
         viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
@@ -1717,6 +1790,222 @@ final class DictationViewModelPolishTokenGuardTests: XCTestCase {
         await waitUntilStoppedSessionCompletes(viewModel)
         let request = await service.capturedRequest
         return (savedRecord, request)
+    }
+
+    // MARK: - Cross-source grounding at the session level
+
+    /// Drives a real stop-commit with BOTH context sources live: the repo
+    /// vocabulary seam (with real provenance) and the clipboard pasteboard
+    /// seam. This is the only place the two meet in production, so the merge's
+    /// rules are asserted here through the actual wiring, not just as a unit.
+    private func runCrossSourceSession(
+        repoOutcome: RepoVocabularyMatcher.GroundingOutcome?,
+        clipboard: String?,
+        transcript: String,
+        templateUserContent: String =
+            "Clean this up.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+    ) async -> (record: DictationSessionRecord?, request: LLMPolishingRequest?) {
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.llmPolishingEnabled = true
+        settings.polishingBackendMode = .externalURL
+        settings.llmPolishingEndpointURL = "http://127.0.0.1:8472/v1/chat/completions"
+        settings.repoVocabularyEnabled = true
+        settings.polishClipboardContextEnabled = clipboard != nil
+
+        let template = LLMPromptTemplates(
+            systemContent: "system",
+            userContent: templateUserContent
+        )
+        let mockConfig = MockAppConfigStore(
+            promptTemplates: template,
+            agentPromptTemplates: template
+        )
+        let service = RecordingPolishingService()
+
+        let viewModel = DictationViewModel(
+            settings: settings,
+            overlayBufferCoordinator: MockOverlayCoordinator(),
+            startRuntimeServices: false
+        )
+        viewModel.appConfigStore = mockConfig
+        viewModel.llmPolishingService = service
+        viewModel.debugResolveTargetAppBundleIDOverride = { "com.apple.Terminal" }
+        viewModel.debugRepoVocabularyEntriesOverride = { _ in repoOutcome }
+        if let clipboard {
+            let stub = PasteboardStub(string: clipboard)
+            viewModel.debugPolishContextPasteboardReaderOverride = { stub }
+        }
+        var savedRecord: DictationSessionRecord?
+        viewModel.debugSavedSessionRecordSink = { savedRecord = $0 }
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.sessionOutputMode = .overlayBuffer
+        viewModel.isFinalizingStop = true
+        viewModel.currentDictationEventText = transcript
+
+        viewModel.finishStoppedSession(promotePendingSegment: false)
+        await waitUntilStoppedSessionCompletes(viewModel)
+        return (savedRecord, await service.capturedRequest)
+    }
+
+    /// Both sources map the same heard span to DIFFERENT exact terms. Through
+    /// the real commit path, neither may be pre-applied and neither may appear
+    /// as a prompt hint — the transcript keeps the user's words.
+    func testSessionAbstainsWhenSourcesConflictOnTheSameSpan() async {
+        let result = await runCrossSourceSession(
+            repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
+                isFallbackOnly: false
+            ),
+            clipboard: "see useAuth.tsx for the hook",
+            transcript: "open use auth dot ts and fix the import"
+        )
+        let request = result.request
+        XCTAssertNotNil(request)
+        XCTAssertFalse(
+            request?.inputText.contains("useAuth.ts") ?? true,
+            "a contested span must not be pre-applied; got: \(request?.inputText ?? "")"
+        )
+        XCTAssertTrue(
+            request?.inputText.contains("use auth dot ts") ?? false,
+            "the user's words must survive an abstention"
+        )
+    }
+
+    /// Conflict detection must not depend on the prompt template carrying
+    /// `{{replacement_dictionary}}`.
+    ///
+    /// Removing that placeholder is explicitly supported, and the repo fetch
+    /// used to be gated on it — which silently disabled the repo's VOTE in the
+    /// merge. The clipboard's reading of a contested span would then be
+    /// pre-applied unopposed, editing words the user never said. Rendering may
+    /// depend on the slot; safety may not.
+    func testSessionAbstainsOnConflictEvenWithoutTheDictionarySlot() async {
+        let result = await runCrossSourceSession(
+            repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
+                isFallbackOnly: false
+            ),
+            clipboard: "see useAuth.tsx for the hook",
+            transcript: "open use auth dot ts and fix the import",
+            templateUserContent: "Clean this up.\nWorking text:\n{{input_text}}"
+        )
+        let input = result.request?.inputText ?? ""
+        XCTAssertFalse(
+            input.contains("useAuth.tsx"),
+            "the clipboard must not win a contested span unopposed; got: \(input)"
+        )
+        XCTAssertFalse(input.contains("useAuth.ts"), "a contested span must not be pre-applied")
+        XCTAssertTrue(input.contains("use auth dot ts"), "the user's words must survive")
+    }
+
+    /// The other half of the rule: without the slot, nothing renders as a hint,
+    /// but an UNCONTESTED term is still pre-applied.
+    func testSessionWithoutDictionarySlotStillGroundsButRendersNoHintSection() async {
+        let result = await runCrossSourceSession(
+            repoOutcome: nil,
+            clipboard: "see UserSessionManager.swift for the hook",
+            transcript: "fix user session manager dot swift now",
+            templateUserContent: "Clean this up.\nWorking text:\n{{input_text}}"
+        )
+        XCTAssertTrue(
+            result.request?.inputText.contains("UserSessionManager.swift") ?? false,
+            "grounding is independent of the hint slot; got: \(result.request?.inputText ?? "")"
+        )
+        let prompt = result.request?.userPrompts.last ?? ""
+        XCTAssertFalse(
+            prompt.contains(RepoVocabularyMatcher.clipboardVocabularyHeader),
+            "no dictionary slot means no rendered hint section"
+        )
+    }
+
+    /// A repo FALLBACK guess must yield to a clipboard exact hit on the same
+    /// span. This only works if provenance survives the real seam — the whole
+    /// point of widening it beyond `[ReplacementEntry]?`.
+    func testSessionRepoFallbackGuessYieldsToClipboardSolidHit() async {
+        let result = await runCrossSourceSession(
+            repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [
+                    ReplacementEntry(replaceWith: "useAuthHook.tsx", matches: ["use auth dot ts"]),
+                ],
+                isFallbackOnly: true
+            ),
+            clipboard: "see useAuth.ts for the hook",
+            transcript: "open use auth dot ts and fix the import"
+        )
+        XCTAssertTrue(
+            result.request?.inputText.contains("useAuth.ts") ?? false,
+            "the solid clipboard hit must win; got: \(result.request?.inputText ?? "")"
+        )
+        XCTAssertFalse(
+            result.request?.inputText.contains("useAuthHook.tsx") ?? true,
+            "the repo guess must yield rather than contest into abstention"
+        )
+    }
+
+    /// Both sources agreeing on the same term is corroboration: it grounds, and
+    /// the term is not duplicated across two prompt sections.
+    func testSessionAgreementGroundsWithoutDuplicatingTheHint() async {
+        let result = await runCrossSourceSession(
+            repoOutcome: RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "useAuth.ts", matches: ["use auth dot ts"])],
+                isFallbackOnly: false
+            ),
+            clipboard: "see useAuth.ts for the hook",
+            transcript: "open use auth dot ts and fix the import"
+        )
+        XCTAssertTrue(result.request?.inputText.contains("useAuth.ts") ?? false)
+        let prompt = result.request?.userPrompts.last ?? ""
+        let occurrences = prompt.components(separatedBy: "- useAuth.ts:").count - 1
+        XCTAssertEqual(occurrences, 1, "an agreed term must render once, not per source")
+    }
+
+    /// The cached-prefix contract, asserted through the real request: attaching
+    /// clipboard context must not disturb any message before the last, or
+    /// polishd re-prefills a cold 4B model on every request.
+    func testSessionClipboardContextLeavesTheCachedPrefixByteIdentical() async {
+        let transcript = "open use auth dot ts and fix the import"
+        let without = await runCrossSourceSession(
+            repoOutcome: nil, clipboard: nil, transcript: transcript
+        )
+        let with = await runCrossSourceSession(
+            repoOutcome: nil,
+            clipboard: "see UserSessionManager.swift for the hook",
+            transcript: transcript
+        )
+        XCTAssertNotNil(without.request)
+        XCTAssertNotNil(with.request)
+        XCTAssertEqual(with.request?.systemPrompt, without.request?.systemPrompt)
+        XCTAssertEqual(
+            with.request?.userPrompts.count, without.request?.userPrompts.count,
+            "context must ride inside the last message, never add one"
+        )
+        XCTAssertEqual(
+            with.request?.userPrompts.dropLast(), without.request?.userPrompts.dropLast(),
+            "every cached-prefix message must be byte-identical"
+        )
+        XCTAssertTrue(
+            with.request?.userPrompts.last?
+                .hasPrefix(PolishContextClipboardReader.contextMessageInstruction) ?? false,
+            "context is prepended inside the final message"
+        )
+        XCTAssertTrue(
+            with.request?.userPrompts.last?.hasSuffix(transcript) ?? false,
+            "the transcript must stay LAST in the final message"
+        )
+    }
+
+    /// A clipboard well below the render budget reaches the model exactly as
+    /// copied — verbatim, through the real commit path.
+    func testSessionAttachesSmallClipboardVerbatim() async {
+        let clipboard = "error in UserSessionManager.swift\n\n  at line 42"
+        let result = await runCrossSourceSession(
+            repoOutcome: nil, clipboard: clipboard, transcript: "fix the user session manager"
+        )
+        XCTAssertTrue(
+            result.request?.userPrompts.last?.contains(clipboard) ?? false,
+            "small clipboard must be attached verbatim; got: \(result.request?.userPrompts.last ?? "")"
+        )
     }
 
     // MARK: - Helpers

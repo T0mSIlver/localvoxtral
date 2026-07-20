@@ -59,11 +59,15 @@ final class LLMPolishEvalSupportTests: XCTestCase {
             endpointURL: endpointURL,
             apiKey: "",
             model: "qwen35-4b",
-            requestShapeModel: production.repoID
+            requestShapeModel: production.repoID,
+            thinkingBudgetTokens: 0,
+            passthroughExtraParameters: true
         )
 
         XCTAssertEqual(configuration.model, "qwen35-4b")
         XCTAssertEqual(configuration.samplingDefaults, production.samplingDefaults)
         XCTAssertEqual(configuration.chatTemplateArguments, ["enable_thinking": false])
+        XCTAssertEqual(configuration.thinkingBudgetTokens, 0)
+        XCTAssertTrue(configuration.passthroughExtraParameters)
     }
 }

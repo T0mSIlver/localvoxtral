@@ -300,6 +300,10 @@ extension DictationViewModel {
             return
         }
         captureSessionTargetVerdict()
+        // Same timing rationale again, and the last chance to take it: the
+        // overlay takes focus once the socket connects, and screen context must
+        // record what the user could see as they chose their words.
+        captureTerminalScreenContextForSession()
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
@@ -623,12 +627,34 @@ extension DictationViewModel {
                 // off OR the polishing endpoint is not loopback, the pasteboard
                 // is never read (privacy).
                 let capturedClipboardContext: PolishClipboardContext?
+                let capturedScreenDecision: TerminalScreenContextDecision
+                let capturedClaudeJoin: ClaudeSessionJoin?
                 if let endpointURL = polishingConfig?.endpointURL {
                     capturedClipboardContext = polishClipboardContextIfEnabled(
                         endpointURL: endpointURL
                     )
+                    // Reconciled HERE, pre-Task, for the same reason as the
+                    // clipboard read above: the stop-time re-read must sample
+                    // the screen at commit, not after the repo-vocabulary await
+                    // has let ~2 s of agent output scroll past — which would
+                    // report every session as mutated.
+                    capturedScreenDecision = terminalScreenContextDecision(
+                        endpointURL: endpointURL
+                    )
+                    // AFTER the screen decision, never before: that call is what
+                    // asks the authorizer about the join, and consuming it first
+                    // would clear it out from under the question and silently
+                    // withdraw every raw screen attachment.
+                    capturedClaudeJoin = consumeClaudeSessionJoin()
                 } else {
                     capturedClipboardContext = nil
+                    capturedScreenDecision = .drop(reason: .noStartCapture)
+                    capturedClaudeJoin = nil
+                    // No endpoint: nothing to ground for, and neither the
+                    // capture nor the join must survive into a later session's
+                    // reconciliation.
+                    terminalScreenStartCapture = nil
+                    claudeSessionJoin = nil
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -639,6 +665,16 @@ extension DictationViewModel {
                 // template can't carry it.
                 let templateCarriesDictionarySlot =
                     promptTemplates.supportsReplacementDictionary
+                // A repo match also votes against every other grounding source.
+                // Even without a render slot, keep that vote when another source
+                // can pre-apply an exact spelling; otherwise a contested span can
+                // be edited unopposed. With no slot and no independent source,
+                // the repo result has no consumer and the expensive pipeline is
+                // skipped entirely.
+                let needsRepoGroundingForConflictSafety =
+                    capturedClipboardContext != nil
+                    || capturedScreenDecision.vocabularyGroundingText != nil
+                    || capturedClaudeJoin != nil
 
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -650,60 +686,307 @@ extension DictationViewModel {
                     // timeout / no repo / feature off it is a fast no-op and the
                     // request is byte-identical to the no-vocabulary path.
                     var replacementDictionarySection = replacementDictionaryPrompt
-                    var repoVocabularyCount = 0
-                    var repoVocabularyEntries: [ReplacementEntry] = []
-                    if templateCarriesDictionarySlot,
+                    var repoVocabularyOutcome = RepoVocabularyMatcher.GroundingOutcome.empty
+                    if (templateCarriesDictionarySlot || needsRepoGroundingForConflictSafety),
                        let endpointURL = polishingConfig?.endpointURL,
-                       let vocabularyEntries = await self.repoVocabularyEntriesIfEnabled(
+                       let outcome = await self.repoVocabularyGroundingIfEnabled(
                            endpointURL: endpointURL,
                            transcript: workingText
                        )
                     {
-                        // Append to the replacement-dictionary section string so
-                        // the entries land in the `{{replacement_dictionary}}`
-                        // slot both profiles already carry — dynamic-suffix side
-                        // of the prompt-cache split, never the cached prefix.
-                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
-                            base: replacementDictionarySection,
-                            entries: vocabularyEntries
-                        )
-                        repoVocabularyEntries = vocabularyEntries
-                        repoVocabularyCount = vocabularyEntries.count
-                        Log.polishing.info(
-                            "Repo vocabulary attached: \(vocabularyEntries.count, privacy: .public) entries"
-                        )
+                        repoVocabularyOutcome = outcome
                     }
 
                     // Clipboard vocabulary is grounded in the already
-                    // privacy-gated clipboard excerpt
-                    // (feature toggle ON + loopback endpoint + never concealed/
-                    // transient — all enforced when the excerpt was captured;
-                    // nil context means none of it runs). Without this, the
-                    // context excerpt lets the model produce the exact copied
-                    // spelling. Hint entries need the dictionary slot.
-                    var clipboardVocabularyCount = 0
-                    var clipboardVocabularyEntries: [ReplacementEntry] = []
-                    if let clipboardContext = capturedClipboardContext {
-                        let clipboardEntries = ClipboardVocabulary.candidateEntries(
-                            transcript: workingText,
-                            excerpt: clipboardContext.excerpt
+                    // privacy-gated clipboard text (feature toggle ON + loopback
+                    // endpoint + never concealed/transient — all enforced when
+                    // it was captured; nil context means none of it runs).
+                    //
+                    // Matching runs over the COMPLETE retained text, never the
+                    // rendered excerpt: a term the user copied grounds the
+                    // transcript whether or not it survived excerpt selection.
+                    // Grounding is input-side and costs no prompt characters,
+                    // so it has no reason to inherit the render budget.
+                    //
+                    // Both the matching and the excerpt selection happen here,
+                    // together, and move OFF the main actor when the buffer is
+                    // large enough to be worth the hop — see
+                    // `PolishContextPreparation`. The render budget is resolved
+                    // first because it is also the inline/detached threshold.
+                    //
+                    // ONE allocation across ALL populated sources, not one per
+                    // source: they share a single request's prompt, so they must
+                    // share a single budget. Two sources each allocating from
+                    // `totalCharacterBudget` would each believe they had all of
+                    // it and together spend double.
+                    //
+                    // Only text that can actually RENDER declares a demand. The
+                    // screen demands nothing unless the decision is `.render`
+                    // (see below): `vocabularyOnly` and `drop` cost no prompt
+                    // characters, and letting them reserve some would starve the
+                    // clipboard of budget to render nothing with.
+                    let screenRenderDemand: Int = {
+                        guard case let .render(excerpt) = capturedScreenDecision else { return 0 }
+                        return excerpt.count
+                    }()
+
+                    // The joined Claude session's repository. Collected inside
+                    // the Task, like the repo vocabulary above and for the same
+                    // reason: its git subprocesses and file reads run OFF the
+                    // main actor under their own deadline, so a slow repo yields
+                    // a smaller snapshot rather than a late commit. Every gate
+                    // (setting, loopback endpoint, live join, LOCAL workspace)
+                    // is inside `claudeRepoSnapshotIfEnabled`, ahead of the
+                    // collector — an unjoined pane means no filesystem call at
+                    // all, not a collector that reads and then discards.
+                    var claudeRepoSnapshot: ClaudeRepoSnapshot?
+                    if let endpointURL = polishingConfig?.endpointURL {
+                        claudeRepoSnapshot = await self.claudeRepoSnapshotIfEnabled(
+                            join: capturedClaudeJoin,
+                            endpointURL: endpointURL,
+                            transcript: workingText
                         )
-                        if !clipboardEntries.isEmpty {
-                            clipboardVocabularyEntries = clipboardEntries
-                            if templateCarriesDictionarySlot {
-                                replacementDictionarySection =
-                                    RepoVocabularyMatcher.appendedPromptSection(
-                                        base: replacementDictionarySection,
-                                        entries: clipboardEntries,
-                                        header: RepoVocabularyMatcher.clipboardVocabularyHeader
-                                    )
-                            }
-                            clipboardVocabularyCount = clipboardEntries.count
-                            // Counts only — entity content is clipboard content.
-                            Log.polishing.info(
-                                "Clipboard vocabulary attached: clipboard-vocab:\(clipboardEntries.count, privacy: .public)"
+                    }
+                    guard !Task.isCancelled else { return }
+
+                    // The session block's text (workspace, the PRIOR prompt, the
+                    // files the agent touched, and a remote session's tool
+                    // excerpts) is flat, so it rides the shared preparation like
+                    // the clipboard and the screen.
+                    //
+                    // Gated through `claudeSessionTextIfEnabled` on ALL THREE of
+                    // the repo block's gates — current setting, current loopback
+                    // endpoint, this exact join still live — not just the
+                    // setting. Both blocks attach the session's content, and
+                    // consenting to one is consenting to both; it follows that
+                    // withdrawing consent, or a session dying mid-sentence, must
+                    // stop both too. Checking only the setting here meant a dead
+                    // session's PRIOR PROMPT still rode to whatever endpoint was
+                    // configured, including a remote one.
+                    var claudeSessionText = ""
+                    if let endpointURL = polishingConfig?.endpointURL {
+                        claudeSessionText = self.claudeSessionTextIfEnabled(
+                            join: capturedClaudeJoin,
+                            endpointURL: endpointURL
+                        )
+                    }
+
+                    // Only RENDERABLE material declares a demand — the repo's
+                    // demand is what it could show, never `groundingText.count`.
+                    // That string is mostly `trackedPaths`, which ground but
+                    // never render, so counting it made a monorepo bid hundreds
+                    // of thousands of characters for content it would not
+                    // attach, and take that space from sources that would. It is
+                    // also computed off-actor: it walks the harvest, and this is
+                    // the `@MainActor` commit path.
+                    var repoRenderDemand = 0
+                    if let claudeRepoSnapshot {
+                        repoRenderDemand = await ClaudeRepoContextPreparation.renderDemand(
+                            snapshot: claudeRepoSnapshot
+                        )
+                    }
+
+                    let allocation = PolishContextBudget.allocate(demands: [
+                        .repository: repoRenderDemand,
+                        .terminal: screenRenderDemand,
+                        .claude: claudeSessionText.count,
+                        .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
+                    ])
+                    let clipboardRenderBudget = allocation[.clipboard] ?? 0
+                    let screenRenderBudget = allocation[.terminal] ?? 0
+                    let repoRenderBudget = allocation[.repository] ?? 0
+                    let claudeRenderBudget = allocation[.claude] ?? 0
+
+                    // Prepared exactly like every other source: matching over
+                    // the COMPLETE harvest, rendering within the grant. The gap
+                    // is widest here — a monorepo's tracked path list alone can
+                    // exceed the whole prompt budget — which is precisely why
+                    // grounding must not inherit the render budget. Every
+                    // harvested term votes; only what fits is shown.
+                    var claudeRepoPreparation = ClaudeRepoContextPreparation.empty
+                    if let claudeRepoSnapshot {
+                        claudeRepoPreparation = await ClaudeRepoContextPreparation.prepared(
+                            snapshot: claudeRepoSnapshot,
+                            transcript: workingText,
+                            renderBudget: repoRenderBudget
+                        )
+                    }
+                    let claudeRepoOutcome = claudeRepoPreparation.grounding
+
+                    var claudeSessionPreparation = PolishContextPreparation.empty
+                    if !claudeSessionText.isEmpty {
+                        claudeSessionPreparation = await PolishContextPreparation.prepared(
+                            text: claudeSessionText,
+                            transcript: workingText,
+                            renderBudget: claudeRenderBudget
+                        )
+                    }
+                    let claudeSessionOutcome = claudeSessionPreparation.grounding
+
+                    var clipboardPreparation = PolishContextPreparation.empty
+                    if let clipboardContext = capturedClipboardContext {
+                        clipboardPreparation = await PolishContextPreparation.prepared(
+                            text: clipboardContext.retainedText,
+                            transcript: workingText,
+                            renderBudget: clipboardRenderBudget
+                        )
+                    }
+                    let clipboardVocabularyOutcome = clipboardPreparation.grounding
+
+                    // Terminal screen context. Grounded in the screen the user
+                    // was looking at when they started speaking, which both
+                    // surviving reconciliation outcomes preserve — `.render`
+                    // may also show it to the model, `.vocabularyOnly` withholds
+                    // the excerpt but the terms the user could SEE while
+                    // choosing their words are still the right spellings to
+                    // match against. `.drop` yields nil and none of this runs.
+                    //
+                    // Matching runs over the COMPLETE sanitized screen, never
+                    // the excerpt: the budget can cut the rendered excerpt to
+                    // nothing (or bar it entirely) and the full screen still
+                    // grounds the transcript, exactly as it does for the
+                    // clipboard.
+                    var screenPreparation = PolishContextPreparation.empty
+                    if let screenText = capturedScreenDecision.vocabularyGroundingText {
+                        screenPreparation = await PolishContextPreparation.prepared(
+                            text: screenText,
+                            transcript: workingText,
+                            renderBudget: screenRenderBudget
+                        )
+                    }
+                    let screenVocabularyOutcome = screenPreparation.grounding
+
+                    guard !Task.isCancelled else { return }
+
+                    // Sources matched independently; the merge is what resolves
+                    // them against each other (agreement collapses, conflicting
+                    // spans abstain, a fallback guess yields to a solid hit).
+                    // Every side carries REAL provenance — a repo aligned-fallback
+                    // guess yields to a clipboard exact hit on the same span,
+                    // and vice versa.
+                    //
+                    // The terminal votes HERE, in the same single merge, rather
+                    // than appending its entries downstream. That is the whole
+                    // point: a span the screen and the clipboard read differently
+                    // must ABSTAIN, and a span they agree on must collapse to one
+                    // entry. A source that appends after the merge has silently
+                    // opted out of both rules and pre-applies its own reading of
+                    // a contested span unopposed — editing words the user did not
+                    // say.
+                    //
+                    // The Claude repo and session sources vote HERE too, in the
+                    // same single merge, for exactly the reason the terminal
+                    // does. They are the strongest sources on the list — a file
+                    // the agent just edited is better evidence of a spelling
+                    // than anything on the clipboard — but "strongest" is not
+                    // "unopposed": when the repo and the clipboard read the same
+                    // heard span as two DIFFERENT terms, neither is pre-applied,
+                    // because pre-applying the wrong bytes edits the user's words
+                    // into something they did not say. Both `.repository`
+                    // candidates share one bucket by design: the terminal-cwd
+                    // vocabulary and the joined session's repo are both "the repo
+                    // the speaker is working in", and they render under one
+                    // header.
+                    let merged = PolishContextGrounding.merge([
+                        PolishContextGrounding.Candidate(
+                            source: .repository,
+                            entries: repoVocabularyOutcome.entries,
+                            isFallbackOnly: repoVocabularyOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .repository,
+                            entries: claudeRepoOutcome.entries,
+                            isFallbackOnly: claudeRepoOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .terminal,
+                            entries: screenVocabularyOutcome.entries,
+                            isFallbackOnly: screenVocabularyOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .claude,
+                            entries: claudeSessionOutcome.entries,
+                            isFallbackOnly: claudeSessionOutcome.isFallbackOnly
+                        ),
+                        PolishContextGrounding.Candidate(
+                            source: .clipboard,
+                            entries: clipboardVocabularyOutcome.entries,
+                            isFallbackOnly: clipboardVocabularyOutcome.isFallbackOnly
+                        ),
+                    ])
+                    let repoVocabularyEntries = merged.entries(from: .repository)
+                    let clipboardVocabularyEntries = merged.entries(from: .clipboard)
+                    let screenVocabularyEntries = merged.entries(from: .terminal)
+                    let claudeVocabularyEntries = merged.entries(from: .claude)
+                    let repoVocabularyCount = repoVocabularyEntries.count
+                    let clipboardVocabularyCount = clipboardVocabularyEntries.count
+                    let screenVocabularyCount = screenVocabularyEntries.count
+                    let claudeVocabularyCount = claudeVocabularyEntries.count
+
+                    // Sections are rendered from the MERGED entries, never the
+                    // per-source matches: a span the merge abstained on must
+                    // not survive as a prompt hint the model could apply by
+                    // hand. Appended to the replacement-dictionary section so
+                    // the entries land in the `{{replacement_dictionary}}` slot
+                    // both profiles already carry — dynamic-suffix side of the
+                    // prompt-cache split, never the cached prefix.
+                    if !repoVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection = RepoVocabularyMatcher.appendedPromptSection(
+                            base: replacementDictionarySection,
+                            entries: repoVocabularyEntries
+                        )
+                        Log.polishing.info(
+                            "Repo vocabulary attached: \(repoVocabularyCount, privacy: .public) entries"
+                        )
+                    }
+
+                    if !clipboardVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: clipboardVocabularyEntries,
+                                header: RepoVocabularyMatcher.clipboardVocabularyHeader
                             )
-                        }
+                    }
+                    if clipboardVocabularyCount > 0 {
+                        // Counts only — entity content is clipboard content.
+                        Log.polishing.info(
+                            "Clipboard vocabulary attached: clipboard-vocab:\(clipboardVocabularyCount, privacy: .public)"
+                        )
+                    }
+
+                    // Rendered from the MERGED entries like every other source —
+                    // a span the merge abstained on must not reappear here as a
+                    // prompt hint. Hint entries need the dictionary slot;
+                    // pre-application does not.
+                    if !screenVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: screenVocabularyEntries,
+                                header: RepoVocabularyMatcher.terminalScreenVocabularyHeader
+                            )
+                    }
+                    if screenVocabularyCount > 0 {
+                        // Counts only — entity content is screen content.
+                        Log.polishing.info(
+                            "Terminal screen vocabulary attached: screen-vocab:\(screenVocabularyCount, privacy: .public)"
+                        )
+                    }
+
+                    if !claudeVocabularyEntries.isEmpty, templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedPromptSection(
+                                base: replacementDictionarySection,
+                                entries: claudeVocabularyEntries,
+                                header: RepoVocabularyMatcher.claudeSessionVocabularyHeader
+                            )
+                    }
+                    if claudeVocabularyCount > 0 {
+                        // Counts only — entity content is session content.
+                        Log.polishing.info(
+                            "Claude session vocabulary attached: claude-vocab:\(claudeVocabularyCount, privacy: .public)"
+                        )
                     }
 
                     guard !Task.isCancelled else { return }
@@ -716,7 +999,13 @@ extension DictationViewModel {
                     // prompt as provenance/context. Boundary checks make this
                     // a no-op if a recorded span is no longer independently
                     // replaceable.
-                    let groundingEntries = repoVocabularyEntries + clipboardVocabularyEntries
+                    // `merged.all`, never a concatenation of the per-source
+                    // entries: the merge is what already resolved agreement and
+                    // conflict ACROSS sources, and re-assembling its inputs by
+                    // hand would reintroduce exactly the duplicates and
+                    // contested spans it dropped. Terminal entries are in here
+                    // because the terminal is a candidate in the merge above.
+                    let groundingEntries = merged.all
                     let groundedWorkingText: String
                     if clipboardPayload != nil {
                         // The payload placeholder is a commit-control token,
@@ -741,7 +1030,7 @@ extension DictationViewModel {
                     }
                     if groundedWorkingText != workingText {
                         Log.polishing.info(
-                            "Technical grounding pre-applied: repo=\(repoVocabularyEntries.count, privacy: .public), clipboard=\(clipboardVocabularyEntries.count, privacy: .public)"
+                            "Technical grounding pre-applied: repo=\(repoVocabularyCount, privacy: .public), terminal=\(screenVocabularyCount, privacy: .public), claude=\(claudeVocabularyCount, privacy: .public), clipboard=\(clipboardVocabularyCount, privacy: .public)"
                         )
                     }
 
@@ -749,30 +1038,92 @@ extension DictationViewModel {
                         inputText: groundedWorkingText,
                         replacementDictionary: replacementDictionarySection
                     )
-                    // Prepend the pre-captured clipboard reference-context block
-                    // to the FINAL user message (letting the polish model fix
-                    // near-miss spelling of technical terms against what the
-                    // user copied).
-                    var capturedPolishContextSummary: String? = nil
-                    if let clipboardContext = capturedClipboardContext {
-                        // Prompt-cache safety: polishd checkpoints ALL-BUT-LAST
-                        // messages as its single-slot prefix cache, so per-request
-                        // context must ride INSIDE the last message — a separate
-                        // context message between prefix and suffix invalidated
-                        // the checkpoint on every request and a cold 4B re-prefill
-                        // blew the polish client timeout (field, 2026-07-11).
-                        // Prepended, never appended: the working text stays LAST
-                        // in the message (this model family echoes instructions
-                        // placed after the input text).
-                        let lastIndex = userPrompts.count - 1
-                        userPrompts[lastIndex] =
-                            PolishContextClipboardReader.contextMessage(
-                                excerpt: clipboardContext.excerpt
-                            ) + "\n\n" + userPrompts[lastIndex]
-                        capturedPolishContextSummary = clipboardContext.provenanceSummary
+                    // Reference-context blocks are prepended to the FINAL user
+                    // message, letting the polish model fix near-miss spelling
+                    // of technical terms against what the user copied and what
+                    // was on their screen.
+                    //
+                    // ONE `attaching` call with the blocks ordered by
+                    // `allocationRank` (terminal, then clipboard). The composer
+                    // owns the two invariants for every source: context rides
+                    // INSIDE the last message (a separate message between prefix
+                    // and suffix invalidated polishd's single-slot checkpoint on
+                    // every request, and the cold 4B re-prefill blew the polish
+                    // client timeout — field, 2026-07-11), and it is prepended
+                    // so the transcript stays LAST. Two sequential prepends keep
+                    // both invariants too, but silently REVERSE source order —
+                    // the array is the form that cannot get that wrong.
+                    //
+                    // Both excerpts were already selected off-actor above: at or
+                    // below its grant a source is attached verbatim; above it,
+                    // the excerpt is the transcript-relevant selection rather
+                    // than the head of the buffer.
+                    //
+                    // The screen block is nil unless the decision is `.render`,
+                    // which requires the captured pane to be positively joined
+                    // to one live Claude session — so plain, unjoined Ghostty
+                    // scrollback contributes vocabulary only and never an
+                    // excerpt.
+                    let repoBlock = claudeRepoSnapshot?.contextBlock(
+                        excerpt: claudeRepoPreparation.excerpt,
+                        renderBudget: repoRenderBudget
+                    )
+                    let screenBlock = capturedScreenDecision.contextBlock(
+                        excerpt: screenPreparation.excerpt,
+                        renderBudget: screenRenderBudget
+                    )
+                    let claudeBlock = capturedClaudeJoin?.snapshot.claudeContextBlock(
+                        excerpt: claudeSessionPreparation.excerpt,
+                        renderBudget: claudeRenderBudget
+                    )
+                    let clipboardBlock = capturedClipboardContext?.contextBlock(
+                        excerpt: clipboardPreparation.excerpt,
+                        renderBudget: clipboardRenderBudget
+                    )
+                    // Ordered by `allocationRank` — repository, terminal, claude,
+                    // clipboard — the same fixed order the budget allocated in.
+                    let contextBlocks = [repoBlock, screenBlock, claudeBlock, clipboardBlock]
+                        .compactMap { $0 }
+                    if !contextBlocks.isEmpty {
+                        userPrompts = PolishContextBlock.attaching(contextBlocks, to: userPrompts)
+                    }
+                    if let clipboardBlock {
                         Log.polishing.info(
-                            "Polish clipboard context attached: \(clipboardContext.provenanceSummary, privacy: .public)"
+                            "Polish clipboard context attached: \(clipboardBlock.summary, privacy: .public)"
                         )
+                    }
+                    if let screenBlock {
+                        Log.polishing.info(
+                            "Polish terminal screen context attached: \(screenBlock.summary, privacy: .public)"
+                        )
+                    }
+                    if let repoBlock {
+                        // Count-only by construction: the summary is the
+                        // collector's provenance line, which is numbers and
+                        // fixed slugs. Repository contents never reach a log.
+                        Log.polishing.info(
+                            "Polish Claude repository context attached: \(repoBlock.summary, privacy: .public)"
+                        )
+                    }
+                    if let claudeBlock {
+                        Log.polishing.info(
+                            "Polish Claude session context attached: \(claudeBlock.summary, privacy: .public)"
+                        )
+                    }
+
+                    // Provenance stays count-only. The screen is recorded only
+                    // when it actually contributed (an excerpt, terms, or both)
+                    // — a dropped capture is not worth a summary line. Ordered
+                    // clipboard-then-screen to match the existing session-record
+                    // format.
+                    var capturedPolishContextSummary: String? = clipboardBlock?.summary
+                    if screenVocabularyCount > 0 || screenBlock != nil {
+                        // The block's summary when one was rendered (it reports
+                        // the TRIMMED count); the decision's otherwise.
+                        let screenSummary =
+                            screenBlock?.summary ?? capturedScreenDecision.provenanceSummary
+                        capturedPolishContextSummary = capturedPolishContextSummary
+                            .map { "\($0) \(screenSummary)" } ?? screenSummary
                     }
 
                     let polishingRequest = LLMPolishingRequest(
@@ -1043,6 +1394,12 @@ extension DictationViewModel {
         isCompletingStoppedSession = false
         realtimeFinalizationLastActivityAt = nil
         polishAndCommitTask = nil
+        // Every stop funnels through here. The commit path has already
+        // consumed the capture by now (it reconciles synchronously, before
+        // spawning the polish Task), so this is a no-op there — it exists to
+        // catch the stop paths that never reach the commit block at all: empty
+        // transcript, polishing disabled, cancelled overlay.
+        discardTerminalScreenCapture()
         clearLatchedSessionMetadata()
         setRealtimeIndicatorIdle()
         livePartialText = ""
@@ -1231,10 +1588,10 @@ extension DictationViewModel {
     /// Returns nil (silent skip) when off, remote, no trustworthy terminal
     /// repo signal, no transcript-relevant match, deadline expiry, or in-flight
     /// skip.
-    func repoVocabularyEntriesIfEnabled(
+    func repoVocabularyGroundingIfEnabled(
         endpointURL: URL,
         transcript: String
-    ) async -> [ReplacementEntry]? {
+    ) async -> RepoVocabularyMatcher.GroundingOutcome? {
         guard settings.repoVocabularyEnabled else { return nil }
         guard PolishContextClipboardReader.isLoopbackEndpoint(endpointURL) else {
             Log.polishing.info("Repo vocabulary skipped: polishing endpoint is not local")
@@ -1318,7 +1675,7 @@ extension DictationViewModel {
     /// the detached section (keeping the race in play for deadline tests).
     private func makeRepoVocabularyPipelineTask(
         transcript: String
-    ) -> Task<[ReplacementEntry]?, Never>? {
+    ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never>? {
         #if DEBUG
         if let override = debugRepoVocabularyPipelineOverride {
             return Task.detached(priority: .utility) { await override(transcript) }
@@ -1473,7 +1830,7 @@ extension DictationViewModel {
         isCompletingStoppedSession = false
         polishAndCommitTask = nil
         clearLatchedSessionMetadata()
-        microphone.stop()
+        stopMicrophoneIfInitialized()
         realtimeFinalizationLastActivityAt = nil
         firstChunkPreprocessor.reset()
         textInsertion.endLiveReplacementSession()
@@ -1862,10 +2219,10 @@ extension DictationViewModel {
     }
 }
 
-/// Winner of the repo-vocabulary race in `repoVocabularyEntriesIfEnabled`:
+/// Winner of the repo-vocabulary race in `repoVocabularyGroundingIfEnabled`:
 /// either the detached pipeline finished (with or without entries) or the
 /// deadline expired first and the pipeline was abandoned.
 private enum RepoVocabularyRaceOutcome: Sendable {
-    case pipeline([ReplacementEntry]?)
+    case pipeline(RepoVocabularyMatcher.GroundingOutcome?)
     case deadlineExpired
 }

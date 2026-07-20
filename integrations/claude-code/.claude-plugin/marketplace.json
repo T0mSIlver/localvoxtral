@@ -1,0 +1,23 @@
+{
+  "name": "localvoxtral",
+  "owner": {
+    "name": "localvoxtral",
+    "url": "https://github.com/T0mSIlver/localvoxtral"
+  },
+  "metadata": {
+    "description": "Off-screen Claude Code session context for the localvoxtral dictation app.",
+    "version": "1.1.0"
+  },
+  "plugins": [
+    {
+      "name": "localvoxtral",
+      "source": "./plugins/localvoxtral",
+      "description": "Publishes Claude Code session context (prompt, cwd, recent files) to a local localvoxtral socket so dictation can ground technical terms. Install this on the machine running localvoxtral. Fail-open: does nothing when the app is not running."
+    },
+    {
+      "name": "localvoxtral-remote",
+      "source": "./plugins/localvoxtral-remote",
+      "description": "Publishes Claude Code session context from a remote host to localvoxtral on your Mac over an SSH RemoteForward tunnel. Install this on the REMOTE host, not the Mac. Declarative HTTP hooks only — no binary, no shell shim, no dependencies. Fail-open: does nothing without a tunnel."
+    }
+  ]
+}

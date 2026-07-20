@@ -152,4 +152,51 @@ final class LLMPolishingServiceTests: XCTestCase {
         XCTAssertEqual(kwargs, ["enable_thinking": false])
         XCTAssertNil(json["chatTemplateArguments"])
     }
+
+    func testLlamaCppReasoningBudgetAndBifrostPassthroughAreExplicitOptIns() throws {
+        let endpoint = URL(string: "http://router:8080/v1/chat/completions")!
+        let configuration = LLMPolishingConfiguration(
+            endpointURL: endpoint,
+            apiKey: "",
+            model: "llamacpp/qwen35-4b",
+            chatTemplateArguments: ["enable_thinking": false],
+            thinkingBudgetTokens: 0,
+            passthroughExtraParameters: true
+        )
+
+        let urlRequest = try LLMPolishingService.makeURLRequest(
+            request: request,
+            configuration: configuration
+        )
+        let data = try XCTUnwrap(urlRequest.httpBody)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        XCTAssertEqual(json["thinking_budget_tokens"] as? Int, 0)
+        XCTAssertEqual(
+            json["chat_template_kwargs"] as? [String: Bool],
+            ["enable_thinking": false]
+        )
+        XCTAssertEqual(
+            urlRequest.value(forHTTPHeaderField: "x-bf-passthrough-extra-params"),
+            "true"
+        )
+
+        let legacy = LLMPolishingConfiguration(
+            endpointURL: endpoint,
+            apiKey: "",
+            model: "model"
+        )
+        let legacyRequest = try LLMPolishingService.makeURLRequest(
+            request: request,
+            configuration: legacy
+        )
+        let legacyData = try XCTUnwrap(legacyRequest.httpBody)
+        let legacyJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: legacyData) as? [String: Any]
+        )
+        XCTAssertNil(legacyJSON["thinking_budget_tokens"])
+        XCTAssertNil(legacyRequest.value(forHTTPHeaderField: "x-bf-passthrough-extra-params"))
+    }
 }

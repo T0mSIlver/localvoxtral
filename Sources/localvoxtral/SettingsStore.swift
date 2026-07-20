@@ -251,7 +251,9 @@ final class SettingsStore {
         static let agentPolishProfileEnabled = "settings.agent_polish_profile_enabled"
         static let polishClipboardContextEnabled = "settings.polish_clipboard_context_enabled"
         static let clipboardPayloadMacroEnabled = "settings.clipboard_payload_macro_enabled"
+        static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
+        static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
         /// event's raw payload is logged to the `Deltas` category before any
         /// merge/preprocess/insertion processing — instrumentation for
@@ -425,6 +427,37 @@ final class SettingsStore {
         }
     }
 
+    /// When true, the visible screen of a Claude Code Ghostty terminal is read
+    /// at dictation start and used to ground near-miss STT of technical terms
+    /// (file names, commands, identifiers, error names) the user could actually
+    /// see while speaking. Opt-in (default false), Ghostty only
+    /// (`TerminalScreenAllowlist` — NOT the broad terminal insertion allowlist,
+    /// which spans editors like VS Code / Cursor), and applied only when the
+    /// polishing endpoint is loopback
+    /// (`PolishContextClipboardReader.isLoopbackEndpoint`) — a remote endpoint
+    /// must never receive screen content. When off, remote, or a non-Ghostty
+    /// app is focused, the screen is never read at all
+    /// (`TerminalScreenContext.shouldAttemptRead`).
+    ///
+    /// Scope, in two tiers — and the help text must state the second one,
+    /// because it is the one that SENDS text:
+    ///
+    /// 1. Always: the screen feeds the deterministic vocabulary MATCHER, which
+    ///    emits `(heard span, exact local term)` pairs. Input-side, no excerpt.
+    /// 2. When `TerminalScreenRawAttachmentPolicy` positively joins the focused
+    ///    pane to one live Claude Code session, a transcript-relevant EXCERPT of
+    ///    the screen is attached to the polish prompt verbatim.
+    ///
+    /// Tier 2 is live (the broker configures the authorizer); an unjoined pane
+    /// still contributes vocabulary only. Consent is asked for the union: a user
+    /// who reads "fixes spellings" has not agreed to have their screen sent, so
+    /// the help text names it.
+    var terminalScreenContextEnabled: Bool {
+        didSet {
+            defaults.set(terminalScreenContextEnabled, forKey: Keys.terminalScreenContextEnabled)
+        }
+    }
+
     /// When true, and the polishing endpoint is loopback
     /// (`PolishContextClipboardReader.isLoopbackEndpoint`), file names / path
     /// components / the branch name from the git repo in the focused terminal
@@ -436,6 +469,37 @@ final class SettingsStore {
     var repoVocabularyEnabled: Bool {
         didSet {
             defaults.set(repoVocabularyEnabled, forKey: Keys.repoVocabularyEnabled)
+        }
+    }
+
+    /// When true, and the polishing endpoint is loopback, and the focused
+    /// terminal pane positively joins to one live Claude Code session, that
+    /// session's repository CONTENT — status, uncommitted diffs, and the
+    /// contents of files the agent just read or edited — plus the previous
+    /// request the user sent that agent are attached to the polish prompt as
+    /// untrusted reference material.
+    ///
+    /// For a session on a REMOTE host the same toggle attaches what that
+    /// session's transport carries — the prior request, its recent file labels,
+    /// and the bounded sanitized tool excerpts its hooks reported — and nothing
+    /// else. There is no remote repository collector and no remote read: a
+    /// remote cwd is an opaque label that cannot authorize a filesystem call.
+    /// The consent is the same either way (this session's content reaches the
+    /// polisher), which is why it is the same toggle.
+    ///
+    /// A separate toggle from `repoVocabularyEnabled`, deliberately, because it
+    /// is a materially different consent. That one harvests NAMES — file
+    /// basenames, path components, a branch — and injects the transcript-
+    /// relevant ones as spelling hints. This one sends file CONTENTS and diff
+    /// hunks: the user's actual source code, and a prompt they typed. Someone
+    /// who agreed to "spell my filenames right" has not thereby agreed to "send
+    /// the body of the file I am editing", so reusing the existing toggle would
+    /// silently widen a consent they already gave. Opt-in (default false),
+    /// loopback endpoints only — repository contents must never ride to a
+    /// remote endpoint. See `ClaudeRepoCollector`.
+    var claudeRepoContextEnabled: Bool {
+        didSet {
+            defaults.set(claudeRepoContextEnabled, forKey: Keys.claudeRepoContextEnabled)
         }
     }
 
@@ -665,8 +729,12 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishClipboardContextEnabled, fallback: false)
         clipboardPayloadMacroEnabled = Self.loadBool(
             defaults: defaults, key: Keys.clipboardPayloadMacroEnabled, fallback: true)
+        terminalScreenContextEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.terminalScreenContextEnabled, fallback: false)
         repoVocabularyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
+        claudeRepoContextEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
         modifierOnlyHotKeyEnabled = Self.loadBool(

@@ -103,10 +103,27 @@ enum PolishTokenGuard {
     /// first appearance; tokens whose span is fully contained in a longer
     /// token's span (e.g. a filename inside a path) are dropped.
     static func protectedTokens(in text: String) -> [String] {
+        containmentFiltered(spans: collectSpans(in: text))
+    }
+
+    /// A recognized span: its range in the source text and the token it yields.
+    typealias ProtectedSpan = (range: NSRange, token: String)
+
+    #if DEBUG
+    /// Test seam: the raw recognized spans BEFORE containment filtering, so the
+    /// containment sweep can be checked against a naive oracle over identical
+    /// input rather than against a re-run of the recognizers.
+    static func debugProtectedSpans(in text: String) -> [ProtectedSpan] {
+        collectSpans(in: text)
+    }
+    #endif
+
+    /// Every span each recognizer finds, in recognizer order — overlaps and all.
+    private static func collectSpans(in text: String) -> [ProtectedSpan] {
         let ns = text as NSString
         let full = NSRange(location: 0, length: ns.length)
 
-        var spans: [(range: NSRange, token: String)] = []
+        var spans: [ProtectedSpan] = []
 
         func collect(_ regex: NSRegularExpression, captureGroup: Int = 0, trimTrailing: Bool = false,
                      filter: (String) -> Bool = { _ in true }) {
@@ -141,21 +158,64 @@ enum PolishTokenGuard {
         collect(envVar)
         collect(hexHash, filter: { $0.contains(where: { $0.isNumber }) })
         collect(version)
+        return spans
+    }
 
+    /// Drops any span contained in another, then de-duplicates by token in
+    /// first-appearance order.
+    private static func containmentFiltered(spans: [ProtectedSpan]) -> [String] {
         // Drop any span strictly contained in a longer span (path swallows its
         // inner filename, URL swallows an inner path, etc.).
-        let kept = spans.enumerated().filter { _, span in
-            !spans.contains { other in
-                !NSEqualRanges(other.range, span.range)
-                    && other.range.location <= span.range.location
-                    && (span.range.location + span.range.length)
-                        <= (other.range.location + other.range.length)
+        //
+        // Linear sweep after a sort, NOT the naive all-pairs scan this replaced:
+        // clipboard context now retains up to
+        // `PolishContextClipboardReader.retentionCharacterCap` characters, and a
+        // code-heavy buffer that size yields tens of thousands of spans, where
+        // O(n²) containment is the difference between milliseconds and minutes.
+        // Same result, sorted order instead of pairwise comparison.
+        //
+        // Why one left-to-right pass suffices: sort by location ascending, then
+        // length DESCENDING. A span S can only be contained by some O with
+        // `O.location <= S.location` and `O.end >= S.end`. Any such O either
+        // starts earlier (sorted before S), or starts at the same location with
+        // `O.length >= S.length` (also sorted before S, by the length tiebreak).
+        // So every possible container precedes S, and tracking the maximum end
+        // seen so far answers containment in O(1) per span.
+        let sorted = spans.sorted { lhs, rhs in
+            if lhs.range.location != rhs.range.location {
+                return lhs.range.location < rhs.range.location
             }
+            return lhs.range.length > rhs.range.length
+        }
+
+        // Identical ranges never drop each other (the all-pairs version excluded
+        // them via `!NSEqualRanges`), and the sort makes them adjacent. So they
+        // are handled as a GROUP: every member is tested against the maximum end
+        // of strictly-earlier groups only, and the group's own end is folded in
+        // afterwards. Two spans sharing a range therefore survive or fall
+        // together, exactly as before.
+        var kept: [(range: NSRange, token: String)] = []
+        var maxEndBeforeGroup = Int.min
+        var index = 0
+        while index < sorted.count {
+            var groupEnd = index
+            while groupEnd + 1 < sorted.count,
+                  NSEqualRanges(sorted[groupEnd + 1].range, sorted[index].range)
+            {
+                groupEnd += 1
+            }
+            let span = sorted[index]
+            let end = span.range.location + span.range.length
+            if maxEndBeforeGroup < end {
+                for member in sorted[index...groupEnd] { kept.append(member) }
+            }
+            maxEndBeforeGroup = max(maxEndBeforeGroup, end)
+            index = groupEnd + 1
         }
 
         var seen = Set<String>()
         var result: [String] = []
-        for (_, span) in kept.sorted(by: { $0.element.range.location < $1.element.range.location }) {
+        for span in kept {
             if seen.insert(span.token).inserted {
                 result.append(span.token)
             }

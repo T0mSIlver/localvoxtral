@@ -1,0 +1,26 @@
+{
+  "name": "localvoxtral-remote",
+  "description": "Publishes Claude Code session context from a REMOTE host to localvoxtral on your Mac, over an SSH RemoteForward tunnel. Declarative HTTP hooks only — nothing to install on the remote beyond this plugin.",
+  "version": "1.0.0",
+  "author": {
+    "name": "localvoxtral"
+  },
+  "homepage": "https://github.com/T0mSIlver/localvoxtral",
+  "license": "MIT",
+  "keywords": [
+    "dictation",
+    "context",
+    "voice",
+    "ssh",
+    "remote"
+  ],
+  "userConfig": {
+    "token": {
+      "type": "string",
+      "sensitive": true,
+      "title": "localvoxtral host token",
+      "description": "Per-host token issued by localvoxtral on your Mac (Enroll a remote host). It authorizes remote context only and can never make localvoxtral read a local file. Revoke or rotate it in the app at any time.",
+      "default": ""
+    }
+  }
+}
