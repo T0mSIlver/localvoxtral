@@ -71,25 +71,15 @@ jobs:
           fi
 
       - name: Clean stale outputs (keep build caches)
-        # Same repair-and-clean as ci.yml/eval-e2e.yml: clean: false skips git
-        # clean entirely, so outputs a previous run generated are removed by
-        # hand — but NOT the build caches. The .build.smoke-hidden rename is
-        # ci.yml's launch-smoke hideaway; restore it if a cancelled run died
-        # mid-smoke.
+        # Shared repair-and-clean for the persistent workspace (see the
+        # script for the removal list and .build.smoke-hidden rationale).
         #
         # The guard condition compares `!= 'false'` (not `== 'true'`) so a
         # missing output fails OPEN: if the guard ever exits 0 without
         # emitting run=..., the drill runs rather than every slot silently
         # skipping green forever. Same condition on the two steps below.
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
-        run: |
-          if [[ -d .build.smoke-hidden ]]; then
-            rm -rf .build
-            mv .build.smoke-hidden .build
-          fi
-          rm -rf dist logs
-          rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
-            .polishd-integration-enable.json .speechd-integration-enable.json
+        run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Package app bundle
         if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
