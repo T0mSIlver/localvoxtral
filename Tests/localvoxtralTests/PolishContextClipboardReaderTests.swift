@@ -16,6 +16,32 @@ final class PolishContextClipboardReaderTests: XCTestCase {
         XCTAssertNil(PolishContextClipboardReader.readClipboardContext(from: stub))
     }
 
+    // F4: the Settings enrollment-token / remote-command Copy actions write
+    // through this helper, and the type set it declares must be exactly what
+    // the harvester's own rules skip. Asserted through the write seam — a
+    // live pasteboard (even a named one) needs the host's pasteboard server,
+    // which the CI runner does not have.
+    func testConcealedWriterDeclaresConcealedAndTheHarvesterRefusesIt() {
+        let recorder = PasteboardWriteRecorder()
+        ConcealedPasteboardWriter.write("LVX-ENROLL-hunter2", to: recorder)
+        XCTAssertEqual(recorder.cleared, 1, "the token must replace, not join, prior contents")
+        XCTAssertEqual(
+            recorder.writes.map(\.string), ["LVX-ENROLL-hunter2", ""],
+            "the copy itself must still work — the user needs the token"
+        )
+        XCTAssertEqual(recorder.writes.map(\.type), [.string, .nsPasteboardConcealed])
+
+        // The declared type set, fed back through the reader: this is the
+        // link that makes 'concealed' mean 'harvester skips it'.
+        let stub = PasteboardStub(
+            string: "LVX-ENROLL-hunter2", types: recorder.writes.map(\.type)
+        )
+        XCTAssertNil(
+            PolishContextClipboardReader.readClipboardContext(from: stub),
+            "a concealed token must never reach polish clipboard context"
+        )
+    }
+
     // MARK: - Empty / missing string
 
     func testNoStringReturnsNil() {
@@ -484,5 +510,25 @@ final class PasteboardStub: PasteboardReading {
     func string() -> String? {
         stringCallCount += 1
         return stubbedString
+    }
+}
+
+/// Recorder for the write seam (`PasteboardWriting`): what the concealed copy
+/// path put on the pasteboard, in order.
+@MainActor
+private final class PasteboardWriteRecorder: PasteboardWriting {
+    private(set) var cleared = 0
+    private(set) var writes: [(string: String, type: NSPasteboard.PasteboardType)] = []
+
+    @discardableResult
+    func clearContents() -> Int {
+        cleared += 1
+        return cleared
+    }
+
+    @discardableResult
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool {
+        writes.append((string: string, type: dataType))
+        return true
     }
 }

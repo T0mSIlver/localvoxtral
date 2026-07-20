@@ -1113,8 +1113,10 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                 Text(title).font(.subheadline).bold()
                 Spacer()
                 Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(body, forType: .string)
+                    // Everything in this sheet embeds or accompanies the
+                    // enrollment token — concealed, so clipboard managers and
+                    // our own clipboard-context harvester skip it (F4).
+                    ConcealedPasteboardWriter.write(body)
                 }
                 .controlSize(.small)
             }

@@ -21,6 +21,36 @@ extension NSPasteboard.PasteboardType {
     static let nsPasteboardTransient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
 }
 
+/// Write seam mirroring `PasteboardReading`: the system pasteboard is host
+/// state a unit test must never touch (clobbering the host clipboard is
+/// antisocial, and the CI runner has no pasteboard server anyway).
+/// `NSPasteboard` already has exactly these members.
+@MainActor
+protocol PasteboardWriting {
+    @discardableResult
+    func clearContents() -> Int
+    @discardableResult
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool
+}
+
+extension NSPasteboard: PasteboardWriting {}
+
+/// Writes credential-bearing text to a pasteboard with
+/// `org.nspasteboard.ConcealedType` declared alongside, so clipboard managers
+/// — and our own clipboard-context harvester, which refuses concealed payloads
+/// in `readableSanitizedString` — never read or retain it. Used by the
+/// enrollment-token / remote-command Copy actions in Settings; a plain
+/// `.string` write there would paste the token straight into the next polish
+/// prompt's clipboard context.
+@MainActor
+enum ConcealedPasteboardWriter {
+    static func write(_ text: String, to pasteboard: any PasteboardWriting = NSPasteboard.general) {
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        pasteboard.setString("", forType: .nsPasteboardConcealed)
+    }
+}
+
 /// The real pasteboard, reading plain strings from `NSPasteboard.general`.
 @MainActor
 struct SystemPasteboardReader: PasteboardReading {
