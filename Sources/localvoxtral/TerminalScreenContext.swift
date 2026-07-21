@@ -177,7 +177,10 @@ enum TerminalScreenContextDecision: Equatable, Sendable {
     /// compacted form is what both captures, the comparison, and the excerpt
     /// all see. Safe to put the excerpt in the prompt AND use it for
     /// vocabulary grounding.
-    case render(excerpt: String)
+    /// `elidedChurnLines` counts rows removed from the excerpt because they
+    /// churned between the two reads (see `maxElidableChurnLines`); every
+    /// rendered line was identical at start and stop.
+    case render(excerpt: String, elidedChurnLines: Int)
 
     /// The screen changed under us (agent output streamed in, a command
     /// finished, the user scrolled). The START text is still a faithful record
@@ -304,9 +307,15 @@ enum TerminalScreenContext {
     /// | ok | policyRejected | any | drop(policyRejected) |
     /// | ok | targetChanged | any | drop(targetChanged) |
     /// | ok | readFailed | any | vocabularyOnly |
-    /// | ok | read(t), t != start | any | vocabularyOnly |
+    /// | ok | read(t), t != start, beyond churn | any | vocabularyOnly |
+    /// | ok | read(t), elidable churn | false | vocabularyOnly |
+    /// | ok | read(t), elidable churn | true | render (churn rows elided) |
     /// | ok | read(t), t == start | false | vocabularyOnly |
     /// | ok | read(t), t == start | true | render |
+    ///
+    /// "Elidable churn" = same line count and at most `maxElidableChurnLines`
+    /// in-place differing rows; the excerpt then contains only rows both
+    /// reads agree on.
     ///
     /// The two drops come first and are unconditional: consent withdrawn, or a
     /// target we can no longer vouch for, destroys the capture regardless of
@@ -335,19 +344,53 @@ enum TerminalScreenContext {
             return .vocabularyOnly(startText: start.text, cause: .stopReadFailed)
         case let .read(stopText):
             guard stopText == start.text else {
+                let startLines = start.text.split(separator: "\n", omittingEmptySubsequences: false)
+                let stopLines = stopText.split(separator: "\n", omittingEmptySubsequences: false)
                 let statistics = screenChangeStatistics(start: start.text, stop: stopText)
-                return .vocabularyOnly(startText: start.text, cause: .screenChanged(
+                let changedCause = TerminalScreenContextDecision.VocabularyOnlyCause.screenChanged(
                     stopLength: stopText.count,
                     differingLines: statistics.differingLines,
                     firstDifferingLine: statistics.firstDifferingLine
-                ))
+                )
+                // In-place churn of a row or two is an idle terminal's UI
+                // (a caret toggling, a hint row shimmering — field report
+                // 2026-07-21: one row, every run), not a changed screen.
+                // Streaming output APPENDS rows, so a line-count change is
+                // never elidable and the mid-response protection stands.
+                guard startLines.count == stopLines.count,
+                      statistics.differingLines <= maxElidableChurnLines
+                else {
+                    return .vocabularyOnly(startText: start.text, cause: changedCause)
+                }
+                guard rawAuthorized else {
+                    return .vocabularyOnly(startText: start.text, cause: .rawUnauthorized)
+                }
+                // Keep only rows both reads agree on: every rendered line was
+                // provably on screen at start AND stop, so the excerpt's
+                // "this is on screen" claim holds line by line.
+                let excerpt = zip(startLines, stopLines)
+                    .filter { $0.0 == $0.1 }
+                    .map { String($0.0) }
+                    .joined(separator: "\n")
+                guard !excerpt.isEmpty else {
+                    return .vocabularyOnly(startText: start.text, cause: changedCause)
+                }
+                return .render(
+                    excerpt: excerpt, elidedChurnLines: statistics.differingLines
+                )
             }
             guard rawAuthorized else {
                 return .vocabularyOnly(startText: start.text, cause: .rawUnauthorized)
             }
-            return .render(excerpt: start.text)
+            return .render(excerpt: start.text, elidedChurnLines: 0)
         }
     }
+
+    /// How many in-place differing rows may be elided from the excerpt rather
+    /// than withholding it. Two covers a caret row plus one hint/meter row; a
+    /// genuinely changing pane (streaming output, a scroll) differs by more
+    /// rows or by line count and still degrades to vocabulary-only.
+    static let maxElidableChurnLines = 2
 
     /// Count-only line comparison for the `screenChanged` diagnostic: how many
     /// lines differ between the two (already-compacted) reads, and where the

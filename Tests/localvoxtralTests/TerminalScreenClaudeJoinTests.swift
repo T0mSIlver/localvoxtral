@@ -600,7 +600,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
             isAccessibilityTrusted: true
         )
-        XCTAssertEqual(decision, .render(excerpt: "swift build"))
+        XCTAssertEqual(decision, .render(excerpt: "swift build", elidedChurnLines: 0))
     }
 
     // "Unchanged" means unchanged AFTER the deterministic whitespace
@@ -623,7 +623,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
             isAccessibilityTrusted: true
         )
-        XCTAssertEqual(decision, .render(excerpt: "swift build"))
+        XCTAssertEqual(decision, .render(excerpt: "swift build", elidedChurnLines: 0))
     }
 
     // The stop-time confirmation read must describe the pane captured at
