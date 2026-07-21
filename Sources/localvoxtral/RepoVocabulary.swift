@@ -2051,6 +2051,49 @@ enum RepoVocabularyMatcher {
         + "speaker's open coding-agent session; use them to correct near-miss spellings "
         + "of the terms below, never to add new content):"
 
+    /// Header for below-threshold matcher candidates rendered as explicit
+    /// verification suggestions rather than pre-applied bytes. The matcher was
+    /// not confident enough to edit the user's words deterministically, so the
+    /// model verifies each untrusted guess against the surrounding transcript —
+    /// the same reference-block defense framing used by the context sections.
+    static let verificationCandidatesHeader =
+        "Possible mishearings (unverified guesses pairing a transcript phrase with a "
+        + "project term it may be a mishearing of; rewrite a phrase to its paired term "
+        + "only when the surrounding transcript clearly supports that term; when unsure, "
+        + "keep the transcript's words unchanged; never use these to add new content):"
+
+    /// Renders the merge's prompt-only guesses as explicit heard/exact pairs.
+    /// Both sides pass through the same single-line defense as vocabulary terms;
+    /// a malformed or now-identical pair contributes no instruction to the model.
+    static func verificationPromptSection(
+        pairs: [PolishContextGrounding.VerificationPair]
+    ) -> String {
+        let lines: [String] = pairs.compactMap { pair in
+            let heard = sanitizedTerm(pair.heard)
+            let exact = sanitizedTerm(pair.exact)
+            guard isRenderableTerm(heard),
+                  isRenderableTerm(exact),
+                  heard != exact
+            else { return nil }
+            return "- possible mishearing: \"\(heard)\" -> \"\(exact)\""
+        }
+        guard !lines.isEmpty else { return "" }
+        return "\(verificationCandidatesHeader)\n\(lines.joined(separator: "\n"))"
+    }
+
+    /// Appends prompt-only verification suggestions beside the replacement-
+    /// dictionary sections. An empty base leaves the section standing alone;
+    /// if sanitization removes every pair, the existing base stays byte-exact.
+    static func appendedVerificationSection(
+        base: String,
+        pairs: [PolishContextGrounding.VerificationPair]
+    ) -> String {
+        let section = verificationPromptSection(pairs: pairs)
+        guard !section.isEmpty else { return base }
+        guard !base.isEmpty else { return section }
+        return base + "\n\n" + section
+    }
+
     /// Renders matched entries as a prompt section mirroring
     /// `ReplacementDictionary.renderedPromptSection`'s `- key: aliases` shape,
     /// under the given header. Every key/alias is sanitized first; an entry
