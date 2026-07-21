@@ -526,7 +526,13 @@ public final class ClaudeContextBroker: Sendable {
         let remainingMillis = (deadline - current) / 1_000_000
         var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let timeout = Int32(min(remainingMillis, UInt64(Int32.max)))
-        let ready = retryingOnEINTRInt32 { poll(&descriptor, 1, timeout) }
+        let ready = poll(&descriptor, 1, timeout)
+        if ready < 0, errno == EINTR {
+            // Re-enter rather than retry with the same timeout: the caller
+            // loops straight back in and the remaining budget is recomputed,
+            // so a late signal cannot extend the absolute deadline.
+            return true
+        }
         guard ready != 0 else {
             Log.claudeContext.error("Dropping Claude broker connection: read deadline expired")
             return false

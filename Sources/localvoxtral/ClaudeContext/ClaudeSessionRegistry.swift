@@ -158,7 +158,7 @@ public final class ClaudeSessionRegistry: Sendable {
             }
 
             state.sessions[record.sessionID] = snapshot
-            enforceCapLocked(&state)
+            enforceCapLocked(&state, keeping: record.sessionID)
             return snapshot
         }
     }
@@ -339,7 +339,12 @@ public final class ClaudeSessionRegistry: Sendable {
         state.markerIndex.removeValue(forKey: snapshot.marker.value)
     }
 
-    private func enforceCapLocked(_ state: inout State) {
+    /// `upserted` is the sessionID this upsert just wrote: on a lastActivity
+    /// tie (frozen test clocks, sub-tick batches) the sessionID tiebreak could
+    /// otherwise select the record that triggered the enforcement — evicting
+    /// the newest data is never the right answer, so it is pinned and the
+    /// next-oldest tied sibling goes instead.
+    private func enforceCapLocked(_ state: inout State, keeping upserted: String? = nil) {
         let grouped = Dictionary(grouping: state.sessions.values, by: \.origin)
         if grouped.count > 1 {
             // Always reserve at least one global slot for a competing origin,
@@ -349,9 +354,13 @@ public final class ClaudeSessionRegistry: Sendable {
                 max(0, limits.maxSessions - 1)
             )
             for sessions in grouped.values where sessions.count > quota {
-                for snapshot in sessions.sorted(by: Self.evictionPrecedes)
+                // The pin never relaxes the quota: with the pinned session
+                // excluded there are still at least `count - quota` evictable
+                // siblings whenever quota >= 1.
+                let evictable = sessions.sorted(by: Self.evictionPrecedes)
+                    .filter { $0.sessionID != upserted }
                     .prefix(sessions.count - quota)
-                {
+                for snapshot in evictable {
                     removeLocked(&state, sessionID: snapshot.sessionID)
                 }
             }

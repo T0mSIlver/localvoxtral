@@ -527,6 +527,41 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         )
     }
 
+    /// A lastActivity tie plus a lexically-small sessionID must not make quota
+    /// eviction select the record that triggered it: the just-upserted session
+    /// is pinned and the oldest tied sibling goes instead.
+    func testQuotaEvictionNeverSelectsTheJustUpsertedSession() {
+        let clock = TestClock(epoch)
+        let quietOrigin = ClaudeTransportOrigin.remote(channel: "ssh:quiet")
+        let burstingOrigin = ClaudeTransportOrigin.remote(channel: "ssh:burst")
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 4, sessionTTL: 10_000),
+            clock: clock,
+            markers: TestMarkers(["lvx-q", "lvx-z1", "lvx-z2", "lvx-z3", "lvx-a"])
+        )
+        registry.ingest(record(.sessionStart, session: "quiet"), origin: quietOrigin)
+        for index in 1...3 {
+            registry.ingest(
+                record(.sessionStart, session: "z-\(index)"),
+                origin: burstingOrigin
+            )
+        }
+        // Frozen clock: every bursting session shares one lastActivity, and
+        // "a-new" sorts lexically FIRST — the exact shape that made the
+        // sessionID tiebreak evict the newest data.
+        registry.ingest(record(.sessionStart, session: "a-new"), origin: burstingOrigin)
+
+        XCTAssertNotNil(
+            registry.snapshot(sessionID: "a-new"),
+            "the session that triggered quota enforcement must never be its victim"
+        )
+        XCTAssertNil(registry.snapshot(sessionID: "z-1"))
+        XCTAssertEqual(
+            registry.liveSessions().filter { $0.origin == burstingOrigin }.count,
+            3
+        )
+    }
+
     func testStaleSessionsArePrunedOnIngest() {
         let clock = TestClock(epoch)
         let registry = makeRegistry(
