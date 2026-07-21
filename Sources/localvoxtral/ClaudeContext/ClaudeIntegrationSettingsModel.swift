@@ -249,6 +249,7 @@ public final class ClaudeIntegrationSettingsModel {
         case .claudeCLINotFound: return "Claude Code CLI not found."
         case .marketplaceUnavailable: return "Plugin files missing from the app."
         case .commandTimedOut: return "Claude Code did not respond."
+        case .outputTooLarge: return "Claude Code produced too much output."
         case .commandFailed, .none: return "Claude Code reported an error."
         }
     }
@@ -262,6 +263,8 @@ public final class ClaudeIntegrationSettingsModel {
             return "The bundled plugin files are missing from this build of localvoxtral. Reinstall the app."
         case .commandTimedOut(_, _, let seconds):
             return "`claude plugin` did not finish within \(Int(seconds))s and was stopped."
+        case .outputTooLarge(_, let capBytes):
+            return "`claude plugin` produced more than \(capBytes / 1024) KB of output and was stopped."
         case .commandFailed(_, let exitCode, let message):
             return "`claude plugin` exited with code \(exitCode).\n\n\(message)"
         case .none:

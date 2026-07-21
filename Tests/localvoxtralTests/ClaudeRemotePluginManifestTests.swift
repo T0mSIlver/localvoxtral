@@ -283,62 +283,110 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         try String(contentsOf: marketplace.appendingPathComponent("README.md"), encoding: .utf8)
     }
 
-    func testReadmeDocumentsTheTunnelAndTheInstallSide() throws {
-        let readme = try readme()
-        XCTAssertTrue(readme.contains("RemoteForward 8473 127.0.0.1:8473"))
+    private func readmeLines() throws -> [String] {
+        try readme().split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+    }
+
+    /// Asserts some README line, trimmed, EQUALS `expected`. For commands and
+    /// config directives that stand on their own line: strictly stronger than a
+    /// document-wide substring, which a fragment buried in prose could satisfy.
+    private func assertReadmeHasLine(
+        equalTo expected: String, _ message: String = "", line: UInt = #line
+    ) throws {
         XCTAssertTrue(
-            readme.contains("claude plugin marketplace add ")
-                && readme.contains(ClaudeRemoteEnrollmentService.repositoryMarketplaceReference),
+            try readmeLines().contains(expected),
+            message.isEmpty ? "no README line equals \"\(expected)\"" : message,
+            line: line
+        )
+    }
+
+    /// Asserts some README line, trimmed, BEGINS with `expected`. For a command
+    /// that carries a trailing suffix on its line (e.g. `--config …`): anchored
+    /// to line start, so a match cannot drift across a line boundary.
+    private func assertReadmeHasLine(
+        startingWith expected: String, _ message: String = "", line: UInt = #line
+    ) throws {
+        XCTAssertTrue(
+            try readmeLines().contains { $0.hasPrefix(expected) },
+            message.isEmpty ? "no README line begins with \"\(expected)\"" : message,
+            line: line
+        )
+    }
+
+    /// Asserts some single README line contains `fragment`. Used where the point
+    /// IS the prose wording (a caveat inside a sentence): scoping to one line
+    /// pins that the phrase lives together, and documents that the wording — not
+    /// a structural fact — is deliberately being held.
+    private func assertReadmeHasLine(
+        containing fragment: String, _ message: String = "", line: UInt = #line
+    ) throws {
+        XCTAssertTrue(
+            try readmeLines().contains { $0.contains(fragment) },
+            message.isEmpty ? "no README line contains \"\(fragment)\"" : message,
+            line: line
+        )
+    }
+
+    func testReadmeDocumentsTheTunnelAndTheInstallSide() throws {
+        // Config/command directives are anchored to their own line; the install-
+        // side caveat is prose, so it is pinned to a single line as wording.
+        try assertReadmeHasLine(equalTo: "RemoteForward 8473 127.0.0.1:8473")
+        try assertReadmeHasLine(
+            equalTo: "claude plugin marketplace add "
+                + ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,
             "a remote host installs from the repo, not from an app bundle it does not have"
         )
-        XCTAssertTrue(readme.contains("claude plugin install localvoxtral-remote@localvoxtral"))
+        try assertReadmeHasLine(startingWith: "claude plugin install localvoxtral-remote@localvoxtral")
         // Installing the wrong plugin on the wrong side fails open forever and
         // looks exactly like a tunnel problem.
-        XCTAssertTrue(readme.contains("Install it on the REMOTE host, not on your Mac"))
+        try assertReadmeHasLine(containing: "Install it on the REMOTE host, not on your Mac")
     }
 
     func testReadmeDocumentsTheExitOnForwardFailureTradeoff() throws {
-        let readme = try readme()
-        XCTAssertTrue(readme.contains("ExitOnForwardFailure no"))
-        XCTAssertTrue(
-            readme.lowercased().contains("silent"),
+        try assertReadmeHasLine(equalTo: "ExitOnForwardFailure no")
+        try assertReadmeHasLine(
+            containing: "silent",
             "the cost of `no` is a silently absent tunnel; a user who is not told will not look"
         )
     }
 
     func testReadmeDocumentsTheTmuxTitlePassthroughCaveat() throws {
-        let readme = try readme()
-        XCTAssertTrue(readme.contains("tmux"))
-        XCTAssertTrue(readme.contains("set-titles on"), "the fix, not just the symptom")
-        XCTAssertTrue(
-            readme.lowercased().contains("unjoined"),
+        try assertReadmeHasLine(containing: "tmux")
+        try assertReadmeHasLine(containing: "set-titles on", "the fix, not just the symptom")
+        try assertReadmeHasLine(
+            containing: "unjoined",
             "and what you lose without it: the screen join, not the off-screen context"
         )
     }
 
     func testReadmeDocumentsUninstallAndRevocation() throws {
-        let readme = try readme()
-        XCTAssertTrue(readme.contains("claude plugin uninstall localvoxtral-remote@localvoxtral"))
-        XCTAssertTrue(readme.contains("claude plugin marketplace remove localvoxtral"))
-        XCTAssertTrue(
-            readme.contains("revoke the host in localvoxtral"),
+        // The commands are inside `ssh builder '…'` wrappers, so anchor to the
+        // wrapper line; the revocation caveat is prose held as wording.
+        try assertReadmeHasLine(
+            equalTo: "ssh builder 'claude plugin uninstall localvoxtral-remote@localvoxtral'"
+        )
+        try assertReadmeHasLine(
+            equalTo: "ssh builder 'claude plugin marketplace remove localvoxtral'"
+        )
+        try assertReadmeHasLine(
+            containing: "revoke the host in localvoxtral",
             "revocation is the real off switch and must not read as an optional last step"
         )
-        XCTAssertTrue(readme.lowercased().contains("rotat"))
+        try assertReadmeHasLine(containing: "rotat")
     }
 
     func testReadmeDocumentsThatPlainSSHIsUnchangedAndNothingIsOnByDefault() throws {
-        let readme = try readme()
-        XCTAssertTrue(readme.contains("Plain SSH still works exactly as before"))
-        XCTAssertTrue(
-            readme.contains("binds no port at all"),
+        // A section heading — its own line — so anchor it exactly.
+        try assertReadmeHasLine(equalTo: "## Plain SSH still works exactly as before")
+        try assertReadmeHasLine(
+            containing: "binds no port at all",
             "a user must be able to confirm that not enrolling costs them nothing"
         )
     }
 
     func testReadmeStatesTheTokensLimits() throws {
-        let readme = try readme()
-        XCTAssertTrue(readme.contains("cannot make the app read a local file"))
-        XCTAssertTrue(readme.contains("HISTCONTROL=ignorespace"), "the token-in-history caveat")
+        try assertReadmeHasLine(containing: "cannot make the app read a local file")
+        try assertReadmeHasLine(containing: "HISTCONTROL=ignorespace", "the token-in-history caveat")
     }
 }

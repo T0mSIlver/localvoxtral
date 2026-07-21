@@ -123,6 +123,19 @@ final class TerminalScreenContextTests: XCTestCase {
         )
     }
 
+    // Wider Unicode space separators are grid padding too: a terminal may emit
+    // U+2000–U+200A (en/em/thin spaces) or U+3000 (ideographic space) for pad
+    // cells. Before the fix only space/tab/NBSP were trimmed, so a row padded
+    // with these carried the pad bytes AND a run of them read as a non-blank
+    // content line — neither trimmed nor collapsed.
+    func testCompactionTrimsTrailingWideUnicodeSpaces() {
+        let raw = "❯ swift build\u{2000}\u{2000}\u{2003}\n\u{2000}\u{2000}\n\u{3000}\t \nBuild complete!\u{2009}\u{3000}"
+        XCTAssertEqual(
+            TerminalScreenAXReader.sanitizedScreenText(raw),
+            "❯ swift build\n\nBuild complete!"
+        )
+    }
+
     // Compaction runs BEFORE the cap — the order is load-bearing. A padded
     // grid can exceed the 24k cap on padding alone; capping first would evict
     // the real text at the tail (exactly the term a user is most likely to be

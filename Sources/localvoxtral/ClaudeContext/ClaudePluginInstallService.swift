@@ -61,6 +61,11 @@ public struct ClaudePluginInstallService: Sendable {
         /// `action` is nil when the runner itself timed out before the service
         /// could attribute the call.
         case commandTimedOut(action: Action?, arguments: [String], seconds: TimeInterval)
+        /// The CLI produced more output than `maxCapturedOutputBytes` and was
+        /// terminated. Distinct from `commandTimedOut` on purpose: a verbose but
+        /// healthy CLI overran the capture cap, it did NOT hang — conflating the
+        /// two makes a chatty command look like a wedged one.
+        case outputTooLarge(arguments: [String], capBytes: Int)
     }
 
     /// Ceiling for one `claude plugin …` call. Generous — a marketplace add can
@@ -338,10 +343,15 @@ public extension ClaudePluginInstallService {
                 )
             }
 
+            // Why the child was torn down, so a verbose-but-healthy CLI is not
+            // reported as a hang. Both reasons take the identical teardown; only
+            // the error thrown differs.
+            enum StopReason { case timedOut, outputTooLarge }
+
             let descriptor = output.fileHandleForReading.fileDescriptor
             let deadline = Date().addingTimeInterval(timeout)
             var collected = Data()
-            var timedOut = false
+            var stopReason: StopReason?
 
             // Drain until EOF. The child holds the only other write end, so EOF
             // arrives when it exits — which is also how we learn it is done.
@@ -353,7 +363,7 @@ public extension ClaudePluginInstallService {
             while true {
                 let remaining = deadline.timeIntervalSinceNow
                 if remaining <= 0 {
-                    timedOut = true
+                    stopReason = .timedOut
                     break
                 }
                 var descriptorPoll = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
@@ -363,7 +373,7 @@ public extension ClaudePluginInstallService {
                     break // Treat an unusable pipe as EOF, per POSIXPipeRead.
                 }
                 if ready == 0 {
-                    timedOut = true
+                    stopReason = .timedOut
                     break
                 }
                 let chunk = POSIXPipeRead.nextChunk(fromDescriptor: descriptor)
@@ -373,24 +383,33 @@ public extension ClaudePluginInstallService {
                     // Stop reading and tear the child down. Nothing drains the
                     // pipe after this, so a child that keeps writing blocks in
                     // the kernel on a full buffer — and if it also ignores
-                    // SIGTERM it stays there. Hence the SIGKILL escalation.
-                    timedOut = true
+                    // SIGTERM it stays there. Hence the SIGKILL escalation. But
+                    // this is an overrun, not a hang — the distinct reason keeps
+                    // the two apart at the throw site below.
+                    stopReason = .outputTooLarge
                     break
                 }
             }
 
-            if !timedOut {
+            if stopReason == nil {
                 // EOF is not proof of exit — a child can close its pipes and
                 // live on — so this wait carries the same deadline as the drain
                 // rather than blocking on waitUntilExit().
-                timedOut = !waitForExit(deadline.timeIntervalSinceNow)
+                if !waitForExit(deadline.timeIntervalSinceNow) { stopReason = .timedOut }
             }
 
-            if timedOut {
+            if let stopReason {
                 stopChild()
-                throw ServiceError.commandTimedOut(
-                    action: nil, arguments: invocation.arguments, seconds: timeout
-                )
+                switch stopReason {
+                case .timedOut:
+                    throw ServiceError.commandTimedOut(
+                        action: nil, arguments: invocation.arguments, seconds: timeout
+                    )
+                case .outputTooLarge:
+                    throw ServiceError.outputTooLarge(
+                        arguments: invocation.arguments, capBytes: maxCapturedOutputBytes
+                    )
+                }
             }
 
             let raw = String(decoding: collected, as: UTF8.self)

@@ -254,10 +254,15 @@ enum TerminalScreenAXReader {
         var pendingBlank = false
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             var trimmed = line
-            // NBSP (U+00A0) alongside space/tab: terminal grids use it for
-            // padding that must not wrap, and a trailing run of it is padding
-            // like any other.
-            while let last = trimmed.last, last == " " || last == "\t" || last == "\u{00A0}" {
+            // Every trailing whitespace scalar except newline is padding: plain
+            // space/tab, NBSP (U+00A0, which grids use for padding that must not
+            // wrap), and the wider Unicode space separators (U+2000–U+200A,
+            // U+3000) a terminal may emit. `isWhitespace` minus newline is that
+            // class — we split on "\n" already, so a line-internal newline is
+            // out of scope and preserved. A line that is ALL such whitespace
+            // trims to empty and is treated as blank below, so blank-line
+            // detection widens with the trim, at no extra cost.
+            while let last = trimmed.last, last.isWhitespace, !last.isNewline {
                 trimmed = trimmed.dropLast()
             }
             if trimmed.isEmpty {
