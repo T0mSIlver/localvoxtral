@@ -68,7 +68,7 @@ env "${common_env[@]}" LV_TEST_PAYLOAD_RESULT=success \
   "$REMOTE_BUILD" test --filter NoSuchTest >/dev/null
 await_gc_marker || fail "successful run did not request a remote gc"
 
-grep -qF -- '--filter=P .lv-last-used' "$rsync_log" \
+grep -qF -- '--filter=P /.lv-last-used' "$rsync_log" \
   || fail "tree sync does not protect the gate's last-used stamp from --delete"
 
 : >"$gc_marker"

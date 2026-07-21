@@ -69,6 +69,16 @@ echo artifact >"$WORK/localvoxtral-fresh-deep-1/.build/arm64/debug/old"
 age_tree "$WORK/localvoxtral-fresh-deep-1"
 echo artifact >"$WORK/localvoxtral-fresh-deep-1/.build/arm64/debug/rebuilt"
 
+# Only fresh entry is a depth-8 xcodebuild product OVERWRITE (no ancestor dir
+# mtime bump) -> kept. Pins the find -maxdepth against the deepest real
+# build-product path.
+xcode_deep="$WORK/localvoxtral-fresh-xcode-1/.build/xcode/Build/Products/Release/app.app/Contents/MacOS"
+mkdir -p "$xcode_deep"
+echo binary >"$xcode_deep/app"
+age_tree "$WORK/localvoxtral-fresh-xcode-1"
+touch "$xcode_deep/app"
+find "$WORK/localvoxtral-fresh-xcode-1" -type d -exec touch -t "$OLD_TS" {} +
+
 # Stale but holds recordings -> pruned, EvalRecordings intact.
 mkdir -p "$WORK/localvoxtral-recordings-1/EvalRecordings/agent-dictation/owner"
 echo '{}' >"$WORK/localvoxtral-recordings-1/EvalRecordings/agent-dictation/owner/manifest.json"
@@ -90,6 +100,8 @@ gc_output="$(run_gate 'gc')"
   || fail "fresh-stamp work dir was deleted"
 [[ -e "$WORK/localvoxtral-fresh-deep-1" ]] \
   || fail "work dir with a fresh build product was deleted"
+[[ -e "$WORK/localvoxtral-fresh-xcode-1" ]] \
+  || fail "work dir with only deep fresh xcodebuild output was deleted"
 [[ -f "$WORK/localvoxtral-recordings-1/EvalRecordings/agent-dictation/owner/manifest.json" ]] \
   || fail "gc destroyed EvalRecordings in a stale dir"
 [[ ! -e "$WORK/localvoxtral-recordings-1/.build" \
@@ -116,6 +128,23 @@ busy_output="$(HOME="$FAKE_HOME" PATH="$TMP_DIR/bin:$PATH" \
   || fail "gc deleted a work dir with live processes rooted in it"
 grep -q 'live processes' <<<"$busy_output" \
   || fail "gc did not report the busy keep: $busy_output"
+# The recordings skeleton from the earlier pass must not be re-reported as
+# "pruned" on every subsequent run.
+grep -q 'deleted 0, pruned 0' <<<"$busy_output" \
+  || fail "gc re-counted an already-pruned skeleton: $busy_output"
+rm -f "$TMP_DIR/bin/lsof"
+
+# lsof present but ERRORING -> evidence unavailable -> fail closed, keep.
+cat >"$TMP_DIR/bin/lsof" <<'STUB'
+#!/usr/bin/env bash
+echo 'lsof: simulated failure' >&2
+exit 1
+STUB
+chmod +x "$TMP_DIR/bin/lsof"
+HOME="$FAKE_HOME" PATH="$TMP_DIR/bin:$PATH" \
+  SSH_ORIGINAL_COMMAND='gc' bash "$GATE" >/dev/null
+[[ -e "$WORK/localvoxtral-busy-1/.build/product" ]] \
+  || fail "gc deleted a work dir when lsof evidence was unavailable"
 rm -f "$TMP_DIR/bin/lsof"
 rm -rf "$WORK/localvoxtral-busy-1"
 

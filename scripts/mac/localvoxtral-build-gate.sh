@@ -144,9 +144,12 @@ format_kib() {
 
 # Both BSD and GNU `df -k` print Available in column 4 and Capacity/Use% in
 # column 5. mac-health.sh greps this exact line prefix — keep it stable.
+# Never let a df hiccup abort diag under set -e: mac-health would misread the
+# resulting non-zero ssh exit as "build host unreachable".
 show_disk_free_line() {
   df -k "$HOME" 2>/dev/null \
-    | awk 'NR == 2 { printf "Data volume free: %d GiB (%s used)\n", $4 / 1048576, $5 }'
+    | awk 'NR == 2 { printf "Data volume free: %d GiB (%s used)\n", $4 / 1048576, $5 }' \
+    || true
 }
 
 show_disk_summary() {
@@ -185,14 +188,18 @@ run_disk_command() {
 
 # A work dir is "in use" when any of this account's live processes has its
 # cwd or a mapped executable inside it — the same evidence the reaper trusts.
-# Fail CLOSED: without lsof we cannot prove the dir idle, so gc keeps it.
+# Fail CLOSED: whenever lsof is missing OR did not run cleanly we cannot
+# prove the dir idle, so gc keeps it. lsof exits non-zero both on errors and
+# when it selects no files at all — but this account's own gate shell always
+# contributes at least its cwd record, so a healthy run selects something
+# and exits 0; a non-zero exit here genuinely means "evidence unavailable".
 workdir_in_use() {
-  local dir="$1"
+  local dir="$1" records
   command -v lsof >/dev/null 2>&1 || return 0
-  lsof -n -P -u "$(id -u)" -a -d cwd,txt -F n 2>/dev/null \
-    | awk -v prefix="n$dir" '
-        index($0, prefix "/") == 1 || $0 == prefix { found = 1; exit }
-        END { exit found ? 0 : 1 }'
+  records="$(lsof -n -P -u "$(id -u)" -a -d cwd,txt -F n 2>/dev/null)" || return 0
+  awk -v prefix="n$dir" '
+    index($0, prefix "/") == 1 || $0 == prefix { found = 1; exit }
+    END { exit found ? 0 : 1 }' <<<"$records"
 }
 
 # Delete a stale work dir's contents but keep EvalRecordings: the rsync in
@@ -208,8 +215,26 @@ prune_workdir_keep_recordings() {
     if [[ "${entry##*/}" == "EvalRecordings" ]]; then
       continue
     fi
-    rm -rf "$entry"
+    # An un-removable entry (foreign owner, odd perms) must not abort the
+    # rest of the prune — or, via set -e, the whole gc pass.
+    rm -rf "$entry" 2>/dev/null || true
   done
+}
+
+# Does the dir hold anything BESIDES EvalRecordings? An already-pruned
+# skeleton fails this, so repeat gc passes neither re-prune it nor report it.
+workdir_has_prunable_entries() {
+  local dir="$1" entry
+  for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+      continue
+    fi
+    if [[ "${entry##*/}" == "EvalRecordings" ]]; then
+      continue
+    fi
+    return 0
+  done
+  return 1
 }
 
 # Age-based garbage collection for ~/work/localvoxtral-* build dirs. Getting
@@ -238,7 +263,11 @@ run_gc_command() {
     validate_work_dir "work/${dir##*/}" || continue
     # -mindepth 1 skips the dir's own mtime, which gc's pruning refreshes —
     # a pruned skeleton must not look active for another whole window.
-    recent="$(find "$dir" -mindepth 1 -maxdepth 4 -newer "$ref" -print -quit 2>/dev/null || true)"
+    # -maxdepth 9 reaches the deepest build products (xcodebuild packages:
+    # .build/xcode/Build/Products/Release/<app>/Contents/MacOS/<bin> is depth
+    # 8; an incremental rebuild overwrites files there without bumping any
+    # shallower dir mtime). -quit bounds the cost at the first fresh entry.
+    recent="$(find "$dir" -mindepth 1 -maxdepth 9 -newer "$ref" -print -quit 2>/dev/null || true)"
     if [[ -n "$recent" ]]; then
       kept_active=$((kept_active + 1))
       continue
@@ -248,11 +277,14 @@ run_gc_command() {
       kept_busy=$((kept_busy + 1))
       continue
     fi
-    size_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')"
+    size_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')" || size_kb=""
     [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
     if [[ -e "$dir/EvalRecordings" ]]; then
+      # Already-pruned skeletons stay silent — reporting "pruned" every run
+      # for a dir holding only recordings would misread as repeated action.
+      workdir_has_prunable_entries "$dir" || continue
       prune_workdir_keep_recordings "$dir"
-      remaining_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')"
+      remaining_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')" || remaining_kb=""
       [[ "$remaining_kb" =~ ^[0-9]+$ ]] || remaining_kb=0
       if (( size_kb > remaining_kb )); then
         freed_kb=$((freed_kb + size_kb - remaining_kb))
@@ -261,7 +293,9 @@ run_gc_command() {
         "${dir##*/}" "$max_age_days"
       pruned=$((pruned + 1))
     else
-      rm -rf "$dir"
+      # An un-removable entry must not abort the pass; whatever survived
+      # will be reported (and retried) by later runs.
+      rm -rf "$dir" 2>/dev/null || true
       freed_kb=$((freed_kb + size_kb))
       printf 'gc %s: unused >= %sd — deleted (%s)\n' \
         "${dir##*/}" "$max_age_days" "$(format_kib "$size_kb")"

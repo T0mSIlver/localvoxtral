@@ -163,7 +163,7 @@ cleanup_transient_marker() {
     # A recording set may exist only in the remote Mac checkout. Protect it
     # from --delete during marker cleanup just as in the main tree sync.
     rsync -az --delete \
-      --filter='P .lv-last-used' \
+      --filter='P /.lv-last-used' \
       --filter='P EvalRecordings/***' \
       --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
       "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
@@ -422,7 +422,7 @@ ssh "$HOST" "mkdir -p $(printf '%q' "$DIR")"
 # tree) — without the protect, --delete would strip it and the gc verb's age
 # decision would fall back to rsync-preserved (old) source mtimes.
 rsync -az --delete \
-  --filter='P .lv-last-used' \
+  --filter='P /.lv-last-used' \
   --filter='P EvalRecordings/***' \
   --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
   "$ROOT_DIR/" "$HOST:$DIR/"
