@@ -306,7 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: coordinator,
-            pluginService: { ClaudePluginInstallService.live() }
+            pluginService: { ClaudePluginInstallService.live() },
+            enrollmentService: ClaudeRemoteEnrollmentService.live()
         )
 
         // Route launch through the same model that owns the Settings status.

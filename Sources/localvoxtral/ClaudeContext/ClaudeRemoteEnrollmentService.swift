@@ -1,22 +1,46 @@
 import Foundation
 
-/// Generates — and, only when explicitly asked, executes — the setup for a
-/// remote Claude Code host.
-///
-/// The rule this type is built around: **localvoxtral never edits a config file
-/// it does not own.** Not `~/.ssh/config`, not `~/.claude/settings.json`, not the
-/// remote host's anything. Those files are the user's, they are load-bearing for
-/// work that has nothing to do with dictation, and a third-party app rewriting
-/// one is how a setup gets corrupted during an unrelated upgrade.
-///
-/// So the output is a PLAN: a snippet to paste, commands to run, and the exact
-/// steps to undo all of it. `applySSHConfigSnippet` exists for the day a UI
-/// wants to offer the edit, and it is a pure function over the file's text with
-/// a delimited block — but nothing here writes it, and `execute` refuses unless
-/// a caller supplied a runner on purpose.
-///
-/// Nothing in the app supplies one today. This task builds the surface; it
-/// mutates no host.
+public struct ClaudeRemoteSSHConfigState: Sendable, Equatable {
+    public var directoryExists: Bool
+    public var configData: Data?
+    public var configPermissions: UInt16?
+    /// lstat-derived trust facts. The live filesystem fills them so the pure
+    /// service can refuse to write through a path another principal controls;
+    /// the defaults describe the trustworthy case so existing fakes stay valid.
+    public var directoryIsSymlink: Bool
+    public var directoryOwnedByCurrentUser: Bool
+    public var directoryPermissions: UInt16?
+    public var configIsSymlink: Bool
+
+    public init(
+        directoryExists: Bool,
+        configData: Data?,
+        configPermissions: UInt16?,
+        directoryIsSymlink: Bool = false,
+        directoryOwnedByCurrentUser: Bool = true,
+        directoryPermissions: UInt16? = nil,
+        configIsSymlink: Bool = false
+    ) {
+        self.directoryExists = directoryExists
+        self.configData = configData
+        self.configPermissions = configPermissions
+        self.directoryIsSymlink = directoryIsSymlink
+        self.directoryOwnedByCurrentUser = directoryOwnedByCurrentUser
+        self.directoryPermissions = directoryPermissions
+        self.configIsSymlink = configIsSymlink
+    }
+}
+
+/// Filesystem seam for the one local file the enrollment flow may edit.
+public protocol ClaudeRemoteSSHConfigFileSystem: Sendable {
+    func readState() throws -> ClaudeRemoteSSHConfigState
+    func createSSHDirectory(permissions: UInt16) throws
+    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws
+}
+
+/// Generates and, after a separate UI confirmation, applies the setup for a
+/// remote Claude Code host. Both mutation paths are injected so tests cannot
+/// reach the real home directory or a real SSH host.
 public struct ClaudeRemoteEnrollmentService: Sendable {
     /// Everything the user needs, in the order they need it.
     public struct SetupPlan: Sendable, Equatable {
@@ -46,24 +70,74 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         public var succeeded: Bool { exitCode == 0 }
     }
 
+    public struct Invocation: Sendable, Equatable {
+        /// Complete argv, including `ssh`, so a fake can prove no token reached
+        /// any process argument.
+        public var argv: [String]
+        public var standardInput: Data
+        public var timeout: TimeInterval
+
+        public init(argv: [String], standardInput: Data, timeout: TimeInterval) {
+            self.argv = argv
+            self.standardInput = standardInput
+            self.timeout = timeout
+        }
+    }
+
+    public struct ExecutionStep: Sendable, Equatable {
+        public var index: Int
+        /// Redacted; kept for diagnostics — the sheet renders only per-step
+        /// status text plus `message`.
+        public var command: String
+        public var message: String
+
+        public init(index: Int, command: String, message: String) {
+            self.index = index
+            self.command = command
+            self.message = message
+        }
+    }
+
+    /// Errors thrown by a runner before it can return an exit status. They are
+    /// caught and redacted by `executeRemoteSetup`; callers never receive one.
+    public enum RunnerFailure: Error, Equatable {
+        case timedOut(seconds: TimeInterval, message: String)
+        case outputTooLarge(capBytes: Int, message: String)
+    }
+
     public enum ServiceError: Error, Equatable {
         /// No runner was injected, which is the default. Executing setup is an
         /// opt-in a caller makes deliberately, never a fallback this type
         /// reaches for.
         case executionNotConfigured
+        case sshConfigEditingNotConfigured
+        case invalidSSHConfigEncoding
+        /// `~/.ssh/config` (or `~/.ssh` itself) is a symlink. A rename-based
+        /// atomic write would replace the link with a regular file and silently
+        /// desync a dotfiles-managed setup, so the app refuses and leaves the
+        /// copy path — which mutates nothing — as the way in.
+        case sshConfigIsSymlink
+        /// `~/.ssh` exists but is not exclusively the user's to write (wrong
+        /// owner, or group/world-writable). Report, never repair.
+        case sshDirectoryNotTrusted
         /// `command` and `message` are REDACTED (`ClaudeRemoteTokenRedaction`)
         /// before they reach this case. An `Error` is the single most-copied
         /// string in any app: it lands in alerts, in `Log`, in the user's bug
         /// report, and — because `localizedDescription` is free — in places
         /// nobody audited. A token that reaches an error is a token that leaks,
         /// so it never reaches one.
-        case commandFailed(command: [String], exitCode: Int32, message: String)
+        case commandFailed(step: Int, command: String, exitCode: Int32, message: String)
+        case commandTimedOut(step: Int, command: String, seconds: TimeInterval, message: String)
+        case runnerFailed(step: Int, command: String, message: String)
         case invalidHostAlias
     }
 
-    /// argv in, result out. Injected so tests pin the exact commands without
-    /// spawning anything, and so no code path can reach a real host by accident.
-    public typealias Runner = @Sendable ([String]) throws -> RunResult
+    /// Invocation in, result out. The stdin field is load-bearing: the bearer
+    /// token must never be placed in argv.
+    public typealias Runner = @Sendable (Invocation) throws -> RunResult
+
+    public static let defaultRemoteSetupTimeout: TimeInterval = 60
+    static let maxCapturedOutputBytes = 64 * 1024
 
     /// Marketplace reference for a remote host, which has no app bundle to
     /// register a local directory from. `claude plugin marketplace add` accepts
@@ -77,9 +151,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     public static let tokenConfigKey = "token"
 
     private let runner: Runner?
+    private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
 
-    public init(runner: Runner? = nil) {
+    public init(
+        runner: Runner? = nil,
+        sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)? = nil
+    ) {
         self.runner = runner
+        self.sshConfigFileSystem = sshConfigFileSystem
     }
 
     public static var remotePluginReference: String {
@@ -94,8 +173,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     ///   - sshHostAlias: the `Host` stanza name in `~/.ssh/config`. Validated,
     ///     not escaped — an alias is a bare token and anything else is a mistake
     ///     we should surface rather than quietly rewrite.
-    ///   - token: the plaintext, which exists only here and in the user's
-    ///     clipboard. Not stored, not logged.
+    ///   - token: the plaintext used to generate the copyable command and, after
+    ///     confirmation, its SSH stdin script. Not stored or logged.
     public static func plan(
         host: ClaudeRemoteHost,
         sshHostAlias: String,
@@ -193,7 +272,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 + "into a local path.",
             "Revoking the host in localvoxtral is the real off switch and takes effect immediately. "
                 + "Uninstalling the remote plugin only stops it asking.",
-            "The install command puts the token in the remote shell's history unless your shell is "
+            "The copied install command puts the token in the remote shell's history unless your shell is "
                 + "set to ignore space-prefixed commands (HISTCONTROL=ignorespace / setopt "
                 + "HIST_IGNORE_SPACE). If it landed there, rotate the token — that is what rotation "
                 + "is for.",
@@ -210,7 +289,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         ]
     }
 
-    // MARK: - SSH config editing (pure; nothing here writes a file)
+    // MARK: - SSH config editing
 
     /// Insert or replace this host's block in an ssh config's text.
     ///
@@ -273,45 +352,171 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         return result.joined(separator: "\n")
     }
 
+    /// Atomically insert or replace one host's marked block in `~/.ssh/config`.
+    /// The caller is responsible for obtaining the user's explicit confirmation
+    /// immediately before calling this method.
+    public func insertSSHConfig(_ plan: SetupPlan, hostID: String) throws {
+        Log.claudeContext.info("Claude remote ssh config insertion requested")
+        guard let sshConfigFileSystem else {
+            Log.claudeContext.error("Claude remote ssh config insertion failed: editing not configured")
+            throw ServiceError.sshConfigEditingNotConfigured
+        }
+        do {
+            let state = try sshConfigFileSystem.readState()
+            // Trust gate before any write decision: never write through a
+            // symlink, and never into a directory another principal can also
+            // write. The copy path stays available for such setups.
+            guard !state.configIsSymlink, !state.directoryIsSymlink else {
+                throw ServiceError.sshConfigIsSymlink
+            }
+            if state.directoryExists {
+                guard state.directoryOwnedByCurrentUser,
+                      (state.directoryPermissions ?? 0) & 0o022 == 0
+                else { throw ServiceError.sshDirectoryNotTrusted }
+            }
+            let existing: String
+            if let data = state.configData {
+                guard let decoded = String(data: data, encoding: .utf8) else {
+                    throw ServiceError.invalidSSHConfigEncoding
+                }
+                existing = decoded
+            } else {
+                existing = ""
+            }
+            let updated = Self.applySSHConfigSnippet(
+                to: existing,
+                snippet: plan.sshConfigSnippet,
+                hostID: hostID
+            )
+            if !state.directoryExists {
+                try sshConfigFileSystem.createSSHDirectory(permissions: 0o700)
+            }
+            try sshConfigFileSystem.atomicWriteConfig(
+                Data(updated.utf8),
+                permissions: state.configPermissions ?? 0o600
+            )
+            Log.claudeContext.info("Claude remote ssh config insertion completed")
+        } catch {
+            Log.claudeContext.error(
+                "Claude remote ssh config insertion failed: \(String(describing: error), privacy: .public)"
+            )
+            throw error
+        }
+    }
+
     // MARK: - Execution (opt-in only)
 
     /// Run the plan's remote commands through the injected runner.
     ///
-    /// Throws `.executionNotConfigured` when no runner was supplied, which is
-    /// the default and the state the app ships in — the shipped Settings UI
-    /// hands the user copyable commands and executes nothing. The SSH config
-    /// snippet is never applied here either: it is the user's file, and the plan
-    /// hands them the text.
-    ///
-    /// **Process-argv exposure — read before injecting a runner.** The install
-    /// command carries the token as an argument, so any runner that spawns a
-    /// process makes that token visible in the REMOTE host's process list
-    /// (`ps`, `/proc/<pid>/cmdline`) for the lifetime of the command, to every
-    /// process on that host. `token` is passed separately rather than being
-    /// read back out of the plan so that this type can scrub it from anything it
-    /// throws; it cannot scrub the runner's own argv, which is why nothing in
-    /// the app supplies a runner. A runner that must exist should feed the token
-    /// over the child's stdin or environment instead of its argv, and take
-    /// `remoteCommands(token:)`'s output apart rather than shelling the string.
+    /// Throws `.executionNotConfigured` when no runner was supplied. Each plan
+    /// command is sent to `/bin/sh -s` over SSH stdin. The only spawned argv is
+    /// `ssh -o BatchMode=yes <alias> /bin/sh -s`, which contains no token.
     ///
     /// - Parameter token: the plaintext, used ONLY to redact it back out of any
     ///   failure. Nothing here logs or stores it.
-    public func executeRemoteSetup(_ plan: SetupPlan, sshHostAlias: String, token: String) throws {
-        guard let runner else { throw ServiceError.executionNotConfigured }
-        guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
-        for command in plan.remoteCommands {
-            let argv = ["ssh", sshHostAlias, command.trimmingCharacters(in: .whitespaces)]
-            let result = try runner(argv)
+    @discardableResult
+    public func executeRemoteSetup(
+        _ plan: SetupPlan,
+        sshHostAlias: String,
+        token: String,
+        timeout: TimeInterval = defaultRemoteSetupTimeout
+    ) throws -> [ExecutionStep] {
+        Log.claudeContext.info("Claude remote setup execution requested")
+        guard let runner else {
+            Log.claudeContext.error("Claude remote setup execution failed: runner not configured")
+            throw ServiceError.executionNotConfigured
+        }
+        guard Self.isValidHostAlias(sshHostAlias) else {
+            Log.claudeContext.error("Claude remote setup execution failed: invalid host alias")
+            throw ServiceError.invalidHostAlias
+        }
+        let deadline = Date().addingTimeInterval(max(timeout, 0))
+        var completed: [ExecutionStep] = []
+        for (index, command) in plan.remoteCommands.enumerated() {
+            let displayCommand = ClaudeRemoteTokenRedaction.redact(
+                command.trimmingCharacters(in: .whitespaces),
+                token: token
+            )
+            let remaining = max(deadline.timeIntervalSinceNow, 0)
+            guard remaining > 0 else {
+                let failure = ServiceError.commandTimedOut(
+                    step: index, command: displayCommand, seconds: timeout, message: ""
+                )
+                Log.claudeContext.error(
+                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
+                )
+                throw failure
+            }
+            let invocation = Invocation(
+                argv: ["ssh", "-o", "BatchMode=yes", sshHostAlias, "/bin/sh", "-s"],
+                standardInput: Self.remoteScript(command: command),
+                timeout: remaining
+            )
+            Log.claudeContext.info(
+                "Claude remote setup step \(index + 1, privacy: .public) requested"
+            )
+            let result: RunResult
+            do {
+                result = try runner(invocation)
+            } catch let failure as RunnerFailure {
+                let error: ServiceError
+                switch failure {
+                case .timedOut(let seconds, let message):
+                    error = .commandTimedOut(
+                        step: index,
+                        command: displayCommand,
+                        seconds: seconds,
+                        message: ClaudeRemoteTokenRedaction.redact(message, token: token)
+                    )
+                case .outputTooLarge(_, let message):
+                    error = .runnerFailed(
+                        step: index,
+                        command: displayCommand,
+                        message: ClaudeRemoteTokenRedaction.redact(message, token: token)
+                    )
+                }
+                Log.claudeContext.error(
+                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+                )
+                throw error
+            } catch {
+                let redacted = ClaudeRemoteTokenRedaction.redact(String(describing: error), token: token)
+                let failure = ServiceError.runnerFailed(
+                    step: index, command: displayCommand, message: redacted
+                )
+                Log.claudeContext.error(
+                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
+                )
+                throw failure
+            }
             guard result.succeeded else {
-                // Redact BOTH halves. The argv contains the token by
-                // construction, and the runner's message is remote output that
-                // routinely echoes the command that failed.
-                throw ServiceError.commandFailed(
-                    command: argv.map { ClaudeRemoteTokenRedaction.redact($0, token: token) },
+                let failure = ServiceError.commandFailed(
+                    step: index,
+                    command: displayCommand,
                     exitCode: result.exitCode,
                     message: ClaudeRemoteTokenRedaction.redact(result.message, token: token)
                 )
+                Log.claudeContext.error(
+                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
+                )
+                throw failure
             }
+            completed.append(
+                ExecutionStep(
+                    index: index,
+                    command: displayCommand,
+                    message: ClaudeRemoteTokenRedaction.redact(result.message, token: token)
+                )
+            )
+            Log.claudeContext.info(
+                "Claude remote setup step \(index + 1, privacy: .public) completed"
+            )
         }
+        Log.claudeContext.info("Claude remote setup execution completed")
+        return completed
+    }
+
+    static func remoteScript(command: String) -> Data {
+        Data("set -eu\n\(command)\n".utf8)
     }
 }

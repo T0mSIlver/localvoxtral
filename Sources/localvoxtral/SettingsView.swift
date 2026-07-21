@@ -970,12 +970,7 @@ private struct ClaudePluginSettingsRow: View {
     }
 }
 
-/// Enrolled SSH hosts, and the copyable setup for each.
-///
-/// The pane never touches the user's `~/.ssh/config`, and never runs anything on
-/// a remote host. It hands over text. That is a deliberate limit, not an
-/// unfinished one: those files are load-bearing for work that has nothing to do
-/// with dictation.
+/// Enrolled SSH hosts, and the preview-first setup for each.
 private struct ClaudeRemoteHostsSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
@@ -999,7 +994,8 @@ private struct ClaudeRemoteHostsSettingsRow: View {
             }
         }
         .sheet(item: Binding(get: { model.presentedPlan }, set: { if $0 == nil { model.dismissPlan() } })) { plan in
-            ClaudeRemoteEnrollmentSheet(presentation: plan) { model.dismissPlan() }
+            ClaudeRemoteEnrollmentSheet(model: model, presentation: plan) { model.dismissPlan() }
+                .interactiveDismissDisabled(model.isPerformingEnrollmentAction)
         }
         // The current API, not `alert(item:)` — that one is deprecated and the
         // repo builds warning-free. The detail lives HERE and never in the pane
@@ -1100,6 +1096,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
 /// plainly, and the recovery path (rotate) is one button away in the pane behind
 /// it.
 private struct ClaudeRemoteEnrollmentSheet: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
     let presentation: ClaudeIntegrationSettingsModel.EnrollmentPresentation
     let onDismiss: () -> Void
 
@@ -1126,13 +1123,20 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                     section(
                         "1. Add to ~/.ssh/config on this Mac",
                         body: plan.sshConfigSnippet,
-                        note: "localvoxtral does not edit this file for you."
+                        note: "Insertion replaces only this host's marked block and writes the file atomically.",
+                        actionTitle: "Insert into ~/.ssh/config",
+                        action: { model.requestSSHConfigInsertion() }
                     )
                     section(
                         "2. Run on the remote host",
                         body: plan.remoteCommands.joined(separator: "\n"),
-                        note: "The leading space keeps the token out of your shell history."
+                        displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
+                        note: "One-click execution sends the token through SSH stdin, never process arguments.",
+                        actionTitle: "Run on SSH host",
+                        action: { model.requestRemoteSetup() }
                     )
+                    confirmationView
+                    enrollmentResults
                     section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
                     section("Uninstall", body: plan.uninstallCommands.joined(separator: "\n"), note: nil)
 
@@ -1147,15 +1151,77 @@ private struct ClaudeRemoteEnrollmentSheet: View {
             .frame(minHeight: 260)
 
             HStack {
+                if model.isPerformingEnrollmentAction {
+                    ProgressView().controlSize(.small)
+                }
                 Spacer()
                 Button("Done", action: onDismiss).keyboardShortcut(.defaultAction)
+                    .disabled(model.isPerformingEnrollmentAction)
             }
         }
         .padding(16)
         .frame(width: 560, height: 520)
     }
 
-    private func section(_ title: String, body: String, note: String?) -> some View {
+    @ViewBuilder
+    private var confirmationView: some View {
+        if let confirmation = model.enrollmentConfirmation {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(confirmation.title).font(.subheadline).bold()
+                Text(confirmation.preview)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
+                HStack {
+                    Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                    Button(confirmation.confirmButtonTitle) {
+                        Task { await model.confirmEnrollmentAction() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var enrollmentResults: some View {
+        if !model.enrollmentStepStatuses.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(model.enrollmentStepStatuses) { step in
+                    Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
+                        .font(.caption)
+                        .foregroundStyle(step.succeeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                        .lineLimit(1)
+                }
+                let details = model.enrollmentStepStatuses
+                    .map(\.detail)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n")
+                if !details.isEmpty {
+                    ScrollView {
+                        Text(details)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 90)
+                    .padding(6)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
+        }
+    }
+
+    private func section(
+        _ title: String,
+        body: String,
+        displayedBody: String? = nil,
+        note: String?,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title).font(.subheadline).bold()
@@ -1168,7 +1234,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                 }
                 .controlSize(.small)
             }
-            Text(body)
+            Text(displayedBody ?? body)
                 .font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1176,6 +1242,11 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                 .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
             if let note {
                 Text(note).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let actionTitle, let action {
+                Button(actionTitle, action: action)
+                    .controlSize(.small)
+                    .disabled(model.isPerformingEnrollmentAction)
             }
         }
     }
