@@ -108,6 +108,10 @@ set -euo pipefail
 #   DEMO_SAY_INPUT_UID            audio-device UID the app's mic is pinned to;
 #                                 resolved automatically from DEMO_SAY_DEVICE
 #                                 when unset
+#   DEMO_IDLE_REQUIRED_SECONDS    hands-free only: minimum HID idle time before
+#                                 the script may take over the GUI (default 120)
+#   DEMO_FORCE                    1 = skip the idle guard for an attended
+#                                 hands-free rehearsal
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "This script records a macOS app — run it on the Mac." >&2
@@ -502,6 +506,42 @@ else
   SCENE_TELL="application \"Terminal\""
 fi
 
+# --- GUARD: never take over a machine someone is actively using ------------------
+# Field incident 2026-07-21: a hands-free run fired while the owner watched a
+# fullscreen video; every staged window landed on another Space and the region
+# capture recorded the owner's screen — which then went up as a run artifact.
+# The audible 3 s warning is not consent. In hands-free mode, require the
+# machine to have been untouched for DEMO_IDLE_REQUIRED_SECONDS (default 120);
+# an attended human take skips this (the operator at the keyboard IS the user).
+# DEMO_FORCE=1 overrides for an attended hands-free rehearsal.
+DEMO_IDLE_REQUIRED_SECONDS="${DEMO_IDLE_REQUIRED_SECONDS:-120}"
+DEMO_FORCE="${DEMO_FORCE:-0}"
+if [[ "$DEMO_HANDS_FREE" == 1 && "$DEMO_FORCE" != 1 ]]; then
+  HID_IDLE_SECONDS="$(ioreg -c IOHIDSystem 2>/dev/null \
+    | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}' || true)"
+  if [[ -z "$HID_IDLE_SECONDS" ]]; then
+    echo "Cannot read HID idle time; refusing a hands-free takeover blind (DEMO_FORCE=1 overrides)." >&2
+    exit 1
+  fi
+  if (( HID_IDLE_SECONDS < DEMO_IDLE_REQUIRED_SECONDS )); then
+    echo "Machine in active use (idle ${HID_IDLE_SECONDS}s < ${DEMO_IDLE_REQUIRED_SECONDS}s) — refusing to take over the GUI. Rerun when idle, or DEMO_FORCE=1 for an attended rehearsal." >&2
+    exit 1
+  fi
+  echo "Idle guard: machine idle ${HID_IDLE_SECONDS}s (>= ${DEMO_IDLE_REQUIRED_SECONDS}s) — proceeding."
+fi
+
+# Synthetic keystrokes land in whatever is frontmost. Assert it is the staged
+# scene app before every typing site — a user raising a window (or a fullscreen
+# Space) between staging and typing must abort, never type into their app.
+assert_scene_frontmost() {
+  local context="$1" front
+  front="$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null || true)"
+  if [[ "$(printf '%s' "$front" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$SCENE_APP" | tr '[:upper:]' '[:lower:]')" ]]; then
+    echo "Frontmost app is '${front:-unknown}', not the staged $SCENE_APP — refusing to send keystrokes ($context)." >&2
+    exit 1
+  fi
+}
+
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action -------
 # On the DEFAULT audio output (never the loopback — that device is inaudible).
 say "record demo taking control in 3" >/dev/null 2>&1 || true
@@ -762,15 +802,17 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
     fi
   fi
 
-  pgrep -xiq ghostty || LAUNCHED_GHOSTTY=1
-  # If Ghostty is already running, snapshot its existing pane ttys so we can
-  # later identify OUR new pane by set difference. (Skip the snapshot when it is
-  # NOT running — `tell application id` would launch it, and once we launch it
-  # ourselves the only pane is unambiguously ours anyway.)
-  TTYS_BEFORE=""
-  if [[ "$LAUNCHED_GHOSTTY" != 1 ]]; then
-    TTYS_BEFORE="$(ghostty_pane_ttys)"
+  # `open -na … --args` delivers the args ONLY to a freshly launched instance.
+  # Against an already-running Ghostty it degrades to a bare reopen: a new tab
+  # in the existing window, no --working-directory, no `-e claude` — the scene
+  # silently never exists (field incident 2026-07-21, the run "succeeded").
+  # Refuse instead: the claude scene requires launching Ghostty ourselves.
+  if pgrep -xiq ghostty; then
+    echo "Ghostty is already running — its instance would swallow our launch args (no staged window, no claude). Quit Ghostty (or record from a machine/session where it is closed) and rerun." >&2
+    exit 1
   fi
+  LAUNCHED_GHOSTTY=1
+  TTYS_BEFORE=""
   echo "Launching Ghostty ($GHOSTTY_APP) in $REPO_DIR with claude ($CLAUDE_BIN)..."
   # Ghostty opens the pane directly on claude, cwd pinned to the staged repo,
   # with an opaque dark look + big font passed as CLI config (Ghostty has no
@@ -798,6 +840,7 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   # Address Ghostty by bundle id (not display name) — the app's own reader does
   # too, and a by-name tell is fragile under localization / name collisions.
   osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+  assert_scene_frontmost "folder-trust Return"
   osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
   sleep 3
 
@@ -856,6 +899,7 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   echo "Submitting the staged setup prompt (grounds beat 2): \"$DEMO_LINE_CLAUDE_SETUP\""
   osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
   sleep 1
+  assert_scene_frontmost "staged setup prompt"
   osascript "$KEYSTROKE_OSA" "$DEMO_LINE_CLAUDE_SETUP" \
     || { echo "Setup-prompt keystroke failed (focus lost?); beat 2 would ground on nothing. Aborting." >&2; exit 1; }
   sleep 0.5
@@ -974,6 +1018,17 @@ else
 fi
 sleep 1.5
 
+# --- GUARD: the scene app must actually own the screen before frames roll -------
+# A region capture records the active Space, not the windows we staged — if a
+# fullscreen app (or anything the user raised meanwhile) is frontmost, staging
+# happened somewhere invisible and we would record the user's screen instead of
+# the scene. Assert frontmost == the scene process; abort loudly otherwise.
+FRONTMOST_APP="$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null || true)"
+if [[ "$(printf '%s' "$FRONTMOST_APP" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$SCENE_APP" | tr '[:upper:]' '[:lower:]')" ]]; then
+  echo "Frontmost app is '${FRONTMOST_APP:-unknown}', not the staged $SCENE_APP — the capture region does not show the scene (fullscreen app / another Space / user activity). Aborting before recording anything." >&2
+  exit 1
+fi
+
 # --- record ----------------------------------------------------------------------
 mkdir -p "$OUT_DIR"
 rm -f "$RAW_MOV" "$OUT_MP4"
@@ -1037,6 +1092,7 @@ sleep 3 # let the committed text sit on screen
 if [[ "$TERMINAL_AGENT" == "claude" && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
   echo "Submitting the polished prompt to claude (recording the response for ${DEMO_RESPONSE_SECONDS}s)..."
   osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
+  assert_scene_frontmost "polished-prompt submit"
   osascript -e 'tell application "System Events" to key code 36' >/dev/null
   sleep "$DEMO_RESPONSE_SECONDS"
 fi
