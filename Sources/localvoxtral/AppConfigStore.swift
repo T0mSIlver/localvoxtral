@@ -278,7 +278,18 @@ struct LLMPromptTemplates: Equatable, Sendable {
         inputText: String,
         replacementDictionary: String
     ) -> String {
-        template
+        var rendered = template
+        if replacementDictionary.isEmpty {
+            // An empty dictionary must not leave its template line behind as
+            // a hole of blank lines between the context blocks and `Working
+            // text:` (field report 2026-07-21). Drop the placeholder together
+            // with one following blank line; the bare-placeholder replacement
+            // below still covers templates without that trailing blank.
+            rendered = rendered.replacingOccurrences(
+                of: "{{replacement_dictionary}}\n\n", with: ""
+            )
+        }
+        return rendered
             .replacingOccurrences(of: "{{input_text}}", with: inputText)
             .replacingOccurrences(of: "{{replacement_dictionary}}", with: replacementDictionary)
     }

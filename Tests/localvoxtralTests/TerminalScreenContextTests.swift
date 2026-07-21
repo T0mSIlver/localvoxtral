@@ -136,6 +136,50 @@ final class TerminalScreenContextTests: XCTestCase {
         )
     }
 
+    // Claude Code's EMPTY input frame (separator, bare ❯, separator, and the
+    // shortcut-hint row) is pure chrome: no term to ground, and the hint row
+    // is the pane's one perpetually animating line (field report 2026-07-21:
+    // churn row 54, both runs). It vanishes from the sanitized text — which
+    // also removes it from the excerpt, the vocabulary, AND the start/stop
+    // comparison.
+    func testEmptyClaudeInputFrameIsStrippedFromSanitizedText() {
+        let separator = String(repeating: "\u{2500}", count: 79)
+        let raw = """
+        \u{23FA} The v4 gate is installed and verified.
+        \(separator)
+        \u{276F}
+        \(separator)
+          \u{23F5}\u{23F5} auto mode on (shift+tab to cycle) \u{00B7} \u{2190} for agents
+        """
+        XCTAssertEqual(
+            TerminalScreenAXReader.sanitizedScreenText(raw),
+            "\u{23FA} The v4 gate is installed and verified."
+        )
+    }
+
+    // A frame with TYPED input is content, and lone separator rules (Claude
+    // Code draws the same rule between conversation turns) are content too.
+    func testTypedInputFrameAndLoneSeparatorsAreKept() {
+        let separator = String(repeating: "\u{2500}", count: 79)
+        let typed = "\(separator)\n\u{276F} fix the login bug\n\(separator)"
+        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(typed), typed)
+
+        let turnDivider = "earlier output\n\(separator)\nlater output"
+        XCTAssertEqual(TerminalScreenAXReader.sanitizedScreenText(turnDivider), turnDivider)
+    }
+
+    // The frame strips wherever it appears, and the blank run it leaves
+    // behind collapses — a scrolled-past idle frame must not become a stray
+    // blank gap in the excerpt.
+    func testStrippedFrameLeavesNoBlankHole() {
+        let separator = String(repeating: "\u{2500}", count: 79)
+        let raw = "above\n\n\(separator)\n\u{276F}\n\(separator)\n\nbelow"
+        XCTAssertEqual(
+            TerminalScreenAXReader.sanitizedScreenText(raw),
+            "above\n\nbelow"
+        )
+    }
+
     // Compaction runs BEFORE the cap — the order is load-bearing. A padded
     // grid can exceed the 24k cap on padding alone; capping first would evict
     // the real text at the tail (exactly the term a user is most likely to be

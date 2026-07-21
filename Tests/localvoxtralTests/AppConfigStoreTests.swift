@@ -425,6 +425,62 @@ final class AppConfigStoreTests: XCTestCase {
         )
     }
 
+    /// An EMPTY dictionary must not leave its template line behind as a hole
+    /// of blank lines between the context blocks and `Working text:` (field
+    /// report 2026-07-21: the rendered message began with two blank lines).
+    /// The placeholder and one following blank line vanish together; a
+    /// non-empty dictionary renders byte-identically to before.
+    func testEmptyReplacementDictionaryLeavesNoBlankHole() {
+        let templates = LLMPromptTemplates(
+            systemContent: "ignored",
+            userContent: """
+            Static guidance.
+
+            {{replacement_dictionary}}
+
+            Working text:
+            {{input_text}}
+
+            Return only the final corrected text.
+            """
+        )
+
+        let rendered = templates.renderedUserPrompts(
+            inputText: "hello world",
+            replacementDictionary: ""
+        )
+
+        XCTAssertEqual(
+            rendered,
+            [
+                "Static guidance.\n\n",
+                """
+                Working text:
+                hello world
+
+                Return only the final corrected text.
+                """,
+            ]
+        )
+
+        let withDictionary = templates.renderedUserPrompts(
+            inputText: "hello world",
+            replacementDictionary: "Replacement dictionary:\n- PostgreSQL: postgres"
+        )
+        XCTAssertEqual(
+            withDictionary[1],
+            """
+            Replacement dictionary:
+            - PostgreSQL: postgres
+
+            Working text:
+            hello world
+
+            Return only the final corrected text.
+            """
+        )
+    }
+
     func testRenderedUserPromptsUsesSingleMessageWhenTemplateStartsWithPlaceholder() {
         let templates = LLMPromptTemplates(
             systemContent: "ignored",
