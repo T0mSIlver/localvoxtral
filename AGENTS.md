@@ -348,8 +348,8 @@ Key subsystems:
     `ClaudeRemoteHostRegistry` (0600 atomic file, token hashes only,
     constant-time compare, immediate revoke/rotate). No enrolled host ⇒ no port
     bound. `ClaudeRemoteEnrollmentService` generates the ssh-config snippet and
-    the `claude plugin` commands; it mutates nothing without an injected runner,
-    and nothing supplies one.
+    the `claude plugin` commands; Settings can apply either only after a second,
+    explicit confirmation that repeats the exact text.
   - Shared: `ClaudeSessionRegistry` (Mutex, injected clock) holds the prior
     prompt, cwd, recent files, remote snippets, and a broker-allocated marker,
     returned to the hook as an OSC 2 `terminalSequence` so the marker rides the
@@ -434,16 +434,24 @@ Key subsystems:
   them, so hosts cannot collide or forge each other's sessions. Bounded,
   sanitized remote prompt/file/tool excerpts may feed the same context budget,
   but there is no remote repository collector.
-- **Remote enrollment is copy-only: no host is ever mutated.**
-  `ClaudeRemoteEnrollmentService` generates a copyable plan (idempotent ssh
-  config block, `claude plugin` commands, verify/uninstall steps, caveats); its
-  `executeRemoteSetup` throws `.executionNotConfigured` unless a runner is
-  injected, and the app injects none — Settings shows the plan with Copy
-  buttons and runs nothing. Keep it that way: the install command carries the
-  token in argv, so any runner that spawns a process exposes it in the REMOTE
-  host's process list. `executeRemoteSetup` takes the token only to redact it
-  back out of what it throws; it cannot redact a runner's own argv. A runner
-  that must exist feeds the token via stdin/environment, not argv.
+- **Remote enrollment execution is opt-in, preview-first, and keeps the token
+  out of process arguments.** `ClaudeRemoteEnrollmentService` generates a
+  copyable plan (idempotent ssh config block, `claude plugin` commands,
+  verify/uninstall steps, caveats), and the Copy buttons remain available.
+  One-click actions require a separate confirmation that repeats the exact
+  ssh-config block or redacted command list. Local insertion replaces only the
+  matching host's marked block, preserves an existing config's permissions, and
+  atomically renames a same-directory temporary file; a missing `~/.ssh` and
+  config are created as 0700/0600. It refuses (with the copy path as the
+  documented out) when `~/.ssh/config` or `~/.ssh` is a symlink — a rename
+  would replace the link and desync a dotfiles setup — or when `~/.ssh` is not
+  owned by the user or is group/world-writable. Remote execution spawns only `ssh -o
+  BatchMode=yes <alias> /bin/sh -s` and sends the generated token-bearing script
+  through stdin — the token must never enter an argv. The whole action has a
+  finite timeout, and every captured result, thrown error, alert, and log string
+  is token-redacted before it leaves the service. Keep the filesystem and
+  process runners injected; the no-runner service must continue to throw
+  `.executionNotConfigured`.
   `ClaudeIntegrationSettingsModel` (`@MainActor @Observable`, all seams
   injected) owns the pane's logic, and `ClaudeRemoteListenerCoordinator` owns
   the bind/unbind decision — enrolling the first host binds immediately and
@@ -453,7 +461,7 @@ Key subsystems:
   A bind conflict is reported, never routed around onto another port: a
   squatter on 8473 receives the remote's bearer token before anything rejects
   it, so the user must learn it is there. Note also what is NOT defensible: a
-  malicious process running as the user on the REMOTE host can read
+  malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
 

@@ -218,9 +218,15 @@ and binds the listener immediately — there is no relaunch step. The list in th
 row shows each enrolled host, when it was last seen, and gives you **Rotate
 Token**, **Revoke** and **Remove**.
 
-The app **does not edit `~/.ssh/config` and does not run anything on the remote
-host.** It hands you the text. Those files are yours and are load-bearing for
-work that has nothing to do with dictation.
+The app hands you every command as copyable text, and can also do the two
+steps for you — **only after showing you exactly what will happen and asking
+you to confirm**: *Insert into ~/.ssh/config* previews the exact block (an
+idempotent, marker-delimited splice; the rest of the file is never touched)
+before atomically writing it, and *Run on SSH host* previews the commands
+(token redacted) before running them through `ssh -o BatchMode=yes` with the
+token fed over stdin — it never appears in any process's argument list, on
+either machine. Nothing runs or is written without that explicit confirmation,
+and the Copy buttons remain if you prefer to do it yourself.
 
 The token is shown exactly once, because only its hash is stored. If you lose it,
 rotate — that is what rotation is for. Then:
@@ -332,8 +338,9 @@ assuming it is a stale copy of the app, and rotate the tokens of any host that
 connected meanwhile.
 
 **Anyone who can write your `~/.ssh/config`.** They can point the forward
-somewhere else. That is true of every use of that file and is why the app will
-not write it for you.
+somewhere else. That is true of every use of that file and is why the app only
+ever writes it after showing you the exact block and getting your confirmation
+— and only its own marker-delimited block, never the rest of the file.
 
 ## Plain SSH still works exactly as before
 

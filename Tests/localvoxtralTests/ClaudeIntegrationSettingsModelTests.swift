@@ -68,6 +68,31 @@ private final class MemoryStore: ClaudeRemoteHostStoreIO {
     func write(_ data: Data, to url: URL) throws { contents.withLock { $0[url.path] = data } }
 }
 
+private final class RecordingSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
+    private let reads = Mutex(0)
+    private let writes = Mutex(0)
+
+    var readCount: Int { reads.withLock { $0 } }
+    var writeCount: Int { writes.withLock { $0 } }
+
+    func readState() throws -> ClaudeRemoteSSHConfigState {
+        reads.withLock { $0 += 1 }
+        return ClaudeRemoteSSHConfigState(
+            directoryExists: true,
+            configData: nil,
+            configPermissions: nil
+        )
+    }
+
+    func createSSHDirectory(permissions _: UInt16) throws {}
+
+    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+        XCTAssertFalse(data.isEmpty)
+        XCTAssertEqual(permissions, 0o600)
+        writes.withLock { $0 += 1 }
+    }
+}
+
 @MainActor
 final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
@@ -81,12 +106,14 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeModel(
         registry: ClaudeRemoteHostRegistry?,
         listener: (any ClaudeRemoteListenerControlling)?,
-        plugin: StubPluginService = StubPluginService()
+        plugin: StubPluginService = StubPluginService(),
+        enrollmentService: ClaudeRemoteEnrollmentService = ClaudeRemoteEnrollmentService()
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: listener,
             pluginService: { plugin },
+            enrollmentService: enrollmentService,
             // Synchronous: the production default hops to a detached task, which
             // would make every assertion below a race. The seam exists for
             // exactly this.
@@ -96,6 +123,16 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                     return nil
                 } catch {
                     return ClaudePluginActionFailure(error)
+                }
+            },
+            performEnrollmentAsync: { body in
+                do {
+                    return ClaudeEnrollmentActionAttempt(steps: try body(), failure: nil)
+                } catch {
+                    return ClaudeEnrollmentActionAttempt(
+                        steps: [],
+                        failure: ClaudeEnrollmentActionFailure(error)
+                    )
                 }
             }
         )
@@ -300,6 +337,146 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNotEqual(rotated.token, first)
         XCTAssertNil(registry.authenticate(token: first), "rotation has no grace period")
         XCTAssertNotNil(registry.authenticate(token: rotated.token))
+    }
+
+    func testRemoteSetupDoesNotRunBeforeExplicitConfirmation() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let token = try XCTUnwrap(model.presentedPlan).token
+
+        model.requestRemoteSetup()
+
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty)
+        let confirmation = try XCTUnwrap(model.enrollmentConfirmation)
+        XCTAssertFalse(confirmation.preview.contains(token))
+        XCTAssertTrue(confirmation.preview.contains(ClaudeRemoteTokenRedaction.placeholder))
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(calls.withLock { $0 }.count, 2)
+        XCTAssertEqual(model.enrollmentStepStatuses.map(\.text), [
+            "Step 1 succeeded.", "Step 2 succeeded.",
+        ])
+    }
+
+    func testCancellingTheConfirmationRunsNothing() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        model.requestRemoteSetup()
+        model.cancelEnrollmentActionConfirmation()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        // Cancel is the user's only exit short of confirming: after it, the
+        // confirm entry point must be a no-op.
+        await model.confirmEnrollmentAction()
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty)
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+    }
+
+    func testANewEnrollmentSheetDoesNotInheritThePreviousHostsStepResults() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "ok")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "first"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.requestRemoteSetup()
+        await model.confirmEnrollmentAction()
+        XCTAssertFalse(model.enrollmentStepStatuses.isEmpty)
+
+        model.dismissPlan()
+        model.enrollLabel = "second"
+        model.enrollSSHAlias = "builder2"
+        await model.enroll()
+
+        XCTAssertNotNil(model.presentedPlan)
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+        XCTAssertNil(model.enrollmentConfirmation)
+    }
+
+    func testSSHConfigInsertionDoesNotTouchFilesystemBeforeExplicitConfirmation() async throws {
+        let registry = try makeRegistry()
+        let fileSystem = RecordingSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        model.requestSSHConfigInsertion()
+
+        XCTAssertEqual(fileSystem.readCount, 0)
+        XCTAssertEqual(fileSystem.writeCount, 0)
+        XCTAssertEqual(
+            model.enrollmentConfirmation?.preview,
+            model.presentedPlan?.plan.sshConfigSnippet
+        )
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(fileSystem.readCount, 1)
+        XCTAssertEqual(fileSystem.writeCount, 1)
+        XCTAssertEqual(model.enrollmentStepStatuses.first?.text, "SSH config updated.")
+    }
+
+    func testRemoteSetupTimeoutHasShortStepStatusAndClearDetail() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            throw ClaudeRemoteEnrollmentService.RunnerFailure.timedOut(
+                seconds: 15,
+                message: "connection stalled"
+            )
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.requestRemoteSetup()
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(model.enrollmentStepStatuses.first?.text, "Step 1 failed.")
+        XCTAssertTrue(model.alert?.detail.contains("within 15s") ?? false)
+        XCTAssertTrue(model.alert?.detail.contains("connection stalled") ?? false)
     }
 
     // MARK: Validation and failures

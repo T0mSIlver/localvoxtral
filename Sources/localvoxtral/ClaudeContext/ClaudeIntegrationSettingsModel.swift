@@ -37,6 +37,29 @@ public struct ClaudePluginActionFailure: Sendable, Equatable {
     }
 }
 
+public struct ClaudeEnrollmentActionFailure: Sendable, Equatable {
+    public var serviceError: ClaudeRemoteEnrollmentService.ServiceError?
+    public var describedError: String
+
+    public init(_ error: any Error) {
+        serviceError = error as? ClaudeRemoteEnrollmentService.ServiceError
+        describedError = String(describing: error)
+    }
+}
+
+public struct ClaudeEnrollmentActionAttempt: Sendable, Equatable {
+    public var steps: [ClaudeRemoteEnrollmentService.ExecutionStep]
+    public var failure: ClaudeEnrollmentActionFailure?
+
+    public init(
+        steps: [ClaudeRemoteEnrollmentService.ExecutionStep],
+        failure: ClaudeEnrollmentActionFailure?
+    ) {
+        self.steps = steps
+        self.failure = failure
+    }
+}
+
 /// Settings-pane state for both Claude Code integrations.
 ///
 /// `@MainActor @Observable`, per repo convention for stateful UI controllers.
@@ -118,15 +141,37 @@ public final class ClaudeIntegrationSettingsModel {
     /// call that made it. It is `private(set)`, it is cleared by `dismissPlan`,
     /// and nothing writes it anywhere. The registry cannot reissue it — that is
     /// the whole point of storing only hashes — so the user gets one chance to
-    /// copy it, and rotation is the recovery path.
+    /// copy it. It is not persisted locally; one-click setup only carries it in
+    /// the confirmed SSH process's stdin. Rotation is the recovery path.
     public struct EnrollmentPresentation: Identifiable, Equatable, Sendable {
         public var id: String { host.id }
         public var host: ClaudeRemoteHost
         public var token: String
+        public var sshHostAlias: String
         public var plan: ClaudeRemoteEnrollmentService.SetupPlan
         /// Rotation reuses this sheet; the copy differs because the user's
         /// situation does (their remote is currently broken, on purpose).
         public var isRotation: Bool
+    }
+
+    public enum EnrollmentAction: Sendable, Equatable {
+        case insertSSHConfig
+        case runRemoteSetup
+    }
+
+    public struct EnrollmentConfirmation: Identifiable, Equatable, Sendable {
+        public var id = UUID()
+        public var action: EnrollmentAction
+        public var title: String
+        public var preview: String
+        public var confirmButtonTitle: String
+    }
+
+    public struct EnrollmentStepStatus: Identifiable, Equatable, Sendable {
+        public var id: Int
+        public var text: String
+        public var succeeded: Bool
+        public var detail: String
     }
 
     /// Long-form detail. Alerts and the log take this; the pane never renders it
@@ -146,6 +191,9 @@ public final class ClaudeIntegrationSettingsModel {
     public private(set) var pluginResult: String?
     public private(set) var isPerformingPluginAction = false
     public private(set) var presentedPlan: EnrollmentPresentation?
+    public private(set) var enrollmentConfirmation: EnrollmentConfirmation?
+    public private(set) var enrollmentStepStatuses: [EnrollmentStepStatus] = []
+    public private(set) var isPerformingEnrollmentAction = false
     public var alert: DetailAlert?
 
     /// Enrollment form. Free-form because the user is typing; validated on
@@ -164,6 +212,7 @@ public final class ClaudeIntegrationSettingsModel {
     private let registry: ClaudeRemoteHostRegistry?
     private let listener: (any ClaudeRemoteListenerControlling)?
     private let pluginService: @Sendable () -> any ClaudePluginInstalling
+    private let enrollmentService: ClaudeRemoteEnrollmentService
     /// Runs one plugin action and returns its failure, or nil.
     ///
     /// Off the main actor by default: `claude plugin install` fetches, and 60s
@@ -171,6 +220,9 @@ public final class ClaudeIntegrationSettingsModel {
     /// production hop would make every assertion a race.
     private let performAsync:
         @Sendable (@escaping @Sendable () throws -> Void) async -> ClaudePluginActionFailure?
+    private let performEnrollmentAsync:
+        @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]) async
+            -> ClaudeEnrollmentActionAttempt
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -182,6 +234,7 @@ public final class ClaudeIntegrationSettingsModel {
         registry: ClaudeRemoteHostRegistry?,
         listener: (any ClaudeRemoteListenerControlling)?,
         pluginService: @escaping @Sendable () -> any ClaudePluginInstalling,
+        enrollmentService: ClaudeRemoteEnrollmentService = ClaudeRemoteEnrollmentService(),
         performAsync: @escaping @Sendable (@escaping @Sendable () throws -> Void) async -> ClaudePluginActionFailure? = { body in
             await Task.detached(priority: .userInitiated) {
                 do {
@@ -191,12 +244,28 @@ public final class ClaudeIntegrationSettingsModel {
                     return ClaudePluginActionFailure(error)
                 }
             }.value
+        },
+        performEnrollmentAsync: @escaping @Sendable (
+            @escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]
+        ) async -> ClaudeEnrollmentActionAttempt = { body in
+            await Task.detached(priority: .userInitiated) {
+                do {
+                    return ClaudeEnrollmentActionAttempt(steps: try body(), failure: nil)
+                } catch {
+                    return ClaudeEnrollmentActionAttempt(
+                        steps: [],
+                        failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            }.value
         }
     ) {
         self.registry = registry
         self.listener = listener
         self.pluginService = pluginService
+        self.enrollmentService = enrollmentService
         self.performAsync = performAsync
+        self.performEnrollmentAsync = performEnrollmentAsync
         refreshHosts()
         refreshListenerStatus()
     }
@@ -320,9 +389,15 @@ public final class ClaudeIntegrationSettingsModel {
                 token: enrollment.token,
                 port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
             )
+            // A fresh sheet must not inherit a previous host's step results —
+            // a still-running earlier action can repopulate the statuses after
+            // dismissPlan() cleared them.
+            enrollmentConfirmation = nil
+            enrollmentStepStatuses = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
+                sshHostAlias: alias,
                 plan: plan,
                 isRotation: false
             )
@@ -351,9 +426,14 @@ public final class ClaudeIntegrationSettingsModel {
                 token: enrollment.token,
                 port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
             )
+            enrollmentConfirmation = nil
+            enrollmentStepStatuses = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
+                sshHostAlias: ClaudeRemoteEnrollmentService.isValidHostAlias(enrollment.host.label)
+                    ? enrollment.host.label
+                    : "your-ssh-host",
                 plan: plan,
                 isRotation: true
             )
@@ -403,6 +483,172 @@ public final class ClaudeIntegrationSettingsModel {
     public func dismissPlan() {
         // The plaintext goes with it. Nothing else holds a copy.
         presentedPlan = nil
+        enrollmentConfirmation = nil
+        enrollmentStepStatuses = []
+    }
+
+    public func requestSSHConfigInsertion() {
+        guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
+        enrollmentStepStatuses = []
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .insertSSHConfig,
+            title: "Insert this exact block into ~/.ssh/config?",
+            preview: presentation.plan.sshConfigSnippet,
+            confirmButtonTitle: "Confirm Insert"
+        )
+        Log.claudeContext.info("Claude remote ssh config confirmation requested")
+    }
+
+    public func requestRemoteSetup() {
+        guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
+        enrollmentStepStatuses = []
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .runRemoteSetup,
+            title: "Run these commands on the SSH host?",
+            preview: Self.redactedRemoteCommands(for: presentation),
+            confirmButtonTitle: "Confirm Run"
+        )
+        Log.claudeContext.info("Claude remote setup confirmation requested")
+    }
+
+    public func cancelEnrollmentActionConfirmation() {
+        enrollmentConfirmation = nil
+    }
+
+    public func confirmEnrollmentAction() async {
+        guard let confirmation = enrollmentConfirmation,
+              let presentation = presentedPlan,
+              !isPerformingEnrollmentAction
+        else { return }
+        enrollmentConfirmation = nil
+        isPerformingEnrollmentAction = true
+        enrollmentStepStatuses = []
+        defer { isPerformingEnrollmentAction = false }
+
+        let service = enrollmentService
+        let attempt = await performEnrollmentAsync {
+            switch confirmation.action {
+            case .insertSSHConfig:
+                try service.insertSSHConfig(presentation.plan, hostID: presentation.host.id)
+                return []
+            case .runRemoteSetup:
+                return try service.executeRemoteSetup(
+                    presentation.plan,
+                    sshHostAlias: presentation.sshHostAlias,
+                    token: presentation.token
+                )
+            }
+        }
+
+        // The sheet may have been dismissed (window close) and even replaced
+        // while the detached work ran; a late result must not surface under a
+        // different host's sheet.
+        guard presentedPlan?.host.id == presentation.host.id else { return }
+
+        if let failure = attempt.failure {
+            enrollmentStepStatuses = Self.failureStatuses(
+                failure,
+                action: confirmation.action
+            )
+            alert = DetailAlert(
+                title: "Remote Claude Code setup",
+                detail: Self.enrollmentFailureDetail(failure)
+            )
+            Log.claudeContext.error(
+                "Claude remote enrollment action failed: \(failure.describedError, privacy: .public)"
+            )
+            return
+        }
+
+        switch confirmation.action {
+        case .insertSSHConfig:
+            enrollmentStepStatuses = [
+                EnrollmentStepStatus(
+                    id: 0, text: "SSH config updated.", succeeded: true, detail: ""
+                )
+            ]
+        case .runRemoteSetup:
+            enrollmentStepStatuses = attempt.steps.map {
+                EnrollmentStepStatus(
+                    id: $0.index,
+                    text: "Step \($0.index + 1) succeeded.",
+                    succeeded: true,
+                    detail: $0.message
+                )
+            }
+        }
+    }
+
+    public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
+        presentation.plan.remoteCommands
+            .map { ClaudeRemoteTokenRedaction.redact($0, token: presentation.token) }
+            .joined(separator: "\n")
+    }
+
+    private static func failureStatuses(
+        _ failure: ClaudeEnrollmentActionFailure,
+        action: EnrollmentAction
+    ) -> [EnrollmentStepStatus] {
+        guard action == .runRemoteSetup else {
+            return [EnrollmentStepStatus(id: 0, text: "SSH config update failed.", succeeded: false, detail: failure.describedError)]
+        }
+
+        let failedStep: Int
+        let detail: String
+        switch failure.serviceError {
+        case .commandFailed(let step, _, _, let message):
+            failedStep = step
+            detail = message
+        case .commandTimedOut(let step, _, _, let message):
+            failedStep = step
+            detail = message
+        case .runnerFailed(let step, _, let message):
+            failedStep = step
+            detail = message
+        default:
+            return [EnrollmentStepStatus(id: 0, text: "Remote setup failed.", succeeded: false, detail: failure.describedError)]
+        }
+        let succeeded = (0..<failedStep).map {
+            EnrollmentStepStatus(id: $0, text: "Step \($0 + 1) succeeded.", succeeded: true, detail: "")
+        }
+        return succeeded + [
+            EnrollmentStepStatus(
+                id: failedStep,
+                text: "Step \(failedStep + 1) failed.",
+                succeeded: false,
+                detail: detail
+            )
+        ]
+    }
+
+    static func enrollmentFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
+        switch failure.serviceError {
+        case .commandTimedOut(_, _, let seconds, let message):
+            let output = message.isEmpty ? "" : "\n\n\(message)"
+            return "SSH setup did not finish within \(Int(seconds))s and was stopped.\(output)"
+        case .commandFailed(_, _, let exitCode, let message):
+            return "SSH setup exited with code \(exitCode).\n\n\(message)"
+        case .runnerFailed(_, _, let message):
+            return "SSH setup could not run.\n\n\(message)"
+        case .invalidSSHConfigEncoding:
+            return "~/.ssh/config is not valid UTF-8, so localvoxtral left it unchanged."
+        case .sshConfigIsSymlink:
+            return "~/.ssh/config (or ~/.ssh) is a symlink — likely a dotfiles setup. "
+                + "localvoxtral won't replace the link; use the Copy button and add the block "
+                + "to the real file yourself."
+        case .sshDirectoryNotTrusted:
+            return "~/.ssh is not exclusively writable by you (wrong owner or group/world-"
+                + "writable), so localvoxtral left it unchanged. Fix its permissions "
+                + "(chmod 700 ~/.ssh) or use the Copy button."
+        case .sshConfigEditingNotConfigured:
+            return "Editing ~/.ssh/config is not available in this build."
+        case .executionNotConfigured:
+            return "Running SSH setup is not available in this build."
+        case .invalidHostAlias:
+            return "The SSH host alias is invalid."
+        case .none:
+            return failure.describedError
+        }
     }
 
     private func reconcileListener(presentAlert: Bool = true) {

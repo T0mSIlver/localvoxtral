@@ -3,6 +3,41 @@ import Synchronization
 import XCTest
 @testable import localvoxtral
 
+private final class MemorySSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
+    struct Storage: Sendable {
+        var state: ClaudeRemoteSSHConfigState
+        var createdDirectoryPermissions: [UInt16] = []
+        var writes: [(data: Data, permissions: UInt16)] = []
+    }
+
+    private let storage: Mutex<Storage>
+
+    init(state: ClaudeRemoteSSHConfigState) {
+        storage = Mutex(Storage(state: state))
+    }
+
+    var snapshot: Storage { storage.withLock { $0 } }
+
+    func readState() throws -> ClaudeRemoteSSHConfigState {
+        storage.withLock { $0.state }
+    }
+
+    func createSSHDirectory(permissions: UInt16) throws {
+        storage.withLock {
+            $0.createdDirectoryPermissions.append(permissions)
+            $0.state.directoryExists = true
+        }
+    }
+
+    func atomicWriteConfig(_ data: Data, permissions: UInt16) throws {
+        storage.withLock {
+            $0.writes.append((data, permissions))
+            $0.state.configData = data
+            $0.state.configPermissions = permissions
+        }
+    }
+}
+
 final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     private let host = ClaudeRemoteHost(
         id: "habc1234",
@@ -307,11 +342,166 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    // MARK: SSH config writing
+
+    func testSSHConfigInsertionCreatesFreshDirectoryAndFileWithPrivatePermissions() throws {
+        let fileSystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteSSHConfigState(
+                directoryExists: false,
+                configData: nil,
+                configPermissions: nil
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+        try service.insertSSHConfig(try plan(), hostID: host.id)
+
+        let snapshot = fileSystem.snapshot
+        XCTAssertEqual(snapshot.createdDirectoryPermissions, [0o700])
+        XCTAssertEqual(snapshot.writes.count, 1)
+        XCTAssertEqual(snapshot.writes.first?.permissions, 0o600)
+        XCTAssertTrue(String(decoding: snapshot.writes[0].data, as: UTF8.self).contains("Host builder"))
+    }
+
+    func testSSHConfigInsertionAppendsToExistingOtherContentAndPreservesPermissions() throws {
+        let existing = "Host github.com\n    User git\n"
+        let fileSystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteSSHConfigState(
+                directoryExists: true,
+                configData: Data(existing.utf8),
+                configPermissions: 0o640
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+        try service.insertSSHConfig(try plan(), hostID: host.id)
+
+        let snapshot = fileSystem.snapshot
+        let written = String(decoding: snapshot.writes[0].data, as: UTF8.self)
+        XCTAssertTrue(written.hasPrefix(existing))
+        XCTAssertTrue(written.contains("Host builder"))
+        XCTAssertEqual(snapshot.writes[0].permissions, 0o640)
+        XCTAssertTrue(snapshot.createdDirectoryPermissions.isEmpty)
+    }
+
+    func testSSHConfigInsertionReplacesExistingHostBlockWithoutDuplication() throws {
+        let old = try plan(alias: "old-builder").sshConfigSnippet
+        let existing = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "Host other\n    User x\n",
+            snippet: old,
+            hostID: host.id
+        )
+        let fileSystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteSSHConfigState(
+                directoryExists: true,
+                configData: Data(existing.utf8),
+                configPermissions: 0o600
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+        try service.insertSSHConfig(try plan(alias: "new-builder"), hostID: host.id)
+
+        let written = String(decoding: fileSystem.snapshot.writes[0].data, as: UTF8.self)
+        XCTAssertTrue(written.contains("Host new-builder"))
+        XCTAssertFalse(written.contains("Host old-builder"))
+        XCTAssertEqual(written.components(separatedBy: ClaudeRemoteEnrollmentService.blockBegin(hostID: host.id)).count - 1, 1)
+        XCTAssertTrue(written.contains("Host other"))
+    }
+
+    func testSSHConfigInsertionRefusesASymlinkedConfigWithoutWriting() throws {
+        // A rename-based atomic write would replace the symlink with a regular
+        // file and silently desync a dotfiles-managed setup.
+        let fileSystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteSSHConfigState(
+                directoryExists: true,
+                configData: nil,
+                configPermissions: nil,
+                configIsSymlink: true
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+        XCTAssertThrowsError(try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)) {
+            XCTAssertEqual(
+                $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
+            )
+        }
+        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+        XCTAssertTrue(fileSystem.snapshot.createdDirectoryPermissions.isEmpty)
+    }
+
+    func testSSHConfigInsertionRefusesASymlinkedSSHDirectoryWithoutWriting() throws {
+        let fileSystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteSSHConfigState(
+                directoryExists: true,
+                configData: nil,
+                configPermissions: nil,
+                directoryIsSymlink: true
+            )
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+        XCTAssertThrowsError(try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)) {
+            XCTAssertEqual(
+                $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshConfigIsSymlink
+            )
+        }
+        XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+    }
+
+    func testSSHConfigInsertionRefusesAnUntrustedSSHDirectoryWithoutWriting() throws {
+        for state in [
+            // group/world-writable
+            ClaudeRemoteSSHConfigState(
+                directoryExists: true,
+                configData: nil,
+                configPermissions: nil,
+                directoryPermissions: 0o770
+            ),
+            // not the user's directory
+            ClaudeRemoteSSHConfigState(
+                directoryExists: true,
+                configData: nil,
+                configPermissions: nil,
+                directoryOwnedByCurrentUser: false
+            ),
+        ] {
+            let fileSystem = MemorySSHConfigFileSystem(state: state)
+            let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+
+            XCTAssertThrowsError(
+                try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)
+            ) {
+                XCTAssertEqual(
+                    $0 as? ClaudeRemoteEnrollmentService.ServiceError, .sshDirectoryNotTrusted
+                )
+            }
+            XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
+        }
+    }
+
+    func testSSHConfigInsertionAcceptsAConventionallyPermissionedDirectory() throws {
+        // 0700 and the common 0755 both lack group/world WRITE, which is the
+        // actual attack surface; refusing them would break ordinary setups.
+        for mode in [UInt16(0o700), UInt16(0o755)] {
+            let fileSystem = MemorySSHConfigFileSystem(
+                state: ClaudeRemoteSSHConfigState(
+                    directoryExists: true,
+                    configData: nil,
+                    configPermissions: nil,
+                    directoryPermissions: mode
+                )
+            )
+            let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: fileSystem)
+            try service.insertSSHConfig(try plan(alias: "builder"), hostID: host.id)
+            XCTAssertEqual(fileSystem.snapshot.writes.count, 1)
+        }
+    }
+
     // MARK: Execution
 
     func testExecutionIsRefusedWithoutAnInjectedRunner() throws {
-        // The default. Nothing in the app supplies a runner, so no code path can
-        // reach a real host by accident.
         let service = ClaudeRemoteEnrollmentService()
         XCTAssertThrowsError(
             try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
@@ -324,58 +514,98 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     }
 
     func testExecutionRunsExactlyTheRemoteCommandsOverSSH() throws {
-        let calls = Mutex<[[String]]>([])
-        let service = ClaudeRemoteEnrollmentService { argv in
-            calls.withLock { $0.append(argv) }
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
             return .init(exitCode: 0, message: "")
-        }
+        })
         try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
 
-        XCTAssertEqual(calls.withLock { $0 }, [
-            [
-                "ssh", "builder",
-                "claude plugin marketplace add \(ClaudeRemoteEnrollmentService.repositoryMarketplaceReference)",
-            ],
-            [
-                "ssh", "builder",
-                "claude plugin install localvoxtral-remote@localvoxtral --config 'token=\(token)'",
-            ],
-        ])
+        let recorded = calls.withLock { $0 }
+        XCTAssertEqual(recorded.count, 2)
+        for invocation in recorded {
+            XCTAssertEqual(
+                invocation.argv,
+                ["ssh", "-o", "BatchMode=yes", "builder", "/bin/sh", "-s"]
+            )
+            XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token))
+        }
+        XCTAssertEqual(
+            recorded.map { String(decoding: $0.standardInput, as: UTF8.self) },
+            try plan().remoteCommands.map { "set -eu\n\($0)\n" }
+        )
+    }
+
+    func testRemoteSetupKeepsTokenInStdinAndOutOfEveryArgv() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "")
+        })
+
+        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
+
+        let recorded = calls.withLock { $0 }
+        XCTAssertTrue(recorded.allSatisfy { !$0.argv.joined(separator: " ").contains(token) })
+        XCTAssertTrue(
+            recorded.contains { String(decoding: $0.standardInput, as: UTF8.self).contains(token) }
+        )
     }
 
     func testExecutionStopsAtTheFirstFailure() throws {
-        let calls = Mutex<[[String]]>([])
-        let service = ClaudeRemoteEnrollmentService { argv in
-            calls.withLock { $0.append(argv) }
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
             return .init(exitCode: 1, message: "marketplace not found")
-        }
+        })
         XCTAssertThrowsError(
             try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
         ) { error in
-            guard case .commandFailed(_, let exitCode, let message)? =
+            guard case .commandFailed(let step, _, let exitCode, let message)? =
                 error as? ClaudeRemoteEnrollmentService.ServiceError
             else {
                 return XCTFail("expected commandFailed, got \(error)")
             }
+            XCTAssertEqual(step, 0)
             XCTAssertEqual(exitCode, 1)
             XCTAssertEqual(message, "marketplace not found")
         }
         XCTAssertEqual(calls.withLock { $0 }.count, 1, "an install after a failed marketplace add is noise")
     }
 
-    func testAFailureNeverCarriesTheTokenIntoTheError() throws {
-        // The install command embeds the token by construction, and a remote's
-        // stderr routinely echoes the command it was given. An Error is the most
-        // freely-copied string in the app — it reaches alerts, `Log`, and the
-        // user's bug report via a free `localizedDescription`. So the token has
-        // to be gone before it is thrown, not merely handled carefully by every
-        // present and future catch site.
-        // Bound locally: capturing `self.token` would drag a non-Sendable
-        // XCTestCase into a @Sendable runner closure.
+    func testSuccessfulCapturedOutputIsRedactedBeforeLeavingTheService() throws {
         let token = token
-        let service = ClaudeRemoteEnrollmentService { _ in
-            .init(exitCode: 1, message: "failed running: claude plugin install --config 'token=\(token)'")
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "remote echoed \(token)")
+        })
+
+        let steps = try service.executeRemoteSetup(
+            try plan(),
+            sshHostAlias: "builder",
+            token: token
+        )
+
+        XCTAssertEqual(steps.count, 2)
+        for step in steps {
+            XCTAssertFalse(step.message.contains(token))
+            XCTAssertTrue(step.message.contains(ClaudeRemoteTokenRedaction.placeholder))
         }
+    }
+
+    func testAFailureNeverCarriesTheTokenIntoTheError() throws {
+        let token = token
+        let calls = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            let call = calls.withLock { value -> Int in
+                defer { value += 1 }
+                return value
+            }
+            if call == 0 { return .init(exitCode: 0, message: "marketplace ready") }
+            return .init(
+                exitCode: 1,
+                message: "failed running: claude plugin install --config 'token=\(token)'"
+            )
+        })
         XCTAssertThrowsError(
             try service.executeRemoteSetup(
                 ClaudeRemoteEnrollmentService.SetupPlan(
@@ -387,14 +617,14 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 token: token
             )
         ) { error in
-            guard case .commandFailed(let command, _, let message)? =
+            guard case .commandFailed(_, let command, _, let message)? =
                 error as? ClaudeRemoteEnrollmentService.ServiceError
             else {
                 return XCTFail("expected commandFailed, got \(error)")
             }
             XCTAssertFalse(
-                command.joined(separator: " ").contains(token),
-                "the argv we throw must not carry the plaintext token"
+                command.contains(token),
+                "the displayed command in the error must not carry the plaintext token"
             )
             XCTAssertFalse(
                 message.contains(token),
@@ -411,9 +641,9 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // The catch-all: whatever else an error grows, interpolating it must
         // never print the secret.
         let token = token
-        let service = ClaudeRemoteEnrollmentService { _ in
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
             .init(exitCode: 1, message: "boom: token=\(token)")
-        }
+        })
         do {
             try service.executeRemoteSetup(
                 ClaudeRemoteEnrollmentService.SetupPlan(
@@ -431,11 +661,35 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
+    func testRemoteTimeoutMapsToClearRedactedServiceError() throws {
+        let token = token
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            throw ClaudeRemoteEnrollmentService.RunnerFailure.timedOut(
+                seconds: 12,
+                message: "last output contained \(token)"
+            )
+        })
+
+        XCTAssertThrowsError(
+            try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
+        ) { error in
+            guard case .commandTimedOut(let step, _, let seconds, let message)? =
+                error as? ClaudeRemoteEnrollmentService.ServiceError
+            else {
+                return XCTFail("expected commandTimedOut, got \(error)")
+            }
+            XCTAssertEqual(step, 0)
+            XCTAssertEqual(seconds, 12)
+            XCTAssertFalse(message.contains(token))
+            XCTAssertTrue(message.contains(ClaudeRemoteTokenRedaction.placeholder))
+        }
+    }
+
     func testExecutionRefusesAnInvalidAlias() {
-        let service = ClaudeRemoteEnrollmentService { _ in
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
             XCTFail("the runner must never be reached with an invalid alias")
             return .init(exitCode: 0, message: "")
-        }
+        })
         XCTAssertThrowsError(
             try service.executeRemoteSetup(
                 ClaudeRemoteEnrollmentService.SetupPlan(
@@ -449,15 +703,14 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     }
 
     func testExecutionNeverTouchesTheSSHConfig() throws {
-        // The plan hands the user the text; writing it is their decision.
-        let calls = Mutex<[[String]]>([])
-        let service = ClaudeRemoteEnrollmentService { argv in
-            calls.withLock { $0.append(argv) }
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
             return .init(exitCode: 0, message: "")
-        }
+        })
         try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
-        for argv in calls.withLock({ $0 }) {
-            XCTAssertFalse(argv.joined(separator: " ").contains(".ssh/config"))
+        for invocation in calls.withLock({ $0 }) {
+            XCTAssertFalse(invocation.argv.joined(separator: " ").contains(".ssh/config"))
         }
     }
 }
