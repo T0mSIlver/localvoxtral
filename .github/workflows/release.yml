@@ -28,8 +28,8 @@ concurrency:
 
 jobs:
   release:
-    # Self-hosted for speed (warm build cache, live voxmlx for the integration
-    # gate). Releases stay ad-hoc signed: the runner's localvoxtral-dev cert
+    # Self-hosted for speed (warm build cache, live speechd STT service for the
+    # integration gate). Releases stay ad-hoc signed: the runner's localvoxtral-dev cert
     # is meaningless on users' machines, so we don't set the identity here.
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
@@ -89,7 +89,24 @@ jobs:
           swift test \
             --skip RealtimeAPIVLLMIntegrationTests
 
-      - name: Gate — live integration (voxmlx)
+      - name: Warm on-demand speechd server
+        # The STT test service is launch-on-demand (scripts/mac/lv-test-servers.sh);
+        # its weights are not resident 24/7, so warm it before the live
+        # integration gate below (this release lane runs on the self-hosted Mac).
+        # `ensure speechd` works against either the retired voxmlx plist or the
+        # swapped-in speechd plist. Best-effort during rollout (a warm timeout
+        # must not mask the gate) — the integration gate itself fails loudly if
+        # the STT service is really down.
+        continue-on-error: true
+        run: |
+          if [ -d /Users/Shared/localvoxtral/run ]; then
+            ./scripts/mac/lv-test-servers.sh ensure speechd
+          else
+            echo "on-demand infra not installed (run dir absent) — relying on the" \
+                 "resident STT service; see scripts/mac/README.md to enable on-demand."
+          fi
+
+      - name: Gate — live integration (STT service)
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit

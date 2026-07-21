@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run stage and model ablations from an agent-e2e inspection log.
 
-The live macOS eval is expensive because audio must pass through voxmlx. Its
+The live macOS eval is expensive because audio must pass through the speechd
+ASR service. Its
 inspection report already retains the ASR transcript, production pre-LLM text,
 exact request, raw model output, and committed output. This script reuses those
 artifacts to answer a narrower question quickly: which processing stages improve

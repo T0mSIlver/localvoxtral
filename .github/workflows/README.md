@@ -5,7 +5,7 @@
 Every PR and push to main: build, advisory format lint (`.swift-format`;
 flips to `--strict` after the one-shot tree reformat), unit tests with a
 coverage summary (`llvm-cov report` over Sources — visibility for the PR
-Proof section, not a gate), live voxmlx integration tests, app packaging,
+Proof section, not a gate), live STT-service integration tests, app packaging,
 launch smoke test, an installable app artifact (`localvoxtral-app`, fetch
 with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
 retention) for symbolicating field crashes. Same-repo branches run on the
@@ -21,7 +21,7 @@ One-command, gate-then-tag releases on the self-hosted runner:
 ```
 
 Pipeline: compute next version from the latest `v*` tag → release build →
-unit tests → live integration tests (voxmlx) → package app bundle → launch
+unit tests → live integration tests (speechd STT service) → package app bundle → launch
 smoke test → zip + dmg → **create tag** → publish GitHub release with
 auto-generated notes and both artifacts.
 

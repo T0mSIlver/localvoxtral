@@ -94,7 +94,7 @@ jobs:
         # scripts/ci/llm-lane-filter.sh (kept out of the workflow so it is
         # testable locally); the human-judgment rule is AGENTS.md
         # "When must the LLM lanes run?". The PolishHelper UNIT suite and the
-        # tier-1 voxmlx realtime integration stay per-push.
+        # tier-1 speechd realtime integration stay per-push.
         id: llm_lane
         if: runner.environment == 'self-hosted'
         env:
@@ -271,8 +271,8 @@ jobs:
           xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
             -ignore-filename-regex '(Tests|\.build)/'
 
-      - name: Warm on-demand voxmlx server
-        # The build host's voxmlx launchd service is launch-on-demand (its
+      - name: Warm on-demand speechd server
+        # The build host's speechd STT test service is launch-on-demand (its
         # multi-GB weights are not resident 24/7 — scripts/mac/lv-test-servers.sh).
         # Touch its trigger and block until port 8000 is healthy so the
         # integration suite below hits warm weights; this also resets the idle
@@ -280,25 +280,29 @@ jobs:
         # frees the RAM only after the machine goes quiet. Self-hosted only —
         # hosted runners have no backend and the suite self-skips.
         #
+        # The `ensure speechd` name works whether the host still runs the retired
+        # Python voxmlx plist or the swapped-in Swift speechd plist: both are
+        # triggered through the same run-dir path and answer a TCP probe on 8000.
+        #
         # Best-effort during rollout: the on-demand LaunchAgents + run dir are a
         # one-time owner install (scripts/mac/README.md). Until that's done the
-        # run dir is absent and there is nothing to warm — the still-always-on
-        # voxmlx serves the suite, so skip cleanly instead of failing CI. The
-        # integration step below is the real gate on voxmlx being reachable.
+        # run dir is absent and there is nothing to warm — the still-resident
+        # STT service serves the suite, so skip cleanly instead of failing CI.
+        # The integration step below is the real gate on the STT service.
         if: runner.environment == 'self-hosted'
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
-            ./scripts/mac/lv-test-servers.sh ensure voxmlx
+            ./scripts/mac/lv-test-servers.sh ensure speechd
           else
             echo "on-demand infra not installed (run dir absent) — relying on the" \
-                 "always-on voxmlx; see scripts/mac/README.md to enable on-demand."
+                 "resident STT service; see scripts/mac/README.md to enable on-demand."
           fi
 
-      - name: Integration tests (live voxmlx)
-        # The self-hosted runner has voxmlx serving locally (launchd service
-        # com.localvoxtral.voxmlx, warmed on-demand by the step above). On
-        # GitHub-hosted runners there is no backend and the suite self-skips,
-        # so this step is self-hosted only.
+      - name: Integration tests (live STT service)
+        # The self-hosted runner has the STT test service serving locally
+        # (launchd service com.localvoxtral.testspeechd, warmed on-demand by the
+        # step above). On GitHub-hosted runners there is no backend and the suite
+        # self-skips, so this step is self-hosted only.
         if: runner.environment == 'self-hosted'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
@@ -373,7 +377,7 @@ jobs:
           SPEECHD_INTEGRATION_TEST_ENABLE: "1"
           SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
         # --enable-code-coverage matches the unit step's build flags (same
-        # rationale as the voxmlx step above): without it this step rebuilds
+        # rationale as the STT integration step above): without it this step rebuilds
         # the whole app+test module without coverage (~17 s), and the next
         # run's unit step rebuilds it back again.
         run: swift test --filter SpeechHelperIntegrationTests --enable-code-coverage

@@ -20,15 +20,30 @@ metal` succeeds even when the component is missing (the shim exists), so
 only an actual invocation (`xcrun metal --version`) proves it works. Runs
 as a normal user, no sudo needed.
 
-## On-demand test servers (voxmlx + mlxlm) — owner runbook
+## On-demand test servers (speechd + polishd) — owner runbook
 
-The two build-host model servers used by the integration/eval suites —
-`com.localvoxtral.voxmlx` (port 8000, tier-1 realtime STT) and
-`com.localvoxtral.mlxlm` (port 8080, LLM polish eval) — used to run
-`RunAtLoad`/`KeepAlive` always-on, keeping multi-GB weights resident 24/7.
-They are now **launch-on-demand with an idle reaper** so that RAM is only
-spent around actual test runs. This is hands-free for both CI and
-`remote-build.sh` — nobody has to remember to start/stop anything.
+The two build-host model servers used by the integration/eval suites are the
+app's OWN bundled Swift helpers (they replaced the retired Python voxmlx /
+mlx-lm services in the 2026-07 migration — see "Migration" below):
+
+- `com.localvoxtral.testspeechd` — `localvoxtral-speechd` on **port 8000**,
+  tier-1 realtime STT (the same OpenAI-Realtime websocket the app ships).
+- `com.localvoxtral.testpolishd` — `localvoxtral-polishd` on **port 8080**,
+  the LLM-polish-eval reference chat/completions endpoint.
+
+Short service names are `speechd` / `polishd` (the retired `voxmlx` / `mlxlm`
+are still accepted as deprecated aliases). They run **launch-on-demand with an
+idle reaper** so RAM is only spent around actual test runs — hands-free for
+both CI and `remote-build.sh`.
+
+Because they are Metal-using MLX helpers, they MUST run from a PACKAGED
+(xcodebuild) `.app` — a bare `swift build` binary cannot load its metallib.
+The plists point at helper binaries inside a stable installed copy at
+`/Users/Shared/localvoxtral/testservers/localvoxtral.app`, refreshed with
+`lv-test-servers.sh install-helpers <path-to-.app>`. The helpers also NEVER
+auto-download weights: the pinned models must be pre-downloaded into the
+service account's Hugging Face cache (below), or `ensure` just times out with a
+clear log line.
 
 How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
 
@@ -54,10 +69,12 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
   in the GUI-owner domain, so the `launchctl kill` is permitted. The
   compromise: warm within a work session / CI burst, RAM freed once the machine
   goes quiet — next use pays one cold model load.
-- **Manual unload:** `lv-test-servers.sh stop [voxmlx|mlxlm|all]` frees the
+- **Manual unload:** `lv-test-servers.sh stop [speechd|polishd|all]` frees the
   weights NOW without waiting for the idle window — same stop path as reap
   (trigger removed, `SIGTERM`→`SIGKILL`, blocks until the port closes). Default
-  target is `all`.
+  target is `all`. Stop signals BOTH the new (`testspeechd`/`testpolishd`) and
+  retired (`voxmlx`/`mlxlm`) labels plus a port-bound fallback, so it works
+  whichever generation is loaded.
 - **Robustness:** an interrupted run or a sleeping Mac just leaves the trigger
   behind; the server stays warm and the reaper collects it later. There is no
   lock to get stuck and no orphan process (launchd owns each server; the reaper
@@ -78,40 +95,56 @@ How it works (`scripts/mac/lv-test-servers.sh` is the single source of truth):
 sudo install -d -m 1777 -o "$(id -un)" /Users/Shared/localvoxtral/run
 sudo install -d -m 0755 /Users/Shared/localvoxtral        # log dir, if absent
 
-# 2. mlxlm venv with the pinned fork wheel. Since the bundled MLX Swift helper
-#    replaced the app-managed mlx-lm wheel (2026-07), the app no longer
-#    installs mlx-lm — this pin exists only for the eval reference endpoint.
-uv venv --python 3.12 ~/.local/share/localvoxtral-eval/mlx-lm
-uv pip install --python ~/.local/share/localvoxtral-eval/mlx-lm/bin/python \
-  'mlx-lm @ https://github.com/T0mSIlver/mlx-lm/releases/download/v0.31.3.post4/mlx_lm-0.31.3.post4-py3-none-any.whl'
+# 2. Stable installed .app whose Metal-capable helper binaries the plists run.
+#    Build a bundle WITH the helpers (never SKIP_SPEECHD/POLISHD), then install:
+#      ./scripts/package_app.sh release           # produces dist/localvoxtral.app
+#      scripts/mac/lv-test-servers.sh install-helpers dist/localvoxtral.app
+#    (or point install-helpers at a try-pr.sh download / a release .app). This
+#    copies to /Users/Shared/localvoxtral/testservers/localvoxtral.app. Refresh
+#    it the same way whenever the helpers change; `stop all` then makes the next
+#    `ensure` cold-start from the new copy.
+
+# 3. Pre-download the pinned models into the OWNER's HF cache (the account whose
+#    launchd domain runs the services — the one bootstrapping the plists below).
+#    The helpers NEVER auto-download: a missing model makes speechd/polishd log
+#    an error and exit, launchd relaunch-loops it, and `ensure` times out with a
+#    clear message. Keep these pins in sync with SpeechModelCatalog.defaultOption
+#    and PolishModelCatalog.defaultOption in the app source.
+python3 -m pip install --user -U 'huggingface_hub[cli]'   # or: uv tool install huggingface_hub
+hf download mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit \
+  --revision fdebf7b2af834a1db4b8a3c99ab7480b333adf9e     # speechd (STT, 8000)
+hf download mlx-community/Qwen3.5-4B-OptiQ-4bit \
+  --revision 41eccc3316fd4bf4b27cedf4924fe23ce44e77d9     # polishd (polish, 8080)
 ```
 
-> This mlxlm service is the *prompt-eval reference endpoint* for
-> `LLMPolishPromptEvalTests` / `remote-build.sh eval-llm` — the app itself no
-> longer installs or runs mlx-lm; production-engine parity is covered by
-> `./scripts/remote-build.sh integration-polishd` instead, and the
-> `--prompt-cache-*` flags below are mlx-lm-specific and don't mirror app
-> behavior. Don't point evals at the app-managed server on 8472 — it only
-> exists while the app is running with polishing enabled, so it vanishes
-> whenever the app quits.
+> The polishd service is the *prompt-eval reference endpoint* for
+> `LLMPolishPromptEvalTests` / `remote-build.sh eval-llm`. It now runs the SAME
+> bundled engine and default 4B model as production (so eval-llm measures the
+> shipped prompt+model combo; production-engine parity is also covered by
+> `./scripts/remote-build.sh integration-polishd`). Don't point evals at the
+> app-managed server on 8472 — it only exists while the app is running with
+> polishing enabled, so it vanishes whenever the app quits.
 
-### mlxlm LaunchAgent (on-demand)
+### polishd LaunchAgent (on-demand)
+
+Note the trigger path: it stays `run/mlxlm.want` (the retired name) on purpose —
+that is the stable cross-generation rendezvous so an already-installed gate and
+un-updated reaper keep working through the swap (see the `lv-test-servers.sh`
+header). Only the Label + ProgramArguments changed.
 
 ```bash
-cat > ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist <<'PLIST'
+cat > ~/Library/LaunchAgents/com.localvoxtral.testpolishd.plist <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.localvoxtral.mlxlm</string>
+  <key>Label</key><string>com.localvoxtral.testpolishd</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/REPLACE_ME/.local/share/localvoxtral-eval/mlx-lm/bin/mlx_lm.server</string>
-    <string>--model</string><string>mlx-community/Qwen3.5-0.8B-8bit</string>
-    <string>--host</string><string>127.0.0.1</string>
+    <string>/Users/Shared/localvoxtral/testservers/localvoxtral.app/Contents/MacOS/localvoxtral-polishd</string>
+    <string>--model</string><string>mlx-community/Qwen3.5-4B-OptiQ-4bit</string>
+    <string>--model-revision</string><string>41eccc3316fd4bf4b27cedf4924fe23ce44e77d9</string>
     <string>--port</string><string>8080</string>
-    <string>--prompt-cache-size</string><string>1</string>
-    <string>--prompt-cache-bytes</string><string>1GB</string>
   </array>
   <!-- On-demand: launchd starts this while the trigger file exists and stops
        it (freeing the weights) when lv-test-servers.sh reap removes it. -->
@@ -121,36 +154,53 @@ cat > ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist <<'PLIST'
     <key>PathState</key>
     <dict><key>/Users/Shared/localvoxtral/run/mlxlm.want</key><true/></dict>
   </dict>
-  <key>StandardOutPath</key><string>/Users/Shared/localvoxtral/mlxlm.log</string>
-  <key>StandardErrorPath</key><string>/Users/Shared/localvoxtral/mlxlm.log</string>
+  <key>StandardOutPath</key><string>/Users/Shared/localvoxtral/polishd.log</string>
+  <key>StandardErrorPath</key><string>/Users/Shared/localvoxtral/polishd.log</string>
 </dict>
 </plist>
 PLIST
 
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testpolishd.plist
 ```
 
-### voxmlx LaunchAgent — convert existing to on-demand
+### speechd LaunchAgent (on-demand)
 
-The voxmlx agent already exists (`com.localvoxtral.voxmlx`, port 8000, its
-`StandardOutPath` pointed at `/Users/Shared/localvoxtral/voxmlx.log` for the
-gate — see below). To make it on-demand, edit its plist to **replace**
-`<key>RunAtLoad</key><true/>` and `<key>KeepAlive</key><true/>` with:
+Same as polishd, the trigger path stays `run/voxmlx.want` (retired name) as the
+stable cross-generation rendezvous — the CI warm step (`ensure speechd`), the
+gate, and an un-updated reaper all touch/read exactly this path, so the STT lane
+keeps warming with no gate/reaper reinstall. `StandardOutPath` is the file the
+gate's `voxlog`/`VOXLOG_FILE` reads.
 
-```xml
+```bash
+cat > ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.localvoxtral.testspeechd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/Shared/localvoxtral/testservers/localvoxtral.app/Contents/MacOS/localvoxtral-speechd</string>
+    <string>--model</string><string>mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit</string>
+    <string>--model-revision</string><string>fdebf7b2af834a1db4b8a3c99ab7480b333adf9e</string>
+    <string>--port</string><string>8000</string>
+    <string>--cache-limit-mb</string><string>4096</string>
+  </array>
+  <!-- On-demand: launchd starts this while the trigger file exists and stops
+       it (freeing the weights) when lv-test-servers.sh reap removes it. -->
   <key>RunAtLoad</key><false/>
   <key>KeepAlive</key>
   <dict>
     <key>PathState</key>
     <dict><key>/Users/Shared/localvoxtral/run/voxmlx.want</key><true/></dict>
   </dict>
-```
+  <key>StandardOutPath</key><string>/Users/Shared/localvoxtral/speechd.log</string>
+  <key>StandardErrorPath</key><string>/Users/Shared/localvoxtral/speechd.log</string>
+</dict>
+</plist>
+PLIST
 
-then re-bootstrap it:
-
-```bash
-launchctl bootout "gui/$(id -u)/com.localvoxtral.voxmlx" || true
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.voxmlx.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist
 ```
 
 ### Idle-reaper LaunchAgent
@@ -183,32 +233,39 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.tests
 
 (Point the script path at a stable checkout of this repo, or copy
 `lv-test-servers.sh` to a fixed location. Override the idle window by adding an
-`EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`.)
+`EnvironmentVariables` dict with `LV_TEST_SERVER_IDLE_SECONDS`. During the
+migration, `git pull` that stable checkout so the reaper runs the new script —
+though an OLD reaper still reaps the new services via its port-bound fallback,
+since it keeps reading the same `run/voxmlx.want` / `run/mlxlm.want` triggers.)
 
 ### Verify (owner-side proof)
 
 ```bash
 scripts/mac/lv-test-servers.sh status                 # both: trigger absent, down
-scripts/mac/lv-test-servers.sh ensure voxmlx          # cold-starts, blocks to warm
-scripts/mac/lv-test-servers.sh status                 # voxmlx: trigger present, up
+scripts/mac/lv-test-servers.sh ensure speechd         # cold-starts, blocks to warm
+scripts/mac/lv-test-servers.sh status                 # speechd: trigger present, up
 # Warm reuse: a second ensure returns instantly ("already warm") and resets idle.
-scripts/mac/lv-test-servers.sh ensure voxmlx
+scripts/mac/lv-test-servers.sh ensure speechd
 # Idle reap: age the trigger AND the stamps past the window, then reap (or just
 # wait for the reaper agent), and confirm launchd stopped the server / freed
 # RAM. Age both — reap keys off the NEWEST of the trigger + stamps, so a
 # freshly cold-started trigger (recent mtime) would otherwise keep it "warm".
+# The trigger/stamp filesystem key stays `voxmlx` for speechd (stable rendezvous).
 # reap BLOCKS until the port actually closes (SIGTERM drains the MLX server in
 # ~2-3s; it escalates to SIGKILL after STOP_GRACE), so the status right after
 # reflects the real state — no need to sleep.
 touch -t 202001010000 /Users/Shared/localvoxtral/run/voxmlx.*   # .want + .seen.*
 scripts/mac/lv-test-servers.sh reap                   # removes trigger + stamps, TERM→KILL
-scripts/mac/lv-test-servers.sh status                 # voxmlx: absent, down
+scripts/mac/lv-test-servers.sh status                 # speechd: absent, down
+# polishd (8080) is the same, keyed on run/mlxlm.want:
+scripts/mac/lv-test-servers.sh ensure polishd
 ```
 
 If the SSH build gate is installed, `remote-build.sh integration|eval-llm|eval-e2e`
-warm the right server through the gate's `ensure` verb automatically; CI warms
-voxmlx in its own step before the integration suite (and `eval-e2e.yml` before
-the nightly agent-dictation eval). The
+warm the right server through the gate's `ensure` verb automatically (it sends
+`ensure speechd`/`polishd`, falling back to the `voxmlx`/`mlxlm` alias for an
+un-reinstalled gate); CI warms speechd in its own step before the integration
+suite (and `eval-e2e.yml` before the nightly agent-dictation eval). The
 `svc-status`/`diag`/`voxlog` verbs still probe ports 8000/8080.
 
 No gate change is needed for the `eval-e2e` lane: its payload is a plain
@@ -225,15 +282,73 @@ When capture happens in a Mac checkout, `scripts/run-agent-eval-local.sh`
 runs the same env-gated suite directly and avoids copying the voice set through
 another source checkout.
 
+### Migration: retire the Python voxmlx/mlx-lm services
+
+One-time owner steps to swap the two Python test services for the bundled Swift
+helpers. The trigger paths (`run/voxmlx.want` / `run/mlxlm.want`) are unchanged,
+so CI stays green throughout — do these in a trusted GUI-owner session on the
+Mac. `$UID` is the owner's uid (`id -u`).
+
+```bash
+# 0. Prereqs (skip if already present from the on-demand install above):
+sudo install -d -m 1777 -o "$(id -un)" /Users/Shared/localvoxtral/run
+sudo install -d -m 0755 -o "$(id -un)" /Users/Shared/localvoxtral
+
+# 1. Install the Metal-capable helper binaries (from a bundle built WITH them):
+cd ~/work/localvoxtral && git pull
+./scripts/package_app.sh release
+scripts/mac/lv-test-servers.sh install-helpers dist/localvoxtral.app
+
+# 2. Pre-download the pinned models into THIS account's HF cache (see step 3 of
+#    the on-demand install above — hf download the Voxtral + Qwen3.5-4B pins).
+
+# 3. Bootout the retired Python services and remove their plists:
+launchctl bootout "gui/$UID/com.localvoxtral.voxmlx" 2>/dev/null || true
+launchctl bootout "gui/$UID/com.localvoxtral.mlxlm"  2>/dev/null || true
+rm -f ~/Library/LaunchAgents/com.localvoxtral.voxmlx.plist \
+      ~/Library/LaunchAgents/com.localvoxtral.mlxlm.plist
+
+# 4. Bootstrap the new helper plists (templates above). The bootout lines make
+#    a rerun of this step safe — bootstrap fails with "5: Input/output error"
+#    when the label is already loaded:
+launchctl bootout "gui/$UID/com.localvoxtral.testspeechd" 2>/dev/null || true
+launchctl bootout "gui/$UID/com.localvoxtral.testpolishd" 2>/dev/null || true
+launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist
+launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/com.localvoxtral.testpolishd.plist
+
+# 5. Delete the retired mlx-lm venv/wheel (no longer used by anything):
+rm -rf ~/.local/share/localvoxtral-eval/mlx-lm
+
+# 6. Reinstall the SSH build gate so `ensure speechd|polishd`, the /health probe
+#    arm on 8080, and the new process/label reporting take effect (see the gate
+#    install section below), and `git pull` the reaper's stable checkout.
+
+# 7. Point the gate's voxlog verb at the new STT log (gate account = the user
+#    the SSH forced command runs as; same file as the "Config" section below):
+echo 'VOXLOG_FILE=/Users/Shared/localvoxtral/speechd.log' >> ~/.localvoxtral-gate.conf
+
+# 8. Verify (the "Verify" block above):
+scripts/mac/lv-test-servers.sh ensure speechd && scripts/mac/lv-test-servers.sh ensure polishd
+scripts/mac/lv-test-servers.sh status
+```
+
+Verification: `RealtimeAPIVLLMIntegrationTests` (via `remote-build.sh
+integration`, or CI) must stay green against the new speechd service, and
+`remote-build.sh eval-llm` scores the default prompt against polishd — re-run it
+and confirm the scoreboard (the 4B reference replaces the old 0.8B mlx-lm
+reference, so expect equal-or-better numbers). Both are OWNER-verified: the
+repo-side changes are compatible with either generation behind the ports, but
+only a live run on the swapped host proves accuracy parity.
+
 ## `localvoxtral-build-gate.sh` — SSH build gate (v4)
 
 Forced command for the Linux dev box's build key on the Mac build host. It
 allowlists the `remote-build.sh` loop (rsync in, `swift build|test`,
 `package_app.sh release`), the v2 read-only diagnostic verbs `diag`,
 `applog [minutes]`, `voxlog [lines]`, `svc-status`, and the on-demand
-test-server verb `ensure <voxmlx|mlxlm|all>` (touches a trigger file in the
-world-writable run dir and polls the port until warm — see the on-demand
-section above). The `reap work/localvoxtral-<id>` recovery verb accepts one
+test-server verb `ensure <speechd|polishd|all>` (retired `voxmlx`/`mlxlm` names
+accepted as aliases; touches a trigger file in the world-writable run dir and
+polls the port until warm — see the on-demand section above). The `reap work/localvoxtral-<id>` recovery verb accepts one
 validated work directory and terminates only stale test processes proven by
 UID plus cwd/mapped-text evidence to belong to it. Everything else is denied
 and logged to `~/Library/Logs/localvoxtral-build-gate.log`.
@@ -311,8 +426,8 @@ differ per machine and are read from an optional, never-committed conf file:
 
 ```bash
 # /Users/<gate-account>/.localvoxtral-gate.conf
-VOXLOG_FILE=/Users/Shared/localvoxtral/voxmlx.log
-VOXMLX_GUI_UID=501        # uid of the GUI user running com.localvoxtral.voxmlx
+VOXLOG_FILE=/Users/Shared/localvoxtral/speechd.log   # STT test-service log (was voxmlx.log)
+VOXMLX_GUI_UID=501        # uid of the GUI user running com.localvoxtral.testspeechd
 # LV_RUN_DIR=/Users/Shared/localvoxtral/run   # only if you moved the triggers
 ```
 
@@ -320,17 +435,9 @@ The `ensure` verb needs no `VOXMLX_GUI_UID` — it never calls `launchctl`, it
 just touches a trigger file the owner-domain launchd watches, so the default
 run dir works as-is once the owner has created it (mode 1777).
 
-For `voxlog` to work across accounts, point the voxmlx LaunchAgent's
-`StandardOutPath`/`StandardErrorPath` at a shared location and set
-`VOXLOG_FILE` to match:
-
-```bash
-sudo install -d -m 0755 -o "$(id -un)" /Users/Shared/localvoxtral
-# edit ~/Library/LaunchAgents/com.localvoxtral.voxmlx.plist: StandardOutPath +
-# StandardErrorPath -> /Users/Shared/localvoxtral/voxmlx.log, then:
-launchctl bootout "gui/$(id -u)/com.localvoxtral.voxmlx" || true
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.localvoxtral.voxmlx.plist
-```
+The `voxlog` verb tails the STT test-service log. The speechd plist template
+above already writes `/Users/Shared/localvoxtral/speechd.log` (a shared
+location), so across-account reads just work once `VOXLOG_FILE` points there.
 
 (The alternative — ACL read grants on the owner's `~/Library/Logs` chain — is
 fiddlier and breaks when the log file is rotated/recreated.)
@@ -340,12 +447,12 @@ fiddlier and breaks when the log file is rotated/recreated.)
 ```bash
 ./scripts/remote-build.sh diag        # versions, processes, ports, disk, logs
 ./scripts/remote-build.sh applog 30   # app unified log, last 30 minutes
-./scripts/remote-build.sh voxlog 100  # voxmlx log tail
-./scripts/remote-build.sh svc-status  # voxmlx service/process/port status
+./scripts/remote-build.sh voxlog 100  # speechd STT test-service log tail
+./scripts/remote-build.sh svc-status  # speechd/polishd service/process/port status
 ./scripts/remote-build.sh disk        # df + per-work-dir du and last-used ages
 ./scripts/remote-build.sh gc          # reclaim stale work dirs now (also runs
                                       # automatically after every build/test)
-ssh <gate-destination> 'ensure voxmlx' # warm the on-demand STT server
+ssh <gate-destination> 'ensure speechd' # warm the on-demand STT server
 ssh <gate-destination> 'reap work/localvoxtral-<id>' # scoped stale-test cleanup
 ssh <gate-destination> 'echo pwned'   # must print "denied command"
 ```

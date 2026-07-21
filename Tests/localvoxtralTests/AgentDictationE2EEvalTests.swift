@@ -9,14 +9,14 @@ import XCTest
 /// corpus and its contract are Phase 1, `EvalCorpus/agent-dictation/`):
 ///
 ///   recorded human WAV OR TTS(spokenForm, /usr/bin/say)
-///     -> production websocket ASR (voxmlx)
+///     -> production websocket ASR (speechd STT service)
 ///     -> production polish stop-commit path (bundled polishd helper or an
 ///        explicitly selected OpenAI-compatible endpoint)
 ///     -> corpus-contract scoring -> scoreboard
 ///
 /// What each stage exercises (documented per the Phase-2 contract):
-/// - ASR: the production `RealtimeAPIWebSocketClient` against a live voxmlx
-///   (same chunking + final-transcript assembly as the tier-1 integration
+/// - ASR: the production `RealtimeAPIWebSocketClient` against a live speechd STT
+///   service (same chunking + final-transcript assembly as the tier-1 integration
 ///   suite). The live-session transcript MERGE (DictationViewModel+
 ///   RealtimeEvents overlap merge) is NOT in the loop — finals are joined
 ///   directly; a Phase-3 candidate.
@@ -683,7 +683,7 @@ final class AgentDictationE2EEvalTests: XCTestCase {
         )
     }
 
-    // MARK: - ASR (production websocket client vs live voxmlx)
+    // MARK: - ASR (production websocket client vs live speechd STT service)
 
     private func transcribe(
         pcm: Data,

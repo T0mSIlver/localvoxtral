@@ -2,9 +2,11 @@
 
 Native macOS menu bar app for realtime dictation (Swift 6.2 strict concurrency,
 SwiftPM, macOS 15+). Streams mic audio to an OpenAI Realtime-compatible backend
-(voxmlx / vLLM), merges partial transcripts, and inserts text into the focused
-app — either live ("Live Auto-Paste") or via an overlay committed on stop
-("Overlay Buffer", supports replacement dictionary + LLM polishing).
+(the bundled `localvoxtral-speechd` helper in managed mode; vLLM or any
+compatible server in External URL mode), merges partial transcripts, and
+inserts text into the focused app — either live ("Live Auto-Paste") or via an
+overlay committed on stop ("Overlay Buffer", supports replacement dictionary +
+LLM polishing).
 
 ## Build & test — read this first on a non-Mac dev box
 
@@ -16,12 +18,12 @@ is machine-local config, set once per clone (never committed):
 ```bash
 ./scripts/remote-build.sh                 # build + unit tests
 ./scripts/remote-build.sh test --filter TextMergingAlgorithmsTests
-./scripts/remote-build.sh integration     # realtime pipeline vs live voxmlx
+./scripts/remote-build.sh integration     # realtime pipeline vs the live speechd STT service
 ./scripts/remote-build.sh eval-llm        # default polish prompt eval vs a live chat/completions server
 ./scripts/remote-build.sh package         # build the .app bundle (also builds both MLX helpers)
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first); optional repo = per-model gate for PolishModelCatalog additions (self-provisions weights)
 ./scripts/remote-build.sh integration-speechd [hf-repo]  # packaged speech helper vs real audio/model: accuracy + append-only deltas + parent tether (run package first)
-./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval: human WAVs (optional) or TTS -> voxmlx -> polishd (run package first)
+./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval: human WAVs (optional) or TTS -> speechd -> polishd (run package first)
 ./scripts/run-agent-eval-local.sh [EvalRecordings/agent-dictation/<set>]   # same eval directly from a Mac checkout (run package_app.sh first)
 ./scripts/ablate-agent-eval.py .build/agent-eval-local.log                 # reuse one E2E log to compare pre/post-processing, prompts, and models without rerunning audio
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
@@ -142,25 +144,29 @@ This is a real app with daily users. Nothing ships on "it compiles".
 | Tier | What | When | Cost |
 |---|---|---|---|
 | 0 | Unit suite (500+ tests) + PolishHelper/SpeechHelper unit suites + packaging + launch smoke | every PR/push, CI (helper unit suites: self-hosted lanes only) | ~1 min |
-| 1 | `RealtimeAPIVLLMIntegrationTests` vs live local voxmlx: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
+| 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the screen is locked or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
-| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live voxmlx ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
+| 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
 Tier 1 details: the suite is env-gated (`VLLM_REALTIME_TEST_ENABLE=1`) and
-expects voxmlx at `ws://127.0.0.1:8000/v1/realtime` — on the build host it runs
-as the launchd service `com.localvoxtral.voxmlx` (logs:
-`~/Library/Logs/voxmlx.log`). Fork PRs run on GitHub-hosted runners with no
-backend, where the suite self-skips. The mic-capture tests
-(`LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE`) stay off in CI until tier 2.
+expects an STT server at `ws://127.0.0.1:8000/v1/realtime` — on the build host it
+runs as the launchd test service `com.localvoxtral.testspeechd` (the bundled
+`localvoxtral-speechd`; logs: `/Users/Shared/localvoxtral/speechd.log`). Fork PRs
+run on GitHub-hosted runners with no backend, where the suite self-skips. The
+mic-capture tests (`LOCALVOXTRAL_MIC_CAPTURE_TEST_ENABLE`) stay off in CI until
+tier 2.
 
-On-demand test servers: the voxmlx (8000) and mlxlm (8080) launchd services are
+On-demand test servers: the speechd (8000, STT) and polishd (8080,
+chat/completions) launchd test services — the app's OWN bundled Swift helpers,
+which replaced the retired Python voxmlx/mlx-lm services in 2026-07 — are
 launch-on-demand (a trigger file + idle reaper — `scripts/mac/lv-test-servers.sh`,
 owner runbook `scripts/mac/README.md`), so their weights are not resident 24/7.
-This is hands-free: CI warms voxmlx in a step before the integration suite, and
+This is hands-free: CI warms speechd in a step before the integration suite, and
 `remote-build.sh integration|eval-llm|eval-e2e` warm the right server through the gate's
-`ensure` verb first, blocking until the port is healthy. A burst of runs reuses
+`ensure` verb first (names `speechd`/`polishd`, with `voxmlx`/`mlxlm` accepted as
+deprecated aliases), blocking until the port is healthy. A burst of runs reuses
 one warm process (each `ensure` resets a ~20 min idle window); the reaper frees
 the RAM once the machine goes quiet.
 
@@ -168,8 +174,9 @@ LLM polish prompt eval: `LLMPolishPromptEvalTests` scores the bundled default
 polishing prompt (punctuation-spacing cases, French vs English) against a live
 chat/completions server through the production request path. Run it with
 `./scripts/remote-build.sh eval-llm [endpoint]` — default endpoint is the
-on-demand `com.localvoxtral.mlxlm` launchd service on port 8080, which the lane
-warms first via the gate's `ensure` verb (owner runbook: `scripts/mac/README.md`);
+on-demand `com.localvoxtral.testpolishd` launchd service on port 8080 (the
+bundled `localvoxtral-polishd`, running the production default model), which the
+lane warms first via the gate's `ensure` verb (owner runbook: `scripts/mac/README.md`);
 a custom endpoint is left untouched. Don't point it at the app-managed instance
 on 8472, which dies whenever the app quits. Enablement is env
 (`LLM_POLISH_EVAL_ENABLE=1`) or the marker file the script writes into the
@@ -197,7 +204,7 @@ prompt warmup, clipboard context/macro, repo vocabulary, the polish-commit
 path (`DictationViewModel+Session.swift`), and the eval support/corpus. The
 decide step writes "LLM eval lane: RUNNING (…)" or "SKIPPED (…)" to the
 run's step summary so a skipped run is self-explanatory. The PolishHelper
-UNIT suite (Metal-free) and the tier-1 voxmlx realtime integration stay
+UNIT suite (Metal-free) and the tier-1 speechd realtime integration stay
 per-push.
 
 The rule behind the list — the LLM lanes are REQUIRED for changes to:

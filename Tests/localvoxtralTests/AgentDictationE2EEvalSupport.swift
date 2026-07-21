@@ -31,8 +31,8 @@ enum AgentDictationE2EEvalSupport {
     static let defaultHelperPath =
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd"
     static let defaultVoxmlxEndpoint = "ws://127.0.0.1:8000/v1/realtime"
-    /// The realtime model the build host's voxmlx service serves (same pin as
-    /// the tier-1 integration lane in `remote-build.sh integration`).
+    /// The realtime model the build host's speechd STT service serves (same pin
+    /// as the tier-1 integration lane in `remote-build.sh integration`).
     static let defaultASRModel = "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit"
 
     struct MarkerConfig: Decodable, Equatable {
