@@ -19,8 +19,10 @@ set -euo pipefail
 #                  transcribe real audio through the production websocket
 #                  client, and assert accuracy + delta + parent-pid contracts
 #     speechd-bench run the packaged speech helper's streaming benchmark;
-#                  optional args = seconds (default 60) and cadence ms
-#                  (default 100 = the production step cadence); requires a prior `package`
+#                  optional args = seconds (default 60), cadence ms
+#                  (default 100 = the production step cadence), and
+#                  cache-limit-mb (default = the helper's built-in limit);
+#                  requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
