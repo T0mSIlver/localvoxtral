@@ -929,27 +929,37 @@ extension DictationViewModel {
                         PolishContextGrounding.Candidate(
                             source: .repository,
                             entries: repoVocabularyOutcome.entries,
-                            isFallbackOnly: repoVocabularyOutcome.isFallbackOnly
+                            isFallbackOnly: repoVocabularyOutcome.isFallbackOnly,
+                            phoneticEntries: repoVocabularyOutcome.phoneticEntries,
+                            verificationEntries: repoVocabularyOutcome.verificationCandidates
                         ),
                         PolishContextGrounding.Candidate(
                             source: .repository,
                             entries: claudeRepoOutcome.entries,
-                            isFallbackOnly: claudeRepoOutcome.isFallbackOnly
+                            isFallbackOnly: claudeRepoOutcome.isFallbackOnly,
+                            phoneticEntries: claudeRepoOutcome.phoneticEntries,
+                            verificationEntries: claudeRepoOutcome.verificationCandidates
                         ),
                         PolishContextGrounding.Candidate(
                             source: .terminal,
                             entries: screenVocabularyOutcome.entries,
-                            isFallbackOnly: screenVocabularyOutcome.isFallbackOnly
+                            isFallbackOnly: screenVocabularyOutcome.isFallbackOnly,
+                            phoneticEntries: screenVocabularyOutcome.phoneticEntries,
+                            verificationEntries: screenVocabularyOutcome.verificationCandidates
                         ),
                         PolishContextGrounding.Candidate(
                             source: .claude,
                             entries: claudeSessionOutcome.entries,
-                            isFallbackOnly: claudeSessionOutcome.isFallbackOnly
+                            isFallbackOnly: claudeSessionOutcome.isFallbackOnly,
+                            phoneticEntries: claudeSessionOutcome.phoneticEntries,
+                            verificationEntries: claudeSessionOutcome.verificationCandidates
                         ),
                         PolishContextGrounding.Candidate(
                             source: .clipboard,
                             entries: clipboardVocabularyOutcome.entries,
-                            isFallbackOnly: clipboardVocabularyOutcome.isFallbackOnly
+                            isFallbackOnly: clipboardVocabularyOutcome.isFallbackOnly,
+                            phoneticEntries: clipboardVocabularyOutcome.phoneticEntries,
+                            verificationEntries: clipboardVocabularyOutcome.verificationCandidates
                         ),
                     ])
                     let repoVocabularyEntries = merged.entries(from: .repository)
@@ -1024,6 +1034,21 @@ extension DictationViewModel {
                         // Counts only — entity content is session content.
                         Log.polishing.info(
                             "Claude session vocabulary attached: claude-vocab:\(claudeVocabularyCount, privacy: .public)"
+                        )
+                    }
+
+                    // Render from the MERGED pairs only: a span the merge
+                    // pre-applied or abstained-and-dropped must not reappear.
+                    // These remain untrusted suggestions for the model to
+                    // verify against context, deliberately never pre-applied.
+                    if !merged.verificationPairs.isEmpty && templateCarriesDictionarySlot {
+                        replacementDictionarySection =
+                            RepoVocabularyMatcher.appendedVerificationSection(
+                                base: replacementDictionarySection,
+                                pairs: merged.verificationPairs
+                            )
+                        Log.polishing.info(
+                            "Verification candidates attached: \(merged.verificationPairs.count, privacy: .public)"
                         )
                     }
 

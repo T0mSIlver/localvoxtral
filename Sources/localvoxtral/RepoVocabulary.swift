@@ -365,6 +365,19 @@ struct RepoVocabulary: Sendable {
     /// by normalized length, so an n-gram only edit-distance-checks terms
     /// within ±1 of its own length, with character arrays precomputed.
     let fuzzyBuckets: [Int: [FuzzyCandidate]]
+    /// Full-length Double Metaphone variants -> phonetic candidates. The
+    /// transcript sweep performs dictionary lookups against this index; it
+    /// never compares every heard n-gram with every repository term.
+    let phoneticIndex: [String: [Int]]
+    /// Eligible terms, stored once even when their primary/secondary keys
+    /// produce several index variants.
+    let phoneticCandidates: [PhoneticCandidate]
+    /// Variants long enough for the conservative edit-distance-one phonetic
+    /// tier, bucketed by length so each lookup remains bounded to ±1.
+    /// Characters are pre-materialized once at index build so the
+    /// distance-one sweep never converts per comparison (mirrors
+    /// `FuzzyCandidate.normalizedCharacters`).
+    let phoneticBuckets: [Int: [(variant: [Character], candidateIndex: Int)]]
     /// Candidate spellings and a character n-gram index for the conservative aligned
     /// fallback. Built once with the vocabulary so a miss never degrades into
     /// an O(transcript n-grams x every repo term) scan in a large monorepo.
@@ -374,6 +387,12 @@ struct RepoVocabulary: Sendable {
     struct FuzzyCandidate: Sendable {
         let term: String
         let normalizedCharacters: [Character]
+    }
+
+    struct PhoneticCandidate: Sendable {
+        let term: String
+        let wordUnitCount: Int
+        let normalized: String
     }
 
     struct AlignedCandidate: Sendable {
@@ -387,17 +406,49 @@ struct RepoVocabulary: Sendable {
         self.branch = branch
         var exact: [String: String] = [:]
         var buckets: [Int: [FuzzyCandidate]] = [:]
+        var phoneticIndex: [String: [Int]] = [:]
+        var phoneticCandidates: [PhoneticCandidate] = []
+        var phoneticBuckets: [Int: [(variant: [Character], candidateIndex: Int)]] = [:]
         var aligned: [AlignedCandidate] = []
         var ngramIndex: [String: [Int]] = [:]
         for term in terms {
             let normalized = RepoVocabularyMatcher.normalize(term)
-            guard normalized.count >= RepoVocabularyMatcher.minNormalizedLength else { continue }
-            if exact[normalized] == nil { exact[normalized] = term }
-            if normalized.count >= RepoVocabularyMatcher.fuzzyMinNormalizedLength {
-                buckets[normalized.count, default: []].append(
-                    FuzzyCandidate(term: term, normalizedCharacters: Array(normalized))
-                )
+            if normalized.count >= RepoVocabularyMatcher.minNormalizedLength {
+                if exact[normalized] == nil { exact[normalized] = term }
+                if normalized.count >= RepoVocabularyMatcher.fuzzyMinNormalizedLength {
+                    buckets[normalized.count, default: []].append(
+                        FuzzyCandidate(term: term, normalizedCharacters: Array(normalized))
+                    )
+                }
             }
+
+            let wordUnits = RepoVocabularyMatcher.phoneticWordUnits(of: term)
+            if !wordUnits.isEmpty,
+               wordUnits.count <= RepoVocabularyMatcher.phoneticMaxWordUnits,
+               (wordUnits.count >= 2
+                   || normalized.count
+                        >= RepoVocabularyMatcher.phoneticMinSingleWordNormalizedLength)
+            {
+                let candidateIndex = phoneticCandidates.count
+                phoneticCandidates.append(PhoneticCandidate(
+                    term: term,
+                    wordUnitCount: wordUnits.count,
+                    normalized: normalized
+                ))
+                // Primary/secondary alternates can converge. Index each term
+                // once per distinct concatenated key so an alternate cannot
+                // manufacture ambiguity with itself.
+                for variant in RepoVocabularyMatcher.phoneticVariants(for: wordUnits) {
+                    guard variant.count >= 2 else { continue }
+                    phoneticIndex[variant, default: []].append(candidateIndex)
+                    if variant.count >= 4 {
+                        phoneticBuckets[variant.count, default: []].append(
+                            (variant: Array(variant), candidateIndex: candidateIndex)
+                        )
+                    }
+                }
+            }
+
             let alignedNormalized = RepoVocabularyMatcher.alignedNormalize(term)
             if alignedNormalized.count >= RepoVocabularyMatcher.alignedMinNormalizedLength {
                 let candidateIndex = aligned.count
@@ -413,6 +464,9 @@ struct RepoVocabulary: Sendable {
         }
         self.exactIndex = exact
         self.fuzzyBuckets = buckets
+        self.phoneticIndex = phoneticIndex
+        self.phoneticCandidates = phoneticCandidates
+        self.phoneticBuckets = phoneticBuckets
         self.alignedCandidates = aligned
         self.alignedNGramIndex = ngramIndex
     }
@@ -945,7 +999,10 @@ enum RepoVocabularyService {
         let outcome = RepoVocabularyMatcher.groundedCandidates(
             transcript: transcript, vocabulary: vocabulary
         )
-        if outcome.entries.isEmpty {
+        if outcome.entries.isEmpty,
+           outcome.phoneticEntries.isEmpty,
+           outcome.verificationCandidates.isEmpty
+        {
             // Static string + no content: the LAST silent skip on this path.
             // Every skip reason is .info — .debug is not persisted by the
             // unified log store, which made a field no-attach undiagnosable
@@ -972,11 +1029,33 @@ enum RepoVocabularyMatcher {
     /// Minimum normalized length (both sides) for the edit-distance-1 fuzzy
     /// tier — short forms would collide constantly.
     static let fuzzyMinNormalizedLength = 8
+    /// A single word needs more evidence than a multi-word phrase before
+    /// pronunciation alone may nominate it. Short homophones such as
+    /// `pane`/`pain` therefore remain ordinary prose unless another tier owns
+    /// them, while a phrase like `terminal pane` is eligible.
+    static let phoneticMinSingleWordNormalizedLength = 8
+    /// Pre-application (a silent rewrite) demands more evidence than a
+    /// verification suggestion, for every window shape: the heard span must
+    /// carry as many normalized characters as a single-word candidate needs,
+    /// and the agreeing key must carry enough consonant structure that the
+    /// agreement is unlikely to be a short-homophone accident. Otherwise a
+    /// multi-word term gluing a stopword onto a short homophone (`thePane`
+    /// heard as "the pain") would silently rewrite ordinary prose. Weaker
+    /// exact-key hits remain verification candidates.
+    static let phoneticMinPreApplyNormalizedLength = 8
+    static let phoneticMinPreApplyKeyLength = 6
+    /// Bounds both index expansion (at most 2^4 key variants) and transcript
+    /// n-grams. Longer identifiers are better served by the character tiers.
+    static let phoneticMaxWordUnits = 4
+    /// Weak phonetic evidence is prompt-only and deliberately scarce: it
+    /// should help verification, not become a vocabulary dump.
+    static let phoneticMaxVerificationCandidates = 4
     /// The aligned fallback is intentionally narrower than the exact matcher:
     /// short strings collide too easily in normal prose.
     static let alignedMinNormalizedLength = 8
     static let alignedMinimumScore = 0.60
     static let alignedMinimumMargin = 0.05
+    static let alignedVerificationMinimumScore = 0.55
     static let alignedMaxWords = 7
     /// A span whose rarest shared n-gram still fans out beyond this cap is not
     /// distinctive enough for deterministic grounding. This also bounds work
@@ -1007,6 +1086,237 @@ enum RepoVocabularyMatcher {
             output += stripped
         }
         return output
+    }
+
+    /// Splits a local spelling into the word units a speaker can pronounce.
+    /// Repository joiners and whitespace are boundaries, as are the two
+    /// identifier transitions that reliably introduce a spoken unit:
+    /// lower-to-upper camel case and letter-to-digit. Units containing no
+    /// letters are discarded because Double Metaphone cannot add evidence for
+    /// punctuation or a bare numeric component.
+    static func phoneticWordUnits(of term: String) -> [String] {
+        var units: [String] = []
+        var current = ""
+        var previous: Character?
+
+        func finishUnit() {
+            guard !current.isEmpty else { return }
+            if current.contains(where: { $0.isLetter }) {
+                units.append(current)
+            }
+            current.removeAll(keepingCapacity: true)
+        }
+
+        for character in term {
+            if character.isWhitespace || "./_-".contains(character) {
+                finishUnit()
+                previous = nil
+                continue
+            }
+            if let previous,
+               (previous.isLowercase && character.isUppercase)
+                    || (previous.isLetter && character.isNumber)
+            {
+                finishUnit()
+            }
+            current.append(character)
+            previous = character
+        }
+        finishUnit()
+        return units
+    }
+
+    /// Enumerates primary/secondary choices without duplicate variants. With
+    /// the four-unit cap this produces at most sixteen strings per term or
+    /// heard span, keeping both indexing and matching strictly bounded.
+    static func phoneticVariants(for wordUnits: [String]) -> [String] {
+        guard !wordUnits.isEmpty, wordUnits.count <= phoneticMaxWordUnits else { return [] }
+        var variants = [""]
+        for unit in wordUnits {
+            let key = DoubleMetaphone.encode(unit)
+            var choices: [String] = []
+            if !key.primary.isEmpty { choices.append(key.primary) }
+            if !key.secondary.isEmpty, key.secondary != key.primary {
+                choices.append(key.secondary)
+            }
+            guard !choices.isEmpty else { return [] }
+            variants = variants.flatMap { prefix in
+                choices.map { prefix + $0 }
+            }
+        }
+        var seen = Set<String>()
+        return variants.filter { seen.insert($0).inserted }
+    }
+
+    /// Result of the phonetic tier over one transcript. `preApply` contains
+    /// only an unambiguous exact-key guess; weaker evidence is retained solely
+    /// for a later prompt verification channel.
+    struct PhoneticOutcome: Equatable, Sendable {
+        let preApply: [ReplacementEntry]
+        let verification: [ReplacementEntry]
+
+        static let empty = PhoneticOutcome(preApply: [], verification: [])
+    }
+
+    /// Matches transcript word n-grams through the prebuilt phonetic indexes.
+    /// Exact/fuzzy character ownership is checked before recording a hit, so
+    /// phonetics never duplicate stronger evidence. Exact pronunciation is a
+    /// pre-apply guess only when one distinct local term owns the heard key;
+    /// ambiguity, distance-one pronunciation, and unspoken extensions remain
+    /// prompt-only suggestions.
+    static func phoneticCandidates(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> PhoneticOutcome {
+        let words = tokenize(transcript)
+        guard !words.isEmpty, !vocabulary.phoneticCandidates.isEmpty else { return .empty }
+
+        var bestPreApplyByTerm: [String: PhoneticHit] = [:]
+        var bestVerificationByTerm: [String: PhoneticHit] = [:]
+
+        func record(_ hit: PhoneticHit, preApply: Bool) {
+            if preApply {
+                if let existing = bestPreApplyByTerm[hit.term],
+                   !phoneticHit(hit, isBetterThan: existing)
+                {
+                    return
+                }
+                bestPreApplyByTerm[hit.term] = hit
+            } else {
+                if let existing = bestVerificationByTerm[hit.term],
+                   !phoneticHit(hit, isBetterThan: existing)
+                {
+                    return
+                }
+                bestVerificationByTerm[hit.term] = hit
+            }
+        }
+
+        // A repeated phrase re-derives the same key variants; its first
+        // transcript position is already its best rank, so each (window
+        // length, variant) pair is swept for near keys at most once —
+        // mirrors `fuzzySweptGrams` in the character tier.
+        var phoneticSweptVariants = Set<String>()
+
+        for start in words.indices {
+            let maxWindow = min(phoneticMaxWordUnits, words.count - start)
+            for length in 1...maxWindow {
+                let window = Array(words[start..<(start + length)])
+                if window.allSatisfy({ isCommon($0) }) { continue }
+                let spoken = window.joined(separator: " ")
+                let normalizedGram = normalize(spoken)
+                guard normalizedGram.count >= minNormalizedLength else { continue }
+
+                let gramVariants = phoneticVariants(for: window)
+                guard !gramVariants.isEmpty else { continue }
+
+                var exactIndexes = Set<Int>()
+                for variant in gramVariants {
+                    exactIndexes.formUnion(vocabulary.phoneticIndex[variant] ?? [])
+                }
+                exactIndexes = Set(exactIndexes.filter { candidateIndex in
+                    let candidate = vocabulary.phoneticCandidates[candidateIndex]
+                    return candidate.wordUnitCount == length
+                        && !characterTierOwns(
+                            heardNormalized: normalizedGram,
+                            candidateNormalized: candidate.normalized
+                        )
+                })
+
+                if !exactIndexes.isEmpty {
+                    let distinctTerms = Set(exactIndexes.map {
+                        vocabulary.phoneticCandidates[$0].term
+                    })
+                    let ambiguous = distinctTerms.count > 1
+                    for candidateIndex in exactIndexes {
+                        let candidate = vocabulary.phoneticCandidates[candidateIndex]
+                        let hit = PhoneticHit(
+                            term: candidate.term,
+                            normalizedLength: candidate.normalized.count,
+                            position: start,
+                            spoken: spoken,
+                            exactKey: true
+                        )
+                        let carriesUnspokenExtension: Bool
+                        if let fileExtension = shortFileExtension(in: candidate.term) {
+                            carriesUnspokenExtension = !spoken.lowercased().contains(
+                                ".\(fileExtension)"
+                            )
+                        } else {
+                            carriesUnspokenExtension = false
+                        }
+                        let carriesPreApplyEvidence =
+                            normalizedGram.count >= phoneticMinPreApplyNormalizedLength
+                            && gramVariants.contains { variant in
+                                variant.count >= phoneticMinPreApplyKeyLength
+                                    && (vocabulary.phoneticIndex[variant] ?? [])
+                                        .contains(candidateIndex)
+                            }
+                        record(
+                            hit,
+                            preApply: !ambiguous && !carriesUnspokenExtension
+                                && carriesPreApplyEvidence
+                        )
+                    }
+                    // An exact pronunciation already owns this heard span.
+                    // Distance-one neighbors would add noise, not evidence.
+                    continue
+                }
+
+                var nearIndexes = Set<Int>()
+                for variant in gramVariants where variant.count >= 4 {
+                    guard phoneticSweptVariants.insert("\(length):\(variant)").inserted
+                    else { continue }
+                    let variantCharacters = Array(variant)
+                    for bucketLength in (variant.count - 1)...(variant.count + 1) {
+                        for indexed in vocabulary.phoneticBuckets[bucketLength] ?? [] {
+                            guard isEditDistanceAtMostOne(
+                                variantCharacters, indexed.variant
+                            ) else { continue }
+                            nearIndexes.insert(indexed.candidateIndex)
+                        }
+                    }
+                }
+                for candidateIndex in nearIndexes {
+                    let candidate = vocabulary.phoneticCandidates[candidateIndex]
+                    guard candidate.wordUnitCount == length,
+                          !characterTierOwns(
+                              heardNormalized: normalizedGram,
+                              candidateNormalized: candidate.normalized
+                          )
+                    else { continue }
+                    record(PhoneticHit(
+                        term: candidate.term,
+                        normalizedLength: candidate.normalized.count,
+                        position: start,
+                        spoken: spoken,
+                        exactKey: false
+                    ), preApply: false)
+                }
+            }
+        }
+
+        // One term cannot be both rewritten and suggested. An exact,
+        // unambiguous key is the better evidence regardless of where a weaker
+        // near-key appeared in the transcript.
+        for term in bestPreApplyByTerm.keys {
+            bestVerificationByTerm.removeValue(forKey: term)
+        }
+        let rank: (PhoneticHit, PhoneticHit) -> Bool = { lhs, rhs in
+            if lhs.normalizedLength != rhs.normalizedLength {
+                return lhs.normalizedLength > rhs.normalizedLength
+            }
+            if lhs.position != rhs.position { return lhs.position < rhs.position }
+            return lhs.term < rhs.term
+        }
+        let preApply = bestPreApplyByTerm.values.sorted(by: rank).prefix(maxEntries).map {
+            ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
+        }
+        let verification = bestVerificationByTerm.values.sorted(by: rank)
+            .prefix(phoneticMaxVerificationCandidates).map {
+                ReplacementEntry(replaceWith: $0.term, matches: [$0.spoken])
+            }
+        return PhoneticOutcome(preApply: Array(preApply), verification: Array(verification))
     }
 
     /// The candidate replacement entries for `transcript` grounded in
@@ -1107,10 +1417,34 @@ enum RepoVocabularyMatcher {
     struct GroundingOutcome: Equatable, Sendable {
         let entries: [ReplacementEntry]
         let isFallbackOnly: Bool
+        /// Exact, unambiguous phonetic-key matches. They are still guess grade
+        /// across sources, but may be pre-applied when nobody contests them.
+        let phoneticEntries: [ReplacementEntry]
+        /// Weak or contested evidence whose original transcript bytes must
+        /// remain untouched. A later prompt renderer can present these as
+        /// explicit possible-mishearing pairs.
+        let verificationCandidates: [ReplacementEntry]
+
+        init(
+            entries: [ReplacementEntry],
+            isFallbackOnly: Bool,
+            phoneticEntries: [ReplacementEntry] = [],
+            verificationCandidates: [ReplacementEntry] = []
+        ) {
+            self.entries = entries
+            self.isFallbackOnly = isFallbackOnly
+            self.phoneticEntries = phoneticEntries
+            self.verificationCandidates = verificationCandidates
+        }
 
         /// Not `none`: a static of that name on a non-Optional type shadows
         /// `Optional.none` at any use site that wraps it.
-        static let empty = GroundingOutcome(entries: [], isFallbackOnly: false)
+        static let empty = GroundingOutcome(
+            entries: [],
+            isFallbackOnly: false,
+            phoneticEntries: [],
+            verificationCandidates: []
+        )
     }
 
     /// `groundedCandidateEntries` with its provenance retained.
@@ -1135,14 +1469,136 @@ enum RepoVocabularyMatcher {
             guard !matches.isEmpty else { return nil }
             return ReplacementEntry(replaceWith: entry.replaceWith, matches: matches)
         }
-        guard unambiguous.isEmpty else {
-            return GroundingOutcome(entries: unambiguous, isFallbackOnly: false)
+        let solidHeardKeys = Set(unambiguous.flatMap(\.matches).map(normalize))
+        let solidTerms = Set(unambiguous.map(\.replaceWith))
+        let phonetic = phoneticCandidates(transcript: transcript, vocabulary: vocabulary)
+
+        // A stronger character hit owns both the local term and the literal
+        // span. Keeping a phonetic suggestion beside it would either duplicate
+        // the answer or refer to bytes pre-application is about to replace.
+        func withoutSolidCollisions(_ entries: [ReplacementEntry]) -> [ReplacementEntry] {
+            entries.compactMap { entry in
+                guard !solidTerms.contains(entry.replaceWith) else { return nil }
+                let matches = entry.matches.filter { !solidHeardKeys.contains(normalize($0)) }
+                guard !matches.isEmpty else { return nil }
+                return ReplacementEntry(replaceWith: entry.replaceWith, matches: matches)
+            }
         }
-        guard let fallback = alignedFallbackEntry(
-            transcript: transcript,
-            vocabulary: vocabulary
-        ) else { return .empty }
-        return GroundingOutcome(entries: [fallback], isFallbackOnly: true)
+        var phoneticPreApply = withoutSolidCollisions(phonetic.preApply)
+        var phoneticVerification = withoutSolidCollisions(phonetic.verification)
+
+        // The character tiers abstained on these spans because two terms
+        // tied. A phonetic guess must not silently rewrite bytes the
+        // strongest tier already declared contested — it survives only as a
+        // verification choice.
+        let contestedKeys = Set(ambiguousHeard.map(normalize))
+        if !contestedKeys.isEmpty {
+            let contested = phoneticPreApply.filter { entry in
+                entry.matches.contains { contestedKeys.contains(normalize($0)) }
+            }
+            if !contested.isEmpty {
+                let contestedTerms = Set(contested.map(\.replaceWith))
+                phoneticPreApply.removeAll { contestedTerms.contains($0.replaceWith) }
+                phoneticVerification.append(contentsOf: contested)
+            }
+        }
+
+        // Preserve the old fallback trigger exactly: it is considered only
+        // when the solid character tiers approved nothing. Phonetic evidence
+        // is guess grade and does not suppress that independent check.
+        let aligned = unambiguous.isEmpty
+            ? alignedFallbackOutcome(transcript: transcript, vocabulary: vocabulary)
+            : (approved: nil, verification: [])
+        var fallback = aligned.approved
+        var alignedVerification = aligned.verification
+
+        // Two independent guesses assigning different local spellings to the
+        // same bytes are not safe to pre-apply. Retain both as verification
+        // choices because abstention leaves those bytes intact.
+        if let approvedFallback = fallback {
+            let fallbackKeys = Set(approvedFallback.matches.map(normalize))
+            let samePhoneticEvidence = (phoneticPreApply + phoneticVerification).contains {
+                $0.replaceWith == approvedFallback.replaceWith
+                    && $0.matches.contains { fallbackKeys.contains(normalize($0)) }
+            }
+            // The narrower pronunciation tier owns an agreeing span. In
+            // particular, a near phonetic key must not be promoted merely
+            // because the broader character-alignment fallback also likes it;
+            // that would turn a prompt-only confidence grade into a rewrite.
+            if samePhoneticEvidence {
+                fallback = nil
+            }
+            let conflicting = phoneticPreApply.filter { entry in
+                entry.replaceWith != approvedFallback.replaceWith
+                    && entry.matches.contains { fallbackKeys.contains(normalize($0)) }
+            }
+            if !conflicting.isEmpty {
+                let conflictingTerms = Set(conflicting.map(\.replaceWith))
+                phoneticPreApply.removeAll { conflictingTerms.contains($0.replaceWith) }
+                phoneticVerification.append(contentsOf: conflicting)
+                alignedVerification.append(approvedFallback)
+                fallback = nil
+            }
+        }
+
+        let primaryEntries: [ReplacementEntry]
+        let isFallbackOnly: Bool
+        if !unambiguous.isEmpty {
+            primaryEntries = unambiguous
+            isFallbackOnly = false
+        } else if let fallback {
+            primaryEntries = [fallback]
+            isFallbackOnly = true
+        } else {
+            primaryEntries = []
+            isFallbackOnly = false
+        }
+
+        // `maxEntries` remains the total pre-application budget. Existing
+        // solid/fallback entries spend it first; phonetic guesses use only the
+        // remainder and never displace stronger evidence.
+        let phoneticBudget = max(0, maxEntries - primaryEntries.count)
+        phoneticPreApply = Array(phoneticPreApply.prefix(phoneticBudget))
+
+        // Conflict demotion can append formerly-high hits after already-weak
+        // hits. Restore the phonetic tier's documented global rank before the
+        // combined verification cap is applied.
+        phoneticVerification.sort { lhs, rhs in
+            let lhsLength = normalize(lhs.replaceWith).count
+            let rhsLength = normalize(rhs.replaceWith).count
+            if lhsLength != rhsLength { return lhsLength > rhsLength }
+            let lhsPosition = lhs.matches.first.flatMap { transcript.range(of: $0) }
+                .map { transcript.distance(from: transcript.startIndex, to: $0.lowerBound) }
+                ?? Int.max
+            let rhsPosition = rhs.matches.first.flatMap { transcript.range(of: $0) }
+                .map { transcript.distance(from: transcript.startIndex, to: $0.lowerBound) }
+                ?? Int.max
+            if lhsPosition != rhsPosition { return lhsPosition < rhsPosition }
+            if lhs.replaceWith != rhs.replaceWith { return lhs.replaceWith < rhs.replaceWith }
+            return (lhs.matches.first ?? "") < (rhs.matches.first ?? "")
+        }
+
+        var verificationCandidates: [ReplacementEntry] = []
+        var seenVerification = Set<VerificationKey>()
+        for entry in phoneticVerification + alignedVerification {
+            for heard in entry.matches {
+                let key = VerificationKey(heardKey: normalize(heard), term: entry.replaceWith)
+                guard seenVerification.insert(key).inserted else { continue }
+                verificationCandidates.append(ReplacementEntry(
+                    replaceWith: entry.replaceWith,
+                    matches: [heard]
+                ))
+                if verificationCandidates.count == phoneticMaxVerificationCandidates { break }
+            }
+            if verificationCandidates.count == phoneticMaxVerificationCandidates { break }
+        }
+
+        return GroundingOutcome(
+            entries: primaryEntries,
+            isFallbackOnly: isFallbackOnly,
+            phoneticEntries: phoneticPreApply,
+            verificationCandidates: verificationCandidates
+        )
     }
 
     /// Places exact vocabulary bytes into only the literal ASR spans already
@@ -1195,8 +1651,22 @@ enum RepoVocabularyMatcher {
         transcript: String,
         vocabulary: RepoVocabulary
     ) -> ReplacementEntry? {
+        alignedFallbackOutcome(transcript: transcript, vocabulary: vocabulary).approved
+    }
+
+    /// The aligned matcher has one deterministic approval channel and a small
+    /// demotion channel for evidence that narrowly misses confidence. Only
+    /// score ambiguity, a near score, or an unspoken extension can be useful
+    /// to the model; a single glued word inflated far beyond the candidate is
+    /// a structural mismatch and remains a hard drop.
+    static func alignedFallbackOutcome(
+        transcript: String,
+        vocabulary: RepoVocabulary
+    ) -> (approved: ReplacementEntry?, verification: [ReplacementEntry]) {
         let tokens = fallbackTokens(in: transcript)
-        guard !tokens.isEmpty, !vocabulary.alignedCandidates.isEmpty else { return nil }
+        guard !tokens.isEmpty, !vocabulary.alignedCandidates.isEmpty else {
+            return (nil, [])
+        }
 
         var bestByCandidate: [Int: AlignedHit] = [:]
         for start in tokens.indices {
@@ -1258,14 +1728,59 @@ enum RepoVocabularyMatcher {
             }
         }
 
-        let ranked = bestByCandidate.values.sorted {
-            alignedHit($0, isBetterThan: $1)
+        let ranked = bestByCandidate.values.sorted { lhs, rhs in
+            if alignedHit(lhs, isBetterThan: rhs) { return true }
+            if alignedHit(rhs, isBetterThan: lhs) { return false }
+            let lhsTerm = vocabulary.alignedCandidates[lhs.candidateIndex].term
+            let rhsTerm = vocabulary.alignedCandidates[rhs.candidateIndex].term
+            if lhsTerm != rhsTerm { return lhsTerm < rhsTerm }
+            return lhs.candidateIndex < rhs.candidateIndex
         }
-        guard let best = ranked.first, best.score >= alignedMinimumScore else { return nil }
+        guard let best = ranked.first else { return (nil, []) }
         let bestCandidate = vocabulary.alignedCandidates[best.candidateIndex]
         let runnerUp = ranked.dropFirst().first
         let margin = best.score - (runnerUp?.score ?? 0)
-        guard margin >= alignedMinimumMargin else { return nil }
+
+        func entry(for hit: AlignedHit) -> ReplacementEntry {
+            ReplacementEntry(
+                replaceWith: vocabulary.alignedCandidates[hit.candidateIndex].term,
+                matches: [hit.heard]
+            )
+        }
+
+        func isInflatedSingleWord(_ hit: AlignedHit) -> Bool {
+            let candidate = vocabulary.alignedCandidates[hit.candidateIndex]
+            let normalizedHeard = alignedNormalize(hit.heard)
+            return !hit.heard.contains(where: { $0.isWhitespace })
+                && Double(normalizedHeard.count) > Double(candidate.normalized.count) * 1.2
+        }
+
+        // This check intentionally precedes every demotion rule. The old
+        // matcher rejected this shape outright; exposing it as a suggestion
+        // would merely move the unsafe deletion risk into the prompt.
+        guard !isInflatedSingleWord(best) else { return (nil, []) }
+
+        if best.score >= alignedMinimumScore, margin < alignedMinimumMargin {
+            var verification = [entry(for: best)]
+            if let runnerUp,
+               runnerUp.score >= alignedMinimumScore,
+               !isInflatedSingleWord(runnerUp)
+            {
+                verification.append(entry(for: runnerUp))
+            }
+            return (nil, Array(verification.prefix(2)))
+        }
+
+        if best.score >= alignedVerificationMinimumScore,
+           best.score < alignedMinimumScore,
+           margin >= alignedMinimumMargin
+        {
+            return (nil, [entry(for: best)])
+        }
+
+        guard best.score >= alignedMinimumScore,
+              margin >= alignedMinimumMargin
+        else { return (nil, []) }
 
         // A filename extension that was not spoken is a semantic choice, not
         // merely a spelling correction. Require a nearby file-oriented verb /
@@ -1277,19 +1792,9 @@ enum RepoVocabularyMatcher {
            !best.heard.lowercased().contains(".\(fileExtension)"),
            !hasFileReferenceCue(tokens: tokens, hit: best, transcript: transcript)
         {
-            return nil
+            return (nil, [entry(for: best)])
         }
-
-        let normalizedHeard = alignedNormalize(best.heard)
-        if !best.heard.contains(where: { $0.isWhitespace }),
-           Double(normalizedHeard.count) > Double(bestCandidate.normalized.count) * 1.2
-        {
-            return nil
-        }
-        return ReplacementEntry(
-            replaceWith: bestCandidate.term,
-            matches: [best.heard]
-        )
+        return (entry(for: best), [])
     }
 
     // MARK: - Internals
@@ -1301,6 +1806,19 @@ enum RepoVocabularyMatcher {
         let position: Int
         let spoken: String
         let exact: Bool
+    }
+
+    private struct PhoneticHit {
+        let term: String
+        let normalizedLength: Int
+        let position: Int
+        let spoken: String
+        let exactKey: Bool
+    }
+
+    private struct VerificationKey: Hashable {
+        let heardKey: String
+        let term: String
     }
 
     private struct FallbackToken {
@@ -1471,6 +1989,32 @@ enum RepoVocabularyMatcher {
         return candidate.spoken.count > existing.spoken.count
     }
 
+    /// Within one phonetic term, exact pronunciation outranks a near key, then
+    /// the earlier and more specific literal span wins. Final cross-term order
+    /// is applied separately after this per-term best-hit reduction.
+    private static func phoneticHit(
+        _ candidate: PhoneticHit,
+        isBetterThan existing: PhoneticHit
+    ) -> Bool {
+        if candidate.exactKey != existing.exactKey { return candidate.exactKey }
+        if candidate.position != existing.position { return candidate.position < existing.position }
+        return candidate.spoken.count > existing.spoken.count
+    }
+
+    /// Exact equality and character edit distance one already have stronger,
+    /// established owners. Checking the bounded distance only when lengths are
+    /// within one avoids unnecessary character work.
+    private static func characterTierOwns(
+        heardNormalized: String,
+        candidateNormalized: String
+    ) -> Bool {
+        if heardNormalized == candidateNormalized { return true }
+        guard abs(heardNormalized.count - candidateNormalized.count) <= 1 else { return false }
+        return isEditDistanceAtMostOne(
+            Array(heardNormalized), Array(candidateNormalized)
+        )
+    }
+
     /// Specialized distance-1 check (all the fuzzy tier needs): two-pointer
     /// single pass with early exit — no O(n²) matrix, no per-pair count
     /// recomputation (callers pass precomputed character arrays).
@@ -1508,10 +2052,13 @@ enum RepoVocabularyMatcher {
     /// interpolation could break a `- key: aliases` line into stray prompt
     /// lines. Reuses the shared clipboard sanitizer (drops control chars) and
     /// additionally removes the newline/tab it deliberately keeps — a rendered
-    /// dictionary line must stay single-line.
+    /// dictionary line must stay single-line. Double quotes are dropped too:
+    /// the verification pairs render both sides inside `"..."`, and a quote
+    /// inside a term would close that quoting early and smuggle its own
+    /// prose into the instruction line.
     static func sanitizedTerm(_ term: String) -> String {
         PolishContextClipboardReader.sanitizeControlCharacters(term)
-            .filter { $0 != "\n" && $0 != "\t" }
+            .filter { $0 != "\n" && $0 != "\t" && $0 != "\"" }
             .trimmingCharacters(in: .whitespaces)
     }
 
@@ -1551,6 +2098,49 @@ enum RepoVocabularyMatcher {
         "Coding agent session vocabulary (exact file names and identifiers from the "
         + "speaker's open coding-agent session; use them to correct near-miss spellings "
         + "of the terms below, never to add new content):"
+
+    /// Header for below-threshold matcher candidates rendered as explicit
+    /// verification suggestions rather than pre-applied bytes. The matcher was
+    /// not confident enough to edit the user's words deterministically, so the
+    /// model verifies each untrusted guess against the surrounding transcript —
+    /// the same reference-block defense framing used by the context sections.
+    static let verificationCandidatesHeader =
+        "Possible mishearings (unverified guesses pairing a transcript phrase with a "
+        + "project term it may be a mishearing of; rewrite a phrase to its paired term "
+        + "only when the surrounding transcript clearly supports that term; when unsure, "
+        + "keep the transcript's words unchanged; never use these to add new content):"
+
+    /// Renders the merge's prompt-only guesses as explicit heard/exact pairs.
+    /// Both sides pass through the same single-line defense as vocabulary terms;
+    /// a malformed or now-identical pair contributes no instruction to the model.
+    static func verificationPromptSection(
+        pairs: [PolishContextGrounding.VerificationPair]
+    ) -> String {
+        let lines: [String] = pairs.compactMap { pair in
+            let heard = sanitizedTerm(pair.heard)
+            let exact = sanitizedTerm(pair.exact)
+            guard isRenderableTerm(heard),
+                  isRenderableTerm(exact),
+                  heard != exact
+            else { return nil }
+            return "- possible mishearing: \"\(heard)\" -> \"\(exact)\""
+        }
+        guard !lines.isEmpty else { return "" }
+        return "\(verificationCandidatesHeader)\n\(lines.joined(separator: "\n"))"
+    }
+
+    /// Appends prompt-only verification suggestions beside the replacement-
+    /// dictionary sections. An empty base leaves the section standing alone;
+    /// if sanitization removes every pair, the existing base stays byte-exact.
+    static func appendedVerificationSection(
+        base: String,
+        pairs: [PolishContextGrounding.VerificationPair]
+    ) -> String {
+        let section = verificationPromptSection(pairs: pairs)
+        guard !section.isEmpty else { return base }
+        guard !base.isEmpty else { return section }
+        return base + "\n\n" + section
+    }
 
     /// Renders matched entries as a prompt section mirroring
     /// `ReplacementDictionary.renderedPromptSection`'s `- key: aliases` shape,

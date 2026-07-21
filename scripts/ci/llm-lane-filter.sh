@@ -50,6 +50,8 @@ PATTERNS=(
   '*PolishContextPreparation*'                       # matching + selection over the retained buffer
   '*ClipboardPayloadMacro*'                          # spoken paste-clipboard macro placeholders
   '*RepoVocabulary*'                                 # repo vocabulary hints fed to the polisher
+  # phonetic grounding tier: feeds what gets pre-applied/suggested
+  '*DoubleMetaphone*'
   '*ClaudeRepoCollector*'                            # what repository content is harvested for the prompt
   '*ClaudeRepoContentFilter*'                        # which repo files/dirs are eligible at all
   '*ClaudeRepoContextSelection*'                     # WHICH repo sections/lines reach the model

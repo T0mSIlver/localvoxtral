@@ -17,24 +17,46 @@ import Foundation
 ///   edit-distance-one tiers found nothing and the bounded aligned matcher
 ///   guessed) while another has a solid hit on that span. The solid hit wins;
 ///   the guess is dropped rather than allowed to compete.
+/// - Weak evidence never rewrites text. Explicit verification candidates and
+///   conflicting guess-grade readings remain bounded prompt suggestions only
+///   while their literal heard bytes have not been pre-applied by another hit.
 ///
 /// Pure and deterministic — decisions depend only on the candidates and the
 /// fixed `PolishContextSource` order.
 enum PolishContextGrounding {
     /// One source's proposal.
-    struct Candidate {
+    struct Candidate: Sendable {
         let source: PolishContextSource
         let entries: [ReplacementEntry]
         /// True when `entries` came from the bounded aligned fallback rather
         /// than the exact / edit-distance-one tiers — a guess, admissible only
         /// while no better-grounded source covers the same heard span.
         let isFallbackOnly: Bool
+        /// Exact, unambiguous phonetic evidence is pre-apply eligible inside a
+        /// source, but remains guess grade when sources are reconciled.
+        let phoneticEntries: [ReplacementEntry]
+        /// Prompt-only possible-mishearing suggestions. They never enter the
+        /// pre-application vote directly.
+        let verificationEntries: [ReplacementEntry]
 
-        init(source: PolishContextSource, entries: [ReplacementEntry], isFallbackOnly: Bool) {
+        init(
+            source: PolishContextSource,
+            entries: [ReplacementEntry],
+            isFallbackOnly: Bool,
+            phoneticEntries: [ReplacementEntry] = [],
+            verificationEntries: [ReplacementEntry] = []
+        ) {
             self.source = source
             self.entries = entries
             self.isFallbackOnly = isFallbackOnly
+            self.phoneticEntries = phoneticEntries
+            self.verificationEntries = verificationEntries
         }
+    }
+
+    struct VerificationPair: Equatable {
+        let heard: String
+        let exact: String
     }
 
     /// The merged grounding, retaining which source each surviving entry came
@@ -43,10 +65,18 @@ enum PolishContextGrounding {
         /// Every surviving entry, in source order — what gets pre-applied.
         let all: [ReplacementEntry]
         private let bySource: [PolishContextSource: [ReplacementEntry]]
+        /// Bounded prompt-only suggestions whose literal heard bytes survived
+        /// pre-application unchanged.
+        let verificationPairs: [VerificationPair]
 
-        init(all: [ReplacementEntry], bySource: [PolishContextSource: [ReplacementEntry]]) {
+        init(
+            all: [ReplacementEntry],
+            bySource: [PolishContextSource: [ReplacementEntry]],
+            verificationPairs: [VerificationPair] = []
+        ) {
             self.all = all
             self.bySource = bySource
+            self.verificationPairs = verificationPairs
         }
 
         /// The surviving entries attributed to `source`. A term two sources
@@ -56,6 +86,8 @@ enum PolishContextGrounding {
             bySource[source] ?? []
         }
     }
+
+    static let maxVerificationPairs = 4
 
     /// Merges `candidates` under the rules documented on this type.
     static func merge(_ candidates: [Candidate]) -> Merged {
@@ -78,20 +110,30 @@ enum PolishContextGrounding {
                         exact: entry.replaceWith,
                         heard: heard,
                         heardKey: RepoVocabularyMatcher.normalize(heard),
-                        isFallbackOnly: candidate.isFallbackOnly
+                        isGuess: candidate.isFallbackOnly
+                    ))
+                }
+            }
+            for entry in candidate.phoneticEntries {
+                for heard in entry.matches {
+                    pairs.append(Pair(
+                        source: candidate.source,
+                        exact: entry.replaceWith,
+                        heard: heard,
+                        heardKey: RepoVocabularyMatcher.normalize(heard),
+                        isGuess: true
                     ))
                 }
             }
         }
-        guard !pairs.isEmpty else { return Merged(all: [], bySource: [:]) }
 
         // Spans are compared NORMALIZED: two sources describing the same span
         // may have heard it written slightly differently ("use auth dot ts" vs
         // "useauth dot ts"), and those must corroborate/conflict rather than
         // pass each other by. The literal span is what survives into the entry,
         // because pre-application matches literal transcript bytes.
-        let solidKeys = Set(pairs.filter { !$0.isFallbackOnly }.map(\.heardKey))
-        let grounded = pairs.filter { !$0.isFallbackOnly || !solidKeys.contains($0.heardKey) }
+        let solidKeys = Set(pairs.filter { !$0.isGuess }.map(\.heardKey))
+        let grounded = pairs.filter { !$0.isGuess || !solidKeys.contains($0.heardKey) }
 
         var termsByKey: [String: Set<String>] = [:]
         for pair in grounded {
@@ -101,7 +143,6 @@ enum PolishContextGrounding {
             terms.count > 1 ? key : nil
         })
         let surviving = grounded.filter { !ambiguousKeys.contains($0.heardKey) }
-        guard !surviving.isEmpty else { return Merged(all: [], bySource: [:]) }
 
         // Group by exact term, first appearance wins the term (and with it the
         // source attribution), so agreement collapses to one entry instead of
@@ -128,7 +169,45 @@ enum PolishContextGrounding {
             all.append(entry)
             bySource[source, default: []].append(entry)
         }
-        return Merged(all: all, bySource: bySource)
+
+        let preAppliedKeys = Set(surviving.map(\.heardKey))
+        var verificationPairs: [VerificationPair] = []
+        var seenVerification = Set<VerificationKey>()
+        func appendVerification(heard: String, exact: String) {
+            guard verificationPairs.count < maxVerificationPairs,
+                  heard != exact
+            else { return }
+            let heardKey = RepoVocabularyMatcher.normalize(heard)
+            guard !preAppliedKeys.contains(heardKey) else { return }
+            let key = VerificationKey(heardKey: heardKey, exact: exact)
+            guard seenVerification.insert(key).inserted else { return }
+            verificationPairs.append(VerificationPair(heard: heard, exact: exact))
+        }
+
+        // Explicit weak evidence retains source rank ordering. It precedes
+        // conflict demotions so each matcher gets first claim on the small
+        // verification budget it deliberately emitted.
+        for candidate in ordered {
+            for entry in candidate.verificationEntries {
+                for heard in entry.matches {
+                    appendVerification(heard: heard, exact: entry.replaceWith)
+                }
+            }
+        }
+
+        // Only ambiguous GUESS keys become suggestions. Solid-vs-solid
+        // disagreement remains a plain abstention, while guesses that yielded
+        // to a solid were removed before ambiguity and cannot be resurrected.
+        let ambiguousGuessKeys = ambiguousKeys.subtracting(solidKeys)
+        for pair in grounded where ambiguousGuessKeys.contains(pair.heardKey) {
+            appendVerification(heard: pair.heard, exact: pair.exact)
+        }
+
+        return Merged(
+            all: all,
+            bySource: bySource,
+            verificationPairs: verificationPairs
+        )
     }
 
     private struct Pair {
@@ -136,6 +215,11 @@ enum PolishContextGrounding {
         let exact: String
         let heard: String
         let heardKey: String
-        let isFallbackOnly: Bool
+        let isGuess: Bool
+    }
+
+    private struct VerificationKey: Hashable {
+        let heardKey: String
+        let exact: String
     }
 }
