@@ -40,9 +40,11 @@ model touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
-Two mechanisms, tried in order when the title fallback is enabled:
+Two mechanisms. The resolver always tries both in order; the opt-in setting
+only controls whether local sessions write the marker the second one looks for:
 
-**TTY join (the default — needs Ghostty from tip).** The hooks report
+**TTY join (the default — needs Ghostty ≥ 1.4, currently the tip channel).**
+The hooks report
 the session's controlling terminal device, and at dictation start the app asks
 Ghostty for the focused pane's `tty` over AppleScript (a one-time Automation
 consent prompt). Device equality is exact, works mid-response, and tells two

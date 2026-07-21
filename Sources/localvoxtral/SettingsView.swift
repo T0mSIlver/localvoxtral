@@ -861,7 +861,7 @@ private struct TextProcessingSettingsPane: View {
                         SettingsHelpText(
                             settings.claudeLocalTitleMarkerFallbackEnabled
                                 ? "Writes a window-title marker for local sessions; also export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code does not overwrite it."
-                                : "Uses the focused TTY to join local sessions and requires Ghostty from tip."
+                                : "Uses the focused TTY to join local sessions and requires Ghostty 1.4 or a tip build."
                         )
                     }
                 }
