@@ -72,7 +72,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
 struct ClaudeSessionJoinResolver {
     private let registry: ClaudeSessionRegistry
     private let markerInWindowTitle: (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead?
-    private let focusedTerminalTTY: (String) -> String?
+    private let focusedTerminalTTY: (String) async -> String?
     private let focusedWindowID: (pid_t) -> CGWindowID?
 
     /// - Parameters:
@@ -99,7 +99,7 @@ struct ClaudeSessionJoinResolver {
         markerInWindowTitle: @escaping (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead? = {
             TerminalScreenAXReader.markerInFocusedWindowTitle(applicationPID: $0)
         },
-        focusedTerminalTTY: @escaping (String) -> String? = { _ in nil },
+        focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = {
             TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
         }
@@ -124,14 +124,14 @@ struct ClaudeSessionJoinResolver {
     ///
     /// This remains the only place a join is resolved, once per dictation, at
     /// start — whichever mechanism answers.
-    func resolve(target: TerminalScreenTarget) -> ClaudeSessionJoin? {
+    func resolve(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
         // The allowlist is re-checked here even though the capture gate already
         // enforced it. This object is reachable independently of that gate, and
         // "only a verified single-AXTextArea grid" is a precondition of reading
         // this app at all — not something to inherit on trust from a caller.
         guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
 
-        if let tty = focusedTerminalTTY(target.bundleID) {
+        if let tty = await focusedTerminalTTY(target.bundleID) {
             switch registry.resolve(tty: tty) {
             case .resolved(let snapshot):
                 Log.claudeContext.info(

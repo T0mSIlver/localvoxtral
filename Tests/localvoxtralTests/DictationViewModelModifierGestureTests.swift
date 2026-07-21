@@ -72,7 +72,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         )
     }
 
-    func testFailedModifierHoldStartDoesNotLatchLiveModeForNextSettingsBasedSession() {
+    func testFailedModifierHoldStartDoesNotLatchLiveModeForNextSettingsBasedSession() async {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         let viewModel = makeViewModel(settings: settings)
 
@@ -89,7 +89,7 @@ final class DictationViewModelModifierGestureTests: XCTestCase {
         viewModel.isAwaitingMicrophonePermission = false
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertEqual(
             viewModel.sessionOutputMode, .overlayBuffer,

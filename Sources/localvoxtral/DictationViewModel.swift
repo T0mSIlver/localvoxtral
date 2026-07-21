@@ -1105,6 +1105,13 @@ final class DictationViewModel {
         if previousMode == .managedLocal, mode == .externalURL {
             Log.backends.info("polishing backend mode switched to external; stopping managed polishd")
             cancelManagedStartupTask()
+            // Mirror the dictation sibling above: cancelling the startup task
+            // mid-connect without aborting would leave the connecting flag
+            // latched and block every later start.
+            if isConnectingRealtimeSession {
+                abortConnectingSession()
+                statusText = StatusStrings.ready
+            }
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
@@ -1765,7 +1772,7 @@ final class DictationViewModel {
     /// an opted-out user, a remote polishing endpoint, or a non-Ghostty app
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
-    func captureTerminalScreenContextForSession() {
+    func captureTerminalScreenContextForSession() async {
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
@@ -1777,7 +1784,7 @@ final class DictationViewModel {
             isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
-        claudeSessionJoin = resolveClaudeSessionJoin(endpointURL: endpointURL)
+        claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
     }
 
     /// Resolves this dictation's Claude session join, ONCE, here at start.
@@ -1792,7 +1799,7 @@ final class DictationViewModel {
     /// Every gate is checked BEFORE the resolver is asked, because asking is not
     /// passive — it makes a live AX round trip for the window title. An opted-out
     /// user, a remote endpoint, or a revoked Accessibility grant means no read.
-    private func resolveClaudeSessionJoin(endpointURL: URL) -> ClaudeSessionJoin? {
+    private func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeSessionJoin? {
         guard let resolver = claudeSessionJoinResolver else { return nil }
         // Either context feature can want a join: the screen needs it to
         // authorize a raw excerpt, the repo/session blocks ARE the join's
@@ -1812,7 +1819,7 @@ final class DictationViewModel {
         ) else { return nil }
         guard textInsertion.isAccessibilityTrusted else { return nil }
         guard let target = TerminalScreenContextSource.frontmostTarget() else { return nil }
-        return resolver.resolve(target: target)
+        return await resolver.resolve(target: target)
     }
 
     /// Drops any retained screen capture. Idempotent, and safe to call on a

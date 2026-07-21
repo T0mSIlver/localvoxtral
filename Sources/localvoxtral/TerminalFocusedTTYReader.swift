@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Observation
 
 /// Reads the controlling TTY of the FOCUSED terminal pane, so the Claude join
 /// can resolve from the process table instead of the window title.
@@ -21,12 +22,17 @@ protocol TerminalFocusedTTYReading {
     /// window, or nil when the app is unsupported, too old to expose `tty`,
     /// Automation is denied, or the read failed. Nil means "fall back to the
     /// marker", never "guess".
-    func focusedTerminalTTY(bundleID: String) -> String?
+    func focusedTerminalTTY(bundleID: String) async -> String?
 }
 
 /// The live reader: one bounded AppleScript question to Ghostty.
 @MainActor
 struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
+    enum ExecutionResult: Sendable {
+        case success(String?)
+        case failure(code: Int)
+    }
+
     /// `with timeout` bounds GHOSTTY'S REPLY, so a wedged terminal cannot hold
     /// dictation start hostage — the same budget discipline as the AX reader's
     /// per-message timeouts. It does NOT bound TCC: the first Apple event ever
@@ -45,38 +51,74 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
     end timeout
     """
 
-    /// Compiled once, reused for every session start. A fresh `NSAppleScript`
-    /// recompiles the (constant) source on each call — avoidable milliseconds
-    /// on the dictation-start hot path. The per-start call itself stays
-    /// synchronous-but-bounded by design: a true off-main hop would make the
-    /// join resolution async and restructure session start, so it is
-    /// deliberately deferred.
-    private static var cachedScript: NSAppleScript?
+    /// Owns both the serial execution context and the compiled script cache.
+    /// `NSAppleScript` is not thread-safe, so it is constructed, compiled, and
+    /// executed only inside this queue. Only `ExecutionResult` crosses back to
+    /// the caller.
+    private final class SerialExecutor: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "com.localvoxtral.ghostty-tty-applescript")
+        private let source: String
+        private let executeOverride: (@Sendable () -> ExecutionResult)?
+        private var cachedScript: NSAppleScript?
 
-    private static func compiledScript() -> NSAppleScript? {
-        if let cachedScript { return cachedScript }
-        guard let script = NSAppleScript(source: source) else { return nil }
-        // Compile eagerly so later executes reuse the compiled form; a compile
-        // error is reported by executeAndReturnError below either way.
-        script.compileAndReturnError(nil)
-        cachedScript = script
-        return script
+        init(
+            source: String,
+            executeOverride: (@Sendable () -> ExecutionResult)? = nil
+        ) {
+            self.source = source
+            self.executeOverride = executeOverride
+        }
+
+        func execute() async -> ExecutionResult {
+            await withCheckedContinuation { continuation in
+                queue.async { [self] in
+                    continuation.resume(returning: executeOnQueue())
+                }
+            }
+        }
+
+        private func executeOnQueue() -> ExecutionResult {
+            if let executeOverride { return executeOverride() }
+            guard let script = compiledScriptOnQueue() else { return .failure(code: 0) }
+            var error: NSDictionary?
+            let result = script.executeAndReturnError(&error)
+            if let error {
+                return .failure(code: (error[NSAppleScript.errorNumber] as? Int) ?? 0)
+            }
+            return .success(result.stringValue)
+        }
+
+        private func compiledScriptOnQueue() -> NSAppleScript? {
+            if let cachedScript { return cachedScript }
+            guard let script = NSAppleScript(source: source)
+            else { return nil }
+            // Compile eagerly so later executes reuse the compiled form; a
+            // compile error is reported by executeAndReturnError either way.
+            script.compileAndReturnError(nil)
+            cachedScript = script
+            return script
+        }
     }
 
-    func focusedTerminalTTY(bundleID: String) -> String? {
+    private let executor: SerialExecutor
+
+    init(
+        executeScript: (@Sendable () -> ExecutionResult)? = nil
+    ) {
+        executor = SerialExecutor(source: Self.source, executeOverride: executeScript)
+    }
+
+    func focusedTerminalTTY(bundleID: String) async -> String? {
         // Ghostty-only, exact match: the script is Ghostty's dictionary, and
         // sending it anywhere else is at best an error and at worst a prompt
         // to automate an app the user never pointed us at.
         guard bundleID == TerminalScreenAllowlist.ghosttyBundleID else { return nil }
-        guard let script = Self.compiledScript() else { return nil }
-        var error: NSDictionary?
-        let result = script.executeAndReturnError(&error)
-        if let error {
+        switch await executor.execute() {
+        case .failure(let code):
             // Code only, never the message — AppleScript error strings can
             // quote window titles, and a title is content.
             // -1700: `tty` not in the dictionary (Ghostty < 1.4).
             // -1743: the user declined the Automation prompt.
-            let code = (error[NSAppleScript.errorNumber] as? Int) ?? 0
             if code == -1743 {
                 Log.claudeContext.info(
                     "Automation permission denied — grant localvoxtral → Ghostty in System Settings > Privacy > Automation"
@@ -87,8 +129,9 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
                 )
             }
             return nil
+        case .success(let rawTTY):
+            return Self.validatedTTY(rawTTY)
         }
-        return Self.validatedTTY(result.stringValue)
     }
 
     /// Accepts only a plausible pty device path. The value crosses from another
@@ -105,23 +148,73 @@ struct GhosttyFocusedTerminalTTYReader: TerminalFocusedTTYReading {
     }
 }
 
+/// Owns the Observation subscription that mirrors the two settings which can
+/// need a focused-pane join. AppDelegate retains one for the app run.
+@MainActor
+final class GhosttyAutomationConsentPrewarmSettingsObserver {
+    private let settings: SettingsStore
+    private let prewarm: @MainActor @Sendable () -> Void
+    private var started = false
+    private var wasEnabled = false
+
+    init(
+        settings: SettingsStore,
+        prewarm: @escaping @MainActor @Sendable () -> Void
+    ) {
+        self.settings = settings
+        self.prewarm = prewarm
+    }
+
+    func start() {
+        guard !started else { return }
+        started = true
+        wasEnabled = isEnabled
+        if wasEnabled {
+            prewarm()
+        }
+        observeSettings()
+    }
+
+    private var isEnabled: Bool {
+        settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled
+    }
+
+    /// Observation's onChange fires once, immediately before a tracked value
+    /// mutates. Re-read and re-arm on the next main-actor turn, matching the
+    /// app's existing status-observation discipline.
+    private func observeSettings() {
+        withObservationTracking {
+            _ = settings.terminalScreenContextEnabled
+            _ = settings.claudeRepoContextEnabled
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                let enabled = self.isEnabled
+                if !self.wasEnabled, enabled {
+                    self.prewarm()
+                }
+                self.wasEnabled = enabled
+                self.observeSettings()
+            }
+        }
+    }
+}
+
 /// One-shot Automation consent pre-warm for the Ghostty tty read.
 ///
 /// The first Apple event this app ever sends to Ghostty raises the TCC
 /// Automation consent sheet, and the send BLOCKS until the user answers — the
 /// script's `with timeout` bounds Ghostty's reply, not TCC. Left to happen
 /// naturally, that block lands in the middle of the user's first dictation
-/// into a Claude pane. So the app fires the same read once, at launch (or as
-/// soon as Ghostty launches), with the result discarded: the sheet appears at
-/// a moment when nothing is in flight, and every later per-start read finds
-/// consent already settled.
+/// into a Claude pane. So the app fires the same read once, at launch, when a
+/// relevant setting is enabled, or as soon as Ghostty launches, with the result
+/// discarded: the sheet appears at a moment when nothing is in flight, and
+/// every later per-start read finds consent already settled.
 ///
 /// Fires at most once per app run, and only when Ghostty is actually running —
 /// `tell application id` would otherwise LAUNCH Ghostty, which a background
 /// pre-warm must never do. The caller gates on the context features being
-/// enabled, so an opted-out user is never prompted; a user who enables the
-/// feature mid-run gets pre-warmed on the next launch (a Settings-toggle
-/// pre-warm is deferred until someone hits it).
+/// enabled, so an opted-out user is never prompted.
 @MainActor
 enum GhosttyAutomationConsentPrewarm {
     private static var fired = false
@@ -136,8 +229,8 @@ enum GhosttyAutomationConsentPrewarm {
                 withBundleIdentifier: TerminalScreenAllowlist.ghosttyBundleID
             ).isEmpty
         },
-        execute: @escaping @MainActor @Sendable () -> Void = {
-            _ = GhosttyFocusedTerminalTTYReader().focusedTerminalTTY(
+        execute: @escaping @MainActor @Sendable () async -> Void = {
+            _ = await GhosttyFocusedTerminalTTYReader().focusedTerminalTTY(
                 bundleID: TerminalScreenAllowlist.ghosttyBundleID
             )
         },
@@ -162,13 +255,15 @@ enum GhosttyAutomationConsentPrewarm {
         }
     }
 
-    private static func fire(_ execute: @escaping @MainActor @Sendable () -> Void) {
+    private static func fire(
+        _ execute: @escaping @MainActor @Sendable () async -> Void
+    ) {
         fired = true
         // A Task, not an inline call: the pre-warm can park in the consent
         // sheet, and the caller (broker startup) must not wait on that.
         Task { @MainActor in
             Log.claudeContext.info("Pre-warming Ghostty Automation consent (result discarded)")
-            execute()
+            await execute()
         }
     }
 

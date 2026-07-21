@@ -136,6 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// records it exists to collect.
     private let claudeSessionRegistry = ClaudeSessionRegistry()
     private var claudeContextBroker: ClaudeContextBroker?
+    private var ghosttyConsentPrewarmObserver:
+        GhosttyAutomationConsentPrewarmSettingsObserver?
     /// Remote (SSH) Claude Code sessions. Both the host registry and the
     /// listener are lazy and optional: a user who has never enrolled a host has
     /// no file to read and no port bound.
@@ -183,6 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing is accepting on.
         claudeContextBroker?.stop()
         claudeContextBroker = nil
+        ghosttyConsentPrewarmObserver = nil
         // Closes the port, so a hook from a surviving remote session gets a
         // connection refused through the tunnel and fails open. Quitting says
         // nothing about enrollment — the hosts stay enrolled for next launch.
@@ -226,7 +229,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let ttyReader = GhosttyFocusedTerminalTTYReader()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
-                focusedTerminalTTY: { ttyReader.focusedTerminalTTY(bundleID: $0) }
+                focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start
@@ -235,11 +238,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // for users who opted into a context feature — the pre-warm is
             // itself the consent prompt, and an opted-out user must never see
             // it.
-            if viewModel.settings.terminalScreenContextEnabled
-                || viewModel.settings.claudeRepoContextEnabled
-            {
-                GhosttyAutomationConsentPrewarm.fireOnceWhenGhosttyIsAvailable()
-            }
+            let prewarmObserver = GhosttyAutomationConsentPrewarmSettingsObserver(
+                settings: viewModel.settings,
+                prewarm: { GhosttyAutomationConsentPrewarm.fireOnceWhenGhosttyIsAvailable() }
+            )
+            ghosttyConsentPrewarmObserver = prewarmObserver
+            prewarmObserver.start()
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to

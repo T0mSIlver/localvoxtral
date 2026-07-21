@@ -74,7 +74,26 @@ extension DictationViewModel {
         let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
 
         guard needsManagedDictation || needsManagedPolishing else {
-            beginDictationSession(outputMode: outputMode)
+            isConnectingRealtimeSession = true
+            managedStartupTask?.cancel()
+            let startupTaskID = UUID()
+            managedStartupTaskID = startupTaskID
+            managedStartupTask = Task { @MainActor [weak self, startupTaskID] in
+                guard let self else { return }
+                defer {
+                    if self.managedStartupTaskID == startupTaskID {
+                        self.managedStartupTask = nil
+                        self.managedStartupTaskID = nil
+                    }
+                }
+                // Same staleness pre-check as the managed path below: a start
+                // that was cancelled or superseded before this task ran must
+                // not enter beginDictationSession at all — its cleanup would
+                // otherwise run against the successor's freshly-latched state.
+                guard !Task.isCancelled, self.managedStartupTaskID == startupTaskID
+                else { return }
+                await self.beginDictationSession(outputMode: outputMode)
+            }
             return
         }
 
@@ -136,7 +155,7 @@ extension DictationViewModel {
                           && self.settings.polishingBackendMode == .managedLocal)),
                   self.isConnectingRealtimeSession
             else { return }
-            self.beginDictationSession(outputMode: outputMode)
+            await self.beginDictationSession(outputMode: outputMode)
             // beginDictationSession re-checks secure input and may refuse
             // HERE — long after the initiating gesture ended (a toggle tap
             // ends immediately; a hold may release while the backend boots).
@@ -209,7 +228,7 @@ extension DictationViewModel {
         )
     }
 
-    func beginDictationSession(outputMode: DictationOutputMode? = nil) {
+    func beginDictationSession(outputMode: DictationOutputMode? = nil) async {
         lastSocketErrorMessage = nil
         // A new session starts: retire any prior "Copy raw transcript"
         // affordance so it never references a stale, unrelated transcript.
@@ -303,7 +322,26 @@ extension DictationViewModel {
         // Same timing rationale again, and the last chance to take it: the
         // overlay takes focus once the socket connects, and screen context must
         // record what the user could see as they chose their words.
-        captureTerminalScreenContextForSession()
+        let ownerTaskID = managedStartupTaskID
+        isConnectingRealtimeSession = true
+        await captureTerminalScreenContextForSession()
+        // Both spawn paths register their managedStartupTaskID before this
+        // method runs, so a changed (non-nil) ID means a NEWER session start
+        // owns the shared capture/metadata now — a cancelled predecessor must
+        // not wipe the successor's state, and must not proceed either. A nil
+        // ID means the canceller merely cleared the slot: cleanup is ours, and
+        // resetting the connecting flag here also heals any cancel path that
+        // never called abortConnectingSession.
+        let ownsSharedSessionState =
+            managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
+        guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
+            if ownsSharedSessionState {
+                discardTerminalScreenCapture()
+                clearLatchedSessionMetadata()
+                isConnectingRealtimeSession = false
+            }
+            return
+        }
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
@@ -316,7 +354,6 @@ extension DictationViewModel {
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 
-        isConnectingRealtimeSession = true
         // Keep the Accessibility warning as the status line when it applies, so
         // the warning isn't clobbered by the generic "Connecting..." text.
         if !accessibilityBlockedAtStart {

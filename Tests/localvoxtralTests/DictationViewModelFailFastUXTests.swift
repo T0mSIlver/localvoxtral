@@ -1,3 +1,4 @@
+import ClaudeContextWire
 import Foundation
 import XCTest
 @testable import localvoxtral
@@ -187,7 +188,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(token, .accessibilityPermissionRequired)
     }
 
-    func testBeginDictationSessionSurfacesAccessibilityWarningInLiveMode() {
+    func testBeginDictationSessionSurfacesAccessibilityWarningInLiveMode() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         // Point at a closed port so the async connect fails fast and does not
         // hit a real backend. The AX warning is asserted synchronously, before
@@ -197,7 +198,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         // Fail-fast warning surfaces at start and is not clobbered by the
         // generic "Connecting..." status.
@@ -208,14 +209,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
-    func testBeginDictationSessionSkipsAccessibilityWarningWhenTrustedInLiveMode() {
+    func testBeginDictationSessionSkipsAccessibilityWarningWhenTrustedInLiveMode() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
         viewModel.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
         XCTAssertNil(viewModel.lastError)
@@ -223,14 +224,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
-    func testBeginDictationSessionSkipsAccessibilityWarningInOverlayMode() {
+    func testBeginDictationSessionSkipsAccessibilityWarningInOverlayMode() async {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
         viewModel.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
         XCTAssertNil(viewModel.lastError)
@@ -395,7 +396,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await viewModel.managedStartupTask?.value
     }
 
-    func testStartDictationInExternalModeNeverTouchesManagedBackendManager() {
+    func testStartDictationInExternalModeNeverTouchesManagedBackendManager() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .externalURL
@@ -406,6 +407,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
+        // The external path now hops through the startup task before
+        // beginDictationSession runs; the endpoint error surfaces when it
+        // completes, and the backend manager must still never be touched.
+        await viewModel.managedStartupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
         XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")
@@ -525,6 +530,91 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(backendManager.stopDictationCallCount, 0)
         XCTAssertEqual(backendManager.stopPolishingCallCount, 1)
         XCTAssertEqual(backendManager.stopAllCallCount, 0)
+    }
+
+    /// Flipping the polishing backend to External mid-connect must release the
+    /// connecting latch exactly like the dictation sibling: before the fix the
+    /// cancel path left `isConnectingRealtimeSession` latched forever, so
+    /// every later start was blocked until app restart.
+    func testPolishingModeSwitchAwayFromManagedMidConnectReleasesTheConnectingLatch() async {
+        let backendManager = FakeManagedBackendManager()
+        let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
+        viewModel.settings.dictationBackendMode = .managedLocal
+        viewModel.settings.polishingBackendMode = .managedLocal
+        viewModel.isShowingConnectionFailureAlert = true
+        retainForTestProcessLifetime(viewModel)
+
+        viewModel.isConnectingRealtimeSession = true
+        viewModel.applyPolishingBackendModeChange(.externalURL)
+
+        XCTAssertFalse(
+            viewModel.isConnectingRealtimeSession,
+            "cancelling a mid-connect startup must not latch the connecting flag"
+        )
+        XCTAssertEqual(viewModel.statusText, DictationViewModel.StatusStrings.ready)
+        await backendManager.waitForStopPolishingCallCount(1)
+    }
+
+    /// A start that was cancelled and superseded BEFORE its startup task ran
+    /// must never enter `beginDictationSession`: its cleanup would wipe the
+    /// successor session's freshly-resolved join.
+    func testCancelledAndSupersededStartupTaskLeavesSuccessorSessionStateAlone() async {
+        let viewModel = makeViewModel(outputMode: .overlayBuffer)
+        viewModel.settings.dictationBackendMode = .externalURL
+        viewModel.settings.polishingBackendMode = .externalURL
+        viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
+        viewModel.isShowingConnectionFailureAlert = true
+        viewModel.debugMicrophoneAuthorizationStatusOverride = .authorized
+        retainForTestProcessLifetime(viewModel)
+
+        // Spawn the startup task but do not let it run yet — the test holds
+        // the main actor, so nothing after this line has interleaved.
+        viewModel.startDictation()
+        let staleTask = viewModel.managedStartupTask
+        XCTAssertNotNil(staleTask)
+
+        // A canceller retires it, and a successor start takes the slot with a
+        // freshly resolved join — all before the stale task ever runs.
+        staleTask?.cancel()
+        viewModel.abortConnectingSession()
+        viewModel.managedStartupTaskID = UUID()
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in true },
+            allocateMarkerValue: { "lvx-successor" }
+        )
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: "s-successor",
+                timestamp: 0,
+                rawCwd: "/repo",
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in
+                TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-successor"), windowID: 7
+                )
+            }
+        )
+        let join = await resolver.resolve(
+            target: TerminalScreenTarget(
+                pid: 4242, bundleID: TerminalScreenAllowlist.ghosttyBundleID
+            )
+        )
+        XCTAssertNotNil(join)
+        viewModel.claudeSessionJoin = join
+
+        _ = await staleTask?.value
+
+        XCTAssertEqual(
+            viewModel.claudeSessionJoin, join,
+            "a stale startup task must not wipe the successor's join"
+        )
     }
 
     func testManagedPolishingModelChangePersistsAndStopsPolishingWhenDisabled() async {
