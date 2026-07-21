@@ -446,27 +446,48 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     public func authenticate(token: String) -> ClaudeRemoteHost? {
         guard ClaudeRemoteTokenDigest.isWellFormed(token) else { return nil }
         return state.withLock { hosts in
-            var matched: StoredHost?
-            for host in hosts {
-                let candidate: String
-                switch host.hashVersion ?? 1 {
-                case 1:
-                    candidate = ClaudeRemoteTokenDigest.legacyHash(
-                        token: token, salt: host.tokenSalt
-                    )
-                case Self.currentHashVersion:
-                    candidate = ClaudeRemoteTokenDigest.hash(token: token, salt: host.tokenSalt)
-                default:
-                    // Still perform a fixed-length comparison for every host.
-                    candidate = String(repeating: "0", count: 64)
-                }
-                let equal = ClaudeRemoteTokenDigest.constantTimeEquals(candidate, host.tokenHash)
-                if equal, host.revokedAt == nil {
-                    matched = host
-                }
-            }
-            return matched?.publicView
+            authenticatedHostLocked(token: token, hosts: hosts)?.publicView
         }
+    }
+
+    /// Re-authenticate and perform one synchronous action under the same host
+    /// lock. Revocation cannot commit between the check and `body`, closing the
+    /// listener's authenticate-then-ingest race. `body` must not call back into
+    /// this host registry; the listener only writes to the separate session
+    /// registry here.
+    public func withAuthenticatedHost<Outcome>(
+        token: String,
+        expectedHostID: String,
+        _ body: (ClaudeRemoteHost) -> Outcome
+    ) -> Outcome? {
+        guard ClaudeRemoteTokenDigest.isWellFormed(token) else { return nil }
+        return state.withLock { hosts in
+            guard let host = authenticatedHostLocked(token: token, hosts: hosts),
+                  host.id == expectedHostID
+            else { return nil }
+            return body(host.publicView)
+        }
+    }
+
+    private func authenticatedHostLocked(token: String, hosts: [StoredHost]) -> StoredHost? {
+        var matched: StoredHost?
+        for host in hosts {
+            let candidate: String
+            switch host.hashVersion ?? 1 {
+            case 1:
+                candidate = ClaudeRemoteTokenDigest.legacyHash(token: token, salt: host.tokenSalt)
+            case Self.currentHashVersion:
+                candidate = ClaudeRemoteTokenDigest.hash(token: token, salt: host.tokenSalt)
+            default:
+                // Still perform a fixed-length comparison for every host.
+                candidate = String(repeating: "0", count: 64)
+            }
+            let equal = ClaudeRemoteTokenDigest.constantTimeEquals(candidate, host.tokenHash)
+            if equal, host.revokedAt == nil {
+                matched = host
+            }
+        }
+        return matched
     }
 
     /// Record that a host is alive. Best-effort and NOT persisted per request —

@@ -1,6 +1,7 @@
 import ClaudeContextWire
 import ClaudeHookPublisherCore
 import Foundation
+import Synchronization
 import XCTest
 @testable import localvoxtral
 
@@ -375,6 +376,69 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
             "the abusive peer must not have produced a session"
         )
         XCTAssertTrue(broker.isRunning, "one abusive peer must not stop the broker")
+    }
+
+    func testTricklingPeerIsCutOffAtTheAbsoluteDeadline() throws {
+        let base: UInt64 = 1_000_000_000
+        let expired = Mutex(false)
+        let bytesRead = Mutex(0)
+        let firstRead = expectation(description: "broker consumed the first trickle byte")
+        broker = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: registry,
+            limits: ClaudeBrokerLimits(readTimeout: 100),
+            uptimeNanos: {
+                expired.withLock { $0 ? base + 200_000_000_000 : base }
+            }
+        )
+        broker.debugConfigureReadHook { count in
+            let total = bytesRead.withLock { bytes -> Int in
+                bytes += count
+                return bytes
+            }
+            expired.withLock { $0 = true }
+            if total == count { firstRead.fulfill() }
+        }
+        try broker.start()
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        defer { close(fd) }
+        var noSigPipe: Int32 = 1
+        XCTAssertEqual(
+            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size)),
+            0
+        )
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let pathBytes = Array(socketPath.utf8)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: pathBytes)
+            raw[pathBytes.count] = 0
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(connected, 0)
+
+        var first: UInt8 = 0x7B
+        XCTAssertEqual(Darwin.send(fd, &first, 1, 0), 1)
+        wait(for: [firstRead], timeout: 5)
+
+        // The first byte advanced the injected monotonic clock beyond the
+        // connection deadline. A per-read timeout incorrectly accepts this
+        // second trickle byte; an absolute deadline closes before reading it.
+        var second: UInt8 = 0x22
+        _ = Darwin.send(fd, &second, 1, 0)
+        shutdown(fd, SHUT_WR)
+        var reply = [UInt8](repeating: 0, count: 16)
+        while read(fd, &reply, reply.count) > 0 {}
+
+        XCTAssertEqual(bytesRead.withLock { $0 }, 1)
+        XCTAssertTrue(registry.liveSessions().isEmpty)
     }
 
     // MARK: Publisher fail-open

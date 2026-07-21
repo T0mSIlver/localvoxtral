@@ -93,6 +93,14 @@ public final class ClaudeRemoteContextListener: Sendable {
     private let now: @Sendable () -> Date
     private let uptimeNanos: @Sendable () -> UInt64
 
+    #if DEBUG
+    private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+    public func debugConfigurePostAuthenticationHook(_ hook: (@Sendable () -> Void)?) {
+        debugPostAuthenticationHook.withLock { $0 = hook }
+    }
+    #endif
+
     public enum StartFailure: Error, Equatable {
         case alreadyRunning
         case socketCreationFailed(errno: Int32)
@@ -397,6 +405,9 @@ public final class ClaudeRemoteContextListener: Sendable {
             respond(fd: fd, status: 401)
             return
         }
+        #if DEBUG
+        debugPostAuthenticationHook.withLock { $0 }?()
+        #endif
 
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
@@ -414,8 +425,20 @@ public final class ClaudeRemoteContextListener: Sendable {
         let bodyEnd = buffer.index(bodyStart, offsetBy: request.contentLength)
         let body = Data(buffer[bodyStart..<bodyEnd])
 
+        guard let marker = hosts.withAuthenticatedHost(
+            token: token,
+            expectedHostID: host.id,
+            { activeHost in
+                ingest(body: body, request: request, host: activeHost)
+            }
+        ) else {
+            Log.claudeContext.error(
+                "Rejected remote connection: host was revoked before ingest"
+            )
+            respond(fd: fd, status: 401)
+            return
+        }
         hosts.noteActivity(hostID: host.id)
-        let marker = ingest(body: body, request: request, host: host)
         respond(fd: fd, status: 200, body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: marker?.value))
     }
 

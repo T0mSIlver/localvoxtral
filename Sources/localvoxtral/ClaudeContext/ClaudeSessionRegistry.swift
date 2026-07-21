@@ -23,17 +23,38 @@ public enum ClaudeMarkerResolution: Sendable, Equatable {
 }
 
 public struct ClaudeRegistryLimits: Sendable, Equatable {
+    /// A local session without a Claude pid cannot be probed for liveness. Five
+    /// minutes keeps brief publisher-metadata failures useful while bounding a
+    /// dead session's joinable exposure far below the normal four-hour TTL.
+    public static let defaultPIDLessLocalSessionTTL: TimeInterval = 5 * 60
+    /// When origins compete for the global cap, no one origin may retain more
+    /// than this many sessions. Eight covers a generous set of terminal tabs
+    /// while leaving most of the global registry available to other origins.
+    public static let defaultMaxSessionsPerOrigin = 8
+
     /// Hard cap on retained sessions. Beyond this, the least-recently-active is
     /// evicted — a user with hundreds of stale sessions must not grow the app.
     public var maxSessions: Int
+    /// Sub-quota applied per transport origin when more than one origin is
+    /// present. A lone origin may use the global cap; once another arrives,
+    /// churn is evicted from the bursting origin first.
+    public var maxSessionsPerOrigin: Int
     /// A session with no hook activity for this long is stale. Claude Code can
     /// die without firing SessionEnd (SIGKILL, a closed terminal), so TTL plus
     /// PID liveness — not SessionEnd alone — is what keeps the registry honest.
     public var sessionTTL: TimeInterval
+    public var pidlessLocalSessionTTL: TimeInterval
 
-    public init(maxSessions: Int = 32, sessionTTL: TimeInterval = 4 * 60 * 60) {
+    public init(
+        maxSessions: Int = 32,
+        maxSessionsPerOrigin: Int = Self.defaultMaxSessionsPerOrigin,
+        sessionTTL: TimeInterval = 4 * 60 * 60,
+        pidlessLocalSessionTTL: TimeInterval = Self.defaultPIDLessLocalSessionTTL
+    ) {
         self.maxSessions = maxSessions
+        self.maxSessionsPerOrigin = maxSessionsPerOrigin
         self.sessionTTL = sessionTTL
+        self.pidlessLocalSessionTTL = pidlessLocalSessionTTL
     }
 
     public static let `default` = ClaudeRegistryLimits()
@@ -286,7 +307,13 @@ public final class ClaudeSessionRegistry: Sendable {
     // MARK: - Locked helpers
 
     private func isFresh(_ snapshot: ClaudeSessionSnapshot, now: Date) -> Bool {
-        guard now.timeIntervalSince(snapshot.lastActivity) <= limits.sessionTTL else { return false }
+        let ttl: TimeInterval
+        if snapshot.origin.isLocalAuthenticated, snapshot.process?.claudePID == nil {
+            ttl = min(limits.sessionTTL, limits.pidlessLocalSessionTTL)
+        } else {
+            ttl = limits.sessionTTL
+        }
+        guard now.timeIntervalSince(snapshot.lastActivity) <= ttl else { return false }
         // `claudePID`, never `hookPID`. The publisher exits the instant it has
         // written its line, so probing its own pid would report every local
         // session dead microseconds after it was created — the registry would
@@ -313,11 +340,40 @@ public final class ClaudeSessionRegistry: Sendable {
     }
 
     private func enforceCapLocked(_ state: inout State) {
+        let grouped = Dictionary(grouping: state.sessions.values, by: \.origin)
+        if grouped.count > 1 {
+            // Always reserve at least one global slot for a competing origin,
+            // even when a caller configures a sub-quota above a small test cap.
+            let quota = min(
+                max(0, limits.maxSessionsPerOrigin),
+                max(0, limits.maxSessions - 1)
+            )
+            for sessions in grouped.values where sessions.count > quota {
+                for snapshot in sessions.sorted(by: Self.evictionPrecedes)
+                    .prefix(sessions.count - quota)
+                {
+                    removeLocked(&state, sessionID: snapshot.sessionID)
+                }
+            }
+        }
+
         guard state.sessions.count > limits.maxSessions else { return }
-        let ordered = state.sessions.values.sorted { $0.lastActivity < $1.lastActivity }
+        let ordered = state.sessions.values.sorted(by: Self.evictionPrecedes)
         for snapshot in ordered.prefix(state.sessions.count - limits.maxSessions) {
             removeLocked(&state, sessionID: snapshot.sessionID)
         }
+    }
+
+    /// Stable tie-breaking keeps eviction reproducible when a burst lands in
+    /// one clock tick (common in tests and possible for batched hook records).
+    private static func evictionPrecedes(
+        _ lhs: ClaudeSessionSnapshot,
+        _ rhs: ClaudeSessionSnapshot
+    ) -> Bool {
+        if lhs.lastActivity != rhs.lastActivity {
+            return lhs.lastActivity < rhs.lastActivity
+        }
+        return lhs.sessionID < rhs.sessionID
     }
 
     /// Never hand out a marker that is already indexed. The allocator is random
