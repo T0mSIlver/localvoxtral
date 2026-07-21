@@ -46,6 +46,75 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded), original)
     }
 
+    func testHerdrProcessFieldsUseGoldenWireNamesAndDecode() throws {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "sess-herdr",
+            timestamp: 1.5,
+            process: ClaudeHookProcessInfo(
+                hookPID: 42,
+                claudePID: 41,
+                herdrPaneID: "pane-7",
+                herdrSocketPath: "herdr.sock"
+            )
+        )
+
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"SessionStart","files":[],"process":{"claude_pid":41,"herdr_pane_id":"pane-7","herdr_socket_path":"herdr.sock","hook_pid":42},"session_id":"sess-herdr","ts":1.5,"v":1}"# + "\n"
+        )
+        let decoded = try ClaudeHookWireCodec.decodeLine(encoded)
+        XCTAssertEqual(decoded.process?.herdrPaneID, "pane-7")
+        XCTAssertEqual(decoded.process?.herdrSocketPath, "herdr.sock")
+    }
+
+    func testClampTruncatesBothHerdrProcessFields() {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "s",
+            timestamp: 1,
+            process: ClaudeHookProcessInfo(
+                hookPID: 2,
+                claudePID: 1,
+                herdrPaneID: String(repeating: "p", count: 20),
+                herdrSocketPath: String(repeating: "s", count: 20)
+            )
+        )
+
+        let clamped = ClaudeHookWireCodec.clamp(
+            record,
+            limits: ClaudeHookLimits(maxPathBytes: 5)
+        )
+        XCTAssertEqual(clamped.process?.herdrPaneID, "ppppp")
+        XCTAssertEqual(clamped.process?.herdrSocketPath, "sssss")
+    }
+
+    func testAbsentHerdrProcessFieldsDecodeAsNil() throws {
+        let json = validJSON(
+            event: "SessionStart",
+            extra: #","process":{"hook_pid":2,"claude_pid":1}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(line(json))
+        XCTAssertNil(record.process?.herdrPaneID)
+        XCTAssertNil(record.process?.herdrSocketPath)
+    }
+
+    func testOldWireLineWithoutHerdrFieldsRemainsCompatible() throws {
+        let oldLine = line(
+            #"{"event":"SessionStart","process":{"claude_pid":1,"hook_pid":2,"term_program":"ghostty","tty":"device"},"session_id":"old","ts":1,"v":1}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(oldLine)
+        XCTAssertEqual(record.process?.tty, "device")
+        XCTAssertEqual(record.process?.termProgram, "ghostty")
+        XCTAssertNil(record.process?.herdrPaneID)
+        XCTAssertNil(record.process?.herdrSocketPath)
+
+        let reencoded = String(decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)), as: UTF8.self)
+        XCTAssertFalse(reencoded.contains("herdr_pane_id"))
+        XCTAssertFalse(reencoded.contains("herdr_socket_path"))
+    }
+
     // MARK: Version gating
 
     func testRejectsFutureVersion() {

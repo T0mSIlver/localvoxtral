@@ -507,7 +507,8 @@ public final class ClaudeContextBroker: Sendable {
                     Log.claudeContext.error("Dropping connection: too many records")
                     return
                 }
-                reply(to: fd, marker: handle(line: line, origin: origin))
+                let handled = handle(line: line, origin: origin)
+                reply(to: fd, marker: handled.marker, isHerdrHosted: handled.isHerdrHosted)
             }
         }
     }
@@ -564,11 +565,14 @@ public final class ClaudeContextBroker: Sendable {
     /// a marker to turn into a terminal title sequence when the user opted into
     /// that fallback. Registry ingestion and marker allocation are unchanged,
     /// so TTY joins keep the same marker-keyed liveness checks either way.
+    /// herdr records never receive one: herdr intercepts OSC 2 inside its pane,
+    /// so the marker cannot describe the outer Ghostty surface and would only
+    /// contaminate herdr's own pane-title state.
     ///
     /// Best-effort by design — a publisher that has already exited is normal,
     /// not an error.
-    private func reply(to fd: Int32, marker: ClaudeSessionMarker?) {
-        let responseMarker = shouldEmitLocalTitleMarker() ? marker?.value : nil
+    private func reply(to fd: Int32, marker: ClaudeSessionMarker?, isHerdrHosted: Bool) {
+        let responseMarker = shouldEmitLocalTitleMarker() && !isHerdrHosted ? marker?.value : nil
         guard let line = ClaudeBrokerResponse.encodeLine(
             ClaudeBrokerResponse(marker: responseMarker)
         ) else { return }
@@ -586,10 +590,14 @@ public final class ClaudeContextBroker: Sendable {
         }
     }
 
-    /// - Returns: the marker for the session this record belongs to, or nil if
-    ///   the record was rejected.
+    /// - Returns: the marker for the session this record belongs to and whether
+    ///   herdr must intercept title changes, or nil marker metadata when the
+    ///   record was rejected.
     @discardableResult
-    private func handle(line: Data, origin: ClaudeTransportOrigin) -> ClaudeSessionMarker? {
+    private func handle(
+        line: Data,
+        origin: ClaudeTransportOrigin
+    ) -> (marker: ClaudeSessionMarker?, isHerdrHosted: Bool) {
         do {
             let record = try ClaudeHookWireCodec.decodeLine(line, limits: limits.wire)
             let snapshot = registry.ingest(record, origin: origin)
@@ -599,19 +607,19 @@ public final class ClaudeContextBroker: Sendable {
             #if DEBUG
             debugNotify(.success(record))
             #endif
-            return snapshot?.marker
+            return (snapshot?.marker, record.process?.herdrPaneID != nil)
         } catch let error as ClaudeHookWireError {
             Log.claudeContext.error("Rejected record: \(String(describing: error), privacy: .public)")
             #if DEBUG
             debugNotify(.failure(error))
             #endif
-            return nil
+            return (nil, false)
         } catch {
             Log.claudeContext.error("Rejected record: undecodable")
             #if DEBUG
             debugNotify(.failure(.malformed))
             #endif
-            return nil
+            return (nil, false)
         }
     }
 }

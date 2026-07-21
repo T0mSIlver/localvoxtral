@@ -229,13 +229,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the session's prior prompt, and the repository context describe the
             // same session — three resolvers would each answer honestly about a
             // different moment.
-            // The tty seam is wired here, not defaulted: sending Apple events
-            // is a consented capability (Automation prompt), so only the app —
-            // never a test that forgot to inject — constructs the live reader.
+            // The tty/herdr seams are wired here, not defaulted: sending Apple
+            // events, reading the process table, and connecting to a user's
+            // local socket are live capabilities, so only the app — never a
+            // test that forgot to inject — constructs them.
             let ttyReader = GhosttyFocusedTerminalTTYReader()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
-                focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) }
+                focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
+                herdrClientProbe: {
+                    HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
+                },
+                herdrPanes: HerdrSocketClient()
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start

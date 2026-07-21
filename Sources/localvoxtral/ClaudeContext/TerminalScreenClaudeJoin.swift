@@ -14,11 +14,18 @@ import Foundation
 /// different moment. So the marker is read at START, from the pane the user was
 /// looking at when they began speaking, and that answer is what every consumer
 /// gets.
+enum ClaudeSessionJoinMechanism: Sendable, Equatable {
+    case ttyDevice
+    case titleMarker
+    case herdrPane
+}
+
 struct ClaudeSessionJoin: Sendable, Equatable {
-    /// The pane the marker was read from. Consumers re-check this rather than
+    /// The pane the join was resolved for. Consumers re-check this rather than
     /// assuming the join is about whatever target they happen to hold.
     let target: TerminalScreenTarget
-    /// The broker-allocated marker, read out of the PID-pinned window title.
+    /// The broker-allocated marker used for commit-time liveness. A title join
+    /// reads it from AX; TTY and herdr joins take it from the resolved snapshot.
     let marker: ClaudeSessionMarker
     /// The session as the registry described it at start.
     let snapshot: ClaudeSessionSnapshot
@@ -28,6 +35,10 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// between the two — so authorization compares windows, not just targets
     /// (review F2). Nil means unknown, which never authorizes.
     let windowID: CGWindowID?
+    /// Positive evidence that selected this session. In particular, a herdr
+    /// pane join is useful for session/repository context but can never license
+    /// a composite raw TUI capture.
+    let mechanism: ClaudeSessionJoinMechanism
 
     /// The workspace path, non-nil only for a locally authenticated session.
     /// The type is what keeps a remote session's cwd away from the filesystem;
@@ -74,6 +85,8 @@ struct ClaudeSessionJoinResolver {
     private let markerInWindowTitle: (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead?
     private let focusedTerminalTTY: (String) async -> String?
     private let focusedWindowID: (pid_t) -> CGWindowID?
+    private let herdrClientProbe: @Sendable (String) -> Bool
+    private let herdrPanes: HerdrPaneQuerying?
 
     /// - Parameters:
     ///   - markerInWindowTitle: reads the PID-pinned focused window title,
@@ -94,6 +107,14 @@ struct ClaudeSessionJoinResolver {
     ///     separate PID-pinned AX read. Nil means unknown, which the
     ///     authorizer refuses, exactly like a nil marker-read identity
     ///     (review F2).
+    ///   - herdrClientProbe: reads the local process table to bind the focused
+    ///     Ghostty surface to a herdr client. It DEFAULTS TO ABSTAIN: a test
+    ///     that forgets to inject must never consult the live process table.
+    ///     The app wires the live probe explicitly.
+    ///   - herdrPanes: queries herdr's local JSON socket after that surface
+    ///     binding succeeds. It likewise DEFAULTS TO ABSTAIN so a test that
+    ///     forgets to inject cannot connect to a real user socket. The app is
+    ///     the only place that installs the live client.
     init(
         registry: ClaudeSessionRegistry,
         markerInWindowTitle: @escaping (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead? = {
@@ -102,25 +123,31 @@ struct ClaudeSessionJoinResolver {
         focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = {
             TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
-        }
+        },
+        herdrClientProbe: @escaping @Sendable (String) -> Bool = { _ in false },
+        herdrPanes: HerdrPaneQuerying? = nil
     ) {
         self.registry = registry
         self.markerInWindowTitle = markerInWindowTitle
         self.focusedTerminalTTY = focusedTerminalTTY
         self.focusedWindowID = focusedWindowID
+        self.herdrClientProbe = herdrClientProbe
+        self.herdrPanes = herdrPanes
     }
 
     /// The join for `target`, or nil on any abstention.
     ///
-    /// TTY first, marker second. The TTY compares the focused pane's device
+    /// TTY first, then herdr when that TTY belongs to an attached client, then
+    /// marker. The TTY compares the focused pane's device
     /// against what the hook publisher reported from inside the session — the
     /// process table cannot be clobbered by whoever wrote the window title
     /// last, so it keeps joining while Claude Code's own conversation titles
-    /// own the visible one. Any TTY non-answer (old Ghostty, Automation
-    /// denied, no local session on that device, two sessions claiming it)
-    /// falls through to the marker path unchanged; remote sessions can ONLY
-    /// join via marker, because their TTY names another machine's device and
-    /// `resolve(tty:)` refuses remote candidates outright.
+    /// own the visible one. A TTY non-answer falls through to the marker path
+    /// unless the outer surface is positively bound to herdr; that path is
+    /// herdr-or-nothing because Ghostty's title cannot identify an inner pane.
+    /// No TTY answer at all still uses the marker unchanged. Remote sessions
+    /// can ONLY join via marker, because their TTY names another machine's
+    /// device and `resolve(tty:)` refuses remote candidates outright.
     ///
     /// This remains the only place a join is resolved, once per dictation, at
     /// start — whichever mechanism answers.
@@ -145,7 +172,8 @@ struct ClaudeSessionJoinResolver {
                     target: target,
                     marker: snapshot.marker,
                     snapshot: snapshot,
-                    windowID: focusedWindowID(target.pid)
+                    windowID: focusedWindowID(target.pid),
+                    mechanism: .ttyDevice
                 )
             case .unknown:
                 abstainedTTYJoin(outcome: "no live session on this device")
@@ -153,6 +181,13 @@ struct ClaudeSessionJoinResolver {
                 abstainedTTYJoin(outcome: "stale")
             case .ambiguous:
                 abstainedTTYJoin(outcome: "ambiguous")
+            }
+
+            // A focused surface positively bound to herdr is herdr-or-nothing.
+            // Ghostty's title describes the outer client, not an inner pane; a
+            // lingering marker there could only mis-join the pane now visible.
+            if herdrClientProbe(tty) {
+                return await resolveViaHerdr(target: target)
             }
         }
 
@@ -169,6 +204,92 @@ struct ClaudeSessionJoinResolver {
         )
     }
 
+    private func resolveViaHerdr(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        let sockets = registry.liveLocalHerdrSocketPaths()
+        guard sockets.count == 1, let socketPath = sockets.first else {
+            Self.abstainedHerdrJoin(
+                outcome: sockets.isEmpty ? "no live registered socket" : "multiple live sockets"
+            )
+            return nil
+        }
+        guard let herdrPanes else {
+            Self.abstainedHerdrJoin(outcome: "pane query capability unavailable")
+            return nil
+        }
+        guard let pane = await herdrPanes.focusedPane(socketPath: socketPath) else {
+            Self.abstainedHerdrJoin(outcome: "focused pane unavailable")
+            return nil
+        }
+
+        let snapshot: ClaudeSessionSnapshot
+        switch registry.resolve(herdrPaneID: pane.paneID) {
+        case .resolved(let resolved):
+            snapshot = resolved
+        case .unknown:
+            Self.abstainedHerdrJoin(outcome: "focused pane has no live session")
+            return nil
+        case .stale:
+            Self.abstainedHerdrJoin(outcome: "focused pane session stale")
+            return nil
+        case .ambiguous:
+            Self.abstainedHerdrJoin(outcome: "focused pane session ambiguous")
+            return nil
+        }
+
+        if let claimed = pane.claimedClaudeSessionID, claimed != snapshot.sessionID {
+            Self.abstainedHerdrJoin(outcome: "pane session claim disagrees")
+            return nil
+        }
+        guard let foreground = await herdrPanes.paneForegroundInfo(
+            socketPath: socketPath, paneID: pane.paneID
+        ) else {
+            Self.abstainedHerdrJoin(outcome: "foreground process query unavailable")
+            return nil
+        }
+        guard let foregroundPIDs = foreground.foregroundPIDs else {
+            Self.abstainedHerdrJoin(outcome: "foreground process detection unavailable")
+            return nil
+        }
+        guard Self.registeredClaudeIsForeground(
+            snapshot: snapshot, foregroundPIDs: foregroundPIDs
+        ) else { return nil }
+
+        Log.claudeContext.info("Terminal pane joined to a live Claude session via herdr pane")
+        return ClaudeSessionJoin(
+            target: target,
+            marker: snapshot.marker,
+            snapshot: snapshot,
+            windowID: focusedWindowID(target.pid),
+            mechanism: .herdrPane
+        )
+    }
+
+    /// Pure pid cross-check kept visible to tests because a snapshot with no
+    /// process cannot be produced by a successful pane-id registry lookup, but
+    /// the resolver must still fail closed if that invariant ever changes.
+    static func registeredClaudeIsForeground(
+        snapshot: ClaudeSessionSnapshot,
+        foregroundPIDs: [Int32]
+    ) -> Bool {
+        guard let process = snapshot.process else {
+            abstainedHerdrJoin(outcome: "registered session has no process metadata")
+            return false
+        }
+        guard foregroundPIDs.contains(process.claudePID) else {
+            abstainedHerdrJoin(outcome: "registered Claude process is not foreground")
+            return false
+        }
+        return true
+    }
+
+    /// Outcome only: pane ids, socket paths, tty paths, and payload contents are
+    /// all live join material and never belong in the unified log.
+    private static func abstainedHerdrJoin(outcome: String) {
+        Log.claudeContext.info(
+            "Herdr pane matched no session (\(outcome, privacy: .public)); Claude context withheld"
+        )
+    }
+
     private func resolveViaMarker(target: TerminalScreenTarget) -> ClaudeSessionJoin? {
         guard let read = markerInWindowTitle(target.pid) else {
             // No marker on screen: this pane is not a joined Claude session, or
@@ -181,7 +302,11 @@ struct ClaudeSessionJoinResolver {
         case .resolved(let snapshot):
             Log.claudeContext.info("Terminal pane joined to a live Claude session via title marker")
             return ClaudeSessionJoin(
-                target: target, marker: read.marker, snapshot: snapshot, windowID: read.windowID
+                target: target,
+                marker: read.marker,
+                snapshot: snapshot,
+                windowID: read.windowID,
+                mechanism: .titleMarker
             )
         case .unknown, .stale, .ambiguous:
             // Count-only: the marker itself is not logged. It is a live handle
@@ -231,6 +356,15 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
 
     func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool {
         guard let join = currentJoin() else { return false }
+        // AX sees herdr's composite TUI. Attaching it would let neighboring
+        // panes — potentially other Claude sessions — ride into this session's
+        // prompt, so a correct pane join still cannot authorize raw capture.
+        guard join.mechanism != .herdrPane else {
+            Log.claudeContext.info(
+                "Herdr pane join cannot authorize composite raw screen attachment; withheld"
+            )
+            return false
+        }
         // The join must be about THIS pane. A join resolved for one target
         // says nothing about another, and a recycled PID must not inherit the
         // previous owner's authorization — hence the full target compare
