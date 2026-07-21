@@ -52,10 +52,13 @@ sessions in the same repo apart. Older Ghostty builds fail this read gracefully;
 install Ghostty from tip for reliable local joins while Claude Code is
 responding.
 
-**Title marker (opt-in local fallback, always on for SSH).** For an older Ghostty
-build or another terminal, enable **Settings → Text Processing → Polishing →
-Local Claude title fallback** and export
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. The app then replies to local hooks with
+**Title marker (opt-in local fallback, always on for SSH).** For an older
+(stable-channel) Ghostty build, enable **Settings → Text Processing →
+Polishing → Local Claude title fallback** and export
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. Both joins are Ghostty-only today: a
+join carries a screen-context read, and Ghostty is the only terminal whose
+window is verified to expose exactly the visible screen over accessibility —
+other terminals abstain entirely rather than half-join. The app then replies to local hooks with
 the session marker, which Claude Code writes into the window title as an OSC 2
 sequence; the environment variable stops Claude Code from overwriting it with
 its own conversation title mid-turn. Remote hooks always receive the marker

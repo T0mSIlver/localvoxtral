@@ -43,11 +43,13 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 ## Features
 
 - **Built for coding agents** — terminals are first-class targets and polishing understands developer speech ([details](#terminals--coding-agents))
+- **Claude Code aware** — an opt-in plugin grounds polishing in your live session: your last prompt, the files Claude just touched, that repo's vocabulary — locally or over SSH ([details](#dictating-into-claude-code))
 - **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option) drives both modes, or use classic per-mode keyboard shortcuts ([details](#shortcuts))
 - **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
 - **Automatic cleanup** — an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
 - **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
 - **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit
+- **Multilingual** — dictate in English, French, or any other language [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) understands; polishing answers in the language you spoke (English and French are covered by the test suite)
 
 > [!TIP]
 > If localvoxtral is useful to you, a ⭐ on this repo helps others find it.
@@ -75,7 +77,7 @@ The gesture selects the output mode, so both workflows are always one key away. 
 
 ## Terminals & coding agents
 
-Most dictation tools fall apart in a terminal. localvoxtral treats it as its primary target: prompt Claude Code — or any CLI coding agent — by voice and watch the words stream in live. SSH sessions work too, since text is typed into your local terminal. Terminal apps are detected automatically (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, cmux, and more), and apps that embed a terminal can be added in `terminal_apps.toml`. Live dictation adapts:
+Most dictation tools fall apart in a terminal. localvoxtral treats it as its primary target: prompt Claude Code — or any CLI coding agent — by voice and watch the words stream in live. SSH sessions work too, since text is typed into your local terminal. Terminal apps are detected automatically (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, Hyper, Tabby, Rio, and more), and apps that embed a terminal can be added in `terminal_apps.toml`. Live dictation adapts:
 
 - **Prompt-safe output** — newlines and tabs are typed as spaces, so a stray line break never submits a half-finished prompt and a tab never triggers shell completion
 - **Replacements without rewriting** — dictionary replacements are applied before text is typed; localvoxtral never backspaces over what the terminal has already drawn
@@ -91,6 +93,29 @@ When an Overlay Buffer dictation commits, optional LLM polishing understands how
 
 The overlay shows a **Polished** badge whenever the LLM touched your text, and the raw transcript stays one click away in the menu bar popover.
 
+### Dictating into Claude Code
+
+localvoxtral ships a [Claude Code plugin](integrations/claude-code/README.md) that turns dictation into a session-aware input method. The plugin is hooks-only — it spends none of your tokens, adds nothing to Claude's context, and cannot slow a turn down (every hook fails open if the app isn't running). What it does is tell localvoxtral what your session is doing, so that when you dictate into that session, polishing is grounded in:
+
+- your **previous prompt** and the session's **working directory**
+- the **files Claude just read or edited** — exactly the identifiers you're most likely to say next
+- that repository's **vocabulary** (via the repo-vocabulary index above, using the session's own reported directory — no tab-title guessing)
+
+The result is dictation that gets the hard part right: the misheard `useAuth.ts`, the branch name you mentioned two turns ago, the flag Claude just wrote into a file.
+
+Install is one click: **Settings → Text Processing → Claude Code plugin → Install**. The app registers its bundled plugin marketplace through Claude Code's own CLI and never edits `~/.claude/settings.json` behind your back.
+
+**Working over SSH?** A second plugin, `localvoxtral-remote`, covers Claude Code sessions on other machines: its hooks POST through an SSH `RemoteForward` back to your Mac — nothing to install on the host beyond the plugin's two JSON files, authenticated by a per-host token you can rotate or revoke in Settings at any time. Remote context is bounded and opaque by construction: labels and short sanitized excerpts only, and the app never reaches into the remote filesystem.
+
+Privacy, in one line: an allowlist of session metadata crosses a private local socket; transcripts, file contents, and shell commands never do. The [plugin README](integrations/claude-code/README.md) documents the exact fields and the threat model.
+
+> [!NOTE]
+> **Joining the right session needs Ghostty from the tip channel (or the title fallback on any terminal).** Before attaching context, localvoxtral must work out which Claude Code session owns the focused terminal. By default that match reads the pane's TTY over AppleScript, which only Ghostty ≥ 1.4 exposes — today that means installing Ghostty from its [tip (nightly) channel](https://ghostty.org/docs/install/pre):
+> ```bash
+> brew install --cask ghostty@tip
+> ```
+> On stable Ghostty, enable the opt-in **window-title marker fallback** in Settings and export `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs, so Claude Code stops overwriting the marker with its own conversation title. Session joins are deliberately limited to Ghostty for now — the join carries a screen-context read, and Ghostty is the only terminal whose window is verified to expose exactly the visible screen to accessibility. Other terminals are on the [roadmap](#roadmap).
+
 ## Settings
 
 Open **Settings** from the menu bar popover:
@@ -98,7 +123,7 @@ Open **Settings** from the menu bar popover:
 - **General** — permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
 - **Endpoints** — Dictation and Polishing each switch independently between `Managed local` (a model picker for polishing, plus a status light) and `External URL` (endpoint URL, model name, API key)
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts) and the menu-bar output mode
-- **Text Processing** — exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste)
+- **Text Processing** — exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste, and Claude Code session context)
 - **About** — version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
 
 The config folder at `~/Library/Application Support/localvoxtral/config` holds `replacement_dictionary.toml`, the LLM prompt TOMLs (including the agent variants), and `terminal_apps.toml`. When an update ships improved defaults, files you haven't edited are refreshed automatically; files you have edited are never touched without asking — the app offers to update them and keeps your versions as `.backup` files alongside.
@@ -107,10 +132,10 @@ The config folder at `~/Library/Application Support/localvoxtral/config` holds `
 
 In **Managed local** mode (the default), localvoxtral launches and supervises two inference engines for you — no terminal required:
 
-- **Dictation — `localvoxtral-speechd`**, a bundled Swift helper built on [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift), streams [mlx-community's Voxtral Mini 4B Realtime 4-bit model](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) through the app's OpenAI Realtime-compatible server.
+- **Dictation — `localvoxtral-speechd`**, a bundled Swift helper built on [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift), streams [Voxtral Mini 4B Realtime in 4-bit with a quantized LM head](https://huggingface.co/T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead) through the app's OpenAI Realtime-compatible server. The checkpoint is a conversion of the mlx-community 4-bit snapshot that also quantizes the tied output head — cutting the decode loop's largest projection from ~30 ms to ~3 ms per token and saving ~530 MB of memory, at level transcription quality.
 - **Polishing — `localvoxtral-polishd`**, a bundled Swift helper built on Apple's [MLX Swift](https://github.com/ml-explore/mlx-swift-lm), runs [Qwen3.5-4B-OptiQ in 4-bit](https://huggingface.co/mlx-community/Qwen3.5-4B-OptiQ-4bit) by default (a lighter 0.8B and a larger 9B are one click away in Settings). A warm prompt cache keeps polish latency low, and turning polishing off frees its memory immediately.
 
-Both helpers ship inside the app bundle. Their model weights download from Hugging Face at exact pinned commits, so an upstream edit to a model repo can never change what your install runs. The app supervises both helpers, and a watchdog stops them even if the app crashes.
+Both helpers ship inside the app bundle. Their model weights download from Hugging Face at exact pinned commits, so an upstream edit to a model repo can never change what your install runs. The app supervises both helpers, and a watchdog stops them even if the app crashes. Transcription-and-polish quality is held by a nightly end-to-end eval — real audio through the production ASR and polishing path, scored against an agent-dictation corpus of ~160 cases — so a model or prompt change that regresses dictation gets caught before it ships.
 
 Prefer your own hardware? Switch Dictation or Polishing to **External URL** in **Settings → Endpoints**: any OpenAI Realtime-compatible server works for dictation, any chat-completions server for polishing.
 
@@ -167,7 +192,8 @@ open ./dist/localvoxtral.app
 ## Roadmap
 
 - [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
-- [ ] End-to-end quality evals — realistic audio → transcription → polish benchmarks driving technical-dictation quality (in progress)
+- [ ] Hotword boosting in the speech model itself — bias transcription (not only polishing) toward your repo's vocabulary
+- [ ] Claude Code session joins beyond Ghostty — TTY-grade joins on more terminals, tmux/cmux support
 - [ ] Documentation website — a visual, end-user guide beyond this README
 - [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
 
