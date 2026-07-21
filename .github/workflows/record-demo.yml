@@ -1,13 +1,32 @@
 name: Record README Demo
 
 # Hands-free demo recording on the self-hosted runner (the owner's Mac, GUI
-# session): scripts/record-demo.sh stages a terminal-centric scene (a small
-# git repo in Terminal.app, with a real Claude Code session when the runner
-# has a logged-in `claude` CLI), drives the app, and speaks the demo lines
-# via TTS into the BlackHole loopback device. The encoded mp4 lands in the
-# run's artifacts; publishing it is manual by design — GitHub only renders
-# inline README video from user-attachments URLs, which have no upload API,
-# so the owner drag-drops the mp4 into a PR comment and pastes the URL.
+# session): scripts/record-demo.sh stages a terminal-centric scene, drives the
+# app, and speaks the demo lines via TTS into the BlackHole loopback device.
+# The encoded mp4 lands in the run's artifacts; publishing it is manual by
+# design — GitHub only renders inline README video from user-attachments URLs,
+# which have no upload API, so the owner drag-drops the mp4 into a PR comment
+# and pastes the URL.
+#
+# Two scenes, chosen by `terminal_agent` / what the runner has:
+#   * claude (flagship): a real Claude Code session in GHOSTTY, so the app joins
+#     the pane to the session by its controlling tty and grounds beat 2 in the
+#     session's own cwd / prior prompt / recent files. The script installs the
+#     localvoxtral Claude Code plugin for the run and uninstalls it after (only
+#     if it installed it). Requires, ON THE RUNNER:
+#       - Ghostty >= 1.4 / tip:  brew install --cask ghostty@tip
+#       - a logged-in `claude` CLI for the runner user
+#       - the app's Automation -> Ghostty grant already allowed (the app raises
+#         the consent sheet at launch via its #167 prewarm; hands-free CI cannot
+#         click it, so it MUST be pre-granted for the runner user — otherwise the
+#         tty read blocks, the join fails open, and beat 2's grounding no-ops)
+#       - Automation -> Ghostty for the runner's shell too (the script reads the
+#         pane tty for its capability check + surgical cleanup)
+#     With terminal_agent=claude the script FAILS FAST when any of the terminal
+#     prerequisites are missing; with terminal_agent=auto it falls back to the
+#     shell scene below.
+#   * shell (fallback): a plain zsh prompt in Terminal.app (always installed);
+#     beat 2 grounds `useAuth.ts` from the window-title cwd, as before.
 #
 # The script announces itself audibly and waits 3 s before taking over the
 # GUI session (owner rule), and needs an UNLOCKED session — it fails fast
@@ -15,12 +34,16 @@ name: Record README Demo
 #
 # One-time runner-machine setup (beyond the capture-assets grants):
 #   brew install blackhole-2ch ffmpeg
+#   brew install --cask ghostty@tip          # claude scene only
+#   # then, for the claude scene, log `claude` in for the runner user and grant
+#   # the app (and the runner shell) Automation -> Ghostty once in System
+#   # Settings > Privacy & Security > Automation.
 
 on:
   workflow_dispatch:
     inputs:
       terminal_agent:
-        description: "Terminal scene: auto = real Claude Code session when usable else plain zsh; claude = require it; shell = plain zsh"
+        description: "Scene: auto = Ghostty Claude session when claude+Ghostty available else Terminal.app zsh; claude = require Ghostty+claude (fail fast otherwise); shell = Terminal.app zsh"
         type: choice
         default: auto
         options:

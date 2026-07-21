@@ -8,21 +8,32 @@ set -euo pipefail
 #   dist/demo/demo-raw.mov  (raw capture, kept so the encode can be redone)
 #
 # The scene is TERMINAL-CENTRIC — localvoxtral is the dictation app to talk to
-# your coding agents. The script stages a small git repo, opens Terminal.app in
-# it (Terminal is always installed; when a logged-in `claude` CLI is available
-# it launches a real Claude Code session in that window instead of a bare
-# shell — never a faked one), and records two beats:
+# your coding agents. The script stages a small git repo and records two beats.
+# The terminal it uses depends on the scene:
+#
+#   * claude mode (the flagship): a REAL Claude Code session in GHOSTTY (>=1.4 /
+#     tip). Ghostty is required here because the app joins the focused pane to
+#     that session by the pane's controlling TTY (Ghostty exposes it over
+#     AppleScript) — that TTY join is what lets polishing ground technical terms
+#     in the SESSION's own reported cwd, prior prompt, and recently-touched
+#     files, independent of the window title. Before launching, the script
+#     installs the localvoxtral Claude Code plugin (hooks-only) so those hooks
+#     report the session; it uninstalls afterwards only if it installed it.
+#   * shell mode (fallback, no usable claude / no Ghostty): a plain zsh prompt in
+#     Terminal.app (always installed). Here beat 2 grounds `useAuth.ts` from the
+#     repo vocabulary the app reads out of the window-title cwd, as before.
 #
 #   Beat 1  hold Right Command -> live dictation streams word-by-word into the
-#           terminal prompt while speaking (the differentiator; no stray
-#           newline ever submits the prompt)
-#   Beat 2  tap Right Command  -> overlay buffer -> speak a line with spoken
-#           symbol forms + a real repo filename -> tap -> the agent-profile
-#           LLM polish (grounded by the repo vocabulary of the staged repo)
-#           writes `--flags` / `useAuth.ts` and the commit lands in the
-#           terminal; in claude mode the polished prompt is then genuinely
-#           SUBMITTED and the real response is recorded (one small request
-#           against the owner's Claude usage — DEMO_SUBMIT_PROMPT=0 disables)
+#           session's prompt/composer while speaking (the differentiator; no
+#           stray newline ever submits it)
+#   Beat 2  tap Right Command  -> overlay buffer -> speak a line with a spoken
+#           symbol form of a real repo identifier + spoken flags -> tap -> the
+#           agent-profile LLM polish (grounded, in claude mode, by the JOINED
+#           session's cwd/prior-prompt/recent-files) writes `useAuth.ts` /
+#           `--coverage` and the commit lands in the terminal; in claude mode the
+#           polished prompt is then genuinely SUBMITTED and the real response is
+#           recorded (one small request against the owner's Claude usage —
+#           DEMO_SUBMIT_PROMPT=0 disables)
 #
 # The voice is either YOU (default) or macOS text-to-speech through a loopback
 # audio device (hands-free mode — how the CI runner records it, see
@@ -38,11 +49,21 @@ set -euo pipefail
 # Default app: dist/localvoxtral.app (build it with ./scripts/package_app.sh).
 #
 # One-time TCC grants for the terminal running this script:
-#   - Accessibility     (posts the Right Command gesture, drives Terminal)
+#   - Accessibility     (posts the Right Command gesture, drives the scene app)
 #   - Screen Recording  (screencapture -v)
 #   - Microphone        (only when DEMO_CAPTURE_AUDIO=1, the default)
+#   - Automation -> Ghostty  (claude scene only: this script also reads Ghostty's
+#                       focused-pane tty to confirm >=1.4 and for surgical
+#                       cleanup — a separate grant from the app's, below)
 # The app itself must already have its mic + Accessibility grants and a
 # working dictation backend (managed local installed, or your endpoints up).
+# For the CLAUDE scene the app ALSO needs its own Automation -> Ghostty grant:
+# the join reads the focused pane's tty over AppleScript, and the app's #167
+# consent prewarm raises that sheet at launch (it must be answered / already
+# granted, or the join blocks and the grounding no-ops). The claude scene also
+# needs Ghostty >=1.4 / tip installed and a logged-in `claude` CLI, and the
+# script installs the localvoxtral Claude Code plugin for the session (removing
+# it afterwards only if it installed it).
 # The overlay beat needs the managed polishing helper: the script enables LLM
 # polishing with the default 4B model and waits for polishd health on port
 # 8472 before recording (a first-ever run may include a ~3.3 GB model
@@ -58,14 +79,25 @@ set -euo pipefail
 #   DEMO_CAPTURE_AUDIO            1 = record default-input audio into the video
 #                                 (default: 1 for a human take, 0 hands-free)
 #   DEMO_LINE_LIVE / _OVERLAY     the lines shown in the prompts / spoken by TTS
+#   DEMO_LINE_CLAUDE_SETUP        claude mode only: the FIRST prompt, typed (not
+#                                 dictated) and submitted before the beats so the
+#                                 plugin's hooks register this session's prior
+#                                 prompt + recently-read file — the context that
+#                                 grounds beat 2. Read-only; answers fast.
+#   DEMO_CLAUDE_SETUP_SECONDS     how long to let the setup prompt's turn run
+#                                 (default 18)
 #   DEMO_SUBMIT_PROMPT            1 (default) = in claude mode, submit the
 #                                 polished beat-2 prompt and record the response
 #   DEMO_RESPONSE_SECONDS         how long to record the response (default 14)
-#   DEMO_TERMINAL_AGENT           auto (default) | claude | shell — what runs in
-#                                 the staged Terminal window. auto uses a real
-#                                 Claude Code session when `claude` is on the
-#                                 login-shell PATH and logged in, else a plain
-#                                 zsh prompt in the staged repo.
+#   DEMO_TERMINAL_AGENT           auto (default) | claude | shell — which scene
+#                                 to record. auto records the Ghostty Claude Code
+#                                 scene when `claude` is logged in AND Ghostty is
+#                                 installed, else falls back to the Terminal.app
+#                                 zsh scene. claude REQUIRES both (fails fast if
+#                                 either is missing, or if Ghostty is too old to
+#                                 expose the pane tty); shell forces Terminal.app.
+#   DEMO_GHOSTTY_APP              path to Ghostty.app (default: resolved via
+#                                 mdfind / /Applications). Overrides detection.
 #   DEMO_HANDS_FREE               1 = no human: render the lines with `say`
 #                                 into the "BlackHole 2ch" loopback device and
 #                                 pin the app's mic to it. One-time machine
@@ -96,14 +128,27 @@ DEMO_TERMINAL_AGENT="${DEMO_TERMINAL_AGENT:-auto}"
 # Beat 1 (hold -> live streaming): a technical sentence a developer would say
 # to a coding agent; streamed raw, so no spoken symbol forms here.
 DEMO_LINE_LIVE="${DEMO_LINE_LIVE:-Refactor the retry logic in the websocket client, and add a unit test for the reconnect path.}"
-# Beat 2 (tap -> overlay + agent-profile polish): spoken symbol forms the
-# polish profile turns into written forms (`index.ts`, `--coverage`). Words
-# chosen for TTS->ASR robustness — take 6 proved "use auth" / "filter auth"
-# get misheard ("the use of that TS", "filter off") and the repo-vocabulary
-# rescue no-ops in claude mode because claude overwrites the Terminal title
-# the resolver reads. Phrased as a read-only ask so submitting it to a real
-# Claude Code session yields a fast text answer, not a tool-permission stall.
-DEMO_LINE_OVERLAY="${DEMO_LINE_OVERLAY:-Explain what index dot t s does, then give me the test command with dash dash coverage.}"
+# Beat 2 (tap -> overlay + agent-profile polish): a spoken identifier + spoken
+# flag that the agent profile writes as code — `useAuth.ts` and `--coverage`.
+# "use auth dot t s" is a proven ASR mishear (take 6: it lands as "the use of
+# that TS" / "use of dot TS"), which is exactly the point — the correction
+# demonstrably NEEDS session context. In the OLD Terminal.app claude scene the
+# repo-vocabulary rescue no-op'd, because Claude Code overwrites the window
+# title the cwd resolver read. The GHOSTTY scene fixes this at the root: the app
+# joins the pane to the Claude session by its TTY (title-independent) and grounds
+# `useAuth.ts` from the JOINED session's cwd (git ls-files finds
+# src/auth/useAuth.ts), its prior prompt (DEMO_LINE_CLAUDE_SETUP names the file),
+# and the file Claude just read. In shell mode the same line is rescued the old
+# way, from the repo vocabulary the app reads out of the window-title cwd.
+# Phrased read-only so submitting it yields a fast text answer, not a
+# tool-permission stall.
+DEMO_LINE_OVERLAY="${DEMO_LINE_OVERLAY:-Explain what use auth dot t s returns, then give me the test command with dash dash coverage.}"
+# claude mode: the staged FIRST prompt. Typed literally (not dictated), so the
+# exact spelling `src/auth/useAuth.ts` becomes the session's prior prompt and,
+# once Claude reads it, a recently-touched file — both grounding beat 2. A
+# read-only ask so the turn is fast.
+DEMO_LINE_CLAUDE_SETUP="${DEMO_LINE_CLAUDE_SETUP:-Read src/auth/useAuth.ts and tell me in one sentence what the useAuth hook returns.}"
+DEMO_CLAUDE_SETUP_SECONDS="${DEMO_CLAUDE_SETUP_SECONDS:-18}"
 # In claude mode the polished beat-2 prompt is genuinely SUBMITTED (one small
 # request against the owner's Claude usage) and the response is recorded for
 # DEMO_RESPONSE_SECONDS. DEMO_SUBMIT_PROMPT=0 turns the ending off.
@@ -292,12 +337,22 @@ SWIFT
 RECORDER_PID=""
 LAUNCHED_APP=0
 LAUNCHED_TERMINAL_APP=0
+LAUNCHED_GHOSTTY=0
 TERMINAL_WINDOW_ID=""
 TERMINAL_TTY=""
 DEMO_STAGE=""
 ORIGINAL_DARK_MODE=""
 ANNOUNCED_TAKEOVER=0
 DEMO_COMPLETED=0
+# Declared here (ahead of the trap) so cleanup can reference them even if the
+# script exits before they are assigned below — `set -u` would otherwise abort
+# cleanup itself on an unbound reference.
+CLAUDE_BIN=""
+GHOSTTY_APP=""
+SCENE_APP="Terminal"
+SCENE_TELL="application \"Terminal\""
+PLUGIN_INSTALLED_THIS_RUN=0
+MARKETPLACE_ADDED_THIS_RUN=0
 cleanup() {
   set +e # cleanup is best-effort: one failing teardown step must not abort the rest
   if [[ -f "$GESTURE" ]]; then
@@ -326,6 +381,25 @@ cleanup() {
   fi
   if [[ "$LAUNCHED_TERMINAL_APP" == 1 ]]; then
     osascript -e 'tell application "Terminal" to quit' >/dev/null 2>&1 || true
+  fi
+  # Ghostty (claude scene): kill only OUR pane's tty above, then quit the app
+  # only if WE launched it — an owner's pre-existing Ghostty is never quit.
+  if [[ "$LAUNCHED_GHOSTTY" == 1 ]]; then
+    osascript -e 'tell application "Ghostty" to quit' >/dev/null 2>&1 || true
+    sleep 1
+    pkill -xi ghostty >/dev/null 2>&1 || true
+  fi
+  # Back out ONLY what this run added (probed with `claude plugin list` before
+  # touching anything) — never disturb an owner's own install. The uninstall and
+  # the marketplace-remove are keyed on SEPARATE flags: an add-succeeds/
+  # install-fails run still removes the marketplace it added.
+  if [[ -n "$CLAUDE_BIN" ]]; then
+    if [[ "$PLUGIN_INSTALLED_THIS_RUN" == 1 ]]; then
+      "$CLAUDE_BIN" plugin uninstall localvoxtral@localvoxtral >/dev/null 2>&1 || true
+    fi
+    if [[ "$MARKETPLACE_ADDED_THIS_RUN" == 1 ]]; then
+      "$CLAUDE_BIN" plugin marketplace remove localvoxtral >/dev/null 2>&1 || true
+    fi
   fi
   if [[ -n "$DEMO_STAGE" ]]; then
     # The staged zsh writes .zsh_sessions into ZDOTDIR while exiting (we just
@@ -369,23 +443,64 @@ command -v ffmpeg >/dev/null || \
   echo "NOTE: ffmpeg not found — the raw .mov will be produced but not encoded (brew install ffmpeg)." >&2
 
 # --- resolve what runs in the terminal window ------------------------------------
-# A real Claude Code session is the ideal scene; fall back to a plain zsh
-# prompt in the staged repo when the CLI is absent or not logged in. Never
-# fake a running agent — a bare shell is honest, a painted TUI is not.
+# The flagship scene is a real Claude Code session in GHOSTTY, because the app
+# joins the focused pane to that session by the pane's controlling TTY — the
+# title-independent mechanism that makes beat 2's grounding fire. That needs
+# BOTH a logged-in `claude` CLI AND Ghostty (>=1.4 / tip). If either is missing
+# we fall back to the honest Terminal.app zsh scene rather than record a claude
+# scene whose join can never resolve. Never fake a running agent.
+GHOSTTY_BUNDLE_ID="com.mitchellh.ghostty"
+# Default BEFORE the resolution block: DEMO_TERMINAL_AGENT=shell skips the whole
+# `if`, and every later reference (and `set -u`) needs this bound regardless.
 TERMINAL_AGENT="shell"
-CLAUDE_BIN=""
 if [[ "$DEMO_TERMINAL_AGENT" != "shell" ]]; then
-  # Resolve the absolute binary via the login shell: the staged demo zsh has a
+  # Resolve the absolute binary via the login shell: a staged demo shell has a
   # bare ZDOTDIR, so the user's own PATH additions won't exist inside it.
   CLAUDE_BIN="$(zsh -lc 'command -v claude' 2>/dev/null || true)"
-  if [[ -n "$CLAUDE_BIN" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null; then
+  CLAUDE_USABLE=0
+  [[ -n "$CLAUDE_BIN" ]] && grep -q '"oauthAccount"' "$HOME/.claude.json" 2>/dev/null && CLAUDE_USABLE=1
+
+  # Locate Ghostty.app: explicit override, then Spotlight, then /Applications.
+  # `|| true` inside the substitution: under `pipefail`, mdfind emitting more
+  # than the pipe buffer holds SIGPIPEs `head` (exit 141), and a disabled
+  # Spotlight returns non-zero — either would abort the script via `set -e`.
+  GHOSTTY_APP="${DEMO_GHOSTTY_APP:-}"
+  if [[ -z "$GHOSTTY_APP" ]]; then
+    GHOSTTY_APP="$(mdfind "kMDItemCFBundleIdentifier == '$GHOSTTY_BUNDLE_ID'" 2>/dev/null | head -n 1 || true)"
+    [[ -z "$GHOSTTY_APP" && -d /Applications/Ghostty.app ]] && GHOSTTY_APP="/Applications/Ghostty.app"
+  fi
+  GHOSTTY_PRESENT=0
+  [[ -n "$GHOSTTY_APP" && -d "$GHOSTTY_APP" ]] && GHOSTTY_PRESENT=1
+
+  if [[ "$CLAUDE_USABLE" == 1 && "$GHOSTTY_PRESENT" == 1 ]]; then
     TERMINAL_AGENT="claude"
   elif [[ "$DEMO_TERMINAL_AGENT" == "claude" ]]; then
-    echo "DEMO_TERMINAL_AGENT=claude, but no usable claude CLI (binary missing from the login-shell PATH, or not logged in)." >&2
+    # Explicit claude: fail fast with the precise missing piece.
+    if [[ "$CLAUDE_USABLE" != 1 ]]; then
+      echo "DEMO_TERMINAL_AGENT=claude, but no usable claude CLI (binary missing from the login-shell PATH, or not logged in)." >&2
+    else
+      echo "DEMO_TERMINAL_AGENT=claude needs Ghostty (>=1.4 / tip) for the focused-pane TTY join, but Ghostty.app was not found. Install it (brew install --cask ghostty@tip) or set DEMO_GHOSTTY_APP." >&2
+    fi
     exit 1
+  else
+    # auto: degrade to the honest Terminal.app shell scene.
+    if [[ "$CLAUDE_USABLE" == 1 && "$GHOSTTY_PRESENT" != 1 ]]; then
+      echo "NOTE: claude is available but Ghostty is not — recording the Terminal.app shell scene instead (the Claude join needs Ghostty's focused-pane tty)." >&2
+    fi
   fi
 fi
 echo "Terminal scene agent: $TERMINAL_AGENT"
+# Scene identity used for activation / AX window placement below. SCENE_APP is
+# the System Events PROCESS name (AX must address processes by name); SCENE_TELL
+# is the `tell application …` target, keyed on Ghostty's BUNDLE ID (matching the
+# app's own reader) rather than the fragile display name.
+if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+  SCENE_APP="Ghostty"
+  SCENE_TELL="application id \"$GHOSTTY_BUNDLE_ID\""
+else
+  SCENE_APP="Terminal"
+  SCENE_TELL="application \"Terminal\""
+fi
 
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action -------
 # On the DEFAULT audio output (never the loopback — that device is inaudible).
@@ -422,10 +537,20 @@ defaults write "$BUNDLE_ID" "settings.managed_llm_polishing_model" -string "mlx-
 # beat reads at README width (clamped to OverlayLayoutMetrics.maximum, 24).
 defaults write "$BUNDLE_ID" "settings.overlay_buffer_font_size" -float 22
 # Repo vocabulary grounds beat 2's spoken filename ("use auth dot t s" ->
-# useAuth.ts, exactly as spelled in the staged repo). Resolution reads the
-# terminal window title, which must contain a /-prefixed path — the staging
-# AppleScript pins the tab's custom title to the staged repo path for that.
+# useAuth.ts, exactly as spelled in the staged repo). In SHELL mode the app reads
+# the cwd out of the terminal window title, which must contain a /-prefixed path
+# — the Terminal staging AppleScript pins the tab's custom title for that.
 defaults write "$BUNDLE_ID" "settings.repo_vocabulary_enabled" -bool true
+# claude mode: the beat-2 grounding comes from the JOINED Claude session, not the
+# title. `claude_repo_context_enabled` is the gate for indexing the joined
+# session's cwd (git ls-files) and attaching its prior prompt + recently-touched
+# files to the polish prompt; it is ALSO what arms the app's one-time
+# Automation->Ghostty consent prewarm (#167) at launch, so the pane-tty read the
+# join depends on is not blocked mid-recording. (Default off; snapshotted above,
+# restored on exit. Left off in shell mode, which has no session to join.)
+if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+  defaults write "$BUNDLE_ID" "settings.claude_repo_context_enabled" -bool true
+fi
 if [[ -n "$DEMO_SAY_INPUT_UID" ]]; then
   defaults write "$BUNDLE_ID" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
 fi
@@ -490,10 +615,12 @@ REGION_Y=$(( MAIN_Y + (MAIN_H - DEMO_HEIGHT) / 2 ))
 (( MAIN_W < DEMO_WIDTH || MAIN_H < DEMO_HEIGHT )) && { echo "Main display (${MAIN_W}x${MAIN_H}) is smaller than the ${DEMO_WIDTH}x${DEMO_HEIGHT} capture region." >&2; exit 1; }
 (( REGION_Y < MAIN_Y + 30 )) && REGION_Y=$(( MAIN_Y + 30 )) # keep clear of the menu bar
 
-# --- stage the demo repo + Terminal window inside the capture region --------------
-# Fixed short path (not mktemp): the tab's custom title is set to this path so
-# RepoVocabulary can resolve the repo from the window title, and a short path
-# keeps that title readable on camera. Wiped before use and on cleanup.
+# --- stage the demo repo + the scene window inside the capture region -------------
+# Fixed short path (not mktemp): in shell mode the Terminal tab's custom title is
+# set to this path so RepoVocabulary can resolve the repo from the window title,
+# and a short path keeps that title readable on camera. In claude mode the join
+# resolves the repo from the session's reported cwd instead, but the same staged
+# path is Ghostty's --working-directory. Wiped before use and on cleanup.
 DEMO_STAGE="/tmp/lv-demo"
 rm -rf "$DEMO_STAGE"
 REPO_DIR="$DEMO_STAGE/webapp"
@@ -554,14 +681,197 @@ unset RPROMPT
 clear
 ZSHRC
 
-pgrep -xq Terminal || LAUNCHED_TERMINAL_APP=1
-SHELL_CMD="cd $(printf %q "$REPO_DIR") && exec /usr/bin/env ZDOTDIR=$(printf %q "$ZDOT_DIR") /bin/zsh -i"
-# AppleScript lives in a temp FILE, never in a heredoc inside $(...): the
-# runner executes this with /bin/bash 3.2, whose command-substitution parser
-# naively scans heredoc bodies and chokes on their quotes/parens — the first
-# hands-free take died exactly there, with a bogus exit 0 on top.
-STAGE_OSA="$DEMO_STAGE/stage-terminal.applescript"
-cat > "$STAGE_OSA" <<'OSA'
+# Size + position the scene window into the capture region via Accessibility
+# (System Events). This is app-agnostic — the same AX path works for Terminal
+# and for Ghostty, whose own AppleScript dictionary is too narrow to move/size a
+# window — so the recording never shows the rest of the desktop.
+# CAVEAT (claude mode): this targets `front window` of the process. When Ghostty
+# was ALREADY running we cannot prove our just-opened window is the frontmost
+# one, so in that case this may move the owner's window instead. There is no
+# window-id handle to scope it to ours; noted as a residual risk in final.md.
+# `|| true`: a positioning glitch must not waste the whole warmup cycle (this is
+# a small behavior change from the pre-refactor Terminal path, which aborted).
+position_scene_window() { # <process name>
+  osascript >/dev/null <<OSA || true
+tell application "$1" to activate
+tell application "System Events" to tell process "$1"
+  set position of front window to {$REGION_X, $REGION_Y}
+  set size of front window to {$DEMO_WIDTH, $DEMO_HEIGHT}
+end tell
+OSA
+}
+
+# Every Ghostty pane's controlling tty, one per line (best-effort). Used to tell
+# OUR just-opened pane apart from an owner's pre-existing panes before trusting a
+# tty for surgical cleanup. Tolerant of Ghostty's object model: if the plural
+# accessors are unsupported it returns empty, and the caller treats empty as
+# "cannot prove ownership" (safe: skip the kill).
+ghostty_pane_ttys() {
+  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to get tty of every terminal of every tab of every window" 2>/dev/null \
+    | tr ',' '\n' | tr -d '{}' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep '^/dev/tty' || true
+}
+
+# A general-purpose keystroke helper (types a literal string into the focused
+# app). argv-based so punctuation in the string can't break out of the quoting —
+# the same reason the staging AppleScript lives in a file.
+KEYSTROKE_OSA="$DEMO_STAGE/keystroke.applescript"
+cat > "$KEYSTROKE_OSA" <<'OSA'
+on run argv
+    tell application "System Events" to keystroke (item 1 of argv)
+end run
+OSA
+
+if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+  # ---- claude scene: GHOSTTY, so the app can join the pane by its TTY ----------
+  # Install the localvoxtral Claude Code plugin FIRST, so the session's
+  # SessionStart/UserPromptSubmit/PostToolUse hooks fire from the moment claude
+  # launches and report its tty + prior prompt + touched files to the app. We
+  # pin `publisher_path` at the app bundle UNDER TEST (this build's publisher,
+  # not one in /Applications). Probe `claude plugin list` first: uninstall on
+  # cleanup ONLY if this run is the one that installed it.
+  APP_ABS="$(cd "$(dirname "$APP_PATH")" >/dev/null 2>&1 && pwd)/$(basename "$APP_PATH")"
+  PUBLISHER_PATH="$APP_ABS/Contents/MacOS/localvoxtral-claude-hook"
+  [[ -x "$PUBLISHER_PATH" ]] || { echo "Publisher binary missing at $PUBLISHER_PATH — repackage with package_app.sh." >&2; exit 1; }
+  MARKETPLACE_DIR="$(cd "$(dirname "$0")/.." >/dev/null 2>&1 && pwd)/integrations/claude-code"
+  [[ -d "$MARKETPLACE_DIR/.claude-plugin" ]] || MARKETPLACE_DIR="$PWD/integrations/claude-code"
+  # Capture the probe THEN grep the variable: `plugin list | grep` under
+  # `pipefail` lets a failing `plugin list` (claude not initialized, a blip)
+  # flip the `if` to false and re-install over — then uninstall — an owner's
+  # plugin. The `|| true` keeps a probe failure from aborting the script; the
+  # grep decides on the captured text alone.
+  plugin_list_output="$("$CLAUDE_BIN" plugin list 2>/dev/null || true)"
+  if grep -qi 'localvoxtral@localvoxtral' <<<"$plugin_list_output"; then
+    echo "localvoxtral plugin already installed — using it as-is (will NOT uninstall on cleanup)."
+  else
+    echo "Installing the localvoxtral Claude Code plugin (marketplace: $MARKETPLACE_DIR)..."
+    if "$CLAUDE_BIN" plugin marketplace add "$MARKETPLACE_DIR"; then
+      MARKETPLACE_ADDED_THIS_RUN=1
+    fi
+    # stderr is intentionally NOT suppressed: a failed install must show claude's
+    # own reason in the log, not just our one-liner.
+    if "$CLAUDE_BIN" plugin install localvoxtral@localvoxtral --config "publisher_path=$PUBLISHER_PATH"; then
+      PLUGIN_INSTALLED_THIS_RUN=1
+      echo "Plugin installed (publisher_path=$PUBLISHER_PATH)."
+    else
+      # Install failed. Cleanup backs out the marketplace on exit whenever WE
+      # added it this run (MARKETPLACE_ADDED_THIS_RUN), independently of whether
+      # the plugin installed — so an add-succeeds/install-fails run does not leak
+      # the marketplace into the owner's config.
+      echo "Failed to install the localvoxtral Claude Code plugin — beat 2's join would never fire. Aborting." >&2
+      exit 1
+    fi
+  fi
+
+  pgrep -xiq ghostty || LAUNCHED_GHOSTTY=1
+  # If Ghostty is already running, snapshot its existing pane ttys so we can
+  # later identify OUR new pane by set difference. (Skip the snapshot when it is
+  # NOT running — `tell application id` would launch it, and once we launch it
+  # ourselves the only pane is unambiguously ours anyway.)
+  TTYS_BEFORE=""
+  if [[ "$LAUNCHED_GHOSTTY" != 1 ]]; then
+    TTYS_BEFORE="$(ghostty_pane_ttys)"
+  fi
+  echo "Launching Ghostty ($GHOSTTY_APP) in $REPO_DIR with claude ($CLAUDE_BIN)..."
+  # Ghostty opens the pane directly on claude, cwd pinned to the staged repo,
+  # with an opaque dark look + big font passed as CLI config (Ghostty has no
+  # scriptable per-tab colors like Terminal). `-e` MUST be last — everything
+  # after it is the command Ghostty runs. --window-width/-height are grid CELLS,
+  # a rough first size that the AX resize below corrects to the capture region.
+  open -na "$GHOSTTY_APP" --args \
+    --working-directory="$REPO_DIR" \
+    --title="webapp" \
+    --font-family="Menlo" \
+    --font-size=21 \
+    --background=1e1e1e \
+    --foreground=e6e6e6 \
+    --window-width=100 \
+    --window-height=30 \
+    -e "$CLAUDE_BIN"
+  for _ in $(seq 1 20); do pgrep -xiq ghostty && break; sleep 0.5; done
+  pgrep -xiq ghostty || { echo "Ghostty did not launch." >&2; exit 1; }
+  sleep 4
+  position_scene_window "$SCENE_APP"
+  sleep 1
+
+  # Folder-trust dialog acceptance (BEFORE any dictated text exists; a no-op on
+  # an already-trusted folder). Same one-Return discipline as the shell path.
+  # Address Ghostty by bundle id (not display name) — the app's own reader does
+  # too, and a by-name tell is fragile under localization / name collisions.
+  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+  osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
+  sleep 3
+
+  # Capability check + cleanup tty: ask Ghostty for the focused pane's tty using
+  # the SAME AppleScript the app's join uses. A /dev/tty result proves Ghostty
+  # exposes the `tty` term (>=1.4). Whether that pane is OURS is decided below.
+  # IMPORTANT: this probe consults the Automation grant of the app running THIS
+  # script (Terminal / the runner shell), which is SEPARATE from the app's own
+  # localvoxtral->Ghostty grant that the join relies on (see final.md checklist).
+  GTTY_ERR="$DEMO_STAGE/ghostty-tty.err"
+  GHOSTTY_TTY="$(osascript \
+    -e 'with timeout of 3 seconds' \
+    -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to get tty of focused terminal of selected tab of front window" \
+    -e 'end timeout' 2>"$GTTY_ERR")" || GHOSTTY_TTY=""
+  if [[ "$GHOSTTY_TTY" == /dev/tty* ]]; then
+    echo "Ghostty focused-pane tty: $GHOSTTY_TTY"
+    # Only trust this tty for surgical `pkill -t` cleanup when it is PROVABLY
+    # ours — otherwise cleanup could kill an owner's pre-existing claude session.
+    #   * we launched Ghostty ourselves  -> the only pane is ours.
+    #   * Ghostty was already running     -> ours only if this tty did NOT exist
+    #     in the pre-launch snapshot (and the snapshot was actually readable).
+    # Any ambiguity leaves TERMINAL_TTY empty, so cleanup skips the kill; the
+    # LAUNCHED_GHOSTTY==1 quit path is then the only teardown, which is safe.
+    if [[ "$LAUNCHED_GHOSTTY" == 1 ]]; then
+      TERMINAL_TTY="$GHOSTTY_TTY"
+    elif [[ -n "$TTYS_BEFORE" ]] && ! grep -Fxq "$GHOSTTY_TTY" <<<"$TTYS_BEFORE"; then
+      TERMINAL_TTY="$GHOSTTY_TTY"
+      echo "Identified our new pane by set difference against the pre-launch snapshot."
+    else
+      echo "WARNING: Ghostty was already running and this run cannot prove which pane is ours (the focused pane pre-existed our launch, or the pane list was unreadable). Skipping surgical pane cleanup to avoid killing the owner's session." >&2
+    fi
+  elif grep -q -- '-1700' "$GTTY_ERR" 2>/dev/null; then
+    # -1700: `tty` is not in Ghostty's dictionary (pre-1.4). The TTY join cannot
+    # resolve, so fail loudly rather than record a scene whose grounding no-ops.
+    echo "This Ghostty is too old to expose the focused-pane tty (AppleScript -1700). Install Ghostty tip (brew install --cask ghostty@tip) and rerun." >&2
+    exit 1
+  else
+    # -1743 (Automation denied to THIS script's app) or any other error. The
+    # app's OWN grant is what the join needs, so this is a warning, not fatal.
+    # Surface the actual stderr so a compile/usage error in the probe is not
+    # silently misreported as a consent problem.
+    echo "WARNING: could not read Ghostty's focused-pane tty from this script (Automation not granted to the app running the script, a compile error, or a transient failure). The join depends on the localvoxtral->Ghostty grant, which is separate. Surgical pane cleanup is unavailable this run." >&2
+    echo "  osascript stderr: $(tr '\n' ' ' <"$GTTY_ERR" 2>/dev/null)" >&2
+  fi
+  rm -f "$GTTY_ERR"
+
+  # Staged FIRST prompt: typed (not dictated) and submitted, so the plugin's
+  # UserPromptSubmit + PostToolUse(Read) hooks register this session's prior
+  # prompt and recently-read file BEFORE beat 2 — the join + grounding are
+  # resolved at beat 2's dictation START. Read-only, so the turn is fast.
+  #
+  # This submit is the ENTIRE mechanism that gives beat 2 its prior-prompt /
+  # recent-file grounding, so it must NOT be swallowed: if focus slipped (trust
+  # dialog still up, wrong window frontmost) the keystrokes are lost and the demo
+  # would silently record with the feature no-op'd. Fail fast on either failure.
+  echo "Submitting the staged setup prompt (grounds beat 2): \"$DEMO_LINE_CLAUDE_SETUP\""
+  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+  sleep 1
+  osascript "$KEYSTROKE_OSA" "$DEMO_LINE_CLAUDE_SETUP" \
+    || { echo "Setup-prompt keystroke failed (focus lost?); beat 2 would ground on nothing. Aborting." >&2; exit 1; }
+  sleep 0.5
+  osascript -e 'tell application "System Events" to key code 36' \
+    || { echo "Setup-prompt submit (Return) failed; beat 2 would ground on nothing. Aborting." >&2; exit 1; }
+  sleep "$DEMO_CLAUDE_SETUP_SECONDS"
+else
+  # ---- shell scene: Terminal.app (unchanged honest fallback) -------------------
+  pgrep -xq Terminal || LAUNCHED_TERMINAL_APP=1
+  SHELL_CMD="cd $(printf %q "$REPO_DIR") && exec /usr/bin/env ZDOTDIR=$(printf %q "$ZDOT_DIR") /bin/zsh -i"
+  # AppleScript lives in a temp FILE, never in a heredoc inside $(...): the
+  # runner executes this with /bin/bash 3.2, whose command-substitution parser
+  # naively scans heredoc bodies and chokes on their quotes/parens — the first
+  # hands-free take died exactly there, with a bogus exit 0 on top.
+  STAGE_OSA="$DEMO_STAGE/stage-terminal.applescript"
+  cat > "$STAGE_OSA" <<'OSA'
 on run argv
     tell application "Terminal"
         activate
@@ -595,53 +905,24 @@ on run argv
     end tell
 end run
 OSA
-TERMINAL_INFO="$(osascript "$STAGE_OSA" "$SHELL_CMD" "$REPO_DIR")"
-TERMINAL_WINDOW_ID="${TERMINAL_INFO%% *}"
-TERMINAL_TTY="${TERMINAL_INFO##* }"
-if [[ -z "$TERMINAL_WINDOW_ID" || -z "$TERMINAL_TTY" || "$TERMINAL_TTY" != /dev/* ]]; then
-  echo "Failed to stage the Terminal window (osascript returned: '$TERMINAL_INFO')." >&2
-  exit 1
-fi
-echo "Terminal demo window id $TERMINAL_WINDOW_ID on $TERMINAL_TTY"
+  TERMINAL_INFO="$(osascript "$STAGE_OSA" "$SHELL_CMD" "$REPO_DIR")"
+  TERMINAL_WINDOW_ID="${TERMINAL_INFO%% *}"
+  TERMINAL_TTY="${TERMINAL_INFO##* }"
+  if [[ -z "$TERMINAL_WINDOW_ID" || -z "$TERMINAL_TTY" || "$TERMINAL_TTY" != /dev/* ]]; then
+    echo "Failed to stage the Terminal window (osascript returned: '$TERMINAL_INFO')." >&2
+    exit 1
+  fi
+  echo "Terminal demo window id $TERMINAL_WINDOW_ID on $TERMINAL_TTY"
 
-# If we launched Terminal ourselves it may have opened a default startup
-# window too — close everything that is not the demo window so nothing else
-# shows through the capture region.
-if [[ "$LAUNCHED_TERMINAL_APP" == 1 ]]; then
-  osascript -e "tell application \"Terminal\" to close (every window whose id is not $TERMINAL_WINDOW_ID)" >/dev/null 2>&1 || true
-fi
+  # If we launched Terminal ourselves it may have opened a default startup
+  # window too — close everything that is not the demo window so nothing else
+  # shows through the capture region.
+  if [[ "$LAUNCHED_TERMINAL_APP" == 1 ]]; then
+    osascript -e "tell application \"Terminal\" to close (every window whose id is not $TERMINAL_WINDOW_ID)" >/dev/null 2>&1 || true
+  fi
 
-# The window fills the region exactly so the recording never shows whatever
-# else is on the desktop.
-osascript >/dev/null <<OSA
-tell application "Terminal" to activate
-tell application "System Events" to tell process "Terminal"
-  set position of front window to {$REGION_X, $REGION_Y}
-  set size of front window to {$DEMO_WIDTH, $DEMO_HEIGHT}
-end tell
-OSA
-sleep 1
-
-# A real Claude Code session, launched visibly in the staged window. The only
-# Return ever pressed is the folder-trust-dialog acceptance BEFORE any
-# dictated text exists (on an already-trusted folder that Return hits the
-# empty composer and is a no-op); once dictated text is on screen nothing
-# ever submits it.
-if [[ "$TERMINAL_AGENT" == "claude" ]]; then
-  echo "Launching claude ($CLAUDE_BIN) in the demo window..."
-  LAUNCH_OSA="$DEMO_STAGE/launch-claude.applescript"
-  cat > "$LAUNCH_OSA" <<'OSA'
-on run argv
-    tell application "Terminal"
-        do script (item 1 of argv) in selected tab of window id ((item 2 of argv) as integer)
-    end tell
-end run
-OSA
-  osascript "$LAUNCH_OSA" "$CLAUDE_BIN" "$TERMINAL_WINDOW_ID" >/dev/null
-  sleep 10
-  osascript -e 'tell application "Terminal" to activate' >/dev/null
-  osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
-  sleep 3
+  position_scene_window "$SCENE_APP"
+  sleep 1
 fi
 
 cue() { # <beat-label> <sentence>
@@ -671,7 +952,7 @@ speak_or_wait() { # <sentence>
 # checkpoints the exact prefix the on-camera beat reuses; its residue is then
 # cleared off-camera.
 echo "Warming the agent-profile polish prompt cache off-camera..."
-osascript -e 'tell application "Terminal" to activate' >/dev/null
+osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
 sleep 1
 cue "WARMUP (off-camera, not recorded). Speak after the beep." "Ready to record the demo."
 tap_hotkey
@@ -716,7 +997,7 @@ recorder_alive_or_abort() {
 }
 recorder_alive_or_abort
 
-osascript -e 'tell application "Terminal" to activate' >/dev/null
+osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
 sleep 1
 
 # Beat 1 — hold: live dictation streams word-by-word into the terminal prompt.
@@ -755,7 +1036,7 @@ sleep 3 # let the committed text sit on screen
 # approved: one small read-only request against the owner's Claude usage.
 if [[ "$TERMINAL_AGENT" == "claude" && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
   echo "Submitting the polished prompt to claude (recording the response for ${DEMO_RESPONSE_SECONDS}s)..."
-  osascript -e 'tell application "Terminal" to activate' >/dev/null
+  osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
   osascript -e 'tell application "System Events" to key code 36' >/dev/null
   sleep "$DEMO_RESPONSE_SECONDS"
 fi
