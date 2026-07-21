@@ -87,6 +87,9 @@ VARIANT_HELP = {
     "pre-compact": "production deterministic pre-processing -> compact language-preserving prompt -> model",
     "raw-production-v2": "raw ASR -> Markdown-friendly production prompt with missing literal examples -> model",
     "current-production": "production pre-LLM text -> current checked-in production prompt/context -> model",
+    "current-production-no-context": "current production request without vocabulary pairs or reference context",
+    "current-production-vocabulary-only": "current production request with vocabulary pairs but no reference context",
+    "current-production-context-only": "current production request with reference context but no vocabulary pairs",
     "current-production-oracle": "current production request + exact evaluation-only technical spelling hints",
     "current-production-grounded": "current production request + broad grounded repo/context candidates",
     "current-production-oracle-strict": "current production request + mandatory evaluation-only exact literals",
@@ -384,11 +387,17 @@ def rendered_user_prompts(
 def current_production_messages(
     record: dict[str, Any], system_prompt: str, user_template: str, oracle: bool = False,
     extra_dictionary: str = "",
+    include_vocabulary: bool = True,
+    include_context: bool = True,
 ) -> list[dict[str, str]]:
     input_text = record.get("polishInputText") or record.get("transcript")
     if not isinstance(input_text, str):
         raise ValueError("case has no production polish input")
     replacement_dictionary, clipboard_context = recorded_dynamic_sections(record)
+    if not include_vocabulary:
+        replacement_dictionary = ""
+    if not include_context:
+        clipboard_context = ""
     if extra_dictionary:
         replacement_dictionary = "\n\n".join(
             value for value in (replacement_dictionary, extra_dictionary) if value
@@ -865,6 +874,10 @@ def messages_for(
                 "current-production-oracle-strict",
             },
             extra_dictionary=extra_dictionary,
+            include_vocabulary=variant != "current-production-no-context"
+            and variant != "current-production-context-only",
+            include_context=variant != "current-production-no-context"
+            and variant != "current-production-vocabulary-only",
         )
         if variant == "current-production-grounded":
             return append_grounded_candidate_check(messages, record)

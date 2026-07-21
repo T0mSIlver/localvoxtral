@@ -696,6 +696,21 @@ final class AgentDictationE2EEvalSupportTests: XCTestCase {
         assert "Reference context" in messages[-1]["content"]
         assert "- DictationViewModel.swift: Dictation View Model" in messages[-1]["content"]
         assert "Working text:\nOpen Dictation View Model." in messages[-1]["content"]
+        no_context = module.current_production_messages(
+            record, system, user, include_vocabulary=False, include_context=False
+        )
+        assert "Reference context" not in no_context[-1]["content"]
+        assert "Repository vocabulary" not in no_context[-1]["content"]
+        vocabulary_only = module.current_production_messages(
+            record, system, user, include_context=False
+        )
+        assert "Reference context" not in vocabulary_only[-1]["content"]
+        assert "Repository vocabulary" in vocabulary_only[-1]["content"]
+        context_only = module.current_production_messages(
+            record, system, user, include_vocabulary=False
+        )
+        assert "Reference context" in context_only[-1]["content"]
+        assert "Repository vocabulary" not in context_only[-1]["content"]
         oracle = module.current_production_messages(record, system, user, oracle=True)
         assert "Evaluation-only oracle technical spellings" in oracle[-1]["content"]
         assert "- DictationViewModel.swift" in oracle[-1]["content"]
