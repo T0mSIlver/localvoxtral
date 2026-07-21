@@ -114,7 +114,7 @@ Privacy, in one line: an allowlist of session metadata crosses a private local s
 > ```bash
 > brew install --cask ghostty@tip
 > ```
-> On stable Ghostty — or any other terminal that shows the standard OSC 2 window title (iTerm2, Terminal, WezTerm, kitty, …) — enable the opt-in **window-title marker fallback** in Settings and export `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs, so Claude Code stops overwriting the marker with its own conversation title. SSH-remote sessions always use the marker.
+> On stable Ghostty, enable the opt-in **window-title marker fallback** in Settings and export `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs, so Claude Code stops overwriting the marker with its own conversation title. Session joins are deliberately limited to Ghostty for now — the join carries a screen-context read, and Ghostty is the only terminal whose window is verified to expose exactly the visible screen to accessibility. Other terminals are on the [roadmap](#roadmap).
 
 ## Settings
 
