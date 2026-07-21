@@ -5,21 +5,29 @@ set -euo pipefail
 # serving TEST services (NOT the app-managed backends).
 #
 # Two launchd LaunchAgents in the GUI-owner domain serve the integration/eval
-# suites:
-#   com.localvoxtral.voxmlx  port 8000  websocket realtime STT (tier-1)
-#   com.localvoxtral.mlxlm   port 8080  http chat/completions  (eval-llm)
-#
-# Keeping their multi-GB weights resident 24/7 wastes RAM. Instead both agents
-# are configured launch-on-demand via a KeepAlive `PathState` TRIGGER FILE
-# (RunAtLoad false, KeepAlive { PathState { <trigger>: true } }): launchd runs
-# the server while the trigger file EXISTS and stops it (freeing the weights)
-# when it is removed. See scripts/mac/README.md for the plists.
+# suites. As of the 2026-07 migration these are the app's OWN bundled Swift
+# helpers (the retired Python voxmlx/mlx-lm services ran here before):
+#   com.localvoxtral.testspeechd  port 8000  websocket realtime STT  (speechd)
+#   com.localvoxtral.testpolishd  port 8080  http chat/completions   (polishd)
+# The short service names are `speechd` / `polishd`; `voxmlx` / `mlxlm` remain
+# accepted as DEPRECATED ALIASES so already-installed gates and un-updated
+# checkouts keep working across the swap.
 #
 # Two file kinds live in the world-writable run dir:
-#   <name>.want         the launchd trigger — its EXISTENCE means "run".
-#   <name>.seen.<uid>   a per-caller activity stamp — its MTIME means "last
-#                       used by uid". The idle reaper keys off the NEWEST
-#                       stamp across all callers.
+#   <fskey>.want         the launchd trigger — its EXISTENCE means "run".
+#   <fskey>.seen.<uid>   a per-caller activity stamp — its MTIME means "last
+#                        used by uid". The idle reaper keys off the NEWEST
+#                        stamp across all callers.
+# The trigger/stamp FILESYSTEM KEYS are deliberately kept at the retired names
+# `voxmlx` / `mlxlm` (voxmlx.want / mlxlm.want) even though the services are
+# now speechd/polishd: these paths are the cross-generation rendezvous. An
+# already-installed gate and an un-updated reaper touch and read exactly these
+# paths, and the newly-bootstrapped testspeechd/testpolishd plists watch the
+# SAME paths (see scripts/mac/README.md) — so warming and idle-accounting keep
+# working through the swap with no gate/reaper reinstall required. Renaming
+# them would break that window; do not, without also renaming the plist
+# PathState keys AND reinstalling the gate + reaper in the same change.
+#
 # They are split because the run dir is a shared, sticky, world-writable dir:
 # any account can CREATE a file, but only its owner (or the dir owner) can
 # update/delete it. So each caller starts a server by creating the shared
@@ -54,6 +62,12 @@ set -euo pipefail
 # the ensure logic INLINE rather than exec'ing this script, so its security
 # review stays self-contained; keep the paths/ports/probes below in sync.
 #
+# The bundled helpers NEVER auto-download weights (a missing model makes
+# speechd/polishd log an error and exit, so launchd relaunch-loops it and the
+# health probe just times out with a clear "NOT ready" message — never a silent
+# serve of the wrong thing). The owner pre-downloads the pinned models into the
+# service account's Hugging Face cache once — see scripts/mac/README.md.
+#
 # Robustness: an interrupted run or a sleeping Mac just leaves the trigger and
 # stamps in place — the server stays warm and the reaper collects it after the
 # idle window. There is no lock to get stuck and no process to orphan: launchd
@@ -75,30 +89,61 @@ READY_TIMEOUT="${LV_TEST_SERVER_READY_TIMEOUT:-180}"
 STOP_GRACE="${LV_TEST_SERVER_STOP_GRACE:-8}"
 PORT_TIMEOUT=2
 
-ALL_SERVICES=(voxmlx mlxlm)
+# Stable installed copy of the packaged .app whose Metal-capable helper
+# binaries the plists run. The helpers MUST come from a packaged (xcodebuild)
+# bundle — a bare `swift build` binary cannot load its metallib at runtime — so
+# `install-helpers` copies a package_app.sh / try-pr.sh / release .app here and
+# the plists point at
+#   $STABLE_APP/Contents/MacOS/localvoxtral-speechd   (port 8000)
+#   $STABLE_APP/Contents/MacOS/localvoxtral-polishd   (port 8080)
+STABLE_APP="${LV_TEST_SERVER_APP:-/Users/Shared/localvoxtral/testservers/localvoxtral.app}"
 
-trigger_for() {
+# Canonical service names, iterated by reap/status. Deprecated aliases
+# (voxmlx→speechd, mlxlm→polishd) are accepted on the command line via canonical().
+ALL_SERVICES=(speechd polishd)
+
+# Normalize a canonical name or a deprecated alias to the canonical name.
+canonical() {
   case "$1" in
-    voxmlx) printf '%s/voxmlx.want\n' "$RUN_DIR" ;;
-    mlxlm)  printf '%s/mlxlm.want\n' "$RUN_DIR" ;;
+    speechd|voxmlx) printf 'speechd\n' ;;
+    polishd|mlxlm)  printf 'polishd\n' ;;
     *) return 1 ;;
   esac
+}
+# Stable trigger/stamp filesystem key (see header) — retained at the retired
+# names so old gates/reapers/plists keep rendezvousing on the same paths.
+fskey_for() {
+  case "$(canonical "$1" 2>/dev/null)" in
+    speechd) printf 'voxmlx\n' ;;
+    polishd) printf 'mlxlm\n' ;;
+    *) return 1 ;;
+  esac
+}
+trigger_for() {
+  local key
+  key="$(fskey_for "$1")" || return 1
+  printf '%s/%s.want\n' "$RUN_DIR" "$key"
+}
+stamp_prefix_for() {
+  local key
+  key="$(fskey_for "$1")" || return 1
+  printf '%s/%s.seen.' "$RUN_DIR" "$key"
 }
 port_for() {
-  case "$1" in
-    voxmlx) printf '8000\n' ;;
-    mlxlm)  printf '8080\n' ;;
+  case "$(canonical "$1" 2>/dev/null)" in
+    speechd) printf '8000\n' ;;
+    polishd) printf '8080\n' ;;
     *) return 1 ;;
   esac
 }
-# voxmlx exposes a websocket, not a documented HTTP readiness route, so it uses
-# a TCP-accept probe (uvicorn binds the port only after startup/model-load).
-# mlxlm answers GET /v1/models once weights are resident — a real readiness
-# signal — so it uses http.
-probe_for() {
-  case "$1" in
-    voxmlx) printf 'tcp\n' ;;
-    mlxlm)  printf 'http:/v1/models\n' ;;
+# launchd labels to signal on stop. Both generations are listed so the reaper
+# tears down whichever plist is currently loaded (the retired Python
+# voxmlx/mlxlm, or the new testspeechd/testpolishd) — plus the port-bound
+# fallback below covers anything launchctl can't reach.
+labels_for() {
+  case "$(canonical "$1" 2>/dev/null)" in
+    speechd) printf 'com.localvoxtral.testspeechd com.localvoxtral.voxmlx\n' ;;
+    polishd) printf 'com.localvoxtral.testpolishd com.localvoxtral.mlxlm\n' ;;
     *) return 1 ;;
   esac
 }
@@ -116,13 +161,23 @@ http_ok() {
     "http://127.0.0.1:${port}${path}" >/dev/null 2>&1
 }
 
+# speechd (8000) exposes a websocket, not a documented HTTP readiness route, and
+# loads its model BEFORE binding the listener, so a TCP-accept probe is a real
+# readiness signal (matching the retired voxmlx uvicorn behavior).
+#
+# polishd (8080) serves GET /health once its model is resident — its readiness
+# contract, and the probe to use going forward. The retired mlx-lm answered GET
+# /v1/models instead. So the 8080 probe accepts EITHER route: /health OR
+# /v1/models. This makes the probe correct against BOTH generations behind the
+# port, so warming stays green before AND after the owner swaps the plist. (The
+# gate mirrors this — see localvoxtral-build-gate.sh; the INSTALLED gate only
+# picks up the /health arm when the owner reinstalls it.)
 healthy() {
-  local name="$1" port probe
-  port="$(port_for "$name")"
-  probe="$(probe_for "$name")"
-  case "$probe" in
-    tcp) tcp_ok "$port" ;;
-    http:*) http_ok "$port" "${probe#http:}" ;;
+  local name="$1" port
+  port="$(port_for "$name")" || return 1
+  case "$(canonical "$name" 2>/dev/null)" in
+    speechd) tcp_ok "$port" ;;
+    polishd) http_ok "$port" "/health" || http_ok "$port" "/v1/models" ;;
     *) return 1 ;;
   esac
 }
@@ -131,9 +186,11 @@ healthy() {
 # empty if none exists. The trigger is included as a fallback so a
 # manually-created trigger with no stamp still ages out.
 newest_activity() {
-  local name="$1"
+  local name="$1" prefix trigger
+  prefix="$(stamp_prefix_for "$name")" || return 1
+  trigger="$(trigger_for "$name")"
   # shellcheck disable=SC2012
-  ls -1 "$RUN_DIR/${name}.seen."* "$(trigger_for "$name")" 2>/dev/null \
+  ls -1 "${prefix}"* "$trigger" 2>/dev/null \
     | while read -r f; do stat -f %m "$f" 2>/dev/null || true; done \
     | sort -n | tail -1
 }
@@ -141,10 +198,11 @@ newest_activity() {
 # ---- commands ----------------------------------------------------------------
 
 ensure_one() {
-  local name="$1" trigger port stamp
-  trigger="$(trigger_for "$name")" || { echo "unknown service: $name" >&2; return 2; }
-  port="$(port_for "$name")"
-  stamp="$RUN_DIR/${name}.seen.$(id -u)"
+  local name="$1" cname trigger port stamp
+  cname="$(canonical "$name")" || { echo "unknown service: $name" >&2; return 2; }
+  trigger="$(trigger_for "$cname")"
+  port="$(port_for "$cname")"
+  stamp="$(stamp_prefix_for "$cname")$(id -u)"
 
   if [[ ! -d "$RUN_DIR" ]]; then
     cat >&2 <<MSG
@@ -179,29 +237,32 @@ MSG
   }
 
   # Warm path: already serving — return immediately so bursts are cheap.
-  if healthy "$name"; then
-    echo "ensure $name: already warm (port $port)"
+  if healthy "$cname"; then
+    echo "ensure $cname: already warm (port $port)"
     return 0
   fi
 
-  echo "ensure $name: cold — waiting up to ${READY_TIMEOUT}s for port $port..."
+  echo "ensure $cname: cold — waiting up to ${READY_TIMEOUT}s for port $port..."
   local waited=0
   while (( waited < READY_TIMEOUT )); do
-    if healthy "$name"; then
-      echo "ensure $name: ready after ${waited}s (port $port)"
+    if healthy "$cname"; then
+      echo "ensure $cname: ready after ${waited}s (port $port)"
       return 0
     fi
     sleep 2
     waited=$((waited + 2))
   done
 
+  local labels
+  labels="$(labels_for "$cname")"
   cat >&2 <<MSG
-ensure $name: NOT ready after ${READY_TIMEOUT}s (port $port).
-Likely the LaunchAgent com.localvoxtral.${name} is not bootstrapped in the
-owner's GUI domain, or the model failed to load. Check:
-  launchctl print gui/\$(id -u)/com.localvoxtral.${name}
-  tail /Users/Shared/localvoxtral/${name}.log
-See scripts/mac/README.md.
+ensure $cname: NOT ready after ${READY_TIMEOUT}s (port $port).
+Likely one of these LaunchAgents is not bootstrapped in the owner's GUI domain,
+or the pinned model is not in the service account's HF cache (the helpers do
+not auto-download). Check:
+  launchctl print gui/\$(id -u)/com.localvoxtral.testspeechd  # or testpolishd
+  tail /Users/Shared/localvoxtral/${cname}.log
+See scripts/mac/README.md (labels tried: ${labels}).
 MSG
   return 1
 }
@@ -225,26 +286,34 @@ cmd_ensure() {
 # `stop` (manual/immediate). Removing the PathState trigger stops launchd from
 # RESTARTING the job, but launchd does NOT reliably terminate an already-running
 # process when a KeepAlive condition flips false — so we drop the trigger FIRST
-# (so launchd won't relaunch the instant we kill it) then SIGTERM the job, which
-# tears down its whole process tree (the job is a uv/uvx wrapper around the real
-# server child). The MLX server drains gracefully in ~2-3s; block until the port
-# closes, and escalate to SIGKILL — plus, as a last resort, kill whatever still
-# binds the port (only this test service does) — if it's still up after
-# STOP_GRACE. The kill MUST finish here: once the trigger is gone a later reap
-# run skips this service, so a server that ignored SIGTERM would leak forever.
-# Must run as the GUI-owner (the reaper's user): `launchctl kill` into
-# gui/$(id -u) needs the owning domain, and the sticky run-dir owner can delete
-# any account's trigger/stamps. Echoes a short outcome fragment for the caller.
+# (so launchd won't relaunch the instant we kill it) then SIGTERM the job(s),
+# which tears down its whole process tree. The MLX server drains gracefully in
+# ~2-3s; block until the port closes, and escalate to SIGKILL — plus, as a last
+# resort, kill whatever still binds the port (only this test service does) — if
+# it's still up after STOP_GRACE. Both generation labels are signaled so this
+# works whether the retired Python plist or the new helper plist is loaded; the
+# port-bound fallback covers any label launchctl cannot reach. The kill MUST
+# finish here: once the trigger is gone a later reap run skips this service, so
+# a server that ignored SIGTERM would leak forever. Must run as the GUI-owner
+# (the reaper's user): `launchctl kill` into gui/$(id -u) needs the owning
+# domain, and the sticky run-dir owner can delete any account's trigger/stamps.
+# Echoes a short outcome fragment for the caller.
 stop_one() {
-  local name="$1" trigger uid port pids waited=0
-  trigger="$(trigger_for "$name")" || return 2
+  local name="$1" cname trigger prefix uid port label pids waited=0
+  cname="$(canonical "$name")" || return 2
+  trigger="$(trigger_for "$cname")"
+  prefix="$(stamp_prefix_for "$cname")"
   uid="$(id -u)"
-  port="$(port_for "$name")"
-  rm -f "$trigger" "$RUN_DIR/${name}.seen."* 2>/dev/null || true
-  launchctl kill SIGTERM "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
-  while (( waited < STOP_GRACE )) && healthy "$name"; do sleep 1; waited=$((waited + 1)); done
-  if healthy "$name"; then
-    launchctl kill SIGKILL "gui/${uid}/com.localvoxtral.${name}" 2>/dev/null || true
+  port="$(port_for "$cname")"
+  rm -f "$trigger" "${prefix}"* 2>/dev/null || true
+  for label in $(labels_for "$cname"); do
+    launchctl kill SIGTERM "gui/${uid}/${label}" 2>/dev/null || true
+  done
+  while (( waited < STOP_GRACE )) && healthy "$cname"; do sleep 1; waited=$((waited + 1)); done
+  if healthy "$cname"; then
+    for label in $(labels_for "$cname"); do
+      launchctl kill SIGKILL "gui/${uid}/${label}" 2>/dev/null || true
+    done
     pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
     [[ -n "$pids" ]] && kill -KILL $pids 2>/dev/null || true
     echo "stopped (SIGTERM ignored → SIGKILL after ${waited}s)"
@@ -278,13 +347,13 @@ cmd_stop() {
   if [[ "$target" == "all" ]]; then names=("${ALL_SERVICES[@]}"); else names=("$target"); fi
   local rc=0
   for name in "${names[@]}"; do
-    if ! trigger_for "$name" >/dev/null 2>&1; then
+    if ! canonical "$name" >/dev/null 2>&1; then
       echo "unknown service: $name" >&2; rc=2; continue
     fi
     if [[ -e "$(trigger_for "$name")" ]] || healthy "$name"; then
-      printf 'stop %s: %s\n' "$name" "$(stop_one "$name")"
+      printf 'stop %s: %s\n' "$(canonical "$name")" "$(stop_one "$name")"
     else
-      echo "stop $name: already down"
+      echo "stop $(canonical "$name"): already down"
     fi
   done
   return "$rc"
@@ -308,9 +377,74 @@ cmd_status() {
   done
 }
 
+# Install/refresh the stable .app copy whose helper binaries the plists run.
+# Point it at a freshly packaged / try-pr'd / released bundle; the helpers must
+# be from a packaged (xcodebuild) build so their Metal kernels load. Copies with
+# `ditto` (preserves the bundle's code signature) into a temp sibling, then
+# swaps via mv-aside + mv-in — not a single atomic rename, so the path is
+# briefly absent; an already-running server keeps serving its open copy, and a
+# concurrent launchd cold-start in that window just retries on the next ensure.
+cmd_install_helpers() {
+  local src="${1:-}"
+  if [[ -z "$src" ]]; then
+    echo "install-helpers: usage: lv-test-servers.sh install-helpers <path-to-.app>" >&2
+    return 2
+  fi
+  src="${src%/}"
+  if [[ ! -d "$src" ]]; then
+    echo "install-helpers: source app not found: $src" >&2
+    return 1
+  fi
+  local speechd_bin="$src/Contents/MacOS/localvoxtral-speechd"
+  local polishd_bin="$src/Contents/MacOS/localvoxtral-polishd"
+  if [[ ! -x "$speechd_bin" || ! -x "$polishd_bin" ]]; then
+    cat >&2 <<MSG
+install-helpers: $src is missing a bundled helper binary.
+Expected both:
+  $speechd_bin
+  $polishd_bin
+Package with helpers first (scripts/package_app.sh release, or a CI artifact via
+scripts/try-pr.sh) — a bundle built with LOCALVOXTRAL_SKIP_SPEECHD/POLISHD=1 will
+not contain them.
+MSG
+    return 1
+  fi
+
+  local dest_dir tmp
+  dest_dir="$(dirname "$STABLE_APP")"
+  if ! mkdir -p "$dest_dir" 2>/dev/null; then
+    echo "install-helpers: cannot create $dest_dir (need: sudo install -d -m 0755 -o \"\$(id -un)\" $dest_dir)" >&2
+    return 1
+  fi
+  tmp="${STABLE_APP}.new.$$"
+  rm -rf "$tmp" 2>/dev/null || true
+  echo "install-helpers: copying $src -> $STABLE_APP"
+  if ! ditto "$src" "$tmp"; then
+    echo "install-helpers: ditto copy failed" >&2
+    rm -rf "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  rm -rf "${STABLE_APP}.old.$$" 2>/dev/null || true
+  if [[ -e "$STABLE_APP" ]]; then
+    # A swallowed mv-aside would make the next mv nest the new bundle INSIDE
+    # the old one (mv dir existing-dir), leaving the plist path serving the old
+    # binary while looking freshly installed. Fail loudly instead.
+    if ! mv "$STABLE_APP" "${STABLE_APP}.old.$$"; then
+      echo "install-helpers: cannot move aside existing $STABLE_APP (permissions? root-owned from an earlier sudo?)" >&2
+      rm -rf "$tmp" 2>/dev/null || true
+      return 1
+    fi
+  fi
+  mv "$tmp" "$STABLE_APP"
+  rm -rf "${STABLE_APP}.old.$$" 2>/dev/null || true
+  echo "install-helpers: installed. Restart the services to pick it up:"
+  echo "  lv-test-servers.sh stop all   # next ensure cold-starts from the new copy"
+}
+
 usage() {
   cat >&2 <<'MSG'
-usage: lv-test-servers.sh <ensure [voxmlx|mlxlm|all] | stop [voxmlx|mlxlm|all] | reap | status>
+usage: lv-test-servers.sh <ensure [speechd|polishd|all] | stop [speechd|polishd|all]
+                            | reap | status | install-helpers <path-to-.app>>
   ensure  start (if down) and block until the named server(s) are warm;
           resets the idle window. Default target: all.
   stop    unload the named server(s) NOW regardless of the idle window, freeing
@@ -318,6 +452,13 @@ usage: lv-test-servers.sh <ensure [voxmlx|mlxlm|all] | stop [voxmlx|mlxlm|all] |
   reap    stop any server idle longer than the idle window (reaper LaunchAgent;
           must run as the run-dir owner).
   status  print trigger + activity + port health for both services.
+  install-helpers  copy a packaged .app's helper binaries to the stable path
+          the plists run ($LV_TEST_SERVER_APP; default
+          /Users/Shared/localvoxtral/testservers/localvoxtral.app).
+
+  Service names: speechd (8000, realtime STT) and polishd (8080, chat
+  completions). The retired names voxmlx/mlxlm are accepted as deprecated
+  aliases during the migration.
 MSG
 }
 
@@ -326,6 +467,7 @@ case "${1:-}" in
   stop)   shift; cmd_stop "${1:-all}" ;;
   reap)   cmd_reap ;;
   status) cmd_status ;;
+  install-helpers) shift; cmd_install_helpers "${1:-}" ;;
   ""|-h|--help) usage; exit 2 ;;
   *) echo "unknown command: $1" >&2; usage; exit 2 ;;
 esac

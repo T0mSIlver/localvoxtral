@@ -24,9 +24,10 @@ import XCTest
 ///   pinned per-command), so from the Linux box the enablement has to travel
 ///   inside the synced tree instead of the SSH command line.
 ///
-/// Default endpoint is the build-host eval service `com.localvoxtral.mlxlm`
-/// (port 8080, owner runbook: scripts/mac/README.md); the app-managed
-/// instance on 8472 works too while the app is running with polishing on.
+/// Default endpoint is the build-host eval service `com.localvoxtral.testpolishd`
+/// (the bundled polishd helper on port 8080, owner runbook:
+/// scripts/mac/README.md); the app-managed instance on 8472 works too while the
+/// app is running with polishing on.
 @MainActor
 final class LLMPolishPromptEvalTests: XCTestCase {
     private static let enableEnv = "LLM_POLISH_EVAL_ENABLE"

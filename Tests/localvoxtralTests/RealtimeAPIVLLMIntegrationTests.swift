@@ -290,7 +290,7 @@ final class RealtimeAPIVLLMIntegrationTests: XCTestCase {
             actual: combinedFinalTranscript
         )
         print(
-            "voxmlx integration: word accuracy \(String(format: "%.3f", wordAccuracy)); "
+            "speechd integration: word accuracy \(String(format: "%.3f", wordAccuracy)); "
                 + "transcript: \(combinedFinalTranscript)"
         )
         XCTAssertGreaterThanOrEqual(

@@ -15,15 +15,25 @@ set -euo pipefail
 #   applog [minutes]    # integer, clamped to 1..120, default 10
 #   voxlog [lines]      # integer, clamped to 1..500, default 80
 #   svc-status
-#   ensure <voxmlx|mlxlm|all>   # warm an on-demand test server (touch + poll)
+#   ensure <speechd|polishd|all>  # warm an on-demand test server (touch + poll;
+#                                 # retired voxmlx/mlxlm names accepted as aliases)
 #   reap work/localvoxtral-<id>  # terminate stale tests in one exact work dir
 #   disk                # df + per-work-dir du (du can take a while — on demand)
 #   gc                  # delete work dirs unused > LV_GC_MAX_AGE_DAYS (v4)
 
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
+# `voxlog` tails the STT test-service log. Post-migration the on-demand STT
+# service is the bundled Swift speechd (com.localvoxtral.testspeechd,
+# StandardOutPath /Users/Shared/localvoxtral/speechd.log); the owner points
+# VOXLOG_FILE at it in ~/.localvoxtral-gate.conf. The default keeps the retired
+# voxmlx.log so an un-reconfigured gate still finds something.
 VOXLOG_FILE="$HOME/Library/Logs/voxmlx.log"
-VOXMLX_SERVICE="com.localvoxtral.voxmlx"
-# The GUI-session uid whose launchd domain hosts the voxmlx service. The gate
+# launchctl labels the STT/polish TEST services may be loaded under: the new
+# bundled-helper plists (testspeechd/testpolishd) and the retired Python ones
+# (voxmlx/mlxlm). svc-status prints whichever the owner's domain actually holds.
+TEST_SERVICE_LABELS=(com.localvoxtral.testspeechd com.localvoxtral.testpolishd \
+  com.localvoxtral.voxmlx com.localvoxtral.mlxlm)
+# The GUI-session uid whose launchd domain hosts the test services. The gate
 # account is deliberately not that user, so launchctl needs to be told.
 VOXMLX_GUI_UID="$(id -u)"
 
@@ -111,7 +121,7 @@ clamp_integer() {
 }
 
 launchctl_target() {
-  printf 'gui/%s/%s\n' "$VOXMLX_GUI_UID" "$VOXMLX_SERVICE"
+  printf 'gui/%s/%s\n' "$VOXMLX_GUI_UID" "$1"
 }
 
 # BSD stat on the Mac; GNU stat only so the shell regression tests can run on
@@ -336,11 +346,16 @@ show_versions() {
 show_processes() {
   section "Processes"
   local process pattern pids
-  for process in localvoxtral voxmlx-serve mlx_lm.server; do
+  # localvoxtral(-speechd/-polishd) are the bundled Swift helpers (the current
+  # test services); voxmlx-serve / mlx_lm.server are the retired Python ones,
+  # kept so a pre-migration host still reports.
+  for process in localvoxtral localvoxtral-speechd localvoxtral-polishd voxmlx-serve mlx_lm.server; do
     printf -- '-- %s --\n' "$process"
     if command -v pgrep >/dev/null 2>&1; then
       case "$process" in
         localvoxtral) pattern='(^|/)localvoxtral( |$)' ;;
+        localvoxtral-speechd) pattern='(^|/)localvoxtral-speechd( |$)' ;;
+        localvoxtral-polishd) pattern='(^|/)localvoxtral-polishd( |$)' ;;
         voxmlx-serve) pattern='(^|/)voxmlx-serve( |$)' ;;
         mlx_lm.server) pattern='(^|/)mlx_lm[.]server( |$)' ;;
       esac
@@ -364,8 +379,8 @@ show_processes() {
 show_ports() {
   section "Ports"
   local port
-  # 8000 = voxmlx launchd service, 8080 = mlx-lm eval launchd service,
-  # 8471/8472 = app-managed voxmlx/mlx-lm.
+  # 8000 = speechd test service (STT), 8080 = polishd test service (eval),
+  # 8471/8472 = app-managed speechd/polishd.
   for port in 8000 8080 8471 8472; do
     printf -- '-- port %s --\n' "$port"
     # Connect test first: lsof only sees this account's sockets, so it
@@ -385,20 +400,27 @@ show_ports() {
 }
 
 show_voxmlx_service() {
-  local lines="$1"
+  local lines="$1" label
 
-  section "launchctl ${VOXMLX_SERVICE}"
-  if command -v launchctl >/dev/null 2>&1; then
-    (launchctl print "$(launchctl_target)" 2>&1 || true) | head -n "$lines"
-  else
+  if ! command -v launchctl >/dev/null 2>&1; then
+    section "launchctl test services"
     printf 'launchctl: not found\n'
+    return
   fi
+  # launchctl print cannot read another user's GUI domain, so most of these
+  # come back empty from the gate account — processes/ports (below in
+  # svc-status/diag) are the real signal. Print each candidate label so
+  # whichever generation is loaded in the owner's domain is visible.
+  for label in "${TEST_SERVICE_LABELS[@]}"; do
+    section "launchctl ${label}"
+    (launchctl print "$(launchctl_target "$label")" 2>&1 || true) | head -n "$lines"
+  done
 }
 
 show_voxlog() {
   local lines="$1"
 
-  section "voxmlx.log"
+  section "STT service log (${VOXLOG_FILE##*/})"
   if [[ -f "$VOXLOG_FILE" ]]; then
     # Size/mtime line so an empty file is distinguishable from a missing one
     # when diagnosing remotely.
@@ -465,32 +487,56 @@ run_svc_status() {
 
 # Map an on-demand service name to its trigger file, port, and readiness probe.
 # Mirrors scripts/mac/lv-test-servers.sh; changing one means changing both.
-lv_service_trigger() {
+# The current names are speechd/polishd; voxmlx/mlxlm are deprecated aliases.
+# The trigger/stamp filesystem KEYS stay at the retired names (voxmlx.want /
+# mlxlm.want) so this gate and the newly-bootstrapped testspeechd/testpolishd
+# plists rendezvous on the same paths (see lv-test-servers.sh header).
+lv_service_canonical() {
   case "$1" in
-    voxmlx) printf '%s/voxmlx.want\n' "$LV_RUN_DIR" ;;
-    mlxlm)  printf '%s/mlxlm.want\n' "$LV_RUN_DIR" ;;
+    speechd|voxmlx) printf 'speechd\n' ;;
+    polishd|mlxlm)  printf 'polishd\n' ;;
     *) return 1 ;;
   esac
 }
+lv_service_fskey() {
+  case "$(lv_service_canonical "$1" 2>/dev/null)" in
+    speechd) printf 'voxmlx\n' ;;
+    polishd) printf 'mlxlm\n' ;;
+    *) return 1 ;;
+  esac
+}
+lv_service_trigger() {
+  local key
+  key="$(lv_service_fskey "$1")" || return 1
+  printf '%s/%s.want\n' "$LV_RUN_DIR" "$key"
+}
 lv_service_port() {
-  case "$1" in
-    voxmlx) printf '8000\n' ;;
-    mlxlm)  printf '8080\n' ;;
+  case "$(lv_service_canonical "$1" 2>/dev/null)" in
+    speechd) printf '8000\n' ;;
+    polishd) printf '8080\n' ;;
     *) return 1 ;;
   esac
 }
 lv_service_healthy() {
-  # voxmlx: TCP accept (uvicorn binds only after model load, no HTTP route).
-  # mlxlm: GET /v1/models returns 200 once weights are resident.
+  # speechd (8000): TCP accept (model loads before the listener binds, no HTTP
+  #   route) — same signal the retired voxmlx uvicorn gave.
+  # polishd (8080): GET /health once the model is resident. Accept /v1/models
+  #   too so the probe is correct against BOTH the new polishd and the retired
+  #   mlx-lm behind the port. NOTE: an INSTALLED gate only gains the /health arm
+  #   when the owner reinstalls it (scripts/mac/README.md) — until then it
+  #   probes /v1/models only, so `ensure polishd` against a swapped-in polishd
+  #   times out (best-effort; the eval itself still reaches /v1/chat/completions).
   local name="$1" port
   port="$(lv_service_port "$name")" || return 1
-  case "$name" in
-    voxmlx)
+  case "$(lv_service_canonical "$name" 2>/dev/null)" in
+    speechd)
       nc -z -G "$LV_ENSURE_PROBE_TIMEOUT" -w "$LV_ENSURE_PROBE_TIMEOUT" \
         127.0.0.1 "$port" >/dev/null 2>&1
       ;;
-    mlxlm)
+    polishd)
       curl -fsS -o /dev/null --max-time "$LV_ENSURE_PROBE_TIMEOUT" \
+        "http://127.0.0.1:${port}/health" >/dev/null 2>&1 \
+      || curl -fsS -o /dev/null --max-time "$LV_ENSURE_PROBE_TIMEOUT" \
         "http://127.0.0.1:${port}/v1/models" >/dev/null 2>&1
       ;;
     *) return 1 ;;
@@ -498,10 +544,12 @@ lv_service_healthy() {
 }
 
 ensure_one_service() {
-  local name="$1" trigger port stamp waited=0
-  trigger="$(lv_service_trigger "$name")" || { printf 'ensure: unknown service %s\n' "$name" >&2; return 2; }
-  port="$(lv_service_port "$name")"
-  stamp="$LV_RUN_DIR/${name}.seen.$(id -u)"
+  local name="$1" cname trigger port stamp waited=0
+  cname="$(lv_service_canonical "$name")" || { printf 'ensure: unknown service %s\n' "$name" >&2; return 2; }
+  trigger="$(lv_service_trigger "$cname")"
+  port="$(lv_service_port "$cname")"
+  stamp="$LV_RUN_DIR/$(lv_service_fskey "$cname").seen.$(id -u)"
+  name="$cname"
 
   if [[ ! -d "$LV_RUN_DIR" ]]; then
     printf 'ensure %s: run dir %s missing — owner must create it (see scripts/mac/README.md)\n' \
@@ -543,19 +591,25 @@ ensure_one_service() {
     waited=$((waited + 2))
   done
 
-  printf 'ensure %s: NOT ready after %ss (port %s) — is com.localvoxtral.%s bootstrapped?\n' \
-    "$name" "$LV_ENSURE_READY_TIMEOUT" "$port" "$name" >&2
+  local label
+  case "$name" in
+    speechd) label="com.localvoxtral.testspeechd" ;;
+    polishd) label="com.localvoxtral.testpolishd" ;;
+    *) label="com.localvoxtral.test${name}" ;;
+  esac
+  printf 'ensure %s: NOT ready after %ss (port %s) — is %s bootstrapped and its model cached?\n' \
+    "$name" "$LV_ENSURE_READY_TIMEOUT" "$port" "$label" >&2
   return 1
 }
 
 run_ensure_command() {
   local target="$1"
   case "$target" in
-    voxmlx|mlxlm) ensure_one_service "$target" ;;
+    speechd|polishd|voxmlx|mlxlm) ensure_one_service "$target" ;;
     all)
       local rc=0
-      ensure_one_service voxmlx || rc=$?
-      ensure_one_service mlxlm || rc=$?
+      ensure_one_service speechd || rc=$?
+      ensure_one_service polishd || rc=$?
       return "$rc"
       ;;
     *) deny ;;

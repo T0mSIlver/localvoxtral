@@ -9,7 +9,7 @@ set -euo pipefail
 #   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
-#     integration  realtime pipeline tests against the live voxmlx service
+#     integration  realtime pipeline tests against the live speechd STT service
 #     integration-polishd
 #                  spawn the bundled polishing helper (built by `package`)
 #                  with the real model and score it against the polish eval
@@ -23,11 +23,12 @@ set -euo pipefail
 #                  (default 100 = the production step cadence), and
 #                  cache-limit-mb (default = the helper's built-in limit);
 #                  requires a prior `package`
-#     eval-llm     default-polish-prompt eval against a live mlx-lm server;
+#     eval-llm     default-polish-prompt eval against a live chat/completions
+#                  server (the bundled polishd test service by default);
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
 #                  http://127.0.0.1:8080/v1/chat/completions, the
-#                  com.localvoxtral.mlxlm service — runbook scripts/mac/README.md)
+#                  com.localvoxtral.testpolishd service — runbook scripts/mac/README.md)
 #     eval-e2e     agent-dictation end-to-end eval: human WAVs or TTS -> live
 #                  voxmlx ASR -> bundled polishd via the production stop-commit
 #                  path, scored against EvalCorpus/agent-dictation (run
@@ -37,8 +38,10 @@ set -euo pipefail
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
 #     applog       unified log for process == "localvoxtral" (gate v2 required)
-#     voxlog       tail ~/Library/Logs/voxmlx.log (gate v2 required)
-#     svc-status   launchctl status for com.localvoxtral.voxmlx (gate v2 required)
+#     voxlog       tail the STT test-service log (gate v2 required; VOXLOG_FILE
+#                  in the gate's conf, default the speechd service log)
+#     svc-status   launchctl/process/port status for the speechd/polishd test
+#                  services (gate v2 required)
 #     disk         df + du of the remote build work dirs (gate v4 required;
 #                  du over the build trees can take a while)
 #     gc           delete remote work dirs unused > 14 days (gate v4 required;
@@ -126,24 +129,40 @@ trap 'handle_remote_signal 130' INT
 trap 'handle_remote_signal 143' TERM
 
 # Bring an on-demand test server up (and warm) before a suite that needs it.
-# The build host's voxmlx (8000) and mlxlm (8080) launchd services are
-# launch-on-demand (scripts/mac/lv-test-servers.sh) so their model weights are
-# not resident 24/7; this asks the SSH build gate's `ensure` verb to touch the
-# trigger and block until the port is healthy. It also resets the idle window,
-# so a burst of runs reuses the warm process.
+# The build host's speechd (8000, STT) and polishd (8080, chat/completions)
+# launchd test services are launch-on-demand (scripts/mac/lv-test-servers.sh)
+# so their model weights are not resident 24/7; this asks the SSH build gate's
+# `ensure` verb to touch the trigger and block until the port is healthy. It
+# also resets the idle window, so a burst of runs reuses the warm process.
+#
+# Names: we send the current name (speechd/polishd) first, then fall back to the
+# deprecated alias (voxmlx/mlxlm) if the INSTALLED gate is old and denies the
+# new one — the new gate accepts both, an un-reinstalled gate accepts only the
+# old ones, so this bridges the reinstall window either way.
 #
 # Best-effort: warming is an optimization, not the gate — the test suite itself
 # fails loudly if the server is actually unreachable. During rollout the
 # on-demand infra is a one-time owner install (scripts/mac/README.md); until
-# then the gate's `ensure` errors (run dir absent) but the still-always-on
-# server serves the suite, so a warm failure must NOT abort the run.
+# then the gate's `ensure` errors (run dir absent) but the server still serves
+# the suite, so a warm failure must NOT abort the run.
 ensure_remote_server() {
-  local name="$1"
+  local name="$1" alias=""
+  case "$name" in
+    speechd) alias="voxmlx" ;;
+    polishd) alias="mlxlm" ;;
+  esac
   echo "==> Ensuring on-demand test server '$name' is warm on $HOST"
-  if ! ssh "$HOST" "ensure $name"; then
-    echo "==> WARN: could not warm '$name' on-demand (infra not installed, or gate" \
-         "lacks the ensure verb). Continuing — the suite will fail if it's really down." >&2
+  if ssh "$HOST" "ensure $name"; then
+    return 0
   fi
+  if [[ -n "$alias" ]]; then
+    echo "==> '$name' not accepted; retrying with deprecated alias '$alias' (old gate)"
+    if ssh "$HOST" "ensure $alias"; then
+      return 0
+    fi
+  fi
+  echo "==> WARN: could not warm '$name' on-demand (infra not installed, or gate" \
+       "lacks the ensure verb). Continuing — the suite will fail if it's really down." >&2
 }
 
 # Transient enable markers ride the rsynced tree because the gate can't pass
@@ -224,16 +243,16 @@ UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEv
   --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
-# build host's voxmlx/mlxlm launchd services are launch-on-demand to keep their
-# weights out of RAM when idle; the lanes that hit them ask the gate to start
-# and warm them first. See scripts/mac/lv-test-servers.sh + scripts/mac/README.md.
+# build host's speechd/polishd launchd test services are launch-on-demand to
+# keep their weights out of RAM when idle; the lanes that hit them ask the gate
+# to start and warm them first. See scripts/mac/lv-test-servers.sh + README.md.
 ENSURE_SERVER=""
 
 case "$CMD" in
   build)   REMOTE_CMD=(swift build "$@") ;;
   test)    REMOTE_CMD=(swift test "${UNIT_TEST_SKIPS[@]}" "$@") ;;
   integration)
-    ENSURE_SERVER="voxmlx"
+    ENSURE_SERVER="speechd"
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
       VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
@@ -331,7 +350,7 @@ case "$CMD" in
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):
-    # human WAVs (when supplied) or TTS -> live voxmlx ASR -> bundled polishd
+    # human WAVs (when supplied) or TTS -> live speechd ASR -> bundled polishd
     # helper through the production stop-commit path, scored against
     # EvalCorpus/agent-dictation. Requires a helper binary from a prior
     # `./scripts/remote-build.sh package` run.
@@ -358,7 +377,7 @@ case "$CMD" in
         exit 1
       fi
     fi
-    ENSURE_SERVER="voxmlx"
+    ENSURE_SERVER="speechd"
     E2E_MARKER="$ROOT_DIR/.agent-eval-e2e-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a
     # stale marker behind (locally or in the remote work dir).
@@ -387,10 +406,10 @@ case "$CMD" in
     fi
     EVAL_ENDPOINT="${1:-http://127.0.0.1:8080/v1/chat/completions}"
     EVAL_MODEL="${2:-}"
-    # Only warm the local on-demand mlxlm service when the eval targets it; a
+    # Only warm the local on-demand polishd service when the eval targets it; a
     # custom endpoint is the caller's own server and we must not touch it.
     if [[ "$EVAL_ENDPOINT" == *"127.0.0.1:8080"* || "$EVAL_ENDPOINT" == *"localhost:8080"* ]]; then
-      ENSURE_SERVER="mlxlm"
+      ENSURE_SERVER="polishd"
     fi
     EVAL_MARKER="$ROOT_DIR/.llm-polish-eval-enable.json"
     # Trap registered before the marker exists, so no kill window leaves a

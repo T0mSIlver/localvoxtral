@@ -1,7 +1,7 @@
 name: Agent Dictation E2E Eval
 
 # The wide agent-dictation eval (owner decision 2026-07-11): nightly + manual
-# only, NEVER per-PR — it runs live TTS -> voxmlx ASR -> polishd inference
+# only, NEVER per-PR — it runs live TTS -> speechd ASR -> polishd inference
 # over the ~160-case EvalCorpus/agent-dictation corpus and takes many minutes.
 # The operator-only human-WAV baseline uses remote-build.sh's optional
 # recording-set argument; CI intentionally keeps the repeatable TTS source.
@@ -59,16 +59,19 @@ jobs:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
         run: ./scripts/package_app.sh release
 
-      - name: Warm on-demand voxmlx server
+      - name: Warm on-demand speechd server
         # Launch-on-demand infra (scripts/mac/lv-test-servers.sh): touch the
-        # trigger and block until port 8000 is healthy. Best-effort during
-        # rollout — the eval itself fails loudly if voxmlx is really down.
+        # trigger and block until port 8000 is healthy. `ensure speechd` works
+        # against either the retired voxmlx plist or the swapped-in speechd plist.
+        # Best-effort during rollout (a warm timeout must not mask the eval) —
+        # the eval itself fails loudly if the STT service is really down.
+        continue-on-error: true
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
-            ./scripts/mac/lv-test-servers.sh ensure voxmlx
+            ./scripts/mac/lv-test-servers.sh ensure speechd
           else
             echo "on-demand infra not installed (run dir absent) — relying on the" \
-                 "always-on voxmlx; see scripts/mac/README.md to enable on-demand."
+                 "resident STT service; see scripts/mac/README.md to enable on-demand."
           fi
 
       - name: Run agent-dictation E2E eval
