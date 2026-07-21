@@ -55,6 +55,56 @@ final class RepoVocabularyPhoneticTests: XCTestCase {
         )
     }
 
+    /// A multi-word term that glues a stopword onto a short homophone must
+    /// not silently rewrite prose: both the heard span and the agreeing key
+    /// are too short for the pre-apply grade. The guess survives only as a
+    /// verification pair.
+    func testStopwordGluedShortHomophoneIsVerificationOnly() {
+        let transcript = "the pain is here"
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
+            transcript: transcript,
+            vocabulary: makeVocabulary(["thePane"])
+        )
+
+        XCTAssertTrue(outcome.entries.isEmpty)
+        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
+        XCTAssertEqual(
+            outcome.verificationCandidates,
+            [ReplacementEntry(replaceWith: "thePane", matches: ["the pain"])]
+        )
+        XCTAssertEqual(
+            RepoVocabularyMatcher.preapplying(
+                entries: outcome.phoneticEntries, to: transcript
+            ),
+            transcript
+        )
+    }
+
+    /// A span the character tiers abstained on because two terms tied is
+    /// contested: a phonetic guess on those same bytes must not silently
+    /// rewrite them either, and demotes to verification.
+    func testCharacterTierAmbiguityBlocksPhoneticPreApplyOnThatSpan() {
+        let outcome = RepoVocabularyMatcher.groundedCandidates(
+            transcript: "flush remainder then click the terminal pain",
+            vocabulary: makeVocabulary([
+                "flushRemainder",
+                "terminal pane",
+                "terminal_pains",
+                "terminal painz",
+            ])
+        )
+
+        XCTAssertEqual(
+            outcome.entries,
+            [ReplacementEntry(replaceWith: "flushRemainder", matches: ["flush remainder"])]
+        )
+        XCTAssertTrue(outcome.phoneticEntries.isEmpty)
+        XCTAssertEqual(
+            outcome.verificationCandidates,
+            [ReplacementEntry(replaceWith: "terminal pane", matches: ["terminal pain"])]
+        )
+    }
+
     // MARK: - Eligibility and stronger-tier ownership
 
     func testShortSingleWordClaudeDoesNotMatchCloseOrClothes() {

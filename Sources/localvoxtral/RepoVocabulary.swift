@@ -374,7 +374,10 @@ struct RepoVocabulary: Sendable {
     let phoneticCandidates: [PhoneticCandidate]
     /// Variants long enough for the conservative edit-distance-one phonetic
     /// tier, bucketed by length so each lookup remains bounded to ±1.
-    let phoneticBuckets: [Int: [(variant: String, candidateIndex: Int)]]
+    /// Characters are pre-materialized once at index build so the
+    /// distance-one sweep never converts per comparison (mirrors
+    /// `FuzzyCandidate.normalizedCharacters`).
+    let phoneticBuckets: [Int: [(variant: [Character], candidateIndex: Int)]]
     /// Candidate spellings and a character n-gram index for the conservative aligned
     /// fallback. Built once with the vocabulary so a miss never degrades into
     /// an O(transcript n-grams x every repo term) scan in a large monorepo.
@@ -405,7 +408,7 @@ struct RepoVocabulary: Sendable {
         var buckets: [Int: [FuzzyCandidate]] = [:]
         var phoneticIndex: [String: [Int]] = [:]
         var phoneticCandidates: [PhoneticCandidate] = []
-        var phoneticBuckets: [Int: [(variant: String, candidateIndex: Int)]] = [:]
+        var phoneticBuckets: [Int: [(variant: [Character], candidateIndex: Int)]] = [:]
         var aligned: [AlignedCandidate] = []
         var ngramIndex: [String: [Int]] = [:]
         for term in terms {
@@ -440,7 +443,7 @@ struct RepoVocabulary: Sendable {
                     phoneticIndex[variant, default: []].append(candidateIndex)
                     if variant.count >= 4 {
                         phoneticBuckets[variant.count, default: []].append(
-                            (variant: variant, candidateIndex: candidateIndex)
+                            (variant: Array(variant), candidateIndex: candidateIndex)
                         )
                     }
                 }
@@ -1031,6 +1034,16 @@ enum RepoVocabularyMatcher {
     /// `pane`/`pain` therefore remain ordinary prose unless another tier owns
     /// them, while a phrase like `terminal pane` is eligible.
     static let phoneticMinSingleWordNormalizedLength = 8
+    /// Pre-application (a silent rewrite) demands more evidence than a
+    /// verification suggestion, for every window shape: the heard span must
+    /// carry as many normalized characters as a single-word candidate needs,
+    /// and the agreeing key must carry enough consonant structure that the
+    /// agreement is unlikely to be a short-homophone accident. Otherwise a
+    /// multi-word term gluing a stopword onto a short homophone (`thePane`
+    /// heard as "the pain") would silently rewrite ordinary prose. Weaker
+    /// exact-key hits remain verification candidates.
+    static let phoneticMinPreApplyNormalizedLength = 8
+    static let phoneticMinPreApplyKeyLength = 6
     /// Bounds both index expansion (at most 2^4 key variants) and transcript
     /// n-grams. Longer identifiers are better served by the character tiers.
     static let phoneticMaxWordUnits = 4
@@ -1179,6 +1192,12 @@ enum RepoVocabularyMatcher {
             }
         }
 
+        // A repeated phrase re-derives the same key variants; its first
+        // transcript position is already its best rank, so each (window
+        // length, variant) pair is swept for near keys at most once —
+        // mirrors `fuzzySweptGrams` in the character tier.
+        var phoneticSweptVariants = Set<String>()
+
         for start in words.indices {
             let maxWindow = min(phoneticMaxWordUnits, words.count - start)
             for length in 1...maxWindow {
@@ -1226,9 +1245,17 @@ enum RepoVocabularyMatcher {
                         } else {
                             carriesUnspokenExtension = false
                         }
+                        let carriesPreApplyEvidence =
+                            normalizedGram.count >= phoneticMinPreApplyNormalizedLength
+                            && gramVariants.contains { variant in
+                                variant.count >= phoneticMinPreApplyKeyLength
+                                    && (vocabulary.phoneticIndex[variant] ?? [])
+                                        .contains(candidateIndex)
+                            }
                         record(
                             hit,
                             preApply: !ambiguous && !carriesUnspokenExtension
+                                && carriesPreApplyEvidence
                         )
                     }
                     // An exact pronunciation already owns this heard span.
@@ -1238,11 +1265,13 @@ enum RepoVocabularyMatcher {
 
                 var nearIndexes = Set<Int>()
                 for variant in gramVariants where variant.count >= 4 {
+                    guard phoneticSweptVariants.insert("\(length):\(variant)").inserted
+                    else { continue }
                     let variantCharacters = Array(variant)
                     for bucketLength in (variant.count - 1)...(variant.count + 1) {
                         for indexed in vocabulary.phoneticBuckets[bucketLength] ?? [] {
                             guard isEditDistanceAtMostOne(
-                                variantCharacters, Array(indexed.variant)
+                                variantCharacters, indexed.variant
                             ) else { continue }
                             nearIndexes.insert(indexed.candidateIndex)
                         }
@@ -1457,6 +1486,22 @@ enum RepoVocabularyMatcher {
         }
         var phoneticPreApply = withoutSolidCollisions(phonetic.preApply)
         var phoneticVerification = withoutSolidCollisions(phonetic.verification)
+
+        // The character tiers abstained on these spans because two terms
+        // tied. A phonetic guess must not silently rewrite bytes the
+        // strongest tier already declared contested — it survives only as a
+        // verification choice.
+        let contestedKeys = Set(ambiguousHeard.map(normalize))
+        if !contestedKeys.isEmpty {
+            let contested = phoneticPreApply.filter { entry in
+                entry.matches.contains { contestedKeys.contains(normalize($0)) }
+            }
+            if !contested.isEmpty {
+                let contestedTerms = Set(contested.map(\.replaceWith))
+                phoneticPreApply.removeAll { contestedTerms.contains($0.replaceWith) }
+                phoneticVerification.append(contentsOf: contested)
+            }
+        }
 
         // Preserve the old fallback trigger exactly: it is considered only
         // when the solid character tiers approved nothing. Phonetic evidence
@@ -2007,10 +2052,13 @@ enum RepoVocabularyMatcher {
     /// interpolation could break a `- key: aliases` line into stray prompt
     /// lines. Reuses the shared clipboard sanitizer (drops control chars) and
     /// additionally removes the newline/tab it deliberately keeps — a rendered
-    /// dictionary line must stay single-line.
+    /// dictionary line must stay single-line. Double quotes are dropped too:
+    /// the verification pairs render both sides inside `"..."`, and a quote
+    /// inside a term would close that quoting early and smuggle its own
+    /// prose into the instruction line.
     static func sanitizedTerm(_ term: String) -> String {
         PolishContextClipboardReader.sanitizeControlCharacters(term)
-            .filter { $0 != "\n" && $0 != "\t" }
+            .filter { $0 != "\n" && $0 != "\t" && $0 != "\"" }
             .trimmingCharacters(in: .whitespaces)
     }
 
