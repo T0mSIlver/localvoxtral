@@ -58,7 +58,9 @@ jobs:
           ./scripts/ci/test-cleanup-stale-test-processes.sh
           ./scripts/ci/test-build-gate-process-cleanup.sh
           ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-build-gate-gc-command.sh
           ./scripts/ci/test-remote-build-reap.sh
+          ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
           ./scripts/ci/test-ui-smoke-guard.sh
           ./scripts/ci/test-clean-stale-outputs.sh
@@ -78,7 +80,9 @@ jobs:
           ./scripts/ci/test-cleanup-stale-test-processes.sh
           ./scripts/ci/test-build-gate-process-cleanup.sh
           ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-build-gate-gc-command.sh
           ./scripts/ci/test-remote-build-reap.sh
+          ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
