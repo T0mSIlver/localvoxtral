@@ -396,6 +396,27 @@ final class ClaudePluginInstallServiceTests: XCTestCase {
         }
     }
 
+    /// A verbose-but-healthy CLI that overruns the capture cap must be reported
+    /// as an overrun, NOT as a timeout. Before the fix both paths set the same
+    /// `timedOut` flag and threw `.commandTimedOut`, so a chatty command looked
+    /// exactly like a wedged one.
+    func testProcessRunnerReportsOutputOverrunDistinctlyFromATimeout() {
+        let runner = ClaudePluginInstallService.processRunner(
+            executableURL: URL(fileURLWithPath: "/bin/cat"),
+            timeout: 5
+        )
+        // `cat /dev/zero` streams without end and overruns the 64 KiB cap almost
+        // immediately — it is not hanging, it is producing too much. The
+        // generous timeout proves the cap fires first: a broken cap would stall
+        // until the deadline and throw `.commandTimedOut` instead.
+        XCTAssertThrowsError(try runner(.init(arguments: ["/dev/zero"]))) { error in
+            guard case .outputTooLarge(_, let capBytes)? = error as? ClaudePluginInstallService.ServiceError else {
+                return XCTFail("expected .outputTooLarge, got \(error)")
+            }
+            XCTAssertEqual(capBytes, ClaudePluginInstallService.maxCapturedOutputBytes)
+        }
+    }
+
     func testProcessRunnerDoesNotHangOnAChildHoldingThePipeOpen() throws {
         // A child that exits but leaves a grandchild holding the write end.
         // EOF never arrives, so only the deadline ends this.

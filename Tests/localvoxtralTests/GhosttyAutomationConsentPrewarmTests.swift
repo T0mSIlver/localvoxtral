@@ -20,6 +20,23 @@ final class GhosttyAutomationConsentPrewarmTests: XCTestCase {
         try await super.tearDown()
     }
 
+    /// Deterministic quiescence: the pre-warm enqueues its `execute` on a
+    /// `Task { @MainActor in … }` synchronously inside `fireOnceWhenGhosttyIsAvailable`,
+    /// so any such Task is already on the main actor's serial queue AHEAD of the
+    /// barrier this awaits. Same-priority jobs run FIFO, so when the barrier
+    /// resumes, every pre-warm Task enqueued before it has run — including a
+    /// buggy SECOND one, which is exactly what "did not fire again" must catch.
+    /// Replaces a fixed `for _ in 0..<100 { await Task.yield() }` burst that only
+    /// hoped to outlast the enqueue.
+    ///
+    /// NOTE: the stronger form — the production seam signalling a continuation
+    /// after its decision point — needs a change to `GhosttyAutomationConsentPrewarm`,
+    /// which another worker owns concurrently; that is deferred to them. This
+    /// barrier is the deterministic improvement available from the test alone.
+    private func drainMainActorQueue() async {
+        await Task { @MainActor in }.value
+    }
+
     func testFiresExactlyOnceWhenGhosttyIsRunning() async {
         let executions = Mutex(0)
         let (executed, signal) = AsyncStream.makeStream(of: Void.self)
@@ -42,9 +59,9 @@ final class GhosttyAutomationConsentPrewarmTests: XCTestCase {
         var iterator = executed.makeAsyncIterator()
         _ = await iterator.next()
         // Drain any (incorrect) second execution deterministically: the fire
-        // path enqueues on the main actor, so once we are running again after
-        // the first signal, a bounded yield burst flushes anything pending.
-        for _ in 0..<100 { await Task.yield() }
+        // path enqueues on the main actor ahead of this barrier, so once the
+        // barrier resumes anything pending has run.
+        await drainMainActorQueue()
         XCTAssertEqual(executions.withLock { $0 }, 1)
     }
 
@@ -59,7 +76,7 @@ final class GhosttyAutomationConsentPrewarmTests: XCTestCase {
         // An unrelated app launching (Ghostty still absent) must not fire —
         // firing would LAUNCH Ghostty via the tell.
         center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil)
-        for _ in 0..<100 { await Task.yield() }
+        await drainMainActorQueue()
         XCTAssertEqual(executions.withLock { $0 }, 0)
     }
 
@@ -85,7 +102,7 @@ final class GhosttyAutomationConsentPrewarmTests: XCTestCase {
         // The observer is one-shot: another launch notification (Ghostty
         // relaunching) must not re-fire.
         center.post(name: NSWorkspace.didLaunchApplicationNotification, object: nil)
-        for _ in 0..<100 { await Task.yield() }
+        await drainMainActorQueue()
         XCTAssertEqual(executions.withLock { $0 }, 1)
     }
 }

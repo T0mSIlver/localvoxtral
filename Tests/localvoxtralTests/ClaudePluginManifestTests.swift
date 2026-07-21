@@ -24,6 +24,23 @@ final class ClaudePluginManifestTests: XCTestCase {
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    /// Every string that appears as a KEY or VALUE anywhere in a parsed JSON
+    /// tree. Lets a check assert on the manifest's actual content rather than
+    /// its raw file text — a structural read that cannot be fooled by, or trip
+    /// over, formatting.
+    private static func jsonStrings(in object: Any) -> [String] {
+        switch object {
+        case let string as String:
+            return [string]
+        case let array as [Any]:
+            return array.flatMap { jsonStrings(in: $0) }
+        case let dictionary as [String: Any]:
+            return dictionary.flatMap { key, value in [key] + jsonStrings(in: value) }
+        default:
+            return []
+        }
+    }
+
     private var marketplaceManifest: URL {
         marketplace.appendingPathComponent(".claude-plugin/marketplace.json")
     }
@@ -129,6 +146,12 @@ final class ClaudePluginManifestTests: XCTestCase {
     func testNoUserFacingManifestURLPointsAtTheOldOwner() throws {
         // The repo moved to T0mSIlver; a stale owner in a manifest is a link
         // users click and a marketplace reference that resolves to nothing.
+        //
+        // Structural, not a raw-text grep: parse each manifest and inspect every
+        // string it actually declares (keys and values, recursively). That both
+        // proves the file is valid JSON and — matching case-insensitively —
+        // catches a `TomVaucourt`/`tomvaucourt` a case-sensitive substring scan
+        // would miss, so it is strictly stronger than the old text search.
         let root = try XCTUnwrap(ClaudePluginAssets.rootMarketplaceURL())
         let manifests = [
             marketplaceManifest,
@@ -137,11 +160,12 @@ final class ClaudePluginManifestTests: XCTestCase {
             remotePluginRoot.appendingPathComponent(".claude-plugin/plugin.json"),
         ]
         for manifest in manifests {
-            let text = try String(contentsOf: manifest, encoding: .utf8)
-            XCTAssertFalse(
-                text.contains("tomvaucourt"),
-                "\(manifest.lastPathComponent) still points at the old repo owner"
-            )
+            for string in Self.jsonStrings(in: try json(at: manifest)) {
+                XCTAssertFalse(
+                    string.lowercased().contains("tomvaucourt"),
+                    "\(manifest.lastPathComponent) still points at the old repo owner via \"\(string)\""
+                )
+            }
         }
     }
 
@@ -315,20 +339,86 @@ final class ClaudePluginManifestTests: XCTestCase {
 
     func testShimIsExecutableAndFailsOpen() throws {
         let shim = pluginRoot.appendingPathComponent("hooks/publish.sh")
+        // Mode bits: Claude Code execs this directly; without +x every hook errors.
         XCTAssertTrue(
             FileManager.default.isExecutableFile(atPath: shim.path),
             "Claude Code executes this directly; without +x every hook errors"
         )
-        let source = try String(contentsOf: shim, encoding: .utf8)
-        XCTAssertTrue(source.hasPrefix("#!/bin/sh"), "must be POSIX sh, not bash")
-        XCTAssertTrue(
-            source.contains("exit 0"),
-            "the shim must exit 0 when the publisher is absent"
+        // Shebang anchored to the exact first line, not a loose substring that a
+        // stray `#!/bin/sh` in a later comment could satisfy.
+        let firstLine = try String(contentsOf: shim, encoding: .utf8)
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init)
+        XCTAssertEqual(firstLine, "#!/bin/sh", "must be POSIX sh, not bash")
+
+        // Beyond reading the source: RUN the shim and prove the exit contract.
+        // `LOCALVOXTRAL_CLAUDE_HOOK_BIN` is candidate #1 in the shim's search, so
+        // injecting a fake publisher through it both selects our stub before any
+        // host path and proves that documented override actually works — a
+        // stronger check than `source.contains("LOCALVOXTRAL_CLAUDE_HOOK_BIN")`.
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        // (1) A publisher that FAILS must not fail the hook: the shim runs it as a
+        // child (never exec) precisely so it can swallow this and still exit 0.
+        let failing = try writeExecutable(
+            "#!/bin/sh\nexit 7\n", named: "failing-publisher", in: temporary
         )
-        XCTAssertTrue(
-            source.contains("LOCALVOXTRAL_CLAUDE_HOOK_BIN"),
-            "remote/non-standard installs need the override"
+        XCTAssertEqual(
+            try runShim(shim, hookBin: failing.path, event: "SessionStart").exitCode, 0,
+            "the shim must exit 0 even when the publisher exits non-zero"
         )
+
+        // (2) The publisher is invoked as a child and receives `--event <Event>`.
+        let argumentsFile = temporary.appendingPathComponent("args")
+        let recorder = try writeExecutable(
+            "#!/bin/sh\nprintf '%s' \"$*\" > \(argumentsFile.path)\nexit 0\n",
+            named: "recording-publisher", in: temporary
+        )
+        let run = try runShim(shim, hookBin: recorder.path, event: "Stop")
+        XCTAssertEqual(run.exitCode, 0, "the shim always exits 0")
+        XCTAssertEqual(
+            try String(contentsOf: argumentsFile, encoding: .utf8), "--event Stop",
+            "the shim must pass the event through to the publisher as --event <Event>"
+        )
+    }
+
+    // MARK: Shim execution helpers
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func writeExecutable(_ contents: String, named name: String, in directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent(name)
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+
+    /// Runs the shim under `/bin/sh` with a chosen publisher and event, returning
+    /// its exit code. stdin is /dev/null so the shim's stdin drain never blocks;
+    /// stdout/stderr are captured and discarded (Claude Code parses stdout, so
+    /// the shim's own paths must stay silent — not asserted here, but kept off
+    /// the test's console).
+    private func runShim(_ shim: URL, hookBin: String, event: String) throws -> (exitCode: Int32, stdout: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [shim.path, event]
+        var environment = ProcessInfo.processInfo.environment
+        environment["LOCALVOXTRAL_CLAUDE_HOOK_BIN"] = hookBin
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 
     func testShimRunsPublisherAsAChildSoExecFailureStillFailsOpen() throws {
