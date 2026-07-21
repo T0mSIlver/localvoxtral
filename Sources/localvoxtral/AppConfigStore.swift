@@ -283,15 +283,20 @@ struct LLMPromptTemplates: Equatable, Sendable {
             // An empty dictionary must not leave its template line behind as
             // a hole of blank lines between the context blocks and `Working
             // text:` (field report 2026-07-21). Drop the placeholder together
-            // with one following blank line; the bare-placeholder replacement
-            // below still covers templates without that trailing blank.
-            rendered = rendered.replacingOccurrences(
-                of: "{{replacement_dictionary}}\n\n", with: ""
-            )
+            // with one following blank line when present, else with its own
+            // line; only a mid-line placeholder falls through to the bare
+            // replacement below.
+            rendered = rendered
+                .replacingOccurrences(of: "{{replacement_dictionary}}\n\n", with: "")
+                .replacingOccurrences(of: "{{replacement_dictionary}}\n", with: "")
         }
+        // Dictionary before transcript: `inputText` is DICTATED CONTENT and may
+        // legitimately contain a placeholder literal (the user talking about
+        // this app). Substituting it last means nothing ever re-scans inserted
+        // transcript text; the dictionary is app-generated and placeholder-free.
         return rendered
-            .replacingOccurrences(of: "{{input_text}}", with: inputText)
             .replacingOccurrences(of: "{{replacement_dictionary}}", with: replacementDictionary)
+            .replacingOccurrences(of: "{{input_text}}", with: inputText)
     }
 
     /// Index of the first placeholder in `userContent`. Content before this

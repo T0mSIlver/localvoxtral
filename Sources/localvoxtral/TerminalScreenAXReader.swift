@@ -255,7 +255,11 @@ enum TerminalScreenAXReader {
     /// (field report 2026-07-21). A frame with typed text (`❯ fix the bug`)
     /// is content and is kept. Lone separator rows are also kept: Claude Code
     /// uses the same rule between conversation turns, and only the exact
-    /// empty-input triple is chrome.
+    /// empty-input triple is chrome. The match is STRUCTURAL, not semantic:
+    /// content that reproduces the exact triple (a heredoc or pasted mock of
+    /// this very UI) is stripped too — accepted, it is indistinguishable by
+    /// construction. The hint row is matched by its `\u{23F5}\u{23F5}` prefix
+    /// because its text varies with the mode cycle.
     static func strippedIdleInputChrome(_ text: String) -> String {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         var kept: [Substring] = []

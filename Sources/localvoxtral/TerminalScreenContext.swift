@@ -180,7 +180,11 @@ enum TerminalScreenContextDecision: Equatable, Sendable {
     /// `elidedChurnLines` counts rows removed from the excerpt because they
     /// churned between the two reads (see `maxElidableChurnLines`); every
     /// rendered line was identical at start and stop.
-    case render(excerpt: String, elidedChurnLines: Int)
+    /// `startText` is the full start-of-speech screen, kept beside the
+    /// (possibly churn-elided) excerpt because the vocabulary matcher
+    /// grounds against what the user COULD SEE while speaking — eliding a
+    /// row from the excerpt must not also hide it from the matcher.
+    case render(excerpt: String, startText: String, elidedChurnLines: Int)
 
     /// The screen changed under us (agent output streamed in, a command
     /// finished, the user scrolled). The START text is still a faithful record
@@ -308,7 +312,7 @@ enum TerminalScreenContext {
     /// | ok | targetChanged | any | drop(targetChanged) |
     /// | ok | readFailed | any | vocabularyOnly |
     /// | ok | read(t), t != start, beyond churn | any | vocabularyOnly |
-    /// | ok | read(t), elidable churn | false | vocabularyOnly |
+    /// | ok | read(t), elidable churn | false | vocabularyOnly (churn stats) |
     /// | ok | read(t), elidable churn | true | render (churn rows elided) |
     /// | ok | read(t), t == start | false | vocabularyOnly |
     /// | ok | read(t), t == start | true | render |
@@ -362,8 +366,11 @@ enum TerminalScreenContext {
                 else {
                     return .vocabularyOnly(startText: start.text, cause: changedCause)
                 }
+                // Unauthorized still reports the CHURN statistics: the
+                // authorizer logs its own refusal line, so the cause keeps
+                // the diagnostic the log cannot otherwise carry.
                 guard rawAuthorized else {
-                    return .vocabularyOnly(startText: start.text, cause: .rawUnauthorized)
+                    return .vocabularyOnly(startText: start.text, cause: changedCause)
                 }
                 // Keep only rows both reads agree on: every rendered line was
                 // provably on screen at start AND stop, so the excerpt's
@@ -376,13 +383,15 @@ enum TerminalScreenContext {
                     return .vocabularyOnly(startText: start.text, cause: changedCause)
                 }
                 return .render(
-                    excerpt: excerpt, elidedChurnLines: statistics.differingLines
+                    excerpt: excerpt,
+                    startText: start.text,
+                    elidedChurnLines: statistics.differingLines
                 )
             }
             guard rawAuthorized else {
                 return .vocabularyOnly(startText: start.text, cause: .rawUnauthorized)
             }
-            return .render(excerpt: start.text, elidedChurnLines: 0)
+            return .render(excerpt: start.text, startText: start.text, elidedChurnLines: 0)
         }
     }
 

@@ -481,6 +481,47 @@ final class AppConfigStoreTests: XCTestCase {
         )
     }
 
+    /// The own-line-without-blank shape: the placeholder's line vanishes too,
+    /// not just the placeholder text (review finding on the first cut, whose
+    /// comment wrongly claimed the bare replacement covered this).
+    func testEmptyDictionaryOnItsOwnLineWithoutBlankAlsoLeavesNoHole() {
+        let templates = LLMPromptTemplates(
+            systemContent: "ignored",
+            userContent: "Guidance.\n{{replacement_dictionary}}\nWorking text:\n{{input_text}}"
+        )
+        let rendered = templates.renderedUserPrompts(
+            inputText: "hello",
+            replacementDictionary: ""
+        )
+        XCTAssertEqual(rendered.last, "Working text:\nhello")
+    }
+
+    /// The transcript is DICTATED CONTENT: a user talking about this app can
+    /// legitimately say the placeholder literal, and substitution must never
+    /// re-scan inserted transcript text (dictionary renders before input).
+    func testDictatedPlaceholderLiteralSurvivesRendering() {
+        let templates = LLMPromptTemplates(
+            systemContent: "ignored",
+            userContent: "{{replacement_dictionary}}\n\nWorking text:\n{{input_text}}"
+        )
+        let empty = templates.renderedUserPrompts(
+            inputText: "the slot is {{replacement_dictionary}} in the template",
+            replacementDictionary: ""
+        )
+        XCTAssertEqual(
+            empty.last,
+            "Working text:\nthe slot is {{replacement_dictionary}} in the template"
+        )
+        let full = templates.renderedUserPrompts(
+            inputText: "the slot is {{replacement_dictionary}} in the template",
+            replacementDictionary: "Replacement dictionary:\n- a: b"
+        )
+        XCTAssertEqual(
+            full.last,
+            "Replacement dictionary:\n- a: b\n\nWorking text:\nthe slot is {{replacement_dictionary}} in the template"
+        )
+    }
+
     func testRenderedUserPromptsUsesSingleMessageWhenTemplateStartsWithPlaceholder() {
         let templates = LLMPromptTemplates(
             systemContent: "ignored",
