@@ -71,6 +71,7 @@ public final class ClaudeContextBroker: Sendable {
     private let registry: ClaudeSessionRegistry
     private let limits: ClaudeBrokerLimits
     private let uptimeNanos: @Sendable () -> UInt64
+    private let shouldEmitLocalTitleMarker: @Sendable () -> Bool
 
     #if DEBUG
     /// Test seam: fires after each record is accepted or rejected, so a socket
@@ -100,12 +101,14 @@ public final class ClaudeContextBroker: Sendable {
         socketPath: String,
         registry: ClaudeSessionRegistry,
         limits: ClaudeBrokerLimits = .default,
-        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        shouldEmitLocalTitleMarker: @escaping @Sendable () -> Bool = { true }
     ) {
         self.socketPath = socketPath
         self.registry = registry
         self.limits = limits
         self.uptimeNanos = uptimeNanos
+        self.shouldEmitLocalTitleMarker = shouldEmitLocalTitleMarker
     }
 
     public enum StartFailure: Error, Equatable {
@@ -555,17 +558,19 @@ public final class ClaudeContextBroker: Sendable {
         return true
     }
 
-    /// Send the session's marker back to the publisher.
+    /// Optionally send the LOCAL session's marker back to the publisher.
     ///
-    /// This is the focus join's outbound half: the publisher turns the marker
-    /// into a terminal title sequence, so the app can later ask "which session
-    /// owns the focused window?" and get an answer instead of a guess.
+    /// Focused-pane TTY is the default local join. The publisher only receives
+    /// a marker to turn into a terminal title sequence when the user opted into
+    /// that fallback. Registry ingestion and marker allocation are unchanged,
+    /// so TTY joins keep the same marker-keyed liveness checks either way.
     ///
     /// Best-effort by design — a publisher that has already exited is normal,
     /// not an error.
     private func reply(to fd: Int32, marker: ClaudeSessionMarker?) {
+        let responseMarker = shouldEmitLocalTitleMarker() ? marker?.value : nil
         guard let line = ClaudeBrokerResponse.encodeLine(
-            ClaudeBrokerResponse(marker: marker?.value)
+            ClaudeBrokerResponse(marker: responseMarker)
         ) else { return }
         _ = line.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }

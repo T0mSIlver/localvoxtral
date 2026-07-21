@@ -32,7 +32,11 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
             isProcessAlive: { _ in true },
             allocateMarkerValue: { "lvx-deadbeef" }
         )
-        broker = ClaudeContextBroker(socketPath: socketPath, registry: registry)
+        broker = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: registry,
+            shouldEmitLocalTitleMarker: { true }
+        )
     }
 
     override func tearDownWithError() throws {
@@ -177,7 +181,7 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertNil(response.marker)
     }
 
-    func testPublisherEmitsMarkerOutputForALiveBroker() throws {
+    func testPublisherEmitsMarkerOutputWhenLocalTitleFallbackIsEnabled() throws {
         // The end-to-end join through the production publisher entry point.
         try broker.start()
         let json = #"{"hook_event_name":"SessionStart","session_id":"e2e","cwd":"/repo"}"#
@@ -196,6 +200,35 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: stdout) as? [String: Any])
         XCTAssertEqual(object["terminalSequence"] as? String, "\u{1B}]2;lvx-deadbeef\u{07}")
         XCTAssertEqual(object["suppressOutput"] as? Bool, true)
+    }
+
+    func testPublisherEmitsNoMarkerOutputWhenLocalTitleFallbackIsDisabled() throws {
+        // The broker still ingests and allocates a marker: only the outbound
+        // local hook response is gated, so TTY joins retain marker-keyed
+        // liveness and the registry remains otherwise unchanged.
+        broker = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: registry,
+            shouldEmitLocalTitleMarker: { false }
+        )
+        try broker.start()
+        let json = #"{"hook_event_name":"SessionStart","session_id":"tty-only","cwd":"/repo"}"#
+        let outcome = ClaudeHookPublisher(
+            environment: ClaudeHookPublisher.Environment(
+                now: { 1 },
+                pid: { 31_337 },
+                ppid: { getpid() },
+                ttyName: { _ in "/dev/ttys003" },
+                variables: [ClaudeHookSocketPath.environmentKey: socketPath]
+            )
+        ).run(stdin: Data(json.utf8), fallbackEvent: nil)
+
+        XCTAssertEqual(outcome, .published)
+        XCTAssertNil(outcome.stdout, "OFF must produce no terminalSequence for a local hook")
+        XCTAssertEqual(
+            registry.snapshot(sessionID: "tty-only")?.marker,
+            ClaudeSessionMarker(value: "lvx-deadbeef")
+        )
     }
 
     func testStartRebindsOverAStaleSocketFile() throws {
