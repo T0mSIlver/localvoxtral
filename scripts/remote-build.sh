@@ -88,6 +88,10 @@ set -euo pipefail
 #                  package an instrumented .app for hand-dogfooding (same
 #                  bundle id, so the Accessibility grant survives; the artifact
 #                  is identifiable by LVXDogfoodCapture in its Info.plist)
+#     mine-term-recall  PRIVATE term-recall ASR-corruption miner via a
+#                  marker-gated XCTest (optional arg = case limit); needs
+#                  EvalRecordings/term-recall/cases.json in this tree and
+#                  refuses to run beside the local-only harvest files
 #     package      ./scripts/package_app.sh release
 #     exec         run the extra args verbatim in the remote work dir
 #     diag         build-host diagnostic summary (gate v2 required)
@@ -599,6 +603,44 @@ case "$CMD" in
       "$SPEECHD_BENCH_OPTIONAL" \
       >"$SPEECHD_BENCH_MARKER"
     REMOTE_CMD=(swift test --filter SpeechdStreamingBenchTests)
+    ;;
+  mine-term-recall)
+    # The SSH gate does not allow arbitrary script execution. A marker-gated
+    # root XCTest launches scripts/mine-term-recall-asr.sh and relays its
+    # sentinel report. PRIVATE inputs/outputs live under the gitignored
+    # EvalRecordings/term-recall/ — cases.json must be present in the local
+    # tree, and the hash->transcript session map must NEVER leave the
+    # harvest machine (see EvalCorpus/term-recall/README.md).
+    if [[ $# -gt 1 ]]; then
+      echo "mine-term-recall accepts at most one argument (case limit)" >&2
+      exit 1
+    fi
+    MINE_LIMIT="${1:-}"
+    if [[ -n "$MINE_LIMIT" && ! "$MINE_LIMIT" =~ ^[1-9][0-9]*$ ]]; then
+      echo "mine-term-recall limit must be a positive integer" >&2
+      exit 1
+    fi
+    if [[ ! -f "$ROOT_DIR/EvalRecordings/term-recall/cases.json" ]]; then
+      echo "EvalRecordings/term-recall/cases.json not found in this tree;" >&2
+      echo "run scripts/harvest-term-recall-cases.py and place ONLY cases.json there" >&2
+      exit 1
+    fi
+    for private_only in session-map.json terms.json; do
+      if [[ -f "$ROOT_DIR/EvalRecordings/term-recall/$private_only" ]]; then
+        echo "EvalRecordings/term-recall/$private_only must never leave the harvest" >&2
+        echo "machine; remove it from this tree before syncing (README.md rule)" >&2
+        exit 1
+      fi
+    done
+    MINE_MARKER="$ROOT_DIR/.term-recall-mine-enable.json"
+    trap 'cleanup_transient_marker "$MINE_MARKER"' EXIT
+    if [[ -n "$MINE_LIMIT" ]]; then
+      printf '{"limit":%s}\n' "$MINE_LIMIT" >"$MINE_MARKER"
+    else
+      printf '{}\n' >"$MINE_MARKER"
+    fi
+    ENSURE_SERVER="speechd"
+    REMOTE_CMD=(swift test --filter TermRecallMinerLaunchTests)
     ;;
   eval-e2e)
     # Agent-dictation end-to-end eval (nightly + manual, never tier 0):

@@ -21,8 +21,12 @@ Linux dev box (where ~/.claude/projects lives):
          LOCAL ONLY — never copy off the harvest machine)
 
 Mac build host (live voxmlx; copy ONLY cases.json into
-EvalRecordings/term-recall/ there — not session-map.json):
+EvalRecordings/term-recall/ there — not session-map.json or terms.json):
   ./scripts/mine-term-recall-asr.sh
+  (from a Linux box: ./scripts/remote-build.sh mine-term-recall [N] — the
+   SSH gate cannot run scripts directly, so the verb launches the miner
+   through the marker-gated TermRecallMinerLaunchTests and refuses to run
+   while the local-only harvest files sit in the tree it would sync)
     -> EvalRecordings/term-recall/mined.jsonl          (resumable journal)
     -> EvalRecordings/term-recall/asr-corruptions.json (the mined product:
          {id, spoken_text, asr_text, corrupted_terms:[{intended, heard}]})
