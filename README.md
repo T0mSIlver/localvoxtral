@@ -49,6 +49,7 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 - **Automatic cleanup** — an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
 - **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
 - **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit
+- **Multilingual** — dictate in English, French, or any other language [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) understands; polishing answers in the language you spoke (English and French are covered by the test suite)
 
 > [!TIP]
 > If localvoxtral is useful to you, a ⭐ on this repo helps others find it.
