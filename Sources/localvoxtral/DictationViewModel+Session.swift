@@ -86,6 +86,12 @@ extension DictationViewModel {
                         self.managedStartupTaskID = nil
                     }
                 }
+                // Same staleness pre-check as the managed path below: a start
+                // that was cancelled or superseded before this task ran must
+                // not enter beginDictationSession at all — its cleanup would
+                // otherwise run against the successor's freshly-latched state.
+                guard !Task.isCancelled, self.managedStartupTaskID == startupTaskID
+                else { return }
                 await self.beginDictationSession(outputMode: outputMode)
             }
             return
@@ -316,11 +322,24 @@ extension DictationViewModel {
         // Same timing rationale again, and the last chance to take it: the
         // overlay takes focus once the socket connects, and screen context must
         // record what the user could see as they chose their words.
+        let ownerTaskID = managedStartupTaskID
         isConnectingRealtimeSession = true
         await captureTerminalScreenContextForSession()
-        guard !Task.isCancelled, isConnectingRealtimeSession else {
-            discardTerminalScreenCapture()
-            clearLatchedSessionMetadata()
+        // Both spawn paths register their managedStartupTaskID before this
+        // method runs, so a changed (non-nil) ID means a NEWER session start
+        // owns the shared capture/metadata now — a cancelled predecessor must
+        // not wipe the successor's state, and must not proceed either. A nil
+        // ID means the canceller merely cleared the slot: cleanup is ours, and
+        // resetting the connecting flag here also heals any cancel path that
+        // never called abortConnectingSession.
+        let ownsSharedSessionState =
+            managedStartupTaskID == ownerTaskID || managedStartupTaskID == nil
+        guard !Task.isCancelled, isConnectingRealtimeSession, ownsSharedSessionState else {
+            if ownsSharedSessionState {
+                discardTerminalScreenCapture()
+                clearLatchedSessionMetadata()
+                isConnectingRealtimeSession = false
+            }
             return
         }
         refreshInsertionScalarTracingForSession()

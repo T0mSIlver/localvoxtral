@@ -1105,6 +1105,13 @@ final class DictationViewModel {
         if previousMode == .managedLocal, mode == .externalURL {
             Log.backends.info("polishing backend mode switched to external; stopping managed polishd")
             cancelManagedStartupTask()
+            // Mirror the dictation sibling above: cancelling the startup task
+            // mid-connect without aborting would leave the connecting flag
+            // latched and block every later start.
+            if isConnectingRealtimeSession {
+                abortConnectingSession()
+                statusText = StatusStrings.ready
+            }
             polishingWarmupTask?.cancel()
             polishingShutdownTask?.cancel()
             polishingShutdownTask = Task { @MainActor [backendManager] in
