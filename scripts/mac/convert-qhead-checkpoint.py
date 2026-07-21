@@ -8,12 +8,14 @@
 The pinned mlx-community conversion stores `decoder.tok_embeddings.weight` as
 unquantized fp16 (768 MiB): its converter skips embeddings, so the tied LM head
 pays a 768 MiB fp16 gemv per decoded token — measured ~30 ms of every 100 ms
-live-streaming step. The quantized head ships in the CHECKPOINT (the engine
-deliberately does no on-the-fly quantization): this script produces that
-checkpoint — the same snapshot with ONLY the tied embedding quantized (same
-affine scheme and group/bits as the rest), ready to upload as a fork repo.
-~540 MiB smaller; the engine loads it directly once mlx-audio-swift fork
-PR #13 (`fix/load-quantized-tied-embedding`) is in the pin.
+live-streaming step. The quantized head ships in the CHECKPOINT (owner direction: loading a
+checkpoint that quantizes it beats quantizing at load, and a checkpoint whose
+head is already quantized never reaches the engine's load-time quantize path):
+this script produces that checkpoint — the same snapshot with ONLY the tied
+embedding quantized (same affine scheme and group/bits as the rest), ready to
+upload as a fork repo. ~540 MiB smaller; the engine loads it directly via the
+quantized-tied-embedding loader fix staged upstream as
+Blaizzy/mlx-audio-swift#232 (pinned by localvoxtral PR #169).
 
 Run on a Mac (Apple Silicon; uv self-provisions Python + mlx):
 
@@ -103,12 +105,19 @@ def main() -> int:
     weight_map[f"{base}.biases"] = shard_name
     copied = 0
     for f in src.iterdir():
-        if f.name in (shard_name, index_path.name) or f.name.startswith("."):
+        # Skip HF cache internals but keep .gitattributes — the promise is
+        # "the same snapshot with only the tied embedding quantized".
+        if f.name in (shard_name, index_path.name):
+            continue
+        if f.name.startswith(".") and f.name != ".gitattributes":
             continue
         shutil.copy2(f, out / f.name)
         copied += 1
-    # total_size = actual bytes of all safetensors now in `out` (shard rewritten above)
-    index["metadata"]["total_size"] = sum(p.stat().st_size for p in out.glob("*.safetensors"))
+    # total_size = actual bytes of all safetensors now in `out` (shard rewritten
+    # above). `metadata` is optional per the safetensors spec, and --source /
+    # --revision overrides may point at an index without it.
+    index.setdefault("metadata", {})["total_size"] = sum(
+        p.stat().st_size for p in out.glob("*.safetensors"))
     (out / index_path.name).write_text(json.dumps(index, indent=2, sort_keys=True))
     print(f"wrote {out} ({copied} files copied, 1 shard rewritten, index updated)")
 
