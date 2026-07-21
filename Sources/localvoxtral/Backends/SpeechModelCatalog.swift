@@ -11,16 +11,21 @@ struct SpeechModelOption: Equatable, Sendable {
 
 enum SpeechModelCatalog {
     static let options: [SpeechModelOption] = [
+        // Same mistralai/Voxtral-Mini-4B-Realtime-2602 4-bit conversion as the previous
+        // mlx-community pin, plus a 4-bit/g64-quantized tied embedding/LM head — the
+        // decode loop's dominant per-token cost (~30 ms -> ~3 ms on M1 Pro). Loading it
+        // requires the quantized-tied-embedding loader fix pinned in
+        // SpeechHelper/Package.swift (staged upstream as Blaizzy/mlx-audio-swift#232).
         SpeechModelOption(
-            repoID: "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
-            revision: "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e",
-            displayName: "Voxtral Mini 4B Realtime (4-bit)"
+            repoID: "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
+            revision: "247f2eeccf962fbcaf85e361731a5e75b2d8cac1",
+            displayName: "Voxtral Mini 4B Realtime (4-bit, quantized head)"
         ),
     ]
 
     static let defaultOption: SpeechModelOption = {
         guard let option = option(
-            forRepoID: "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+            forRepoID: "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead"
         ) else {
             preconditionFailure("Default speech model missing from the catalog.")
         }

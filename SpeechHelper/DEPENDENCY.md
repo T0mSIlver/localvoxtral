@@ -17,23 +17,26 @@ checkout — we no longer keep a copy here.
 ```
 .package(
     url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "03890317975a2371fe0a0a9b13ad6a790f929814"
+    revision: "791ab876c10b47cc9f8894ff4100240aa6d95bf7"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-**Temporary fork pin.** `0389031` is our fork's `localvoxtral-pin-e1-e2` branch: upstream
-`3b0b114` (the merge of
-[Blaizzy/mlx-audio-swift#226](https://github.com/Blaizzy/mlx-audio-swift/pull/226),
-"Fix float32 leak in VoxtralRealtime streaming", authored by us) plus two
-streaming-performance fixes staged for upstream as fork PRs
-([#2](https://github.com/T0mSIlver/mlx-audio-swift/pull/2): Metal-pool clear cadence,
-[#3](https://github.com/T0mSIlver/mlx-audio-swift/pull/3): incremental mel/conv front end —
-both with bench evidence in the PR threads). Switchback plan: once both merge upstream, point
-the URL back at `Blaizzy/mlx-audio-swift` at the containing revision and delete the fork
-branch; nothing else changes.
+**Temporary fork pin.** `791ab87` is our fork's `fix/load-quantized-tied-embedding` branch:
+upstream main `6ea59e5` — which now contains everything the previous `localvoxtral-pin-e1-e2`
+pin carried as fork commits (upstream
+[#229](https://github.com/Blaizzy/mlx-audio-swift/pull/229): Metal-pool clear cadence,
+[#230](https://github.com/Blaizzy/mlx-audio-swift/pull/230): incremental mel/conv front end,
+[#231](https://github.com/Blaizzy/mlx-audio-swift/pull/231): hoisted attention invariants,
+all merged) — plus one commit: the quantized-tied-embedding loader fix staged upstream as
+[Blaizzy/mlx-audio-swift#232](https://github.com/Blaizzy/mlx-audio-swift/pull/232). That fix
+is required to load the catalog-pinned `-qhead` checkpoint (4-bit/g64-quantized tied
+embedding/LM head — see `SpeechModelCatalog.swift`); without it the loader rejects the
+checkpoint's `tok_embeddings.scales`/`.biases` under `verify: .all`. Switchback plan: once
+#232 merges, point the URL back at `Blaizzy/mlx-audio-swift` at the containing revision and
+delete the fork branch; nothing else changes.
 
 ## What #226 upstreamed
 
