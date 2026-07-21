@@ -530,6 +530,18 @@ if [[ "$DEMO_HANDS_FREE" == 1 && "$DEMO_FORCE" != 1 ]]; then
   echo "Idle guard: machine idle ${HID_IDLE_SECONDS}s (>= ${DEMO_IDLE_REQUIRED_SECONDS}s) — proceeding."
 fi
 
+# Synthetic keystrokes land in whatever is frontmost. Assert it is the staged
+# scene app before every typing site — a user raising a window (or a fullscreen
+# Space) between staging and typing must abort, never type into their app.
+assert_scene_frontmost() {
+  local context="$1" front
+  front="$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null || true)"
+  if [[ "$(printf '%s' "$front" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$SCENE_APP" | tr '[:upper:]' '[:lower:]')" ]]; then
+    echo "Frontmost app is '${front:-unknown}', not the staged $SCENE_APP — refusing to send keystrokes ($context)." >&2
+    exit 1
+  fi
+}
+
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action -------
 # On the DEFAULT audio output (never the loopback — that device is inaudible).
 say "record demo taking control in 3" >/dev/null 2>&1 || true
@@ -790,15 +802,17 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
     fi
   fi
 
-  pgrep -xiq ghostty || LAUNCHED_GHOSTTY=1
-  # If Ghostty is already running, snapshot its existing pane ttys so we can
-  # later identify OUR new pane by set difference. (Skip the snapshot when it is
-  # NOT running — `tell application id` would launch it, and once we launch it
-  # ourselves the only pane is unambiguously ours anyway.)
-  TTYS_BEFORE=""
-  if [[ "$LAUNCHED_GHOSTTY" != 1 ]]; then
-    TTYS_BEFORE="$(ghostty_pane_ttys)"
+  # `open -na … --args` delivers the args ONLY to a freshly launched instance.
+  # Against an already-running Ghostty it degrades to a bare reopen: a new tab
+  # in the existing window, no --working-directory, no `-e claude` — the scene
+  # silently never exists (field incident 2026-07-21, the run "succeeded").
+  # Refuse instead: the claude scene requires launching Ghostty ourselves.
+  if pgrep -xiq ghostty; then
+    echo "Ghostty is already running — its instance would swallow our launch args (no staged window, no claude). Quit Ghostty (or record from a machine/session where it is closed) and rerun." >&2
+    exit 1
   fi
+  LAUNCHED_GHOSTTY=1
+  TTYS_BEFORE=""
   echo "Launching Ghostty ($GHOSTTY_APP) in $REPO_DIR with claude ($CLAUDE_BIN)..."
   # Ghostty opens the pane directly on claude, cwd pinned to the staged repo,
   # with an opaque dark look + big font passed as CLI config (Ghostty has no
@@ -826,6 +840,7 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   # Address Ghostty by bundle id (not display name) — the app's own reader does
   # too, and a by-name tell is fragile under localization / name collisions.
   osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+  assert_scene_frontmost "folder-trust Return"
   osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
   sleep 3
 
@@ -884,6 +899,7 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   echo "Submitting the staged setup prompt (grounds beat 2): \"$DEMO_LINE_CLAUDE_SETUP\""
   osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
   sleep 1
+  assert_scene_frontmost "staged setup prompt"
   osascript "$KEYSTROKE_OSA" "$DEMO_LINE_CLAUDE_SETUP" \
     || { echo "Setup-prompt keystroke failed (focus lost?); beat 2 would ground on nothing. Aborting." >&2; exit 1; }
   sleep 0.5
@@ -1076,6 +1092,7 @@ sleep 3 # let the committed text sit on screen
 if [[ "$TERMINAL_AGENT" == "claude" && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
   echo "Submitting the polished prompt to claude (recording the response for ${DEMO_RESPONSE_SECONDS}s)..."
   osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
+  assert_scene_frontmost "polished-prompt submit"
   osascript -e 'tell application "System Events" to key code 36' >/dev/null
   sleep "$DEMO_RESPONSE_SECONDS"
 fi
