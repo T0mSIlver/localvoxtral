@@ -108,6 +108,10 @@ set -euo pipefail
 #   DEMO_SAY_INPUT_UID            audio-device UID the app's mic is pinned to;
 #                                 resolved automatically from DEMO_SAY_DEVICE
 #                                 when unset
+#   DEMO_IDLE_REQUIRED_SECONDS    hands-free only: minimum HID idle time before
+#                                 the script may take over the GUI (default 120)
+#   DEMO_FORCE                    1 = skip the idle guard for an attended
+#                                 hands-free rehearsal
 
 if [[ "$(uname)" != "Darwin" ]]; then
   echo "This script records a macOS app — run it on the Mac." >&2
@@ -500,6 +504,30 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
 else
   SCENE_APP="Terminal"
   SCENE_TELL="application \"Terminal\""
+fi
+
+# --- GUARD: never take over a machine someone is actively using ------------------
+# Field incident 2026-07-21: a hands-free run fired while the owner watched a
+# fullscreen video; every staged window landed on another Space and the region
+# capture recorded the owner's screen — which then went up as a run artifact.
+# The audible 3 s warning is not consent. In hands-free mode, require the
+# machine to have been untouched for DEMO_IDLE_REQUIRED_SECONDS (default 120);
+# an attended human take skips this (the operator at the keyboard IS the user).
+# DEMO_FORCE=1 overrides for an attended hands-free rehearsal.
+DEMO_IDLE_REQUIRED_SECONDS="${DEMO_IDLE_REQUIRED_SECONDS:-120}"
+DEMO_FORCE="${DEMO_FORCE:-0}"
+if [[ "$DEMO_HANDS_FREE" == 1 && "$DEMO_FORCE" != 1 ]]; then
+  HID_IDLE_SECONDS="$(ioreg -c IOHIDSystem 2>/dev/null \
+    | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}' || true)"
+  if [[ -z "$HID_IDLE_SECONDS" ]]; then
+    echo "Cannot read HID idle time; refusing a hands-free takeover blind (DEMO_FORCE=1 overrides)." >&2
+    exit 1
+  fi
+  if (( HID_IDLE_SECONDS < DEMO_IDLE_REQUIRED_SECONDS )); then
+    echo "Machine in active use (idle ${HID_IDLE_SECONDS}s < ${DEMO_IDLE_REQUIRED_SECONDS}s) — refusing to take over the GUI. Rerun when idle, or DEMO_FORCE=1 for an attended rehearsal." >&2
+    exit 1
+  fi
+  echo "Idle guard: machine idle ${HID_IDLE_SECONDS}s (>= ${DEMO_IDLE_REQUIRED_SECONDS}s) — proceeding."
 fi
 
 # --- OWNER RULE: audible takeover warning BEFORE any focus-stealing action -------
@@ -973,6 +1001,17 @@ else
   osascript -e 'tell application "System Events" to key code 36' >/dev/null
 fi
 sleep 1.5
+
+# --- GUARD: the scene app must actually own the screen before frames roll -------
+# A region capture records the active Space, not the windows we staged — if a
+# fullscreen app (or anything the user raised meanwhile) is frontmost, staging
+# happened somewhere invisible and we would record the user's screen instead of
+# the scene. Assert frontmost == the scene process; abort loudly otherwise.
+FRONTMOST_APP="$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null || true)"
+if [[ "$(printf '%s' "$FRONTMOST_APP" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$SCENE_APP" | tr '[:upper:]' '[:lower:]')" ]]; then
+  echo "Frontmost app is '${FRONTMOST_APP:-unknown}', not the staged $SCENE_APP — the capture region does not show the scene (fullscreen app / another Space / user activity). Aborting before recording anything." >&2
+  exit 1
+fi
 
 # --- record ----------------------------------------------------------------------
 mkdir -p "$OUT_DIR"
