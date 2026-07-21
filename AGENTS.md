@@ -50,7 +50,11 @@ letting rsync hang or CI queue forever.
 
 Parallel agents are isolated automatically: the remote dir defaults to a
 per-worktree name derived from the local checkout path. `LV_BUILD_DIR`
-still overrides it when you need a specific dir.
+still overrides it when you need a specific dir. Abandoned remote dirs are
+garbage-collected by the gate's `gc` verb (fired best-effort after every
+run; 14-day unused window, live dirs and `EvalRecordings/` always kept), so
+minting a fresh dir is cheap — never hand-clean `~/work` on the Mac.
+`./scripts/remote-build.sh disk` shows per-dir sizes and last-used ages.
 
 - An interrupted remote run can leave a stale SwiftPM lock in its remote dir —
   don't debug it, switch to a fresh `LV_BUILD_DIR`.
@@ -93,7 +97,7 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   confusion and theorize-first cost an hour on 2026-07-05. Deeper tools:
   `scripts/mac-diag.sh` on the Mac, Export Diagnostics… in Settings > About,
   and (once the v2 gate is installed — owner runbook: `scripts/mac/README.md`)
-  `./scripts/remote-build.sh diag|applog|voxlog|svc-status`.
+  `./scripts/remote-build.sh diag|applog|voxlog|svc-status|disk|gc`.
 - **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
   stages the scene, drives the real Right-Command tap/hold gesture with
   synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator

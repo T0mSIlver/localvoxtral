@@ -225,7 +225,7 @@ When capture happens in a Mac checkout, `scripts/run-agent-eval-local.sh`
 runs the same env-gated suite directly and avoids copying the voice set through
 another source checkout.
 
-## `localvoxtral-build-gate.sh` — SSH build gate (v3)
+## `localvoxtral-build-gate.sh` — SSH build gate (v4)
 
 Forced command for the Linux dev box's build key on the Mac build host. It
 allowlists the `remote-build.sh` loop (rsync in, `swift build|test`,
@@ -237,6 +237,41 @@ section above). The `reap work/localvoxtral-<id>` recovery verb accepts one
 validated work directory and terminates only stale test processes proven by
 UID plus cwd/mapped-text evidence to belong to it. Everything else is denied
 and logged to `~/Library/Logs/localvoxtral-build-gate.log`.
+
+### v4: work-dir garbage collection (`gc`) and disk visibility (`disk`)
+
+Every Linux worktree mints its own `~/work/localvoxtral-<slug>-<hash>` build
+dir on the gate account (remote-build.sh derives the name from the local
+checkout path so parallel agents never contend), and agent worktrees are
+ephemeral — so multi-GB SwiftPM/xcodebuild trees used to accumulate until the
+disk filled. v4 closes the loop:
+
+- Every gated use of a work dir (mkdir, rsync, build/test payload) touches a
+  `.lv-last-used` stamp at its root, so staleness never depends on
+  rsync-preserved source mtimes. remote-build.sh protects the stamp from its
+  `rsync --delete`.
+- `gc` (no arguments) deletes any `work/localvoxtral-*` dir with no entry
+  modified in the last `LV_GC_MAX_AGE_DAYS` days (default 14, overridable in
+  `~/.localvoxtral-gate.conf`). Three keep-checks each fail toward "keep":
+  recent activity (stamp or fresh build products), live processes rooted in
+  the dir (lsof cwd/mapped-text evidence — same as `reap`), and
+  `EvalRecordings/` presence, which downgrades deletion to a prune that
+  preserves the recordings in place (private human WAVs may exist only in
+  that remote copy).
+- remote-build.sh fires `gc` automatically after every run, backgrounded and
+  best-effort — the disk only fills while agents build, which is exactly when
+  it runs. No cron/LaunchDaemon needed. A pre-v4 installed gate just denies
+  the verb (a `DENY gc` line per run in the gate log until the upgrade).
+- `disk` prints `df` plus per-work-dir `du` and last-used ages on demand;
+  `diag` gained a cheap Disk section (df + ages, no du) whose
+  `Data volume free: N GiB` line `mac-health.sh` parses to warn below
+  `LV_MIN_FREE_GIB` (default 25).
+
+Not covered by `gc` (occasional owner attention): the gate account's Hugging
+Face cache accumulates a multi-GB snapshot per model pin ever tested — prune
+retired pins by hand, but keep the current ones or the next integration run
+re-downloads them — and `~/Library/Caches/localvoxtral-eval/wav` (TTS cache,
+safe to delete any time, regenerates).
 
 Allowed build payloads run in a dedicated process group. Whenever the payload
 leader exits — including a SIGPIPE after its SSH output channel closes — the
@@ -303,10 +338,13 @@ fiddlier and breaks when the log file is rotated/recreated.)
 ### Verifying from the Linux box
 
 ```bash
-./scripts/remote-build.sh diag        # versions, processes, ports, logs
+./scripts/remote-build.sh diag        # versions, processes, ports, disk, logs
 ./scripts/remote-build.sh applog 30   # app unified log, last 30 minutes
 ./scripts/remote-build.sh voxlog 100  # voxmlx log tail
 ./scripts/remote-build.sh svc-status  # voxmlx service/process/port status
+./scripts/remote-build.sh disk        # df + per-work-dir du and last-used ages
+./scripts/remote-build.sh gc          # reclaim stale work dirs now (also runs
+                                      # automatically after every build/test)
 ssh <gate-destination> 'ensure voxmlx' # warm the on-demand STT server
 ssh <gate-destination> 'reap work/localvoxtral-<id>' # scoped stale-test cleanup
 ssh <gate-destination> 'echo pwned'   # must print "denied command"

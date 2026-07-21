@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# localvoxtral build gate v3.
+# localvoxtral build gate v4.
 #
 # This script is intended to be installed as the forced command for the Mac
 # build-host SSH key. It keeps the existing build/test/package allowlist and
@@ -17,6 +17,8 @@ set -euo pipefail
 #   svc-status
 #   ensure <voxmlx|mlxlm|all>   # warm an on-demand test server (touch + poll)
 #   reap work/localvoxtral-<id>  # terminate stale tests in one exact work dir
+#   disk                # df + per-work-dir du (du can take a while — on demand)
+#   gc                  # delete work dirs unused > LV_GC_MAX_AGE_DAYS (v4)
 
 LOG_FILE="$HOME/Library/Logs/localvoxtral-build-gate.log"
 VOXLOG_FILE="$HOME/Library/Logs/voxmlx.log"
@@ -35,6 +37,19 @@ LV_RUN_DIR="/Users/Shared/localvoxtral/run"
 LV_ENSURE_READY_TIMEOUT=180
 LV_ENSURE_PROBE_TIMEOUT=2
 REAPER="$HOME/bin/localvoxtral-cleanup-stale-test-processes.sh"
+
+# Work-dir garbage collection (`gc` verb): every ephemeral Linux worktree
+# mints one ~/work/localvoxtral-* dir (remote-build.sh derives the name from
+# the local checkout path) and nothing else ever deletes them, so stale
+# multi-GB SwiftPM/xcodebuild trees accumulate until the disk fills. A dir
+# whose newest activity is older than this many days is reclaimed.
+LV_GC_MAX_AGE_DAYS=14
+
+# Every gated use of a work dir refreshes this stamp file at its root, so gc
+# staleness never depends on rsync-preserved source mtimes (rsync -a copies
+# the SENDER's mtimes — a tree synced five minutes ago can look weeks old
+# without it). remote-build.sh protects the stamp from its rsync --delete.
+LV_LAST_USED_STAMP=".lv-last-used"
 
 # Machine-local overrides (never committed): the gate account is separate
 # from the GUI owner account, so voxmlx's log path and GUI uid differ per
@@ -97,6 +112,200 @@ clamp_integer() {
 
 launchctl_target() {
   printf 'gui/%s/%s\n' "$VOXMLX_GUI_UID" "$VOXMLX_SERVICE"
+}
+
+# BSD stat on the Mac; GNU stat only so the shell regression tests can run on
+# a Linux dev box. GNU must be tried FIRST: BSD's -f flag exists on GNU too
+# but means "filesystem status" there, succeeding with a mount point instead
+# of an mtime — while -c fails cleanly on BSD.
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
+# Epoch seconds -> a `touch -t` timestamp. BSD `date -r <epoch>` on the Mac;
+# GNU date treats -r as --reference=<file> and fails, so -d "@epoch" answers.
+touch_timestamp_for_epoch() {
+  date -r "$1" +%Y%m%d%H%M.%S 2>/dev/null || date -d "@$1" +%Y%m%d%H%M.%S
+}
+
+touch_workdir_stamp() {
+  local dir="$1"
+  if [[ -d "$dir" ]]; then
+    touch "$dir/$LV_LAST_USED_STAMP" 2>/dev/null || true
+  fi
+}
+
+format_kib() {
+  awk -v kb="$1" 'BEGIN {
+    if (kb >= 1048576) printf "%.1f GiB", kb / 1048576
+    else printf "%d MiB", kb / 1024
+  }'
+}
+
+# Both BSD and GNU `df -k` print Available in column 4 and Capacity/Use% in
+# column 5. mac-health.sh greps this exact line prefix — keep it stable.
+# Never let a df hiccup abort diag under set -e: mac-health would misread the
+# resulting non-zero ssh exit as "build host unreachable".
+show_disk_free_line() {
+  df -k "$HOME" 2>/dev/null \
+    | awk 'NR == 2 { printf "Data volume free: %d GiB (%s used)\n", $4 / 1048576, $5 }' \
+    || true
+}
+
+show_disk_summary() {
+  section "Disk"
+  run_or_note df -h "$HOME"
+  show_disk_free_line
+  local dir now mtime age
+  now="$(date +%s)"
+  for dir in "$HOME"/work/localvoxtral-*; do
+    [[ -d "$dir" ]] || continue
+    mtime="$(file_mtime "$dir/$LV_LAST_USED_STAMP" || true)"
+    if [[ ! "$mtime" =~ ^[0-9]+$ ]]; then
+      mtime="$(file_mtime "$dir" || true)"
+    fi
+    if [[ "$mtime" =~ ^[0-9]+$ ]]; then
+      age="$(( (now - mtime) / 86400 ))d"
+    else
+      age="?"
+    fi
+    printf 'workdir %s last-used %s ago\n' "${dir##*/}" "$age"
+  done
+}
+
+# `du` over multi-GB build trees can take a while, so sizes are a separate
+# on-demand verb rather than part of diag (mac-health runs diag under a
+# 20-second timeout).
+run_disk_command() {
+  show_disk_summary
+  section "Build work dir sizes"
+  local dir
+  for dir in "$HOME"/work/localvoxtral-*; do
+    [[ -d "$dir" ]] || continue
+    run_or_note du -sh "$dir"
+  done
+}
+
+# A work dir is "in use" when any of this account's live processes has its
+# cwd or a mapped executable inside it — the same evidence the reaper trusts.
+# Fail CLOSED: whenever lsof is missing OR did not run cleanly we cannot
+# prove the dir idle, so gc keeps it. lsof exits non-zero both on errors and
+# when it selects no files at all — but this account's own gate shell always
+# contributes at least its cwd record, so a healthy run selects something
+# and exits 0; a non-zero exit here genuinely means "evidence unavailable".
+workdir_in_use() {
+  local dir="$1" records
+  command -v lsof >/dev/null 2>&1 || return 0
+  records="$(lsof -n -P -u "$(id -u)" -a -d cwd,txt -F n 2>/dev/null)" || return 0
+  awk -v prefix="n$dir" '
+    index($0, prefix "/") == 1 || $0 == prefix { found = 1; exit }
+    END { exit found ? 0 : 1 }' <<<"$records"
+}
+
+# Delete a stale work dir's contents but keep EvalRecordings: the rsync in
+# remote-build.sh receiver-protects that subtree because private human WAVs
+# may exist ONLY in this remote copy — reclaiming build state must never
+# destroy them. The skeleton dir that remains is tiny and harmless.
+prune_workdir_keep_recordings() {
+  local dir="$1" entry
+  for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+      continue
+    fi
+    if [[ "${entry##*/}" == "EvalRecordings" ]]; then
+      continue
+    fi
+    # An un-removable entry (foreign owner, odd perms) must not abort the
+    # rest of the prune — or, via set -e, the whole gc pass.
+    rm -rf "$entry" 2>/dev/null || true
+  done
+}
+
+# Does the dir hold anything BESIDES EvalRecordings? An already-pruned
+# skeleton fails this, so repeat gc passes neither re-prune it nor report it.
+workdir_has_prunable_entries() {
+  local dir="$1" entry
+  for entry in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    if [[ ! -e "$entry" && ! -L "$entry" ]]; then
+      continue
+    fi
+    if [[ "${entry##*/}" == "EvalRecordings" ]]; then
+      continue
+    fi
+    return 0
+  done
+  return 1
+}
+
+# Age-based garbage collection for ~/work/localvoxtral-* build dirs. Getting
+# deletion wrong is asymmetric: a live or recent dir must never go, a stale
+# one costs only a cold rebuild — so three independent checks each fail
+# toward "keep": (1) any entry modified since the cutoff, down to the
+# build-product level (the per-use stamp guarantees a fresh depth-1 mtime for
+# every gated run; the find catches pre-stamp dirs whose builds rewrote
+# .build metadata); (2) live processes rooted in the dir; (3) EvalRecordings
+# presence downgrades delete to a prune that keeps the recordings.
+run_gc_command() {
+  local max_age_days="$LV_GC_MAX_AGE_DAYS"
+  if [[ ! "$max_age_days" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'gc: invalid LV_GC_MAX_AGE_DAYS: %s\n' "$max_age_days" >&2
+    return 1
+  fi
+  local now cutoff ref dir recent size_kb remaining_kb
+  local deleted=0 pruned=0 kept_active=0 kept_busy=0 freed_kb=0
+  now="$(date +%s)"
+  cutoff=$((now - max_age_days * 86400))
+  ref="$(mktemp "${TMPDIR:-/tmp}/lv-gc-cutoff.XXXXXX")" || return 1
+  touch -t "$(touch_timestamp_for_epoch "$cutoff")" "$ref" || { rm -f "$ref"; return 1; }
+
+  for dir in "$HOME"/work/localvoxtral-*; do
+    [[ -d "$dir" ]] || continue
+    validate_work_dir "work/${dir##*/}" || continue
+    # -mindepth 1 skips the dir's own mtime, which gc's pruning refreshes —
+    # a pruned skeleton must not look active for another whole window.
+    # -maxdepth 9 reaches the deepest build products (xcodebuild packages:
+    # .build/xcode/Build/Products/Release/<app>/Contents/MacOS/<bin> is depth
+    # 8; an incremental rebuild overwrites files there without bumping any
+    # shallower dir mtime). -quit bounds the cost at the first fresh entry.
+    recent="$(find "$dir" -mindepth 1 -maxdepth 9 -newer "$ref" -print -quit 2>/dev/null || true)"
+    if [[ -n "$recent" ]]; then
+      kept_active=$((kept_active + 1))
+      continue
+    fi
+    if workdir_in_use "$dir"; then
+      printf 'gc %s: stale but has live processes — kept\n' "${dir##*/}"
+      kept_busy=$((kept_busy + 1))
+      continue
+    fi
+    size_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')" || size_kb=""
+    [[ "$size_kb" =~ ^[0-9]+$ ]] || size_kb=0
+    if [[ -e "$dir/EvalRecordings" ]]; then
+      # Already-pruned skeletons stay silent — reporting "pruned" every run
+      # for a dir holding only recordings would misread as repeated action.
+      workdir_has_prunable_entries "$dir" || continue
+      prune_workdir_keep_recordings "$dir"
+      remaining_kb="$(du -sk "$dir" 2>/dev/null | awk '{print $1}')" || remaining_kb=""
+      [[ "$remaining_kb" =~ ^[0-9]+$ ]] || remaining_kb=0
+      if (( size_kb > remaining_kb )); then
+        freed_kb=$((freed_kb + size_kb - remaining_kb))
+      fi
+      printf 'gc %s: unused >= %sd — pruned (EvalRecordings kept)\n' \
+        "${dir##*/}" "$max_age_days"
+      pruned=$((pruned + 1))
+    else
+      # An un-removable entry must not abort the pass; whatever survived
+      # will be reported (and retried) by later runs.
+      rm -rf "$dir" 2>/dev/null || true
+      freed_kb=$((freed_kb + size_kb))
+      printf 'gc %s: unused >= %sd — deleted (%s)\n' \
+        "${dir##*/}" "$max_age_days" "$(format_kib "$size_kb")"
+      deleted=$((deleted + 1))
+    fi
+  done
+  rm -f "$ref"
+  printf 'gc: deleted %d, pruned %d, active %d, busy %d, freed ~%s\n' \
+    "$deleted" "$pruned" "$kept_active" "$kept_busy" "$(format_kib "$freed_kb")"
+  show_disk_free_line
 }
 
 show_versions() {
@@ -225,6 +434,7 @@ run_diag() {
   show_versions
   show_processes
   show_ports
+  show_disk_summary
   show_voxmlx_service 20
   show_voxlog 20
   show_applog 10 60
@@ -492,6 +702,7 @@ run_cd_command() {
   allow_build_payload "$payload" || deny
 
   cd "$HOME/${dir%/}"
+  touch_workdir_stamp "$PWD"
   run_payload_with_cleanup "$payload"
 }
 
@@ -519,6 +730,7 @@ run_mkdir_command() {
 
   validate_work_dir "$dir" || deny
   mkdir -p "$HOME/${dir%/}"
+  touch_workdir_stamp "$HOME/${dir%/}"
 }
 
 run_rsync_command() {
@@ -543,6 +755,7 @@ run_rsync_command() {
   dest="${argv[argc - 1]}"
   validate_work_dir "$dest" || deny
 
+  touch_workdir_stamp "$HOME/${dest%/}"
   cd "$HOME"
   exec rsync "${argv[@]:1}"
 }
@@ -579,6 +792,12 @@ case "$original_command" in
     ;;
   svc-status)
     run_svc_status
+    ;;
+  disk)
+    run_disk_command
+    ;;
+  gc)
+    run_gc_command
     ;;
   ensure\ *)
     arg="${original_command#ensure }"

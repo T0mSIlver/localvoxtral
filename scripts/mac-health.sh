@@ -30,6 +30,20 @@ if diag_output="$(timeout 20 ssh -o ConnectTimeout=8 -o BatchMode=yes "$HOST" di
   if echo "$diag_output" | grep -q 'Runner.Listener'; then
     echo "  actions runner: process visible"
   fi
+  # Disk pressure (gate v4 diag prints this line; older gates just lack it).
+  # Stale build work dirs are gc'd automatically after each remote run, so a
+  # low-disk warning here usually means something OUTSIDE work/ is growing —
+  # `./scripts/remote-build.sh disk` shows the work-dir share of it.
+  free_line="$(echo "$diag_output" | grep -m1 '^Data volume free:' || true)"
+  if [[ -n "$free_line" ]]; then
+    echo "  $free_line"
+    free_gib="$(echo "$free_line" | awk '{print $4}')"
+    min_free_gib="${LV_MIN_FREE_GIB:-25}"
+    if [[ "$free_gib" =~ ^[0-9]+$ ]] && (( free_gib < min_free_gib )); then
+      echo "WARN: build host low on disk (${free_gib} GiB free < ${min_free_gib} GiB) —" \
+        "'./scripts/remote-build.sh disk' for sizes, 'gc' to reclaim stale work dirs" >&2
+    fi
+  fi
 elif echo "$diag_output" | grep -qi 'denied command\|command not allowed'; then
   echo "OK: SSH gate reachable (gate v1 — no diagnostics; install v2, see scripts/mac/README.md)"
 else

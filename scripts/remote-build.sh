@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live voxmlx service
@@ -37,6 +37,11 @@ set -euo pipefail
 #     applog       unified log for process == "localvoxtral" (gate v2 required)
 #     voxlog       tail ~/Library/Logs/voxmlx.log (gate v2 required)
 #     svc-status   launchctl status for com.localvoxtral.voxmlx (gate v2 required)
+#     disk         df + du of the remote build work dirs (gate v4 required;
+#                  du over the build trees can take a while)
+#     gc           delete remote work dirs unused > 14 days (gate v4 required;
+#                  also fired automatically, best-effort, after every run —
+#                  EvalRecordings inside a stale dir are always preserved)
 #
 # Examples:
 #   ./scripts/remote-build.sh
@@ -158,6 +163,7 @@ cleanup_transient_marker() {
     # A recording set may exist only in the remote Mac checkout. Protect it
     # from --delete during marker cleanup just as in the main tree sync.
     rsync -az --delete \
+      --filter='P /.lv-last-used' \
       --filter='P EvalRecordings/***' \
       --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
       "$ROOT_DIR/" "$HOST:$DIR/" 2>/dev/null || true
@@ -193,7 +199,7 @@ quote_remote_command() {
 }
 
 case "$CMD" in
-  diag|svc-status)
+  diag|svc-status|disk|gc)
     if [[ $# -ne 0 ]]; then
       echo "$CMD does not accept extra arguments" >&2
       exit 1
@@ -412,7 +418,11 @@ ssh "$HOST" "mkdir -p $(printf '%q' "$DIR")"
 # .build/ and dist/ are excluded from deletion too, so the remote incremental
 # build state survives between runs. EvalRecordings is receiver-protected:
 # private human WAVs may live only on the Mac and must survive a Linux sync.
+# .lv-last-used is the gate's per-use staleness stamp (never in the source
+# tree) — without the protect, --delete would strip it and the gc verb's age
+# decision would fall back to rsync-preserved (old) source mtimes.
 rsync -az --delete \
+  --filter='P /.lv-last-used' \
   --filter='P EvalRecordings/***' \
   --exclude '.git/' --exclude '.build/' --exclude 'dist/' \
   "$ROOT_DIR/" "$HOST:$DIR/"
@@ -420,4 +430,19 @@ rsync -az --delete \
 # cleanup rsync now has something to delete.
 TREE_SYNCED=1
 
-run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")"
+PAYLOAD_STATUS=0
+run_remote_payload "cd $(printf '%q' "$DIR") && $(printf '%q ' "${REMOTE_CMD[@]}")" \
+  || PAYLOAD_STATUS=$?
+
+# Opportunistic remote work-dir GC (gate v4 `gc` verb): reclaim stale sibling
+# dirs while the host is known awake — the disk only fills when agents build,
+# which is exactly when this fires. Backgrounded and best-effort: it must
+# never delay the inner loop or fail the run, and a pre-v4 gate just denies
+# the verb. Output lands in .build/last-gc.log for the curious.
+GC_LOG="${LOCALVOXTRAL_GC_LOG:-$ROOT_DIR/.build/last-gc.log}"
+(
+  mkdir -p "$(dirname "$GC_LOG")" 2>/dev/null || true
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$HOST" gc >"$GC_LOG" 2>&1 || true
+) &
+
+exit "$PAYLOAD_STATUS"
