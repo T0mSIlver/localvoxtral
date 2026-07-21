@@ -643,8 +643,10 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             isAccessibilityTrusted: true
         )
         XCTAssertEqual(
-            decision, .vocabularyOnly(startText: "swift build"),
+            decision, .vocabularyOnly(startText: "swift build", cause: .stopReadFailed),
             "identical text from another window must degrade to matching-only, never render"
+            + " — the mismatch is a failed confirmation of the START window"
+            + " (its own info log line marks this sub-case)"
         )
     }
 

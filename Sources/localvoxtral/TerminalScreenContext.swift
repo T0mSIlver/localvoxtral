@@ -186,7 +186,41 @@ enum TerminalScreenContextDecision: Equatable, Sendable {
     /// as a raw excerpt would tell the model "this is on screen" about text
     /// that no longer is — so the excerpt is withheld and only the matcher sees
     /// the text.
-    case vocabularyOnly(startText: String)
+    ///
+    /// `cause` names WHICH leg of the truth table degraded the capture — three
+    /// unrelated conditions land here, and a field log that cannot tell them
+    /// apart cannot be debugged (2026-07-21: an idle-pane dictation reconciled
+    /// to vocab-only and the log could not say why). Everything in it is
+    /// count-only, never content.
+    case vocabularyOnly(startText: String, cause: VocabularyOnlyCause)
+
+    enum VocabularyOnlyCause: Equatable, Sendable {
+        /// The gate still held and the target was still ours, but the
+        /// stop-time re-read itself failed.
+        case stopReadFailed
+        /// The stop-time re-read succeeded and differs from the start capture.
+        /// The line statistics separate "one UI line churned" (a caret, a
+        /// spinner row) from "the whole pane repainted" without ever logging
+        /// what the lines say. `firstDifferingLine` is zero-based.
+        case screenChanged(stopLength: Int, differingLines: Int, firstDifferingLine: Int?)
+        /// The text matched, but no configured authorizer positively joined
+        /// this capture's window to a live Claude session (the authorizer logs
+        /// its own refusal reason).
+        case rawUnauthorized
+
+        /// Count-only slug for `provenanceSummary`.
+        var summarySlug: String {
+            switch self {
+            case .stopReadFailed:
+                return "stop-read-failed"
+            case let .screenChanged(stopLength, differingLines, firstDifferingLine):
+                let first = firstDifferingLine.map(String.init) ?? "none"
+                return "screen-changed(stop:\(stopLength)ch lines:\(differingLines) first:\(first))"
+            case .rawUnauthorized:
+                return "raw-unauthorized"
+            }
+        }
+    }
 
     /// No context at all.
     case drop(reason: DropReason)
@@ -298,12 +332,43 @@ enum TerminalScreenContext {
         case .targetChanged:
             return .drop(reason: .targetChanged)
         case .readFailed:
-            return .vocabularyOnly(startText: start.text)
+            return .vocabularyOnly(startText: start.text, cause: .stopReadFailed)
         case let .read(stopText):
-            guard stopText == start.text, rawAuthorized else {
-                return .vocabularyOnly(startText: start.text)
+            guard stopText == start.text else {
+                let statistics = screenChangeStatistics(start: start.text, stop: stopText)
+                return .vocabularyOnly(startText: start.text, cause: .screenChanged(
+                    stopLength: stopText.count,
+                    differingLines: statistics.differingLines,
+                    firstDifferingLine: statistics.firstDifferingLine
+                ))
+            }
+            guard rawAuthorized else {
+                return .vocabularyOnly(startText: start.text, cause: .rawUnauthorized)
             }
             return .render(excerpt: start.text)
         }
+    }
+
+    /// Count-only line comparison for the `screenChanged` diagnostic: how many
+    /// lines differ between the two (already-compacted) reads, and where the
+    /// first difference sits. Lines one side has beyond the other's end all
+    /// count as differing. Never returns content.
+    static func screenChangeStatistics(
+        start: String,
+        stop: String
+    ) -> (differingLines: Int, firstDifferingLine: Int?) {
+        let startLines = start.split(separator: "\n", omittingEmptySubsequences: false)
+        let stopLines = stop.split(separator: "\n", omittingEmptySubsequences: false)
+        let shared = min(startLines.count, stopLines.count)
+        var differing = abs(startLines.count - stopLines.count)
+        var first: Int?
+        for index in 0..<shared where startLines[index] != stopLines[index] {
+            differing += 1
+            if first == nil { first = index }
+        }
+        if first == nil, startLines.count != stopLines.count {
+            first = shared
+        }
+        return (differing, first)
     }
 }

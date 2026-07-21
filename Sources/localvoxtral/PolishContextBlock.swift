@@ -139,7 +139,7 @@ extension TerminalScreenContextDecision {
     var vocabularyGroundingText: String? {
         switch self {
         case let .render(excerpt): return excerpt
-        case let .vocabularyOnly(startText): return startText
+        case let .vocabularyOnly(startText, _): return startText
         case .drop: return nil
         }
     }
@@ -149,7 +149,8 @@ extension TerminalScreenContextDecision {
     var provenanceSummary: String {
         switch self {
         case let .render(excerpt): return "screen:\(excerpt.count)ch"
-        case let .vocabularyOnly(startText): return "screen-vocab-only:\(startText.count)ch"
+        case let .vocabularyOnly(startText, cause):
+            return "screen-vocab-only:\(startText.count)ch:\(cause.summarySlug)"
         case let .drop(reason): return "screen-dropped:\(reason.rawValue)"
         }
     }

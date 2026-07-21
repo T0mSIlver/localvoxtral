@@ -417,7 +417,7 @@ final class TerminalScreenContextTests: XCTestCase {
             endpointURL: loopback,
             isAccessibilityTrusted: true
         )
-        XCTAssertEqual(decision, .vocabularyOnly(startText: "hello"))
+        XCTAssertEqual(decision, .vocabularyOnly(startText: "hello", cause: .stopReadFailed))
     }
 
     // End to end through the live source with everything green: still no raw
@@ -432,7 +432,7 @@ final class TerminalScreenContextTests: XCTestCase {
             endpointURL: loopback,
             isAccessibilityTrusted: true
         )
-        XCTAssertEqual(decision, .vocabularyOnly(startText: "hello"))
+        XCTAssertEqual(decision, .vocabularyOnly(startText: "hello", cause: .rawUnauthorized))
         XCTAssertNil(decision.contextBlock(excerpt: "hello", renderBudget: 2000))
     }
 
@@ -504,7 +504,7 @@ final class TerminalScreenContextTests: XCTestCase {
                 stop: .readFailed,
                 rawAuthorized: true
             ),
-            .vocabularyOnly(startText: "before")
+            .vocabularyOnly(startText: "before", cause: .stopReadFailed)
         )
     }
 
@@ -529,7 +529,7 @@ final class TerminalScreenContextTests: XCTestCase {
                 stop: .read("hi"),
                 rawAuthorized: false
             ),
-            .vocabularyOnly(startText: "hi")
+            .vocabularyOnly(startText: "hi", cause: .rawUnauthorized)
         )
     }
 
@@ -540,7 +540,69 @@ final class TerminalScreenContextTests: XCTestCase {
                 stop: .read("before\nagent streamed more output"),
                 rawAuthorized: true
             ),
-            .vocabularyOnly(startText: "before")
+            .vocabularyOnly(startText: "before", cause: .screenChanged(
+                stopLength: "before\nagent streamed more output".count,
+                differingLines: 1,
+                firstDifferingLine: 1
+            ))
+        )
+    }
+
+    // The whole point of the statistics: a field log that can say "one line
+    // churned at index 2" (a caret or spinner row) versus "everything
+    // repainted" — using counts only, never content.
+    func testScreenChangeStatisticsSeparateSingleLineChurnFromFullRepaint() {
+        let start = "❯ swift build\nBuild complete!\n> type here"
+        let caretToggled = "❯ swift build\nBuild complete!\n> type here▌"
+        let singleLine = TerminalScreenContext.screenChangeStatistics(
+            start: start, stop: caretToggled
+        )
+        XCTAssertEqual(singleLine.differingLines, 1)
+        XCTAssertEqual(singleLine.firstDifferingLine, 2)
+
+        let repaint = TerminalScreenContext.screenChangeStatistics(
+            start: start, stop: "completely\ndifferent\npane"
+        )
+        XCTAssertEqual(repaint.differingLines, 3)
+        XCTAssertEqual(repaint.firstDifferingLine, 0)
+    }
+
+    func testScreenChangeStatisticsCountTrailingExtraLinesAsDiffering() {
+        let grew = TerminalScreenContext.screenChangeStatistics(
+            start: "a\nb", stop: "a\nb\nc\nd"
+        )
+        XCTAssertEqual(grew.differingLines, 2)
+        XCTAssertEqual(grew.firstDifferingLine, 2)
+
+        let shrank = TerminalScreenContext.screenChangeStatistics(
+            start: "a\nb\nc", stop: "a"
+        )
+        XCTAssertEqual(shrank.differingLines, 2)
+        XCTAssertEqual(shrank.firstDifferingLine, 1)
+
+        let identical = TerminalScreenContext.screenChangeStatistics(
+            start: "a\nb", stop: "a\nb"
+        )
+        XCTAssertEqual(identical.differingLines, 0)
+        XCTAssertNil(identical.firstDifferingLine)
+    }
+
+    // The reconciled log line must carry the cause so the three vocab-only
+    // legs are distinguishable in the field — and stay count-only doing it.
+    func testVocabularyOnlySummaryNamesTheCauseCountOnly() {
+        let secret = "AKIAIOSFODNN7EXAMPLE"
+        XCTAssertEqual(
+            TerminalScreenContextDecision.vocabularyOnly(
+                startText: secret,
+                cause: .screenChanged(stopLength: 19, differingLines: 1, firstDifferingLine: 41)
+            ).provenanceSummary,
+            "screen-vocab-only:20ch:screen-changed(stop:19ch lines:1 first:41)"
+        )
+        XCTAssertEqual(
+            TerminalScreenContextDecision.vocabularyOnly(
+                startText: secret, cause: .rawUnauthorized
+            ).provenanceSummary,
+            "screen-vocab-only:20ch:raw-unauthorized"
         )
     }
 
@@ -572,7 +634,9 @@ final class TerminalScreenContextTests: XCTestCase {
     // The abstention: mutated screens keep matching but never show the model an
     // excerpt claiming to be what is on screen.
     func testVocabularyOnlyAbstainsFromExcerptButKeepsGroundingText() {
-        let decision = TerminalScreenContextDecision.vocabularyOnly(startText: "swift build")
+        let decision = TerminalScreenContextDecision.vocabularyOnly(
+            startText: "swift build", cause: .rawUnauthorized
+        )
         XCTAssertNil(decision.contextBlock(excerpt: "swift build", renderBudget: 2000))
         XCTAssertEqual(decision.vocabularyGroundingText, "swift build")
     }
@@ -645,8 +709,10 @@ final class TerminalScreenContextTests: XCTestCase {
             "screen:20ch"
         )
         XCTAssertEqual(
-            TerminalScreenContextDecision.vocabularyOnly(startText: secret).provenanceSummary,
-            "screen-vocab-only:20ch"
+            TerminalScreenContextDecision.vocabularyOnly(
+                startText: secret, cause: .stopReadFailed
+            ).provenanceSummary,
+            "screen-vocab-only:20ch:stop-read-failed"
         )
         XCTAssertEqual(
             TerminalScreenContextDecision.drop(reason: .targetChanged).provenanceSummary,
@@ -658,7 +724,9 @@ final class TerminalScreenContextTests: XCTestCase {
         )
         let decisions: [TerminalScreenContextDecision] = [
             .render(excerpt: secret),
-            .vocabularyOnly(startText: secret),
+            .vocabularyOnly(startText: secret, cause: .screenChanged(
+                stopLength: 999, differingLines: 3, firstDifferingLine: 0
+            )),
             .drop(reason: .noStartCapture),
             .drop(reason: .policyRejected),
         ]
