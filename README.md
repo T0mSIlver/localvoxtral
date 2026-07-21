@@ -75,7 +75,7 @@ The gesture selects the output mode, so both workflows are always one key away. 
 
 ## Terminals & coding agents
 
-Most dictation tools fall apart in a terminal. localvoxtral treats it as its primary target: prompt Claude Code — or any CLI coding agent — by voice and watch the words stream in live. SSH sessions work too, since text is typed into your local terminal. Terminal apps are detected automatically (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, cmux, and more), and apps that embed a terminal can be added in `terminal_apps.toml`. Live dictation adapts:
+Most dictation tools fall apart in a terminal. localvoxtral treats it as its primary target: prompt Claude Code — or any CLI coding agent — by voice and watch the words stream in live. SSH sessions work too, since text is typed into your local terminal. Terminal apps are detected automatically (Terminal, iTerm2, Ghostty, Warp, WezTerm, kitty, Alacritty, Hyper, Tabby, Rio, and more), and apps that embed a terminal can be added in `terminal_apps.toml`. Live dictation adapts:
 
 - **Prompt-safe output** — newlines and tabs are typed as spaces, so a stray line break never submits a half-finished prompt and a tab never triggers shell completion
 - **Replacements without rewriting** — dictionary replacements are applied before text is typed; localvoxtral never backspaces over what the terminal has already drawn
@@ -91,6 +91,13 @@ When an Overlay Buffer dictation commits, optional LLM polishing understands how
 
 The overlay shows a **Polished** badge whenever the LLM touched your text, and the raw transcript stays one click away in the menu bar popover.
 
+> [!NOTE]
+> **Claude Code session context needs Ghostty from the tip channel.** When you dictate into a Claude Code session, localvoxtral can attach that session's context to polishing (opt-in, under **Settings → Text Processing**) — but only after it works out which session owns the focused terminal. That match reads the pane's TTY over AppleScript, which only Ghostty ≥ 1.4 exposes. Today that means installing Ghostty from its [tip (nightly) channel](https://ghostty.org/docs/install/pre):
+> ```bash
+> brew install --cask ghostty@tip
+> ```
+> On stable Ghostty the TTY join is unavailable; an opt-in title-marker fallback in Settings covers that case instead.
+
 ## Settings
 
 Open **Settings** from the menu bar popover:
@@ -98,7 +105,7 @@ Open **Settings** from the menu bar popover:
 - **General** — permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
 - **Endpoints** — Dictation and Polishing each switch independently between `Managed local` (a model picker for polishing, plus a status light) and `External URL` (endpoint URL, model name, API key)
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts) and the menu-bar output mode
-- **Text Processing** — exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste)
+- **Text Processing** — exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste, and Claude Code session context)
 - **About** — version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
 
 The config folder at `~/Library/Application Support/localvoxtral/config` holds `replacement_dictionary.toml`, the LLM prompt TOMLs (including the agent variants), and `terminal_apps.toml`. When an update ships improved defaults, files you haven't edited are refreshed automatically; files you have edited are never touched without asking — the app offers to update them and keeps your versions as `.backup` files alongside.
