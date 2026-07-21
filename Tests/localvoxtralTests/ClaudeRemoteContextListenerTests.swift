@@ -157,7 +157,10 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     // MARK: - Happy path
 
-    func testAnAuthenticatedHookIsIngestedAndGetsItsMarkerBack() throws {
+    func testRemoteHookAlwaysGetsItsMarkerBecauseTheLocalFallbackSettingDoesNotGateIt() throws {
+        // The local title-fallback preference is injected only into the UNIX
+        // broker. This remote listener deliberately has no such dependency:
+        // the title marker is the ONLY SSH join and must always be returned.
         try startListener()
         let response = try XCTUnwrap(try send(hookRequest(token: token)))
         XCTAssertEqual(response.status, 200)

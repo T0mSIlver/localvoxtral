@@ -859,6 +859,20 @@ private struct TextProcessingSettingsPane: View {
                 // listener, and plugin/session setup is independent of the
                 // current hotkey configuration. They are still rows in the same
                 // constant Polishing group.
+                SettingsFieldRow(title: "Local Claude title fallback") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("", isOn: $settings.claudeLocalTitleMarkerFallbackEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+
+                        SettingsHelpText(
+                            settings.claudeLocalTitleMarkerFallbackEnabled
+                                ? "Writes a window-title marker for local sessions; also export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code does not overwrite it."
+                                : "Uses the focused TTY to join local sessions and requires Ghostty 1.4 or a tip build."
+                        )
+                    }
+                }
+
                 if let claude = viewModel.claudeIntegrationSettings {
                     ClaudePluginSettingsRow(model: claude)
                     ClaudeRemoteHostsSettingsRow(model: claude)

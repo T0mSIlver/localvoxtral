@@ -405,10 +405,13 @@ Key subsystems:
     LOCAL sessions only — the title is a fought-over channel (Claude Code's
     own conversation titles clobber the marker mid-turn), the process table is
     not. Any TTY non-answer falls through to the marker in the PID-pinned
-    window title, which remains the ONLY join for SSH-remote sessions: a
-    remote TTY names another machine's device, and `resolve(tty:)` refuses
-    remote candidates so an SSH host can never claim a local pane by echoing
-    its TTY.
+    window title — but LOCAL sessions only carry that marker when the user
+    enabled the opt-in title fallback (default off; the broker still allocates
+    markers either way, it just withholds them from local hook responses). The
+    title marker remains the ONLY join for SSH-remote sessions, emitted for
+    them unconditionally: a remote TTY names another machine's device, and
+    `resolve(tty:)` refuses remote candidates so an SSH host can never claim a
+    local pane by echoing its TTY.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

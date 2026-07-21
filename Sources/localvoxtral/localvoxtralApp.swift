@@ -214,7 +214,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Log.claudeContext.error("Claude context broker not started: no socket path (HOME unset)")
             return
         }
-        let broker = ClaudeContextBroker(socketPath: socketPath, registry: claudeSessionRegistry)
+        let broker = ClaudeContextBroker(
+            socketPath: socketPath,
+            registry: claudeSessionRegistry,
+            shouldEmitLocalTitleMarker:
+                settingsStore.makeClaudeLocalTitleMarkerFallbackProvider()
+        )
         do {
             try broker.start()
             claudeContextBroker = broker

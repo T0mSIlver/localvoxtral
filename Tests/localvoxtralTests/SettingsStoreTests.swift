@@ -27,6 +27,23 @@ final class SettingsStoreTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:])
     }
 
+    // MARK: - Claude Code local title fallback
+
+    func testClaudeLocalTitleMarkerFallback_defaultsOff() {
+        XCTAssertFalse(makeStore().claudeLocalTitleMarkerFallbackEnabled)
+    }
+
+    func testClaudeLocalTitleMarkerFallback_providerTracksBothSettingStates() {
+        let store = makeStore()
+        let provider = store.makeClaudeLocalTitleMarkerFallbackProvider()
+
+        XCTAssertFalse(provider())
+        store.claudeLocalTitleMarkerFallbackEnabled = true
+        XCTAssertTrue(provider())
+        store.claudeLocalTitleMarkerFallbackEnabled = false
+        XCTAssertFalse(provider())
+    }
+
     // MARK: - Overlay Buffer session reachability
 
     func testOverlayBufferReachability_truthTable() {

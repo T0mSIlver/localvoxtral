@@ -40,25 +40,27 @@ model touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
-Two mechanisms, tried in order:
+Two mechanisms. The resolver always tries both in order; the opt-in setting
+only controls whether local sessions write the marker the second one looks for:
 
-**TTY join (preferred — needs Ghostty 1.4 or a tip build).** The hooks report
+**TTY join (the default — needs Ghostty ≥ 1.4, currently the tip channel).**
+The hooks report
 the session's controlling terminal device, and at dictation start the app asks
 Ghostty for the focused pane's `tty` over AppleScript (a one-time Automation
 consent prompt). Device equality is exact, works mid-response, and tells two
-sessions in the same repo apart. On Ghostty ≤ 1.3 this read fails gracefully
-(the `tty` property shipped for 1.4.0) — install Ghostty from tip if you want
-reliable joins while Claude Code is responding.
+sessions in the same repo apart. Older Ghostty builds fail this read gracefully;
+install Ghostty from tip for reliable local joins while Claude Code is
+responding.
 
-**Title marker (fallback).** The app allocates a marker per session and replies
-with it on the socket. The publisher then asks Claude Code to write that marker
-into the window title (an OSC 2 sequence), with `suppressOutput` so it never
-appears in your transcript. Know its limits: Claude Code overwrites the title
-with its own conversation-derived text whenever it is responding, so the marker
-usually survives only until the first turn — unless you set
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. It remains the ONLY join for SSH-remote
-sessions (their tty names a device on another machine) and for pre-1.4 Ghostty,
-which is why it stays.
+**Title marker (opt-in local fallback, always on for SSH).** For an older Ghostty
+build or another terminal, enable **Settings → Text Processing → Polishing →
+Local Claude title fallback** and export
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. The app then replies to local hooks with
+the session marker, which Claude Code writes into the window title as an OSC 2
+sequence; the environment variable stops Claude Code from overwriting it with
+its own conversation title mid-turn. Remote hooks always receive the marker
+regardless of this setting because it is the ONLY join for SSH sessions: their
+tty names a device on another machine.
 
 The marker grammar is `lvx-<hex>` and nothing else is ever emitted — an escape
 sequence is code as much as data, so the marker is allowlist-validated and
