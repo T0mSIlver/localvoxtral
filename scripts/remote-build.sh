@@ -19,8 +19,10 @@ set -euo pipefail
 #                  transcribe real audio through the production websocket
 #                  client, and assert accuracy + delta + parent-pid contracts
 #     speechd-bench run the packaged speech helper's streaming benchmark;
-#                  optional args = seconds (default 60) and cadence ms
-#                  (default 100 = the production step cadence); requires a prior `package`
+#                  optional args = seconds (default 60), cadence ms
+#                  (default 100 = the production step cadence), and
+#                  cache-limit-mb (default = the helper's built-in limit);
+#                  requires a prior `package`
 #     eval-llm     default-polish-prompt eval against a live mlx-lm server;
 #                  optional args = chat/completions endpoint and external
 #                  model alias (default endpoint
@@ -290,12 +292,13 @@ case "$CMD" in
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
     # root XCTest launches the xcodebuild-produced helper and relays its BENCH output.
-    if [[ $# -gt 2 ]]; then
-      echo "speechd-bench accepts optional seconds and cadence-ms arguments" >&2
+    if [[ $# -gt 3 ]]; then
+      echo "speechd-bench accepts optional seconds, cadence-ms, and cache-limit-mb arguments" >&2
       exit 1
     fi
     SPEECHD_BENCH_SECONDS="${1:-60}"
     SPEECHD_BENCH_CADENCE="${2:-100}"
+    SPEECHD_BENCH_CACHE_MB="${3:-}"
     if [[ ! "$SPEECHD_BENCH_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
       echo "speechd-bench seconds must be a positive integer" >&2
       exit 1
@@ -304,13 +307,26 @@ case "$CMD" in
       echo "speechd-bench cadence-ms must be a positive integer" >&2
       exit 1
     fi
+    if [[ -n "$SPEECHD_BENCH_CACHE_MB" && ! "$SPEECHD_BENCH_CACHE_MB" =~ ^[1-9][0-9]*$ ]]; then
+      echo "speechd-bench cache-limit-mb must be a positive integer" >&2
+      exit 1
+    fi
     SPEECHD_BENCH_MARKER="$ROOT_DIR/.speechd-bench-enable.json"
     trap 'cleanup_transient_marker "$SPEECHD_BENCH_MARKER"' EXIT
-    printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s}\n' \
-      "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
-      "$SPEECHD_BENCH_SECONDS" \
-      "$SPEECHD_BENCH_CADENCE" \
-      >"$SPEECHD_BENCH_MARKER"
+    if [[ -n "$SPEECHD_BENCH_CACHE_MB" ]]; then
+      printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s,"cacheLimitMB":%s}\n' \
+        "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
+        "$SPEECHD_BENCH_SECONDS" \
+        "$SPEECHD_BENCH_CADENCE" \
+        "$SPEECHD_BENCH_CACHE_MB" \
+        >"$SPEECHD_BENCH_MARKER"
+    else
+      printf '{"helperPath":"%s","seconds":%s,"cadenceMilliseconds":%s}\n' \
+        "dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd" \
+        "$SPEECHD_BENCH_SECONDS" \
+        "$SPEECHD_BENCH_CADENCE" \
+        >"$SPEECHD_BENCH_MARKER"
+    fi
     REMOTE_CMD=(swift test --filter SpeechdStreamingBenchTests)
     ;;
   eval-e2e)
