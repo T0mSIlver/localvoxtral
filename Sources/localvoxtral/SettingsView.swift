@@ -319,10 +319,16 @@ private struct ConnectionSettingsPane: View {
                 case .externalURL:
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(
-                            "http://127.0.0.1:8080/v1/chat/completions",
+                            "http://127.0.0.1:8080",
                             text: polishingEndpointBinding
                         )
                         .textFieldStyle(.roundedBorder)
+
+                        SettingsHelpText(
+                            "Enter a base URL (e.g. http://127.0.0.1:8080); "
+                                + "/v1/chat/completions is appended automatically. "
+                                + "A full …/v1/chat/completions URL still works."
+                        )
                     }
 
                     SettingsFieldRow(title: "API key") {

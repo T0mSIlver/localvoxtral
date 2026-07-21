@@ -81,6 +81,9 @@ enum DiagnosticsExporter {
 
         let polishingSummary: String
         if let polishing = settings.llmPolishingConfiguration {
+            // Deliberately the pre-normalization URL as the user typed it; the
+            // wire request appends /v1/chat/completions to a base URL
+            // (LLMPolishingService.normalizedChatCompletionsURL).
             polishingSummary = sanitizedEndpointDescription(from: polishing.endpointURL)
         } else {
             polishingSummary = "<disabled>"

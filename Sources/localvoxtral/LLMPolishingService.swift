@@ -158,13 +158,75 @@ struct LLMPolishingService: LLMPolishingServicing {
         )
     }
 
+    /// Maps a user-entered polishing endpoint to the effective OpenAI-compatible
+    /// `chat/completions` URL, so the Settings field accepts a bare base URL
+    /// (the convention every OpenAI-compatible client follows) while remaining
+    /// backward compatible with the full `/v1/chat/completions` URLs users used
+    /// to have to type.
+    ///
+    /// The path is inspected case-insensitively; the scheme, host, port, and
+    /// query are never altered — only the path is rewritten, so the Local
+    /// Network preflight (which classifies by host/port) sees the same target.
+    /// Rules:
+    /// - A path already ending in `/chat/completions` (with or without a
+    ///   trailing slash) is returned exactly as given. llama.cpp, vLLM, LM
+    ///   Studio, and Ollama's OpenAI-compat surface all expose
+    ///   `/v1/chat/completions`, so any full URL round-trips unchanged.
+    /// - An empty path or `/` (the base-URL case) gets `/v1/chat/completions`
+    ///   appended: `http://127.0.0.1:8080` → `http://127.0.0.1:8080/v1/chat/completions`.
+    /// - A path ending in `/v1` (or `/v1/`) gets `/chat/completions` appended.
+    ///   This also covers proxy prefixes that still mount the OpenAI API under
+    ///   `/v1` (`/proxy/v1` → `/proxy/v1/chat/completions`).
+    /// - Any other non-empty path is treated as a base and gets
+    ///   `/v1/chat/completions` appended, since that is where every server above
+    ///   mounts the OpenAI API.
+    ///
+    /// Appending never introduces a new double slash (a `//` already inside the
+    /// input path is preserved as typed). Query and fragment are preserved. If
+    /// the input cannot be broken into URL components it is returned unchanged,
+    /// so the existing failure handling (an invalid endpoint yields a nil
+    /// configuration and no request) still applies.
+    static func normalizedChatCompletionsURL(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        else { return url }
+
+        // Trailing slashes are insignificant for the decision; collapse them to
+        // a single canonical path before matching so `/v1/` and `/v1` behave
+        // alike and appended segments never produce `//`.
+        var path = components.path
+        while path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        let lowered = path.lowercased()
+
+        if lowered.hasSuffix("/chat/completions") {
+            // Already a full chat/completions URL — leave the user's input
+            // exactly as typed (including any trailing slash).
+            return url
+        }
+
+        let effectivePath: String
+        if path.isEmpty || path == "/" {
+            effectivePath = "/v1/chat/completions"
+        } else if lowered.hasSuffix("/v1") {
+            effectivePath = path + "/chat/completions"
+        } else {
+            effectivePath = path + "/v1/chat/completions"
+        }
+
+        components.path = effectivePath
+        return components.url ?? url
+    }
+
     /// The full URLRequest for one polish call — the single construction path
     /// (and the test seam pinning the timeout without networking).
     static func makeURLRequest(
         request: LLMPolishingRequest,
         configuration: LLMPolishingConfiguration
     ) throws -> URLRequest {
-        var urlRequest = URLRequest(url: configuration.endpointURL)
+        var urlRequest = URLRequest(
+            url: normalizedChatCompletionsURL(configuration.endpointURL)
+        )
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if !configuration.apiKey.isEmpty {
