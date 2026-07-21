@@ -120,6 +120,12 @@ final class LocalNetworkPermissionPreflight: LocalNetworkPermissionPreflighting 
     private var activeConnections: [LocalNetworkEndpointPolicy.Target: NWConnection] = [:]
     private var loggedWaitingTargets: Set<LocalNetworkEndpointPolicy.Target> = []
 
+    #if DEBUG
+    /// Test seam: when set, called instead of opening a real NWConnection, so
+    /// tier-0 tests can drive the production dedupe/policy path networkless.
+    var debugProbeStarter: ((LocalNetworkEndpointPolicy.Target) -> Void)?
+    #endif
+
     func preflight(endpoint: URL, reason: String) {
         guard let target = LocalNetworkEndpointPolicy.preflightTarget(for: endpoint) else {
             return
@@ -141,6 +147,12 @@ final class LocalNetworkPermissionPreflight: LocalNetworkPermissionPreflighting 
         Log.backends.info(
             "local-network permission preflight requested reason=\(reason, privacy: .public) host=\(target.host, privacy: .private) port=\(target.port, privacy: .public)"
         )
+        #if DEBUG
+        if let debugProbeStarter {
+            debugProbeStarter(target)
+            return
+        }
+        #endif
         let connection = NWConnection(host: NWEndpoint.Host(target.host), port: port, using: .tcp)
         activeConnections[target] = connection
         connection.stateUpdateHandler = { [weak self] state in
@@ -197,6 +209,7 @@ final class LocalNetworkPermissionPreflight: LocalNetworkPermissionPreflighting 
         }
     }
 
+    @MainActor
     deinit {
         for connection in activeConnections.values {
             connection.stateUpdateHandler = nil

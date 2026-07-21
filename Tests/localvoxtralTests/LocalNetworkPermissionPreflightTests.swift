@@ -15,7 +15,9 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
             ("ws://[fe80::1234]:8000/realtime", "fe80::1234", 8000),
             ("ws://dictation-box.local:8000/realtime", "dictation-box.local", 8000),
             ("http://polisher.home.arpa:8080/v1/chat/completions", "polisher.home.arpa", 8080),
+            ("http://router.lan:8080/v1/chat/completions", "router.lan", 8080),
             ("ws://speech-server:8000/realtime", "speech-server", 8000),
+            ("http://[::ffff:10.0.0.5]:8080/v1/chat/completions", "::ffff:10.0.0.5", 8080),
         ]
 
         for (rawURL, expectedHost, expectedPort) in cases {
@@ -38,6 +40,7 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
             "wss://api.openai.com/v1/realtime",
             "https://8.8.8.8/v1/chat/completions",
             "https://[2606:4700:4700::1111]/v1/chat/completions",
+            "http://[::ffff:8.8.8.8]:8080/v1/chat/completions",
             "file:///tmp/realtime.sock",
         ]
 
@@ -136,7 +139,9 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         )
     }
 
-    func testPackagedInfoPlistDeclaresLocalNetworkUsageWithoutBonjourBrowsing() throws {
+    func testPackagingScriptDeclaresLocalNetworkUsageWithoutBonjourBrowsing() throws {
+        // Asserts on the script text (the packaged-plist source of truth);
+        // the built bundle itself is covered by the packaging smoke lane.
         let repoRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -164,6 +169,23 @@ final class LocalNetworkPermissionPreflightTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return (SettingsStore(defaults: defaults, environment: [:]), suiteName)
+    }
+
+    func testProductionPreflightDedupesRepeatedTargetsWithoutOpeningConnections() throws {
+        let preflight = LocalNetworkPermissionPreflight()
+        var probed: [LocalNetworkEndpointPolicy.Target] = []
+        preflight.debugProbeStarter = { probed.append($0) }
+
+        let lan = try XCTUnwrap(URL(string: "ws://192.168.50.4:8000/realtime"))
+        preflight.preflight(endpoint: lan, reason: "edit")
+        preflight.preflight(endpoint: lan, reason: "launch")
+        let loopback = try XCTUnwrap(URL(string: "ws://127.0.0.1:8000/realtime"))
+        preflight.preflight(endpoint: loopback, reason: "edit")
+        let otherPort = try XCTUnwrap(URL(string: "ws://192.168.50.4:8080/realtime"))
+        preflight.preflight(endpoint: otherPort, reason: "edit")
+
+        XCTAssertEqual(probed.map(\.host), ["192.168.50.4", "192.168.50.4"])
+        XCTAssertEqual(probed.map(\.port), [8000, 8080])
     }
 }
 
