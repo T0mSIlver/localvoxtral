@@ -766,14 +766,14 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
 
     // The default install must never read a screen, and under XCTest the live
     // seams are pinned off regardless.
-    func testSessionStartCaptureIsNilWithSettingOff() {
+    func testSessionStartCaptureIsNilWithSettingOff() async {
         let viewModel = makeViewModel()
         XCTAssertFalse(viewModel.settings.terminalScreenContextEnabled)
-        viewModel.captureTerminalScreenContextForSession()
+        await viewModel.captureTerminalScreenContextForSession()
         XCTAssertNil(viewModel.terminalScreenStartCapture)
     }
 
-    func testSessionStartCaptureNeverCallsAXWhenSettingIsOff() {
+    func testSessionStartCaptureNeverCallsAXWhenSettingIsOff() async {
         var reads = 0
         TerminalScreenAXReader.debugScreenReadOverride = { _ in
             reads += 1
@@ -784,7 +784,7 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
         }
         let viewModel = makeViewModel()
         viewModel.settings.terminalScreenContextEnabled = false
-        viewModel.captureTerminalScreenContextForSession()
+        await viewModel.captureTerminalScreenContextForSession()
         XCTAssertEqual(reads, 0)
         XCTAssertNil(viewModel.terminalScreenStartCapture)
     }

@@ -31,7 +31,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         XCTAssertTrue(viewModel.isLiveAutoPasteModeEnabled)
     }
 
-    func testExplicitOutputModeSurvivesBeginDictationSession() {
+    func testExplicitOutputModeSurvivesBeginDictationSession() async {
         let settings = makeSettings(outputMode: .liveAutoPaste)
         settings.realtimeAPIEndpointURL = "ws://127.0.0.1:1/realtime"
         let overlayCoordinator = MockOverlayCoordinator()
@@ -42,7 +42,7 @@ final class DictationViewModelOverlayLifecycleTests: XCTestCase {
         )
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession(outputMode: .overlayBuffer)
+        await viewModel.beginDictationSession(outputMode: .overlayBuffer)
 
         XCTAssertEqual(viewModel.sessionOutputMode, .overlayBuffer)
         XCTAssertTrue(viewModel.isOverlayBufferModeEnabled)

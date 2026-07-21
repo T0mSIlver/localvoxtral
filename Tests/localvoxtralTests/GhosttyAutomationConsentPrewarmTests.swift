@@ -105,4 +105,38 @@ final class GhosttyAutomationConsentPrewarmTests: XCTestCase {
         await drainMainActorQueue()
         XCTAssertEqual(executions.withLock { $0 }, 1)
     }
+
+    func testSettingsOffToOnTransitionPrewarmsOnlyOncePerAppRun() async {
+        let suiteName = "localvoxtral.GhosttyPrewarmSettings.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults, environment: [:])
+        let executions = Mutex(0)
+        let observer = GhosttyAutomationConsentPrewarmSettingsObserver(settings: settings) {
+            GhosttyAutomationConsentPrewarm.fireOnceWhenGhosttyIsAvailable(
+                isGhosttyRunning: { true },
+                execute: { executions.withLock { $0 += 1 } },
+                notificationCenter: NotificationCenter()
+            )
+        }
+        observer.start()
+
+        settings.terminalScreenContextEnabled = true
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(
+            executions.withLock { $0 }, 1,
+            "enabling a context setting after launch must pre-warm before dictation"
+        )
+
+        settings.terminalScreenContextEnabled = false
+        settings.terminalScreenContextEnabled = true
+        settings.claudeRepoContextEnabled = true
+        for _ in 0..<100 { await Task.yield() }
+        XCTAssertEqual(
+            executions.withLock { $0 }, 1,
+            "a successful pre-warm must remain at-most-once for the app run"
+        )
+        _ = observer
+    }
 }

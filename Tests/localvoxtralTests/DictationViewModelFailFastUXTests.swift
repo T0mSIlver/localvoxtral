@@ -187,7 +187,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertEqual(token, .accessibilityPermissionRequired)
     }
 
-    func testBeginDictationSessionSurfacesAccessibilityWarningInLiveMode() {
+    func testBeginDictationSessionSurfacesAccessibilityWarningInLiveMode() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         // Point at a closed port so the async connect fails fast and does not
         // hit a real backend. The AX warning is asserted synchronously, before
@@ -197,7 +197,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         // Fail-fast warning surfaces at start and is not clobbered by the
         // generic "Connecting..." status.
@@ -208,14 +208,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
-    func testBeginDictationSessionSkipsAccessibilityWarningWhenTrustedInLiveMode() {
+    func testBeginDictationSessionSkipsAccessibilityWarningWhenTrustedInLiveMode() async {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
         viewModel.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(true)
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
         XCTAssertNil(viewModel.lastError)
@@ -223,14 +223,14 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.abortConnectingSession()
     }
 
-    func testBeginDictationSessionSkipsAccessibilityWarningInOverlayMode() {
+    func testBeginDictationSessionSkipsAccessibilityWarningInOverlayMode() async {
         let viewModel = makeViewModel(outputMode: .overlayBuffer)
         viewModel.settings.realtimeAPIEndpointURL = "ws://127.0.0.1:65535/realtime"
         viewModel.isShowingConnectionFailureAlert = true
         viewModel.textInsertion.debugSetAccessibilityTrusted(false)
         retainForTestProcessLifetime(viewModel)
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertEqual(viewModel.statusText, "Connecting to realtime backend...")
         XCTAssertNil(viewModel.lastError)
@@ -395,7 +395,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         await viewModel.managedStartupTask?.value
     }
 
-    func testStartDictationInExternalModeNeverTouchesManagedBackendManager() {
+    func testStartDictationInExternalModeNeverTouchesManagedBackendManager() async {
         let backendManager = FakeManagedBackendManager()
         let viewModel = makeViewModel(outputMode: .overlayBuffer, backendManager: backendManager)
         viewModel.settings.dictationBackendMode = .externalURL
@@ -406,6 +406,10 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         retainForTestProcessLifetime(viewModel)
 
         viewModel.startDictation()
+        // The external path now hops through the startup task before
+        // beginDictationSession runs; the endpoint error surfaces when it
+        // completes, and the backend manager must still never be touched.
+        await viewModel.managedStartupTask?.value
 
         XCTAssertTrue(backendManager.ensureCalls.isEmpty)
         XCTAssertEqual(viewModel.statusText, "Invalid endpoint URL.")

@@ -74,7 +74,20 @@ extension DictationViewModel {
         let needsManagedPolishing = isManagedPolishingRequired(outputMode: requestedOutputMode)
 
         guard needsManagedDictation || needsManagedPolishing else {
-            beginDictationSession(outputMode: outputMode)
+            isConnectingRealtimeSession = true
+            managedStartupTask?.cancel()
+            let startupTaskID = UUID()
+            managedStartupTaskID = startupTaskID
+            managedStartupTask = Task { @MainActor [weak self, startupTaskID] in
+                guard let self else { return }
+                defer {
+                    if self.managedStartupTaskID == startupTaskID {
+                        self.managedStartupTask = nil
+                        self.managedStartupTaskID = nil
+                    }
+                }
+                await self.beginDictationSession(outputMode: outputMode)
+            }
             return
         }
 
@@ -136,7 +149,7 @@ extension DictationViewModel {
                           && self.settings.polishingBackendMode == .managedLocal)),
                   self.isConnectingRealtimeSession
             else { return }
-            self.beginDictationSession(outputMode: outputMode)
+            await self.beginDictationSession(outputMode: outputMode)
             // beginDictationSession re-checks secure input and may refuse
             // HERE — long after the initiating gesture ended (a toggle tap
             // ends immediately; a hold may release while the backend boots).
@@ -209,7 +222,7 @@ extension DictationViewModel {
         )
     }
 
-    func beginDictationSession(outputMode: DictationOutputMode? = nil) {
+    func beginDictationSession(outputMode: DictationOutputMode? = nil) async {
         lastSocketErrorMessage = nil
         // A new session starts: retire any prior "Copy raw transcript"
         // affordance so it never references a stale, unrelated transcript.
@@ -303,7 +316,13 @@ extension DictationViewModel {
         // Same timing rationale again, and the last chance to take it: the
         // overlay takes focus once the socket connects, and screen context must
         // record what the user could see as they chose their words.
-        captureTerminalScreenContextForSession()
+        isConnectingRealtimeSession = true
+        await captureTerminalScreenContextForSession()
+        guard !Task.isCancelled, isConnectingRealtimeSession else {
+            discardTerminalScreenCapture()
+            clearLatchedSessionMetadata()
+            return
+        }
         refreshInsertionScalarTracingForSession()
 
         audioChunkBuffer.clear()
@@ -316,7 +335,6 @@ extension DictationViewModel {
         textInsertion.clearPendingText()
         textInsertion.resetDiagnostics()
 
-        isConnectingRealtimeSession = true
         // Keep the Accessibility warning as the status line when it applies, so
         // the warning isn't clobbered by the generic "Connecting..." text.
         if !accessibilityBlockedAtStart {

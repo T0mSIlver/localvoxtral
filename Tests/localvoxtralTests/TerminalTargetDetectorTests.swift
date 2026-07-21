@@ -262,7 +262,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
     // MARK: - Capture-at-begin / consume-at-audio-start lifecycle
 
-    func testBeginDictationSessionCapturesVerdictBeforeConnect() {
+    func testBeginDictationSessionCapturesVerdictBeforeConnect() async {
         // Pins the wiring: the verdict must be sampled inside
         // beginDictationSession (before the socket opens), like
         // preResolvedOverlayAnchor. Overlay mode avoids the live-auto-paste
@@ -275,7 +275,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
         Self.retainedViewModels.append(viewModel)
 
-        viewModel.beginDictationSession(outputMode: .overlayBuffer)
+        await viewModel.beginDictationSession(outputMode: .overlayBuffer)
         XCTAssertFalse(
             viewModel.debugHasInitializedMicrophoneForTesting,
             "connecting must not eagerly initialize CoreAudio"
@@ -503,7 +503,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
 
     // MARK: - Session start under Secure Keyboard Entry (#89 split behavior)
 
-    func testLiveSessionStartRefusedUnderSecureInput() {
+    func testLiveSessionStartRefusedUnderSecureInput() async {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
@@ -512,7 +512,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         var soundPlays = 0
         viewModel.secureInputWarningSound = { soundPlays += 1 }
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertFalse(viewModel.isDictating, "a live session that can only type into the void must not start")
         XCTAssertFalse(viewModel.isConnectingRealtimeSession, "no socket attempt for a refused start")
@@ -525,14 +525,14 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
-    func testRefusedStartWarningClearsAtNextSessionStartWithSecureInputOff() {
+    func testRefusedStartWarningClearsAtNextSessionStartWithSecureInputOff() async {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         Self.retainedViewModels.append(viewModel)
         viewModel.secureInputWarningSound = {}
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
 
         // The password prompt is gone; the stale-warning path at the next
@@ -546,7 +546,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
-    func testConnectionFailureAlertNeverRunsModalEvenWithNSAppInitialized() {
+    func testConnectionFailureAlertNeverRunsModalEvenWithNSAppInitialized() async {
         // Regression: presentConnectionFailureAlert's `NSApp != nil` guard is
         // not enough in a test process — any earlier test touching
         // NSApplication.shared initializes NSApp for the rest of the suite,
@@ -560,7 +560,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         Self.retainedViewModels.append(viewModel)
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = ""
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertNotNil(viewModel.lastError, "the failure must still be surfaced")
@@ -585,7 +585,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         XCTAssertTrue(DictationViewModel.isTestProcess())
     }
 
-    func testStaleSecureIconDoesNotMaskEarlyExitFailuresOnNextAttempt() {
+    func testStaleSecureIconDoesNotMaskEarlyExitFailuresOnNextAttempt() async {
         // Codex finding on #90: refused start leaves the icon lit; a next
         // attempt that exits early (missing mic) BEFORE the verdict capture
         // must not keep reporting a secure-input warning that is now off.
@@ -595,7 +595,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         let viewModel = makeViewModel(outputMode: .liveAutoPaste)
         Self.retainedViewModels.append(viewModel)
         viewModel.secureInputWarningSound = {}
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
         XCTAssertEqual(viewModel.menuBarIndicatorState, .secureInputWarning)
 
         TerminalTargetDetector.debugSecureEventInputOverride = { false }
@@ -603,7 +603,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         // verdict capture: custom backend mode with an empty endpoint URL.
         viewModel.settings.dictationBackendMode = .externalURL
         viewModel.settings.realtimeAPIEndpointURL = ""
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertNotEqual(
             viewModel.menuBarIndicatorState, .secureInputWarning,
@@ -613,7 +613,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         viewModel.isShowingConnectionFailureAlert = true
     }
 
-    func testRefusedLiveStartResetsStaleOverlayPanel() {
+    func testRefusedLiveStartResetsStaleOverlayPanel() async {
         // Codex finding on #90 (round 3): a prior overlay commit failure
         // intentionally leaves its panel visible until the NEXT session
         // resets the coordinator — a refused live start must still perform
@@ -626,14 +626,14 @@ final class TerminalTargetDetectorTests: XCTestCase {
         Self.retainedViewModels.append(viewModel)
         viewModel.secureInputWarningSound = {}
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertFalse(viewModel.isDictating)
         XCTAssertGreaterThanOrEqual(coordinator.resetCallCount, 1)
         viewModel.isShowingConnectionFailureAlert = true
     }
 
-    func testOverlaySessionStartProceedsUnderSecureInput() {
+    func testOverlaySessionStartProceedsUnderSecureInput() async {
         TerminalTargetDetector.debugFrontmostBundleIDOverride = { "com.apple.Terminal" }
         TerminalTargetDetector.debugSecureEventInputOverride = { true }
 
@@ -641,7 +641,7 @@ final class TerminalTargetDetectorTests: XCTestCase {
         Self.retainedViewModels.append(viewModel)
         viewModel.secureInputWarningSound = {}
 
-        viewModel.beginDictationSession()
+        await viewModel.beginDictationSession()
 
         XCTAssertTrue(
             viewModel.isConnectingRealtimeSession,
