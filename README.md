@@ -92,7 +92,7 @@ When an Overlay Buffer dictation commits, optional LLM polishing understands how
 The overlay shows a **Polished** badge whenever the LLM touched your text, and the raw transcript stays one click away in the menu bar popover.
 
 > [!NOTE]
-> **Claude Code session context needs Ghostty from the tip channel.** When you dictate into a Claude Code session, localvoxtral can attach that session's context to polishing (opt-in, under **Settings → Text Processing**) — but only after it works out which session owns the focused terminal. That match reads the pane's TTY over AppleScript, which only Ghostty ≥ 1.4 exposes. Today that means installing Ghostty from its [tip (nightly) channel](https://ghostty.org/docs/install/pre):
+> **Claude Code session context needs Ghostty from the tip channel (or the opt-in title fallback).** When you dictate into a Claude Code session, localvoxtral can attach that session's context to polishing (opt-in, under **Settings → Text Processing**) — but only after it works out which session owns the focused terminal. By default that match reads the pane's TTY over AppleScript, which only Ghostty ≥ 1.4 exposes. Today that means installing Ghostty from its [tip (nightly) channel](https://ghostty.org/docs/install/pre):
 > ```bash
 > brew install --cask ghostty@tip
 > ```
