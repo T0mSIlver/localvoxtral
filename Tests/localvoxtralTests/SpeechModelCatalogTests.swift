@@ -13,7 +13,7 @@ final class SpeechModelCatalogTests: XCTestCase {
 
     func testSpeechModelCatalogPinsFullCommitSHA() {
         let option = SpeechModelCatalog.defaultOption
-        XCTAssertEqual(option.repoID, "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
+        XCTAssertEqual(option.repoID, "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead")
         XCTAssertEqual(option.revision.count, 40)
         XCTAssertTrue(option.revision.allSatisfy(\.isHexDigit))
     }

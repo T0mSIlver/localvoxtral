@@ -34,14 +34,15 @@ let package = Package(
         // #226). Pinned to a full-SHA revision, not a tag, so the exact reviewed tree is
         // reproducible — see DEPENDENCY.md for the upgrade procedure.
         //
-        // TEMPORARY FORK PIN: our fork's `localvoxtral-pin-e1-e2` = upstream 3b0b114 plus two
-        // streaming-performance fixes staged for upstream (fork PRs; see DEPENDENCY.md):
-        // cache-clear cadence (per-step -> per-256-tokens + finish) and the incremental
-        // mel/conv front end (O(N^2) -> O(N) per utterance). Switch the URL back to
-        // Blaizzy/mlx-audio-swift once both merge upstream.
+        // TEMPORARY FORK PIN: our fork's `fix/load-quantized-tied-embedding` = upstream
+        // main 6ea59e5 (which now contains everything the previous e1-e2 pin carried:
+        // upstream #229/#230/#231) plus the quantized-tied-embedding loader fix staged
+        // upstream as Blaizzy/mlx-audio-swift#232 — required by the catalog's -qhead model
+        // (SpeechModelCatalog). Switch the URL back to Blaizzy/mlx-audio-swift once #232
+        // merges.
         .package(
             url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "03890317975a2371fe0a0a9b13ad6a790f929814"
+            revision: "791ab876c10b47cc9f8894ff4100240aa6d95bf7"
         ),
     ],
     targets: [
