@@ -93,6 +93,12 @@ jobs:
             echo "Machine in active use (idle ${IDLE}s < ${REQUIRED}s) — refusing before the build. Rerun when the Mac is idle." >&2
             exit 1
           fi
+          # Same economics for the claude scene's other refusal: a pre-running
+          # Ghostty swallows the launch args (script aborts post-build).
+          if [[ "${{ inputs.terminal_agent }}" == "claude" ]] && pgrep -xiq ghostty; then
+            echo "Ghostty is already running — the claude scene must launch it itself. Quit Ghostty and rerun." >&2
+            exit 1
+          fi
           echo "Idle guard (pre-build): machine idle ${IDLE}s (>= ${REQUIRED}s)."
 
       - name: Package app bundle
