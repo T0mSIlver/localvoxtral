@@ -2,7 +2,7 @@
 
 ## `ci.yml`
 
-Every PR and push to main: build, advisory format lint (`.swift-format`;
+Every non-fast-path PR and push to main: build, advisory format lint (`.swift-format`;
 flips to `--strict` after the one-shot tree reformat), unit tests with a
 coverage summary (`llvm-cov report` over Sources — visibility for the PR
 Proof section, not a gate), live STT-service integration tests, app packaging,
@@ -10,6 +10,14 @@ launch smoke test, an installable app artifact (`localvoxtral-app`, fetch
 with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
 retention) for symbolicating field crashes. Same-repo branches run on the
 self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
+
+The same `build-test` check takes a docs/scripts-only fast path when every
+changed file passes `scripts/ci/docs-only-filter.sh`; it then skips all Swift,
+helper, packaging, artifact, smoke, warm, and integration steps. The filter
+fails open to the full run for unknown or ambiguous diffs and excludes CI
+control files, packaging inputs (`assets/icons/**`), and every path selected
+by the LLM/speechd lane filters; an explicit `[run-llm-eval]` /
+`[run-speechd-integration]` marker also forces the full run.
 
 ## `release.yml`
 

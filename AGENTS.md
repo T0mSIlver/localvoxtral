@@ -143,8 +143,8 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 | Tier | What | When | Cost |
 |---|---|---|---|
-| 0 | Unit suite (500+ tests) + PolishHelper/SpeechHelper unit suites + packaging + launch smoke | every PR/push, CI (helper unit suites: self-hosted lanes only) | ~1 min |
-| 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
+| 0 | Unit suite (500+ tests) + PolishHelper/SpeechHelper unit suites + packaging + launch smoke | every non-fast-path PR/push, CI (helper unit suites: self-hosted lanes only) | ~1 min |
+| 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every non-fast-path PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the screen is locked or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
@@ -273,11 +273,19 @@ rather than silently treating it as a model failure.
 
 ## CI / shipping
 
-- `ci.yml` runs tiers 0–1 on every PR and push to main (the polishd
+- `ci.yml` runs tiers 0–1 on every non-fast-path PR and push to main (the polishd
   live-model lane conditionally — see "When must the LLM lanes run?").
   Same-repo branches run on the self-hosted Mac runner (fast, warm cache);
   fork PRs run on GitHub-hosted macOS. Never move fork-PR jobs to the
   self-hosted runner — it is a personal machine.
+- The `build-test` check stays present but skips every Swift, helper, package,
+  artifact, smoke, warm, and integration lane when every changed path is a
+  documentation, presentation, or operational-script path per the conservative
+  allowlist in `scripts/ci/docs-only-filter.sh`. Unknown/ambiguous diffs,
+  packaging inputs (`assets/icons/**`), lane-filter-relevant paths, the
+  `[run-llm-eval]`/`[run-speechd-integration]` markers, and changes to the
+  filter or other `scripts/ci/**` paths all fail open to the full run. Release
+  and all other workflows remain fully gated.
 - Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
   <run-id>` for a push/rerun). It polls like `gh pr checks --watch` but also
   probes the build host over SSH and fail-fasts in ~30 s with a wake-the-Mac
