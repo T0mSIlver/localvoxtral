@@ -11,6 +11,12 @@ import Foundation
 /// classic implementation, which stops after four key characters, this
 /// implementation deliberately keeps the complete keys so long identifiers
 /// remain discriminative.
+///
+/// One further consequence of the single-word contract: rules that inspect
+/// spaces inside the input ("VAN ", "VON ", "SAN ", " C") can never match,
+/// because normalization strips everything but letters. Those branches are
+/// kept verbatim for structural parity with the reference, not because they
+/// are reachable.
 enum DoubleMetaphone {
     struct Key: Equatable, Hashable, Sendable {
         let primary: String
@@ -279,7 +285,11 @@ private extension DoubleMetaphone {
                 if position == 1, isVowel(at: 0), !isSlavoGermanic {
                     append("KN", "N")
                 } else if !contains(at: position + 2, "EY")
-                            && character(at: position + 2) != "Y"
+                            // The reference checks the letter after the G —
+                            // always the N here, so the condition is
+                            // vacuously true. Kept verbatim for bit-parity
+                            // with published key tables.
+                            && character(at: position + 1) != "Y"
                             && !isSlavoGermanic {
                     append("N", "KN")
                 } else {
@@ -306,7 +316,10 @@ private extension DoubleMetaphone {
                     || contains(at: 0, "SCH")
                     || contains(at: position + 1, "ET") {
                     append("K")
-                } else if contains(at: position + 1, "IER") {
+                } else if contains(at: position + 1, "IER"),
+                          position + 4 == letters.count {
+                    // The reference matches "IER " against its trailing
+                    // padding, i.e. only at the end of the word.
                     append("J")
                 } else {
                     append("J", "K")
@@ -520,7 +533,8 @@ private extension DoubleMetaphone {
                 } else {
                     append("A")
                 }
-                return position + 1
+                // No return: the reference falls through, so an initial
+                // "witz"/"wicz" still reaches the WICZ rule below.
             }
             if (position == letters.count - 1 && isVowel(at: position - 1))
                 || contains(at: position - 1, "EWSKI", "EWSKY", "OWSKI", "OWSKY")

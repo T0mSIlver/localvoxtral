@@ -90,6 +90,29 @@ final class DoubleMetaphoneTests: XCTestCase {
         )
     }
 
+    func testCanonicalRuleEdges_matchReferenceImplementation() {
+        // Non-initial GN not followed by "EY": the reference keeps a
+        // (vacuously true) check on the letter after the G, so a "-GNY-"
+        // word is N primary / KN secondary — not KN/KN.
+        XCTAssertEqual(
+            DoubleMetaphone.encode("signy"),
+            DoubleMetaphone.Key(primary: "SN", secondary: "SKN")
+        )
+        // A word-initial W before a vowel appends its vowel sound and then
+        // falls through, so an initial "witz"/"wicz" still reaches the
+        // WICZ rule — as the reference does.
+        XCTAssertEqual(
+            DoubleMetaphone.encode("witz"),
+            DoubleMetaphone.Key(primary: "ATS", secondary: "FFX")
+        )
+        // "-GIER" softens G only at the end of the word; mid-word the
+        // J/K alternates survive.
+        XCTAssertEqual(
+            DoubleMetaphone.encode("rogiers"),
+            DoubleMetaphone.Key(primary: "RJRS", secondary: "RKRS")
+        )
+    }
+
     func testMotivatingPhoneticRelationships() {
         let pain = DoubleMetaphone.encode("pain")
         let pane = DoubleMetaphone.encode("pane")
