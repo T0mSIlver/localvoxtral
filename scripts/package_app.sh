@@ -283,9 +283,19 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <key>NSMicrophoneUsageDescription</key>
   <string>localvoxtral needs microphone access for live dictation.</string>
   <key>NSLocalNetworkUsageDescription</key>
-  <string>localvoxtral needs local network access to reach realtime transcription endpoints.</string>
+  <string>localvoxtral needs local network access to connect to transcription and polishing servers you configure.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>localvoxtral asks Ghostty which terminal pane is focused, so dictation context comes from the Claude Code session you are actually talking to.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
 </dict>
 </plist>
 PLIST

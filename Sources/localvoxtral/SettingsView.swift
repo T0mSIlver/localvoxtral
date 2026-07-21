@@ -33,7 +33,7 @@ struct SettingsView: View {
                 settings.endpointURL(for: settings.realtimeProvider)
             },
             set: { newValue in
-                settings.realtimeAPIEndpointURL = newValue
+                viewModel.applyRealtimeEndpointChange(newValue)
             }
         )
     }
@@ -183,6 +183,13 @@ private struct ConnectionSettingsPane: View {
     let endpointBinding: Binding<String>
     let modelBinding: Binding<String>
 
+    private var polishingEndpointBinding: Binding<String> {
+        Binding(
+            get: { settings.llmPolishingEndpointURL },
+            set: { viewModel.applyLLMPolishingEndpointChange($0) }
+        )
+    }
+
     private var dictationBackendModeBinding: Binding<BackendMode> {
         Binding(
             get: { settings.dictationBackendMode },
@@ -313,7 +320,7 @@ private struct ConnectionSettingsPane: View {
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(
                             "http://127.0.0.1:8080/v1/chat/completions",
-                            text: $settings.llmPolishingEndpointURL
+                            text: polishingEndpointBinding
                         )
                         .textFieldStyle(.roundedBorder)
                     }
