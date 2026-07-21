@@ -70,6 +70,7 @@ public final class ClaudeContextBroker: Sendable {
     private let socketPath: String
     private let registry: ClaudeSessionRegistry
     private let limits: ClaudeBrokerLimits
+    private let uptimeNanos: @Sendable () -> UInt64
 
     #if DEBUG
     /// Test seam: fires after each record is accepted or rejected, so a socket
@@ -77,11 +78,16 @@ public final class ClaudeContextBroker: Sendable {
     /// registry on a wall clock (AGENTS: no wall-clock in tests). Never used in
     /// production paths.
     private let debugIngestHook = Mutex<(@Sendable (Result<ClaudeHookRecord, ClaudeHookWireError>) -> Void)?>(nil)
+    private let debugReadHook = Mutex<(@Sendable (Int) -> Void)?>(nil)
 
     public func debugConfigureIngestHook(
         _ hook: (@Sendable (Result<ClaudeHookRecord, ClaudeHookWireError>) -> Void)?
     ) {
         debugIngestHook.withLock { $0 = hook }
+    }
+
+    public func debugConfigureReadHook(_ hook: (@Sendable (Int) -> Void)?) {
+        debugReadHook.withLock { $0 = hook }
     }
 
     private func debugNotify(_ result: Result<ClaudeHookRecord, ClaudeHookWireError>) {
@@ -93,11 +99,13 @@ public final class ClaudeContextBroker: Sendable {
     public init(
         socketPath: String,
         registry: ClaudeSessionRegistry,
-        limits: ClaudeBrokerLimits = .default
+        limits: ClaudeBrokerLimits = .default,
+        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
         self.socketPath = socketPath
         self.registry = registry
         self.limits = limits
+        self.uptimeNanos = uptimeNanos
     }
 
     public enum StartFailure: Error, Equatable {
@@ -464,22 +472,18 @@ public final class ClaudeContextBroker: Sendable {
         }
         let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: peerUID)
 
-        var timeout = timeval(
-            tv_sec: Int(limits.readTimeout),
-            tv_usec: Int32((limits.readTimeout - Double(Int(limits.readTimeout))) * 1_000_000)
-        )
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        let deadline = uptimeNanos() &+ UInt64(max(0, limits.readTimeout) * 1_000_000_000)
 
         var pending = Data()
         var recordCount = 0
         var chunk = [UInt8](repeating: 0, count: 8 * 1024)
 
         while true {
-            let count = retryingOnEINTRInt { read(fd, &chunk, chunk.count) }
-            if count <= 0 { break } // EOF, timeout, or error — all mean "done".
-            pending.append(contentsOf: chunk[0..<count])
+            guard readMore(fd: fd, into: &pending, using: &chunk, deadline: deadline) else {
+                break
+            }
 
             // Split FIRST, then bound only what is left over. The cap is on a
             // single LINE, not on how much a peer may send: a publisher is free
@@ -503,6 +507,52 @@ public final class ClaudeContextBroker: Sendable {
                 reply(to: fd, marker: handle(line: line, origin: origin))
             }
         }
+    }
+
+    /// Append one chunk under a whole-connection monotonic deadline. A
+    /// per-syscall `SO_RCVTIMEO` resets after every byte and lets a slowloris
+    /// retain a connection slot forever.
+    private func readMore(
+        fd: Int32,
+        into buffer: inout Data,
+        using chunk: inout [UInt8],
+        deadline: UInt64
+    ) -> Bool {
+        let current = uptimeNanos()
+        guard current < deadline else {
+            Log.claudeContext.error("Dropping Claude broker connection: read deadline expired")
+            return false
+        }
+        let remainingMillis = (deadline - current) / 1_000_000
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let timeout = Int32(min(remainingMillis, UInt64(Int32.max)))
+        let ready = poll(&descriptor, 1, timeout)
+        if ready < 0, errno == EINTR {
+            // Re-enter rather than retry with the same timeout: the caller
+            // loops straight back in and the remaining budget is recomputed,
+            // so a late signal cannot extend the absolute deadline.
+            return true
+        }
+        guard ready != 0 else {
+            Log.claudeContext.error("Dropping Claude broker connection: read deadline expired")
+            return false
+        }
+        guard ready > 0 else {
+            Log.claudeContext.error("Claude broker connection poll failed (\(errno, privacy: .public))")
+            return false
+        }
+
+        let count = retryingOnEINTRInt { read(fd, &chunk, chunk.count) }
+        guard count >= 0 else {
+            Log.claudeContext.error("Claude broker connection read failed (\(errno, privacy: .public))")
+            return false
+        }
+        guard count > 0 else { return false }
+        #if DEBUG
+        debugReadHook.withLock { $0 }?(count)
+        #endif
+        buffer.append(contentsOf: chunk[0..<count])
+        return true
     }
 
     /// Send the session's marker back to the publisher.

@@ -93,6 +93,14 @@ public final class ClaudeRemoteContextListener: Sendable {
     private let now: @Sendable () -> Date
     private let uptimeNanos: @Sendable () -> UInt64
 
+    #if DEBUG
+    private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
+
+    public func debugConfigurePostAuthenticationHook(_ hook: (@Sendable () -> Void)?) {
+        debugPostAuthenticationHook.withLock { $0 = hook }
+    }
+    #endif
+
     public enum StartFailure: Error, Equatable {
         case alreadyRunning
         case socketCreationFailed(errno: Int32)
@@ -397,6 +405,9 @@ public final class ClaudeRemoteContextListener: Sendable {
             respond(fd: fd, status: 401)
             return
         }
+        #if DEBUG
+        debugPostAuthenticationHook.withLock { $0 }?()
+        #endif
 
         guard ClaudeRemoteHTTPCodec.eventName(inPath: request.path) != nil else {
             respond(fd: fd, status: 404)
@@ -414,18 +425,48 @@ public final class ClaudeRemoteContextListener: Sendable {
         let bodyEnd = buffer.index(bodyStart, offsetBy: request.contentLength)
         let body = Data(buffer[bodyStart..<bodyEnd])
 
+        // Parse and scope OUTSIDE the host lock: constant-time-hashing every
+        // stored token is already the lock's fixed cost per request, and
+        // serializing body parsing behind it would stall every other host's
+        // auth behind one slow payload. Only the COMMIT — the part the
+        // revocation race is about — re-authenticates under the lock.
+        guard let prepared = prepareIngest(body: body, request: request, host: host) else {
+            // Unparseable payloads never touch the session registry, so
+            // revocation has nothing to protect; same 200-with-no-marker the
+            // pre-race-fix path returned.
+            hosts.noteActivity(hostID: host.id)
+            respond(fd: fd, status: 200, body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil))
+            return
+        }
+        guard let marker = hosts.withAuthenticatedHost(
+            token: token,
+            expectedHostID: host.id,
+            { _ in
+                commitIngest(prepared)
+            }
+        ) else {
+            Log.claudeContext.error(
+                "Rejected remote connection: host was revoked before ingest"
+            )
+            respond(fd: fd, status: 401)
+            return
+        }
         hosts.noteActivity(hostID: host.id)
-        let marker = ingest(body: body, request: request, host: host)
         respond(fd: fd, status: 200, body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: marker?.value))
     }
 
-    /// - Returns: the marker for the session, so the hook's response can carry
-    ///   it back down the SSH PTY as an OSC 2 title write.
-    private func ingest(
+    private struct PreparedIngest {
+        let record: ClaudeHookRecord
+        let snippets: [ClaudeContentSnippet]
+        let hostID: String
+    }
+
+    /// The parse/scope half of ingest, safe outside any lock.
+    private func prepareIngest(
         body: Data,
         request: ClaudeRemoteHTTPRequest,
         host: ClaudeRemoteHost
-    ) -> ClaudeSessionMarker? {
+    ) -> PreparedIngest? {
         guard let payload = ClaudeRemoteHookPayloadParser.parse(
             data: body,
             fallbackEvent: ClaudeRemoteHTTPCodec.eventName(inPath: request.path),
@@ -446,13 +487,26 @@ public final class ClaudeRemoteContextListener: Sendable {
             hostID: host.id,
             sessionID: record.sessionID
         )
-        let origin = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: host.id))
+        return PreparedIngest(record: record, snippets: payload.snippets, hostID: host.id)
+    }
 
-        let snapshot = registry.ingest(record, origin: origin, snippets: payload.snippets)
+    /// The session-registry half of ingest. Runs under the host-registry lock
+    /// (`withAuthenticatedHost`) so revocation cannot commit between the
+    /// re-check and this write.
+    ///
+    /// - Returns: the marker for the session, so the hook's response can carry
+    ///   it back down the SSH PTY as an OSC 2 title write.
+    private func commitIngest(_ prepared: PreparedIngest) -> ClaudeSessionMarker? {
+        let origin = ClaudeTransportOrigin.remote(
+            channel: ClaudeRemoteSessionScope.channel(hostID: prepared.hostID)
+        )
+        let snapshot = registry.ingest(
+            prepared.record, origin: origin, snippets: prepared.snippets
+        )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.
         Log.claudeContext.debug(
-            "Ingested remote \(record.event.rawValue, privacy: .public) from \(host.id, privacy: .public)"
+            "Ingested remote \(prepared.record.event.rawValue, privacy: .public) from \(prepared.hostID, privacy: .public)"
         )
         return snapshot?.marker
     }

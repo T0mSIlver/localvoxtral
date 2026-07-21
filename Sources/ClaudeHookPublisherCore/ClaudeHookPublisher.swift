@@ -241,17 +241,41 @@ public struct ClaudeHookPublisher: Sendable {
         }
     }
 
-    /// Read stdin to EOF, refusing to grow past `maxLineBytes`.
+    /// Read stdin until EOF or a short absolute deadline, refusing to grow past
+    /// `maxLineBytes`.
     ///
     /// Raw `read(2)`, not `FileHandle.availableData` (banned repo-wide: it
     /// aborts the process on descriptor errors — PR #60). Partial reads are the
-    /// norm on a pipe, so loop; a full buffer means a hostile/huge payload and
-    /// we stop reading rather than allocate for it.
-    public static func readBoundedStdin(limits: ClaudeHookLimits = .default) -> Data {
+    /// norm on a pipe, so loop; `poll` is recomputed from a monotonic deadline
+    /// so a producer that leaves the pipe open cannot park the hook forever. A
+    /// full buffer means a hostile/huge payload and we stop reading rather than
+    /// allocate for it.
+    ///
+    /// Kept equal to the socket publisher's default per-phase budget: stdin is
+    /// another inline hook phase, and being late is worse than being absent.
+    public static let stdinReadTimeout: TimeInterval = 0.25
+
+    public static func readBoundedStdin(
+        limits: ClaudeHookLimits = .default,
+        descriptor: Int32 = 0,
+        timeout: TimeInterval = stdinReadTimeout,
+        uptimeNanos: @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+    ) -> Data {
+        let deadline = uptimeNanos() &+ UInt64(max(0, timeout) * 1_000_000_000)
         var buffer = Data()
         var chunk = [UInt8](repeating: 0, count: 16 * 1024)
         while buffer.count <= limits.maxLineBytes {
-            let count = retryingOnEINTR { read(0, &chunk, chunk.count) }
+            let current = uptimeNanos()
+            guard current < deadline else { break }
+            let remainingMillis = (deadline - current) / 1_000_000
+            var descriptorPoll = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let pollTimeout = Int32(min(remainingMillis, UInt64(Int32.max)))
+            let ready = poll(&descriptorPoll, 1, pollTimeout)
+            if ready < 0, errno == EINTR { continue }
+            guard ready > 0 else { break }
+
+            let count = read(descriptor, &chunk, chunk.count)
+            if count < 0, errno == EINTR { continue }
             if count <= 0 { break } // EOF, or an error we treat as EOF.
             buffer.append(contentsOf: chunk[0..<count])
         }

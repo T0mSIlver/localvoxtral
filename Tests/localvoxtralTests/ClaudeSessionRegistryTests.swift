@@ -286,6 +286,24 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.resolve(marker: marker), .stale)
     }
 
+    func testPIDLessLocalSessionUsesTheShortExposureTTL() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 32, sessionTTL: 4 * 60 * 60),
+            clock: clock,
+            markers: TestMarkers(["lvx-1"])
+        )
+        registry.ingest(record(.sessionStart), origin: local)
+
+        clock.advance(5 * 60 + 1)
+
+        XCTAssertEqual(
+            registry.resolve(marker: ClaudeSessionMarker(value: "lvx-1")),
+            .stale,
+            "without a Claude pid to probe, a dead local session must not remain joinable for four hours"
+        )
+    }
+
     /// Regression, production-shaped: the publisher is a one-shot process, so
     /// by the time the app looks at a record the `hookPID` is ALWAYS dead. If
     /// liveness probes it, every local session is `.stale` the instant it is
@@ -478,6 +496,69 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(
             registry.resolve(marker: ClaudeSessionMarker(value: "lvx-1")), .unknown,
             "the evicted session's marker must not linger in the index"
+        )
+    }
+
+    func testOneOriginsBurstCannotEvictAnotherOriginsLiveSession() {
+        let clock = TestClock(epoch)
+        let quietOrigin = ClaudeTransportOrigin.remote(channel: "ssh:quiet")
+        let burstingOrigin = ClaudeTransportOrigin.remote(channel: "ssh:burst")
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 4, sessionTTL: 10_000),
+            clock: clock,
+            markers: TestMarkers(["lvx-q", "lvx-b1", "lvx-b2", "lvx-b3", "lvx-b4"])
+        )
+        registry.ingest(record(.sessionStart, session: "quiet"), origin: quietOrigin)
+        for index in 1...4 {
+            clock.advance(1)
+            registry.ingest(
+                record(.sessionStart, session: "burst-\(index)"),
+                origin: burstingOrigin
+            )
+        }
+
+        XCTAssertNotNil(
+            registry.snapshot(sessionID: "quiet"),
+            "one origin's churn must consume its own quota before evicting another origin"
+        )
+        XCTAssertEqual(
+            registry.liveSessions().filter { $0.origin == burstingOrigin }.count,
+            3
+        )
+    }
+
+    /// A lastActivity tie plus a lexically-small sessionID must not make quota
+    /// eviction select the record that triggered it: the just-upserted session
+    /// is pinned and the oldest tied sibling goes instead.
+    func testQuotaEvictionNeverSelectsTheJustUpsertedSession() {
+        let clock = TestClock(epoch)
+        let quietOrigin = ClaudeTransportOrigin.remote(channel: "ssh:quiet")
+        let burstingOrigin = ClaudeTransportOrigin.remote(channel: "ssh:burst")
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(maxSessions: 4, sessionTTL: 10_000),
+            clock: clock,
+            markers: TestMarkers(["lvx-q", "lvx-z1", "lvx-z2", "lvx-z3", "lvx-a"])
+        )
+        registry.ingest(record(.sessionStart, session: "quiet"), origin: quietOrigin)
+        for index in 1...3 {
+            registry.ingest(
+                record(.sessionStart, session: "z-\(index)"),
+                origin: burstingOrigin
+            )
+        }
+        // Frozen clock: every bursting session shares one lastActivity, and
+        // "a-new" sorts lexically FIRST — the exact shape that made the
+        // sessionID tiebreak evict the newest data.
+        registry.ingest(record(.sessionStart, session: "a-new"), origin: burstingOrigin)
+
+        XCTAssertNotNil(
+            registry.snapshot(sessionID: "a-new"),
+            "the session that triggered quota enforcement must never be its victim"
+        )
+        XCTAssertNil(registry.snapshot(sessionID: "z-1"))
+        XCTAssertEqual(
+            registry.liveSessions().filter { $0.origin == burstingOrigin }.count,
+            3
         )
     }
 

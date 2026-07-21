@@ -333,4 +333,36 @@ final class UnixSocketPublisherTimeoutTests: XCTestCase {
         // being absent.
         XCTAssertLessThanOrEqual(UnixSocketPublisher().timeout, 0.5)
     }
+
+    func testStdinReadConsultsAbsoluteDeadlineWhilePipeStaysOpenWithoutData() {
+        var descriptors: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&descriptors), 0)
+        defer {
+            close(descriptors[0])
+            close(descriptors[1])
+        }
+        let flags = fcntl(descriptors[0], F_GETFL, 0)
+        XCTAssertGreaterThanOrEqual(flags, 0)
+        XCTAssertEqual(fcntl(descriptors[0], F_SETFL, flags | O_NONBLOCK), 0)
+
+        let calls = Mutex(0)
+        let base: UInt64 = 1_000_000_000
+        let data = ClaudeHookPublisher.readBoundedStdin(
+            descriptor: descriptors[0],
+            timeout: 0.25,
+            uptimeNanos: {
+                calls.withLock { count in
+                    count += 1
+                    return count == 1 ? base : base + 1_000_000_000
+                }
+            }
+        )
+
+        XCTAssertTrue(data.isEmpty)
+        XCTAssertGreaterThanOrEqual(
+            calls.withLock { $0 },
+            2,
+            "the reader must re-check its monotonic deadline instead of entering an unbounded read"
+        )
+    }
 }

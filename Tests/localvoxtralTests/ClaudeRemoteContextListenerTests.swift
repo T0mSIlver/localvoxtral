@@ -267,6 +267,28 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertTrue(sessions.liveSessions().isEmpty, "revocation needs no restart to take effect")
     }
 
+    func testRevocationBetweenAuthenticationAndIngestCannotSeedASession() throws {
+        listener = ClaudeRemoteContextListener(
+            registry: sessions,
+            hosts: hosts,
+            limits: ClaudeRemoteListenerLimits(port: port)
+        )
+        let hostStore = hosts!
+        let revokedHostID = hostID!
+        listener.debugConfigurePostAuthenticationHook {
+            try! hostStore.revoke(hostID: revokedHostID)
+        }
+        try listener.start()
+
+        let response = try XCTUnwrap(try send(hookRequest(token: token)))
+
+        XCTAssertEqual(response.status, 401)
+        XCTAssertTrue(
+            sessions.liveSessions().isEmpty,
+            "an in-flight request must not recreate its host after revocation swept the registry"
+        )
+    }
+
     func testARotatedTokenSwapsWhichCredentialWorks() throws {
         try startListener()
         let rotated = try hosts.rotateToken(hostID: hostID)
