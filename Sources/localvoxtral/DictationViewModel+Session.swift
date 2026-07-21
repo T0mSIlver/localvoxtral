@@ -764,7 +764,7 @@ extension DictationViewModel {
                     // characters, and letting them reserve some would starve the
                     // clipboard of budget to render nothing with.
                     let screenRenderDemand: Int = {
-                        guard case let .render(excerpt) = capturedScreenDecision else { return 0 }
+                        guard case let .render(excerpt, _, _) = capturedScreenDecision else { return 0 }
                         return excerpt.count
                     }()
 

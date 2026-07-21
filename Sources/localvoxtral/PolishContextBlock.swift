@@ -118,7 +118,7 @@ extension TerminalScreenContextDecision {
         // has already contributed its terms through the matcher and abstains
         // from the prompt; `drop` contributes nothing at all. This guard is what
         // makes an unjoined Ghostty pane's scrollback unrenderable.
-        guard case let .render(full) = self, !excerpt.isEmpty, renderBudget > 0 else { return nil }
+        guard case let .render(full, _, _) = self, !excerpt.isEmpty, renderBudget > 0 else { return nil }
         // Fence-escaping is the only step that can GROW the text, so it takes
         // the cap too — otherwise a screen full of `---` dividers would spend
         // more prompt space than the budget granted it.
@@ -138,8 +138,8 @@ extension TerminalScreenContextDecision {
     /// screen for both `render` and `vocabularyOnly`, nil for `drop`.
     var vocabularyGroundingText: String? {
         switch self {
-        case let .render(excerpt): return excerpt
-        case let .vocabularyOnly(startText): return startText
+        case let .render(_, startText, _): return startText
+        case let .vocabularyOnly(startText, _): return startText
         case .drop: return nil
         }
     }
@@ -148,8 +148,12 @@ extension TerminalScreenContextDecision {
     /// character counts and a reason slug — never screen content.
     var provenanceSummary: String {
         switch self {
-        case let .render(excerpt): return "screen:\(excerpt.count)ch"
-        case let .vocabularyOnly(startText): return "screen-vocab-only:\(startText.count)ch"
+        case let .render(excerpt, _, elidedChurnLines):
+            return elidedChurnLines == 0
+                ? "screen:\(excerpt.count)ch"
+                : "screen:\(excerpt.count)ch:elided-churn:\(elidedChurnLines)"
+        case let .vocabularyOnly(startText, cause):
+            return "screen-vocab-only:\(startText.count)ch:\(cause.summarySlug)"
         case let .drop(reason): return "screen-dropped:\(reason.rawValue)"
         }
     }

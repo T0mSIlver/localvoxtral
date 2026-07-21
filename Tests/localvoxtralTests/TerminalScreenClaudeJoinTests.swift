@@ -600,7 +600,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
             isAccessibilityTrusted: true
         )
-        XCTAssertEqual(decision, .render(excerpt: "swift build"))
+        XCTAssertEqual(decision, .render(excerpt: "swift build", startText: "swift build", elidedChurnLines: 0))
     }
 
     // "Unchanged" means unchanged AFTER the deterministic whitespace
@@ -623,7 +623,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             endpointURL: URL(string: "http://127.0.0.1:8472/v1/chat/completions")!,
             isAccessibilityTrusted: true
         )
-        XCTAssertEqual(decision, .render(excerpt: "swift build"))
+        XCTAssertEqual(decision, .render(excerpt: "swift build", startText: "swift build", elidedChurnLines: 0))
     }
 
     // The stop-time confirmation read must describe the pane captured at
@@ -643,8 +643,10 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             isAccessibilityTrusted: true
         )
         XCTAssertEqual(
-            decision, .vocabularyOnly(startText: "swift build"),
+            decision, .vocabularyOnly(startText: "swift build", cause: .stopReadFailed),
             "identical text from another window must degrade to matching-only, never render"
+            + " — the mismatch is a failed confirmation of the START window"
+            + " (its own info log line marks this sub-case)"
         )
     }
 

@@ -228,8 +228,16 @@ enum TerminalScreenAXReader {
     /// head is capped. Returns nil for text that is empty or whitespace-only —
     /// a freshly cleared terminal is not context.
     static func sanitizedScreenText(_ raw: String) -> String? {
+        // Chrome stripping needs trailing-trimmed lines to match, and can
+        // leave a blank run where the frame stood — hence compaction on both
+        // sides. Both passes are deterministic, so identical screens still
+        // sanitize identically (the reconcile comparison depends on that).
         let sanitized = compactedGridWhitespace(
-            PolishContextClipboardReader.sanitizeControlCharacters(raw)
+            strippedIdleInputChrome(
+                compactedGridWhitespace(
+                    PolishContextClipboardReader.sanitizeControlCharacters(raw)
+                )
+            )
         )
         guard !sanitized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
@@ -237,6 +245,47 @@ enum TerminalScreenAXReader {
         return sanitized.count > screenCharacterCap
             ? String(sanitized.prefix(screenCharacterCap))
             : sanitized
+    }
+
+    /// Claude Code's idle input frame: a box-drawing separator row, a bare `❯`
+    /// prompt, a second separator, and optionally the shortcut-hint row under
+    /// it (`⏵⏵ auto mode on …`). With the input EMPTY the frame is pure
+    /// chrome — no term to ground, the hint row is the pane's one perpetually
+    /// animating line, and rendered into a prompt it reads as stray dividers
+    /// (field report 2026-07-21). A frame with typed text (`❯ fix the bug`)
+    /// is content and is kept. Lone separator rows are also kept: Claude Code
+    /// uses the same rule between conversation turns, and only the exact
+    /// empty-input triple is chrome. The match is STRUCTURAL, not semantic:
+    /// content that reproduces the exact triple (a heredoc or pasted mock of
+    /// this very UI) is stripped too — accepted, it is indistinguishable by
+    /// construction. The hint row is matched by its `\u{23F5}\u{23F5}` prefix
+    /// because its text varies with the mode cycle.
+    static func strippedIdleInputChrome(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var kept: [Substring] = []
+        var index = 0
+        while index < lines.count {
+            if index + 2 < lines.count,
+               isInputFrameSeparator(lines[index]),
+               lines[index + 1] == "❯",
+               isInputFrameSeparator(lines[index + 2])
+            {
+                index += 3
+                if index < lines.count,
+                   lines[index].drop(while: { $0 == " " }).hasPrefix("⏵⏵")
+                {
+                    index += 1
+                }
+                continue
+            }
+            kept.append(lines[index])
+            index += 1
+        }
+        return kept.joined(separator: "\n")
+    }
+
+    private static func isInputFrameSeparator(_ line: Substring) -> Bool {
+        line.count >= 10 && line.allSatisfy { $0 == "─" }
     }
 
     /// The AX grid pads rows toward the pane width and reports every blank

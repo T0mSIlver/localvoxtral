@@ -278,9 +278,25 @@ struct LLMPromptTemplates: Equatable, Sendable {
         inputText: String,
         replacementDictionary: String
     ) -> String {
-        template
-            .replacingOccurrences(of: "{{input_text}}", with: inputText)
+        var rendered = template
+        if replacementDictionary.isEmpty {
+            // An empty dictionary must not leave its template line behind as
+            // a hole of blank lines between the context blocks and `Working
+            // text:` (field report 2026-07-21). Drop the placeholder together
+            // with one following blank line when present, else with its own
+            // line; only a mid-line placeholder falls through to the bare
+            // replacement below.
+            rendered = rendered
+                .replacingOccurrences(of: "{{replacement_dictionary}}\n\n", with: "")
+                .replacingOccurrences(of: "{{replacement_dictionary}}\n", with: "")
+        }
+        // Dictionary before transcript: `inputText` is DICTATED CONTENT and may
+        // legitimately contain a placeholder literal (the user talking about
+        // this app). Substituting it last means nothing ever re-scans inserted
+        // transcript text; the dictionary is app-generated and placeholder-free.
+        return rendered
             .replacingOccurrences(of: "{{replacement_dictionary}}", with: replacementDictionary)
+            .replacingOccurrences(of: "{{input_text}}", with: inputText)
     }
 
     /// Index of the first placeholder in `userContent`. Content before this

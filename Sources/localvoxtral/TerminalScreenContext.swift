@@ -177,7 +177,14 @@ enum TerminalScreenContextDecision: Equatable, Sendable {
     /// compacted form is what both captures, the comparison, and the excerpt
     /// all see. Safe to put the excerpt in the prompt AND use it for
     /// vocabulary grounding.
-    case render(excerpt: String)
+    /// `elidedChurnLines` counts rows removed from the excerpt because they
+    /// churned between the two reads (see `maxElidableChurnLines`); every
+    /// rendered line was identical at start and stop.
+    /// `startText` is the full start-of-speech screen, kept beside the
+    /// (possibly churn-elided) excerpt because the vocabulary matcher
+    /// grounds against what the user COULD SEE while speaking — eliding a
+    /// row from the excerpt must not also hide it from the matcher.
+    case render(excerpt: String, startText: String, elidedChurnLines: Int)
 
     /// The screen changed under us (agent output streamed in, a command
     /// finished, the user scrolled). The START text is still a faithful record
@@ -186,7 +193,41 @@ enum TerminalScreenContextDecision: Equatable, Sendable {
     /// as a raw excerpt would tell the model "this is on screen" about text
     /// that no longer is — so the excerpt is withheld and only the matcher sees
     /// the text.
-    case vocabularyOnly(startText: String)
+    ///
+    /// `cause` names WHICH leg of the truth table degraded the capture — three
+    /// unrelated conditions land here, and a field log that cannot tell them
+    /// apart cannot be debugged (2026-07-21: an idle-pane dictation reconciled
+    /// to vocab-only and the log could not say why). Everything in it is
+    /// count-only, never content.
+    case vocabularyOnly(startText: String, cause: VocabularyOnlyCause)
+
+    enum VocabularyOnlyCause: Equatable, Sendable {
+        /// The gate still held and the target was still ours, but the
+        /// stop-time re-read itself failed.
+        case stopReadFailed
+        /// The stop-time re-read succeeded and differs from the start capture.
+        /// The line statistics separate "one UI line churned" (a caret, a
+        /// spinner row) from "the whole pane repainted" without ever logging
+        /// what the lines say. `firstDifferingLine` is zero-based.
+        case screenChanged(stopLength: Int, differingLines: Int, firstDifferingLine: Int?)
+        /// The text matched, but no configured authorizer positively joined
+        /// this capture's window to a live Claude session (the authorizer logs
+        /// its own refusal reason).
+        case rawUnauthorized
+
+        /// Count-only slug for `provenanceSummary`.
+        var summarySlug: String {
+            switch self {
+            case .stopReadFailed:
+                return "stop-read-failed"
+            case let .screenChanged(stopLength, differingLines, firstDifferingLine):
+                let first = firstDifferingLine.map(String.init) ?? "none"
+                return "screen-changed(stop:\(stopLength)ch lines:\(differingLines) first:\(first))"
+            case .rawUnauthorized:
+                return "raw-unauthorized"
+            }
+        }
+    }
 
     /// No context at all.
     case drop(reason: DropReason)
@@ -270,9 +311,15 @@ enum TerminalScreenContext {
     /// | ok | policyRejected | any | drop(policyRejected) |
     /// | ok | targetChanged | any | drop(targetChanged) |
     /// | ok | readFailed | any | vocabularyOnly |
-    /// | ok | read(t), t != start | any | vocabularyOnly |
+    /// | ok | read(t), t != start, beyond churn | any | vocabularyOnly |
+    /// | ok | read(t), elidable churn | false | vocabularyOnly (churn stats) |
+    /// | ok | read(t), elidable churn | true | render (churn rows elided) |
     /// | ok | read(t), t == start | false | vocabularyOnly |
     /// | ok | read(t), t == start | true | render |
+    ///
+    /// "Elidable churn" = same line count and at most `maxElidableChurnLines`
+    /// in-place differing rows; the excerpt then contains only rows both
+    /// reads agree on.
     ///
     /// The two drops come first and are unconditional: consent withdrawn, or a
     /// target we can no longer vouch for, destroys the capture regardless of
@@ -298,12 +345,82 @@ enum TerminalScreenContext {
         case .targetChanged:
             return .drop(reason: .targetChanged)
         case .readFailed:
-            return .vocabularyOnly(startText: start.text)
+            return .vocabularyOnly(startText: start.text, cause: .stopReadFailed)
         case let .read(stopText):
-            guard stopText == start.text, rawAuthorized else {
-                return .vocabularyOnly(startText: start.text)
+            guard stopText == start.text else {
+                let startLines = start.text.split(separator: "\n", omittingEmptySubsequences: false)
+                let stopLines = stopText.split(separator: "\n", omittingEmptySubsequences: false)
+                let statistics = screenChangeStatistics(start: start.text, stop: stopText)
+                let changedCause = TerminalScreenContextDecision.VocabularyOnlyCause.screenChanged(
+                    stopLength: stopText.count,
+                    differingLines: statistics.differingLines,
+                    firstDifferingLine: statistics.firstDifferingLine
+                )
+                // In-place churn of a row or two is an idle terminal's UI
+                // (a caret toggling, a hint row shimmering — field report
+                // 2026-07-21: one row, every run), not a changed screen.
+                // Streaming output APPENDS rows, so a line-count change is
+                // never elidable and the mid-response protection stands.
+                guard startLines.count == stopLines.count,
+                      statistics.differingLines <= maxElidableChurnLines
+                else {
+                    return .vocabularyOnly(startText: start.text, cause: changedCause)
+                }
+                // Unauthorized still reports the CHURN statistics: the
+                // authorizer logs its own refusal line, so the cause keeps
+                // the diagnostic the log cannot otherwise carry.
+                guard rawAuthorized else {
+                    return .vocabularyOnly(startText: start.text, cause: changedCause)
+                }
+                // Keep only rows both reads agree on: every rendered line was
+                // provably on screen at start AND stop, so the excerpt's
+                // "this is on screen" claim holds line by line.
+                let excerpt = zip(startLines, stopLines)
+                    .filter { $0.0 == $0.1 }
+                    .map { String($0.0) }
+                    .joined(separator: "\n")
+                guard !excerpt.isEmpty else {
+                    return .vocabularyOnly(startText: start.text, cause: changedCause)
+                }
+                return .render(
+                    excerpt: excerpt,
+                    startText: start.text,
+                    elidedChurnLines: statistics.differingLines
+                )
             }
-            return .render(excerpt: start.text)
+            guard rawAuthorized else {
+                return .vocabularyOnly(startText: start.text, cause: .rawUnauthorized)
+            }
+            return .render(excerpt: start.text, startText: start.text, elidedChurnLines: 0)
         }
+    }
+
+    /// How many in-place differing rows may be elided from the excerpt rather
+    /// than withholding it. Two covers a caret row plus one hint/meter row; a
+    /// genuinely changing pane (streaming output, a scroll) differs by more
+    /// rows or by line count and still degrades to vocabulary-only.
+    static let maxElidableChurnLines = 2
+
+    /// Count-only line comparison for the `screenChanged` diagnostic: how many
+    /// lines differ between the two (already-compacted) reads, and where the
+    /// first difference sits. Lines one side has beyond the other's end all
+    /// count as differing. Never returns content.
+    static func screenChangeStatistics(
+        start: String,
+        stop: String
+    ) -> (differingLines: Int, firstDifferingLine: Int?) {
+        let startLines = start.split(separator: "\n", omittingEmptySubsequences: false)
+        let stopLines = stop.split(separator: "\n", omittingEmptySubsequences: false)
+        let shared = min(startLines.count, stopLines.count)
+        var differing = abs(startLines.count - stopLines.count)
+        var first: Int?
+        for index in 0..<shared where startLines[index] != stopLines[index] {
+            differing += 1
+            if first == nil { first = index }
+        }
+        if first == nil, startLines.count != stopLines.count {
+            first = shared
+        }
+        return (differing, first)
     }
 }
