@@ -74,6 +74,33 @@ jobs:
 
           echo "present=true" >> "$GITHUB_OUTPUT"
 
+      - name: Idle guard (cheap, pre-build)
+        # The recorder's own hands-free idle guard (scripts/record-demo.sh)
+        # runs AFTER packaging, so a refused takeover would still burn a ~7 min
+        # helper build on the personal-Mac runner. Duplicate the cheap check
+        # here to fail in seconds instead; the script's guard remains the
+        # authoritative one (it re-checks immediately before the takeover).
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          IDLE="$(ioreg -c IOHIDSystem 2>/dev/null \
+            | awk '/HIDIdleTime/ {print int($NF/1000000000); exit}')"
+          REQUIRED="${DEMO_IDLE_REQUIRED_SECONDS:-120}"
+          if [[ -z "$IDLE" ]]; then
+            echo "Cannot read HID idle time — failing before the build (the script would refuse anyway)." >&2
+            exit 1
+          fi
+          if (( IDLE < REQUIRED )); then
+            echo "Machine in active use (idle ${IDLE}s < ${REQUIRED}s) — refusing before the build. Rerun when the Mac is idle." >&2
+            exit 1
+          fi
+          # Same economics for the claude scene's other refusal: a pre-running
+          # Ghostty swallows the launch args (script aborts post-build).
+          if [[ "${{ inputs.terminal_agent }}" == "claude" ]] && pgrep -xiq ghostty; then
+            echo "Ghostty is already running — the claude scene must launch it itself. Quit Ghostty and rerun." >&2
+            exit 1
+          fi
+          echo "Idle guard (pre-build): machine idle ${IDLE}s (>= ${REQUIRED}s)."
+
       - name: Package app bundle
         if: steps.guard.outputs.present == 'true'
         env:
