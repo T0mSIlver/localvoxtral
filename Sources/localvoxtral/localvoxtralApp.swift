@@ -175,6 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startClaudeContextBroker()
         startClaudeRemoteListener()
         reconcileBundledConfigDefaults()
+        viewModel.preflightConfiguredLocalNetworkEndpoints()
         guard !settingsStore.onboardingCompleted else { return }
         presentOnboarding()
     }

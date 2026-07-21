@@ -564,6 +564,8 @@ final class DictationViewModel {
     private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored
     private let managesRuntimeServices: Bool
+    @ObservationIgnored
+    private let localNetworkPermissionPreflight: any LocalNetworkPermissionPreflighting
     // Tracks physical key state so repeat key-down events do not retrigger actions.
     @ObservationIgnored
     private var isPushToTalkShortcutHeld = false
@@ -587,6 +589,7 @@ final class DictationViewModel {
         settings: SettingsStore,
         backendManager: (any ManagedBackendManaging)? = nil,
         overlayBufferCoordinator: OverlayBufferSessionCoordinating? = nil,
+        localNetworkPermissionPreflight: (any LocalNetworkPermissionPreflighting)? = nil,
         startRuntimeServices: Bool = true
     ) {
         self.settings = settings
@@ -598,6 +601,8 @@ final class DictationViewModel {
                 speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
+        self.localNetworkPermissionPreflight =
+            localNetworkPermissionPreflight ?? LocalNetworkPermissionPreflight()
         if let overlayBufferCoordinator {
             self.overlayBufferCoordinator = overlayBufferCoordinator
         } else {
@@ -1070,6 +1075,10 @@ final class DictationViewModel {
         let previousMode = settings.dictationBackendMode
         settings.dictationBackendMode = mode
 
+        if mode == .externalURL {
+            preflightDictationEndpoint(reason: "dictation backend switched to external")
+        }
+
         if previousMode == .externalURL, mode == .managedLocal {
             startManagedBackendWarmup(dictation: true, polishing: false)
             return
@@ -1095,6 +1104,10 @@ final class DictationViewModel {
         let previousMode = settings.polishingBackendMode
         settings.polishingBackendMode = mode
 
+        if mode == .externalURL {
+            preflightPolishingEndpoint(reason: "polishing backend switched to external")
+        }
+
         if previousMode == .externalURL, mode == .managedLocal {
             if isManagedPolishingWarmupWanted {
                 startPolishingWarmup()
@@ -1119,6 +1132,43 @@ final class DictationViewModel {
                 await backendManager.stopPolishing()
             }
         }
+    }
+
+    func applyRealtimeEndpointChange(_ endpoint: String) {
+        settings.realtimeAPIEndpointURL = endpoint
+        guard settings.dictationBackendMode == .externalURL else { return }
+        preflightDictationEndpoint(reason: "dictation endpoint updated")
+    }
+
+    func applyLLMPolishingEndpointChange(_ endpoint: String) {
+        settings.llmPolishingEndpointURL = endpoint
+        guard settings.polishingBackendMode == .externalURL else { return }
+        preflightPolishingEndpoint(reason: "polishing endpoint updated")
+    }
+
+    func preflightConfiguredLocalNetworkEndpoints() {
+        if settings.dictationBackendMode == .externalURL {
+            preflightDictationEndpoint(reason: "configured external dictation endpoint")
+        }
+        if settings.polishingBackendMode == .externalURL {
+            preflightPolishingEndpoint(reason: "configured external polishing endpoint")
+        }
+    }
+
+    private func preflightDictationEndpoint(reason: String) {
+        guard let endpoint = settings.resolvedWebSocketURL(for: settings.realtimeProvider),
+              LocalNetworkEndpointPolicy.preflightTarget(for: endpoint) != nil
+        else { return }
+        localNetworkPermissionPreflight.preflight(endpoint: endpoint, reason: reason)
+    }
+
+    private func preflightPolishingEndpoint(reason: String) {
+        let configuredEndpoint = settings.llmPolishingEndpointURL.trimmed
+        guard settings.polishingBackendMode == .externalURL,
+              let endpoint = URL(string: configuredEndpoint),
+              LocalNetworkEndpointPolicy.preflightTarget(for: endpoint) != nil
+        else { return }
+        localNetworkPermissionPreflight.preflight(endpoint: endpoint, reason: reason)
     }
 
     /// Managed speechd's launch arguments carry this setting; a running engine
