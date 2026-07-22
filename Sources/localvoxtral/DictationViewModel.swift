@@ -1821,14 +1821,17 @@ final class DictationViewModel {
         )
     }
 
-    /// Samples the Ghostty screen for polish grounding, at the same moment and
+    /// Samples the focused terminal's screen for polish grounding (Ghostty
+    /// over AX, iTerm2/Terminal.app over AppleScript contents), at the same
+    /// moment and
     /// for the same reason as the verdict above: this is the last point where
     /// the app the user is dictating INTO is reliably frontmost. The target is
     /// resolved independently of the overlay (see
     /// `TerminalScreenContextSource.frontmostTarget`).
     ///
-    /// Every privacy gate is evaluated inside the source before any AX call, so
-    /// an opted-out user, a remote polishing endpoint, or a non-Ghostty app
+    /// Every privacy gate is evaluated inside the source before any AX or
+    /// AppleScript call, so
+    /// an opted-out user, a remote polishing endpoint, or an unlisted app
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
     func captureTerminalScreenContextForSession() async {

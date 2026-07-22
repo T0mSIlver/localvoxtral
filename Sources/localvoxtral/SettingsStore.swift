@@ -454,17 +454,19 @@ final class SettingsStore {
         }
     }
 
-    /// When true, the visible screen of a Claude Code Ghostty terminal is read
-    /// at dictation start and used to ground near-miss STT of technical terms
+    /// When true, the visible screen of a Claude Code terminal is read at
+    /// dictation start and used to ground near-miss STT of technical terms
     /// (file names, commands, identifiers, error names) the user could actually
-    /// see while speaking. Opt-in (default false), Ghostty only
-    /// (`TerminalScreenAllowlist` — NOT the broad terminal insertion allowlist,
+    /// see while speaking. Opt-in (default false), allowlisted terminals only
+    /// (`TerminalScreenAllowlist`: Ghostty over its verified AX grid;
+    /// iTerm2/Terminal.app over the AppleScript focused session/tab contents —
+    /// NOT the broad terminal insertion allowlist,
     /// which spans editors like VS Code / Cursor), and applied only when the
     /// polishing endpoint is permitted (`PolishContextClipboardReader
     /// .isPermittedContextEndpoint`: loopback, or any endpoint under the
     /// explicit `polishContextTrustedEndpointEnabled` opt-in) — an endpoint the
     /// user has not consented to must never receive screen content. When off,
-    /// the endpoint is not permitted, or a non-Ghostty app is focused, the
+    /// the endpoint is not permitted, or an unlisted app is focused, the
     /// screen is never read at all (`TerminalScreenContext.shouldAttemptRead`).
     ///
     /// Scope, in two tiers — and the help text must state the second one,

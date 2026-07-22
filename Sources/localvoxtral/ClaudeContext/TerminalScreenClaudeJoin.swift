@@ -122,12 +122,14 @@ struct ClaudeSessionJoinResolver {
     ///     AX tree — the same reason every other live read in this feature is
     ///     a seam.
     ///   - focusedTerminalTTY: reads the focused pane's controlling TTY for a
-    ///     bundle id (Ghostty ≥ 1.4 over AppleScript). Unlike the AX seam this
+    ///     bundle id over AppleScript (Ghostty ≥ 1.4's focused terminal,
+    ///     iTerm2's current session, Terminal.app's selected tab). Unlike the
+    ///     AX seam this
     ///     DEFAULTS TO ABSTAIN, not to the live reader: an Apple event is not
     ///     an AX read — the first one triggers the Automation consent prompt,
     ///     and a defaulted live reader would send real events (and hang the
     ///     suite on that prompt) from any test that forgets to inject. The app
-    ///     wires `GhosttyFocusedTerminalTTYReader` explicitly.
+    ///     wires `AppleScriptTerminalTTYReader` explicitly.
     ///   - focusedWindowID: the tty join's window identity. A marker join
     ///     learns its window from the marker read itself, but a tty join never
     ///     consults the title — so the focused window is identified by this
@@ -181,8 +183,10 @@ struct ClaudeSessionJoinResolver {
     func resolve(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
         // The allowlist is re-checked here even though the capture gate already
         // enforced it. This object is reachable independently of that gate, and
-        // "only a verified single-AXTextArea grid" is a precondition of reading
-        // this app at all — not something to inherit on trust from a caller.
+        // "only a terminal with a verified focused-pane surface" (Ghostty's
+        // single-AXTextArea grid, iTerm2's current session, Terminal.app's
+        // selected tab) is a precondition of reading this app at all — not
+        // something to inherit on trust from a caller.
         guard TerminalScreenAllowlist.isSupported(target.bundleID) else { return nil }
 
         if let tty = await focusedTerminalTTY(target.bundleID) {

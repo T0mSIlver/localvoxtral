@@ -14,8 +14,10 @@ import Foundation
 ///   question ("does this app reject AX value writes?") and deliberately spans
 ///   every terminal plus user-supplied bundles, including Electron apps whose
 ///   AX tree exposes the user's editor buffer. Reusing it here would read
-///   source files out of VS Code / Cursor. This reader keeps its own
-///   single-entry allowlist — see `TerminalScreenAllowlist`.
+///   source files out of VS Code / Cursor. This reader reads only the
+///   AX-verified subset of `TerminalScreenAllowlist`
+///   (`axCaptureBundleIDs` — Ghostty); iTerm2/Terminal.app are captured over
+///   AppleScript instead (`TerminalScreenAppleScriptReader`), never AX.
 /// - **PID-pinned.** The element is reached from `AXUIElementCreateApplication`
 ///   for a caller-supplied PID, never from system-wide focus, and the element's
 ///   own PID is re-read and compared before its value is trusted. A window that

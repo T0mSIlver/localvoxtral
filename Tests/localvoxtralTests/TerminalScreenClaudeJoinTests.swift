@@ -723,7 +723,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
     // MARK: - TTY reply validation
 
     func testFocusedTTYAppleScriptExecutesOffTheMainThread() async {
-        let reader = GhosttyFocusedTerminalTTYReader {
+        let reader = AppleScriptTerminalTTYReader { _ in
             XCTAssertFalse(
                 Thread.isMainThread,
                 "the blocking AppleScript execute must not run on the main thread"
@@ -740,25 +740,25 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
 
     func testValidatedTTYAcceptsOnlyPlausibleDevicePaths() {
         XCTAssertEqual(
-            GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys000"), "/dev/ttys000"
+            AppleScriptTerminalTTYReader.validatedTTY("/dev/ttys000"), "/dev/ttys000"
         )
-        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY(nil))
-        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY(""))
+        XCTAssertNil(AppleScriptTerminalTTYReader.validatedTTY(nil))
+        XCTAssertNil(AppleScriptTerminalTTYReader.validatedTTY(""))
         XCTAssertNil(
-            GhosttyFocusedTerminalTTYReader.validatedTTY("ttys000"),
+            AppleScriptTerminalTTYReader.validatedTTY("ttys000"),
             "a bare name is not a device path"
         )
         XCTAssertNil(
-            GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys0 00"),
+            AppleScriptTerminalTTYReader.validatedTTY("/dev/ttys0 00"),
             "whitespace means this is a title, not a device"
         )
         XCTAssertNil(
-            GhosttyFocusedTerminalTTYReader.validatedTTY(
+            AppleScriptTerminalTTYReader.validatedTTY(
                 "/dev/tty" + String(repeating: "s", count: 64)
             ),
             "a reply longer than any real pty path is not a device"
         )
-        XCTAssertNil(GhosttyFocusedTerminalTTYReader.validatedTTY("/dev/ttys00é"))
+        XCTAssertNil(AppleScriptTerminalTTYReader.validatedTTY("/dev/ttys00é"))
     }
 
     // MARK: - Abstentions
