@@ -49,9 +49,31 @@ enum TerminalScreenContextSource {
         return TerminalScreenTarget(pid: pid, bundleID: bundleID)
     }
 
+    /// One screen read, routed by capture route: Ghostty through the verified
+    /// AX grid read, iTerm2/Terminal.app through the AppleScript focused
+    /// session/tab contents read. The routes are EXCLUSIVE by construction —
+    /// an AppleScript-captured terminal must never be read over AX (its tree
+    /// is unverified, and iTerm2's would mix split panes into one read) — and
+    /// a bundle on neither list reads nothing, as a second line behind the
+    /// allowlist gate. Both routes return the same sanitized/capped form and
+    /// window identity, so everything downstream (matching, start/stop
+    /// comparison, budgeting, raw-attachment authorization) is
+    /// route-agnostic.
+    static func readVisibleScreen(
+        target: TerminalScreenTarget
+    ) -> TerminalScreenAXReader.VisibleScreenRead? {
+        if TerminalScreenAllowlist.isAppleScriptCaptureSupported(target.bundleID) {
+            return TerminalScreenAppleScriptReader.readVisibleScreen(target: target)
+        }
+        if TerminalScreenAllowlist.isAXCaptureSupported(target.bundleID) {
+            return TerminalScreenAXReader.readVisibleScreen(applicationPID: target.pid)
+        }
+        return nil
+    }
+
     /// Start-of-dictation capture. Resolves the frontmost non-self app, clears
     /// the full gate, and only then reads the screen. Returns nil (having made
-    /// NO AX call) whenever the gate rejects.
+    /// NO AX or AppleScript call) whenever the gate rejects.
     ///
     /// Call before the overlay changes focus — see `frontmostTarget()`.
     static func captureAtStart(
@@ -70,7 +92,7 @@ enum TerminalScreenContextSource {
         ) else {
             return nil
         }
-        guard let read = TerminalScreenAXReader.readVisibleScreen(applicationPID: target.pid) else {
+        guard let read = readVisibleScreen(target: target) else {
             return nil
         }
         // Count-only: screen text is user content and never reaches a log.
@@ -175,9 +197,7 @@ enum TerminalScreenContextSource {
             return .policyRejected
         }
 
-        guard let read = TerminalScreenAXReader.readVisibleScreen(
-            applicationPID: start.target.pid
-        ) else {
+        guard let read = readVisibleScreen(target: stopTarget) else {
             return .readFailed
         }
         // The re-read must describe the WINDOW captured at start, not merely

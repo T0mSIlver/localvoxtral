@@ -377,6 +377,15 @@ final class DictationViewModel {
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
 
+    /// The JOINED herdr pane's visible text at dictation start (`pane.read`,
+    /// sanitized + capped like an AX read). Non-nil only when the session's
+    /// join is a `.herdrPane` join AND the screen-context consent gate cleared
+    /// at start. At commit it replaces the composite-AX screen decision (see
+    /// `HerdrPaneScreenContext.reconcileAtStop`); cleared on every session
+    /// exit, exactly like the screen capture and the join above.
+    @ObservationIgnored
+    var herdrPaneStartCapture: HerdrPaneScreenCapture?
+
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
 
@@ -1812,20 +1821,24 @@ final class DictationViewModel {
         )
     }
 
-    /// Samples the Ghostty screen for polish grounding, at the same moment and
+    /// Samples the focused terminal's screen for polish grounding (Ghostty
+    /// over AX, iTerm2/Terminal.app over AppleScript contents), at the same
+    /// moment and
     /// for the same reason as the verdict above: this is the last point where
     /// the app the user is dictating INTO is reliably frontmost. The target is
     /// resolved independently of the overlay (see
     /// `TerminalScreenContextSource.frontmostTarget`).
     ///
-    /// Every privacy gate is evaluated inside the source before any AX call, so
-    /// an opted-out user, a remote polishing endpoint, or a non-Ghostty app
+    /// Every privacy gate is evaluated inside the source before any AX or
+    /// AppleScript call, so
+    /// an opted-out user, a remote polishing endpoint, or an unlisted app
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
     func captureTerminalScreenContextForSession() async {
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
+            herdrPaneStartCapture = nil
             return
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -1835,6 +1848,19 @@ final class DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
+        // Only a herdr pane join produces a sample here (the function refuses
+        // everything else before any socket request), and it reads exactly the
+        // joined pane. Fetched at start for the same reason the AX screen is:
+        // this text is evidence of what the user could see while choosing
+        // their words, and only a start sample can be that.
+        herdrPaneStartCapture = await HerdrPaneScreenContext.captureAtStart(
+            join: claudeSessionJoin,
+            resolver: claudeSessionJoinResolver,
+            settingEnabled: settings.terminalScreenContextEnabled,
+            endpointURL: endpointURL,
+            isAccessibilityTrusted: textInsertion.isAccessibilityTrusted,
+            trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
+        )
     }
 
     /// Resolves this dictation's Claude session join, ONCE, here at start.
@@ -1885,6 +1911,8 @@ final class DictationViewModel {
         // dictation is precisely how the wrong repo's context would get
         // attached to an unrelated sentence.
         claudeSessionJoin = nil
+        // And the pane text with the join: it is that session's screen.
+        herdrPaneStartCapture = nil
     }
 
     /// Reconciles the start capture against a stop-time re-read of the SAME
@@ -1912,6 +1940,15 @@ final class DictationViewModel {
         let join = claudeSessionJoin
         claudeSessionJoin = nil
         return join
+    }
+
+    /// Takes this dictation's herdr pane start sample and clears it. Consumed
+    /// alongside the join at commit; a sample must never survive into another
+    /// session's reconciliation.
+    func consumeHerdrPaneStartCapture() -> HerdrPaneScreenCapture? {
+        let capture = herdrPaneStartCapture
+        herdrPaneStartCapture = nil
+        return capture
     }
 
     /// The repository snapshot for `join`, or nil when any gate rejects.

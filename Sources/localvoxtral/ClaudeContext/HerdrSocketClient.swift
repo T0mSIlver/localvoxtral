@@ -21,6 +21,10 @@ struct HerdrPaneForegroundInfo: Sendable, Equatable {
 protocol HerdrPaneQuerying: Sendable {
     func focusedPane(socketPath: String) async -> HerdrFocusedPane?
     func paneForegroundInfo(socketPath: String, paneID: String) async -> HerdrPaneForegroundInfo?
+    /// The visible text of exactly `paneID` (`pane.read`, ANSI-stripped by the
+    /// server). Raw wire text: the caller owns sanitization, bounding, and
+    /// every consent gate. nil on any refusal, failure, or invalid response.
+    func paneVisibleText(socketPath: String, paneID: String) async -> String?
 }
 
 /// Minimal read-only client for herdr's one-request-per-connection JSON API.
@@ -53,7 +57,7 @@ struct HerdrSocketClient: HerdrPaneQuerying {
     func focusedPane(socketPath: String) async -> HerdrFocusedPane? {
         await Task.detached(priority: .userInitiated) { [self] in
             let request = Request(
-                id: Self.requestID(), method: "pane.current", params: [:]
+                id: Self.requestID(), method: "pane.current", params: [String: String]()
             )
             guard let line = query(socketPath: socketPath, request: request),
                   let envelope = try? JSONDecoder().decode(
@@ -106,7 +110,33 @@ struct HerdrSocketClient: HerdrPaneQuerying {
         }.value
     }
 
-    private func query(socketPath: String, request: Request) -> Data? {
+    func paneVisibleText(socketPath: String, paneID: String) async -> String? {
+        await Task.detached(priority: .userInitiated) { [self] in
+            let request = Request(
+                id: Self.requestID(),
+                method: "pane.read",
+                params: PaneReadParams(paneID: paneID)
+            )
+            guard let line = query(socketPath: socketPath, request: request),
+                  let envelope = try? JSONDecoder().decode(
+                    Envelope<PaneReadResult>.self, from: line
+                  ),
+                  envelope.id == request.id,
+                  let result = envelope.result,
+                  result.type == "pane_read",
+                  // The response must be about the pane that was asked for. A
+                  // server answering about any other pane is invalid, and its
+                  // text must never be attributed to the joined pane.
+                  result.read.paneID == paneID
+            else {
+                Log.claudeContext.info("Herdr pane read abstained: invalid response")
+                return nil
+            }
+            return result.read.text
+        }.value
+    }
+
+    private func query(socketPath: String, request: some Encodable) -> Data? {
         let deadline = makeDeadline()
         guard socketPath.hasPrefix("/"),
               let metadata = socketMetadata(socketPath),
@@ -287,7 +317,7 @@ struct HerdrSocketClient: HerdrPaneQuerying {
         "lvx-" + UUID().uuidString.lowercased()
     }
 
-    private static func encodedLine(_ request: Request) throws -> Data {
+    private static func encodedLine(_ request: some Encodable) throws -> Data {
         var data = try JSONEncoder().encode(request)
         data.append(0x0A)
         return data
@@ -295,12 +325,33 @@ struct HerdrSocketClient: HerdrPaneQuerying {
 
     private static let maxResponseLineBytes = 1024 * 1024
 
-    private struct Request: Encodable {
+    /// Generic over the params payload: most methods take flat string maps,
+    /// but `pane.read` carries a bool (`strip_ansi`), which a `[String:
+    /// String]` would silently mis-encode as a string herdr's serde rejects.
+    private struct Request<Params: Encodable>: Encodable {
         var id: String
         var method: String
         /// Required even for methods with no arguments; herdr rejects a
         /// request that omits this key.
-        var params: [String: String]
+        var params: Params
+    }
+
+    /// `pane.read` params — herdr c234f221, `src/api/schema/panes.rs`
+    /// (`PaneReadParams`): `pane_id` and `source` are required; `format`
+    /// defaults to `text` and `strip_ansi` to `true` server-side, but both are
+    /// sent explicitly because the caller DEPENDS on ANSI-free plain text.
+    private struct PaneReadParams: Encodable {
+        var paneID: String
+        var source = "visible"
+        var format = "text"
+        var stripANSI = true
+
+        enum CodingKeys: String, CodingKey {
+            case paneID = "pane_id"
+            case source
+            case format
+            case stripANSI = "strip_ansi"
+        }
     }
 
     private struct Envelope<Result: Decodable>: Decodable {
@@ -402,6 +453,25 @@ struct HerdrSocketClient: HerdrPaneQuerying {
 
     private struct ForegroundProcess: Decodable {
         var pid: Int32
+    }
+
+    /// `pane.read` success — herdr c234f221, `src/api/schema/response.rs`
+    /// (`ResponseResult::PaneRead`, tag `pane_read`) wrapping
+    /// `PaneReadResult` from `src/api/schema/panes.rs`. Only the fields the
+    /// caller validates or consumes are decoded.
+    private struct PaneReadResult: Decodable {
+        var type: String
+        var read: Read
+
+        struct Read: Decodable {
+            var paneID: String
+            var text: String
+
+            enum CodingKeys: String, CodingKey {
+                case paneID = "pane_id"
+                case text
+            }
+        }
     }
 }
 #endif

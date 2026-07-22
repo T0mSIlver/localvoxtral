@@ -31,12 +31,13 @@ final class TerminalScreenContextTests: XCTestCase {
         XCTAssertTrue(TerminalScreenAllowlist.isSupported("com.mitchellh.ghostty"))
     }
 
-    func testNonGhosttyTerminalsAreNotSupportedForScreenReads() {
+    func testUnverifiedTerminalsAreNotSupportedForScreenReads() {
         // These are all terminal-like for INSERTION. Screen reading is a
-        // separate privacy question and must not inherit that verdict.
+        // separate privacy question and must not inherit that verdict —
+        // iTerm2 and Terminal.app graduated only after their AppleScript
+        // focused-pane contents route was verified (owner decision,
+        // 2026-07-22); the rest stay out.
         for bundleID in [
-            "com.apple.Terminal",
-            "com.googlecode.iterm2",
             "net.kovidgoyal.kitty",
             "dev.warp.Warp-Stable",
             "co.zeit.hyper",
@@ -261,7 +262,7 @@ final class TerminalScreenContextTests: XCTestCase {
         let cases: [(String, Bool, URL, String?, Bool)] = [
             ("setting off", false, loopback, TerminalScreenAllowlist.ghosttyBundleID, true),
             ("remote endpoint", true, remote, TerminalScreenAllowlist.ghosttyBundleID, true),
-            ("unsupported app", true, loopback, "com.apple.Terminal", true),
+            ("unsupported app", true, loopback, "net.kovidgoyal.kitty", true),
             ("editor", true, loopback, "com.microsoft.VSCode", true),
             ("no bundle", true, loopback, nil, true),
             ("untrusted", true, loopback, TerminalScreenAllowlist.ghosttyBundleID, false),
@@ -305,7 +306,7 @@ final class TerminalScreenContextTests: XCTestCase {
         let lan = URL(string: "http://192.168.1.183:8080/v1/chat/completions")!
         let cases: [(String, Bool, String?, Bool)] = [
             ("setting off", false, TerminalScreenAllowlist.ghosttyBundleID, true),
-            ("unsupported app", true, "com.apple.Terminal", true),
+            ("unsupported app", true, "net.kovidgoyal.kitty", true),
             ("no bundle", true, nil, true),
             ("untrusted", true, TerminalScreenAllowlist.ghosttyBundleID, false),
         ]

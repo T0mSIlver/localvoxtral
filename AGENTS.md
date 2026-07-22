@@ -414,9 +414,14 @@ Key subsystems:
     (`ClaudeSessionJoinResolver`), and every consumer — raw screen attachment,
     the session block, repo collection — shares that one answer. Three
     resolutions could each answer honestly about a different moment; that is
-    how one session's screen ends up next to another's repo. Resolution is
-    TTY-first: the focused Ghostty pane's controlling TTY (AppleScript,
-    Ghostty ≥ 1.4) matched exactly against the hook-reported session TTY,
+    how one session's screen ends up next to another's repo. Joins support
+    three terminals (`TerminalScreenAllowlist`, owner decision 2026-07-22):
+    Ghostty, iTerm2, and Terminal.app. Resolution is
+    TTY-first: the focused pane's controlling TTY, read per terminal over
+    AppleScript (`AppleScriptTerminalTTYReader` — Ghostty ≥ 1.4's focused
+    terminal, iTerm2's current session, Terminal.app's selected tab; sdef- or
+    docs-confirmed, any error abstains) matched exactly against the
+    hook-reported session TTY,
     LOCAL sessions only — the title is a fought-over channel (Claude Code's
     own conversation titles clobber the marker mid-turn), the process table is
     not. Any TTY non-answer falls through to the marker in the PID-pinned
@@ -433,9 +438,11 @@ Key subsystems:
     Ghostty's title nor describe an inner pane — the broker never emits one to
     a herdr-hosted session, even under the title-fallback opt-in. The arm runs
     only after the surface TTY positively binds to herdr (a `herdr` client
-    process on the focused Ghostty surface's TTY, `HerdrClientTTYProbe` —
+    process on the focused terminal surface's TTY, `HerdrClientTTYProbe` —
     herdr's socket has no client introspection, so the process table is the
-    only binding), and from that point the join is herdr-or-nothing: no
+    only binding; the probe needs only the surface TTY string, so the herdr
+    arm works on all three supported terminals), and from that point the join
+    is herdr-or-nothing: no
     marker fallback, because a lingering title marker could only mis-join.
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
     `HerdrSocketClient` (hand-written, read-only — herdr is AGPL, never vendor
@@ -446,9 +453,26 @@ Key subsystems:
     foreground process list (catches a suspended Claude with the user at the
     shell). Two live herdr sessions (distinct sockets) abstain — there is no
     way to tell which one the surface displays. A herdr join never authorizes
-    raw screen attachment: the AX capture is the composite herdr TUI, and
-    neighboring panes must not ride into this session's prompt (a clean
-    `pane.read` excerpt is a possible follow-up, not built).
+    raw screen attachment of the AX capture: that is the composite herdr TUI,
+    and neighboring panes must not ride into this session's prompt. Instead,
+    a herdr join's screen context is a clean `pane.read` excerpt of EXACTLY
+    the joined pane (`HerdrPaneScreenContext`), fetched at start and stop
+    behind the same consent gate and sanitize/cap pipeline as an AX read;
+    `pane.read` fires only after the herdrPane join resolved and never for
+    any other pane or mechanism. On any pane.read failure the session falls
+    back to the pre-existing behavior — composite AX text, vocabulary-only,
+    nothing attached.
+  - Screen capture is split by ROUTE (`TerminalScreenAllowlist`): raw AX grid
+    capture remains Ghostty-only (its single-`AXTextArea` grid is verified;
+    iTerm2's AX tree is ambiguous across splits, Terminal.app's unverified).
+    iTerm2/Terminal.app screen context comes ONLY from the AppleScript
+    `contents` of the focused session/tab (`TerminalScreenAppleScriptReader`
+    — visible screen, never `history`/scrollback; answered by the terminal
+    process itself, same trust class as the TTY read, per-pane clean). Both
+    routes share one downstream pipeline (sanitization, caps, start/stop
+    reconcile, vocab-always / raw-excerpt-only-after-authorized-join). A TTY
+    join in iTerm2/Terminal.app authorizes attaching that focused pane's
+    contents; a herdr join still never attaches surface text on any terminal.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

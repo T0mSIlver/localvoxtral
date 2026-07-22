@@ -43,7 +43,7 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 ## Features
 
 - **Built for coding agents** — terminals are first-class targets and polishing understands developer speech ([details](#terminals--coding-agents))
-- **Claude Code aware** — an opt-in plugin grounds polishing in your live session: your last prompt, the files Claude just touched, that repo's vocabulary — locally or over SSH ([details](#dictating-into-claude-code))
+- **Claude Code aware** — dictation joins the *exact* session under your cursor — Ghostty, iTerm2, Terminal.app, even a single [herdr](https://herdr.dev) pane — and grounds polishing in its live screen, your last prompt, the files Claude just touched, and that repo, locally or over SSH ([details](#dictating-into-claude-code))
 - **One-key dictation** — a single modifier key (Fn/Globe, Right Command, or Right Option) drives both modes, or use classic per-mode keyboard shortcuts ([details](#shortcuts))
 - **Two output modes** — Overlay Buffer (review, then commit on stop) or Live Auto-Paste (words land in the focused app while you speak)
 - **Automatic cleanup** — an exact-match replacement dictionary in both output modes, plus optional LLM polishing with editable prompts when an Overlay Buffer dictation commits
@@ -56,7 +56,7 @@ On first launch, a setup wizard walks you through the microphone and Accessibili
 
 ## Privacy
 
-In the default Managed local mode, nothing you say or write is sent anywhere. Audio capture, transcription, and LLM polishing all run as local processes on your Mac, and the only network traffic is the one-time engine and model download. There is no telemetry, no account, and no cloud fallback. The context-aware polishing features (repo vocabulary, clipboard context) are opt-in and by default only ever talk to a loopback polishing endpoint — a non-local endpoint receives context only if you additionally enable the explicit trusted-endpoint opt-in (default off). If you point localvoxtral at your own External URL server instead, your data goes only where you send it.
+In the default Managed local mode, nothing you say or write is sent anywhere. Audio capture, transcription, and LLM polishing all run as local processes on your Mac, and the only network traffic is the one-time engine and model download. There is no telemetry, no account, and no cloud fallback. The context-aware polishing features (Claude Code session context, repo vocabulary, clipboard context) are opt-in and by default only ever talk to a loopback polishing endpoint — a non-local endpoint receives context only if you additionally enable the explicit trusted-endpoint opt-in (default off). If you point localvoxtral at your own External URL server instead, your data goes only where you send it.
 
 ## Shortcuts
 
@@ -86,8 +86,8 @@ Most dictation tools fall apart in a terminal. localvoxtral treats it as its pri
 When an Overlay Buffer dictation commits, optional LLM polishing understands how developers talk:
 
 - **Agent prompt profile** (on by default) — when the target is a terminal, polishing switches to an agent-tuned prompt. Spoken symbol forms become written ones ("dash dash force" → `--force`, "src slash auth" → `src/auth`, "the dot env file" → `.env`), code-like tokens (and only those) get backticks, filler words are stripped, self-corrections resolve to the final intent, and explicit enumerations become lists
-- **Model-first polishing** — both prompt profiles trust the model's final wording and technical formatting so useful Markdown and reconstructed identifiers survive; only explicit clipboard-paste placeholder-count integrity remains as a post-model fallback
-- **Repo vocabulary** (opt-in) — when the focused terminal's foreground work is in a git repo, localvoxtral finds it from the focused tab title, or — when you dictate into a joined Claude Code session — from that session's own reported working directory. It indexes the repo's file list (a single sandboxed `git ls-files`, cached briefly) and passes up to 12 relevant terms to the polisher, so "use auth dot t s" comes out as `useAuth.ts`. If several open tabs make the repo ambiguous, it safely sends no hints. High-confidence, boundary-checked matches are corrected in the working text before the polish request; everything else stays a hint, never a rewrite of the model's output
+- **Model-first polishing** — polishing trusts the model's final wording and technical formatting, so useful Markdown and reconstructed identifiers survive
+- **Repo vocabulary** (opt-in) — the focused repo (found from the tab title, or from a joined Claude Code session's own working directory) is indexed with a single sandboxed `git ls-files`, and up to 12 relevant terms reach the polisher, so "use auth dot t s" comes out as `useAuth.ts`. An ambiguous repo safely sends no hints, and only high-confidence, boundary-checked matches are corrected in the working text — everything else stays a hint, never a rewrite of the model's output
 - **Clipboard as context** (opt-in) — the polisher sees a sanitized excerpt of your clipboard to ground technical spellings
 - **"Paste clipboard" macro** (on by default) — say it mid-dictation and the clipboard content is embedded as a code block when the text commits
 
@@ -97,6 +97,7 @@ The overlay shows a **Polished** badge whenever the LLM touched your text, and t
 
 localvoxtral ships a [Claude Code plugin](integrations/claude-code/README.md) that turns dictation into a session-aware input method. The plugin is hooks-only — it spends none of your tokens, adds nothing to Claude's context, and cannot slow a turn down (every hook fails open if the app isn't running). What it does is tell localvoxtral what your session is doing, so that when you dictate into that session, polishing is grounded in:
 
+- the session's **visible screen** — the exact pane you're dictating into, so what you and Claude are both looking at grounds what you say
 - your **previous prompt** and the session's **working directory**
 - the **files Claude just read or edited** — exactly the identifiers you're most likely to say next
 - that repository's **vocabulary** (via the repo-vocabulary index above, using the session's own reported directory — no tab-title guessing)
@@ -110,11 +111,7 @@ Install is one click: **Settings → Text Processing → Claude Code plugin → 
 Privacy, in one line: an allowlist of session metadata crosses a private local socket; transcripts, file contents, and shell commands never do. The [plugin README](integrations/claude-code/README.md) documents the exact fields and the threat model.
 
 > [!NOTE]
-> **Joining the right session needs Ghostty from the tip channel (or the title fallback on any terminal).** Before attaching context, localvoxtral must work out which Claude Code session owns the focused terminal. By default that match reads the pane's TTY over AppleScript, which only Ghostty ≥ 1.4 exposes — today that means installing Ghostty from its [tip (nightly) channel](https://ghostty.org/docs/install/pre):
-> ```bash
-> brew install --cask ghostty@tip
-> ```
-> On stable Ghostty, enable the opt-in **window-title marker fallback** in Settings and export `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs, so Claude Code stops overwriting the marker with its own conversation title. Session joins are deliberately limited to Ghostty for now — the join carries a screen-context read, and Ghostty is the only terminal whose window is verified to expose exactly the visible screen to accessibility. Other terminals are on the [roadmap](#roadmap).
+> **Session joins work in Ghostty (≥ 1.4, today the [tip channel](https://ghostty.org/docs/install/pre)), iTerm2, and Terminal.app.** localvoxtral asks the terminal itself for the focused pane's TTY and matches it exactly against the session's — and inside a [herdr](https://herdr.dev) multiplexer, the join binds to the precise pane and reads its screen from herdr directly, so neighboring panes never leak into your prompt. Joins are exact-or-nothing: any ambiguity attaches no context at all. On stable (pre-1.4) Ghostty, enable the opt-in **window-title marker fallback** in Settings and export `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs. First use asks for one Automation permission per terminal.
 
 ## Settings
 
@@ -193,7 +190,7 @@ open ./dist/localvoxtral.app
 
 - [ ] Developer ID signing + notarization — install with no Gatekeeper workarounds
 - [ ] Hotword boosting in the speech model itself — bias transcription (not only polishing) toward your repo's vocabulary
-- [ ] Claude Code session joins beyond Ghostty — TTY-grade joins on more terminals, tmux/cmux support
+- [ ] Claude Code session joins on more terminals — WezTerm is next; tmux/cmux support
 - [ ] Documentation website — a visual, end-user guide beyond this README
 - [ ] More streaming ASR models beyond Voxtral Realtime — e.g. [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
 

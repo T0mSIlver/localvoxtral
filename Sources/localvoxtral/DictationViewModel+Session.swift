@@ -667,6 +667,7 @@ extension DictationViewModel {
                 let capturedClipboardContext: PolishClipboardContext?
                 let capturedScreenDecision: TerminalScreenContextDecision
                 let capturedClaudeJoin: ClaudeSessionJoin?
+                let capturedHerdrPaneStart: HerdrPaneScreenCapture?
                 if let endpointURL = polishingConfig?.endpointURL {
                     capturedClipboardContext = polishClipboardContextIfEnabled(
                         endpointURL: endpointURL
@@ -684,15 +685,18 @@ extension DictationViewModel {
                     // would clear it out from under the question and silently
                     // withdraw every raw screen attachment.
                     capturedClaudeJoin = consumeClaudeSessionJoin()
+                    capturedHerdrPaneStart = consumeHerdrPaneStartCapture()
                 } else {
                     capturedClipboardContext = nil
                     capturedScreenDecision = .drop(reason: .noStartCapture)
                     capturedClaudeJoin = nil
+                    capturedHerdrPaneStart = nil
                     // No endpoint: nothing to ground for, and neither the
                     // capture nor the join must survive into a later session's
                     // reconciliation.
                     terminalScreenStartCapture = nil
                     claudeSessionJoin = nil
+                    herdrPaneStartCapture = nil
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -716,6 +720,34 @@ extension DictationViewModel {
 
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
+
+                    // A herdr-joined dictation swaps the composite-AX screen
+                    // decision for the JOINED pane's clean `pane.read`
+                    // reconciliation. FIRST await in the Task, before the
+                    // repo-vocabulary hop, for the same reason the AX
+                    // reconcile runs pre-Task: the stop re-read must sample
+                    // the pane at commit, not after ~2 s of agent output has
+                    // scrolled past. Everything downstream (render demand,
+                    // vocab grounding, the rendered block, provenance) reads
+                    // this decision, so the swap is complete or not at all —
+                    // on any pane.read failure it IS `capturedScreenDecision`,
+                    // which for a herdr join is vocabulary-only at best (the
+                    // authorizer still refuses composite raw attachment).
+                    var screenDecision = capturedScreenDecision
+                    if capturedHerdrPaneStart != nil,
+                       let endpointURL = polishingConfig?.endpointURL {
+                        screenDecision = await HerdrPaneScreenContext.reconcileAtStop(
+                            start: capturedHerdrPaneStart,
+                            join: capturedClaudeJoin,
+                            resolver: self.claudeSessionJoinResolver,
+                            fallback: capturedScreenDecision,
+                            settingEnabled: self.settings.terminalScreenContextEnabled,
+                            endpointURL: endpointURL,
+                            isAccessibilityTrusted: self.textInsertion.isAccessibilityTrusted,
+                            trustedEndpointEnabled:
+                                self.settings.polishContextTrustedEndpointEnabled
+                        )
+                    }
 
                     // The polish request is assembled HERE, inside the Task, so
                     // the opt-in repo-vocabulary indexing — whose git subprocess
@@ -764,7 +796,7 @@ extension DictationViewModel {
                     // characters, and letting them reserve some would starve the
                     // clipboard of budget to render nothing with.
                     let screenRenderDemand: Int = {
-                        guard case let .render(excerpt, _, _) = capturedScreenDecision else { return 0 }
+                        guard case let .render(excerpt, _, _) = screenDecision else { return 0 }
                         return excerpt.count
                     }()
 
@@ -885,7 +917,7 @@ extension DictationViewModel {
                     // grounds the transcript, exactly as it does for the
                     // clipboard.
                     var screenPreparation = PolishContextPreparation.empty
-                    if let screenText = capturedScreenDecision.vocabularyGroundingText {
+                    if let screenText = screenDecision.vocabularyGroundingText {
                         screenPreparation = await PolishContextPreparation.prepared(
                             text: screenText,
                             transcript: workingText,
@@ -1131,7 +1163,7 @@ extension DictationViewModel {
                         excerpt: claudeRepoPreparation.excerpt,
                         renderBudget: repoRenderBudget
                     )
-                    let screenBlock = capturedScreenDecision.contextBlock(
+                    let screenBlock = screenDecision.contextBlock(
                         excerpt: screenPreparation.excerpt,
                         renderBudget: screenRenderBudget
                     )
@@ -1184,7 +1216,7 @@ extension DictationViewModel {
                         // The block's summary when one was rendered (it reports
                         // the TRIMMED count); the decision's otherwise.
                         let screenSummary =
-                            screenBlock?.summary ?? capturedScreenDecision.provenanceSummary
+                            screenBlock?.summary ?? screenDecision.provenanceSummary
                         capturedPolishContextSummary = capturedPolishContextSummary
                             .map { "\($0) \(screenSummary)" } ?? screenSummary
                     }

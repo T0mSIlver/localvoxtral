@@ -136,8 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// records it exists to collect.
     private let claudeSessionRegistry = ClaudeSessionRegistry()
     private var claudeContextBroker: ClaudeContextBroker?
-    private var ghosttyConsentPrewarmObserver:
-        GhosttyAutomationConsentPrewarmSettingsObserver?
+    private var terminalConsentPrewarmObserver:
+        TerminalAutomationConsentPrewarmSettingsObserver?
     /// Remote (SSH) Claude Code sessions. Both the host registry and the
     /// listener are lazy and optional: a user who has never enrolled a host has
     /// no file to read and no port bound.
@@ -186,7 +186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing is accepting on.
         claudeContextBroker?.stop()
         claudeContextBroker = nil
-        ghosttyConsentPrewarmObserver = nil
+        terminalConsentPrewarmObserver = nil
         // Closes the port, so a hook from a surviving remote session gets a
         // connection refused through the tunnel and fails open. Quitting says
         // nothing about enrollment — the hosts stay enrolled for next launch.
@@ -233,7 +233,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // events, reading the process table, and connecting to a user's
             // local socket are live capabilities, so only the app — never a
             // test that forgot to inject — constructs them.
-            let ttyReader = GhosttyFocusedTerminalTTYReader()
+            let ttyReader = AppleScriptTerminalTTYReader()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
@@ -244,16 +244,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start
-            // path: the first Apple event to Ghostty blocks in TCC until the
-            // user answers, and that freeze must not land mid-dictation. Only
-            // for users who opted into a context feature — the pre-warm is
-            // itself the consent prompt, and an opted-out user must never see
-            // it.
-            let prewarmObserver = GhosttyAutomationConsentPrewarmSettingsObserver(
+            // path: the first Apple event to a terminal blocks in TCC until
+            // the user answers, and that freeze must not land mid-dictation.
+            // One pre-warm per supported terminal (each is its own TCC pair),
+            // firing only while that terminal is running. Only for users who
+            // opted into a context feature — the pre-warm is itself the
+            // consent prompt, and an opted-out user must never see it.
+            let prewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
                 settings: viewModel.settings,
-                prewarm: { GhosttyAutomationConsentPrewarm.fireOnceWhenGhosttyIsAvailable() }
+                prewarm: {
+                    for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
+                            bundleID: bundleID
+                        )
+                    }
+                }
             )
-            ghosttyConsentPrewarmObserver = prewarmObserver
+            terminalConsentPrewarmObserver = prewarmObserver
             prewarmObserver.start()
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
