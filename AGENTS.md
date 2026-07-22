@@ -110,6 +110,9 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   ffmpeg`. GitHub renders inline video only from user-attachments URLs (no
   API for those), so the owner drag-drops the mp4 into a PR comment and
   pastes the URL into the README by hand.
+  `DEMO_TERMINAL_AGENT=herdr` (explicit only, never auto) records the herdr
+  pane-join scene — split panes in an isolated named herdr session, dictation
+  into the focused Claude pane, log-asserted herdr join + pane.read context.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
   descriptor errors and aborts the app (field crash, PR #60). Use
