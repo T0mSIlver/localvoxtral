@@ -144,7 +144,7 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
 
     // MARK: Marker roundtrip — the focus join
 
-    func testBrokerRepliesWithTheAllocatedMarker() throws {
+    func testBrokerRepliesWithTheAllocatedMarkerForANonHerdrRecord() throws {
         try broker.start()
         let record = ClaudeHookRecord(
             event: .sessionStart, sessionID: "joined", timestamp: 1, rawCwd: "/repo"
@@ -166,6 +166,39 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         guard case .resolved = registry.resolve(marker: ClaudeSessionMarker(value: "lvx-deadbeef")) else {
             return XCTFail("the replied marker must resolve back to the session")
         }
+    }
+
+    func testBrokerWithholdsTheMarkerForAHerdrHostedRecord() throws {
+        // Even with title fallback opted in, herdr intercepts OSC 2 inside the
+        // pane, so emitting this marker could never identify Ghostty's surface.
+        try broker.start()
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "herdr-hosted",
+            timestamp: 1,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(
+                hookPID: 31_337,
+                claudePID: getpid(),
+                herdrPaneID: "pane-7",
+                herdrSocketPath: "/tmp/herdr.sock"
+            )
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)),
+            to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertNil(response.marker)
+        XCTAssertEqual(
+            registry.snapshot(sessionID: "herdr-hosted")?.marker,
+            ClaudeSessionMarker(value: "lvx-deadbeef"),
+            "herdr changes reply emission only; registry identity remains allocated"
+        )
     }
 
     func testRejectedRecordRepliesWithNoMarker() throws {

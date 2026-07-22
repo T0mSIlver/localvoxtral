@@ -61,7 +61,9 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         files: [ClaudeFileTouch] = [],
         claudePID: Int32? = nil,
         hookPID: Int32 = 777,
-        tty: String? = nil
+        tty: String? = nil,
+        herdrPaneID: String? = nil,
+        herdrSocketPath: String? = nil
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: event,
@@ -70,7 +72,15 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             rawCwd: cwd,
             prompt: prompt,
             files: files,
-            process: claudePID.map { ClaudeHookProcessInfo(hookPID: hookPID, claudePID: $0, tty: tty) }
+            process: claudePID.map {
+                ClaudeHookProcessInfo(
+                    hookPID: hookPID,
+                    claudePID: $0,
+                    tty: tty,
+                    herdrPaneID: herdrPaneID,
+                    herdrSocketPath: herdrSocketPath
+                )
+            }
         )
     }
 
@@ -402,6 +412,109 @@ final class ClaudeSessionRegistryTests: XCTestCase {
             record(.sessionStart, claudePID: 9001, tty: "/dev/ttys003"), origin: local
         )
         XCTAssertEqual(registry.resolve(tty: "/dev/ttys007"), .unknown)
+    }
+
+    // MARK: herdr pane lookup — the marker-free focus join
+
+    func testHerdrPaneLookupResolvesTheLocalSessionInThatPane() {
+        let registry = makeRegistry()
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
+            origin: local
+        )
+        guard case .resolved(let snapshot) = registry.resolve(herdrPaneID: "pane-7") else {
+            return XCTFail("expected the session in that herdr pane")
+        }
+        XCTAssertEqual(snapshot.sessionID, "s1")
+    }
+
+    func testHerdrPaneLookupIsUnknownForAnUnseenPane() {
+        let registry = makeRegistry()
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
+            origin: local
+        )
+        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-other"), .unknown)
+    }
+
+    func testHerdrPaneLookupReportsStaleWhenTheOnlyMatchIsDead() {
+        let liveness = TestLiveness()
+        let registry = makeRegistry(liveness: liveness)
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
+            origin: local
+        )
+        liveness.kill(9001)
+        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-7"), .stale)
+    }
+
+    func testTwoLocalSessionsInOneHerdrPaneAbstainAsAmbiguous() {
+        let registry = makeRegistry(markers: TestMarkers(["lvx-1", "lvx-2"]))
+        registry.ingest(
+            record(.sessionStart, session: "s1", claudePID: 9001, herdrPaneID: "pane-7"),
+            origin: local
+        )
+        registry.ingest(
+            record(.sessionStart, session: "s2", claudePID: 9002, herdrPaneID: "pane-7"),
+            origin: local
+        )
+        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-7"), .ambiguous)
+    }
+
+    func testHerdrPaneLookupNeverMatchesARemoteSession() {
+        // Pane ids belong to one machine's herdr. A remote host echoing a local
+        // id must not be able to claim dictation focused in that local pane.
+        let registry = makeRegistry()
+        registry.ingest(
+            record(.sessionStart, claudePID: 9001, herdrPaneID: "pane-7"),
+            origin: .remote(channel: "ssh")
+        )
+        XCTAssertEqual(registry.resolve(herdrPaneID: "pane-7"), .unknown)
+    }
+
+    func testLiveLocalHerdrSocketPathsAreDistinct() {
+        let registry = makeRegistry(markers: TestMarkers(["lvx-1", "lvx-2", "lvx-3"]))
+        registry.ingest(
+            record(.sessionStart, session: "s1", claudePID: 9001, herdrSocketPath: "/tmp/a.sock"),
+            origin: local
+        )
+        registry.ingest(
+            record(.sessionStart, session: "s2", claudePID: 9002, herdrSocketPath: "/tmp/a.sock"),
+            origin: local
+        )
+        registry.ingest(
+            record(.sessionStart, session: "s3", claudePID: 9003, herdrSocketPath: "/tmp/b.sock"),
+            origin: local
+        )
+        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/a.sock", "/tmp/b.sock"])
+    }
+
+    func testLiveLocalHerdrSocketPathsExcludeStaleSessions() {
+        let liveness = TestLiveness()
+        let registry = makeRegistry(liveness: liveness, markers: TestMarkers(["lvx-1", "lvx-2"]))
+        registry.ingest(
+            record(.sessionStart, session: "live", claudePID: 9001, herdrSocketPath: "/tmp/live.sock"),
+            origin: local
+        )
+        registry.ingest(
+            record(.sessionStart, session: "dead", claudePID: 9002, herdrSocketPath: "/tmp/dead.sock"),
+            origin: local
+        )
+        liveness.kill(9002)
+        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/live.sock"])
+    }
+
+    func testLiveLocalHerdrSocketPathsExcludeRemoteSessions() {
+        let registry = makeRegistry(markers: TestMarkers(["lvx-1", "lvx-2"]))
+        registry.ingest(
+            record(.sessionStart, session: "local", claudePID: 9001, herdrSocketPath: "/tmp/local.sock"),
+            origin: local
+        )
+        registry.ingest(
+            record(.sessionStart, session: "remote", claudePID: 9002, herdrSocketPath: "/tmp/remote.sock"),
+            origin: .remote(channel: "ssh")
+        )
+        XCTAssertEqual(registry.liveLocalHerdrSocketPaths(), ["/tmp/local.sock"])
     }
 
     // MARK: Workspace lookup — ambiguity

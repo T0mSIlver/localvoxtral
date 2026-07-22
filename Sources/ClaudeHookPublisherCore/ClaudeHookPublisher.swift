@@ -126,7 +126,8 @@ public struct ClaudeHookPublisher: Sendable {
     }
 
     /// Safe metadata only: identity and location of the terminal, never its
-    /// contents and never argv/env beyond `$TERM_PROGRAM`.
+    /// contents and never argv/env beyond `$TERM_PROGRAM`,
+    /// `$HERDR_PANE_ID`, and `$HERDR_SOCKET_PATH`.
     func processInfo() -> ClaudeHookProcessInfo {
         // ONE ppid resolution feeds both fields: the published claudePID and
         // the tty's process-table fallback must describe the same process.
@@ -135,7 +136,11 @@ public struct ClaudeHookPublisher: Sendable {
             hookPID: environment.pid(),
             claudePID: claudePID,
             tty: environment.ttyName(claudePID),
-            termProgram: environment.variables["TERM_PROGRAM"].flatMap { $0.isEmpty ? nil : $0 }
+            termProgram: environment.variables["TERM_PROGRAM"].flatMap { $0.isEmpty ? nil : $0 },
+            herdrPaneID: environment.variables["HERDR_PANE_ID"].flatMap { $0.isEmpty ? nil : $0 },
+            herdrSocketPath: environment.variables["HERDR_SOCKET_PATH"].flatMap {
+                $0.isEmpty ? nil : $0
+            }
         )
     }
 

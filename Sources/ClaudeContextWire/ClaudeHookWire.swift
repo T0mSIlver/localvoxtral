@@ -95,12 +95,25 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
     public var tty: String?
     /// `$TERM_PROGRAM` (e.g. `ghostty`, `iTerm.app`), when set.
     public var termProgram: String?
+    /// herdr pane identity, published only when the hook ran inside a herdr pane.
+    public var herdrPaneID: String?
+    /// The herdr JSON API socket path herdr injected into the pane environment.
+    public var herdrSocketPath: String?
 
-    public init(hookPID: Int32, claudePID: Int32, tty: String? = nil, termProgram: String? = nil) {
+    public init(
+        hookPID: Int32,
+        claudePID: Int32,
+        tty: String? = nil,
+        termProgram: String? = nil,
+        herdrPaneID: String? = nil,
+        herdrSocketPath: String? = nil
+    ) {
         self.hookPID = hookPID
         self.claudePID = claudePID
         self.tty = tty
         self.termProgram = termProgram
+        self.herdrPaneID = herdrPaneID
+        self.herdrSocketPath = herdrSocketPath
     }
 
     enum CodingKeys: String, CodingKey {
@@ -108,6 +121,8 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         case claudePID = "claude_pid"
         case tty
         case termProgram = "term_program"
+        case herdrPaneID = "herdr_pane_id"
+        case herdrSocketPath = "herdr_socket_path"
     }
 }
 
@@ -310,6 +325,12 @@ public enum ClaudeHookWireCodec {
         if var process = record.process {
             process.tty = process.tty.map { truncate($0, toUTF8Bytes: limits.maxPathBytes) }
             process.termProgram = process.termProgram.map {
+                truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            process.herdrPaneID = process.herdrPaneID.map {
+                truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            process.herdrSocketPath = process.herdrSocketPath.map {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
             }
             clamped.process = process

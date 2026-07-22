@@ -234,6 +234,47 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Look up by herdr pane id — the herdr focus join. LOCAL sessions only: a
+    /// remote host's pane ids live in another machine's herdr and could collide
+    /// with (or deliberately mirror) a local pane's id; matching them here would
+    /// let an SSH host claim a local pane by echoing its pane id.
+    public func resolve(herdrPaneID: String) -> ClaudeMarkerResolution {
+        let timestamp = now()
+        return state.withLock { state in
+            let matches = state.sessions.values.filter { snapshot in
+                snapshot.origin.isLocalAuthenticated
+                    && snapshot.process?.herdrPaneID == herdrPaneID
+                    && isFresh(snapshot, now: timestamp)
+            }
+            switch matches.count {
+            case 0:
+                let hadStale = state.sessions.values.contains {
+                    $0.origin.isLocalAuthenticated && $0.process?.herdrPaneID == herdrPaneID
+                }
+                return hadStale ? .stale : .unknown
+            case 1:
+                return .resolved(matches[0])
+            default:
+                return .ambiguous
+            }
+        }
+    }
+
+    /// Distinct herdr socket paths across live LOCAL sessions. The resolver
+    /// refuses to guess between multiple herdr sessions, so it needs the count,
+    /// not just one path.
+    public func liveLocalHerdrSocketPaths() -> Set<String> {
+        let timestamp = now()
+        return state.withLock { state in
+            Set(state.sessions.values.compactMap { snapshot in
+                guard snapshot.origin.isLocalAuthenticated,
+                      isFresh(snapshot, now: timestamp)
+                else { return nil }
+                return snapshot.process?.herdrSocketPath
+            })
+        }
+    }
+
     public func snapshot(sessionID: String) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         return state.withLock { state in

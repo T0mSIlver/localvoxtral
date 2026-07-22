@@ -427,6 +427,28 @@ Key subsystems:
     them unconditionally: a remote TTY names another machine's device, and
     `resolve(tty:)` refuses remote candidates so an SSH host can never claim a
     local pane by echoing its TTY.
+  - herdr (the tmux-like agent multiplexer) is a first-class join target with
+    its own arm, and it is MARKER-FREE by design (owner decision 2026-07-21):
+    herdr intercepts OSC 2 per pane, so a title marker can neither reach
+    Ghostty's title nor describe an inner pane — the broker never emits one to
+    a herdr-hosted session, even under the title-fallback opt-in. The arm runs
+    only after the surface TTY positively binds to herdr (a `herdr` client
+    process on the focused Ghostty surface's TTY, `HerdrClientTTYProbe` —
+    herdr's socket has no client introspection, so the process table is the
+    only binding), and from that point the join is herdr-or-nothing: no
+    marker fallback, because a lingering title marker could only mis-join.
+    The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
+    `HerdrSocketClient` (hand-written, read-only — herdr is AGPL, never vendor
+    its code) asks that one socket for the focused pane and the join is exact
+    pane-id equality (`resolve(herdrPaneID:)`, local sessions only), guarded
+    by two fail-closed cross-checks: herdr's own `agent_session` claim must
+    not disagree, and the registered Claude pid must be in the pane's
+    foreground process list (catches a suspended Claude with the user at the
+    shell). Two live herdr sessions (distinct sockets) abstain — there is no
+    way to tell which one the surface displays. A herdr join never authorizes
+    raw screen attachment: the AX capture is the composite herdr TUI, and
+    neighboring panes must not ride into this session's prompt (a clean
+    `pane.read` excerpt is a possible follow-up, not built).
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

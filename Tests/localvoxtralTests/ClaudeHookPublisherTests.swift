@@ -51,6 +51,43 @@ final class ClaudeHookPublisherTests: XCTestCase {
         XCTAssertNil(info.termProgram)
     }
 
+    func testHerdrEnvironmentValuesArePublished() {
+        let info = publisher(variables: [
+            "HOME": "/h",
+            "HERDR_PANE_ID": "pane-7",
+            "HERDR_SOCKET_PATH": "/tmp/herdr.sock",
+        ]).processInfo()
+        XCTAssertEqual(info.herdrPaneID, "pane-7")
+        XCTAssertEqual(info.herdrSocketPath, "/tmp/herdr.sock")
+    }
+
+    func testHerdrEnvironmentValuesArePublishedIndependently() {
+        let paneOnly = publisher(variables: ["HERDR_PANE_ID": "pane-7"]).processInfo()
+        XCTAssertEqual(paneOnly.herdrPaneID, "pane-7")
+        XCTAssertNil(paneOnly.herdrSocketPath)
+
+        let socketOnly = publisher(
+            variables: ["HERDR_SOCKET_PATH": "/tmp/herdr.sock"]
+        ).processInfo()
+        XCTAssertNil(socketOnly.herdrPaneID)
+        XCTAssertEqual(socketOnly.herdrSocketPath, "/tmp/herdr.sock")
+    }
+
+    func testEmptyHerdrEnvironmentValuesAreTreatedAsAbsent() {
+        let info = publisher(variables: [
+            "HERDR_PANE_ID": "",
+            "HERDR_SOCKET_PATH": "",
+        ]).processInfo()
+        XCTAssertNil(info.herdrPaneID)
+        XCTAssertNil(info.herdrSocketPath)
+    }
+
+    func testAbsentHerdrEnvironmentValuesAreNil() {
+        let info = publisher(variables: ["HOME": "/h"]).processInfo()
+        XCTAssertNil(info.herdrPaneID)
+        XCTAssertNil(info.herdrSocketPath)
+    }
+
     // The published claudePID and the tty resolution consume the SAME pid,
     // from one `ppid()` call: the tty seam receives the pid the ppid seam
     // yielded, so the two fields can never describe different processes (the

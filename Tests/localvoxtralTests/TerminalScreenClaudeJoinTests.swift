@@ -29,6 +29,24 @@ private final class JoinTestMarkers: Sendable {
     }
 }
 
+private struct JoinTestHerdrPanes: HerdrPaneQuerying {
+    var focused: HerdrFocusedPane?
+    var foreground: HerdrPaneForegroundInfo?
+    var onFocused: @Sendable () -> Void = {}
+
+    func focusedPane(socketPath _: String) async -> HerdrFocusedPane? {
+        onFocused()
+        return focused
+    }
+
+    func paneForegroundInfo(
+        socketPath _: String,
+        paneID _: String
+    ) async -> HerdrPaneForegroundInfo? {
+        foreground
+    }
+}
+
 /// The gate that decides which Claude session a dictation is about, and
 /// whether a captured Ghostty pane's raw text may be rendered into a prompt.
 ///
@@ -53,7 +71,9 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
     private func record(
         session: String = "s1",
         claudePID: Int32? = 9001,
-        tty: String? = nil
+        tty: String? = nil,
+        herdrPaneID: String? = nil,
+        herdrSocketPath: String? = nil
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: .sessionStart,
@@ -62,7 +82,15 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             rawCwd: "/repo",
             prompt: nil,
             files: [],
-            process: claudePID.map { ClaudeHookProcessInfo(hookPID: 777, claudePID: $0, tty: tty) }
+            process: claudePID.map {
+                ClaudeHookProcessInfo(
+                    hookPID: 777,
+                    claudePID: $0,
+                    tty: tty,
+                    herdrPaneID: herdrPaneID,
+                    herdrSocketPath: herdrSocketPath
+                )
+            }
         )
     }
 
@@ -89,7 +117,9 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         title: String?,
         focusedTTY: String? = nil,
         titleWindowID: CGWindowID? = 101,
-        ttyWindowID: CGWindowID? = 101
+        ttyWindowID: CGWindowID? = 101,
+        herdrClient: Bool = false,
+        herdrPanes: HerdrPaneQuerying? = nil
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
@@ -101,7 +131,9 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
                 }
             },
             focusedTerminalTTY: { _ in focusedTTY },
-            focusedWindowID: { _ in ttyWindowID }
+            focusedWindowID: { _ in ttyWindowID },
+            herdrClientProbe: { _ in herdrClient },
+            herdrPanes: herdrPanes
         )
     }
 
@@ -133,6 +165,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         XCTAssertEqual(join.marker, ClaudeSessionMarker(value: "lvx-abcd"))
         XCTAssertEqual(join.snapshot.sessionID, "s1")
         XCTAssertEqual(join.target, ghostty)
+        XCTAssertEqual(join.mechanism, .titleMarker)
         let gate = await authorizer(registry: registry, title: "lvx-abcd — ~/repo")
         XCTAssertTrue(gate.isAuthorized(target: ghostty, windowID: windowA))
     }
@@ -184,6 +217,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         let join = try XCTUnwrap(resolved)
         XCTAssertEqual(join.snapshot.sessionID, "s1")
         XCTAssertEqual(join.marker, ClaudeSessionMarker(value: "lvx-abcd"))
+        XCTAssertEqual(join.mechanism, .ttyDevice)
         // The tty-joined session revalidates at stop through the same
         // marker-keyed liveness path as a title join.
         XCTAssertTrue(joinResolver.isStillLive(join))
@@ -240,6 +274,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         ).resolve(target: ghostty)
         let join = try XCTUnwrap(resolved)
         XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertEqual(join.mechanism, .titleMarker)
     }
 
     func testAmbiguousTTYFallsBackToTheTitleMarker() async throws {
@@ -273,6 +308,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         )
         let join = await joinResolver.resolve(target: ghostty)
         XCTAssertEqual(join?.windowID, windowB)
+        XCTAssertEqual(join?.mechanism, .ttyDevice)
         let gate = TerminalScreenClaudeJoinAuthorizer(resolver: joinResolver, currentJoin: { join })
         XCTAssertTrue(
             gate.isAuthorized(target: ghostty, windowID: windowB),
@@ -317,6 +353,366 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             registry: registry, title: nil, focusedTTY: "/dev/ttys003"
         ).resolve(target: ghostty)
         XCTAssertNil(join)
+    }
+
+    // MARK: - herdr join
+
+    private func herdrRecord(
+        session: String = "s1",
+        claudePID: Int32 = 9001,
+        paneID: String = "pane-a",
+        socketPath: String = "/tmp/herdr-a.sock"
+    ) -> ClaudeHookRecord {
+        record(
+            session: session,
+            claudePID: claudePID,
+            tty: "/dev/ttys-inner",
+            herdrPaneID: paneID,
+            herdrSocketPath: socketPath
+        )
+    }
+
+    private func herdrPanes(
+        paneID: String = "pane-a",
+        claim: String? = nil,
+        foregroundPIDs: [Int32]? = [9001]
+    ) -> JoinTestHerdrPanes {
+        JoinTestHerdrPanes(
+            focused: HerdrFocusedPane(
+                paneID: paneID, claimedClaudeSessionID: claim
+            ),
+            foreground: HerdrPaneForegroundInfo(
+                shellPID: 8000, foregroundPIDs: foregroundPIDs
+            )
+        )
+    }
+
+    func testTTYResolutionWinsBeforeHerdrProbe() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(
+                record(
+                    tty: "/dev/ttys003",
+                    herdrPaneID: "pane-a",
+                    herdrSocketPath: "/tmp/herdr.sock"
+                ),
+                origin: local
+            )
+        )
+        let probeCalls = Mutex(0)
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in nil },
+            focusedTerminalTTY: { _ in "/dev/ttys003" },
+            focusedWindowID: { _ in self.windowA },
+            herdrClientProbe: { _ in
+                probeCalls.withLock { $0 += 1 }
+                return true
+            },
+            herdrPanes: herdrPanes()
+        )
+
+        let resolved = await joinResolver.resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .ttyDevice)
+        XCTAssertEqual(probeCalls.withLock { $0 }, 0)
+    }
+
+    func testHerdrPaneJoinsWhenPaneAndForegroundPIDMatch() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let joinResolver = resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes(claim: "s1")
+        )
+
+        let resolved = await joinResolver.resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertEqual(join.mechanism, .herdrPane)
+        XCTAssertEqual(join.windowID, windowA)
+        XCTAssertTrue(joinResolver.isStillLive(join))
+    }
+
+    func testHerdrPaneWithNilSessionClaimStillJoins() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes(claim: nil)
+        ).resolve(target: ghostty)
+
+        XCTAssertEqual(try XCTUnwrap(join).mechanism, .herdrPane)
+    }
+
+    func testHerdrSurfaceNeverFallsBackToTitleMarker() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let titleReads = Mutex(0)
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in
+                titleReads.withLock { $0 += 1 }
+                return TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: self.windowA
+                )
+            },
+            focusedTerminalTTY: { _ in "/dev/ttys-outer" },
+            herdrClientProbe: { _ in true },
+            herdrPanes: JoinTestHerdrPanes(focused: nil, foreground: nil)
+        )
+
+        let join = await joinResolver.resolve(target: ghostty)
+        XCTAssertNil(join)
+        XCTAssertEqual(titleReads.withLock { $0 }, 0)
+    }
+
+    func testHerdrJoinAbstainsWithNoRegisteredSocket() async {
+        let registry = makeRegistry()
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes()
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWithMultipleRegisteredSockets() async {
+        let registry = makeRegistry(markers: ["lvx-aaaa", "lvx-bbbb"])
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        XCTAssertNotNil(
+            registry.ingest(
+                herdrRecord(
+                    session: "s2",
+                    claudePID: 9002,
+                    paneID: "pane-b",
+                    socketPath: "/tmp/herdr-b.sock"
+                ),
+                origin: local
+            )
+        )
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes()
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenLivePaneQueryIsNotInjected() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testDefaultHerdrProbeAbstains() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in nil },
+            focusedTerminalTTY: { _ in "/dev/ttys-outer" }
+        )
+        let join = await joinResolver.resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenFocusedPaneIsUnavailable() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: JoinTestHerdrPanes(focused: nil, foreground: nil)
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenFocusedPaneIsUnmatched() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes(paneID: "pane-unregistered")
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenFocusedPaneIsAmbiguous() async {
+        let registry = makeRegistry(markers: ["lvx-aaaa", "lvx-bbbb"])
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        XCTAssertNotNil(
+            registry.ingest(
+                herdrRecord(session: "s2", claudePID: 9002), origin: local
+            )
+        )
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes()
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenFocusedPaneTurnsStaleDuringQuery() async {
+        let clock = JoinTestClock(epoch)
+        let registry = makeRegistry(
+            limits: ClaudeRegistryLimits(sessionTTL: 60), clock: clock
+        )
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let panes = JoinTestHerdrPanes(
+            focused: HerdrFocusedPane(paneID: "pane-a", claimedClaudeSessionID: nil),
+            foreground: HerdrPaneForegroundInfo(shellPID: nil, foregroundPIDs: [9001]),
+            onFocused: { clock.advance(61) }
+        )
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: panes
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenSessionClaimDisagrees() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes(claim: "another-session")
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenForegroundQueryIsUnavailable() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let panes = JoinTestHerdrPanes(
+            focused: HerdrFocusedPane(paneID: "pane-a", claimedClaudeSessionID: nil),
+            foreground: nil
+        )
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: panes
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenForegroundDetectionIsUnavailable() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes(foregroundPIDs: nil)
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrJoinAbstainsWhenClaudePIDIsNotForeground() async {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let join = await resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes(foregroundPIDs: [7777])
+        ).resolve(target: ghostty)
+        XCTAssertNil(join)
+    }
+
+    func testHerdrForegroundCrossCheckRefusesSnapshotWithoutProcessInfo() {
+        let snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1",
+            origin: local,
+            marker: ClaudeSessionMarker(value: "lvx-abcd"),
+            firstSeen: epoch
+        )
+        XCTAssertNil(snapshot.process, "precondition")
+        XCTAssertFalse(
+            ClaudeSessionJoinResolver.registeredClaudeIsForeground(
+                snapshot: snapshot, foregroundPIDs: [9001]
+            )
+        )
+    }
+
+    func testNoTTYAnswerUsesMarkerWithoutCallingHerdrProbe() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let probeCalls = Mutex(0)
+        let joinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in
+                TerminalScreenAXReader.FocusedWindowMarkerRead(
+                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: self.windowA
+                )
+            },
+            focusedTerminalTTY: { _ in nil },
+            herdrClientProbe: { _ in
+                probeCalls.withLock { $0 += 1 }
+                return true
+            },
+            herdrPanes: herdrPanes()
+        )
+
+        let resolved = await joinResolver.resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .titleMarker)
+        XCTAssertEqual(probeCalls.withLock { $0 }, 0)
+    }
+
+    func testHerdrJoinNeverAuthorizesCompositeRawScreen() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(herdrRecord(), origin: local))
+        let joinResolver = resolver(
+            registry: registry,
+            title: nil,
+            focusedTTY: "/dev/ttys-outer",
+            herdrClient: true,
+            herdrPanes: herdrPanes()
+        )
+        let resolved = await joinResolver.resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        let gate = TerminalScreenClaudeJoinAuthorizer(
+            resolver: joinResolver, currentJoin: { join }
+        )
+
+        XCTAssertEqual(join.mechanism, .herdrPane)
+        XCTAssertEqual(join.windowID, windowA)
+        XCTAssertFalse(gate.isAuthorized(target: ghostty, windowID: windowA))
     }
 
     // MARK: - TTY reply validation

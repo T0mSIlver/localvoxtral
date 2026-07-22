@@ -65,6 +65,7 @@ PATTERNS=(
   '*ClaudeContextBroker*'                            # the socket that feeds the registry
   '*ClaudeHookWire*'                                 # the record shape the snapshot is reduced from
   '*ClaudeHookInputParser*'                          # which hook fields become session state
+  '*ClaudeHookPublisher*'                            # the identity metadata (tty/pid/herdr pane) joins key on
   'integrations/claude-code/*'                       # the plugin that publishes those hooks
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
