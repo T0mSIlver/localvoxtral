@@ -52,6 +52,47 @@ final class AppleScriptTerminalTTYReaderTests: XCTestCase {
         }
     }
 
+    /// macOS dismisses the TCC Automation consent sheet the moment the pending
+    /// Apple event times out (field bug 2026-07-22: the iTerm2 prompt vanished
+    /// after the read script's 1 s timeout, before the user could answer). The
+    /// consent probe must therefore ask the same question under a timeout long
+    /// enough for a human to answer the sheet.
+    func testConsentPrewarmScriptGivesTheUserTimeToAnswerTheSheet() throws {
+        for bundleID in TerminalScreenAllowlist.supportedBundleIDs {
+            let readSource = try XCTUnwrap(
+                AppleScriptTerminalTTYReader.scriptSource(forBundleID: bundleID)
+            )
+            let prewarmSource = try XCTUnwrap(
+                AppleScriptTerminalTTYReader.consentPrewarmScriptSource(forBundleID: bundleID)
+            )
+            XCTAssertTrue(
+                prewarmSource.contains("with timeout of 600 seconds"),
+                "\(bundleID)'s consent probe must outlive a human answering the sheet"
+            )
+            XCTAssertFalse(
+                prewarmSource.contains("with timeout of 1 second"),
+                "\(bundleID)'s consent probe must not present a 1-second prompt"
+            )
+            // Same question, same target — only the timeout differs, so a
+            // grant earned by the probe covers every later read verbatim.
+            XCTAssertEqual(
+                readSource.replacingOccurrences(
+                    of: "with timeout of 1 second", with: "with timeout of 600 seconds"
+                ),
+                prewarmSource,
+                "\(bundleID)'s probe must ask exactly the read's question"
+            )
+        }
+    }
+
+    func testConsentPrewarmScriptSourceIsNilForUnsupportedBundles() {
+        XCTAssertNil(
+            AppleScriptTerminalTTYReader.consentPrewarmScriptSource(
+                forBundleID: "net.kovidgoyal.kitty"
+            )
+        )
+    }
+
     func testScriptSourceIsNilForUnsupportedBundles() {
         XCTAssertNil(AppleScriptTerminalTTYReader.scriptSource(forBundleID: "com.example.shell"))
         XCTAssertNil(AppleScriptTerminalTTYReader.scriptSource(forBundleID: ""))

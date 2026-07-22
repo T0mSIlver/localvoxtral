@@ -92,12 +92,14 @@ struct AppleScriptTerminalTTYReader: TerminalFocusedTTYReading {
 
     /// `with timeout` bounds THE TERMINAL'S REPLY, so a wedged terminal cannot
     /// hold dictation start hostage — the same budget discipline as the AX
-    /// reader's per-message timeouts. It does NOT bound TCC: the first Apple
-    /// event ever sent to a terminal parks in the Automation consent sheet for
-    /// as long as the user leaves it open, timeout or no timeout. That
-    /// first-run freeze belongs at app launch, not mid-dictation, which is
-    /// what `TerminalAutomationConsentPrewarm` exists for — by the time a
-    /// session start runs this read, the sheet has already come and gone.
+    /// reader's per-message timeouts. It ALSO bounds the life of the TCC
+    /// Automation consent sheet: macOS tears the sheet down the moment the
+    /// pending Apple event times out (field bug 2026-07-22 — iTerm2's prompt
+    /// vanished after ~1 s, before the user could answer). Consent must
+    /// therefore be settled by `TerminalAutomationConsentPrewarm`, whose probe
+    /// sends the same question under `consentPrewarmScriptSource` — a timeout
+    /// long enough for a human to answer the sheet — so by the time a session
+    /// start runs this read, consent has already been decided.
     /// `tell application id` of the frontmost app never launches anything: the
     /// caller only asks about an app it just observed as frontmost.
     ///
@@ -109,6 +111,18 @@ struct AppleScriptTerminalTTYReader: TerminalFocusedTTYReading {
     /// - Terminal.app: `selected tab of front window` (`tty` confirmed in its
     ///   sdef, code `ttty`; Terminal has no split panes).
     static func scriptSource(forBundleID bundleID: String) -> String? {
+        script(forBundleID: bundleID, timeoutSeconds: 1)
+    }
+
+    /// The consent pre-warm's variant of the same question: identical property
+    /// chain, but the Apple event must outlive a human reading and answering
+    /// the Automation consent sheet — the sheet is dismissed when the event
+    /// times out, so a 1 s probe presents a 1 s prompt.
+    static func consentPrewarmScriptSource(forBundleID bundleID: String) -> String? {
+        script(forBundleID: bundleID, timeoutSeconds: 600)
+    }
+
+    private static func script(forBundleID bundleID: String, timeoutSeconds: Int) -> String? {
         let propertyChain: String
         switch bundleID {
         case TerminalScreenAllowlist.ghosttyBundleID:
@@ -120,8 +134,9 @@ struct AppleScriptTerminalTTYReader: TerminalFocusedTTYReading {
         default:
             return nil
         }
+        let timeout = timeoutSeconds == 1 ? "1 second" : "\(timeoutSeconds) seconds"
         return """
-        with timeout of 1 second
+        with timeout of \(timeout)
             tell application id "\(bundleID)"
                 get \(propertyChain)
             end tell
@@ -257,14 +272,18 @@ final class TerminalAutomationConsentPrewarmSettingsObserver {
 /// TCC consent is per target app, not per property).
 ///
 /// The first Apple event this app ever sends to a terminal raises the TCC
-/// Automation consent sheet, and the send BLOCKS until the user answers — the
-/// script's `with timeout` bounds the terminal's reply, not TCC. Left to
-/// happen naturally, that block lands in the middle of the user's first
-/// dictation into a Claude pane. So the app fires the same read once per
-/// terminal, at launch, when a relevant setting is enabled, or as soon as that
-/// terminal launches, with the result discarded: the sheet appears at a moment
-/// when nothing is in flight, and every later per-start read finds consent
-/// already settled.
+/// Automation consent sheet, and the sheet lives exactly as long as that
+/// pending event: macOS dismisses it when the event times out (field bug
+/// 2026-07-22 — the iTerm2 prompt vanished after the read script's 1 s
+/// timeout, before the user could answer). So the probe sent here uses
+/// `consentPrewarmScriptSource` — the same focused-pane question under a
+/// timeout long enough for a human to answer — on its OWN serial executor,
+/// so a sheet parked for minutes never queues behind-the-scenes dictation
+/// reads (which abstain unaided until consent exists anyway). It fires once
+/// per terminal, at launch, when a relevant setting is enabled, or as soon as
+/// that terminal launches, with the result discarded: the sheet appears at a
+/// moment when nothing is in flight, and every later per-start read finds
+/// consent already settled.
 ///
 /// Fires at most once per terminal per app run, and only when that terminal is
 /// actually running — `tell application id` would otherwise LAUNCH it, which a
@@ -275,6 +294,42 @@ enum TerminalAutomationConsentPrewarm {
     private static var firedBundleIDs: Set<String> = []
     private static var launchObservers: [String: any NSObjectProtocol] = [:]
     private static var observedCenters: [String: NotificationCenter] = [:]
+    private static var probeExecutors: [String: TerminalAppleScriptSerialExecutor] = [:]
+
+    /// Sends the long-timeout consent probe for `bundleID` on a dedicated
+    /// executor and logs how consent settled. Result text is discarded — this
+    /// exists only to park in the sheet so the user can answer it.
+    static func performConsentProbe(bundleID: String) async {
+        guard
+            let source = AppleScriptTerminalTTYReader.consentPrewarmScriptSource(
+                forBundleID: bundleID
+            )
+        else { return }
+        let executor: TerminalAppleScriptSerialExecutor
+        if let existing = probeExecutors[bundleID] {
+            executor = existing
+        } else {
+            executor = TerminalAppleScriptSerialExecutor(
+                source: source,
+                queueLabel: "com.localvoxtral.terminal-consent-prewarm.\(bundleID)"
+            )
+            probeExecutors[bundleID] = executor
+        }
+        switch await executor.execute() {
+        case .failure(let code) where code == -1743:
+            Log.claudeContext.info(
+                "Automation consent declined for \(bundleID, privacy: .public) — grant localvoxtral in System Settings > Privacy > Automation"
+            )
+        case .failure(let code):
+            Log.claudeContext.info(
+                "Consent pre-warm probe for \(bundleID, privacy: .public) ended without a grant decision (AppleScript error \(code, privacy: .public))"
+            )
+        case .success:
+            Log.claudeContext.info(
+                "Automation consent settled for \(bundleID, privacy: .public)"
+            )
+        }
+    }
 
     /// Fires the pre-warm now when `bundleID`'s app is running, otherwise arms
     /// a one-shot launch observer that fires it when the app appears.
@@ -294,7 +349,7 @@ enum TerminalAutomationConsentPrewarm {
             ).isEmpty
         }
         let execute = execute ?? {
-            _ = await AppleScriptTerminalTTYReader().focusedTerminalTTY(bundleID: bundleID)
+            await performConsentProbe(bundleID: bundleID)
         }
         guard !firedBundleIDs.contains(bundleID), launchObservers[bundleID] == nil else { return }
         if isRunning() {
