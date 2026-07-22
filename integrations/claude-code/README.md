@@ -43,27 +43,32 @@ model touches without watching your whole tree.
 Two mechanisms. The resolver always tries both in order; the opt-in setting
 only controls whether local sessions write the marker the second one looks for:
 
-**TTY join (the default — needs Ghostty ≥ 1.4, currently the tip channel).**
-The hooks report
+**TTY join (the default — Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
+and Terminal.app).** The hooks report
 the session's controlling terminal device, and at dictation start the app asks
-Ghostty for the focused pane's `tty` over AppleScript (a one-time Automation
-consent prompt). Device equality is exact, works mid-response, and tells two
-sessions in the same repo apart. Older Ghostty builds fail this read gracefully;
-install Ghostty from tip for reliable local joins while Claude Code is
-responding.
+the focused terminal itself for its focused pane's `tty` over AppleScript (a
+one-time Automation consent prompt per terminal). Device equality is exact,
+works mid-response, and tells two sessions in the same repo apart. Inside a
+[herdr](https://herdr.dev) multiplexer session the TTY can't match (herdr
+interposes its own PTY per pane), so the app instead binds the surface to
+herdr and asks herdr's own socket for the focused pane — an exact pane-id
+join, deliberately marker-free: any ambiguity, including two live herdr
+sessions, attaches nothing. Other terminals abstain entirely rather than
+half-join.
 
 **Title marker (opt-in local fallback, always on for SSH).** For an older
 (stable-channel) Ghostty build, enable **Settings → Text Processing →
 Polishing → Local Claude title fallback** and export
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`. Both joins are Ghostty-only today: a
-join carries a screen-context read, and Ghostty is the only terminal whose
-window is verified to expose exactly the visible screen over accessibility —
-other terminals abstain entirely rather than half-join. The app then replies to local hooks with
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs.
+The app then replies to local hooks with
 the session marker, which Claude Code writes into the window title as an OSC 2
 sequence; the environment variable stops Claude Code from overwriting it with
-its own conversation title mid-turn. Remote hooks always receive the marker
-regardless of this setting because it is the ONLY join for SSH sessions: their
-tty names a device on another machine.
+its own conversation title mid-turn. The fallback exists for stable Ghostty
+only — iTerm2 and Terminal.app expose the TTY natively and never need it, and
+herdr-hosted sessions never receive a marker at all (herdr intercepts titles
+per pane, so a marker could only mis-join). Remote hooks always receive the
+marker regardless of this setting because it is the ONLY join for SSH
+sessions: their tty names a device on another machine.
 
 The marker grammar is `lvx-<hex>` and nothing else is ever emitted — an escape
 sequence is code as much as data, so the marker is allowlist-validated and

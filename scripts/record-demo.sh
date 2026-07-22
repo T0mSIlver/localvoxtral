@@ -19,6 +19,21 @@ set -euo pipefail
 #     files, independent of the window title. Before launching, the script
 #     installs the localvoxtral Claude Code plugin (hooks-only) so those hooks
 #     report the session; it uninstalls afterwards only if it installed it.
+#   * herdr mode (opt-in, DEMO_TERMINAL_AGENT=herdr — never chosen by auto): the
+#     claude scene INSIDE a herdr pane. Ghostty runs `herdr --session <name>`
+#     (an ISOLATED named demo session — the owner's own herdr sessions are never
+#     attached, stopped, or split), with TWO panes: the focused pane runs the
+#     real Claude Code session in the staged repo, the neighbor runs a decoy
+#     watcher printing identifiers from a DIFFERENT fake repo. Beat 2's
+#     grounding then rides the HERDR PANE JOIN (the app resolves the exact pane
+#     over herdr's JSON socket — no title marker, no surface-tty match for the
+#     inner session) and the pane-exact `pane.read` screen context — the visual
+#     proof that the right session wins and neighboring panes never leak. After
+#     beat 2 the script ASSERTS both from the app's unified log
+#     (subsystem com.localvoxtral, category ClaudeContext) and deletes the
+#     capture if the join silently fell back — never record a lying demo.
+#     Pane management is herdr-CLI-only (split/run/send-keys over the socket);
+#     no synthetic keystrokes are used for it.
 #   * shell mode (fallback, no usable claude / no Ghostty): a plain zsh prompt in
 #     Terminal.app (always installed). Here beat 2 grounds `useAuth.ts` from the
 #     repo vocabulary the app reads out of the window-title cwd, as before.
@@ -89,13 +104,24 @@ set -euo pipefail
 #   DEMO_SUBMIT_PROMPT            1 (default) = in claude mode, submit the
 #                                 polished beat-2 prompt and record the response
 #   DEMO_RESPONSE_SECONDS         how long to record the response (default 14)
-#   DEMO_TERMINAL_AGENT           auto (default) | claude | shell — which scene
-#                                 to record. auto records the Ghostty Claude Code
-#                                 scene when `claude` is logged in AND Ghostty is
-#                                 installed, else falls back to the Terminal.app
-#                                 zsh scene. claude REQUIRES both (fails fast if
-#                                 either is missing, or if Ghostty is too old to
-#                                 expose the pane tty); shell forces Terminal.app.
+#   DEMO_TERMINAL_AGENT           auto (default) | claude | herdr | shell —
+#                                 which scene to record. auto records the Ghostty
+#                                 Claude Code scene when `claude` is logged in
+#                                 AND Ghostty is installed, else falls back to
+#                                 the Terminal.app zsh scene (herdr is NEVER
+#                                 chosen by auto — it must be explicit). claude
+#                                 REQUIRES claude+Ghostty (fails fast if either
+#                                 is missing, or if Ghostty is too old to expose
+#                                 the pane tty); herdr additionally REQUIRES
+#                                 `herdr` on the login-shell PATH; shell forces
+#                                 Terminal.app.
+#   DEMO_HERDR_SESSION            herdr mode: the ISOLATED named herdr session
+#                                 the demo creates, drives, and tears down
+#                                 (default "lv-demo"). The demo owns this name:
+#                                 a stale stopped session dir with this name is
+#                                 deleted at start, and the whole session is
+#                                 stopped+deleted on exit. A RUNNING session by
+#                                 this name is refused, never hijacked.
 #   DEMO_GHOSTTY_APP              path to Ghostty.app (default: resolved via
 #                                 mdfind / /Applications). Overrides detection.
 #   DEMO_HANDS_FREE               1 = no human: render the lines with `say`
@@ -129,6 +155,7 @@ DEMO_WARMUP_SECONDS="${DEMO_WARMUP_SECONDS:-12}"
 DEMO_COMMIT_SECONDS="${DEMO_COMMIT_SECONDS:-12}"
 DEMO_POLISH_READY_SECONDS="${DEMO_POLISH_READY_SECONDS:-300}"
 DEMO_TERMINAL_AGENT="${DEMO_TERMINAL_AGENT:-auto}"
+DEMO_HERDR_SESSION="${DEMO_HERDR_SESSION:-lv-demo}"
 # Beat 1 (hold -> live streaming): a technical sentence a developer would say
 # to a coding agent; streamed raw, so no spoken symbol forms here.
 DEMO_LINE_LIVE="${DEMO_LINE_LIVE:-Refactor the retry logic in the websocket client, and add a unit test for the reconnect path.}"
@@ -172,8 +199,8 @@ if [[ -z "${DEMO_CAPTURE_AUDIO:-}" ]]; then
 fi
 
 case "$DEMO_TERMINAL_AGENT" in
-  auto|claude|shell) ;;
-  *) echo "DEMO_TERMINAL_AGENT must be auto, claude, or shell (got: $DEMO_TERMINAL_AGENT)" >&2; exit 1;;
+  auto|claude|herdr|shell) ;;
+  *) echo "DEMO_TERMINAL_AGENT must be auto, claude, herdr, or shell (got: $DEMO_TERMINAL_AGENT)" >&2; exit 1;;
 esac
 
 OUT_DIR="dist/demo"
@@ -357,6 +384,8 @@ SCENE_APP="Terminal"
 SCENE_TELL="application \"Terminal\""
 PLUGIN_INSTALLED_THIS_RUN=0
 MARKETPLACE_ADDED_THIS_RUN=0
+HERDR_BIN=""
+HERDR_SESSION_STARTED=0
 cleanup() {
   set +e # cleanup is best-effort: one failing teardown step must not abort the rest
   if [[ -f "$GESTURE" ]]; then
@@ -385,6 +414,16 @@ cleanup() {
   fi
   if [[ "$LAUNCHED_TERMINAL_APP" == 1 ]]; then
     osascript -e 'tell application "Terminal" to quit' >/dev/null 2>&1 || true
+  fi
+  # herdr (herdr scene): stop and delete ONLY the named demo session this run
+  # started — `session stop` exits the server and every pane process (claude,
+  # the decoy loop), `session delete` removes its persisted state. The stop is
+  # keyed on HERDR_SESSION_STARTED, so a refused/pre-existing session is never
+  # touched, and the default session cannot be reached (every call is
+  # --session-scoped to the demo name).
+  if [[ "$HERDR_SESSION_STARTED" == 1 && -n "$HERDR_BIN" ]]; then
+    "$HERDR_BIN" session stop "$DEMO_HERDR_SESSION" >/dev/null 2>&1 || true
+    "$HERDR_BIN" session delete "$DEMO_HERDR_SESSION" >/dev/null 2>&1 || true
   fi
   # Ghostty (claude scene): kill only OUR pane's tty above, then quit the app
   # only if WE launched it — an owner's pre-existing Ghostty is never quit.
@@ -476,7 +515,24 @@ if [[ "$DEMO_TERMINAL_AGENT" != "shell" ]]; then
   GHOSTTY_PRESENT=0
   [[ -n "$GHOSTTY_APP" && -d "$GHOSTTY_APP" ]] && GHOSTTY_PRESENT=1
 
-  if [[ "$CLAUDE_USABLE" == 1 && "$GHOSTTY_PRESENT" == 1 ]]; then
+  if [[ "$DEMO_TERMINAL_AGENT" == "herdr" ]]; then
+    # herdr scene: the claude scene's requirements PLUS the herdr CLI. Explicit
+    # only — auto never picks it. Fail fast, one precise message per gap.
+    if [[ "$CLAUDE_USABLE" != 1 ]]; then
+      echo "DEMO_TERMINAL_AGENT=herdr, but no usable claude CLI (binary missing from the login-shell PATH, or not logged in)." >&2
+      exit 1
+    fi
+    if [[ "$GHOSTTY_PRESENT" != 1 ]]; then
+      echo "DEMO_TERMINAL_AGENT=herdr needs Ghostty (>=1.4 / tip): the app's herdr arm binds the focused surface's tty to the herdr client before it will ask herdr's socket anything. Install it (brew install --cask ghostty@tip) or set DEMO_GHOSTTY_APP." >&2
+      exit 1
+    fi
+    HERDR_BIN="$(zsh -lc 'command -v herdr' 2>/dev/null || true)"
+    if [[ -z "$HERDR_BIN" ]]; then
+      echo "DEMO_TERMINAL_AGENT=herdr, but no herdr binary on the login-shell PATH (https://herdr.dev)." >&2
+      exit 1
+    fi
+    TERMINAL_AGENT="herdr"
+  elif [[ "$CLAUDE_USABLE" == 1 && "$GHOSTTY_PRESENT" == 1 ]]; then
     TERMINAL_AGENT="claude"
   elif [[ "$DEMO_TERMINAL_AGENT" == "claude" ]]; then
     # Explicit claude: fail fast with the precise missing piece.
@@ -498,13 +554,19 @@ echo "Terminal scene agent: $TERMINAL_AGENT"
 # the System Events PROCESS name (AX must address processes by name); SCENE_TELL
 # is the `tell application …` target, keyed on Ghostty's BUNDLE ID (matching the
 # app's own reader) rather than the fragile display name.
-if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+if [[ "$TERMINAL_AGENT" == "claude" || "$TERMINAL_AGENT" == "herdr" ]]; then
   SCENE_APP="Ghostty"
   SCENE_TELL="application id \"$GHOSTTY_BUNDLE_ID\""
 else
   SCENE_APP="Terminal"
   SCENE_TELL="application \"Terminal\""
 fi
+
+# herdr scene: every herdr invocation is pinned to the isolated demo session —
+# never the caller's HERDR_SESSION / HERDR_SOCKET_PATH (an explicit --session
+# overrides both, so running this script from inside a herdr pane cannot leak
+# commands into that session).
+herdr_cli() { "$HERDR_BIN" --session "$DEMO_HERDR_SESSION" "$@"; }
 
 # --- GUARD: never take over a machine someone is actively using ------------------
 # Field incident 2026-07-21: a hands-free run fired while the owner watched a
@@ -588,8 +650,15 @@ defaults write "$BUNDLE_ID" "settings.repo_vocabulary_enabled" -bool true
 # Automation->Ghostty consent prewarm (#167) at launch, so the pane-tty read the
 # join depends on is not blocked mid-recording. (Default off; snapshotted above,
 # restored on exit. Left off in shell mode, which has no session to join.)
-if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+if [[ "$TERMINAL_AGENT" == "claude" || "$TERMINAL_AGENT" == "herdr" ]]; then
   defaults write "$BUNDLE_ID" "settings.claude_repo_context_enabled" -bool true
+fi
+# herdr mode: the joined pane's screen context arrives over herdr's socket
+# (`pane.read`), gated on the SAME opt-in as an AX screen read — enable it so
+# the pane-exact capture the scene asserts on can fire. (Snapshotted above,
+# restored on exit; left untouched in the other scenes.)
+if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+  defaults write "$BUNDLE_ID" "settings.terminal_screen_context_enabled" -bool true
 fi
 if [[ -n "$DEMO_SAY_INPUT_UID" ]]; then
   defaults write "$BUNDLE_ID" "settings.selected_input_device_uid" -string "$DEMO_SAY_INPUT_UID"
@@ -761,8 +830,11 @@ on run argv
 end run
 OSA
 
-if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+if [[ "$TERMINAL_AGENT" == "claude" || "$TERMINAL_AGENT" == "herdr" ]]; then
   # ---- claude scene: GHOSTTY, so the app can join the pane by its TTY ----------
+  # ---- herdr scene: the same Ghostty+claude scaffolding, with herdr between
+  #      them — Ghostty runs the herdr client, claude runs inside a herdr pane,
+  #      and the join is the pane-exact herdr socket join. ----------------------
   # Install the localvoxtral Claude Code plugin FIRST, so the session's
   # SessionStart/UserPromptSubmit/PostToolUse hooks fire from the moment claude
   # launches and report its tty + prior prompt + touched files to the app. We
@@ -802,6 +874,56 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
     fi
   fi
 
+  if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+    # Claim the isolated demo session name WITHOUT ever touching a running one.
+    # `herdr session delete` succeeds for a missing or stopped session (clearing
+    # stale state from a crashed earlier take) and REFUSES a running one
+    # (src/session.rs delete_session) — exactly the guard we want: a live
+    # session by this name, whoever owns it, is never hijacked or stopped.
+    if ! "$HERDR_BIN" session delete "$DEMO_HERDR_SESSION" >/dev/null 2>&1; then
+      echo "herdr session \"$DEMO_HERDR_SESSION\" is RUNNING — refusing to touch it (the demo needs to own its named session end to end)." >&2
+      echo "If it is a leftover from an earlier demo take, stop it first: herdr session stop $DEMO_HERDR_SESSION — or pick another name via DEMO_HERDR_SESSION." >&2
+      exit 1
+    fi
+
+    # The decoy pane's fake OTHER repo: real files (so the pane could even ls
+    # them) plus a deterministic, network-free watcher loop printing its
+    # identifiers. On camera this is the neighboring pane that must NOT leak
+    # into the polish: beat 2 writes useAuth.ts from the JOINED pane's session,
+    # never usePayment.ts from this one.
+    DECOY_DIR="$DEMO_STAGE/billing"
+    mkdir -p "$DECOY_DIR/src/billing" "$DECOY_DIR/tests"
+    cat > "$DECOY_DIR/package.json" <<'JSON'
+{
+  "name": "billing",
+  "private": true,
+  "scripts": {
+    "test": "vitest run"
+  }
+}
+JSON
+    cat > "$DECOY_DIR/src/billing/usePayment.ts" <<'TS'
+export function usePayment() {
+  return { status: "idle" };
+}
+TS
+    cat > "$DECOY_DIR/src/billing/PaymentForm.tsx" <<'TS'
+export function PaymentForm() {
+  return null;
+}
+TS
+    cat > "$DECOY_DIR/tests/checkout.spec.ts" <<'TS'
+import { test } from "vitest";
+
+test.todo("charges the saved card");
+TS
+    # Single-quoted on purpose (hence the shellcheck directive): the PANE's
+    # shell expands $(date) live on every loop iteration; ours must not.
+    # Prints a fresh line every few seconds so the pane reads as alive.
+    # shellcheck disable=SC2016
+    DECOY_CMD='clear; echo "billing — test watcher"; while :; do echo "$(date +%H:%M:%S)  watching  usePayment.ts  PaymentForm.tsx  checkout.spec.ts"; sleep 3; done'
+  fi
+
   # `open -na … --args` delivers the args ONLY to a freshly launched instance.
   # Against an already-running Ghostty it degrades to a bare reopen: a new tab
   # in the existing window, no --working-directory, no `-e claude` — the scene
@@ -813,12 +935,25 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   fi
   LAUNCHED_GHOSTTY=1
   TTYS_BEFORE=""
-  echo "Launching Ghostty ($GHOSTTY_APP) in $REPO_DIR with claude ($CLAUDE_BIN)..."
-  # Ghostty opens the pane directly on claude, cwd pinned to the staged repo,
-  # with an opaque dark look + big font passed as CLI config (Ghostty has no
-  # scriptable per-tab colors like Terminal). `-e` MUST be last — everything
-  # after it is the command Ghostty runs. --window-width/-height are grid CELLS,
-  # a rough first size that the AX resize below corrects to the capture region.
+  # Ghostty opens the pane directly on the scene command, cwd pinned to the
+  # staged repo, with an opaque dark look + big font passed as CLI config
+  # (Ghostty has no scriptable per-tab colors like Terminal). `-e` MUST be last —
+  # everything after it is the command Ghostty runs. --window-width/-height are
+  # grid CELLS, a rough first size that the AX resize below corrects to the
+  # capture region. herdr mode runs the herdr CLIENT here (`herdr --session` =
+  # launch or attach the isolated named session, which we just proved is not
+  # running); claude then starts INSIDE a herdr pane over the socket, below.
+  if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+    SCENE_EXEC=(-e "$HERDR_BIN" --session "$DEMO_HERDR_SESSION")
+    # From here the demo owns the session name (the stale-delete above proved
+    # nothing was running under it) — cleanup stops+deletes it even if the
+    # server only finishes coming up after a mid-staging abort.
+    HERDR_SESSION_STARTED=1
+    echo "Launching Ghostty ($GHOSTTY_APP) in $REPO_DIR with herdr ($HERDR_BIN, session $DEMO_HERDR_SESSION)..."
+  else
+    SCENE_EXEC=(-e "$CLAUDE_BIN")
+    echo "Launching Ghostty ($GHOSTTY_APP) in $REPO_DIR with claude ($CLAUDE_BIN)..."
+  fi
   open -na "$GHOSTTY_APP" --args \
     --working-directory="$REPO_DIR" \
     --title="webapp" \
@@ -828,7 +963,7 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
     --foreground=e6e6e6 \
     --window-width=100 \
     --window-height=30 \
-    -e "$CLAUDE_BIN"
+    "${SCENE_EXEC[@]}"
   for _ in $(seq 1 20); do pgrep -xiq ghostty && break; sleep 0.5; done
   pgrep -xiq ghostty || { echo "Ghostty did not launch." >&2; exit 1; }
   sleep 4
@@ -839,10 +974,14 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   # an already-trusted folder). Same one-Return discipline as the shell path.
   # Address Ghostty by bundle id (not display name) — the app's own reader does
   # too, and a by-name tell is fragile under localization / name collisions.
-  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
-  assert_scene_frontmost "folder-trust Return"
-  osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
-  sleep 3
+  # herdr mode skips this: claude is not running yet (it starts inside a herdr
+  # pane below, and its trust dialog is answered pane-exactly over the socket).
+  if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+    osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+    assert_scene_frontmost "folder-trust Return"
+    osascript -e 'tell application "System Events" to key code 36' >/dev/null 2>&1 || true
+    sleep 3
+  fi
 
   # Capability check + cleanup tty: ask Ghostty for the focused pane's tty using
   # the SAME AppleScript the app's join uses. A /dev/tty result proves Ghostty
@@ -887,24 +1026,86 @@ if [[ "$TERMINAL_AGENT" == "claude" ]]; then
   fi
   rm -f "$GTTY_ERR"
 
-  # Staged FIRST prompt: typed (not dictated) and submitted, so the plugin's
-  # UserPromptSubmit + PostToolUse(Read) hooks register this session's prior
-  # prompt and recently-read file BEFORE beat 2 — the join + grounding are
-  # resolved at beat 2's dictation START. Read-only, so the turn is fast.
+  if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+    # ---- herdr pane staging: CLI/socket only, no synthetic keystrokes --------
+    # We just launched the herdr client in Ghostty; wait for its server to
+    # answer on the demo session's socket and expose the initial pane.
+    echo "Waiting for the herdr demo session ($DEMO_HERDR_SESSION) to come up..."
+    HERDR_CLAUDE_PANE=""
+    HERDR_DEADLINE=$(( SECONDS + 30 ))
+    until [[ -n "$HERDR_CLAUDE_PANE" ]]; do
+      if (( SECONDS >= HERDR_DEADLINE )); then
+        echo "herdr session $DEMO_HERDR_SESSION never answered \`pane list\` within 30s — aborting." >&2
+        exit 1
+      fi
+      # Compact one-line JSON: {"id":...,"result":{"panes":[{"pane_id":"...",...
+      HERDR_CLAUDE_PANE="$(herdr_cli pane list 2>/dev/null \
+        | grep -o '"pane_id":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)"
+      [[ -n "$HERDR_CLAUDE_PANE" ]] || sleep 1
+    done
+    echo "herdr initial pane: $HERDR_CLAUDE_PANE"
+
+    # Second pane: the decoy watcher, split to the RIGHT of the claude pane in
+    # the fake billing repo. `pane split` leaves focus unchanged by default
+    # (--no-focus states it explicitly), so the claude pane keeps the composer.
+    # The split response is the new pane: .result.pane.pane_id.
+    HERDR_SPLIT_OUT="$(herdr_cli pane split --pane "$HERDR_CLAUDE_PANE" --direction right --cwd "$DECOY_DIR" --no-focus 2>&1)" \
+      || { echo "herdr pane split failed: $HERDR_SPLIT_OUT" >&2; exit 1; }
+    HERDR_DECOY_PANE="$(grep -o '"pane_id":"[^"]*"' <<<"$HERDR_SPLIT_OUT" | head -n 1 | cut -d'"' -f4 || true)"
+    [[ -n "$HERDR_DECOY_PANE" && "$HERDR_DECOY_PANE" != "$HERDR_CLAUDE_PANE" ]] \
+      || { echo "Could not identify the new decoy pane (split response: $HERDR_SPLIT_OUT)." >&2; exit 1; }
+    echo "herdr decoy pane:   $HERDR_DECOY_PANE"
+    sleep 1 # let the new pane's shell finish spawning before typing into it
+    # `pane run` submits text + Enter atomically into the pane's shell.
+    herdr_cli pane run "$HERDR_DECOY_PANE" "$DECOY_CMD" >/dev/null \
+      || { echo "Failed to start the decoy watcher in pane $HERDR_DECOY_PANE." >&2; exit 1; }
+
+    # Claude in the FOCUSED pane, cd'd explicitly so the session cwd is the
+    # staged repo regardless of the pane shell's starting directory.
+    echo "Starting claude inside herdr pane $HERDR_CLAUDE_PANE..."
+    herdr_cli pane run "$HERDR_CLAUDE_PANE" "cd $(printf %q "$REPO_DIR") && $(printf %q "$CLAUDE_BIN")" >/dev/null \
+      || { echo "Failed to start claude in pane $HERDR_CLAUDE_PANE." >&2; exit 1; }
+    sleep 6
+    # Folder-trust dialog acceptance, pane-exact over the socket (a no-op Enter
+    # on an empty composer when the folder is already trusted).
+    herdr_cli pane send-keys "$HERDR_CLAUDE_PANE" Enter >/dev/null || true
+    sleep 3
+
+    # The dictated beats land in whatever pane herdr focuses — prove it is the
+    # claude pane, or the demo would stream text into the decoy.
+    if ! herdr_cli pane get "$HERDR_CLAUDE_PANE" | grep -q '"focused":true'; then
+      echo "herdr focus is NOT on the claude pane ($HERDR_CLAUDE_PANE) — the beats would land in the wrong pane. Aborting." >&2
+      exit 1
+    fi
+  fi
+
+  # Staged FIRST prompt: submitted so the plugin's UserPromptSubmit +
+  # PostToolUse(Read) hooks register this session's prior prompt and
+  # recently-read file BEFORE beat 2 — the join + grounding are resolved at
+  # beat 2's dictation START. Read-only, so the turn is fast.
   #
   # This submit is the ENTIRE mechanism that gives beat 2 its prior-prompt /
-  # recent-file grounding, so it must NOT be swallowed: if focus slipped (trust
-  # dialog still up, wrong window frontmost) the keystrokes are lost and the demo
-  # would silently record with the feature no-op'd. Fail fast on either failure.
+  # recent-file grounding, so it must NOT be swallowed. Fail fast on failure.
   echo "Submitting the staged setup prompt (grounds beat 2): \"$DEMO_LINE_CLAUDE_SETUP\""
-  osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
-  sleep 1
-  assert_scene_frontmost "staged setup prompt"
-  osascript "$KEYSTROKE_OSA" "$DEMO_LINE_CLAUDE_SETUP" \
-    || { echo "Setup-prompt keystroke failed (focus lost?); beat 2 would ground on nothing. Aborting." >&2; exit 1; }
-  sleep 0.5
-  osascript -e 'tell application "System Events" to key code 36' \
-    || { echo "Setup-prompt submit (Return) failed; beat 2 would ground on nothing. Aborting." >&2; exit 1; }
+  if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+    # Pane-exact over the socket: `pane run` is bracketed-paste aware and
+    # submits text + Enter atomically into claude's composer — no focus race.
+    herdr_cli pane run "$HERDR_CLAUDE_PANE" "$DEMO_LINE_CLAUDE_SETUP" >/dev/null \
+      || { echo "Setup-prompt pane run failed; beat 2 would ground on nothing. Aborting." >&2; exit 1; }
+  else
+    # claude mode: typed (not dictated) into the frontmost Ghostty window. If
+    # focus slipped (trust dialog still up, wrong window frontmost) the
+    # keystrokes are lost and the demo would silently record with the feature
+    # no-op'd — fail fast on either failure.
+    osascript -e "tell application id \"$GHOSTTY_BUNDLE_ID\" to activate" >/dev/null 2>&1 || true
+    sleep 1
+    assert_scene_frontmost "staged setup prompt"
+    osascript "$KEYSTROKE_OSA" "$DEMO_LINE_CLAUDE_SETUP" \
+      || { echo "Setup-prompt keystroke failed (focus lost?); beat 2 would ground on nothing. Aborting." >&2; exit 1; }
+    sleep 0.5
+    osascript -e 'tell application "System Events" to key code 36' \
+      || { echo "Setup-prompt submit (Return) failed; beat 2 would ground on nothing. Aborting." >&2; exit 1; }
+  fi
   sleep "$DEMO_CLAUDE_SETUP_SECONDS"
 else
   # ---- shell scene: Terminal.app (unchanged honest fallback) -------------------
@@ -1004,7 +1205,11 @@ sleep 1
 speak_or_wait "Ready to record the demo."
 tap_hotkey
 sleep $(( DEMO_COMMIT_SECONDS + 4 )) # cold polish — wait it out fully before clearing
-if [[ "$TERMINAL_AGENT" == "claude" ]]; then
+if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+  # Ctrl+C clears the composer text the warmup committed — pane-exact over the
+  # socket, so it cannot land anywhere but claude's composer.
+  herdr_cli pane send-keys "$HERDR_CLAUDE_PANE" ctrl+c >/dev/null
+elif [[ "$TERMINAL_AGENT" == "claude" ]]; then
   # Ctrl+C clears the composer text the warmup committed.
   osascript -e 'tell application "System Events" to keystroke "c" using control down' >/dev/null
 else
@@ -1071,13 +1276,19 @@ sleep 3 # stop finalization + held-back tail flush
 
 # Transition — clear the prompt line WITHOUT Return (Return would submit!).
 # A single Ctrl+C gives a fresh prompt line in zsh and clears Claude Code's
-# composer (a second one would exit claude — never send two).
-osascript -e 'tell application "System Events" to keystroke "c" using control down' >/dev/null
+# composer (a second one would exit claude — never send two). herdr mode sends
+# it pane-exactly over the socket instead of as a synthetic keystroke.
+if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+  herdr_cli pane send-keys "$HERDR_CLAUDE_PANE" ctrl+c >/dev/null
+else
+  osascript -e 'tell application "System Events" to keystroke "c" using control down' >/dev/null
+fi
 sleep 1.5
 
 # Beat 2 — tap: overlay buffer, spoken symbol forms, agent-profile polish,
 # and the committed text lands in the terminal.
 cue "BEAT 2 — overlay + agent polish (tap). Speak after the beep." "$DEMO_LINE_OVERLAY"
+HERDR_ASSERT_LOG_START="$(date '+%Y-%m-%d %H:%M:%S')" # herdr join proof window
 tap_hotkey
 sleep 1
 speak_or_wait "$DEMO_LINE_OVERLAY"
@@ -1086,14 +1297,59 @@ echo "Committing (agent-profile polish + insert)..."
 sleep "$DEMO_COMMIT_SECONDS"
 sleep 3 # let the committed text sit on screen
 
-# Ending (claude mode) — genuinely submit the polished prompt and record the
-# real response. This is the ONE deliberate Return on dictated text, owner-
+# VERIFICATION (herdr mode) — the demo's whole claim is that beat 2 was
+# grounded through the HERDR PANE JOIN with pane-exact screen context. Prove
+# both from the app's own unified log for beat 2's window, or destroy the
+# capture: a take where the join silently abstained (falling back to
+# no-context) is a lying demo, and "Never fake a running agent" extends to
+# never faking a working join. The two lines asserted are emitted by
+# TerminalScreenClaudeJoin.resolveViaHerdr and
+# HerdrPaneScreenContext.captureAtStart (subsystem com.localvoxtral,
+# category ClaudeContext); every abstention logs its outcome publicly, so the
+# failure path prints whatever the join said instead.
+if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+  echo "Verifying the herdr pane join from the app log..."
+  HERDR_JOIN_OK=0
+  HERDR_SCREEN_OK=0
+  HERDR_LOG_SLICE=""
+  HERDR_VERIFY_DEADLINE=$(( SECONDS + 20 )) # log ingestion can lag a little
+  while :; do
+    HERDR_LOG_SLICE="$(log show --info --start "$HERDR_ASSERT_LOG_START" \
+      --predicate 'subsystem == "com.localvoxtral" AND category == "ClaudeContext"' 2>/dev/null || true)"
+    grep -qF 'joined to a live Claude session via herdr pane' <<<"$HERDR_LOG_SLICE" && HERDR_JOIN_OK=1
+    grep -qF 'Herdr pane screen context captured at start' <<<"$HERDR_LOG_SLICE" && HERDR_SCREEN_OK=1
+    [[ "$HERDR_JOIN_OK" == 1 && "$HERDR_SCREEN_OK" == 1 ]] && break
+    (( SECONDS >= HERDR_VERIFY_DEADLINE )) && break
+    sleep 2
+  done
+  if [[ "$HERDR_JOIN_OK" != 1 || "$HERDR_SCREEN_OK" != 1 ]]; then
+    rm -f "$RAW_MOV" "$OUT_MP4" # never leave a lying capture behind
+    [[ "$HERDR_JOIN_OK" != 1 ]] \
+      && echo "HERDR VERIFICATION FAILED: no 'joined … via herdr pane' in the app log for beat 2 — the join abstained or fell back, so the recorded beat was NOT grounded by the pane join." >&2
+    [[ "$HERDR_SCREEN_OK" != 1 ]] \
+      && echo "HERDR VERIFICATION FAILED: no 'Herdr pane screen context captured at start' — the pane-exact pane.read never attached." >&2
+    echo "Likely causes: the app's Automation->Ghostty grant is missing (tty read blocked), another live herdr-hosted Claude session is registered (the resolver refuses to guess between sockets), the plugin hooks did not fire, or the screen-context consent gate rejected." >&2
+    echo "ClaudeContext log for the window (join outcomes are public):" >&2
+    grep -iE 'herdr|joined|marker|abstain|screen' <<<"$HERDR_LOG_SLICE" >&2 \
+      || echo "  (no ClaudeContext lines at all — did the hooks/plugin publish this session?)" >&2
+    exit 1
+  fi
+  echo "herdr join verified: pane join + pane-exact screen context both present in the app log."
+fi
+
+# Ending (claude/herdr modes) — genuinely submit the polished prompt and record
+# the real response. This is the ONE deliberate Return on dictated text, owner-
 # approved: one small read-only request against the owner's Claude usage.
-if [[ "$TERMINAL_AGENT" == "claude" && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
+if [[ ( "$TERMINAL_AGENT" == "claude" || "$TERMINAL_AGENT" == "herdr" ) && "$DEMO_SUBMIT_PROMPT" == 1 ]]; then
   echo "Submitting the polished prompt to claude (recording the response for ${DEMO_RESPONSE_SECONDS}s)..."
-  osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
-  assert_scene_frontmost "polished-prompt submit"
-  osascript -e 'tell application "System Events" to key code 36' >/dev/null
+  if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
+    # Pane-exact Enter over the socket — it can only reach claude's composer.
+    herdr_cli pane send-keys "$HERDR_CLAUDE_PANE" Enter >/dev/null
+  else
+    osascript -e "tell $SCENE_TELL to activate" >/dev/null 2>&1 || true
+    assert_scene_frontmost "polished-prompt submit"
+    osascript -e 'tell application "System Events" to key code 36' >/dev/null
+  fi
   sleep "$DEMO_RESPONSE_SECONDS"
 fi
 

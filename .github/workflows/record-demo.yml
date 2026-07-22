@@ -8,7 +8,7 @@ name: Record README Demo
 # which have no upload API, so the owner drag-drops the mp4 into a PR comment
 # and pastes the URL.
 #
-# Two scenes, chosen by `terminal_agent` / what the runner has:
+# Three scenes, chosen by `terminal_agent` / what the runner has:
 #   * claude (flagship): a real Claude Code session in GHOSTTY, so the app joins
 #     the pane to the session by its controlling tty and grounds beat 2 in the
 #     session's own cwd / prior prompt / recent files. The script installs the
@@ -25,6 +25,13 @@ name: Record README Demo
 #     With terminal_agent=claude the script FAILS FAST when any of the terminal
 #     prerequisites are missing; with terminal_agent=auto it falls back to the
 #     shell scene below.
+#   * herdr (explicit only — never chosen by auto): the claude scene inside a
+#     herdr pane. Ghostty runs `herdr --session <isolated demo session>`, two
+#     panes (claude + a decoy watcher), and beat 2 is grounded through the
+#     HERDR PANE JOIN + pane-exact pane.read screen context; the script asserts
+#     both from the app's unified log and fails (deleting the capture) if the
+#     join silently fell back. Requires everything the claude scene does PLUS
+#     `herdr` on the runner user's login-shell PATH (https://herdr.dev).
 #   * shell (fallback): a plain zsh prompt in Terminal.app (always installed);
 #     beat 2 grounds `useAuth.ts` from the window-title cwd, as before.
 #
@@ -43,12 +50,13 @@ on:
   workflow_dispatch:
     inputs:
       terminal_agent:
-        description: "Scene: auto = Ghostty Claude session when claude+Ghostty available else Terminal.app zsh; claude = require Ghostty+claude (fail fast otherwise); shell = Terminal.app zsh"
+        description: "Scene: auto = Ghostty Claude session when claude+Ghostty available else Terminal.app zsh; claude = require Ghostty+claude (fail fast otherwise); herdr = Claude inside a herdr pane, require Ghostty+claude+herdr (fail fast otherwise); shell = Terminal.app zsh"
         type: choice
         default: auto
         options:
           - auto
           - claude
+          - herdr
           - shell
 
 concurrency:
@@ -93,10 +101,11 @@ jobs:
             echo "Machine in active use (idle ${IDLE}s < ${REQUIRED}s) — refusing before the build. Rerun when the Mac is idle." >&2
             exit 1
           fi
-          # Same economics for the claude scene's other refusal: a pre-running
-          # Ghostty swallows the launch args (script aborts post-build).
-          if [[ "${{ inputs.terminal_agent }}" == "claude" ]] && pgrep -xiq ghostty; then
-            echo "Ghostty is already running — the claude scene must launch it itself. Quit Ghostty and rerun." >&2
+          # Same economics for the claude/herdr scenes' other refusal: a
+          # pre-running Ghostty swallows the launch args (script aborts
+          # post-build).
+          if [[ "${{ inputs.terminal_agent }}" == "claude" || "${{ inputs.terminal_agent }}" == "herdr" ]] && pgrep -xiq ghostty; then
+            echo "Ghostty is already running — the ${{ inputs.terminal_agent }} scene must launch it itself. Quit Ghostty and rerun." >&2
             exit 1
           fi
           # And for a locked screen: the recorder fails fast on Secure
