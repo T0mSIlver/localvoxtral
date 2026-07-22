@@ -32,6 +32,7 @@ private final class JoinTestMarkers: Sendable {
 private struct JoinTestHerdrPanes: HerdrPaneQuerying {
     var focused: HerdrFocusedPane?
     var foreground: HerdrPaneForegroundInfo?
+    var visibleText: String?
     var onFocused: @Sendable () -> Void = {}
 
     func focusedPane(socketPath _: String) async -> HerdrFocusedPane? {
@@ -44,6 +45,10 @@ private struct JoinTestHerdrPanes: HerdrPaneQuerying {
         paneID _: String
     ) async -> HerdrPaneForegroundInfo? {
         foreground
+    }
+
+    func paneVisibleText(socketPath _: String, paneID _: String) async -> String? {
+        visibleText
     }
 }
 

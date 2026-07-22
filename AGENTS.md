@@ -446,9 +446,15 @@ Key subsystems:
     foreground process list (catches a suspended Claude with the user at the
     shell). Two live herdr sessions (distinct sockets) abstain — there is no
     way to tell which one the surface displays. A herdr join never authorizes
-    raw screen attachment: the AX capture is the composite herdr TUI, and
-    neighboring panes must not ride into this session's prompt (a clean
-    `pane.read` excerpt is a possible follow-up, not built).
+    raw screen attachment of the AX capture: that is the composite herdr TUI,
+    and neighboring panes must not ride into this session's prompt. Instead,
+    a herdr join's screen context is a clean `pane.read` excerpt of EXACTLY
+    the joined pane (`HerdrPaneScreenContext`), fetched at start and stop
+    behind the same consent gate and sanitize/cap pipeline as an AX read;
+    `pane.read` fires only after the herdrPane join resolved and never for
+    any other pane or mechanism. On any pane.read failure the session falls
+    back to the pre-existing behavior — composite AX text, vocabulary-only,
+    nothing attached.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

@@ -20,6 +20,14 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     case herdrPane
 }
 
+/// The herdr pane a `.herdrPane` join resolved to. Captured at resolution so
+/// the pane-text fetch can only ever be keyed by the pane the join is ABOUT —
+/// there is no other place a pane id enters that path.
+struct ClaudeHerdrPaneBinding: Sendable, Equatable {
+    let paneID: String
+    let socketPath: String
+}
+
 struct ClaudeSessionJoin: Sendable, Equatable {
     /// The pane the join was resolved for. Consumers re-check this rather than
     /// assuming the join is about whatever target they happen to hold.
@@ -39,6 +47,25 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// pane join is useful for session/repository context but can never license
     /// a composite raw TUI capture.
     let mechanism: ClaudeSessionJoinMechanism
+    /// Non-nil exactly for `.herdrPane` joins: the pane whose clean, per-pane
+    /// text (`pane.read`) may stand in for the composite screen capture.
+    let herdrPane: ClaudeHerdrPaneBinding?
+
+    init(
+        target: TerminalScreenTarget,
+        marker: ClaudeSessionMarker,
+        snapshot: ClaudeSessionSnapshot,
+        windowID: CGWindowID?,
+        mechanism: ClaudeSessionJoinMechanism,
+        herdrPane: ClaudeHerdrPaneBinding? = nil
+    ) {
+        self.target = target
+        self.marker = marker
+        self.snapshot = snapshot
+        self.windowID = windowID
+        self.mechanism = mechanism
+        self.herdrPane = herdrPane
+    }
 
     /// The workspace path, non-nil only for a locally authenticated session.
     /// The type is what keeps a remote session's cwd away from the filesystem;
@@ -260,7 +287,30 @@ struct ClaudeSessionJoinResolver {
             marker: snapshot.marker,
             snapshot: snapshot,
             windowID: focusedWindowID(target.pid),
-            mechanism: .herdrPane
+            mechanism: .herdrPane,
+            herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath)
+        )
+    }
+
+    /// The joined herdr pane's visible text, or nil on any refusal or failure.
+    ///
+    /// This is the ONLY path that issues a `pane.read`, and it can only read
+    /// the pane the join resolved to: the request is keyed by the binding the
+    /// herdr arm captured at resolution time, so no other pane — and no other
+    /// join mechanism — can reach herdr's socket through it. The returned text
+    /// is RAW wire text; the caller owns sanitization, bounding, and every
+    /// consent gate (see `HerdrPaneScreenContext`).
+    func herdrPaneVisibleText(for join: ClaudeSessionJoin) async -> String? {
+        guard join.mechanism == .herdrPane, let binding = join.herdrPane else {
+            Log.claudeContext.info("Herdr pane read refused: join is not a herdr pane join")
+            return nil
+        }
+        guard let herdrPanes else {
+            Log.claudeContext.info("Herdr pane read refused: pane query capability unavailable")
+            return nil
+        }
+        return await herdrPanes.paneVisibleText(
+            socketPath: binding.socketPath, paneID: binding.paneID
         )
     }
 

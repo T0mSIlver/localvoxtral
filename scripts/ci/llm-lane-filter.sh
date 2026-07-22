@@ -70,6 +70,7 @@ PATTERNS=(
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
   '*DictationViewModel+Session.swift'                # polish-and-commit path
+  'Sources/localvoxtral/DictationViewModel.swift'    # context capture/gate call sites feeding the commit path
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
   '*PolishHelperIntegrationTests*'                   # the lane's own suite
   '*AgentDictationE2EEval*'                          # agent-dictation E2E eval harness (suite + support + its unit tests)

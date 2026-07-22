@@ -129,6 +129,26 @@ private func herdrRequest(_ data: Data) -> [String: Any]? {
     return object as? [String: Any]
 }
 
+private func paneReadResult(
+    paneID: String = "pane-a",
+    text: String = "swift build\nerror: FooBar.swift:12",
+    type: String = "pane_read"
+) -> [String: Any] {
+    [
+        "type": type,
+        "read": [
+            "pane_id": paneID,
+            "workspace_id": "ws-1",
+            "tab_id": "tab-1",
+            "source": "visible",
+            "format": "text",
+            "text": text,
+            "revision": 3,
+            "truncated": false,
+        ],
+    ]
+}
+
 private func herdrResponse(
     for request: Data,
     result: [String: Any]? = nil,
@@ -334,6 +354,88 @@ final class HerdrSocketClientTests: XCTestCase {
         let request = try XCTUnwrap(server.requestLine.flatMap(herdrRequest))
         XCTAssertEqual(request["method"] as? String, "pane.process_info")
         XCTAssertEqual((request["params"] as? [String: Any])?["pane_id"] as? String, "pane-a")
+    }
+
+    // MARK: - pane.read
+
+    /// The exact wire shape herdr c234f221 accepts: `pane.read` with required
+    /// `pane_id` + `source`, and `strip_ansi` as a real JSON bool — a string
+    /// "true" would fail herdr's serde decoding.
+    func testPaneVisibleTextHappyPathSendsPaneReadWireShape() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(for: request, result: paneReadResult())
+        }
+        defer { server.stop() }
+
+        let text = await HerdrSocketClient().paneVisibleText(
+            socketPath: server.socketPath, paneID: "pane-a"
+        )
+
+        XCTAssertEqual(text, "swift build\nerror: FooBar.swift:12")
+        let request = try XCTUnwrap(server.requestLine.flatMap(herdrRequest))
+        XCTAssertTrue((request["id"] as? String)?.hasPrefix("lvx-") == true)
+        XCTAssertEqual(request["method"] as? String, "pane.read")
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertEqual(params["pane_id"] as? String, "pane-a")
+        XCTAssertEqual(params["source"] as? String, "visible")
+        XCTAssertEqual(params["format"] as? String, "text")
+        XCTAssertEqual(params["strip_ansi"] as? Bool, true)
+    }
+
+    func testPaneVisibleTextMismatchedResponsePaneIDAbstains() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(for: request, result: paneReadResult(paneID: "pane-OTHER"))
+        }
+        defer { server.stop() }
+
+        let text = await HerdrSocketClient().paneVisibleText(
+            socketPath: server.socketPath, paneID: "pane-a"
+        )
+        XCTAssertNil(text, "another pane's text must never be attributed to the joined pane")
+    }
+
+    func testPaneVisibleTextWrongResultTypeAbstains() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(for: request, result: paneReadResult(type: "pane_current"))
+        }
+        defer { server.stop() }
+
+        let text = await HerdrSocketClient().paneVisibleText(
+            socketPath: server.socketPath, paneID: "pane-a"
+        )
+        XCTAssertNil(text)
+    }
+
+    func testPaneVisibleTextErrorEnvelopeAbstains() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(
+                for: request,
+                error: ["code": "pane_not_found", "message": "not found"]
+            )
+        }
+        defer { server.stop() }
+
+        let text = await HerdrSocketClient().paneVisibleText(
+            socketPath: server.socketPath, paneID: "pane-a"
+        )
+        XCTAssertNil(text)
+    }
+
+    func testPaneVisibleTextShortInjectedDeadlineExpiresWhenServerDoesNotReply() async throws {
+        let release = DispatchSemaphore(value: 0)
+        let server = try HerdrOneShotServer { _ in
+            release.wait()
+            return nil
+        }
+        defer {
+            release.signal()
+            server.stop()
+        }
+
+        let text = await HerdrSocketClient(timeout: 0.01).paneVisibleText(
+            socketPath: server.socketPath, paneID: "pane-a"
+        )
+        XCTAssertNil(text)
     }
 
     func testForegroundProcessesPresentDecodePIDs() async throws {
