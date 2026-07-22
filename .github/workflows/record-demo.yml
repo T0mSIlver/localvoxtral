@@ -99,7 +99,24 @@ jobs:
             echo "Ghostty is already running — the claude scene must launch it itself. Quit Ghostty and rerun." >&2
             exit 1
           fi
-          echo "Idle guard (pre-build): machine idle ${IDLE}s (>= ${REQUIRED}s)."
+          # And for a locked screen: the recorder fails fast on Secure
+          # Keyboard Entry anyway, but only AFTER packaging. Same probe as
+          # scripts/ci/ui-smoke-guard.sh; probe errors fail open (an
+          # uncomputable state must not silently disable the lane).
+          LOCK_STATE="$(swift - <<'SWIFT' 2>/dev/null || echo error
+          import CoreGraphics
+          guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+            print("no-session")
+            exit(0)
+          }
+          print(session["CGSSessionScreenIsLocked"] != nil ? "locked" : "unlocked")
+          SWIFT
+          )"
+          if [[ "$LOCK_STATE" == "locked" || "$LOCK_STATE" == "no-session" ]]; then
+            echo "GUI session is $LOCK_STATE — the recorder needs an unlocked session. Refusing before the build." >&2
+            exit 1
+          fi
+          echo "Idle guard (pre-build): machine idle ${IDLE}s (>= ${REQUIRED}s), session unlocked."
 
       - name: Package app bundle
         if: steps.guard.outputs.present == 'true'
