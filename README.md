@@ -104,6 +104,12 @@ localvoxtral ships a [Claude Code plugin](integrations/claude-code/README.md) th
 
 The result is dictation that gets the hard part right: the misheard `useAuth.ts`, the branch name you mentioned two turns ago, the flag Claude just wrote into a file.
 
+Here it is inside a [herdr](https://herdr.dev) multiplexer — the join binds to the exact Claude pane and grounds the dictation in that pane's screen, while the neighboring pane stays out of the prompt:
+
+<!-- herdr demo video: recorded by record-demo.yml (terminal_agent=herdr); regenerate via that workflow and replace the URL below. -->
+
+https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
+
 Install is one click: **Settings → Text Processing → Claude Code plugin → Install**. The app registers its bundled plugin marketplace through Claude Code's own CLI and never edits `~/.claude/settings.json` behind your back.
 
 **Working over SSH?** A second plugin, `localvoxtral-remote`, covers Claude Code sessions on other machines: its hooks POST through an SSH `RemoteForward` back to your Mac — nothing to install on the host beyond the plugin's two JSON files, authenticated by a per-host token you can rotate or revoke in Settings at any time. Remote context is bounded and opaque by construction: labels and short sanitized excerpts only, and the app never reaches into the remote filesystem.
