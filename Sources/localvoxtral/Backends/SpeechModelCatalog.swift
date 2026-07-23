@@ -15,7 +15,7 @@ enum SpeechModelCatalog {
         // mlx-community pin, plus a 4-bit/g64-quantized tied embedding/LM head — the
         // decode loop's dominant per-token cost (~30 ms -> ~3 ms on M1 Pro). Loading it
         // requires the quantized-tied-embedding loader fix pinned in
-        // SpeechHelper/Package.swift (staged upstream as Blaizzy/mlx-audio-swift#232).
+        // SpeechHelper/Package.swift (upstreamed in Blaizzy/mlx-audio-swift#232).
         SpeechModelOption(
             repoID: "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
             revision: "247f2eeccf962fbcaf85e361731a5e75b2d8cac1",

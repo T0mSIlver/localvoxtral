@@ -34,15 +34,13 @@ let package = Package(
         // #226). Pinned to a full-SHA revision, not a tag, so the exact reviewed tree is
         // reproducible — see DEPENDENCY.md for the upgrade procedure.
         //
-        // TEMPORARY FORK PIN: our fork's `fix/load-quantized-tied-embedding` = upstream
-        // main 6ea59e5 (which now contains everything the previous e1-e2 pin carried:
-        // upstream #229/#230/#231) plus the quantized-tied-embedding loader fix staged
-        // upstream as Blaizzy/mlx-audio-swift#232 — required by the catalog's -qhead model
-        // (SpeechModelCatalog). Switch the URL back to Blaizzy/mlx-audio-swift once #232
-        // merges.
+        // 8ed8188 is the merge of Blaizzy/mlx-audio-swift#232 (quantized-tied-embedding
+        // loader — required by the catalog's -qhead model, SpeechModelCatalog); with it
+        // upstream main carries everything the temporary T0mSIlver fork pin held, so the
+        // pin is back on upstream.
         .package(
-            url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-            revision: "791ab876c10b47cc9f8894ff4100240aa6d95bf7"
+            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
+            revision: "8ed8188bf862062d2c6f4c6ecefbfed301f615a0"
         ),
     ],
     targets: [

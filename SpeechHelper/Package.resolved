@@ -21,9 +21,9 @@
     {
       "identity": "mlx-audio-swift",
       "kind": "remoteSourceControl",
-      "location": "https://github.com/T0mSIlver/mlx-audio-swift.git",
+      "location": "https://github.com/Blaizzy/mlx-audio-swift.git",
       "state": {
-        "revision": "791ab876c10b47cc9f8894ff4100240aa6d95bf7"
+        "revision": "8ed8188bf862062d2c6f4c6ecefbfed301f615a0"
       }
     },
     {

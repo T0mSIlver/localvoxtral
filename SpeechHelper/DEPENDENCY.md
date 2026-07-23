@@ -16,27 +16,25 @@ checkout — we no longer keep a copy here.
 
 ```
 .package(
-    url: "https://github.com/T0mSIlver/mlx-audio-swift.git",
-    revision: "791ab876c10b47cc9f8894ff4100240aa6d95bf7"
+    url: "https://github.com/Blaizzy/mlx-audio-swift.git",
+    revision: "8ed8188bf862062d2c6f4c6ecefbfed301f615a0"
 )
 ```
 
 Pinned to a full-SHA **revision**, not a tag, so the exact reviewed tree is reproducible and
 can't move under us.
 
-**Temporary fork pin.** `791ab87` is our fork's `fix/load-quantized-tied-embedding` branch:
-upstream main `6ea59e5` — which now contains everything the previous `localvoxtral-pin-e1-e2`
-pin carried as fork commits (upstream
-[#229](https://github.com/Blaizzy/mlx-audio-swift/pull/229): Metal-pool clear cadence,
-[#230](https://github.com/Blaizzy/mlx-audio-swift/pull/230): incremental mel/conv front end,
-[#231](https://github.com/Blaizzy/mlx-audio-swift/pull/231): hoisted attention invariants,
-all merged) — plus one commit: the quantized-tied-embedding loader fix staged upstream as
-[Blaizzy/mlx-audio-swift#232](https://github.com/Blaizzy/mlx-audio-swift/pull/232). That fix
-is required to load the catalog-pinned `-qhead` checkpoint (4-bit/g64-quantized tied
-embedding/LM head — see `SpeechModelCatalog.swift`); without it the loader rejects the
-checkpoint's `tok_embeddings.scales`/`.biases` under `verify: .all`. Switchback plan: once
-#232 merges, point the URL back at `Blaizzy/mlx-audio-swift` at the containing revision and
-delete the fork branch; nothing else changes.
+`8ed8188` is upstream main at the merge of
+[Blaizzy/mlx-audio-swift#232](https://github.com/Blaizzy/mlx-audio-swift/pull/232): the
+quantized-tied-embedding loader fix, required to load the catalog-pinned `-qhead` checkpoint
+(4-bit/g64-quantized tied embedding/LM head — see `SpeechModelCatalog.swift`); without it the
+loader rejects the checkpoint's `tok_embeddings.scales`/`.biases` under `verify: .all`. Its
+merge ended the temporary `T0mSIlver/mlx-audio-swift` fork pin that had staged the fix — every
+optimization the fork ever carried is upstream now (#229: Metal-pool clear cadence, #230:
+incremental mel/conv front end, #231: hoisted attention invariants, #232 above). Note the
+merged #232 is a review-evolved variant of the fork commit (module-routed
+`embedToken`/`logits` instead of raw-weight access, plus upstream regression tests), so the
+switchback re-ran the live speechd integration lane rather than assuming equivalence.
 
 ## What #226 upstreamed
 
