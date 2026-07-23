@@ -107,7 +107,7 @@ The result is dictation that gets the hard part right: the misheard `useAuth.ts`
 Here it is inside a [herdr](https://herdr.dev) multiplexer — the join binds to the exact Claude pane and grounds the dictation in that pane's screen, while the neighboring pane stays out of the prompt:
 
 <!-- herdr demo video: recorded by record-demo.yml (terminal_agent=herdr); regenerate via that workflow and replace the URL below. -->
-HERDR_DEMO_VIDEO_URL_PLACEHOLDER
+https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
 Install is one click: **Settings → Text Processing → Claude Code plugin → Install**. The app registers its bundled plugin marketplace through Claude Code's own CLI and never edits `~/.claude/settings.json` behind your back.
 
