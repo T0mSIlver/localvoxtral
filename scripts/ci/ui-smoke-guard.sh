@@ -8,6 +8,8 @@
 # The lane is therefore scheduled as an evening retry ladder, and each slot
 # decides:
 #
+#   skip — the runner (the owner's MacBook) is on battery power
+#          (ac-power-guard.sh, shared with eval-e2e.yml's nightly guard)
 #   skip — a run whose DRILL actually executed and passed completed in the
 #          recent window (the day is covered; later slots stay green no-ops)
 #   skip — the console session is locked, or there is no GUI session
@@ -29,7 +31,18 @@
 # Test seams (see test-ui-smoke-guard.sh):
 #   UI_SMOKE_GUARD_LOCK_STATE                locked|unlocked|no-session|error
 #   UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS  integer, or "none"
+#   AC_POWER_GUARD_STATE                     ac|battery|error (passed through)
 set -euo pipefail
+
+# Power first: the cheapest probe (no gh API calls), and unplugged trumps
+# everything else — a scheduled slot must not cost the battery a packaging
+# build plus the AX drill (owner request, 2026-07-24).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+power_decision="$("$SCRIPT_DIR/ac-power-guard.sh")"
+if [[ "$(sed -n 's/^run=//p' <<<"$power_decision")" == "false" ]]; then
+  echo "$power_decision"
+  exit 0
+fi
 
 # 20 h: slots are ~90 min apart within one evening, and consecutive days'
 # anchors are 24 h apart — a success at any slot today never suppresses

@@ -35,14 +35,44 @@ jobs:
           # would force a cold MLX C++ + Metal helper rebuild every night).
           clean: false
 
+      - name: Decide whether this scheduled run proceeds (AC power probe)
+        # Enforced for schedule events only: workflow_dispatch is explicit
+        # operator intent and always runs. The runner is the owner's personal
+        # MacBook — the nightly must not drain the battery when the machine
+        # is unplugged (owner request, 2026-07-24). The decision logic lives
+        # in scripts/ci/ac-power-guard.sh (kept out of the workflow so it is
+        # testable — test-ac-power-guard.sh runs in ci.yml's shell-test
+        # step); it fails OPEN on probe errors so a broken probe can never
+        # silently disable the lane.
+        id: guard
+        if: github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+          DECISION="$(./scripts/ci/ac-power-guard.sh)"
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+            echo "E2E eval nightly: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "E2E eval nightly: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Clean stale outputs (keep build caches)
         # Shared repair-and-clean for the persistent workspace (see the
         # script for the removal list and .build.smoke-hidden rationale).
+        #
+        # The guard condition compares `!= 'false'` (not `== 'true'`) so a
+        # missing output fails OPEN: if the guard ever exits 0 without
+        # emitting run=..., the eval runs rather than every nightly silently
+        # skipping green forever (same pattern as ui-smoke.yml). Same
+        # condition on every step below.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: ./scripts/ci/clean-stale-outputs.sh
 
       - name: Ensure Metal toolchain
         # Same probe as ci.yml: `xcrun --find metal` succeeding does NOT mean
         # the component is installed; only invoking metal proves it.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             echo "Metal toolchain not active for $(whoami); installing component..."
@@ -55,6 +85,7 @@ jobs:
           fi
 
       - name: Package app bundle (builds the polishing helper)
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
         run: ./scripts/package_app.sh release
@@ -65,6 +96,7 @@ jobs:
         # against either the retired voxmlx plist or the swapped-in speechd plist.
         # Best-effort during rollout (a warm timeout must not mask the eval) —
         # the eval itself fails loudly if the STT service is really down.
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         continue-on-error: true
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
@@ -75,6 +107,7 @@ jobs:
           fi
 
       - name: Run agent-dictation E2E eval
+        if: github.event_name != 'schedule' || steps.guard.outputs.run != 'false'
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
           LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
@@ -92,7 +125,10 @@ jobs:
       - name: Scoreboard to step summary
         # Extract the section between the scoreboard markers (kept in sync
         # with AgentDictationE2EEvalSupport.scoreboardBeginMarker/EndMarker).
-        if: always()
+        # `always() &&` keeps the scoreboard on eval failure but stays quiet
+        # on a guard-skipped nightly ("no eval log produced" would read as a
+        # failure there). Same on the two steps below.
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
         run: |
           if [[ -f logs/eval-e2e.log ]]; then
             {
@@ -105,7 +141,7 @@ jobs:
           fi
 
       - name: Upload eval log (scoreboard artifact)
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
         uses: actions/upload-artifact@v4
         with:
           name: eval-e2e-scoreboard
@@ -113,7 +149,7 @@ jobs:
           retention-days: 30
 
       - name: Process leak check (informational)
-        if: always()
+        if: always() && (github.event_name != 'schedule' || steps.guard.outputs.run != 'false')
         run: |
           survivors="$(ps -axo pid,etime,ucomm \
             | grep -iE 'localvoxtral|polishd|xctest|swiftpm-testing|XCBBuildService' \

@@ -7,7 +7,8 @@ on:
     # 2026-07-20): the AX drill needs an UNLOCKED GUI session, and the old
     # 04:00 slot always found the MacBook locked (every window interaction
     # false-reds — run 29722553773). Each slot runs the guard below and
-    # skips green when the screen is locked or an earlier slot's drill
+    # skips green when the Mac is on battery power (personal machine — owner
+    # request, 2026-07-24), the screen is locked, or an earlier slot's drill
     # already ran and passed (a guard-skip does NOT count — it also
     # concludes `success`, so the guard checks the drill step, not the run),
     # so at most one real drill runs per day, at whichever slot
@@ -48,7 +49,7 @@ jobs:
           # Metal helper rebuilds (observed run 29763957545, 2026-07-20).
           clean: false
 
-      - name: Decide whether this scheduled slot runs (lock probe + already-covered)
+      - name: Decide whether this scheduled slot runs (power + lock probes + already-covered)
         # Enforced for schedule events only: workflow_dispatch and the
         # needs-ui-smoke label are explicit operator intent and always run.
         # The decision logic lives in scripts/ci/ui-smoke-guard.sh (kept out
