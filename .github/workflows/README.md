@@ -48,10 +48,12 @@ builds the styled DMG, verifies it with `hdiutil`, and uploads it for eyeballing
 
 Lock-aware evening AX smoke drill on the self-hosted Mac runner: three
 scheduled slots (18:00/19:30/21:00 UTC, 20:00 Paris anchor), each gated by
-`scripts/ci/ui-smoke-guard.sh` — a slot skips green when the screen is locked
-(the drill needs an unlocked GUI session) or when a slot's drill already ran
-and passed that day, so at most one real drill runs per day. Manual dispatch
-bypasses the guard.
+`scripts/ci/ui-smoke-guard.sh` — a slot skips green when the Mac is on
+battery power (scheduled lanes never drain the owner's MacBook,
+`scripts/ci/ac-power-guard.sh`, shared with eval-e2e.yml's nightly), when
+the screen is locked (the drill needs an unlocked GUI session), or when a
+slot's drill already ran and passed that day, so at most one real drill runs
+per day. Manual dispatch bypasses the guard.
 Also runs on same-repo PRs when the `needs-ui-smoke` label is added — the
 on-demand proof path for UI-affecting PRs (re-add the label to rerun after
 new pushes; fork PRs never reach the self-hosted runner, label or no label).

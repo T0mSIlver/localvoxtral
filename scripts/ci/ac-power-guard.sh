@@ -14,7 +14,9 @@
 #   run  — on AC power, or the probe is unavailable/unparseable. Probe
 #          errors fail OPEN: an uncomputable state must never silently
 #          disable a lane (same philosophy as ui-smoke-guard.sh and the CI
-#          lane filters).
+#          lane filters). Note the direction this buys: with a broken probe
+#          a scheduled lane MAY still run unplugged — "never run on battery"
+#          is best-effort by design, traded for "never silently dead".
 #
 # Output (GitHub-output style on stdout):
 #   run=true|false
@@ -32,8 +34,13 @@ power_state() {
   # `pmset -g ps` opens with "Now drawing from 'AC Power'" / "'Battery
   # Power'" / "'UPS Power'". Anything else — pmset absent (non-Mac), exit
   # failure, changed wording — is an error state and fails open.
-  local first_line
-  first_line="$(pmset -g ps 2>/dev/null | head -n 1)" || first_line=""
+  # Capture whole output, then take the first line via parameter expansion:
+  # a `pmset | head -n 1` pipe under pipefail dies of SIGPIPE when the output
+  # outgrows the pipe buffer, clobbering a successfully read battery line
+  # into fail-open (PR #187 review finding; test: 80 KB trailing output).
+  local raw first_line
+  raw="$(pmset -g ps 2>/dev/null)" || raw=""
+  first_line="${raw%%$'\n'*}"
   case "$first_line" in
     *"AC Power"*) echo "ac" ;;
     *"Battery Power"* | *"UPS Power"*) echo "battery" ;;

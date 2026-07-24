@@ -50,7 +50,10 @@ printf '%s\n' "$STUB_PMSET_OUTPUT"
 STUB
 chmod +x "$TMP_DIR/bin/pmset"
 
-pmset_env=("PATH=$TMP_DIR/bin:$PATH")
+# Pin the seam EMPTY (falls through `[[ -n … ]]` into the real probe): a
+# developer shell with AC_POWER_GUARD_STATE exported must not short-circuit
+# these cases into false greens against the stubbed pmset.
+pmset_env=("PATH=$TMP_DIR/bin:$PATH" "AC_POWER_GUARD_STATE=")
 
 expect true "pmset AC Power parses as ac" \
   "${pmset_env[@]}" \
@@ -63,6 +66,15 @@ expect false "pmset Battery Power (with detail lines) parses as battery" \
 expect false "pmset UPS Power parses as battery" \
   "${pmset_env[@]}" \
   "STUB_PMSET_OUTPUT=Now drawing from 'UPS Power'"
+# Pipe-buffer-exceeding output must not clobber a captured battery reading:
+# under `set -o pipefail`, a `pmset | head -n 1` capture dies of SIGPIPE once
+# the output outgrows the 64 KB pipe buffer, and the `|| first_line=""`
+# recovery then discarded a SUCCESSFULLY read battery line into a fail-open
+# run — the one wrong direction for this guard (PR #187 review finding).
+# 80 KB: over the pipe buffer, under the single-argument limit env can pass.
+expect false "pmset battery line survives 80 KB of trailing output" \
+  "${pmset_env[@]}" \
+  "STUB_PMSET_OUTPUT=$(printf "Now drawing from 'Battery Power'\n"; head -c 80000 /dev/zero | tr '\0' 'x')"
 expect true "pmset failure fails open" \
   "${pmset_env[@]}" \
   "STUB_PMSET_FAIL=1" "STUB_PMSET_OUTPUT="
