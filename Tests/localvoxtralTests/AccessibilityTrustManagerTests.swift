@@ -97,4 +97,27 @@ final class AccessibilityTrustManagerTests: XCTestCase {
         XCTAssertTrue(manager.isTrusted)
         XCTAssertGreaterThanOrEqual(sleepCalls, 1)
     }
+
+    // MARK: - XCTest-pinned defaults (live TCC sampling must never reach tests)
+
+    func testDefaultTrustCheckerIsPinnedTrustedUnderXCTest() {
+        // Before the pin this sampled the HOST's live AXIsProcessTrusted() —
+        // the whole unit suite went red when a runner auto-update swapped the
+        // bundled node binary and invalidated its Accessibility grant
+        // (2026-07-24). Deterministic on every host by construction now.
+        XCTAssertTrue(AccessibilityTrustManager.defaultTrustChecker())
+    }
+
+    func testDefaultInitializedManagerIsTrustedUnderXCTest() {
+        // A manager built with the production defaults (no injected checker,
+        // the path DictationViewModel takes) must resolve trusted under
+        // XCTest so session-start warnings stay deterministic; tests that
+        // exercise the untrusted paths pin debugSetTrustOverride(false).
+        let manager = AccessibilityTrustManager(pollingTimeoutSeconds: 0)
+
+        manager.refresh()
+
+        XCTAssertTrue(manager.isTrusted)
+        XCTAssertNil(manager.lastError)
+    }
 }
