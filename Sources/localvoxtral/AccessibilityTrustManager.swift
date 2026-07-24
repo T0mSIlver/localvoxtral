@@ -33,12 +33,35 @@ final class AccessibilityTrustManager {
     /// does not clobber the injected state. Always nil in release builds.
     @ObservationIgnored private var debugTrustOverride: Bool?
 
+    /// Default live trust probe. Under XCTest it resolves to a fixed
+    /// `trusted` verdict: an unpinned live sample ties the unit suite to the
+    /// HOST's Accessibility grant for the test runner, and a runner
+    /// auto-update swaps its bundled node binary and silently invalidates
+    /// that grant (2026-07-24 red CI; same class as the locked-screen seams
+    /// pinned in TerminalTargetDetector, PR #122). Injected checkers and
+    /// `debugSetTrustOverride` still win.
+    nonisolated static func defaultTrustChecker() -> Bool {
+        #if DEBUG
+        if TerminalTargetDetector.isRunningUnderXCTest { return true }
+        #endif
+        return AXIsProcessTrusted()
+    }
+
+    /// Default live prompter. Pinned to a no-op under XCTest: on an
+    /// untrusted host the real `AXIsProcessTrustedWithOptions` prompt pops
+    /// an actual TCC dialog in the runner's GUI session on every unit run.
+    nonisolated static func defaultPermissionPrompter() {
+        #if DEBUG
+        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        #endif
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
+
     init(
-        trustChecker: @escaping TrustChecker = { AXIsProcessTrusted() },
-        permissionPrompter: @escaping PermissionPrompter = {
-            let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
-        },
+        trustChecker: @escaping TrustChecker = AccessibilityTrustManager.defaultTrustChecker,
+        permissionPrompter: @escaping PermissionPrompter =
+            AccessibilityTrustManager.defaultPermissionPrompter,
         sleepFor: @escaping SleepClosure = { duration in
             try? await Task.sleep(for: duration)
         },
