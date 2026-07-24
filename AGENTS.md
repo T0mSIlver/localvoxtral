@@ -26,6 +26,8 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval: human WAVs (optional) or TTS -> speechd -> polishd (run package first)
 ./scripts/run-agent-eval-local.sh [EvalRecordings/agent-dictation/<set>]   # same eval directly from a Mac checkout (run package_app.sh first)
 ./scripts/ablate-agent-eval.py .build/agent-eval-local.log                 # reuse one E2E log to compare pre/post-processing, prompts, and models without rerunning audio
+./scripts/remote-build.sh dogfood          # build the instrumented tree + run the context-capture suite
+./scripts/remote-build.sh dogfood-package  # package an instrumented .app for hand-dogfooding
 ./scripts/remote-build.sh build --package-path PolishHelper   # helper package alone
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free)
 ./scripts/remote-build.sh test  --package-path SpeechHelper   # speech helper unit tests (Metal-free)
@@ -113,6 +115,21 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `DEMO_TERMINAL_AGENT=herdr` (explicit only, never auto) records the herdr
   pane-join scene — split panes in an isolated named herdr session, dictation
   into the focused Claude pane, log-asserted herdr join + pane.read context.
+- **Dogfooding context capture** (`Sources/localvoxtral/Dogfood`): the app logs
+  context COUNTS only, on purpose, which also makes a retrieval miss
+  unattributable after the fact. The capture is the gated exception — it records
+  the join outcome, the screen decision and its cause, each source's harvest and
+  proposals, budget demands vs. grants, the rendered prompts, and the model's
+  reply, so a wrong term can be blamed on exactly one of four stages
+  (retrieval / matcher / conflict / budget). It is behind a COMPILE flag
+  (`LOCALVOXTRAL_DOGFOOD`, or the gitignored `.dogfood-capture-enable` marker
+  that crosses the build gate) plus a runtime opt-in
+  (`defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`).
+  Shipped releases do not contain it, and there is deliberately no uploader —
+  records are local files under Application Support. Use `dogfood-package` for a
+  hand-testable build; it keeps the bundle id so the TCC grant survives and
+  stamps `LVXDogfoodCapture` into Info.plist so you can tell which binary you
+  are running.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
   descriptor errors and aborts the app (field crash, PR #60). Use

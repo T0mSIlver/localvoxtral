@@ -285,6 +285,12 @@ final class SettingsStore {
         /// Note the `debug.` prefix (not `settings.`): this is not a
         /// user-facing preference and must never surface in the settings UI.
         static let debugLogRealtimeDeltas = "debug.log_realtime_deltas"
+        #if LOCALVOXTRAL_DOGFOOD
+        /// The runtime half of the dogfooding gate. `debug.` prefixed like the
+        /// flag above: it exists only in an instrumented build and is not a
+        /// product preference.
+        static let dogfoodCaptureEnabled = "debug.dogfood_capture_enabled"
+        #endif
         static let modifierOnlyHotKeyEnabled = "settings.modifier_only_hotkey_enabled"
         static let modifierOnlyHotKeyModifier = "settings.modifier_only_hotkey_modifier"
         static let modifierOnlyHoldDelay = "settings.modifier_only_hold_delay"
@@ -601,6 +607,28 @@ final class SettingsStore {
         didSet { defaults.set(debugLogRealtimeDeltas, forKey: Keys.debugLogRealtimeDeltas) }
     }
 
+    #if LOCALVOXTRAL_DOGFOOD
+    /// Arms the dogfooding context capture. Default false, and it exists at all
+    /// only in a build compiled with `LOCALVOXTRAL_DOGFOOD` (see `Package.swift`
+    /// for why that gate is a compile flag rather than this toggle alone).
+    ///
+    /// While armed, every polished dictation writes a record containing the raw
+    /// transcript, the harvested context, the rendered prompts, and the model's
+    /// reply to `~/Library/Application Support/localvoxtral/dogfood`. That is
+    /// content the shipped app deliberately never writes anywhere, which is why
+    /// arming it is a deliberate act rather than a side effect of running an
+    /// instrumented build.
+    ///
+    /// No UI yet — like `debugLogRealtimeDeltas`, and toggled the same way:
+    ///   `defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`
+    /// A Settings row and a status-item indicator belong with the flag-this-
+    /// dictation affordance; until they exist, an armed build is only
+    /// discoverable from this default and the capture directory.
+    var dogfoodCaptureEnabled: Bool {
+        didSet { defaults.set(dogfoodCaptureEnabled, forKey: Keys.dogfoodCaptureEnabled) }
+    }
+    #endif
+
     var modifierOnlyHotKeyEnabled: Bool {
         didSet { defaults.set(modifierOnlyHotKeyEnabled, forKey: Keys.modifierOnlyHotKeyEnabled) }
     }
@@ -826,6 +854,10 @@ final class SettingsStore {
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(
             defaults: defaults, key: Keys.debugLogRealtimeDeltas, fallback: false)
+        #if LOCALVOXTRAL_DOGFOOD
+        dogfoodCaptureEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.dogfoodCaptureEnabled, fallback: false)
+        #endif
         modifierOnlyHotKeyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.modifierOnlyHotKeyEnabled, fallback: false)
         if let storedModifier = defaults.string(forKey: Keys.modifierOnlyHotKeyModifier),

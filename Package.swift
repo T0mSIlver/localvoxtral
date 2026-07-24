@@ -1,6 +1,38 @@
 // swift-tools-version: 6.2
 
 import PackageDescription
+import Foundation
+
+/// Opt-in dogfooding instrumentation (`Sources/localvoxtral/Dogfood`), compiled
+/// ONLY when the environment asks for it: `LOCALVOXTRAL_DOGFOOD=1 swift build`.
+///
+/// It is a compile gate rather than a settings-only feature on purpose. The
+/// capture writes repository contents, terminal screen text, clipboard text, and
+/// fully rendered prompts to disk — exactly the material the shipped app refuses
+/// to log. Keeping it out of the released binary makes "this build cannot record
+/// your context" a property of the artifact instead of a promise about a
+/// default, and leaves the README's privacy section literally true.
+///
+/// Inside such a build the capture is still off until the runtime opt-in is
+/// armed. Two locks, and the outer one is not a checkbox.
+/// Enablement travels EITHER as the environment variable (local builds, CI)
+/// OR as a gitignored marker file in the package root — the same dual form the
+/// LLM eval lanes use, and for the same reason: the Mac build gate allowlists
+/// exact `swift test …` payloads, so an env prefix cannot cross the SSH
+/// boundary. `remote-build.sh dogfood` writes the marker, syncs, and removes it
+/// again on exit.
+///
+/// The marker cannot leak into a release: `release.yml` builds from a clean
+/// checkout, the file is gitignored, and `package_app.sh` prints which mode it
+/// built in and stamps `LVXDogfoodCapture` into the bundle's Info.plist.
+let dogfoodMarkerURL = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .appendingPathComponent(".dogfood-capture-enable")
+let dogfoodCaptureEnabled =
+    ProcessInfo.processInfo.environment["LOCALVOXTRAL_DOGFOOD"] == "1"
+    || FileManager.default.fileExists(atPath: dogfoodMarkerURL.path)
+let dogfoodSwiftSettings: [SwiftSetting] =
+    dogfoodCaptureEnabled ? [.define("LOCALVOXTRAL_DOGFOOD")] : []
 
 let package = Package(
     name: "localvoxtral",
@@ -39,7 +71,8 @@ let package = Package(
             ],
             resources: [
                 .process("Resources"),
-            ]
+            ],
+            swiftSettings: dogfoodSwiftSettings
         ),
         .testTarget(
             name: "localvoxtralTests",
@@ -47,7 +80,8 @@ let package = Package(
                 "localvoxtral",
                 "ClaudeContextWire",
                 "ClaudeHookPublisherCore",
-            ]
+            ],
+            swiftSettings: dogfoodSwiftSettings
         ),
     ]
 )
