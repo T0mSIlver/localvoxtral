@@ -540,6 +540,15 @@ jobs:
 
       - name: Smoke test packaged app launch (end-user simulation)
         if: steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          # TCC attributes the launched app's permission checks to the
+          # runner's bundled node (the service's responsible process). A
+          # runner auto-update swaps that node and invalidates its
+          # Accessibility grant, so the app's startup prompt pops a REAL
+          # dialog on the runner's GUI session on every run (2026-07-24).
+          # Suppress only the startup prompts; the launch path stays
+          # production-shaped.
+          LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
         run: |
           # Launch a COPY of the packaged app from outside the workspace with
           # the workspace .build renamed away. A same-tree launch silently

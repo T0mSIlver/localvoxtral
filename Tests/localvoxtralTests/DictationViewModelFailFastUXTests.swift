@@ -252,6 +252,38 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         XCTAssertFalse(viewModel.debugHasRequestedStartupPermissions)
     }
 
+    func testStartupPermissionPromptSuppressionParsesEnvironment() {
+        XCTAssertTrue(
+            DictationViewModel.startupPermissionPromptsSuppressed(
+                environment: ["LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS": "1"]))
+        XCTAssertFalse(
+            DictationViewModel.startupPermissionPromptsSuppressed(
+                environment: ["LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS": "0"]))
+        XCTAssertFalse(DictationViewModel.startupPermissionPromptsSuppressed(environment: [:]))
+    }
+
+    func testStartupPermissionPromptsAreSkippedWhenSuppressed() {
+        // CI's packaged-app launch smoke sets
+        // LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1: the real binary
+        // launched inside the runner's process tree must not reach the
+        // startup permission-prompt pass, or an untrusted responsible
+        // process (the runner's bundled node after an auto-update) pops a
+        // real TCC dialog on the runner's GUI session once per run.
+        let settings = makeSettings(outputMode: .overlayBuffer)
+        settings.onboardingCompleted = true
+        let viewModel = DictationViewModel(
+            settings: settings,
+            backendManager: FakeManagedBackendManager(),
+            overlayBufferCoordinator: NoopOverlayCoordinator(),
+            startRuntimeServices: true,
+            suppressStartupPermissionPrompts: true
+        )
+
+        XCTAssertFalse(
+            viewModel.debugHasRequestedStartupPermissions,
+            "suppression must return before the latch — no prompt task may be spawned")
+    }
+
     // MARK: - Managed backend startup
 
     func testStartDictationManagedBothWithPolishingEnabledRequestsBothBackends() async {
