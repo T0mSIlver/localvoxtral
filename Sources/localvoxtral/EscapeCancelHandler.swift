@@ -63,16 +63,29 @@ final class EscapeCancelHandler {
         }
     }
 
-    func start() {
+    /// Diagnostic-only probe of the host's live permission state. Pinned off
+    /// under XCTest: the unit suite must never sample live TCC state (PR #188
+    /// review finding — same invariant as the AccessibilityTrustManager and
+    /// ModifierOnlyHotKeyManager pins). Registration below stays REAL either
+    /// way: Carbon hotkeys are trust-independent, so pinning only the probe
+    /// keeps the existing registration coverage.
+    private func logLivePermissionState() {
         #if DEBUG
-        Self.startCallCount += 1
+        if TerminalTargetDetector.isRunningUnderXCTest { return }
         #endif
-
         let trusted = AXIsProcessTrusted()
         let inputMonitoring = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
         Log.escape.notice(
             "permission state: AXIsProcessTrusted=\(trusted, privacy: .public) inputMonitoring=\(Self.describeHIDAccess(inputMonitoring), privacy: .public)"
         )
+    }
+
+    func start() {
+        #if DEBUG
+        Self.startCallCount += 1
+        #endif
+
+        logLivePermissionState()
 
         guard !isRegistered else {
             Self.record(.registered)
