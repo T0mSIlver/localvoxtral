@@ -6,6 +6,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 GUARD="$ROOT_DIR/scripts/ci/ui-smoke-guard.sh"
 
+# Pin the power probe for every case that is not about power: without this,
+# running the suite on a battery-powered Mac would flip every expectation.
+export AC_POWER_GUARD_STATE=ac
+
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
   exit 1
@@ -25,6 +29,25 @@ expect() {
   [[ -n "$reason" ]] || fail "$description: reason line is missing"
   printf 'PASS: %s (%s)\n' "$description" "$reason"
 }
+
+# Battery power skips before anything else is consulted: the stubbed error
+# states on both other seams prove neither probe is reached (reaching either
+# would fail open into run=true or hit the unstubbed gh path).
+expect false "battery power skips regardless of coverage and lock state" \
+  AC_POWER_GUARD_STATE=battery \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LOCK_STATE=error
+
+# A broken power probe must fail open INTO the remaining rules, not into an
+# unconditional run — the lock decision still applies.
+expect true "power probe error falls through to an unlocked run" \
+  AC_POWER_GUARD_STATE=error \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LOCK_STATE=unlocked
+expect false "power probe error still respects a locked screen" \
+  AC_POWER_GUARD_STATE=error \
+  UI_SMOKE_GUARD_LAST_SUCCESS_AGE_SECONDS=none \
+  UI_SMOKE_GUARD_LOCK_STATE=locked
 
 # A recent success wins before the lock probe is even consulted: the lock
 # state must not matter (and the stubbed "error" state proves the probe is
