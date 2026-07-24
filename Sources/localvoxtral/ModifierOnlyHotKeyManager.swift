@@ -66,6 +66,21 @@ final class ModifierOnlyHotKeyManager {
             Self.record(forcedStartOutcome)
             return forcedStartOutcome
         }
+        // Unpinned, the live path below samples the HOST's Accessibility
+        // grant to the test runner — a runner auto-update swaps its bundled
+        // node binary and silently invalidates that grant, which turned the
+        // whole unit suite red (2026-07-24; same class as the locked-screen
+        // seams pinned in TerminalTargetDetector, PR #122). Under XCTest the
+        // registration resolves to a fixed success without installing real
+        // NSEvent monitors; tests exercising failure outcomes pin
+        // `forcedStartOutcome` above, and gesture logic drives the
+        // debug*ForTesting entry points directly.
+        if TerminalTargetDetector.isRunningUnderXCTest {
+            stop()
+            configureGestureState(modifier: modifier)
+            Self.record(.created)
+            return .created
+        }
         #endif
 
         stop()
@@ -381,6 +396,13 @@ final class ModifierOnlyHotKeyManager {
         startCallCount = 0
         stopCallCount = 0
         forcedStartOutcome = nil
+    }
+
+    /// Number of live NSEvent monitors currently installed. Lets tests prove
+    /// the XCTest-pinned `start()` never touched the real monitor APIs.
+    var debugInstalledMonitorCount: Int {
+        [globalFlagsMonitor, localFlagsMonitor, globalKeyDownMonitor, localKeyDownMonitor]
+            .compactMap { $0 }.count
     }
 
     func debugStartGestureForTesting(modifier: ModifierKey) {

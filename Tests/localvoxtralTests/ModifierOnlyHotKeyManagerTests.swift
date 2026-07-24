@@ -428,6 +428,33 @@ final class ModifierOnlyHotKeyManagerTests: XCTestCase {
         XCTAssertEqual(manager1TapCount, 1)
         XCTAssertEqual(manager2TapCount, 1)
     }
+
+    // MARK: - XCTest-pinned start (live TCC sampling must never reach tests)
+
+    func testUnforcedStartUnderXCTestPinsToCreatedWithoutRealMonitors() {
+        // No forcedStartOutcome: this exercises start()'s default path, which
+        // before the pin sampled the HOST's live Accessibility grant — red
+        // whenever a runner auto-update invalidated the grant (2026-07-24),
+        // and installing REAL NSEvent monitors when the host happened to be
+        // trusted. Both are wrong in a unit suite; the pinned path must
+        // report success and touch no monitor APIs.
+        let manager = ModifierOnlyHotKeyManager()
+        ModifierOnlyHotKeyManager.resetDebugState()
+        defer { ModifierOnlyHotKeyManager.resetDebugState() }
+
+        let outcome = manager.start(modifier: .rightCommand)
+
+        XCTAssertEqual(outcome, .created)
+        XCTAssertEqual(
+            manager.debugInstalledMonitorCount, 0,
+            "the XCTest-pinned start() must never install live NSEvent monitors"
+        )
+        // The pinned registration is a real one from the caller's view:
+        // gesture state is configured and stop() tears it down cleanly.
+        XCTAssertEqual(manager.debugGestureSnapshotForTesting().targetModifier, .rightCommand)
+        manager.stop()
+        XCTAssertNil(manager.debugGestureSnapshotForTesting().targetModifier)
+    }
 }
 
 @MainActor

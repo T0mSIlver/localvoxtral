@@ -220,6 +220,8 @@ enum TerminalTargetDetector {
     // three seams resolve to fixed defaults under XCTest: secure input off,
     // no frontmost bundle, probe unavailable. Tests that exercise the live
     // behaviors pin the overrides explicitly.
-    static let isRunningUnderXCTest = NSClassFromString("XCTestCase") != nil
+    // nonisolated: consulted from nonisolated pinned defaults too
+    // (AccessibilityTrustManager) — an immutable Bool is safe anywhere.
+    nonisolated static let isRunningUnderXCTest = NSClassFromString("XCTestCase") != nil
     #endif
 }
