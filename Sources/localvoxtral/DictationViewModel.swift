@@ -820,7 +820,10 @@ final class DictationViewModel {
     private func requestStartupPermissionsIfNeeded() {
         guard managesRuntimeServices else { return }
         guard !suppressStartupPermissionPrompts else {
-            Log.dictation.info(
+            // .notice so the line persists in the unified log archive: it is
+            // the after-the-fact field proof that a CI smoke launch skipped
+            // the prompt pass (.info survives only in the memory buffer).
+            Log.dictation.notice(
                 "startup permission prompts suppressed (LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1)"
             )
             return
