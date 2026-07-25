@@ -425,6 +425,20 @@ jobs:
         if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
         run: swift test --package-path SpeechHelper
 
+      - name: Dogfood capture suite (instrumented build)
+        # The dogfooding capture is behind a COMPILE flag (Package.swift), so
+        # neither it nor its tests exist in any of the lanes above — the normal
+        # unit suite compiles the shipping shape, which is the point. Without
+        # this step the capture would rot silently: nothing else in CI ever
+        # builds it, and it is only ever exercised by hand.
+        #
+        # Self-hosted only, matching the helper suites: it is a second full
+        # compile of the app target, which a fork PR should not pay for.
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          LOCALVOXTRAL_DOGFOOD: "1"
+        run: swift test --filter 'Dogfood'
+
       - name: Ensure Metal toolchain
         # Xcode 26 ships the Metal compiler as a separate component, and its
         # activation is per-user — installing it for the SSH build user does

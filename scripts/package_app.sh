@@ -119,6 +119,29 @@ patch_shortcutrecorder_bundle_lookup
 # regenerates DerivedSources every build) and shipped launch-broken artifacts
 # for days (#87). Never patch DerivedSources; only dependency checkouts (the
 # ShortcutRecorder patch above) persist across builds.
+# Dogfooding capture is a COMPILE gate (see Package.swift): the released
+# artifact must not contain the code that writes context to disk. `swift build`
+# inherits this environment, so exporting it here is all the threading needed —
+# but the artifact must also be identifiable at runtime, because "which binary
+# is the owner actually running" has already cost an hour of field debugging
+# once (AGENTS.md). The bundle identifier deliberately does NOT change: a
+# different one would be a different app to TCC and would throw away the
+# Accessibility grant this build exists to exercise.
+#
+# Enablement matches Package.swift exactly: the env var OR the gitignored
+# marker file (which is how it crosses the build gate — see remote-build.sh).
+# Recomputing the same predicate here is deliberate: the loud line and the
+# plist stamp must describe what was actually compiled, not what the caller
+# thought they asked for.
+DOGFOOD_PLIST_ENTRY=""
+if [[ "${LOCALVOXTRAL_DOGFOOD:-}" == "1" || -f "$ROOT_DIR/.dogfood-capture-enable" ]]; then
+  echo "Dogfood capture: ENABLED — this artifact can write context records to disk"
+  DOGFOOD_PLIST_ENTRY="  <key>LVXDogfoodCapture</key>
+  <true/>"
+else
+  echo "Dogfood capture: disabled (set LOCALVOXTRAL_DOGFOOD=1 to build an instrumented artifact)"
+fi
+
 swift build -c "$CONFIGURATION" --product localvoxtral -Xswiftc -g
 
 BINARY_PATH="$(find "$ROOT_DIR/.build" -type f -path "*/${CONFIGURATION}/localvoxtral" | head -n 1)"
@@ -296,9 +319,24 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
   <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
   <key>NSRemovableVolumesUsageDescription</key>
   <string>localvoxtral reads project files from Claude Code sessions when project context is enabled.</string>
+${DOGFOOD_PLIST_ENTRY}
 </dict>
 </plist>
 PLIST
+
+# Verify the stamp in the artifact agrees with the predicate above — the loud
+# "Dogfood capture" line must describe the Info.plist that actually shipped,
+# not just the branch this script took.
+DOGFOOD_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXDogfoodCapture' "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo absent)"
+if [[ -n "$DOGFOOD_PLIST_ENTRY" && "$DOGFOOD_STAMP" != "true" ]]; then
+  echo "Dogfood capture was enabled but LVXDogfoodCapture is not stamped in Info.plist (got: $DOGFOOD_STAMP)"
+  exit 1
+fi
+if [[ -z "$DOGFOOD_PLIST_ENTRY" && "$DOGFOOD_STAMP" != "absent" ]]; then
+  echo "Dogfood capture is disabled but Info.plist carries LVXDogfoodCapture=$DOGFOOD_STAMP"
+  exit 1
+fi
+echo "Info.plist LVXDogfoodCapture stamp: $DOGFOOD_STAMP"
 
 # --- Bundled polishing helper (localvoxtral-polishd, PolishHelper/) --------
 # MUST build with xcodebuild: SwiftPM CLI cannot compile mlx-swift's Metal
