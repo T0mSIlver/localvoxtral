@@ -324,6 +324,20 @@ ${DOGFOOD_PLIST_ENTRY}
 </plist>
 PLIST
 
+# Verify the stamp in the artifact agrees with the predicate above — the loud
+# "Dogfood capture" line must describe the Info.plist that actually shipped,
+# not just the branch this script took.
+DOGFOOD_STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXDogfoodCapture' "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo absent)"
+if [[ -n "$DOGFOOD_PLIST_ENTRY" && "$DOGFOOD_STAMP" != "true" ]]; then
+  echo "Dogfood capture was enabled but LVXDogfoodCapture is not stamped in Info.plist (got: $DOGFOOD_STAMP)"
+  exit 1
+fi
+if [[ -z "$DOGFOOD_PLIST_ENTRY" && "$DOGFOOD_STAMP" != "absent" ]]; then
+  echo "Dogfood capture is disabled but Info.plist carries LVXDogfoodCapture=$DOGFOOD_STAMP"
+  exit 1
+fi
+echo "Info.plist LVXDogfoodCapture stamp: $DOGFOOD_STAMP"
+
 # --- Bundled polishing helper (localvoxtral-polishd, PolishHelper/) --------
 # MUST build with xcodebuild: SwiftPM CLI cannot compile mlx-swift's Metal
 # kernels (mlx-swift README), producing a binary that fails at runtime with
