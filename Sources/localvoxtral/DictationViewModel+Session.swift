@@ -1232,6 +1232,15 @@ extension DictationViewModel {
                     var polishingDuration: Double? = nil
                     var sessionStatus: DictationSessionStatus = .completed
                     var llmConnectionFailure: (message: String, technicalDetails: String?)?
+                    #if LOCALVOXTRAL_DOGFOOD
+                    // The model's raw reply and the (placeholder-bearing)
+                    // committed text, hoisted out of the do-block for the
+                    // capture record below. Placeholder-bearing on purpose: the
+                    // clipboard PAYLOAD follows the session-record rule and
+                    // never enters a persisted record.
+                    var dogfoodPolishedOutput: String?
+                    var dogfoodCommittedText: String?
+                    #endif
 
                     if let config = polishingConfig, !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         do {
@@ -1278,6 +1287,10 @@ extension DictationViewModel {
                             // commit copy below.
                             processedTextForPersistence =
                                 committedText != originalText ? committedText : nil
+                            #if LOCALVOXTRAL_DOGFOOD
+                            dogfoodPolishedOutput = result.polishedText
+                            dogfoodCommittedText = committedText
+                            #endif
 
                             guard !Task.isCancelled else { return }
 
@@ -1375,6 +1388,77 @@ extension DictationViewModel {
                             }()
                         )
                     )
+
+                    #if LOCALVOXTRAL_DOGFOOD
+                    // AFTER the commit and the session record: capture latency
+                    // can only ever land on the tail of this task, never on the
+                    // user's paste. `writeDogfoodCaptureIfArmed` checks the
+                    // runtime opt-in before doing any work.
+                    await self.writeDogfoodCaptureIfArmed(DogfoodCaptureInputs(
+                        session: DogfoodCaptureRecord.Session(
+                            targetBundleID: capturedTargetBundleID,
+                            targetKind: self.sessionTargetIsTerminalLike
+                                ? "terminal-like" : "other",
+                            outputMode: capturedOutputMode,
+                            promptProfile: capturedPolishProfile,
+                            endpointClass: polishingConfig.map {
+                                DogfoodCaptureBuilder.endpointClass(of: $0.endpointURL)
+                            },
+                            polishModel: polishingConfig?.model
+                        ),
+                        join: capturedClaudeJoin,
+                        // Filled from the tap inside writeDogfoodCaptureIfArmed.
+                        joinAbstentions: [],
+                        screenDecision: screenDecision,
+                        herdrSwapApplied: capturedHerdrPaneStart != nil
+                            && screenDecision != capturedScreenDecision,
+                        targetBundleID: capturedTargetBundleID,
+                        demands: [
+                            .repository: repoRenderDemand,
+                            .terminal: screenRenderDemand,
+                            .claude: claudeSessionText.count,
+                            .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
+                        ],
+                        grants: allocation,
+                        rendered: [
+                            .repository: repoBlock != nil
+                                ? claudeRepoPreparation.excerpt.count : 0,
+                            .terminal: screenBlock != nil
+                                ? screenPreparation.excerpt.count : 0,
+                            .claude: claudeBlock != nil
+                                ? claudeSessionPreparation.excerpt.count : 0,
+                            .clipboard: clipboardBlock != nil
+                                ? clipboardPreparation.excerpt.count : 0,
+                        ],
+                        repoVocabularyHarvest: nil,
+                        repoVocabularyOutcome: repoVocabularyOutcome,
+                        claudeRepoSnapshot: claudeRepoSnapshot,
+                        claudeRepoOutcome: claudeRepoOutcome,
+                        claudeRepoRenderedExcerpt: repoBlock != nil
+                            ? claudeRepoPreparation.excerpt : nil,
+                        claudeSessionText: claudeSessionText.isEmpty ? nil : claudeSessionText,
+                        claudeSessionOutcome: claudeSessionOutcome,
+                        claudeSessionRenderedExcerpt: claudeBlock != nil
+                            ? claudeSessionPreparation.excerpt : nil,
+                        clipboardRetainedText: capturedClipboardContext?.retainedText,
+                        clipboardOutcome: clipboardVocabularyOutcome,
+                        clipboardRenderedExcerpt: clipboardBlock != nil
+                            ? clipboardPreparation.excerpt : nil,
+                        screenOutcome: screenVocabularyOutcome,
+                        screenRenderedExcerpt: screenBlock != nil
+                            ? screenPreparation.excerpt : nil,
+                        text: DogfoodCaptureRecord.Text(
+                            rawTranscript: originalText,
+                            workingText: workingText,
+                            groundedText: groundedWorkingText,
+                            systemPrompt: polishingRequest.systemPrompt,
+                            userPrompts: polishingRequest.userPrompts,
+                            polishedOutput: dogfoodPolishedOutput,
+                            committedText: dogfoodCommittedText
+                        ),
+                        polishSeconds: polishingDuration
+                    ))
+                    #endif
 
                     if let llmConnectionFailure {
                         self.handleLLMPolishingConnectionFailure(
