@@ -31,3 +31,4 @@ DerivedData/
 # Compile gate for the dogfooding context capture (Package.swift reads it).
 # Never commit: its presence changes what the app is compiled to do.
 /.dogfood-capture-enable
+.fastcontext/

@@ -312,6 +312,12 @@ final class DictationViewModel {
     var llmPolishingService: any LLMPolishingServicing = LLMPolishingService()
     @ObservationIgnored
     var appConfigStore: any AppConfigServing = AppConfigStore()
+    #if LOCALVOXTRAL_DOGFOOD
+    /// `var` for the same reason `llmPolishingService` is: tests point it at a
+    /// temp directory. Production uses the Application Support default.
+    @ObservationIgnored
+    var dogfoodCaptureStore = DogfoodCaptureStore()
+    #endif
     /// Warms the managed polishing helper's prompt-prefix cache on every
     /// helper launch (see `PolishPromptWarmupCoordinator`). Created only when
     /// runtime services run — trigger logic is unit-tested on the coordinator
@@ -1869,6 +1875,11 @@ final class DictationViewModel {
     /// means the screen is never read. A nil polishing configuration also means
     /// no read: with no endpoint there is nothing to ground for.
     func captureTerminalScreenContextForSession() async {
+        #if LOCALVOXTRAL_DOGFOOD
+        // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
+        // note from the PREVIOUS session must not describe this one.
+        DogfoodCaptureTap.shared.beginSession()
+        #endif
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
@@ -1910,12 +1921,14 @@ final class DictationViewModel {
     /// passive — it makes a live AX round trip for the window title. An opted-out
     /// user, a remote endpoint, or a revoked Accessibility grant means no read.
     private func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeSessionJoin? {
-        guard let resolver = claudeSessionJoinResolver else { return nil }
+        guard let resolver = claudeSessionJoinResolver else {
+            return dogfoodUnresolvedJoin(cause: "gate: no resolver installed")
+        }
         // Either context feature can want a join: the screen needs it to
         // authorize a raw excerpt, the repo/session blocks ARE the join's
         // content. Neither being enabled means there is nothing to resolve for.
         guard settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled else {
-            return nil
+            return dogfoodUnresolvedJoin(cause: "gate: both context settings off")
         }
         // Permitted endpoints only (loopback, or any endpoint under the
         // explicit trusted-endpoint opt-in). Repository contents and a prior
@@ -1926,10 +1939,27 @@ final class DictationViewModel {
         guard PolishContextClipboardReader.isPermittedContextEndpoint(
             endpointURL,
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
-        ) else { return nil }
-        guard textInsertion.isAccessibilityTrusted else { return nil }
-        guard let target = TerminalScreenContextSource.frontmostTarget() else { return nil }
+        ) else {
+            return dogfoodUnresolvedJoin(cause: "gate: endpoint not permitted")
+        }
+        guard textInsertion.isAccessibilityTrusted else {
+            return dogfoodUnresolvedJoin(cause: "gate: accessibility not trusted")
+        }
+        guard let target = TerminalScreenContextSource.frontmostTarget() else {
+            return dogfoodUnresolvedJoin(cause: "gate: no frontmost supported terminal")
+        }
         return await resolver.resolve(target: target)
+    }
+
+    /// Notes WHY the join never reached the resolver, so a dogfood record can
+    /// distinguish "gate refused" from "resolver abstained" — and always
+    /// returns nil, keeping the guard sites one-liners. Compiled to a bare nil
+    /// in a shipping build.
+    private func dogfoodUnresolvedJoin(cause: String) -> ClaudeSessionJoin? {
+        #if LOCALVOXTRAL_DOGFOOD
+        DogfoodCaptureTap.shared.noteJoinAbstention(cause)
+        #endif
+        return nil
     }
 
     /// Drops any retained screen capture. Idempotent, and safe to call on a

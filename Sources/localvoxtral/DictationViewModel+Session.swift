@@ -1232,6 +1232,15 @@ extension DictationViewModel {
                     var polishingDuration: Double? = nil
                     var sessionStatus: DictationSessionStatus = .completed
                     var llmConnectionFailure: (message: String, technicalDetails: String?)?
+                    #if LOCALVOXTRAL_DOGFOOD
+                    // The model's raw reply and the (placeholder-bearing)
+                    // committed text, hoisted out of the do-block for the
+                    // capture record below. Placeholder-bearing on purpose: the
+                    // clipboard PAYLOAD follows the session-record rule and
+                    // never enters a persisted record.
+                    var dogfoodPolishedOutput: String?
+                    var dogfoodCommittedText: String?
+                    #endif
 
                     if let config = polishingConfig, !workingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         do {
@@ -1278,6 +1287,10 @@ extension DictationViewModel {
                             // commit copy below.
                             processedTextForPersistence =
                                 committedText != originalText ? committedText : nil
+                            #if LOCALVOXTRAL_DOGFOOD
+                            dogfoodPolishedOutput = result.polishedText
+                            dogfoodCommittedText = committedText
+                            #endif
 
                             guard !Task.isCancelled else { return }
 
@@ -1375,6 +1388,83 @@ extension DictationViewModel {
                             }()
                         )
                     )
+
+                    #if LOCALVOXTRAL_DOGFOOD
+                    // AFTER the commit and the session record: capture latency
+                    // can only ever land on the tail of this task, never on the
+                    // user's paste. `writeDogfoodCaptureIfArmed` checks the
+                    // runtime opt-in before doing any work.
+                    await self.writeDogfoodCaptureIfArmed(DogfoodCaptureInputs(
+                        session: DogfoodCaptureRecord.Session(
+                            targetBundleID: capturedTargetBundleID,
+                            targetKind: self.sessionTargetIsTerminalLike
+                                ? "terminal-like" : "other",
+                            outputMode: capturedOutputMode,
+                            promptProfile: capturedPolishProfile,
+                            endpointClass: polishingConfig.map {
+                                DogfoodCaptureBuilder.endpointClass(of: $0.endpointURL)
+                            },
+                            polishModel: polishingConfig?.model
+                        ),
+                        join: capturedClaudeJoin,
+                        // Filled from the tap inside writeDogfoodCaptureIfArmed.
+                        joinAbstentions: [],
+                        screenDecision: screenDecision,
+                        // Value inequality is the swap signal: only the herdr
+                        // reconcile above ever reassigns `screenDecision`, and
+                        // a failed pane.read returns the fallback (equal). A
+                        // successful pane.read that happens to EQUAL the
+                        // fallback mislabels only the route — the decision and
+                        // cause still tell the true story. Intentional.
+                        herdrSwapApplied: capturedHerdrPaneStart != nil
+                            && screenDecision != capturedScreenDecision,
+                        targetBundleID: capturedTargetBundleID,
+                        demands: [
+                            .repository: repoRenderDemand,
+                            .terminal: screenRenderDemand,
+                            .claude: claudeSessionText.count,
+                            .clipboard: capturedClipboardContext?.retainedCharacterCount ?? 0,
+                        ],
+                        grants: allocation,
+                        rendered: [
+                            .repository: repoBlock != nil
+                                ? claudeRepoPreparation.excerpt.count : 0,
+                            .terminal: screenBlock != nil
+                                ? screenPreparation.excerpt.count : 0,
+                            .claude: claudeBlock != nil
+                                ? claudeSessionPreparation.excerpt.count : 0,
+                            .clipboard: clipboardBlock != nil
+                                ? clipboardPreparation.excerpt.count : 0,
+                        ],
+                        repoVocabularyHarvest: nil,
+                        repoVocabularyOutcome: repoVocabularyOutcome,
+                        claudeRepoSnapshot: claudeRepoSnapshot,
+                        claudeRepoOutcome: claudeRepoOutcome,
+                        claudeRepoRenderedExcerpt: repoBlock != nil
+                            ? claudeRepoPreparation.excerpt : nil,
+                        claudeSessionText: claudeSessionText.isEmpty ? nil : claudeSessionText,
+                        claudeSessionOutcome: claudeSessionOutcome,
+                        claudeSessionRenderedExcerpt: claudeBlock != nil
+                            ? claudeSessionPreparation.excerpt : nil,
+                        clipboardRetainedText: capturedClipboardContext?.retainedText,
+                        clipboardOutcome: clipboardVocabularyOutcome,
+                        clipboardRenderedExcerpt: clipboardBlock != nil
+                            ? clipboardPreparation.excerpt : nil,
+                        screenOutcome: screenVocabularyOutcome,
+                        screenRenderedExcerpt: screenBlock != nil
+                            ? screenPreparation.excerpt : nil,
+                        text: DogfoodCaptureRecord.Text(
+                            rawTranscript: originalText,
+                            workingText: workingText,
+                            groundedText: groundedWorkingText,
+                            systemPrompt: polishingRequest.systemPrompt,
+                            userPrompts: polishingRequest.userPrompts,
+                            polishedOutput: dogfoodPolishedOutput,
+                            committedText: dogfoodCommittedText
+                        ),
+                        polishSeconds: polishingDuration
+                    ))
+                    #endif
 
                     if let llmConnectionFailure {
                         self.handleLLMPolishingConnectionFailure(
@@ -1780,7 +1870,7 @@ extension DictationViewModel {
     ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never>? {
         #if DEBUG
         if let override = debugRepoVocabularyPipelineOverride {
-            return Task.detached(priority: .utility) { await override(transcript) }
+            return Self.detachedRepoVocabularyPipeline { await override(transcript) }
         }
         #endif
         guard let terminalApplicationPID = overlayBufferCoordinator.commitTargetAppPID else {
@@ -1804,7 +1894,7 @@ extension DictationViewModel {
             processFallbackPID = nil
         }
         let cache = repoVocabularyCache
-        return Task.detached(priority: .utility) {
+        return Self.detachedRepoVocabularyPipeline {
             await RepoVocabularyService.entries(
                 forWindowTitle: title,
                 terminalApplicationPID: processFallbackPID,
@@ -1812,6 +1902,30 @@ extension DictationViewModel {
                 cache: cache
             )
         }
+    }
+
+    /// The detached pipeline task, with the ONE dogfood obligation both the
+    /// live pipeline and the DEBUG override seam must share: in a dogfood
+    /// build, the body runs under the tap generation read at creation time
+    /// (synchronously, in the caller's main-actor context — ordered against
+    /// `beginSession`). Task-locals do not cross `Task.detached`, so the
+    /// binding happens inside the closure; see `DogfoodCaptureTap.noteGeneration`
+    /// for why an abandoned pipeline's late harvest note must be rejectable.
+    /// Routing the seam through here too is what makes the binding testable —
+    /// a pipeline path that skipped it would accept stale notes unchecked.
+    private static func detachedRepoVocabularyPipeline(
+        _ body: @escaping @Sendable () async -> RepoVocabularyMatcher.GroundingOutcome?
+    ) -> Task<RepoVocabularyMatcher.GroundingOutcome?, Never> {
+        #if LOCALVOXTRAL_DOGFOOD
+        let dogfoodGeneration = DogfoodCaptureTap.shared.currentGeneration
+        return Task.detached(priority: .utility) {
+            await DogfoodCaptureTap.$noteGeneration.withValue(dogfoodGeneration) {
+                await body()
+            }
+        }
+        #else
+        return Task.detached(priority: .utility) { await body() }
+        #endif
     }
 
     private func resolveRepoVocabularyDeadlineSleep() -> @Sendable () async -> Void {
