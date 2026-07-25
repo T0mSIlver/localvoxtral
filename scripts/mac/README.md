@@ -340,6 +340,57 @@ reference, so expect equal-or-better numbers). Both are OWNER-verified: the
 repo-side changes are compatible with either generation behind the ports, but
 only a live run on the swapped host proves accuracy parity.
 
+## Runner node re-sign agent — TCC grants that survive runner auto-updates
+
+`runner-node-resign.sh` keeps the self-hosted runner's bundled node binaries
+(`~/actions-runner/externals/node*/bin/node` — BOTH of them, node20 and
+node24) signed with the owner's stable `localvoxtral-dev` identity and a
+fixed identifier. macOS keys a TCC grant for an unsigned binary to its
+content hash, so every runner auto-update used to silently invalidate the
+Accessibility + Screen Recording grants the tier-2 GUI lanes need (field
+incidents 2026-07-24/25: red ui-smoke, real TCC prompts on the GUI session).
+With a stable signature the grant is keyed to identity+identifier and
+survives updates untouched. Auto-update stays ON — there is no monthly
+manual-update ritual with this in place.
+
+A LaunchAgent (`com.localvoxtral.runner-node-resign`) re-signs automatically:
+`WatchPaths` on `externals/` fires when an update swaps node (plus an hourly
+`StartInterval` sweep as backstop), waits for any in-flight CI job to drain
+(never stops the service under a live `Runner.Worker`), then
+`svc.sh stop` → `codesign --force` → `svc.sh start`. Sign failures still
+restart the service — a broken grant is recoverable, a dead runner is not.
+Log: `~/Library/Logs/localvoxtral-runner-node-resign.log`.
+
+### One-time install (owner GUI session on the Mac)
+
+```bash
+# 1. Install + bootstrap the agent (copies the script to a stable path under
+#    ~/Library/Application Support/localvoxtral/bin — the repo checkout may
+#    be a garbage-collected rsync dir, the agent must not point into it):
+scripts/mac/runner-node-resign.sh install-agent
+
+# 2. FIRST signed pass BY HAND, so the keychain "Always Allow" prompt for the
+#    signing key lands on you, not on the silent agent:
+"$HOME/Library/Application Support/localvoxtral/bin/runner-node-resign.sh" run
+
+# 3. System Settings > Privacy & Security: in BOTH Accessibility and Screen
+#    Recording, REMOVE the existing node rows and re-add BOTH
+#    ~/actions-runner/externals/node*/bin/node binaries (4 entries total).
+#    The old rows are keyed to the pre-signing hashes and never match again.
+#    This is the LAST manual TCC action; later updates re-sign automatically.
+
+# 4. Verify:
+scripts/mac/runner-node-resign.sh status     # expect: signed x2, agent loaded
+gh workflow run ui-smoke.yml --ref main      # TCC preflight = the live probe
+```
+
+Caveats: there is a sub-minute window between an auto-update landing and the
+agent re-signing + restarting — a tier-2 run in that window fails its TCC
+preflight once and self-heals. If the `localvoxtral-dev` certificate is ever
+rotated or deleted, all four grants die with it (redo step 3 after signing
+with the new identity). Regression tests: `scripts/ci/test-runner-node-resign.sh`
+(stubbed codesign/pgrep/svc.sh, runs in CI on every push).
+
 ## `localvoxtral-build-gate.sh` — SSH build gate (v4)
 
 Forced command for the Linux dev box's build key on the Mac build host. It
