@@ -17,6 +17,11 @@ extension DictationViewModel {
         let abstentions = DogfoodCaptureTap.shared.consumeJoinAbstentions()
         let repoVocabularyHarvest = DogfoodCaptureTap.shared.consumeRepoVocabularyHarvest()
         guard settings.dogfoodCaptureEnabled else { return }
+        // A stopped-with-no-speech session skipped the polish call and has
+        // nothing to attribute; a record of empty stages is retention noise.
+        guard !inputs.text.workingText
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
 
         var inputs = inputs
         inputs.joinAbstentions = abstentions

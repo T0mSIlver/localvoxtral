@@ -1,5 +1,6 @@
 #if LOCALVOXTRAL_DOGFOOD
 
+import AppKit
 import Foundation
 import XCTest
 @testable import localvoxtral
@@ -116,6 +117,101 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         await second.viewModel.polishAndCommitTask?.value
         let records = try recordsOnDisk(in: second.captureDirectory)
         XCTAssertNil(records.last?.join?.abstentionReason)
+    }
+
+    /// Populated sources ride the commit path into the record: a clipboard
+    /// context produces its allocation row and harvested source row, and a
+    /// repo-vocabulary outcome (with its tapped harvest) produces the
+    /// `repoVocabulary` row AND its pre-application shows in `groundedText`.
+    /// This is the end-to-end lock on the demand/grant/rendered extraction and
+    /// the tap→record path, which the builder unit tests alone cannot see
+    /// (review, 2026-07-25).
+    func testPopulatedSourcesProduceAllocationAndSourceRows() async throws {
+        let harness = try makeHarness(dogfoodArmed: true)
+        harness.viewModel.settings.polishClipboardContextEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.debugPolishContextPasteboardReaderOverride = {
+            WiringPasteboardStub(text: "error in PolishContextBudget.swift line 40")
+        }
+        harness.viewModel.debugRepoVocabularyEntriesOverride = { _ in
+            RepoVocabularyMatcher.GroundingOutcome(
+                entries: [ReplacementEntry(replaceWith: "herdr", matches: ["herder"])],
+                isFallbackOnly: false
+            )
+        }
+        DogfoodCaptureTap.shared.beginSession()
+        DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["herdr", "pane.read"])
+        harness.viewModel.currentDictationEventText = "join the herder pane"
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+
+        // Grounding pre-applied the repo entry before the model saw the text.
+        XCTAssertEqual(record.text.groundedText, "join the herdr pane")
+
+        // One allocation row: only the clipboard declared a render demand.
+        XCTAssertEqual(record.allocation.count, 1)
+        let allocation = record.allocation[0]
+        XCTAssertEqual(allocation.source, "clipboard")
+        XCTAssertGreaterThan(allocation.demandedCharacters, 0)
+        XCTAssertEqual(allocation.grantedCharacters, allocation.demandedCharacters)
+        XCTAssertEqual(allocation.renderedCharacters, allocation.demandedCharacters)
+        XCTAssertFalse(allocation.excerptWasSelected)
+
+        let sourceNames = record.sources.map(\.source)
+        XCTAssertEqual(sourceNames, ["repoVocabulary", "clipboard"])
+
+        let repoRow = record.sources[0]
+        XCTAssertEqual(repoRow.harvest, ["herdr", "pane.read"])
+        XCTAssertEqual(repoRow.entries, [.init(term: "herdr", heard: ["herder"])])
+
+        let clipboardRow = record.sources[1]
+        XCTAssertTrue(
+            clipboardRow.harvest.contains("PolishContextBudget.swift"),
+            "the clipboard's technical entities are the harvest: \(clipboardRow.harvest)"
+        )
+        XCTAssertEqual(
+            clipboardRow.renderedExcerpt,
+            "error in PolishContextBudget.swift line 40"
+        )
+    }
+
+    /// The MAJOR from the 2026-07-25 review: a deadline-abandoned repo
+    /// vocabulary pipeline finishing AFTER its session ended must not write its
+    /// harvest into the next session's slot. Notes carry the generation they
+    /// were created under; a stale one is dropped.
+    func testStaleGenerationHarvestNoteIsRejected() {
+        let tap = DogfoodCaptureTap.shared
+        tap.beginSession()
+        let staleGeneration = tap.currentGeneration
+        tap.beginSession() // the next dictation began; the old pipeline is stale
+
+        DogfoodCaptureTap.$noteGeneration.withValue(staleGeneration) {
+            tap.noteRepoVocabularyHarvest(["previous-session-term"])
+        }
+        XCTAssertNil(
+            tap.consumeRepoVocabularyHarvest(),
+            "a stale pipeline's harvest must not survive into the new session"
+        )
+
+        DogfoodCaptureTap.$noteGeneration.withValue(tap.currentGeneration) {
+            tap.noteRepoVocabularyHarvest(["current-session-term"])
+        }
+        XCTAssertEqual(tap.consumeRepoVocabularyHarvest(), ["current-session-term"])
+    }
+
+    /// A stopped-with-no-speech session writes nothing: there was no polish
+    /// call and there is nothing to attribute.
+    func testEmptyDictationWritesNoRecord() async throws {
+        let harness = try makeHarness(dogfoodArmed: true)
+        harness.viewModel.currentDictationEventText = "   "
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
     }
 
     // MARK: - Builder
@@ -310,6 +406,14 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         settings.dictationOutputMode = .overlayBuffer
         return settings
     }
+}
+
+/// A plain-text pasteboard with no concealed/transient markers.
+private final class WiringPasteboardStub: PasteboardReading {
+    private let text: String
+    init(text: String) { self.text = text }
+    func types() -> [NSPasteboard.PasteboardType]? { [.string] }
+    func string() -> String? { text }
 }
 
 /// Always polishes successfully, without networking.

@@ -1410,6 +1410,12 @@ extension DictationViewModel {
                         // Filled from the tap inside writeDogfoodCaptureIfArmed.
                         joinAbstentions: [],
                         screenDecision: screenDecision,
+                        // Value inequality is the swap signal: only the herdr
+                        // reconcile above ever reassigns `screenDecision`, and
+                        // a failed pane.read returns the fallback (equal). A
+                        // successful pane.read that happens to EQUAL the
+                        // fallback mislabels only the route — the decision and
+                        // cause still tell the true story. Intentional.
                         herdrSwapApplied: capturedHerdrPaneStart != nil
                             && screenDecision != capturedScreenDecision,
                         targetBundleID: capturedTargetBundleID,
@@ -1888,6 +1894,23 @@ extension DictationViewModel {
             processFallbackPID = nil
         }
         let cache = repoVocabularyCache
+        #if LOCALVOXTRAL_DOGFOOD
+        // Read on the main actor, at task creation: the generation this
+        // pipeline works FOR. Task-locals do not cross `Task.detached`, so the
+        // binding happens inside the closure — see `DogfoodCaptureTap.noteGeneration`
+        // for why an abandoned pipeline's late note must be rejectable.
+        let dogfoodGeneration = DogfoodCaptureTap.shared.currentGeneration
+        return Task.detached(priority: .utility) {
+            await DogfoodCaptureTap.$noteGeneration.withValue(dogfoodGeneration) {
+                await RepoVocabularyService.entries(
+                    forWindowTitle: title,
+                    terminalApplicationPID: processFallbackPID,
+                    transcript: transcript,
+                    cache: cache
+                )
+            }
+        }
+        #else
         return Task.detached(priority: .utility) {
             await RepoVocabularyService.entries(
                 forWindowTitle: title,
@@ -1896,6 +1919,7 @@ extension DictationViewModel {
                 cache: cache
             )
         }
+        #endif
     }
 
     private func resolveRepoVocabularyDeadlineSleep() -> @Sendable () async -> Void {

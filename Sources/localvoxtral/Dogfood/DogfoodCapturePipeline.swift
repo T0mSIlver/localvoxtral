@@ -27,27 +27,62 @@ final class DogfoodCaptureTap: Sendable {
     static let shared = DogfoodCaptureTap()
 
     private struct State {
+        /// Which dictation the slots belong to. Bumped by `beginSession`, so a
+        /// note carrying an older generation can be recognized as stale.
+        var generation: UInt64 = 0
         var joinAbstentions: [String] = []
         var repoVocabularyHarvest: [String]?
     }
 
     private let state = Mutex(State())
 
-    /// Clears both slots. Called at dictation start, before the join resolves.
+    /// The generation a harvest note was created under. The repo-vocabulary
+    /// pipeline is a DETACHED task racing a 2 s deadline; when the deadline
+    /// wins, the pipeline is abandoned but keeps running, and its eventual
+    /// harvest note can land after the owning session already consumed — which
+    /// would put session A's repo terms into session B's record, the exact
+    /// bucket-1 misattribution the record exists to prevent (review, 2026-07-25).
+    /// The commit path binds this task-local around the pipeline body at task
+    /// creation (task-locals do not cross `Task.detached` on their own), and
+    /// `noteRepoVocabularyHarvest` rejects a note whose generation has passed.
+    /// Nil (an unbound caller, e.g. a direct unit test) is accepted as current.
+    @TaskLocal static var noteGeneration: UInt64?
+
+    /// Clears both slots and advances the generation. Called at dictation
+    /// start, before the join resolves.
     func beginSession() {
-        state.withLock { $0 = State() }
+        state.withLock {
+            $0.generation &+= 1
+            $0.joinAbstentions = []
+            $0.repoVocabularyHarvest = nil
+        }
+    }
+
+    var currentGeneration: UInt64 {
+        state.withLock { $0.generation }
     }
 
     /// One arm's abstention cause, e.g. `"tty: stale"`. Accumulated: a single
     /// resolve can abstain on the tty arm and then again on the marker arm, and
     /// the record wants the whole story, not the last chapter.
+    ///
+    /// No generation check, deliberately: abstentions are noted synchronously
+    /// on the main actor during session start, and overlapping session starts
+    /// are blocked upstream — there is no abandoned producer to guard against.
     func noteJoinAbstention(_ cause: String) {
         state.withLock { $0.joinAbstentions.append(cause) }
     }
 
     /// The exact term pool the terminal-cwd repo vocabulary matched against.
+    /// Dropped when `noteGeneration` says the note is from a session that has
+    /// already ended — see `noteGeneration`.
     func noteRepoVocabularyHarvest(_ terms: [String]) {
-        state.withLock { $0.repoVocabularyHarvest = terms }
+        state.withLock {
+            if let generation = Self.noteGeneration, generation != $0.generation {
+                return
+            }
+            $0.repoVocabularyHarvest = terms
+        }
     }
 
     /// All abstention causes noted since `beginSession`, oldest first, and
