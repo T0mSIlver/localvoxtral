@@ -121,6 +121,11 @@ jobs:
         run: ./scripts/package_app.sh release "${{ steps.meta.outputs.version }}" "${{ github.run_number }}"
 
       - name: Gate — packaged app launch smoke test
+        env:
+          # Same rationale as ci.yml's launch smoke: keep the real app's
+          # startup TCC prompts off the runner's GUI session (node's
+          # Accessibility grant dies on every runner auto-update).
+          LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
         run: |
           python3 - <<'PY'
           import subprocess, time

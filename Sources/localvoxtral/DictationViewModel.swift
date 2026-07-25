@@ -573,6 +573,18 @@ final class DictationViewModel {
     private var lifecycleObservers: [NSObjectProtocol] = []
     @ObservationIgnored
     private let managesRuntimeServices: Bool
+    /// When true, the startup permission-prompt pass (microphone +
+    /// Accessibility) is skipped entirely. Driven by
+    /// `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` in production;
+    /// injectable for tests. CI's packaged-app launch smoke execs the real
+    /// binary inside the Actions runner's process tree, where TCC attributes
+    /// permission checks to the runner's bundled node — after a runner
+    /// auto-update invalidates node's Accessibility grant, the startup
+    /// prompt pops a REAL dialog on the runner's GUI session once per run
+    /// (2026-07-24). The env override silences only the prompts; the launch
+    /// path stays production-shaped.
+    @ObservationIgnored
+    private let suppressStartupPermissionPrompts: Bool
     @ObservationIgnored
     private let localNetworkPermissionPreflight: any LocalNetworkPermissionPreflighting
     // Tracks physical key state so repeat key-down events do not retrigger actions.
@@ -599,7 +611,9 @@ final class DictationViewModel {
         backendManager: (any ManagedBackendManaging)? = nil,
         overlayBufferCoordinator: OverlayBufferSessionCoordinating? = nil,
         localNetworkPermissionPreflight: (any LocalNetworkPermissionPreflighting)? = nil,
-        startRuntimeServices: Bool = true
+        startRuntimeServices: Bool = true,
+        suppressStartupPermissionPrompts: Bool =
+            DictationViewModel.startupPermissionPromptsSuppressed()
     ) {
         self.settings = settings
         self.backendManager =
@@ -610,6 +624,7 @@ final class DictationViewModel {
                 speechdStepCadenceProvider: { settings.speechdStepCadence.milliseconds }
             )
         self.managesRuntimeServices = startRuntimeServices
+        self.suppressStartupPermissionPrompts = suppressStartupPermissionPrompts
         self.localNetworkPermissionPreflight =
             localNetworkPermissionPreflight ?? LocalNetworkPermissionPreflight()
         if let overlayBufferCoordinator {
@@ -792,8 +807,27 @@ final class DictationViewModel {
         lifecycleObservers = [sleepObserver, terminateObserver]
     }
 
+    /// True when `LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1` — the
+    /// explicit opt-out CI's launch smoke sets so the real packaged app can
+    /// be launched without popping TCC dialogs on the runner's GUI session
+    /// (see `suppressStartupPermissionPrompts`).
+    nonisolated static func startupPermissionPromptsSuppressed(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment["LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS"] == "1"
+    }
+
     private func requestStartupPermissionsIfNeeded() {
         guard managesRuntimeServices else { return }
+        guard !suppressStartupPermissionPrompts else {
+            // .notice so the line persists in the unified log archive: it is
+            // the after-the-fact field proof that a CI smoke launch skipped
+            // the prompt pass (.info survives only in the memory buffer).
+            Log.dictation.notice(
+                "startup permission prompts suppressed (LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS=1)"
+            )
+            return
+        }
         guard settings.onboardingCompleted else {
             debugLog("startup permission prompts skipped until onboarding completes")
             return
