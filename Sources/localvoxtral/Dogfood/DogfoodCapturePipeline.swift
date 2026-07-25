@@ -37,7 +37,8 @@ final class DogfoodCaptureTap: Sendable {
     private let state = Mutex(State())
 
     /// The generation a harvest note was created under. The repo-vocabulary
-    /// pipeline is a DETACHED task racing a 2 s deadline; when the deadline
+    /// pipeline is a DETACHED task racing `repoVocabularyPipelineDeadline`
+    /// (3 s at the time of writing); when the deadline
     /// wins, the pipeline is abandoned but keeps running, and its eventual
     /// harvest note can land after the owning session already consumed — which
     /// would put session A's repo terms into session B's record, the exact

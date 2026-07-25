@@ -202,6 +202,65 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(tap.consumeRepoVocabularyHarvest(), ["current-session-term"])
     }
 
+    /// The generation BINDING itself, through the real pipeline-task path: a
+    /// harvest noted from inside the detached pipeline (via the seam, which
+    /// shares `detachedRepoVocabularyPipeline` with production) carries the
+    /// creation-time generation and lands in the record. Deleting the
+    /// `withValue` binding would not fail this test — the next one exists for
+    /// that (verification review, 2026-07-25).
+    func testPipelineNotedHarvestRidesTheBindingIntoTheRecord() async throws {
+        let harness = try makeHarness(dogfoodArmed: true)
+        harness.viewModel.settings.polishClipboardContextEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.debugPolishContextPasteboardReaderOverride = {
+            WiringPasteboardStub(text: "clipboard text")
+        }
+        harness.viewModel.debugRepoVocabularyPipelineOverride = { _ in
+            DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["pipeline-term"])
+            return .empty
+        }
+        DogfoodCaptureTap.shared.beginSession()
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        let repoRow = record.sources.first { $0.source == "repoVocabulary" }
+        XCTAssertEqual(repoRow?.harvest, ["pipeline-term"])
+    }
+
+    /// The MAJOR's end-to-end regression: a pipeline whose session has ended
+    /// (the next dictation's `beginSession` ran) must have its harvest note
+    /// REJECTED — because the detached task carries the creation-time
+    /// generation. This is the test that fails if the `withValue` binding is
+    /// removed from `detachedRepoVocabularyPipeline`: an unbound note fails
+    /// open and the stale harvest would land in the record.
+    func testAbandonedPipelineHarvestIsRejectedByTheBinding() async throws {
+        let harness = try makeHarness(dogfoodArmed: true)
+        harness.viewModel.settings.polishClipboardContextEnabled = true
+        harness.viewModel.settings.repoVocabularyEnabled = true
+        harness.viewModel.debugPolishContextPasteboardReaderOverride = {
+            WiringPasteboardStub(text: "clipboard text")
+        }
+        harness.viewModel.debugRepoVocabularyPipelineOverride = { _ in
+            // The next dictation begins while this pipeline is still running…
+            DogfoodCaptureTap.shared.beginSession()
+            // …so its late note is stale and must be dropped.
+            DogfoodCaptureTap.shared.noteRepoVocabularyHarvest(["stale-term"])
+            return .empty
+        }
+        DogfoodCaptureTap.shared.beginSession()
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertNil(
+            record.sources.first { $0.source == "repoVocabulary" },
+            "a stale pipeline's harvest must not reach any record"
+        )
+    }
+
     /// A stopped-with-no-speech session writes nothing: there was no polish
     /// call and there is nothing to attribute.
     func testEmptyDictationWritesNoRecord() async throws {
