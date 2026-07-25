@@ -84,6 +84,11 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   System Settings → Accessibility). First codesign with a new key needs one
   GUI "Always Allow" keychain prompt — trigger it with a local
   `package_app.sh` run before relying on CI, or the runner job hangs.
+  The same identity-vs-hash rule protects the tier-2 lanes' TCC grants: the
+  `com.localvoxtral.runner-node-resign` LaunchAgent re-signs the runner's
+  bundled `externals/node*` with `localvoxtral-dev` after every runner
+  auto-update so the Accessibility/Screen Recording grants survive
+  (`scripts/mac/runner-node-resign.sh`, owner runbook `scripts/mac/README.md`).
 - **macOS 26 launch stall**: first launch of a *downloaded* ad-hoc-signed
   bundle stalls forever at `_dyld_start` (Gatekeeper first-exec scan);
   `xattr -cr` does NOT fix it, a LOCAL `codesign --force --deep --sign -`
