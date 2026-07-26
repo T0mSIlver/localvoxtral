@@ -239,16 +239,26 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         ]
     }
 
+    /// The comments are part of the deliverable: these commands are run by a
+    /// person, and the field failure was a person reading healthy output as
+    /// broken — a forward "failure" that just means another session already
+    /// holds the tunnel, and a 401 that is the success signal. Say so in the
+    /// output they are pasting, not in a note they have scrolled past.
     static func verifyCommands(sshHostAlias: String, port: UInt16) -> [String] {
         [
-            // Does the forward actually exist? -v prints the remote forwarding
-            // request and the remote's answer, which is the only place a failed
-            // RemoteForward is visible when ExitOnForwardFailure is `no`.
+            // -v because a failed RemoteForward is otherwise invisible when
+            // ExitOnForwardFailure is `no`.
+            "# Forward check — 'remote forward success' means this probe owns the",
+            "# tunnel. A failure here is EXPECTED while another live session to",
+            "# this host holds it; the port check below is the truth either way.",
             "ssh -v \(sshHostAlias) true 2>&1 | grep -i 'remote forward'",
-            "ssh \(sshHostAlias) 'claude plugin list'",
-            // From the remote side, through the tunnel: 401 proves the tunnel is
-            // up and the listener is answering. A connection error means the
-            // forward did not take.
+            "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
+            "# here even though it runs fine when you are logged in.",
+            "ssh \(sshHostAlias) 'PATH=\"$HOME/.claude/local:$HOME/.local/bin:$HOME/bin"
+                + ":/opt/homebrew/bin:/usr/local/bin:$PATH\" claude plugin list'",
+            "# 401 = SUCCESS: the tunnel is up and localvoxtral answered (an",
+            "# unauthenticated probe must be refused). A connection error means",
+            "# no live session holds the forward right now.",
             "ssh \(sshHostAlias) 'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST "
                 + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(port)/v1/hook/SessionStart'",
         ]
@@ -286,6 +296,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             "A second concurrent SSH session to the same host will fail to bind \(port) on the "
                 + "remote and — because ExitOnForwardFailure is `no` — will connect anyway with no "
                 + "tunnel. The first session keeps the forward.",
+            "One-click setup connects with forwarding disabled (the tunnel belongs to your real "
+                + "sessions, not setup) and first resolves `claude` from common install locations — "
+                + "non-interactive SSH shells often lack the user-local PATH entries an interactive "
+                + "login has.",
         ]
     }
 
@@ -410,7 +424,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     ///
     /// Throws `.executionNotConfigured` when no runner was supplied. Each plan
     /// command is sent to `/bin/sh -s` over SSH stdin. The only spawned argv is
-    /// `ssh -o BatchMode=yes <alias> /bin/sh -s`, which contains no token.
+    /// `ssh -o BatchMode=yes -o ClearAllForwardings=yes <alias> /bin/sh -s`,
+    /// which contains no token.
     ///
     /// - Parameter token: the plaintext, used ONLY to redact it back out of any
     ///   failure. Nothing here logs or stores it.
@@ -448,7 +463,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 throw failure
             }
             let invocation = Invocation(
-                argv: ["ssh", "-o", "BatchMode=yes", sshHostAlias, "/bin/sh", "-s"],
+                // ClearAllForwardings: the setup connection has no use for the
+                // 8473 tunnel, and with the user's own session usually holding
+                // it, attempting the forward here only produced a scary
+                // "remote port forwarding failed" warning inside setup errors
+                // (field report 2026-07-26).
+                argv: [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    sshHostAlias, "/bin/sh", "-s",
+                ],
                 standardInput: Self.remoteScript(command: command),
                 timeout: remaining
             )
@@ -516,7 +539,36 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         return completed
     }
 
+    /// PATH resolution for `claude` under `ssh <host> /bin/sh -s`.
+    ///
+    /// Non-interactive SSH shells run with sshd's minimal PATH (no login rc),
+    /// which usually lacks the user-local directories claude installs into —
+    /// the field failure was dash's bare `claude: not found` on a host where
+    /// claude worked fine interactively. Probe the same locations the local
+    /// installer does (`ClaudePluginInstallService.claudeCLICandidates`), plus
+    /// nvm-style node bins, and fail with an actionable message instead of
+    /// dash's. POSIX sh only — the remote /bin/sh is dash on Debian-family
+    /// hosts. Token-free by construction, like the `set -eu` line: the
+    /// confirmation shows the commands the user authorizes; this is part of
+    /// how they run.
+    static let claudePathResolverPreamble = """
+        if ! command -v claude >/dev/null 2>&1; then
+          for lv_dir in "$HOME/.claude/local" "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin; do
+            if [ -x "$lv_dir/claude" ]; then PATH="$lv_dir:$PATH"; break; fi
+          done
+        fi
+        if ! command -v claude >/dev/null 2>&1; then
+          echo "localvoxtral: 'claude' was not found on this host's non-interactive PATH, nor in ~/.claude/local, ~/.local/bin, ~/bin, /opt/homebrew/bin, /usr/local/bin, or ~/.nvm/versions/node/*/bin. Run 'command -v claude' in a normal shell on this host, then rerun setup — or add that directory to PATH for non-interactive SSH shells." >&2
+          exit 127
+        fi
+
+        """
+
     static func remoteScript(command: String) -> Data {
-        Data("set -eu\n\(command)\n".utf8)
+        // The resolver only guards commands that actually invoke claude, so a
+        // future non-claude step cannot be failed by a missing CLI it never
+        // needed.
+        let preamble = command.contains("claude") ? claudePathResolverPreamble : ""
+        return Data("set -eu\n\(preamble)\(command)\n".utf8)
     }
 }
