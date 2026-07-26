@@ -676,9 +676,10 @@ final class PolishHelperIntegrationTests: XCTestCase {
         // timeout and failed the scoreboard with "request timed out" — a
         // latency artifact, not a quality regression (CI, 2026-07-11). Pay
         // the profile's prefill up front with the production warmup request
-        // shape, result ignored — exactly what the planned profile-aware
-        // warmup will do in production (TODO in `PolishPromptWarmup
-        // .request`). Bounded: an attempt that times out client-side still
+        // shape, result ignored — exactly what the production profile-aware
+        // warmup does per launch (`PolishPromptWarmup.plan` warms the agent
+        // prefix alongside the standard one). Bounded: an attempt that times
+        // out client-side still
         // leaves the helper prefilling, so the next attempt (and the
         // scoreboard) hits the warm checkpoint.
         let service = LLMPolishingService()
