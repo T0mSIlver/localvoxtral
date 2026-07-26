@@ -496,6 +496,75 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertEqual(model.enrollmentStepStatuses.first?.succeeded, false)
     }
 
+    /// Review finding (PR #194): the late-result guard compared only
+    /// `host.id`, which token rotation REUSES — a setup still in flight when
+    /// the sheet went away could publish its old-token outcome underneath the
+    /// rotation sheet that replaced it. The guard now requires the whole
+    /// presentation to match; rotation mints a new token, so equality
+    /// distinguishes the generations.
+    func testALateResultFromBeforeARotationNeverSurfacesUnderTheNewToken() async throws {
+        let registry = try makeRegistry()
+        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "ok")
+        })
+        let model = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            pluginService: { StubPluginService() },
+            enrollmentService: service,
+            performAsync: { body in
+                do {
+                    try body()
+                    return nil
+                } catch {
+                    return ClaudePluginActionFailure(error)
+                }
+            },
+            performEnrollmentAsync: { body in
+                // Park until the test releases the gate, so the "sheet went
+                // away and the user rotated while ssh was still running"
+                // interleaving is deterministic — cooperative yields only, no
+                // wall-clock.
+                var latch = gate.makeAsyncIterator()
+                _ = await latch.next()
+                do {
+                    return ClaudeEnrollmentActionAttempt(steps: try body(), failure: nil)
+                } catch {
+                    return ClaudeEnrollmentActionAttempt(
+                        steps: [],
+                        failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            }
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.presentedPlan).host.id
+
+        model.requestRemoteSetup()
+        let inFlight = Task { await model.confirmEnrollmentAction() }
+        while !model.isPerformingEnrollmentAction { await Task.yield() }
+
+        model.dismissPlan()
+        await model.rotate(hostID: hostID)
+        XCTAssertEqual(
+            model.presentedPlan?.host.id, hostID,
+            "rotation reuses the host id — that reuse is the trap"
+        )
+
+        releaseGate.yield(())
+        releaseGate.finish()
+        await inFlight.value
+
+        XCTAssertTrue(
+            model.enrollmentStepStatuses.isEmpty,
+            "an old-token result must not render under the rotation sheet"
+        )
+        XCTAssertNil(model.enrollmentResultsAction)
+    }
+
     func testRemoteSetupTimeoutHasShortStepStatusAndClearDetail() async throws {
         let registry = try makeRegistry()
         let service = ClaudeRemoteEnrollmentService(runner: { _ in

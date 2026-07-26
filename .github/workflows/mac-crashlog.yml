@@ -116,21 +116,42 @@ jobs:
       - name: Claude remote ssh config state (markers only)
         run: |
           # Field-debugging the enrollment insertion: report only what proves
-          # or disproves that the app's marked block is present. Never print
-          # the config's content — Host aliases and hostnames are private and
-          # this log is public. Marker lines carry only the random host id.
+          # or disproves that the app's marked block is present. This log is
+          # PUBLIC: never print config content, filenames, aliases, hostnames,
+          # or account names. Markers print only when they match the app's
+          # exact grammar (grep -o keeps the matched text alone, so a
+          # marker-like line carrying extra private text is counted, never
+          # shown). A diagnostic must not go red on the states it exists to
+          # characterize (missing file, symlink), hence set +e.
+          set +e
           cfg="$HOME/.ssh/config"
-          echo "--- lstat ~/.ssh and ~/.ssh/config:"
-          /usr/bin/stat -f '%N: type=%HT perms=%Mp%Lp owner=%Su mtime=%Sm size=%z' \
-            "$HOME/.ssh" "$cfg" 2>&1 | sed "s|$HOME|~|g"
-          echo "--- localvoxtral marker lines (line number + marker only):"
-          grep -n '^# \(BEGIN\|END\) localvoxtral claude context' "$cfg" 2>/dev/null \
-            || echo "<no localvoxtral markers>"
-          echo "--- RemoteForward 8473 present:"
-          grep -c 'RemoteForward 8473' "$cfg" 2>/dev/null || echo "0"
-          echo "--- leftover atomic-write temp files:"
-          ls "$HOME/.ssh/".config.localvoxtral.* 2>/dev/null | sed "s|$HOME|~|g" \
-            || echo "<none>"
+          marker_grammar='^# \(BEGIN\|END\) localvoxtral claude context ([a-z0-9]\{1,32\})$'
+          echo "--- ~/.ssh and config state:"
+          for path in "$HOME/.ssh" "$cfg"; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+              /usr/bin/stat -f '%N: type=%HT perms=%Mp%Lp mtime=%Sm size=%z' "$path" 2>&1 \
+                | sed "s|$HOME|~|g"
+            else
+              echo "$path: <absent>" | sed "s|$HOME|~|g"
+            fi
+          done
+          if [ "$(/usr/bin/stat -f %u "$HOME/.ssh" 2>/dev/null)" = "$(id -u)" ]; then
+            echo "ssh dir owned by current user: yes"
+          else
+            echo "ssh dir owned by current user: NO"
+          fi
+          echo "--- localvoxtral marker lines (strict grammar only):"
+          grep -no "$marker_grammar" "$cfg" 2>/dev/null \
+            || echo "<no well-formed localvoxtral markers>"
+          marker_like="$(grep -c '^# \(BEGIN\|END\) localvoxtral claude context' "$cfg" 2>/dev/null)"
+          well_formed="$(grep -c "$marker_grammar" "$cfg" 2>/dev/null)"
+          echo "marker-like lines: ${marker_like:-0} (well-formed: ${well_formed:-0})"
+          echo "--- RemoteForward 8473 count:"
+          grep -c 'RemoteForward 8473' "$cfg" 2>/dev/null
+          [ -f "$cfg" ] || echo "<no config file>"
+          echo "--- leftover atomic-write temp files (count only):"
+          /usr/bin/find "$HOME/.ssh" -maxdepth 1 -name '.config.localvoxtral.*' 2>/dev/null \
+            | wc -l | tr -d ' '
 
       - name: List running localvoxtral instances
         run: |

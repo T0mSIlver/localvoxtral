@@ -399,6 +399,7 @@ public final class ClaudeIntegrationSettingsModel {
             // dismissPlan() cleared them.
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
+            enrollmentResultsAction = nil
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
@@ -433,6 +434,7 @@ public final class ClaudeIntegrationSettingsModel {
             )
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
+            enrollmentResultsAction = nil
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
@@ -551,8 +553,11 @@ public final class ClaudeIntegrationSettingsModel {
 
         // The sheet may have been dismissed (window close) and even replaced
         // while the detached work ran; a late result must not surface under a
-        // different host's sheet.
-        guard presentedPlan?.host.id == presentation.host.id else { return }
+        // different sheet. The whole presentation must match, not just the
+        // host id — rotation REUSES the host id, and an id-only guard let an
+        // old-token outcome render beneath the new token's commands. Rotation
+        // mints a fresh token, so value equality distinguishes generations.
+        guard presentedPlan == presentation else { return }
 
         if let failure = attempt.failure {
             enrollmentStepStatuses = Self.failureStatuses(
