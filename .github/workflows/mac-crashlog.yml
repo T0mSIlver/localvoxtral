@@ -113,6 +113,25 @@ jobs:
           probe_model "polishd" "$polish_repo" "$polish_revision"
           exit 0
 
+      - name: Claude remote ssh config state (markers only)
+        run: |
+          # Field-debugging the enrollment insertion: report only what proves
+          # or disproves that the app's marked block is present. Never print
+          # the config's content — Host aliases and hostnames are private and
+          # this log is public. Marker lines carry only the random host id.
+          cfg="$HOME/.ssh/config"
+          echo "--- lstat ~/.ssh and ~/.ssh/config:"
+          /usr/bin/stat -f '%N: type=%HT perms=%Mp%Lp owner=%Su mtime=%Sm size=%z' \
+            "$HOME/.ssh" "$cfg" 2>&1 | sed "s|$HOME|~|g"
+          echo "--- localvoxtral marker lines (line number + marker only):"
+          grep -n '^# \(BEGIN\|END\) localvoxtral claude context' "$cfg" 2>/dev/null \
+            || echo "<no localvoxtral markers>"
+          echo "--- RemoteForward 8473 present:"
+          grep -c 'RemoteForward 8473' "$cfg" 2>/dev/null || echo "0"
+          echo "--- leftover atomic-write temp files:"
+          ls "$HOME/.ssh/".config.localvoxtral.* 2>/dev/null | sed "s|$HOME|~|g" \
+            || echo "<none>"
+
       - name: List running localvoxtral instances
         run: |
           pids=$(pgrep -x localvoxtral || true)

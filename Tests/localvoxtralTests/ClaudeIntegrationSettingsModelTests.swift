@@ -423,6 +423,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertNotNil(model.presentedPlan)
         XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
         XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertNil(model.enrollmentResultsAction)
     }
 
     func testSSHConfigInsertionDoesNotTouchFilesystemBeforeExplicitConfirmation() async throws {
@@ -451,7 +452,48 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertEqual(fileSystem.readCount, 1)
         XCTAssertEqual(fileSystem.writeCount, 1)
-        XCTAssertEqual(model.enrollmentStepStatuses.first?.text, "SSH config updated.")
+        XCTAssertEqual(
+            model.enrollmentStepStatuses.first?.text,
+            "Inserted this host's block into ~/.ssh/config."
+        )
+        XCTAssertEqual(model.enrollmentResultsAction, .insertSSHConfig)
+    }
+
+    /// Field report 2026-07-26: the step-1 success rendered in a pooled results
+    /// area below step 2, the owner never saw it, and confirmed the insertion
+    /// twice believing it had done nothing. The sheet now renders each outcome
+    /// inside the section that ran it, which needs the model to say WHICH
+    /// action the statuses belong to — and to clear that tag the moment a new
+    /// confirmation starts, so step 1's stale result can never render while
+    /// step 2 is the one being confirmed.
+    func testStepResultsAreTaggedWithTheActionThatProducedThem() async throws {
+        let registry = try makeRegistry()
+        let fileSystem = RecordingSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { _ in .init(exitCode: 1, message: "remote said no") },
+            sshConfigFileSystem: fileSystem
+        )
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        XCTAssertNil(model.enrollmentResultsAction)
+
+        model.requestSSHConfigInsertion()
+        await model.confirmEnrollmentAction()
+        XCTAssertEqual(model.enrollmentResultsAction, .insertSSHConfig)
+
+        model.requestRemoteSetup()
+        XCTAssertNil(model.enrollmentResultsAction, "a pending confirmation must not show stale results")
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+
+        await model.confirmEnrollmentAction()
+        XCTAssertEqual(model.enrollmentResultsAction, .runRemoteSetup)
+        XCTAssertEqual(model.enrollmentStepStatuses.first?.succeeded, false)
     }
 
     func testRemoteSetupTimeoutHasShortStepStatusAndClearDetail() async throws {

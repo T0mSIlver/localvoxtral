@@ -193,6 +193,11 @@ public final class ClaudeIntegrationSettingsModel {
     public private(set) var presentedPlan: EnrollmentPresentation?
     public private(set) var enrollmentConfirmation: EnrollmentConfirmation?
     public private(set) var enrollmentStepStatuses: [EnrollmentStepStatus] = []
+    /// Which action produced `enrollmentStepStatuses`. The sheet renders each
+    /// outcome inside the section whose button the user actually clicked; a
+    /// pooled results area below step 2 is how a step-1 success went unseen
+    /// and got re-confirmed (field report 2026-07-26).
+    public private(set) var enrollmentResultsAction: EnrollmentAction?
     public private(set) var isPerformingEnrollmentAction = false
     public var alert: DetailAlert?
 
@@ -485,11 +490,13 @@ public final class ClaudeIntegrationSettingsModel {
         presentedPlan = nil
         enrollmentConfirmation = nil
         enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
     }
 
     public func requestSSHConfigInsertion() {
         guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
         enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .insertSSHConfig,
             title: "Insert this exact block into ~/.ssh/config?",
@@ -502,6 +509,7 @@ public final class ClaudeIntegrationSettingsModel {
     public func requestRemoteSetup() {
         guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
         enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .runRemoteSetup,
             title: "Run these commands on the SSH host?",
@@ -523,6 +531,7 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentConfirmation = nil
         isPerformingEnrollmentAction = true
         enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
         defer { isPerformingEnrollmentAction = false }
 
         let service = enrollmentService
@@ -550,6 +559,7 @@ public final class ClaudeIntegrationSettingsModel {
                 failure,
                 action: confirmation.action
             )
+            enrollmentResultsAction = confirmation.action
             alert = DetailAlert(
                 title: "Remote Claude Code setup",
                 detail: Self.enrollmentFailureDetail(failure)
@@ -564,7 +574,7 @@ public final class ClaudeIntegrationSettingsModel {
         case .insertSSHConfig:
             enrollmentStepStatuses = [
                 EnrollmentStepStatus(
-                    id: 0, text: "SSH config updated.", succeeded: true, detail: ""
+                    id: 0, text: "Inserted this host's block into ~/.ssh/config.", succeeded: true, detail: ""
                 )
             ]
         case .runRemoteSetup:
@@ -577,6 +587,7 @@ public final class ClaudeIntegrationSettingsModel {
                 )
             }
         }
+        enrollmentResultsAction = confirmation.action
     }
 
     public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
