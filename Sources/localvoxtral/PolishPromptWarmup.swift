@@ -59,19 +59,33 @@ enum PolishPromptWarmup {
         else {
             return nil
         }
-        let standardTemplates = appConfigStore.loadLLMPromptTemplates()
+        let standardRequest = request(templates: appConfigStore.loadLLMPromptTemplates())
         var requests: [ProfiledRequest] = [
-            ProfiledRequest(profile: .standard, request: request(templates: standardTemplates))
+            ProfiledRequest(profile: .standard, request: standardRequest)
         ]
         if settings.agentPolishProfileEnabled {
-            let agentTemplates = appConfigStore.loadLLMPromptTemplates(profile: .agent)
-            if agentTemplates != standardTemplates {
-                requests.append(
-                    ProfiledRequest(profile: .agent, request: request(templates: agentTemplates))
-                )
+            let agentRequest = request(
+                templates: appConfigStore.loadLLMPromptTemplates(profile: .agent)
+            )
+            if !sharesCheckpointedPrefix(agentRequest, standardRequest) {
+                requests.append(ProfiledRequest(profile: .agent, request: agentRequest))
             }
         }
         return (requests, configuration)
+    }
+
+    /// Whether two warmup requests would prime the same helper checkpoint.
+    /// The helper's cache key is the templated NON-FINAL messages (system +
+    /// all user prompts but the last), so the comparison mirrors exactly
+    /// that — templates that differ only past the first placeholder (or an
+    /// agent fallback to the standard files) share one checkpoint, and the
+    /// duplicate request would be wasted helper work.
+    private static func sharesCheckpointedPrefix(
+        _ lhs: LLMPolishingRequest,
+        _ rhs: LLMPolishingRequest
+    ) -> Bool {
+        lhs.systemPrompt == rhs.systemPrompt
+            && lhs.userPrompts.dropLast() == rhs.userPrompts.dropLast()
     }
 
     /// A warmup request labeled with the profile it primes, so per-request
@@ -169,6 +183,14 @@ final class PolishPromptWarmupCoordinator {
         let service = serviceProvider()
         warmupTask = Task { @MainActor in
             for profiledRequest in plan.requests {
+                // Checked per iteration, not only on the error path: a helper
+                // stop can race a SUCCESSFUL response, and the next profile's
+                // request must not land on the stopped (or replacement)
+                // helper.
+                guard !Task.isCancelled else {
+                    Log.backends.info("polish prompt warmup cancelled")
+                    return
+                }
                 let profile = profiledRequest.profile.rawValue
                 do {
                     let result = try await service.polish(
