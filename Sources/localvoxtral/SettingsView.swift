@@ -1125,6 +1125,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         body: plan.sshConfigSnippet,
                         note: "Insertion replaces only this host's marked block and writes the file atomically.",
                         actionTitle: "Insert into ~/.ssh/config",
+                        enrollmentAction: .insertSSHConfig,
                         action: { model.requestSSHConfigInsertion() }
                     )
                     section(
@@ -1133,10 +1134,9 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
                         note: "One-click execution sends the token through SSH stdin, never process arguments.",
                         actionTitle: "Run on SSH host",
+                        enrollmentAction: .runRemoteSetup,
                         action: { model.requestRemoteSetup() }
                     )
-                    confirmationView
-                    enrollmentResults
                     section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
                     section("Uninstall", body: plan.uninstallCommands.joined(separator: "\n"), note: nil)
 
@@ -1163,31 +1163,12 @@ private struct ClaudeRemoteEnrollmentSheet: View {
         .frame(width: 560, height: 520)
     }
 
+    /// One step's outcome, rendered inside the section whose button ran it.
+    /// A pooled results area below step 2 is how a step-1 success went unseen
+    /// in the field and got re-confirmed.
     @ViewBuilder
-    private var confirmationView: some View {
-        if let confirmation = model.enrollmentConfirmation {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(confirmation.title).font(.subheadline).bold()
-                Text(confirmation.preview)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 4))
-                HStack {
-                    Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
-                    Button(confirmation.confirmButtonTitle) {
-                        Task { await model.confirmEnrollmentAction() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var enrollmentResults: some View {
-        if !model.enrollmentStepStatuses.isEmpty {
+    private func sectionResults(for enrollmentAction: ClaudeIntegrationSettingsModel.EnrollmentAction) -> some View {
+        if model.enrollmentResultsAction == enrollmentAction, !model.enrollmentStepStatuses.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(model.enrollmentStepStatuses) { step in
                     Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
@@ -1220,9 +1201,19 @@ private struct ClaudeRemoteEnrollmentSheet: View {
         displayedBody: String? = nil,
         note: String?,
         actionTitle: String? = nil,
+        enrollmentAction: ClaudeIntegrationSettingsModel.EnrollmentAction? = nil,
         action: (() -> Void)? = nil
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        // The confirmation lives in the section whose button requested it, so
+        // "Confirm" is always next to the thing it confirms. The displayed body
+        // above the buttons IS the confirmation preview (the plan's exact
+        // snippet for step 1, the redacted commands for step 2) — highlighted
+        // while the question is pending, so the second explicit confirmation
+        // still repeats the exact text it authorizes.
+        let pendingConfirmation = model.enrollmentConfirmation.flatMap { confirmation in
+            confirmation.action == enrollmentAction ? confirmation : nil
+        }
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text(title).font(.subheadline).bold()
                 Spacer()
@@ -1239,14 +1230,31 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(6)
-                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                .background(
+                    pendingConfirmation != nil
+                        ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 4)
+                )
             if let note {
                 Text(note).font(.caption2).foregroundStyle(.secondary)
             }
-            if let actionTitle, let action {
+            if let confirmation = pendingConfirmation {
+                Text(confirmation.title).font(.caption).bold()
+                HStack {
+                    Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                    Button(confirmation.confirmButtonTitle) {
+                        Task { await model.confirmEnrollmentAction() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+            } else if let actionTitle, let action {
                 Button(actionTitle, action: action)
                     .controlSize(.small)
                     .disabled(model.isPerformingEnrollmentAction)
+            }
+            if let enrollmentAction {
+                sectionResults(for: enrollmentAction)
             }
         }
     }
