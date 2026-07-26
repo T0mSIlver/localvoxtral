@@ -315,6 +315,21 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         for command in commands {
             XCTAssertFalse(command.contains(token), "a preflight must not print the credential")
         }
+        // Field report 2026-07-26: the owner read healthy verify output as
+        // broken. The commands themselves must say what their output means and
+        // survive a login shell that skips rc files.
+        XCTAssertTrue(
+            joined.contains("EXPECTED while another live session"),
+            "the forward-failure line needs its interpretation next to it"
+        )
+        XCTAssertTrue(
+            joined.contains("401 = SUCCESS"),
+            "401 is the pass signal and must be labeled as such"
+        )
+        XCTAssertTrue(
+            joined.contains("PATH=\"$HOME/.claude/local:$HOME/.local/bin"),
+            "plugin list must not depend on the remote shell's rc-file PATH"
+        )
     }
 
     // MARK: Notes

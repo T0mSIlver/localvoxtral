@@ -239,16 +239,26 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         ]
     }
 
+    /// The comments are part of the deliverable: these commands are run by a
+    /// person, and the field failure was a person reading healthy output as
+    /// broken — a forward "failure" that just means another session already
+    /// holds the tunnel, and a 401 that is the success signal. Say so in the
+    /// output they are pasting, not in a note they have scrolled past.
     static func verifyCommands(sshHostAlias: String, port: UInt16) -> [String] {
         [
-            // Does the forward actually exist? -v prints the remote forwarding
-            // request and the remote's answer, which is the only place a failed
-            // RemoteForward is visible when ExitOnForwardFailure is `no`.
+            // -v because a failed RemoteForward is otherwise invisible when
+            // ExitOnForwardFailure is `no`.
+            "# Forward check — 'remote forward success' means this probe owns the",
+            "# tunnel. A failure here is EXPECTED while another live session to",
+            "# this host holds it; the port check below is the truth either way.",
             "ssh -v \(sshHostAlias) true 2>&1 | grep -i 'remote forward'",
-            "ssh \(sshHostAlias) 'claude plugin list'",
-            // From the remote side, through the tunnel: 401 proves the tunnel is
-            // up and the listener is answering. A connection error means the
-            // forward did not take.
+            "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
+            "# here even though it runs fine when you are logged in.",
+            "ssh \(sshHostAlias) 'PATH=\"$HOME/.claude/local:$HOME/.local/bin:$HOME/bin"
+                + ":/opt/homebrew/bin:/usr/local/bin:$PATH\" claude plugin list'",
+            "# 401 = SUCCESS: the tunnel is up and localvoxtral answered (an",
+            "# unauthenticated probe must be refused). A connection error means",
+            "# no live session holds the forward right now.",
             "ssh \(sshHostAlias) 'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST "
                 + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(port)/v1/hook/SessionStart'",
         ]
