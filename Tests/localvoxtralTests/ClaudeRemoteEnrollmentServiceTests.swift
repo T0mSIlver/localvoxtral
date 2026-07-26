@@ -524,16 +524,58 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let recorded = calls.withLock { $0 }
         XCTAssertEqual(recorded.count, 2)
         for invocation in recorded {
+            // ClearAllForwardings: setup must not compete for the 8473 tunnel
+            // a real session already holds (field report 2026-07-26).
             XCTAssertEqual(
                 invocation.argv,
-                ["ssh", "-o", "BatchMode=yes", "builder", "/bin/sh", "-s"]
+                [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    "builder", "/bin/sh", "-s",
+                ]
             )
             XCTAssertFalse(invocation.argv.joined(separator: " ").contains(token))
         }
         XCTAssertEqual(
             recorded.map { String(decoding: $0.standardInput, as: UTF8.self) },
-            try plan().remoteCommands.map { "set -eu\n\($0)\n" }
+            try plan().remoteCommands.map {
+                "set -eu\n\(ClaudeRemoteEnrollmentService.claudePathResolverPreamble)\($0)\n"
+            }
         )
+    }
+
+    /// Field failure 2026-07-26: `ssh <host> /bin/sh -s` runs under sshd's
+    /// minimal PATH, so a host where `claude` works interactively still died
+    /// with dash's bare "claude: not found". The script must resolve claude
+    /// from the known install locations before running, and fail with an
+    /// actionable message when it truly is absent.
+    func testRemoteScriptResolvesClaudeFromUserLocalInstallLocations() {
+        let script = String(
+            decoding: ClaudeRemoteEnrollmentService.remoteScript(
+                command: "claude plugin list"
+            ),
+            as: UTF8.self
+        )
+        XCTAssertTrue(script.hasPrefix("set -eu\n"))
+        XCTAssertTrue(script.contains("command -v claude"))
+        for location in [".claude/local", ".local/bin", "/opt/homebrew/bin", ".nvm/versions/node"] {
+            XCTAssertTrue(script.contains(location), "missing probe location \(location)")
+        }
+        XCTAssertTrue(script.contains("exit 127"), "a missing claude must fail loudly, not run on")
+        XCTAssertTrue(
+            script.contains("Run 'command -v claude' in a normal shell"),
+            "the failure message must tell the user what to actually do"
+        )
+        XCTAssertTrue(script.hasSuffix("claude plugin list\n"))
+    }
+
+    func testRemoteScriptLeavesNonClaudeCommandsUnguarded() {
+        let script = String(
+            decoding: ClaudeRemoteEnrollmentService.remoteScript(command: "uname -a"),
+            as: UTF8.self
+        )
+        // A future non-claude step must not be failed by a missing CLI it
+        // never needed.
+        XCTAssertEqual(script, "set -eu\nuname -a\n")
     }
 
     func testRemoteSetupKeepsTokenInStdinAndOutOfEveryArgv() throws {

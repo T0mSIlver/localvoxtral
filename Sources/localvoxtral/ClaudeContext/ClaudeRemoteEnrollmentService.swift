@@ -286,6 +286,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             "A second concurrent SSH session to the same host will fail to bind \(port) on the "
                 + "remote and — because ExitOnForwardFailure is `no` — will connect anyway with no "
                 + "tunnel. The first session keeps the forward.",
+            "One-click setup connects with forwarding disabled (the tunnel belongs to your real "
+                + "sessions, not setup) and first resolves `claude` from common install locations — "
+                + "non-interactive SSH shells often lack the user-local PATH entries an interactive "
+                + "login has.",
         ]
     }
 
@@ -410,7 +414,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     ///
     /// Throws `.executionNotConfigured` when no runner was supplied. Each plan
     /// command is sent to `/bin/sh -s` over SSH stdin. The only spawned argv is
-    /// `ssh -o BatchMode=yes <alias> /bin/sh -s`, which contains no token.
+    /// `ssh -o BatchMode=yes -o ClearAllForwardings=yes <alias> /bin/sh -s`,
+    /// which contains no token.
     ///
     /// - Parameter token: the plaintext, used ONLY to redact it back out of any
     ///   failure. Nothing here logs or stores it.
@@ -448,7 +453,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 throw failure
             }
             let invocation = Invocation(
-                argv: ["ssh", "-o", "BatchMode=yes", sshHostAlias, "/bin/sh", "-s"],
+                // ClearAllForwardings: the setup connection has no use for the
+                // 8473 tunnel, and with the user's own session usually holding
+                // it, attempting the forward here only produced a scary
+                // "remote port forwarding failed" warning inside setup errors
+                // (field report 2026-07-26).
+                argv: [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    sshHostAlias, "/bin/sh", "-s",
+                ],
                 standardInput: Self.remoteScript(command: command),
                 timeout: remaining
             )
@@ -516,7 +529,36 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         return completed
     }
 
+    /// PATH resolution for `claude` under `ssh <host> /bin/sh -s`.
+    ///
+    /// Non-interactive SSH shells run with sshd's minimal PATH (no login rc),
+    /// which usually lacks the user-local directories claude installs into —
+    /// the field failure was dash's bare `claude: not found` on a host where
+    /// claude worked fine interactively. Probe the same locations the local
+    /// installer does (`ClaudePluginInstallService.claudeCLICandidates`), plus
+    /// nvm-style node bins, and fail with an actionable message instead of
+    /// dash's. POSIX sh only — the remote /bin/sh is dash on Debian-family
+    /// hosts. Token-free by construction, like the `set -eu` line: the
+    /// confirmation shows the commands the user authorizes; this is part of
+    /// how they run.
+    static let claudePathResolverPreamble = """
+        if ! command -v claude >/dev/null 2>&1; then
+          for lv_dir in "$HOME/.claude/local" "$HOME/.local/bin" "$HOME/bin" /opt/homebrew/bin /usr/local/bin "$HOME"/.nvm/versions/node/*/bin; do
+            if [ -x "$lv_dir/claude" ]; then PATH="$lv_dir:$PATH"; break; fi
+          done
+        fi
+        if ! command -v claude >/dev/null 2>&1; then
+          echo "localvoxtral: 'claude' was not found on this host's non-interactive PATH, nor in ~/.claude/local, ~/.local/bin, ~/bin, /opt/homebrew/bin, /usr/local/bin, or ~/.nvm/versions/node/*/bin. Run 'command -v claude' in a normal shell on this host, then rerun setup — or add that directory to PATH for non-interactive SSH shells." >&2
+          exit 127
+        fi
+
+        """
+
     static func remoteScript(command: String) -> Data {
-        Data("set -eu\n\(command)\n".utf8)
+        // The resolver only guards commands that actually invoke claude, so a
+        // future non-claude step cannot be failed by a missing CLI it never
+        // needed.
+        let preamble = command.contains("claude") ? claudePathResolverPreamble : ""
+        return Data("set -eu\n\(preamble)\(command)\n".utf8)
     }
 }
