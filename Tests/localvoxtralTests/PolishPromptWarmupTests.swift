@@ -102,18 +102,73 @@ final class PolishPromptWarmupTests: XCTestCase {
         }
     }
 
+    /// First polish call suspends, and resolves SUCCESSFULLY when the
+    /// surrounding task is cancelled — models a helper response that wins
+    /// the race against cancellation. Later calls answer immediately.
+    private final class SucceedOnCancelPolishService: LLMPolishingServicing, @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var recordedRequests: [LLMPolishingRequest] = []
+        let started = XCTestExpectation(description: "first polish request reached the service")
+
+        var requests: [LLMPolishingRequest] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recordedRequests
+        }
+
+        func polish(
+            request: LLMPolishingRequest,
+            configuration: LLMPolishingConfiguration
+        ) async throws -> LLMPolishingResult {
+            let isFirst: Bool = lock.withLock {
+                recordedRequests.append(request)
+                return recordedRequests.count == 1
+            }
+            if isFirst {
+                started.fulfill()
+                await withTaskCancellationHandler {
+                    await withCheckedContinuation { continuation in
+                        lock.lock()
+                        self.continuation = continuation
+                        lock.unlock()
+                    }
+                } onCancel: {
+                    lock.lock()
+                    let continuation = self.continuation
+                    self.continuation = nil
+                    lock.unlock()
+                    continuation?.resume()
+                }
+            }
+            return LLMPolishingResult(
+                rawText: request.inputText,
+                polishedText: request.inputText,
+                durationSeconds: 0
+            )
+        }
+    }
+
     // MARK: - Helpers
 
-    private func makePlan() -> (
-        request: LLMPolishingRequest, configuration: LLMPolishingConfiguration
+    private func makePlan(
+        profiles: [PolishPromptProfile] = [.standard]
+    ) -> (
+        requests: [PolishPromptWarmup.ProfiledRequest],
+        configuration: LLMPolishingConfiguration
     ) {
         (
-            request: LLMPolishingRequest(
-                inputText: "warm",
-                systemPrompt: "system",
-                userPrompts: ["static prefix", "tail"],
-                maxTokens: 1
-            ),
+            requests: profiles.map { profile in
+                PolishPromptWarmup.ProfiledRequest(
+                    profile: profile,
+                    request: LLMPolishingRequest(
+                        inputText: "warm",
+                        systemPrompt: "system \(profile.rawValue)",
+                        userPrompts: ["static prefix \(profile.rawValue)", "tail"],
+                        maxTokens: 1
+                    )
+                )
+            },
             configuration: LLMPolishingConfiguration(
                 endpointURL: URL(string: "http://127.0.0.1:9/v1/chat/completions")!,
                 apiKey: "",
@@ -156,6 +211,61 @@ final class PolishPromptWarmupTests: XCTestCase {
         coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
         await awaitWarmup(coordinator)
         XCTAssertEqual(service.requests.count, 1, "duplicate ready must not re-fire warmup")
+    }
+
+    func testTwoProfilePlanWarmsBothPrefixesPerReadyEdge() async {
+        let service = RecordingPolishService()
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan(profiles: [.standard, .agent])] in plan }
+        )
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(
+            service.requests.map(\.systemPrompt),
+            ["system standard", "system agent"],
+            "one ready edge must warm every profile's prefix, standard first"
+        )
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.count, 2, "duplicate ready must not re-fire warmup")
+    }
+
+    func testFirstProfileFailureStillWarmsRemainingProfiles() async {
+        // A non-cancellation failure is log-only per profile: the agent
+        // request must still be sent when the standard one failed.
+        let service = RecordingPolishService()
+        service.setFailure(LLMPolishingError.networkError("connection refused"))
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan(profiles: [.standard, .agent])] in plan }
+        )
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(service.requests.count, 2)
+    }
+
+    func testHelperStopAfterSuccessfulFirstProfileSkipsRemainingProfiles() async {
+        // Codex review finding: cancellation was only observed on the error
+        // path, so a helper stop racing a SUCCESSFUL standard response let
+        // the agent request land on the stopped (or replacement) helper.
+        let service = SucceedOnCancelPolishService()
+        let coordinator = PolishPromptWarmupCoordinator(
+            serviceProvider: { service },
+            planProvider: { [plan = makePlan(profiles: [.standard, .agent])] in plan }
+        )
+
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .ready))
+        await fulfillment(of: [service.started], timeout: 5)
+        coordinator.handleStatusUpdate(update(BackendCatalog.polishd, .stopped))
+        await awaitWarmup(coordinator)
+        XCTAssertEqual(
+            service.requests.count, 1,
+            "a cancelled warmup must not start the next profile's request"
+        )
     }
 
     func testWarmupFiresAgainAfterHelperRestart() async {
@@ -298,6 +408,32 @@ final class PolishPromptWarmupTests: XCTestCase {
         )
     }
 
+    /// Same invariant for the agent profile's bundled templates: an agent
+    /// commit reuses the checkpoint only if the warmup's non-final messages
+    /// are byte-identical to an agent production request's.
+    func testWarmupRequestSharesAllNonFinalMessagesWithAgentProductionRequests() throws {
+        let (templates, cleanup) = try LLMPolishEvalSupport.agentPromptTemplates()
+        defer { cleanup() }
+
+        let warmup = PolishPromptWarmup.request(templates: templates)
+        let production = LLMPolishingRequest(
+            inputText: "run cargo test dash dash release",
+            systemPrompt: templates.systemContent,
+            userPrompts: templates.renderedUserPrompts(
+                inputText: "run cargo test dash dash release",
+                replacementDictionary: ""
+            )
+        )
+
+        XCTAssertEqual(warmup.systemPrompt, production.systemPrompt)
+        XCTAssertEqual(warmup.userPrompts.count, production.userPrompts.count)
+        XCTAssertEqual(
+            Array(warmup.userPrompts.dropLast()),
+            Array(production.userPrompts.dropLast()),
+            "warmup must prime the exact prefix messages agent production requests reuse"
+        )
+    }
+
     /// A custom user template with no static text before its first
     /// placeholder renders as a single user message; the shared prefix is
     /// then just the system message, and warmup must mirror that shape.
@@ -343,6 +479,9 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:])
     }
 
+    /// Implements only the zero-arg loader, so the protocol's default
+    /// conformance answers every profile with the standard templates —
+    /// exactly the agent-file-fallback shape of the real store.
     private var configStore: some AppConfigServing {
         struct Fixed: AppConfigServing {
             func configDirectoryURL() -> URL { URL(fileURLWithPath: "/dev/null") }
@@ -357,6 +496,33 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
         return Fixed()
     }
 
+    /// Distinct templates per profile, like the real store with healthy
+    /// agent prompt files.
+    private var profileAwareConfigStore: some AppConfigServing {
+        struct ProfileAware: AppConfigServing {
+            func configDirectoryURL() -> URL { URL(fileURLWithPath: "/dev/null") }
+            func loadReplacementDictionary() -> ReplacementDictionary {
+                ReplacementDictionary(entries: [])
+            }
+            func loadLLMPromptTemplates() -> LLMPromptTemplates {
+                LLMPromptTemplates(systemContent: "system", userContent: "prefix {{input_text}}")
+            }
+            func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+                switch profile {
+                case .standard:
+                    return loadLLMPromptTemplates()
+                case .agent:
+                    return LLMPromptTemplates(
+                        systemContent: "agent system",
+                        userContent: "agent prefix {{input_text}}"
+                    )
+                }
+            }
+            func loadTerminalAppBundleIDs() -> [String] { [] }
+        }
+        return ProfileAware()
+    }
+
     func testPlanWarmsManagedEndpointWhenPolishingEnabled() throws {
         let store = makeStore()
         store.llmPolishingEnabled = true
@@ -369,7 +535,93 @@ final class PolishPromptWarmupPlanTests: XCTestCase {
             plan.configuration.endpointURL.absoluteString,
             ManagedBackendEndpoints.polishingURLString
         )
-        XCTAssertEqual(plan.request.maxTokens, 1)
+        XCTAssertEqual(plan.requests.first?.request.maxTokens, 1)
+    }
+
+    /// Regression (first agent-profile polish paid full cold prefill): with
+    /// the agent profile enabled and healthy agent prompt files, the plan
+    /// must warm the AGENT prefix too — the helper keeps one checkpoint slot
+    /// per profile, and a standard-only warmup leaves the terminal-dictation
+    /// first polish cold.
+    func testPlanWarmsAgentPrefixWhenAgentProfileEnabled() throws {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.agentPolishProfileEnabled = true
+
+        let plan = try XCTUnwrap(
+            PolishPromptWarmup.plan(settings: store, appConfigStore: profileAwareConfigStore)
+        )
+
+        XCTAssertEqual(plan.requests.map(\.profile), [.standard, .agent])
+        let agentRequest = try XCTUnwrap(plan.requests.last?.request)
+        XCTAssertEqual(agentRequest.systemPrompt, "agent system")
+        XCTAssertEqual(agentRequest.userPrompts.first, "agent prefix ")
+        XCTAssertEqual(agentRequest.maxTokens, 1)
+    }
+
+    func testPlanSkipsAgentPrefixWhenProfileDisabled() throws {
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.agentPolishProfileEnabled = false
+
+        let plan = try XCTUnwrap(
+            PolishPromptWarmup.plan(settings: store, appConfigStore: profileAwareConfigStore)
+        )
+
+        XCTAssertEqual(plan.requests.map(\.profile), [.standard])
+    }
+
+    func testPlanDropsDuplicateAgentRequestOnTemplateFallback() throws {
+        // Agent prompt files corrupt/missing → the loader answers with the
+        // standard templates; warming the identical prefix twice is wasted
+        // helper work, so the plan de-duplicates it.
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.agentPolishProfileEnabled = true
+
+        let plan = try XCTUnwrap(
+            PolishPromptWarmup.plan(settings: store, appConfigStore: configStore)
+        )
+
+        XCTAssertEqual(plan.requests.map(\.profile), [.standard])
+    }
+
+    func testPlanDropsAgentRequestWhenOnlyTailsDiffer() throws {
+        // Codex review finding: the helper's cache key is the NON-FINAL
+        // messages only, so agent templates that differ from standard only
+        // past the first placeholder prime the same checkpoint — a second
+        // request would be wasted helper work.
+        struct TailOnlyDiff: AppConfigServing {
+            func configDirectoryURL() -> URL { URL(fileURLWithPath: "/dev/null") }
+            func loadReplacementDictionary() -> ReplacementDictionary {
+                ReplacementDictionary(entries: [])
+            }
+            func loadLLMPromptTemplates() -> LLMPromptTemplates {
+                LLMPromptTemplates(systemContent: "system", userContent: "prefix {{input_text}}")
+            }
+            func loadLLMPromptTemplates(profile: PolishPromptProfile) -> LLMPromptTemplates {
+                switch profile {
+                case .standard:
+                    return loadLLMPromptTemplates()
+                case .agent:
+                    return LLMPromptTemplates(
+                        systemContent: "system",
+                        userContent: "prefix {{input_text}} agent-only tail"
+                    )
+                }
+            }
+            func loadTerminalAppBundleIDs() -> [String] { [] }
+        }
+
+        let store = makeStore()
+        store.llmPolishingEnabled = true
+        store.agentPolishProfileEnabled = true
+
+        let plan = try XCTUnwrap(
+            PolishPromptWarmup.plan(settings: store, appConfigStore: TailOnlyDiff())
+        )
+
+        XCTAssertEqual(plan.requests.map(\.profile), [.standard])
     }
 
     func testPlanIsNilWhenPolishingDisabled() {
