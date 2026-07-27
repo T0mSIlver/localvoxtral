@@ -1,0 +1,79 @@
+import Foundation
+
+/// Trailing-whitespace policy for text dictated into a coding-agent TUI.
+///
+/// Terminal agents (Claude Code, Codex CLI, …) open a slash-command
+/// autocomplete popup while the prompt line is a bare `/token`, and a file
+/// picker while the line ends in an `@token`. In both, a SPACE after the token
+/// confirms or dismisses that popup — so an invisible trailing space decides
+/// what the user's next keystroke does.
+///
+/// Dictation adds exactly that space without the user ever speaking it: ASR
+/// segments carry token-trailing spaces, so "slash compact" reaches the field
+/// as `/compact ` and the popup is gone before the user can pick anything.
+///
+/// The policy is deliberately narrow — the repo's abstain-over-guess rule. It
+/// removes only whitespace, only from the end, and only for two shapes:
+///
+/// - **Lone slash command**: the whole text is `/` followed by one run of
+///   `[A-Za-z0-9_-]`. A token holding a SECOND `/` is a filesystem path
+///   (`/usr/bin`, `/tmp/x`), never a slash command, and is left alone — as is
+///   any text with other words in it (`fix /compact please`), where the popup
+///   is already closed and the trailing space is dictated content. Slash
+///   command names are ASCII by construction in every agent TUI we target, so
+///   a non-ASCII token (`/compacté`) abstains rather than guessing.
+/// - **Trailing mention**: the last whitespace-separated token is `@` plus a
+///   run of filename characters (`@Sources/Foo.swift`, `@README`). A bare `@`
+///   proposes nothing and `a@b` is an email address, not a mention: neither
+///   opens a picker, so neither is touched. A token carrying trailing
+///   punctuation (`@file,`) is prose, and abstains too.
+///
+/// Nothing else is ever modified, and no character the user dictated is ever
+/// removed.
+enum TUIAutocompleteTrailingSpace {
+    /// Characters a slash-command NAME may contain. `/` is deliberately absent:
+    /// that is what separates `/compact` from the path `/usr/bin`.
+    private static let slashCommandNameCharacters = Set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+    )
+
+    /// Characters a mention token may contain after its `@` — filename-ish, so
+    /// paths and extensions qualify while prose punctuation does not.
+    private static let mentionNameCharacters = Set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./~"
+    )
+
+    /// Returns `text` with its trailing whitespace removed when the text is one
+    /// of the two autocomplete shapes above; otherwise returns `text` unchanged.
+    static func stripped(_ text: String) -> String {
+        var body = text
+        while let last = body.last, last.isWhitespace {
+            body.removeLast()
+        }
+        // Nothing to strip: never rewrite text that has no trailing whitespace.
+        guard body.count != text.count else { return text }
+
+        // Leading whitespace belongs to neither shape's recognition (and is
+        // preserved either way — only the tail is ever cut).
+        let candidate = body.drop(while: \.isWhitespace)
+        guard isLoneSlashCommand(candidate) || endsWithMentionToken(candidate) else {
+            return text
+        }
+        return body
+    }
+
+    private static func isLoneSlashCommand(_ text: Substring) -> Bool {
+        guard text.first == "/" else { return false }
+        let name = text.dropFirst()
+        guard !name.isEmpty else { return false }
+        return name.allSatisfy { slashCommandNameCharacters.contains($0) }
+    }
+
+    private static func endsWithMentionToken(_ text: Substring) -> Bool {
+        guard let token = text.split(whereSeparator: \.isWhitespace).last else { return false }
+        guard token.first == "@" else { return false }
+        let name = token.dropFirst()
+        guard !name.isEmpty else { return false }
+        return name.allSatisfy { mentionNameCharacters.contains($0) }
+    }
+}
