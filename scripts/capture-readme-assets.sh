@@ -40,9 +40,18 @@ TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing")
 # identifier scheme.
 TAB_IDS=("general" "endpoints" "dictation" "textProcessing")
 TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
+# The three arrays are indexed together below; a mismatch would silently capture
+# one tab's window into another tab's file.
+if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then
+  echo "Tab tables disagree: ${#TAB_NAMES[@]} names, ${#TAB_IDS[@]} ids, ${#TAB_FILES[@]} files. Fix them together." >&2
+  exit 1
+fi
 # Resolved from this script's location, not the cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
+# Pins the probe's shape-matched fallbacks to the Settings window; the app has
+# other windows the wrong AXButton/AXScrollArea could be found in.
+SETTINGS_WINDOW_TITLE="Settings"
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
@@ -291,6 +300,7 @@ for i in "${!TAB_NAMES[@]}"; do
   echo "Capturing $out"
   swift "$AX_PROBE" "$APP_PID" \
     --press "settings.tab.${tab_id}" --title "$tab" \
+    --window "$SETTINGS_WINDOW_TITLE" \
     --timeout 10 --dump-on-fail \
     || { echo "Could not select the $tab tab." >&2; exit 1; }
   sleep 1
