@@ -185,6 +185,28 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         }
     }
 
+    func testV1LineCarryingAnExplicitAgentKeyIsMalformed() {
+        // No v1 writer ever emitted the key — "absent = claude" IS the v1
+        // contract. A v1 line carrying it is hand-crafted, not old.
+        XCTAssertThrowsError(
+            try ClaudeHookWireCodec.decodeLine(
+                line(validJSON(version: 1, extra: #","agent":"claude""#))
+            )
+        ) { error in
+            XCTAssertEqual(error as? ClaudeHookWireError, .malformed)
+        }
+    }
+
+    func testFocusClearedEventDecodes() throws {
+        let json = validJSON(
+            event: "FocusCleared",
+            extra: #","agent":"opencode","process":{"hook_pid":9,"claude_pid":9,"tty":"/dev/ttys004"}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(line(json))
+        XCTAssertEqual(record.event, .focusCleared)
+        XCTAssertEqual(record.agent, .opencode)
+    }
+
     func testFocusChangedEventDecodes() throws {
         let json = validJSON(
             event: "FocusChanged",

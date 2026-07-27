@@ -76,7 +76,8 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         session: String,
         cwd: String? = "/repo",
         prompt: String? = nil,
-        files: [ClaudeFileTouch] = []
+        files: [ClaudeFileTouch] = [],
+        herdrPaneID: String? = nil
     ) -> ClaudeHookRecord {
         ClaudeHookRecord(
             event: event,
@@ -86,7 +87,9 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
             rawCwd: cwd,
             prompt: prompt,
             files: files,
-            process: ClaudeHookProcessInfo(hookPID: opencodePID, claudePID: opencodePID)
+            process: ClaudeHookProcessInfo(
+                hookPID: opencodePID, claudePID: opencodePID, herdrPaneID: herdrPaneID
+            )
         )
     }
 
@@ -154,10 +157,11 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         XCTAssertNotNil(registry.snapshot(sessionID: "ses_1"))
     }
 
-    func testARecordSpellingAnotherAgentsScopedIDIsDropped() throws {
-        // Scoping makes honest collision impossible, so a Claude record whose
-        // session id literally reads "opencode:ses_1" is spelling a key that
-        // is not its own. It must not mutate the opencode session.
+    func testALocalClaudeRecordSpellingAReservedPrefixIsDroppedOutright() throws {
+        // Review C2a: prefix concatenation would otherwise let a literal
+        // Claude id "opencode:ses_1" alias opencode's raw "ses_1". A LOCAL
+        // Claude record with a reserved prefix is dropped at the door — it
+        // neither mutates the aliased session nor mints one of its own.
         let registry = makeRegistry()
         registry.ingest(opencodeRecord(.sessionStart, session: "ses_1", cwd: "/real"), origin: local)
 
@@ -167,6 +171,24 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         XCTAssertNil(forged, "cross-agent key spelling is dropped whole")
         let snapshot = try XCTUnwrap(registry.snapshot(sessionID: "opencode:ses_1"))
         XCTAssertEqual(snapshot.localWorkspacePath?.path, "/real")
+        XCTAssertEqual(snapshot.agent, .opencode)
+
+        // Without a session to collide with, the reserved spelling still never
+        // becomes a key.
+        XCTAssertNil(
+            registry.ingest(
+                claudeRecord(.sessionStart, session: "opencode:ses_9", claudePID: 7), origin: local
+            )
+        )
+        XCTAssertNil(registry.snapshot(sessionID: "opencode:ses_9"))
+        // Same rule for the remote namespace: only the remote LISTENER may
+        // spell "remote:" ids, and it arrives over a remote origin.
+        XCTAssertNil(
+            registry.ingest(
+                claudeRecord(.sessionStart, session: "remote:host:x", claudePID: 7), origin: local
+            )
+        )
+        XCTAssertNil(registry.snapshot(sessionID: "remote:host:x"))
     }
 
     func testFocusRecordNeverMintsASession() {
@@ -263,28 +285,105 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         XCTAssertEqual(registry.resolve(tty: tty), .stale)
     }
 
-    func testFocusDeclaredByADifferentProcessThanTheSessionAbstains() {
-        // A declaration that outlived its process must not steer a recycled
-        // TTY: the declarer's pid and the focused session's registered pid
-        // must be the same process.
+    func testFocusDeclaredByADifferentProcessThanTheSessionIsRefusedAtIngest() {
+        // A declaration whose pid does not match the focused session's
+        // registered process could never resolve — it is refused before any
+        // focus state is written, so it cannot suppress anything either.
         let registry = makeRegistry()
         registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)
-        registry.ingest(focusRecord(session: "ses_a", pid: 5555), origin: local)
+        XCTAssertNil(registry.ingest(focusRecord(session: "ses_a", pid: 5555), origin: local))
+
+        XCTAssertEqual(
+            registry.resolve(tty: tty), .unknown,
+            "a refused declaration leaves the TTY exactly as undeclared as before"
+        )
+    }
+
+    func testDeclarationWhoseSessionPidChangedAfterwardsAbstainsAtResolve() {
+        // The resolve-time pid cross-check still matters after a valid ingest:
+        // if the session's registered process changes underneath a standing
+        // declaration (a new opencode process reusing the session id), the
+        // stale declaration must stop steering the TTY.
+        let registry = makeRegistry()
+        registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)
+        registry.ingest(focusRecord(session: "ses_a"), origin: local)
+        XCTAssertEqual(resolvedSessionID(registry.resolve(tty: tty)), "opencode:ses_a")
+
+        var restarted = opencodeRecord(.userPromptSubmit, session: "ses_a", prompt: "hi")
+        restarted.process = ClaudeHookProcessInfo(hookPID: 9999, claudePID: 9999)
+        registry.ingest(restarted, origin: local)
 
         XCTAssertEqual(registry.resolve(tty: tty), .stale)
     }
 
-    func testFocusDisambiguatesCompetingPerSessionTTYClaims() {
-        // The generic form of "multiple + focus fresh": two live sessions each
-        // claim the same device per-session (the suspended-agent-under-a-new-
-        // one shape), and a fresh declaration picks the displayed one.
+    func testClaudeAgentFocusRecordsAreRefused() {
+        // Focus is an opencode-only mechanism: nothing in Claude Code's hook
+        // set knows what a pane displays, so a `.claude` focus record is an
+        // inconsistency to refuse — it must not create, refresh, or clear any
+        // declaration.
         let registry = makeRegistry()
         registry.ingest(claudeRecord(.sessionStart, session: "old", claudePID: 71, tty: tty), origin: local)
         registry.ingest(claudeRecord(.sessionStart, session: "new", claudePID: 72, tty: tty), origin: local)
-        XCTAssertEqual(registry.resolve(tty: tty), .ambiguous, "without focus this abstains today")
 
-        registry.ingest(focusRecord(session: "new", agent: .claude, pid: 72), origin: local)
-        XCTAssertEqual(resolvedSessionID(registry.resolve(tty: tty)), "new")
+        XCTAssertNil(registry.ingest(focusRecord(session: "new", agent: .claude, pid: 72), origin: local))
+        XCTAssertEqual(
+            registry.resolve(tty: tty), .ambiguous,
+            "competing per-session claims stay ambiguous; a refused declaration decides nothing"
+        )
+    }
+
+    func testInvalidFocusRecordCannotSuppressAClaudeTTYClaim() {
+        // Review C2b regression: focus state used to be written BEFORE the
+        // record was validated, so a declaration naming an unknown session
+        // poisoned the TTY into `.stale` for the whole focus TTL — silently
+        // unjoining a perfectly live Claude session on that device.
+        let registry = makeRegistry()
+        registry.ingest(claudeRecord(.sessionStart, session: "cl", claudePID: 71, tty: tty), origin: local)
+
+        XCTAssertNil(registry.ingest(focusRecord(session: "ses_ghost"), origin: local))
+        XCTAssertEqual(
+            resolvedSessionID(registry.resolve(tty: tty)), "cl",
+            "an invalid declaration must leave the per-session TTY claim untouched"
+        )
+    }
+
+    func testFocusClearedRetractsTheDeclarationImmediately() {
+        let registry = makeRegistry()
+        registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)
+        registry.ingest(focusRecord(session: "ses_a"), origin: local)
+        XCTAssertEqual(resolvedSessionID(registry.resolve(tty: tty)), "opencode:ses_a")
+
+        var clear = focusRecord(session: "ses_a")
+        clear.event = .focusCleared
+        registry.ingest(clear, origin: local)
+
+        XCTAssertEqual(
+            registry.resolve(tty: tty), .unknown,
+            "leaving the session view must stop the join NOW, not at TTL expiry"
+        )
+        XCTAssertNotNil(
+            registry.snapshot(sessionID: "opencode:ses_a"),
+            "retraction clears the pane binding, never the session"
+        )
+    }
+
+    func testFocusClearedFromClaudeAgentOrRemoteTransportIsRefused() {
+        let registry = makeRegistry()
+        registry.ingest(opencodeRecord(.sessionStart, session: "ses_a"), origin: local)
+        registry.ingest(focusRecord(session: "ses_a"), origin: local)
+
+        var claudeClear = focusRecord(session: "ses_a", agent: .claude)
+        claudeClear.event = .focusCleared
+        XCTAssertNil(registry.ingest(claudeClear, origin: local))
+
+        var remoteClear = focusRecord(session: "ses_a")
+        remoteClear.event = .focusCleared
+        XCTAssertNil(registry.ingest(remoteClear, origin: .remote(channel: "ssh:host")))
+
+        XCTAssertEqual(
+            resolvedSessionID(registry.resolve(tty: tty)), "opencode:ses_a",
+            "a refused retraction leaves the declaration standing"
+        )
     }
 
     func testConflictBetweenATTYClaimAndAFocusDeclarationAbstains() {
@@ -348,6 +447,67 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         // The oldest ones are gone: their TTYs resolve as if never declared.
         XCTAssertEqual(registry.resolve(tty: "/dev/ttys000"), .unknown)
         XCTAssertEqual(registry.resolve(tty: "/dev/ttys001"), .unknown)
+    }
+
+    // MARK: - Focus participation in the herdr pane join (review C3)
+
+    func testHerdrPaneWithTwoOpencodeSessionsResolvesThroughFreshFocus() {
+        // Every opencode session in one TUI shares the pane id AND the pid, so
+        // without focus participation a second session made the herdr arm
+        // permanently `.ambiguous` — the join silently died for opencode
+        // panes. A verified fresh declaration picks the displayed session.
+        let registry = makeRegistry()
+        registry.ingest(
+            opencodeRecord(.sessionStart, session: "ses_a", herdrPaneID: "w1:p1"), origin: local
+        )
+        registry.ingest(
+            opencodeRecord(.sessionStart, session: "ses_b", herdrPaneID: "w1:p1"), origin: local
+        )
+        XCTAssertEqual(registry.resolve(herdrPaneID: "w1:p1"), .ambiguous, "no focus, no winner")
+
+        registry.ingest(focusRecord(session: "ses_b"), origin: local)
+        XCTAssertEqual(
+            resolvedSessionID(registry.resolve(herdrPaneID: "w1:p1")), "opencode:ses_b"
+        )
+
+        // Retraction restores the abstention immediately.
+        var clear = focusRecord(session: "ses_b")
+        clear.event = .focusCleared
+        registry.ingest(clear, origin: local)
+        XCTAssertEqual(registry.resolve(herdrPaneID: "w1:p1"), .ambiguous)
+    }
+
+    func testHerdrPaneFocusGoesStaleWithTheDeclaration() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(clock: clock)
+        registry.ingest(
+            opencodeRecord(.sessionStart, session: "ses_a", herdrPaneID: "w1:p1"), origin: local
+        )
+        registry.ingest(
+            opencodeRecord(.sessionStart, session: "ses_b", herdrPaneID: "w1:p1"), origin: local
+        )
+        registry.ingest(focusRecord(session: "ses_b"), origin: local)
+        XCTAssertEqual(
+            resolvedSessionID(registry.resolve(herdrPaneID: "w1:p1")), "opencode:ses_b"
+        )
+
+        clock.advance(ClaudeRegistryLimits.defaultFocusDeclarationTTL + 1)
+        XCTAssertEqual(
+            registry.resolve(herdrPaneID: "w1:p1"), .ambiguous,
+            "an expired declaration is absent information for the pane join too"
+        )
+    }
+
+    func testHerdrPaneWithSingleSessionStillResolvesWithoutFocus() {
+        // The pre-existing single-candidate behavior is untouched: focus only
+        // arbitrates multi-candidate panes.
+        let registry = makeRegistry()
+        registry.ingest(
+            opencodeRecord(.sessionStart, session: "ses_a", herdrPaneID: "w1:p1"), origin: local
+        )
+        XCTAssertEqual(
+            resolvedSessionID(registry.resolve(herdrPaneID: "w1:p1")), "opencode:ses_a"
+        )
     }
 
     // MARK: - Opencode event shapes through the reducer

@@ -95,6 +95,14 @@ public enum ClaudeHookEvent: String, Sendable, Equatable, CaseIterable, Codable 
     /// can. Claude Code never sends this; nothing in its hook set knows what a
     /// pane displays.
     case focusChanged = "FocusChanged"
+    /// The pane left its session view (v2, opencode TUI half only): "this TTY
+    /// no longer displays the named session". Retracts the pane's focus
+    /// declaration immediately instead of letting it linger until TTL — a
+    /// user who navigated home is not dictating into the session they left.
+    /// The named session is the one being retracted; the registry clears the
+    /// TTY's declaration regardless, because a clear can only ever widen
+    /// abstention.
+    case focusCleared = "FocusCleared"
 }
 
 /// Hard bounds applied at BOTH ends of the wire.
@@ -380,6 +388,13 @@ public enum ClaudeHookWireCodec {
         // not a generic decode failure — and never a fallthrough to `.claude`,
         // which would hand a future agent Claude's channel rules.
         if let agentValue = dictionary["agent"] {
+            // No v1 writer ever emitted this key — v1 predates it, and
+            // "absent = claude" is the entire v1 compatibility contract. A v1
+            // line that carries it anyway is not an old publisher; it is a
+            // malformed or hand-crafted record, and it is dropped as such.
+            guard claimedVersion >= 2 else {
+                throw ClaudeHookWireError.malformed
+            }
             let agentName = agentValue as? String
             guard let agentName, ClaudeHookAgent(rawValue: agentName) != nil else {
                 throw ClaudeHookWireError.unknownAgent(agentName)
