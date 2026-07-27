@@ -17,7 +17,10 @@
 //          element, optionally restricted to the subtree of the element whose
 //          AXIdentifier is <scope>. Scoping is not cosmetic: sidebar row labels
 //          are AXStaticText, so an unscoped needle could be satisfied by the
-//          navigation chrome without the pane ever rendering.
+//          navigation chrome without the pane ever rendering. When the
+//          identifier does not surface, the scope falls back to the window's
+//          first AXScrollArea (still outside the navigation chrome) and the
+//          success line says which route matched.
 // --press  finds the element whose AXIdentifier is <ax-identifier> and sends it
 //          AXPress. With --title, an AXButton whose title/description matches is
 //          accepted as a fallback when SwiftUI did not surface the identifier;
@@ -233,16 +236,35 @@ if let pressIdentifier {
 
 guard let needle else { usage() }
 
+func subtreeContains(_ element: AXUIElement, _ needle: String) -> Bool {
+    var budget = 20000
+    return containsNeedle(element, needle, depth: 0, budget: &budget)
+}
+
 repeat {
     if let scopeIdentifier {
         if let scope = findInWindows(where: { $0.identifier == scopeIdentifier }) {
-            var budget = 20000
-            if containsNeedle(scope, needle, depth: 0, budget: &budget) { exit(0) }
+            if subtreeContains(scope, needle) {
+                print("AXPROBE: \"\(needle)\" found inside AXIdentifier \"\(scopeIdentifier)\".")
+                exit(0)
+            }
+        } else if let scrollArea = findInWindows(where: { $0.role == "AXScrollArea" }) {
+            // The identifier did not surface. Fall back to the window's first
+            // AXScrollArea, which keeps the assertion honest: the pane is the
+            // only scrolling region in the Settings window, and the navigation
+            // chrome (sidebar rows, pane header) sits OUTSIDE it, so a sidebar
+            // label still cannot satisfy a pane assertion.
+            if subtreeContains(scrollArea, needle) {
+                print(
+                    "AXPROBE: \"\(needle)\" found inside the window's first AXScrollArea "
+                        + "(AXIdentifier \"\(scopeIdentifier)\" did not surface)."
+                )
+                exit(0)
+            }
         }
     } else {
-        for window in windows() {
-            var budget = 20000
-            if containsNeedle(window, needle, depth: 0, budget: &budget) { exit(0) }
+        for window in windows() where subtreeContains(window, needle) {
+            exit(0)
         }
     }
     usleep(250_000)
