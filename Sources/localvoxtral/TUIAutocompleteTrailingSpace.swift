@@ -23,10 +23,17 @@ import Foundation
 ///   command names are ASCII by construction in every agent TUI we target, so
 ///   a non-ASCII token (`/compacté`) abstains rather than guessing.
 /// - **Trailing mention**: the last whitespace-separated token is `@` plus a
-///   run of filename characters (`@Sources/Foo.swift`, `@README`). A bare `@`
-///   proposes nothing and `a@b` is an email address, not a mention: neither
-///   opens a picker, so neither is touched. A token carrying trailing
-///   punctuation (`@file,`) is prose, and abstains too.
+///   run of filename characters holding at least one name character. A bare
+///   `@` proposes nothing and `a@b` is an email address, not a mention:
+///   neither opens a picker, so neither is touched. A token carrying trailing
+///   punctuation (`@file,`) is prose, and abstains too. The name-character
+///   floor rejects degenerate punctuation-only tokens (`@.`, `@/`, `@~/`) that
+///   name no file and would otherwise pass the filename-character test.
+///
+/// LEADING whitespace is ignored when recognizing a shape and preserved in the
+/// result, so `"  /compact "` is recognized and returns `"  /compact"`. That is
+/// deliberate: only the tail is ever cut, and the shape of the line the TUI
+/// sees does not change with indentation the ASR happened to emit.
 ///
 /// Nothing else is ever modified, and no character the user dictated is ever
 /// removed.
@@ -41,6 +48,13 @@ enum TUIAutocompleteTrailingSpace {
     /// paths and extensions qualify while prose punctuation does not.
     private static let mentionNameCharacters = Set(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./~"
+    )
+
+    /// The subset a mention name must contain at least one of. Without this
+    /// floor, punctuation-only tokens like `@.` or `@/` — which name no file
+    /// and open no picker — would satisfy the filename-character test.
+    private static let mentionRequiredCharacters = Set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
     )
 
     /// Returns `text` with its trailing whitespace removed when the text is one
@@ -73,7 +87,9 @@ enum TUIAutocompleteTrailingSpace {
         guard let token = text.split(whereSeparator: \.isWhitespace).last else { return false }
         guard token.first == "@" else { return false }
         let name = token.dropFirst()
-        guard !name.isEmpty else { return false }
+        guard name.contains(where: { mentionRequiredCharacters.contains($0) }) else {
+            return false
+        }
         return name.allSatisfy { mentionNameCharacters.contains($0) }
     }
 }

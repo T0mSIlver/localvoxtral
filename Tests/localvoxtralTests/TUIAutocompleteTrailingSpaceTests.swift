@@ -28,10 +28,17 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/compact"), "/compact")
     }
 
-    /// Leading whitespace is not part of either shape and survives — only the
-    /// tail is ever cut.
+    /// Deliberate (documented on the type): leading whitespace is ignored when
+    /// recognizing a shape and preserved in the result — only the tail is ever
+    /// cut, and indentation the ASR happened to emit does not change the shape
+    /// of the line the TUI sees.
     func testLeadingWhitespaceIsPreserved() {
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped(" /compact "), " /compact")
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("  /compact "), "  /compact")
+        XCTAssertEqual(
+            TUIAutocompleteTrailingSpace.stripped(" @Sources/Foo.swift "),
+            " @Sources/Foo.swift"
+        )
     }
 
     /// A token holding a second `/` is a filesystem path, not a slash command.
@@ -100,6 +107,19 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("check @file, "), "check @file, ")
     }
 
+    /// A mention name must hold at least one name character: `.` and `/` are
+    /// allowed so paths qualify, but a token made only of them names no file
+    /// and opens no picker.
+    func testPunctuationOnlyMentionNamesAreUntouched() {
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@. "), "@. ")
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@/ "), "@/ ")
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@~/ "), "@~/ ")
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@... "), "@... ")
+        // A real path keeps working.
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@~/notes.md "), "@~/notes.md")
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("@./Package.swift "), "@./Package.swift")
+    }
+
     /// A mention that is not the LAST token had its picker closed by the words
     /// that followed it.
     func testMentionInTheMiddleIsUntouched() {
@@ -164,6 +184,39 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         service.flushFinalLiveReplacementCorrections()
 
         XCTAssertEqual(typed.value.joined(), "/review")
+        service.endLiveReplacementSession()
+    }
+
+    /// The subtlest interaction: the slash command is assembled across SEVERAL
+    /// releases, so the stop flush can only recognize it by consulting
+    /// `liveTypedTextForSession` — the text already handed to the field. The
+    /// tail space is withheld and every earlier release is left exactly as it
+    /// was typed (there are no backspaces in the insertion path).
+    func testTerminalSlashCommandAssembledAcrossFlushesWithholdsOnlyTheTailSpace() {
+        let typed = Box<[String]>([])
+        let service = makeService(capturing: typed)
+        service.beginLiveReplacementSession(
+            dictionary: nil,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: true
+        )
+
+        service.enqueueRealtimeInsertion("/comp")
+        XCTAssertEqual(typed.value, ["/comp"], "the first release reaches the field immediately")
+        service.enqueueRealtimeInsertion("act ")
+        XCTAssertEqual(
+            typed.value, ["/comp", "act"],
+            "the second release types the word; its trailing space is buffered"
+        )
+
+        service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(
+            typed.value, ["/comp", "act"],
+            "the stop flush must add nothing: already-typed releases are untouched "
+                + "and the buffered tail space is withheld"
+        )
+        XCTAssertEqual(typed.value.joined(), "/compact")
         service.endLiveReplacementSession()
     }
 
