@@ -379,10 +379,18 @@ Key subsystems:
     `ClaudeContextBroker` verifies peer UID *before reading*, and only ever
     unlinks a socket it has PROVED stale by connect-probe — a second live
     instance owns its socket legitimately.
-  - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): declares
-    `type: "http"` hooks, so Claude Code itself POSTs to
-    `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH `RemoteForward` — no
-    binary, no shim, no `jq`/`nc`/Node on that host. `ClaudeRemoteContextListener`
+  - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): command
+    hooks running the bundled POSIX-sh shim `hooks/post.sh`, which curls the
+    event JSON to `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH
+    `RemoteForward` — no localvoxtral binary and no `jq`/`nc`/Node on that
+    host, but it does need `sh` and `curl` (fail-open when absent). It was
+    `type: "http"` hooks until 2026-07-27: Claude Code expands http-hook
+    header `${VAR}`s from the process environment only and never injects
+    plugin userConfig options there (verified on 2.1.220), so every hook
+    authenticated as `Bearer ` and was 401'd — command hooks are the only
+    surface that receives `CLAUDE_PLUGIN_OPTION_TOKEN`. The shim keeps the
+    token out of every argv (`curl --header @tempfile`, 0600, heredoc-written)
+    and prints the listener's 200 body untouched. `ClaudeRemoteContextListener`
     (loopback-bound POSIX, dedicated port 8473; 8471/8472 remain the managed
     backends) authenticates the Bearer token *before retaining a body* against
     `ClaudeRemoteHostRegistry` (0600 atomic file, token hashes only,

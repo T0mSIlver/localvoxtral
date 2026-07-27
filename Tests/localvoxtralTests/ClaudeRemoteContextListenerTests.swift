@@ -300,7 +300,8 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     }
 
     func testAnUninterpolatedPlaceholderIsRejectedNotHashed() throws {
-        // What ships if `allowedEnvVars` is ever dropped from the manifest.
+        // What any client still sending a literal, uninterpolated placeholder
+        // (the plugin's original http-hook failure mode) must receive.
         try startListener()
         XCTAssertEqual(
             try send(hookRequest(token: "${CLAUDE_PLUGIN_OPTION_TOKEN}"))?.status,

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Off-screen Claude Code session context for the localvoxtral dictation app. Add this marketplace from a REMOTE host, where there is no app bundle to register a local directory from: claude plugin marketplace add T0mSIlver/localvoxtral",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "plugins": [
     {
@@ -17,7 +17,7 @@
     {
       "name": "localvoxtral-remote",
       "source": "./integrations/claude-code/plugins/localvoxtral-remote",
-      "description": "Publishes Claude Code session context from a remote host to localvoxtral on your Mac over an SSH RemoteForward tunnel. Install this on the REMOTE host, not the Mac. Declarative HTTP hooks only — no binary, no shell shim, no dependencies. Fail-open: does nothing without a tunnel."
+      "description": "Publishes Claude Code session context from a remote host to localvoxtral on your Mac over an SSH RemoteForward tunnel. Install this on the REMOTE host, not the Mac. Command hooks running a bundled POSIX-sh shim that POSTs via curl — no localvoxtral binary, needs only sh and curl. Fail-open: does nothing without a tunnel, a token, or curl."
     }
   ]
 }

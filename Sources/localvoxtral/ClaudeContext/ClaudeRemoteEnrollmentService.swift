@@ -145,9 +145,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// `.claude-plugin/marketplace.json` listing both plugins for exactly this.
     public static let repositoryMarketplaceReference = "T0mSIlver/localvoxtral"
 
-    /// The plugin's sensitive userConfig key. Claude Code exposes it to hooks as
-    /// `CLAUDE_PLUGIN_OPTION_TOKEN`, which the manifest's `allowedEnvVars` lets
-    /// it interpolate into the `Authorization` header.
+    /// The plugin's sensitive userConfig key. Claude Code exposes it to the
+    /// plugin's COMMAND-hook shim as `CLAUDE_PLUGIN_OPTION_TOKEN`; the shim
+    /// hands it to curl through a private header file, never an argv. (It is
+    /// NOT available to declarative http hooks — Claude Code expands their
+    /// header `${VAR}`s from the process environment only, which is why the
+    /// plugin uses a command shim at all; verified on 2.1.220.)
     public static let tokenConfigKey = "token"
 
     private let runner: Runner?
@@ -293,6 +296,9 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 + "screen join.",
             "Plain `ssh` with no enrollment keeps working exactly as before: no tunnel, no token, no "
                 + "hooks, and the pane stays screen-only and unjoined.",
+            "The plugin needs only POSIX `sh` and `curl` on the remote host — no localvoxtral binary. "
+                + "Its hooks fail open silently when either is missing, the tunnel is down, or the app "
+                + "is not answering: you simply get no context, never a blocked Claude turn.",
             "A second concurrent SSH session to the same host will fail to bind \(port) on the "
                 + "remote and — because ExitOnForwardFailure is `no` — will connect anyway with no "
                 + "tunnel. The first session keeps the forward.",

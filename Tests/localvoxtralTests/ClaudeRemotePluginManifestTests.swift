@@ -5,12 +5,19 @@ import XCTest
 
 /// Validates the `localvoxtral-remote` plugin as an artifact.
 ///
-/// This manifest is the entire remote-side install: there is no shim script and
-/// no binary to catch a mistake at runtime, and the machine it runs on is one we
-/// cannot see. A typo'd URL, a lost `Authorization` header, or a missing
-/// `allowedEnvVars` entry would not fail loudly — it would fail open, forever,
-/// and look exactly like "the tunnel isn't up". These assertions are the only
-/// thing standing between that and a user.
+/// The manifest plus one POSIX-sh curl shim are the entire remote-side install,
+/// and the machine they run on is one we cannot see. A typo'd URL, a lost
+/// `Authorization` header, or a shim that reads the wrong env var would not
+/// fail loudly — it would fail open, forever, and look exactly like "the
+/// tunnel isn't up". These assertions are the only thing standing between that
+/// and a user.
+///
+/// Why a command shim and not declarative `type: "http"` hooks (the plugin's
+/// original shape): Claude Code expands http-hook header `${VAR}` references
+/// from the actual process environment ONLY and never injects plugin
+/// userConfig options there — verified empirically on 2.1.220, where every
+/// http hook authenticated as `Bearer ` (empty) and was 401'd forever.
+/// `CLAUDE_PLUGIN_OPTION_<KEY>` reaches command-hook subprocesses only.
 final class ClaudeRemotePluginManifestTests: XCTestCase {
     private var marketplace: URL!
 
@@ -47,6 +54,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
+    private var shimURL: URL {
+        pluginRoot.appendingPathComponent("hooks/post.sh")
+    }
+
+    private func shimSource() throws -> String {
+        try String(contentsOf: shimURL, encoding: .utf8)
+    }
+
     // MARK: Plugin
 
     func testPluginManifestIsValidAndLeavesTheStandardHooksFileImplicit() throws {
@@ -76,23 +91,33 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsNoExecutableOfAnyKind() throws {
-        // The whole premise: nothing to install on the remote but the manifest.
-        // No Python, no jq, no nc, no Node, no publisher binary. If a file ever
-        // appears here that a shell could run, the premise is gone.
+    func testPluginShipsExactlyOneExecutableTheCurlShim() throws {
+        // The premise, updated for the command-hook shape: nothing to install
+        // on the remote but the manifests and ONE POSIX-sh shim. No Python, no
+        // jq, no nc, no Node, no publisher binary. If any other runnable file
+        // ever appears here, the premise is gone.
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
             var isDirectory: ObjCBool = false
             FileManager.default.fileExists(atPath: full.path, isDirectory: &isDirectory)
             guard !isDirectory.boolValue else { continue }
+            if path == "hooks/post.sh" {
+                // Claude Code's shell resolves the hook command through this
+                // file; without +x every hook errors on the user's turn.
+                XCTAssertTrue(
+                    FileManager.default.isExecutableFile(atPath: full.path),
+                    "the shim must be executable"
+                )
+                continue
+            }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executables, found \(path)"
+                "the remote plugin must ship no executable but the shim, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests only, found \(path)"
+                "the remote plugin must ship JSON manifests and the shim only, found \(path)"
             )
         }
     }
@@ -113,15 +138,16 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     func testNoTokenValueIsBakedIntoTheManifest() throws {
-        // The manifest is public, in a public repo. The only token in it is the
-        // env var reference; an actual credential here would ship to everyone.
+        // The manifest and shim are public, in a public repo. The only token in
+        // them is the env var reference; an actual credential would ship to
+        // everyone.
         let manifestText = try String(
             contentsOf: pluginRoot.appendingPathComponent(".claude-plugin/plugin.json"), encoding: .utf8
         )
         let hooksText = try String(
             contentsOf: pluginRoot.appendingPathComponent("hooks/hooks.json"), encoding: .utf8
         )
-        for text in [manifestText, hooksText] {
+        for text in [manifestText, hooksText, try shimSource()] {
             XCTAssertFalse(text.contains("Bearer lv"), "no literal credential may appear")
         }
         let userConfig = try XCTUnwrap(try manifest()["userConfig"] as? [String: Any])
@@ -140,78 +166,102 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    func testEveryHookIsHTTPWithNoCommandAnywhere() throws {
-        // A `command` hook on the remote would need a shell, a binary, and a
-        // publisher we deliberately do not ship there.
+    func testEveryHookIsACommandRunningTheShimWithNoHTTPHookAnywhere() throws {
+        // A declarative `type: "http"` hook cannot authenticate: Claude Code
+        // expands its header `${VAR}`s from the process environment only and
+        // never injects plugin userConfig options there (verified on 2.1.220 —
+        // every hook sent `Bearer ` and was 401'd). Only a command hook
+        // receives CLAUDE_PLUGIN_OPTION_TOKEN.
         for (event, entry) in try allHookEntries() {
-            XCTAssertEqual(entry["type"] as? String, "http", "\(event) must be an http hook")
-            XCTAssertNil(entry["command"], "\(event) must not declare a command")
+            XCTAssertEqual(entry["type"] as? String, "command", "\(event) must be a command hook")
+            XCTAssertNil(entry["url"], "\(event): an http-hook url would never authenticate")
+            XCTAssertNil(entry["headers"], "\(event): headers are http-hook-only and leak intent")
+            XCTAssertNil(entry["allowedEnvVars"], "\(event): allowedEnvVars is http-hook-only")
+            let command = try XCTUnwrap(entry["command"] as? String, "\(event) needs a command")
+            // QUOTED (same F7 rationale as the local plugin): hook commands run
+            // through a shell, and an unquoted ${CLAUDE_PLUGIN_ROOT} word-splits
+            // on any space in the install path and the hook dies silently.
+            XCTAssertTrue(
+                command.hasPrefix("\"${CLAUDE_PLUGIN_ROOT}/hooks/post.sh\" "),
+                "\(event) must resolve the shim through a QUOTED ${CLAUDE_PLUGIN_ROOT}: \(command)"
+            )
+            XCTAssertTrue(
+                command.hasSuffix(" \(event)"),
+                "\(event) must pass its own event name, got: \(command)"
+            )
         }
     }
 
-    func testEveryHookPostsToTheLoopbackListenerOnItsOwnEventPath() throws {
-        for (event, entry) in try allHookEntries() {
-            let url = try XCTUnwrap(entry["url"] as? String)
-            // Loopback, literally. The tunnel's remote end is 127.0.0.1 on the
-            // remote host; any other address would send the user's prompts
-            // across their network in the clear.
-            XCTAssertTrue(
-                url.hasPrefix("http://127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)"),
-                "\(event) must post to the tunnelled loopback port, got \(url)"
-            )
-            XCTAssertTrue(
-                url.hasSuffix("\(ClaudeRemoteHTTPCodec.hookPathPrefix)\(event)"),
-                "\(event) must post to its own event path, got \(url)"
-            )
-            // The path is what gives the parser a fallback event name.
+    func testShimPostsToTheLoopbackListenerOnThePerEventPath() throws {
+        // Loopback, literally. The tunnel's remote end is 127.0.0.1 on the
+        // remote host; any other address would send the user's prompts across
+        // their network in the clear. The URL lives in the shim now, so pin it
+        // there — template plus the event argument each hook passes.
+        let source = try shimSource()
+        let template = "http://127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)"
+            + "\(ClaudeRemoteHTTPCodec.hookPathPrefix)$EVENT"
+        XCTAssertTrue(
+            source.contains("\"\(template)\""),
+            "the shim must POST to the tunnelled loopback port on the per-event path"
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "http://").count, 2,
+            "exactly one URL in the shim — a second one would be a second place to typo"
+        )
+        // The event each command passes must resolve through the same codec the
+        // listener parses with — the path is its fallback event name.
+        for (event, _) in try allHookEntries() {
             XCTAssertEqual(
                 ClaudeRemoteHTTPCodec.eventName(
-                    inPath: String(url.dropFirst("http://127.0.0.1:8473".count))
+                    inPath: "\(ClaudeRemoteHTTPCodec.hookPathPrefix)\(event)"
                 ),
                 event
             )
         }
     }
 
-    func testHookPortDoesNotCollideWithTheManagedBackends() throws {
-        // 8471 is voxmlx and 8472 is polishd. Reusing either would make a hook
+    func testShimPortDoesNotCollideWithTheManagedBackends() throws {
+        // 8471 is speechd and 8472 is polishd. Reusing either would make a hook
         // POST land in an inference server — or worse, make the listener refuse
         // to bind and take the backend's port when it started first.
-        for (_, entry) in try allHookEntries() {
-            let url = try XCTUnwrap(entry["url"] as? String)
-            XCTAssertFalse(url.contains(":8471"))
-            XCTAssertFalse(url.contains(":8472"))
-        }
+        let source = try shimSource()
+        XCTAssertFalse(source.contains(":8471"))
+        XCTAssertFalse(source.contains(":8472"))
     }
 
-    func testEveryHookSendsTheTokenAndAllowsItsEnvVar() throws {
-        for (event, entry) in try allHookEntries() {
-            let headers = try XCTUnwrap(entry["headers"] as? [String: String], "\(event) needs headers")
-            let authorization = try XCTUnwrap(headers["Authorization"], "\(event) must authenticate")
-            XCTAssertEqual(authorization, "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}")
-
-            // Without allowedEnvVars the interpolation does not happen and the
-            // header ships the literal `${...}` — which the listener rejects as
-            // a malformed token. Fail-open all the way down, and invisible.
-            let allowed = try XCTUnwrap(entry["allowedEnvVars"] as? [String], "\(event) needs allowedEnvVars")
-            XCTAssertEqual(allowed, ["CLAUDE_PLUGIN_OPTION_TOKEN"])
-        }
-    }
-
-    func testTheEnvVarMatchesTheDeclaredUserConfigKey() throws {
-        // Claude Code exposes userConfig to hooks as CLAUDE_PLUGIN_OPTION_<KEY>.
-        // The declared key and the variable the header reads must agree, or the
-        // config silently does nothing.
+    func testShimReadsTheTokenEnvVarMatchingTheDeclaredUserConfigKey() throws {
+        // Claude Code exposes userConfig to command hooks as
+        // CLAUDE_PLUGIN_OPTION_<KEY>. The declared key and the variable the
+        // shim reads must agree, or the config silently does nothing.
         let expected = "CLAUDE_PLUGIN_OPTION_"
             + ClaudeRemoteEnrollmentService.tokenConfigKey.uppercased()
-        for (event, entry) in try allHookEntries() {
-            let headers = try XCTUnwrap(entry["headers"] as? [String: String])
-            XCTAssertTrue(
-                headers["Authorization"]?.contains(expected) == true,
-                "\(event) must read \(expected)"
+        XCTAssertTrue(try shimSource().contains(expected), "shim must read \(expected)")
+    }
+
+    func testShimKeepsTheTokenOutOfEveryArgv() throws {
+        // /proc/<pid>/cmdline is world-readable on Linux, so a
+        // `curl -H "Authorization: Bearer $TOKEN"` would publish the credential
+        // to every local user. The header must reach curl through a file.
+        let source = try shimSource()
+        XCTAssertTrue(
+            source.contains("--header @"),
+            "the Authorization header must reach curl via a header FILE, not argv"
+        )
+        for line in source.split(separator: "\n") where !line.hasPrefix("#") {
+            XCTAssertFalse(
+                line.contains("Authorization: Bearer $") && line.contains("curl"),
+                "no curl invocation may carry the token in argv: \(line)"
             )
-            XCTAssertEqual(entry["allowedEnvVars"] as? [String], [expected])
+            // An external printf/echo would itself put the token in an argv —
+            // POSIX does not require either to be a shell builtin. The shim
+            // writes the header file with a redirected `cat` heredoc instead.
+            XCTAssertFalse(
+                (line.contains("printf") || line.contains("echo")) && line.contains("TOKEN"),
+                "never hand the token to printf/echo: \(line)"
+            )
         }
+        // The tempfile holding the header must be private.
+        XCTAssertTrue(source.contains("umask 077"), "the header tempfile must be private")
     }
 
     func testEveryHookHasAShortTimeout() throws {
@@ -225,14 +275,92 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    /// Claude Code supports `async` only for command hooks. The remote plugin is
-    /// declarative HTTP, so every handler remains synchronous with a one-second
-    /// fail-open ceiling.
-    func testHTTPHooksDoNotDeclareCommandOnlyAsync() throws {
+    /// The listener's 200 body is the marker `terminalSequence` — Claude Code
+    /// only acts on a hook's stdout when the hook is synchronous, so `async`
+    /// would silently discard every marker. curl's own `--max-time 1` inside
+    /// the shim keeps the old http hooks' one-second network ceiling; the
+    /// declared timeout is the backstop around the whole script.
+    func testHooksAreSynchronousSoTheMarkerResponseReachesClaudeCode() throws {
+        let source = try shimSource()
+        XCTAssertTrue(source.contains("--max-time 1"), "the network ceiling must stay at one second")
         for (event, entry) in try allHookEntries() {
-            XCTAssertNil(entry["async"], "\(event): async is command-hook-only")
-            XCTAssertEqual(entry["timeout"] as? Int, 1)
+            XCTAssertNil(entry["async"], "\(event): async discards stdout, losing the marker")
+            XCTAssertEqual(entry["timeout"] as? Int, 3)
         }
+    }
+
+    // MARK: Shim behavior
+    //
+    // Beyond reading the source: RUN the shim and prove the fail-open contract
+    // on paths that never touch the network. The design contract is that the
+    // app being absent must be invisible — exit 0, no stdout (Claude Code
+    // parses it as control JSON; on UserPromptSubmit non-JSON stdout is
+    // appended to the user's prompt), no stderr.
+
+    func testShimIsPOSIXShAndExecutable() throws {
+        XCTAssertTrue(
+            FileManager.default.isExecutableFile(atPath: shimURL.path),
+            "Claude Code executes this directly; without +x every hook errors"
+        )
+        let firstLine = try shimSource()
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init)
+        XCTAssertEqual(firstLine, "#!/bin/sh", "must be POSIX sh, not bash — remote hosts vary")
+    }
+
+    func testShimFailsOpenSilentlyWithoutATokenAndWithoutCurl() throws {
+        // (1) Token unset: must exit 0 with no output BEFORE dialing anything.
+        let noToken = try runShim(environment: [:])
+        XCTAssertEqual(noToken.exitCode, 0, "no token must fail open")
+        XCTAssertEqual(noToken.stdout, "", "fail-open must print nothing on stdout")
+        XCTAssertEqual(noToken.stderr, "", "fail-open must print nothing on stderr")
+
+        // (2) Empty token — the userConfig default — is the same as unset.
+        let emptyToken = try runShim(environment: ["CLAUDE_PLUGIN_OPTION_TOKEN": ""])
+        XCTAssertEqual(emptyToken.exitCode, 0)
+        XCTAssertEqual(emptyToken.stdout, "")
+        XCTAssertEqual(emptyToken.stderr, "")
+
+        // (3) Token set but no curl on PATH: the documented degraded host.
+        let noCurl = try runShim(environment: [
+            "CLAUDE_PLUGIN_OPTION_TOKEN": "unit-test-token",
+            "PATH": "/nonexistent",
+        ])
+        XCTAssertEqual(noCurl.exitCode, 0, "a host without curl must fail open")
+        XCTAssertEqual(noCurl.stdout, "")
+        XCTAssertEqual(noCurl.stderr, "")
+    }
+
+    /// Runs the shim under `/bin/sh` with exactly the given extra environment
+    /// (a nil-token run REMOVES the variable), a `{}` event body on stdin, and
+    /// captures everything.
+    private func runShim(
+        environment: [String: String]
+    ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [shimURL.path, "Stop"]
+        var processEnvironment = ProcessInfo.processInfo.environment
+        processEnvironment.removeValue(forKey: "CLAUDE_PLUGIN_OPTION_TOKEN")
+        processEnvironment.merge(environment) { _, new in new }
+        process.environment = processEnvironment
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        stdin.fileHandleForWriting.write(Data("{}".utf8))
+        stdin.fileHandleForWriting.closeFile()
+        let out = stdout.fileHandleForReading.readDataToEndOfFile()
+        let err = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            String(decoding: out, as: UTF8.self),
+            String(decoding: err, as: UTF8.self)
+        )
     }
 
     func testPostToolUseMatchesOnlyFileBearingTools() throws {
@@ -341,6 +469,20 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // Installing the wrong plugin on the wrong side fails open forever and
         // looks exactly like a tunnel problem.
         try assertReadmeHasLine(containing: "Install it on the REMOTE host, not on your Mac")
+    }
+
+    func testReadmeIsHonestAboutTheHostDependency() throws {
+        // The old shape truthfully needed nothing on the host; the command shim
+        // needs sh and curl. Understating that would send a user on a minimal
+        // container host into the classic silent fail-open hole.
+        try assertReadmeHasLine(
+            containing: "needs only `sh` and `curl` on the host",
+            "the dependency must be stated where the transport is explained"
+        )
+        try assertReadmeHasLine(
+            containing: "POSIX `sh` and `curl` only",
+            "and in the comparison table a reader actually skims"
+        )
     }
 
     func testReadmeDocumentsTheExitOnForwardFailureTradeoff() throws {

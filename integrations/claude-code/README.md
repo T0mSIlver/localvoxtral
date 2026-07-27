@@ -191,9 +191,9 @@ plugin installed on the wrong side fails open silently forever.
 | | `localvoxtral` | `localvoxtral-remote` |
 |---|---|---|
 | Install on | the Mac running the app | the remote host |
-| Transport | AF_UNIX socket, `command` hook + shim | HTTP over an SSH `RemoteForward`, declarative `http` hooks |
+| Transport | AF_UNIX socket, `command` hook + shim | HTTP over an SSH `RemoteForward`, `command` hook + `curl` shim |
 | Authentication | kernel-verified peer UID | per-host bearer token you issue in the app |
-| Needs on that host | the app's publisher binary | **nothing** — no Python, no `jq`, no `nc`, no Node, no binary |
+| Needs on that host | the app's publisher binary | POSIX `sh` and `curl` only — no Python, no `jq`, no `nc`, no Node, no localvoxtral binary |
 | Context it delivers | full: cwd authorizes local repository reads | opaque: labels and bounded excerpts only |
 
 ## How it works
@@ -202,16 +202,26 @@ plugin installed on the wrong side fails open silently forever.
 remote host                            your Mac
 ┌───────────────────────┐              ┌────────────────────────────┐
 │ Claude Code           │              │ localvoxtral               │
-│   http hook  ────────►│ 127.0.0.1:8473              ▲             │
+│   command hook (curl)►│ 127.0.0.1:8473              ▲             │
 │   Bearer <token>      │   │          │              │             │
 └───────────────────────┘   │          │   ClaudeRemoteContextListener
                             └── ssh RemoteForward ────┘             │
         ◄──── {"terminalSequence": "\e]2;lvx-…\a"} ────────────────┘
 ```
 
-Claude Code is the HTTP client. It POSTs each hook's event JSON to
-`http://127.0.0.1:8473/v1/hook/<Event>` on the *remote* loopback; OpenSSH's
-`RemoteForward` carries that to your Mac's loopback, where the app is listening.
+Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
+curls the hook's event JSON to `http://127.0.0.1:8473/v1/hook/<Event>` on the
+*remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
+loopback, where the app is listening. The shim reads the token from the
+`CLAUDE_PLUGIN_OPTION_TOKEN` environment variable Claude Code injects into
+command-hook subprocesses, and passes it to curl through a private tempfile
+(`--header @file`) so it never appears in any process's argument list. It
+needs only `sh` and `curl` on the host, and fails open — silently, printing
+nothing — when either is missing, the token is unset, the tunnel is down, or
+the app does not answer within a second. (Declarative `http` hooks cannot do
+this: Claude Code expands their header `${VAR}`s from the process environment
+only and never injects plugin userConfig options there, so an http hook would
+always authenticate as an empty `Bearer` and be refused.)
 The app answers with the session's marker as a `terminalSequence`, which Claude
 Code writes to its terminal — so the marker rides the SSH PTY back into Ghostty
 and the pane identifies itself. Nothing else opens a port, and nothing is
@@ -271,7 +281,8 @@ If it landed there anyway, rotate the token in the app — that is what rotation
 for.
 
 Nothing else is installed. The marketplace add resolves the repository root's
-`.claude-plugin/marketplace.json`; the plugin is two JSON files.
+`.claude-plugin/marketplace.json`; the plugin is two JSON files and one
+POSIX-sh script that needs only `sh` and `curl` on the host.
 
 **3. Check it:**
 

@@ -3,10 +3,13 @@ import Foundation
 /// The HTTP contract between a REMOTE Claude Code session and the app's
 /// loopback listener.
 ///
-/// The remote plugin declares `type: "http"` hooks, so Claude Code itself is the
-/// client: it POSTs the hook event JSON and reads our response JSON back. There
-/// is no publisher binary on the remote host, no shell shim, no `curl`, no `jq`,
-/// and nothing for the user to install beyond the plugin.
+/// The remote plugin's command hooks run its bundled POSIX-sh shim, which curls
+/// the hook event JSON here and prints our response JSON back for Claude Code.
+/// There is no publisher binary on the remote host and nothing for the user to
+/// install beyond the plugin — the shim needs only `sh` and `curl`. (It cannot
+/// be a declarative `type: "http"` hook: Claude Code never injects plugin
+/// userConfig options into http-hook header expansion, so an http hook can
+/// never present the bearer token — verified on 2.1.220.)
 ///
 /// This type is Foundation-only for the same reason the rest of the module is:
 /// the contract must be checkable without a socket, and the parser is the piece
