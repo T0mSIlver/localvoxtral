@@ -160,13 +160,15 @@ public enum ClaudeSessionReducer {
         if let workspace = ClaudeWorkspaceReference.make(rawCwd: record.rawCwd, origin: origin) {
             snapshot.workspace = workspace
         }
-        // Never absorbed from a focus record: its process block describes the
-        // PANE (the declarer's tty and pid), not the session. Folding it in
-        // would hand the session a per-session TTY claim its publisher
-        // deliberately never makes — the opencode server half publishes no tty
-        // precisely because it cannot prove it owns a pane — and would let a
-        // focus record overwrite the pid that liveness probes.
-        if let process = record.process, record.event != .focusChanged {
+        // Never absorbed from a focus record (declaration or retraction): its
+        // process block describes the PANE (the declarer's tty and pid), not
+        // the session. Folding it in would hand the session a per-session TTY
+        // claim its publisher deliberately never makes — the opencode server
+        // half publishes no tty precisely because it cannot prove it owns a
+        // pane — and would let a focus record overwrite the pid that liveness
+        // probes.
+        if let process = record.process,
+           record.event != .focusChanged, record.event != .focusCleared {
             snapshot.process = process
         }
 
@@ -193,12 +195,12 @@ public enum ClaudeSessionReducer {
             snapshot.activity = .working
         case .stop:
             snapshot.activity = .idle
-        case .focusChanged:
+        case .focusChanged, .focusCleared:
             // Focus is registry-level state (a TTY→session binding, held in
-            // `ClaudeSessionRegistry`'s focus table) — a pane DISPLAYING a
-            // session says nothing about whether its model is working, so the
-            // per-session state here changes only by the lastActivity bump
-            // applied above.
+            // `ClaudeSessionRegistry`'s focus table) — a pane DISPLAYING or
+            // leaving a session says nothing about whether its model is
+            // working, so the per-session state here changes only by the
+            // lastActivity bump applied above.
             break
         case .sessionEnd:
             snapshot.activity = .ended

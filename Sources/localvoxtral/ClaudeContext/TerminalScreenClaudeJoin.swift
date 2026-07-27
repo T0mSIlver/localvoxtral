@@ -294,7 +294,7 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedHerdrJoin(outcome: "foreground process detection unavailable")
             return nil
         }
-        guard Self.registeredClaudeIsForeground(
+        guard Self.registeredAgentIsForeground(
             snapshot: snapshot, foregroundPIDs: foregroundPIDs
         ) else { return nil }
 
@@ -334,7 +334,10 @@ struct ClaudeSessionJoinResolver {
     /// Pure pid cross-check kept visible to tests because a snapshot with no
     /// process cannot be produced by a successful pane-id registry lookup, but
     /// the resolver must still fail closed if that invariant ever changes.
-    static func registeredClaudeIsForeground(
+    /// Agent-neutral (review F3): the pane may host Claude Code or opencode,
+    /// and the registered pid is whichever agent process the session's records
+    /// named — the abstention wording must not claim Claude for both.
+    static func registeredAgentIsForeground(
         snapshot: ClaudeSessionSnapshot,
         foregroundPIDs: [Int32]
     ) -> Bool {
@@ -343,7 +346,9 @@ struct ClaudeSessionJoinResolver {
             return false
         }
         guard foregroundPIDs.contains(process.claudePID) else {
-            abstainedHerdrJoin(outcome: "registered Claude process is not foreground")
+            abstainedHerdrJoin(
+                outcome: "registered \(snapshot.agent.rawValue) process is not foreground"
+            )
             return false
         }
         return true
