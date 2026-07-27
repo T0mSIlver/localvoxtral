@@ -20,12 +20,17 @@ final class DogfoodEditSignalTestMonitor: DogfoodEditKeyMonitoring {
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private(set) var isInstalled = false
+    /// Set false to stand in for the untrusted-Accessibility case, where the
+    /// real monitor never goes up.
+    var canInstall = true
     private var handler: (@MainActor (DogfoodEditSignal) -> Void)?
 
-    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) {
+    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) -> Bool {
         startCount += 1
+        guard canInstall else { return false }
         isInstalled = true
         self.handler = handler
+        return true
     }
 
     func stop() {
@@ -212,13 +217,15 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testSignalInsideWindowIsRecordedWithBuckets() async throws {
         let harness = makeWatcher()
 
-        harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        )
         XCTAssertTrue(harness.watcher.isWatching)
         XCTAssertEqual(harness.monitor.startCount, 1)
         await harness.sleeper.waitForSleepRequest()
         XCTAssertEqual(harness.sleeper.requestedDurations, [.seconds(2.0)], "3 words -> 2s window")
 
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
         harness.clock.advance(1.5)
         harness.monitor.send(.backspace)
         await harness.watcher.flushTask?.value
@@ -242,10 +249,12 @@ final class DogfoodEditSignalTests: XCTestCase {
         let harness = makeWatcher()
         let longText = (0..<60).map { "word\($0)" }.joined(separator: " ")
 
-        harness.watcher.arm(committedText: longText, outputMode: "overlay_buffer")
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: longText, outputMode: "overlay_buffer")
+        )
         await harness.sleeper.waitForSleepRequest()
         XCTAssertEqual(harness.sleeper.requestedDurations, [.seconds(15.0)])
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
 
         harness.clock.advance(9)
         harness.monitor.send(.selectAll)
@@ -264,8 +273,10 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testSignalAfterWindowIsNotRecorded() async throws {
         let harness = makeWatcher()
 
-        harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
 
         let windowTask = harness.watcher.windowTask
         harness.clock.advance(2)
@@ -293,11 +304,11 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testLiveModeOutputModeIsRecorded() async throws {
         let harness = makeWatcher()
 
-        harness.watcher.arm(
+        let token = try XCTUnwrap(harness.watcher.arm(
             committedText: "insert this live",
             outputMode: DictationOutputMode.liveAutoPaste.rawValue
-        )
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        ))
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
         harness.clock.advance(0.4)
         harness.monitor.send(.backspace)
         await harness.watcher.flushTask?.value
@@ -313,8 +324,10 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testNewDictationSupersedesTheOpenWindow() async throws {
         let harness = makeWatcher()
 
-        harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
 
         harness.watcher.arm(committedText: "second dictation text", outputMode: "overlay_buffer")
         await harness.watcher.flushTask?.value
@@ -333,8 +346,10 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testSupersededRecordIsNotRewrittenByTheNextWatch() async throws {
         let harness = makeWatcher()
 
-        harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
         harness.watcher.arm(committedText: "second dictation text", outputMode: "overlay_buffer")
         await harness.watcher.flushTask?.value
 
@@ -360,8 +375,10 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testMissingRecordFailsQuietly() async throws {
         let harness = makeWatcher(writeRecord: false)
 
-        harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
         harness.monitor.send(.backspace)
         await harness.watcher.flushTask?.value
 
@@ -373,8 +390,10 @@ final class DogfoodEditSignalTests: XCTestCase {
     func testBehaviorPatchFollowsAFlagRename() async throws {
         let harness = makeWatcher()
 
-        harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
-        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store)
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
 
         let flaggedURL = try XCTUnwrap(harness.store.flagMostRecentRecord())
         harness.monitor.send(.backspace)
@@ -384,6 +403,158 @@ final class DogfoodEditSignalTests: XCTestCase {
         XCTAssertTrue(record.flagged, "flagging must survive the patch")
         XCTAssertEqual(record.behavior?.outcome, .edited)
         XCTAssertNil(harness.readBack(), "the patch must not resurrect the unflagged name")
+        XCTAssertEqual(
+            try harness.store.listRecords().count, 1,
+            "one dictation keeps exactly one record file"
+        )
+    }
+
+    /// The other order: the patch lands first and flagging follows. The flagged
+    /// copy must carry the behavior, and the plain name must be gone — the
+    /// review-queue file is the one with the whole story in it.
+    func testFlagAfterBehaviorPatchKeepsBothFacts() async throws {
+        let harness = makeWatcher()
+
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
+        harness.monitor.send(.backspace)
+        await harness.watcher.flushTask?.value
+
+        let flaggedURL = try XCTUnwrap(harness.store.flagMostRecentRecord())
+        let record = try XCTUnwrap(harness.readBack(at: flaggedURL))
+        XCTAssertTrue(record.flagged)
+        XCTAssertEqual(record.behavior?.outcome, .edited)
+        XCTAssertNil(harness.readBack(), "the plain name must not survive the flag")
+        XCTAssertEqual(try harness.store.listRecords().count, 1)
+    }
+
+    /// The race itself, run for real: a flag and a behavior patch issued
+    /// concurrently over the SAME record.
+    ///
+    /// Flagging renames (write flagged, remove plain), so an unserialized patch
+    /// that read the plain file and lost the race would write it back and leave
+    /// TWO files for one dictation — a stale unflagged copy beside the flagged
+    /// one. The store's single-flight lock is what makes both orders end in one
+    /// file that carries both facts.
+    func testConcurrentFlagAndPatchLeaveExactlyOneRecord() async throws {
+        let harness = makeWatcher()
+        let store = harness.store
+        let behavior = DogfoodCaptureRecord.Behavior(
+            outcome: .edited,
+            signal: .backspace,
+            secondsSinceCommitBucket: "0-1",
+            wordCountBucket: "1-5",
+            watchWindowSeconds: 2,
+            outputMode: "overlay_buffer"
+        )
+        let recordURL = harness.recordURL
+
+        // Both are running before either is awaited — the interleaving is real,
+        // not simulated.
+        let flagging = Task.detached { _ = try? store.flagMostRecentRecord() }
+        let patching = Task.detached {
+            _ = try? store.attachBehavior(behavior, toRecordAt: recordURL)
+        }
+        await flagging.value
+        await patching.value
+
+        let records = try store.listRecords()
+        XCTAssertEqual(
+            records.count, 1,
+            "a lost race must never resurrect the pre-rename copy: \(records.map(\.fileName))"
+        )
+        XCTAssertTrue(records[0].flagged, "the flag is the user's, and it wins either way")
+        let record = try XCTUnwrap(harness.readBack(at: records[0].url))
+        XCTAssertTrue(record.flagged, "the name and the JSON must agree")
+        XCTAssertEqual(
+            record.behavior?.outcome, .edited,
+            "whichever order ran, the behavior belongs in the surviving record"
+        )
+    }
+
+    /// FINDING 1's regression, in the LOSING order: a stale watch's attach must
+    /// be rejected by the token, not by timing.
+    ///
+    /// The record write is awaited, so a second dictation can arm while the
+    /// first is still being written. Without the token, the late
+    /// `attachRecord` would hand session A's record to session B's OPEN window
+    /// — and B's gesture would then be written into A's record.
+    func testStaleAttachIsRejectedByTheToken() async throws {
+        let harness = makeWatcher()
+
+        // Session A arms and commits; its record write is still in flight.
+        let staleToken = try XCTUnwrap(
+            harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
+        )
+        // Session B arms before A's write returns. A's window closes as
+        // superseded, with no record attached — nothing is written for it.
+        harness.watcher.arm(committedText: "second dictation text", outputMode: "overlay_buffer")
+        await harness.watcher.flushTask?.value
+
+        // A's write finally returns and tries to attach its record — with A's
+        // (now stale) token.
+        let sessionARecord = try harness.writeExtraRecord()
+        harness.watcher.attachRecord(
+            url: sessionARecord, store: harness.store, token: staleToken
+        )
+
+        // B's window is open and now sees the gesture. If the stale attach had
+        // been accepted, B's `edited` would be sitting in that record.
+        harness.clock.advance(0.5)
+        harness.monitor.send(.backspace)
+        await harness.watcher.flushTask?.value
+
+        XCTAssertNil(
+            harness.readBack(at: sessionARecord)?.behavior,
+            "a stale token must not connect one session's record to another's window"
+        )
+    }
+
+    /// FINDING 5: no Accessibility trust means the observer never goes up, and
+    /// an unobserved dictation must record NOTHING rather than a clean window.
+    /// "Never watched" and "the user kept the text" are different facts and a
+    /// review has to be able to tell them apart from the records alone.
+    func testUnobservableDictationLeavesNoBehaviorBlock() async throws {
+        let harness = makeWatcher()
+        harness.monitor.canInstall = false
+
+        XCTAssertNil(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer"),
+            "no observer, no token"
+        )
+        XCTAssertFalse(harness.watcher.isWatching)
+        XCTAssertEqual(harness.monitor.startCount, 1, "it did try")
+        XCTAssertTrue(harness.sleeper.requestedDurations.isEmpty, "no window was opened")
+
+        await harness.watcher.flushTask?.value
+        XCTAssertNil(
+            harness.readBack()?.behavior,
+            "an unobserved dictation must not be recorded as clean"
+        )
+    }
+
+    /// FINDING 3: a window still open at quit patches its record INLINE. A Task
+    /// enqueued during `willTerminate` is not guaranteed to run, so the assert
+    /// deliberately does not await anything.
+    func testTerminationFlushesTheOpenWindowInline() throws {
+        let harness = makeWatcher()
+
+        let token = try XCTUnwrap(
+            harness.watcher.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        )
+        harness.watcher.attachRecord(url: harness.recordURL, store: harness.store, token: token)
+        harness.clock.advance(0.5)
+
+        harness.watcher.flushForTermination()
+
+        XCTAssertEqual(
+            harness.readBack()?.behavior?.outcome, .superseded,
+            "the patch must be on disk before the call returns"
+        )
+        XCTAssertFalse(harness.watcher.isWatching)
+        XCTAssertFalse(harness.monitor.isInstalled)
     }
 
     // MARK: Harness
@@ -396,6 +567,13 @@ final class DogfoodEditSignalTests: XCTestCase {
         let store: DogfoodCaptureStore
         let directory: URL
         let recordURL: URL
+
+        /// A second record in the same store, for the tests that need two.
+        func writeExtraRecord() throws -> URL {
+            try store.write(
+                DogfoodEditSignalTests.makeRecord(capturedAt: clock.now().addingTimeInterval(1))
+            )
+        }
 
         func readBack(at url: URL? = nil) -> DogfoodCaptureRecord? {
             let target = url ?? recordURL
@@ -428,7 +606,7 @@ final class DogfoodEditSignalTests: XCTestCase {
 
         var recordURL = directory.appendingPathComponent("missing.json", isDirectory: false)
         if writeRecord {
-            recordURL = (try? store.write(makeRecord(capturedAt: clock.now()))) ?? recordURL
+            recordURL = (try? store.write(Self.makeRecord(capturedAt: clock.now()))) ?? recordURL
         }
 
         return WatcherHarness(
@@ -442,7 +620,9 @@ final class DogfoodEditSignalTests: XCTestCase {
         )
     }
 
-    private func makeRecord(capturedAt: Date) -> DogfoodCaptureRecord {
+    /// `nonisolated`: a pure factory, and the harness that writes a second
+    /// record is a plain struct off the test class's actor.
+    nonisolated fileprivate static func makeRecord(capturedAt: Date) -> DogfoodCaptureRecord {
         DogfoodCaptureRecord(
             id: UUID().uuidString,
             capturedAt: capturedAt,

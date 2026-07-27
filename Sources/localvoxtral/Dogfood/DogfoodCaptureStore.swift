@@ -1,6 +1,7 @@
 #if LOCALVOXTRAL_DOGFOOD
 
 import Foundation
+import Synchronization
 
 /// Directory operations the store needs beyond writing one file. Split out as a
 /// protocol for the same reason the registry splits its own IO: the pruning
@@ -76,6 +77,25 @@ struct DogfoodCaptureStore: Sendable {
         case unreadableRecord(path: String)
     }
 
+    /// Serializes every read-modify-write over a record file.
+    ///
+    /// The store is a value type and its two mutating paths run on different
+    /// isolation domains — flagging from the menu on the main actor, the
+    /// behavior patch from a detached task — over the same file. Their
+    /// interleaving is not theoretical: flagging RENAMES (write flagged, remove
+    /// plain), so a patch that read the plain file, lost the race, and then
+    /// wrote it back would resurrect the unflagged copy ALONGSIDE the flagged
+    /// one. Two records for one dictation, one of them stale and exempt from
+    /// nothing, is exactly the contradiction `flagMostRecentRecord` refuses to
+    /// create for itself.
+    ///
+    /// Process-wide (`static`) rather than per-instance because the identity
+    /// that matters is the directory, and every store in a process points at the
+    /// same one. Held across locate/read/encode/write only — never across an
+    /// `await`, and never re-entered: the locked paths call the private
+    /// unlocked bodies, not each other.
+    private static let recordMutationLock = Mutex(0)
+
     private let directoryURL: URL
     private let io: ClaudeRemoteHostStoreIO
     private let directoryIO: DogfoodCaptureDirectoryIO
@@ -116,6 +136,10 @@ struct DogfoodCaptureStore: Sendable {
     /// Writes `record` and prunes. Returns the file it wrote.
     @discardableResult
     func write(_ record: DogfoodCaptureRecord) throws -> URL {
+        try Self.recordMutationLock.withLock { _ in try writeLocked(record) }
+    }
+
+    private func writeLocked(_ record: DogfoodCaptureRecord) throws -> URL {
         var redacted = record
         let redactions = DogfoodCaptureRedaction.redact(&redacted)
         if redactions > 0 {
@@ -135,7 +159,7 @@ struct DogfoodCaptureStore: Sendable {
             isDirectory: false
         )
         try io.write(data, to: url)
-        try? prune()
+        try? pruneLocked()
         return url
     }
 
@@ -164,8 +188,20 @@ struct DogfoodCaptureStore: Sendable {
         _ behavior: DogfoodCaptureRecord.Behavior,
         toRecordAt url: URL
     ) throws -> URL {
+        try Self.recordMutationLock.withLock { _ in
+            try attachBehaviorLocked(behavior, toRecordAt: url)
+        }
+    }
+
+    private func attachBehaviorLocked(
+        _ behavior: DogfoodCaptureRecord.Behavior,
+        toRecordAt url: URL
+    ) throws -> URL {
         // Flagging renames; a record flagged during the watch window is still
-        // this dictation's record and must still receive its signal.
+        // this dictation's record and must still receive its signal. The
+        // locate/read/write below is one critical section, so a concurrent
+        // flag either completes before the locate (and is followed) or after
+        // the write (and carries the behavior with it).
         let target = try locateRecord(writtenAt: url)
         guard
             let data = try directoryIO.read(from: target),
@@ -219,6 +255,10 @@ struct DogfoodCaptureStore: Sendable {
     /// record the owner explicitly asked to keep. Better to fail loudly.
     @discardableResult
     func flagMostRecentRecord() throws -> URL? {
+        try Self.recordMutationLock.withLock { _ in try flagMostRecentRecordLocked() }
+    }
+
+    private func flagMostRecentRecordLocked() throws -> URL? {
         guard let latest = try listRecords().first else { return nil }
         guard !latest.flagged else { return latest.url }
 
@@ -289,6 +329,12 @@ struct DogfoodCaptureStore: Sendable {
 
     /// Applies the retention rules. Flagged records are never removed.
     func prune() throws {
+        try Self.recordMutationLock.withLock { _ in try pruneLocked() }
+    }
+
+    /// The retention body, without the lock. Callers already inside the
+    /// critical section use this — `Mutex` is not recursive.
+    private func pruneLocked() throws {
         let records = try listRecords()
         let cutoff = now().addingTimeInterval(-retention.maximumUnflaggedAge)
 

@@ -10,9 +10,10 @@ import Foundation
 /// Everything else in a record describes what the pipeline DID. None of it says
 /// whether the answer was any good — a record whose grounding, budget, and
 /// prompt all look perfect is indistinguishable from one the owner erased half a
-/// second later. Reaching for Backspace or ⌘A within a couple of seconds of a
-/// commit is the cheapest honest label available: the user just told us the
-/// transcription or the polish was wrong, without being asked.
+/// second later. Reaching for Backspace (or forward delete) or ⌘A within a
+/// couple of seconds of a commit is the cheapest honest label available: the
+/// user just told us the transcription or the polish was wrong, without being
+/// asked.
 ///
 /// It is deliberately NOT a keylogger, and the shape of the record is what
 /// guarantees that: the enum has two cases, and the only other things recorded
@@ -56,8 +57,9 @@ enum DogfoodEditSignal: String, Codable, Equatable, Sendable {
 enum DogfoodEditSignalOutcome: String, Codable, Equatable, Sendable {
     case edited
     case clean
-    /// A new dictation began before the window closed. Reported rather than
-    /// folded into `clean`: the user moved on, which is not evidence either way.
+    /// The window was cut short — a new dictation began, or the app quit.
+    /// Reported rather than folded into `clean`: the user moved on, which is
+    /// not evidence either way.
     case superseded
 }
 
@@ -126,9 +128,14 @@ enum DogfoodEditSignalPolicy {
 /// Accessibility grant.
 @MainActor
 protocol DogfoodEditKeyMonitoring: AnyObject {
-    /// Begins delivering recognized signals. Called at most once per watch;
-    /// `stop()` always follows, including when the window closed unobserved.
-    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void)
+    /// Begins delivering recognized signals, reporting whether an observer
+    /// actually went up. Called at most once per watch; `stop()` always follows
+    /// a `true`, including when the window closed unobserved.
+    ///
+    /// A `false` is not a failure to handle — it is the answer "this dictation
+    /// was never observed", and the watcher refuses to arm on it rather than
+    /// reporting an unwatched window as clean.
+    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) -> Bool
     func stop()
 }
 
@@ -148,13 +155,14 @@ protocol DogfoodEditKeyMonitoring: AnyObject {
 ///   production signature for a capture that shipped builds do not compile —
 ///   the same trade `DogfoodCaptureTap` documents, decided the same way.
 /// * **No new permission.** Global `NSEvent` monitors need the Accessibility
-///   trust the app already holds for insertion; without it, this simply never
-///   installs and the watch reports `clean`.
+///   trust the app already holds for insertion; without it, this reports
+///   `false` and the dictation gets NO behavior block at all — see
+///   `DogfoodEditSignalWatcher.arm`.
 @MainActor
 final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
     private var monitor: Any?
 
-    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) {
+    func start(_ handler: @escaping @MainActor (DogfoodEditSignal) -> Void) -> Bool {
         stop()
 
         #if DEBUG
@@ -163,7 +171,7 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
         // monitor here would read the HOST's keyboard while the suite runs, and
         // an unattended CI machine is not a test fixture. The watcher's own
         // tests inject a fake monitor.
-        if TerminalTargetDetector.isRunningUnderXCTest { return }
+        if TerminalTargetDetector.isRunningUnderXCTest { return false }
         #endif
 
         guard AXIsProcessTrusted() else {
@@ -173,7 +181,7 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
             Log.diagnostics.notice(
                 "Dogfood edit signal: Accessibility not trusted; no watch installed"
             )
-            return
+            return false
         }
 
         monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
@@ -188,11 +196,13 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
             Task { @MainActor in handler(signal) }
         }
 
-        if monitor == nil {
+        guard monitor != nil else {
             Log.diagnostics.notice(
                 "Dogfood edit signal: keyDown monitor installation failed; no watch"
             )
+            return false
         }
+        return true
     }
 
     func stop() {
@@ -214,8 +224,15 @@ final class DogfoodEditKeyNSEventMonitor: DogfoodEditKeyMonitoring {
 /// 2. `attachRecord` — the record finished being written and now has a location
 ///    to patch. Assembly runs off-actor, so this can arrive after the window
 ///    already closed; both orders end in one patch, never two.
-/// 3. The window closes — a recognized key, the elapsed window, or a new
-///    dictation. The monitor is torn down at that instant, not at flush.
+/// 3. The window closes — a recognized key, the elapsed window, a new
+///    dictation, or the app terminating (`supersede`, wired to
+///    `willTerminateNotification`, so a window still open at quit patches its
+///    record instead of silently losing it). The monitor is torn down at that
+///    instant, not at flush.
+///
+/// A quit that beats even that — a crash, a force-quit — leaves the record with
+/// no behavior block. That is the same "never observed" answer an untrusted
+/// process gets, and it is deliberately NOT `clean`.
 ///
 /// Cross-session contamination is impossible by construction rather than by
 /// timing: a watch patches the ONE record URL it was handed, and arming a new
@@ -267,6 +284,14 @@ final class DogfoodEditSignalWatcher {
         self.sleepFor = sleepFor
     }
 
+    /// A watcher that goes away with a window still open must not leave a live
+    /// keyboard observer behind it. `isolated deinit` (SE-0371) so the teardown
+    /// runs on the actor the monitor requires; `ModifierOnlyHotKeyManager`
+    /// predates it and drives teardown from its owner instead.
+    isolated deinit {
+        monitor.stop()
+    }
+
     /// True while a window is open. Tests assert the monitor is not left
     /// installed; production never branches on it.
     var isWatching: Bool {
@@ -274,19 +299,47 @@ final class DogfoodEditSignalWatcher {
         return watch.result == nil
     }
 
-    /// Opens the window for the dictation that just committed.
+    /// Identifies ONE watch. The caller holds it across the record write and
+    /// hands it back to `attachRecord`, which is what makes a stale attach
+    /// rejectable: the token names the dictation the URL belongs to, and a
+    /// watcher that has moved on refuses it.
+    ///
+    /// Not an `Int` and not `Equatable` by accident — it exists to be compared
+    /// against the watcher's own state and nothing else.
+    struct WatchToken: Equatable, Sendable {
+        fileprivate let generation: UInt64
+    }
+
+    /// Opens the window for the dictation that just committed, returning the
+    /// token to hand back with the record. Nil when nothing is being watched —
+    /// an empty commit, or an observer that could not be installed (no
+    /// Accessibility trust). A nil token means the dictation gets NO behavior
+    /// block, which is the honest answer: "never observed" must not be
+    /// recordable as "the user kept the text".
     ///
     /// `committedText` is measured, never stored: only its word-count bucket
     /// reaches the record.
-    func arm(committedText: String, outputMode: String) {
+    @discardableResult
+    func arm(committedText: String, outputMode: String) -> WatchToken? {
         supersede()
 
         let wordCount = DogfoodEditSignalPolicy.wordCount(of: committedText)
-        guard wordCount > 0 else { return }
+        guard wordCount > 0 else { return nil }
 
         generation &+= 1
         let generation = generation
         let windowSeconds = DogfoodEditSignalPolicy.windowSeconds(wordCount: wordCount)
+
+        // Install BEFORE the watch exists, so an observer that never went up
+        // leaves no watch behind to flush a misleading `clean`.
+        let installed = monitor.start { [weak self] signal in
+            self?.handle(signal: signal, generation: generation)
+        }
+        guard installed else {
+            watch = nil
+            return nil
+        }
+
         watch = Watch(
             generation: generation,
             armedAt: now(),
@@ -295,22 +348,25 @@ final class DogfoodEditSignalWatcher {
             outputMode: outputMode
         )
 
-        monitor.start { [weak self] signal in
-            self?.handle(signal: signal, generation: generation)
-        }
-
         windowTask = Task { [weak self] in
             guard let self else { return }
             await self.sleepFor(.seconds(windowSeconds))
             guard !Task.isCancelled else { return }
             self.closeWindow(outcome: .clean, signal: nil, generation: generation)
         }
+
+        return WatchToken(generation: generation)
     }
 
-    /// Hands the open (or already-closed) watch the record it belongs to. The
-    /// record is written after the commit, so this always follows `arm`.
-    func attachRecord(url: URL, store: DogfoodCaptureStore) {
-        guard var watch, watch.generation == generation else { return }
+    /// Hands the open (or already-closed) watch the record it belongs to.
+    ///
+    /// `token` is the one `arm` returned for THIS dictation. Comparing it
+    /// against the watch's own generation is the whole contamination guard: the
+    /// record write is `await`ed, so a second dictation can arm in between, and
+    /// without the token this call would hand session A's record to session B's
+    /// open window — which would then patch A's record with B's behavior.
+    func attachRecord(url: URL, store: DogfoodCaptureStore, token: WatchToken) {
+        guard var watch, watch.generation == token.generation else { return }
         watch.recordURL = url
         watch.store = store
         self.watch = watch
@@ -324,6 +380,21 @@ final class DogfoodEditSignalWatcher {
         closeWindow(outcome: .superseded, signal: nil, generation: watch.generation)
     }
 
+    /// Closes an open window because the app is terminating, writing the patch
+    /// INLINE rather than from a `Task`.
+    ///
+    /// `willTerminateNotification` observers run synchronously and the process
+    /// is gone shortly after; a Task enqueued there is not guaranteed to run at
+    /// all (the backend shutdown next to it is best-effort for the same
+    /// reason). One small JSON rewrite on the main actor is cheap enough to pay
+    /// at quit, and the alternative is losing the window's answer entirely.
+    func flushForTermination() {
+        guard let watch, watch.result == nil else { return }
+        closeWindow(
+            outcome: .superseded, signal: nil, generation: watch.generation, inline: true
+        )
+    }
+
     private func handle(signal: DogfoodEditSignal, generation: UInt64) {
         closeWindow(outcome: .edited, signal: signal, generation: generation)
     }
@@ -331,7 +402,8 @@ final class DogfoodEditSignalWatcher {
     private func closeWindow(
         outcome: DogfoodEditSignalOutcome,
         signal: DogfoodEditSignal?,
-        generation: UInt64
+        generation: UInt64,
+        inline: Bool = false
     ) {
         guard var watch, watch.generation == generation, watch.result == nil else { return }
 
@@ -344,12 +416,12 @@ final class DogfoodEditSignalWatcher {
         let elapsed = max(0, now().timeIntervalSince(watch.armedAt))
         watch.result = (outcome, signal, elapsed)
         self.watch = watch
-        flushIfReady()
+        flushIfReady(inline: inline)
     }
 
     /// Patches the record once both halves are known: the window's verdict and
     /// where the record landed. Whichever arrives second triggers the write.
-    private func flushIfReady() {
+    private func flushIfReady(inline: Bool = false) {
         guard let watch,
               let result = watch.result,
               let url = watch.recordURL,
@@ -367,6 +439,10 @@ final class DogfoodEditSignalWatcher {
         )
         self.watch = nil
 
+        guard !inline else {
+            DogfoodCaptureWriter.attachSynchronously(behavior, toRecordAt: url, store: store)
+            return
+        }
         flushTask = Task {
             await DogfoodCaptureWriter.attach(behavior, toRecordAt: url, store: store)
         }

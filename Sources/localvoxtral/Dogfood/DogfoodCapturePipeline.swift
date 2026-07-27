@@ -473,6 +473,18 @@ enum DogfoodCaptureWriter {
         toRecordAt url: URL,
         store: DogfoodCaptureStore
     ) async {
+        attachSynchronously(behavior, toRecordAt: url, store: store)
+    }
+
+    /// The same patch, without the hop. Used at app termination, where a `Task`
+    /// is not guaranteed to run — see
+    /// `DogfoodEditSignalWatcher.flushForTermination`. The work is one small
+    /// JSON rewrite either way; only the caller's urgency differs.
+    nonisolated static func attachSynchronously(
+        _ behavior: DogfoodCaptureRecord.Behavior,
+        toRecordAt url: URL,
+        store: DogfoodCaptureStore
+    ) {
         do {
             try store.attachBehavior(behavior, toRecordAt: url)
             Log.polishing.info(

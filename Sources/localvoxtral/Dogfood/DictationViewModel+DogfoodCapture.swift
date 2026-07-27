@@ -34,7 +34,12 @@ extension DictationViewModel {
         // reaching for Backspace during those milliseconds is the strongest
         // signal there is, and arming after the write would be exactly the
         // window that misses it.
-        dogfoodEditSignalWatcher.arm(
+        //
+        // The token names THIS dictation's watch. It has to be carried across
+        // the write below, because that write is awaited and the next dictation
+        // can arm in the meantime — an untokened attach would hand this
+        // record's URL to that session's window.
+        let watchToken = dogfoodEditSignalWatcher.arm(
             committedText: inputs.text.committedText ?? inputs.text.groundedText,
             outputMode: inputs.session.outputMode
         )
@@ -50,8 +55,9 @@ extension DictationViewModel {
         // A failed write leaves it open until its window closes, where it finds
         // no record and flushes nothing — the signal costs the record, never
         // the other way around.
-        if let url = await DogfoodCaptureWriter.write(record, store: store) {
-            dogfoodEditSignalWatcher.attachRecord(url: url, store: store)
+        let url = await DogfoodCaptureWriter.write(record, store: store)
+        if let url, let watchToken {
+            dogfoodEditSignalWatcher.attachRecord(url: url, store: store, token: watchToken)
         }
     }
 

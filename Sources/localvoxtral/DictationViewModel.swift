@@ -811,6 +811,13 @@ final class DictationViewModel {
                 if self.isDictating {
                     self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
                 }
+                #if LOCALVOXTRAL_DOGFOOD
+                // Last chance for a still-open post-commit watch to patch its
+                // record: after this the process is gone and the dictation
+                // would keep no behavior block at all. Written inline — a Task
+                // spawned at terminate is not guaranteed to run.
+                self.dogfoodEditSignalWatcher.flushForTermination()
+                #endif
                 await self.backendManager.stopAll()
             }
         }
