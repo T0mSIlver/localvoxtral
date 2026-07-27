@@ -29,6 +29,16 @@ extension DictationViewModel {
         let store = dogfoodCaptureStore
         let started = ContinuousClock.now
 
+        // BEFORE assembly, not after the write: the watch window measures from
+        // the commit, and assembly re-derives every harvest off-actor. A user
+        // reaching for Backspace during those milliseconds is the strongest
+        // signal there is, and arming after the write would be exactly the
+        // window that misses it.
+        dogfoodEditSignalWatcher.arm(
+            committedText: inputs.text.committedText ?? inputs.text.groundedText,
+            outputMode: inputs.session.outputMode
+        )
+
         // Assembly walks complete retained buffers (harvest re-derivation);
         // `build` is nonisolated, so this await hops off the main actor the
         // same way the preparations it mirrors do.
@@ -36,7 +46,13 @@ extension DictationViewModel {
         let elapsed = (ContinuousClock.now - started).components
         record.timings.captureMilliseconds =
             Double(elapsed.seconds) * 1000 + Double(elapsed.attoseconds) / 1e15
-        await DogfoodCaptureWriter.write(record, store: store)
+        // The watch is already open; this only tells it which record to patch.
+        // A failed write leaves it open until its window closes, where it finds
+        // no record and flushes nothing — the signal costs the record, never
+        // the other way around.
+        if let url = await DogfoodCaptureWriter.write(record, store: store) {
+            dogfoodEditSignalWatcher.attachRecord(url: url, store: store)
+        }
     }
 
     private nonisolated static func assembleDogfoodRecord(

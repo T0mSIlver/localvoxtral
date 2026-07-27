@@ -139,6 +139,70 @@ struct DogfoodCaptureStore: Sendable {
         return url
     }
 
+    // MARK: - Patching
+
+    /// Attaches the post-commit behavior signal to an already-written record,
+    /// returning where it landed.
+    ///
+    /// A patch rather than a delayed write: the record is what the commit path
+    /// knew AT commit, and holding it back for up to fifteen seconds to wait for
+    /// a signal would lose every record to a quit, a crash, or a cancelled task
+    /// — including the ones whose commit went wrong, which are exactly the ones
+    /// worth having.
+    ///
+    /// Read-modify-write of the SAME file, never `write(_:)`: that recomputes
+    /// the file name from the record, and `capturedAt` has lost its milliseconds
+    /// to the ISO-8601 round trip by the time it is decoded again, so a
+    /// rewritten record would land beside the original as a duplicate rather
+    /// than on top of it. Following `flagMostRecentRecord`, the name on disk is
+    /// authoritative and is preserved.
+    ///
+    /// The behavior block is fixed slugs and numbers, so no re-redaction is
+    /// needed (and the rest of the record was redacted on its way in).
+    @discardableResult
+    func attachBehavior(
+        _ behavior: DogfoodCaptureRecord.Behavior,
+        toRecordAt url: URL
+    ) throws -> URL {
+        // Flagging renames; a record flagged during the watch window is still
+        // this dictation's record and must still receive its signal.
+        let target = try locateRecord(writtenAt: url)
+        guard
+            let data = try directoryIO.read(from: target),
+            var record = try? makeDecoder().decode(DogfoodCaptureRecord.self, from: data)
+        else {
+            throw StoreError.unreadableRecord(path: target.path)
+        }
+
+        record.behavior = behavior
+        guard let encoded = try? makeEncoder().encode(record) else {
+            throw StoreError.encodingFailed
+        }
+        try io.write(encoded, to: target)
+        return target
+    }
+
+    /// The record's current location: where it was written, or its flagged
+    /// rename. Throws when neither exists — a pruned or hand-deleted record is
+    /// not something to recreate.
+    private func locateRecord(writtenAt url: URL) throws -> URL {
+        if (try? directoryIO.read(from: url)) ?? nil != nil { return url }
+
+        let name = url.lastPathComponent
+        guard name.hasSuffix(DogfoodCaptureFileName.plainSuffix) else {
+            throw StoreError.unreadableRecord(path: url.path)
+        }
+        let base = String(name.dropLast(DogfoodCaptureFileName.plainSuffix.count))
+        let flagged = url.deletingLastPathComponent().appendingPathComponent(
+            base + DogfoodCaptureFileName.flaggedSuffix,
+            isDirectory: false
+        )
+        guard (try? directoryIO.read(from: flagged)) ?? nil != nil else {
+            throw StoreError.unreadableRecord(path: url.path)
+        }
+        return flagged
+    }
+
     // MARK: - Flagging
 
     /// Marks the most recently captured record for review, returning its new
