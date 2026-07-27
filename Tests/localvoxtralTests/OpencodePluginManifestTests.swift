@@ -54,6 +54,10 @@ final class OpencodePluginManifestTests: XCTestCase {
             "console.", // any logging corrupts the TUI or the turn
             "process.stdout",
             "process.stderr",
+            // The blocklist above misses raw descriptor writes (review C6):
+            // fs.writeSync(1, …) reaches the terminal without ever naming
+            // stdout. No form of writeSync has a legitimate use here.
+            "writeSync",
             "child_process",
             "Bun.spawn",
             "fetch(",
@@ -66,8 +70,34 @@ final class OpencodePluginManifestTests: XCTestCase {
         }
     }
 
+    func testServerHalfSpanNeverMentionsATTY() throws {
+        // The server half must be UNABLE to publish a TTY (invariant 1: under
+        // `opencode serve` an isatty answer names a pane that does not display
+        // the session). record()'s tty parameter is only reachable from the
+        // TUI half; pin that mechanically by asserting the server half's whole
+        // span never contains the token at all (review C6 / opencode F2).
+        let text = try source()
+        let start = try XCTUnwrap(text.range(of: "const ServerHalf"))
+        let end = try XCTUnwrap(text.range(of: "// TUI half"))
+        XCTAssertLessThan(start.lowerBound, end.lowerBound, "server half must precede the TUI half")
+        let span = text[start.lowerBound..<end.lowerBound].lowercased()
+        XCTAssertFalse(span.contains("tty"), "the server half may never touch a TTY, even lexically")
+    }
+
     func testSocketIsUnrefedSoThePluginCannotKeepOpencodeAlive() throws {
         XCTAssertTrue(try source().contains(".unref()"))
+    }
+
+    func testBackpressureIsBoundedByADropNeverAWait() throws {
+        // Review C5: socket.write with the broker not draining must never
+        // queue unboundedly inside the agent process. The plugin checks the
+        // queued-byte watermark and resets the connection past the cap.
+        let text = try source()
+        XCTAssertTrue(text.contains("const MAX_QUEUED_BYTES = 64 * 1024;"))
+        XCTAssertTrue(
+            text.contains("writableLength > MAX_QUEUED_BYTES"),
+            "the queued-bytes watermark must gate every write"
+        )
     }
 
     // MARK: Wire contract — pinned to the Swift constants, not to copies
@@ -96,7 +126,10 @@ final class OpencodePluginManifestTests: XCTestCase {
 
     func testEveryPublishedEventNameIsAKnownWireEvent() throws {
         let text = try source()
-        let published = ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd", "FocusChanged"]
+        let published = [
+            "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
+            "FocusChanged", "FocusCleared",
+        ]
         for event in published {
             XCTAssertTrue(text.contains("\"\(event)\""), "plugin should publish \(event)")
             XCTAssertNotNil(
@@ -121,12 +154,17 @@ final class OpencodePluginManifestTests: XCTestCase {
         }
     }
 
-    func testFocusHeartbeatStaysComfortablyInsideTheRegistryTTL() throws {
-        XCTAssertTrue(try source().contains("const FOCUS_HEARTBEAT_MS = 20000;"))
-        // Three lost heartbeats must still leave a live declaration.
+    func testFocusHeartbeatAndSampleCadenceFitTheRegistryTTL() throws {
+        let text = try source()
+        XCTAssertTrue(text.contains("const FOCUS_HEARTBEAT_MS = 20000;"))
+        // The half-second sample is what bounds switch latency (no
+        // route-change event exists in opencode 1.17.x's TUI plugin API).
+        XCTAssertTrue(text.contains("const FOCUS_POLL_MS = 500;"))
+        // One lost 20s heartbeat plus sampling jitter must still leave a live
+        // declaration; more than that and the pane has gone silent for real.
         XCTAssertGreaterThanOrEqual(
-            ClaudeRegistryLimits.defaultFocusDeclarationTTL, 4 * 20,
-            "registry focus TTL must cover several lost 20s heartbeats"
+            ClaudeRegistryLimits.defaultFocusDeclarationTTL, 2 * 20 + 5,
+            "registry focus TTL must cover one lost 20s heartbeat plus jitter"
         )
     }
 

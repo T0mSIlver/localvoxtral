@@ -55,9 +55,12 @@ and remove the line from `~/.config/opencode/tui.json`.
   mis-joins. The server half therefore never claims a TTY; the TUI half —
   which only loads in the realm that renders your pane — declares
   `FocusChanged` records ("this TTY currently displays session X"),
-  freshness-bounded and heartbeat-refreshed. localvoxtral resolves a pane to
-  a session only through a fresh declaration, cross-checked against the
-  declaring process's pid, and abstains on anything ambiguous or stale.
+  freshness-bounded, heartbeat-refreshed, and explicitly retracted
+  (`FocusCleared`) the moment the pane leaves its session view. localvoxtral
+  resolves a pane to a session only through a fresh declaration,
+  cross-checked against the declaring process's pid (and, at the broker,
+  against the kernel-verified pid of the connecting process), and abstains
+  on anything ambiguous or stale.
 - **Blast radius zero.** The plugin runs inside your agent process. It never
   blocks a hook on IO: one lazily reconnected, `unref()`ed socket,
   fire-and-forget writes, every handler wrapped in try/catch, all fields

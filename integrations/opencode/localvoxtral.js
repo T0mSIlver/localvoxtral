@@ -60,14 +60,26 @@ const MAX_PROMPT_BYTES = 8 * 1024;
 const MAX_PATH_BYTES = 4 * 1024;
 const MAX_FILES_PER_RECORD = 16;
 
-// The registry treats a focus declaration as stale after two minutes
+// The registry treats a focus declaration as stale after 45 seconds
 // (ClaudeRegistryLimits.defaultFocusDeclarationTTL); a 20-second heartbeat
-// keeps a steadily displayed session comfortably fresh across lost writes.
-const FOCUS_POLL_MS = 2000;
+// keeps a steadily displayed session fresh across one lost write, and the
+// half-second sample keeps a session SWITCH visible almost immediately —
+// opencode's TUI plugin API exposes the displayed session only as the
+// `api.route.current` getter (no route-change event exists on any bus in
+// 1.17.x), so sampling cadence is the switch latency. Bus events additionally
+// trigger an immediate resample, so any switch that coincides with session
+// activity is caught event-fast.
+const FOCUS_POLL_MS = 500;
 const FOCUS_HEARTBEAT_MS = 20000;
 
 // Bounds on in-process caches, so a very long-lived opencode cannot grow.
 const MAX_TRACKED_SESSIONS = 64;
+
+// Hard cap on bytes queued in the socket before the runtime flushed them. A
+// broker that stops reading must never grow this process's memory: past the
+// cap the connection is reset and records are DROPPED — context is a
+// nice-to-have, the user's agent process is not.
+const MAX_QUEUED_BYTES = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Socket path — mirrors ClaudeHookSocketPath.swift exactly.
@@ -95,14 +107,18 @@ function socketPath() {
 
 let socket;
 
+/// Returns true only when the line was actually handed to a healthy socket —
+/// callers that track publish state (the focus declarations) must not advance
+/// on a dropped write, or a lost switch would go unrepaired until the next
+/// heartbeat.
 function publish(record) {
   try {
-    if (!record) return;
+    if (!record) return false;
     const line = JSON.stringify(record) + "\n";
-    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) return;
+    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) return false;
     if (!socket || socket.destroyed) {
       const path = socketPath();
-      if (!path) return;
+      if (!path) return false;
       socket = net.createConnection(path);
       socket.unref();
       // Broker replies (marker lines for Claude publishers) are read and
@@ -115,13 +131,29 @@ function publish(record) {
         } catch {}
       });
     }
+    // Backpressure is a drop, never a wait: if the broker stopped draining,
+    // reset the connection (the next publish lazily reconnects) and lose
+    // this record rather than queue unboundedly inside the agent process.
+    if (socket.writableLength > MAX_QUEUED_BYTES) {
+      try {
+        socket.destroy();
+      } catch {}
+      socket = undefined;
+      return false;
+    }
     socket.write(line);
-  } catch {}
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function closeSocket() {
   try {
-    if (socket && !socket.destroyed) socket.destroy();
+    // end(), not destroy(): a final retraction may still be in the buffer,
+    // and end() flushes before FIN while an unref()ed socket cannot keep the
+    // process alive anyway.
+    if (socket && !socket.destroyed) socket.end();
   } catch {}
   socket = undefined;
 }
@@ -164,13 +196,15 @@ function processBlock(tty) {
 }
 
 function record(event, sessionID, fields, tty) {
-  const scopedID = truncateBytes(sessionID, MAX_PATH_BYTES);
-  if (!scopedID) return undefined;
+  // Bounded, not scoped: namespacing ("opencode:…") is applied by the
+  // RECEIVER from the agent tag, by design. The plugin sends raw ids.
+  const boundedID = truncateBytes(sessionID, MAX_PATH_BYTES);
+  if (!boundedID) return undefined;
   const result = {
     v: WIRE_VERSION,
     event,
     agent: AGENT,
-    session_id: scopedID,
+    session_id: boundedID,
     ts: Date.now() / 1000,
     process: processBlock(tty),
   };
@@ -195,17 +229,17 @@ function record(event, sessionID, fields, tty) {
 // ---------------------------------------------------------------------------
 // Server half (worker realm): session content, never a TTY.
 
-const ServerHalf = async (input) => {
+const ServerHalf = async () => {
   // session id -> directory, learned from session.created (the session's cwd
-  // is not on chat.message). The plugin-load directory is the only fallback;
-  // when neither is known the record goes out WITHOUT a cwd — fail closed on
-  // the field, not the record.
+  // is not on chat.message). There is deliberately NO fallback — not even the
+  // plugin-load directory: an instance-less server hosts sessions from many
+  // directories, and a wrong cwd would ground dictation on the wrong repo.
+  // When the directory is unknown the record goes out WITHOUT a cwd — fail
+  // closed on the field, not the record.
   const directoryBySession = new Map();
   // Subagent (task tool) sessions carry parentID; their lifecycle must not
   // masquerade as user-facing sessions (same rule herdr's plugin applies).
   const childSessions = new Set();
-  const fallbackDirectory =
-    input && typeof input.directory === "string" && input.directory ? input.directory : undefined;
 
   function remember(map, key, value) {
     map.set(key, value);
@@ -216,7 +250,7 @@ const ServerHalf = async (input) => {
   }
 
   function directoryFor(sessionID) {
-    return directoryBySession.get(sessionID) || fallbackDirectory;
+    return directoryBySession.get(sessionID);
   }
 
   return {
@@ -338,38 +372,75 @@ const TuiHalf = async (api) => {
   const tty = ownTTY();
   if (!tty) return; // No pane evidence, nothing to declare. Ever.
 
-  // opencode's TUI exposes the displayed session as api.route.current
-  // (@opencode-ai/plugin/tui: TuiRouteCurrent) and publishes no route-change
-  // event on any bus, so the getter is sampled on an unref()ed timer — a pure
-  // in-memory read, no IO. A change publishes immediately; a heartbeat keeps
-  // the declaration fresh; leaving the session view (home) simply stops the
-  // heartbeat and the app's registry expires the declaration.
+  // opencode's TUI exposes the displayed session only as the
+  // `api.route.current` getter (@opencode-ai/plugin/tui: TuiRouteCurrent) —
+  // no route-change event exists on any bus in 1.17.x, so event-driven focus
+  // is approximated from both ends: a half-second sample of the getter (pure
+  // in-memory read, no IO) bounds switch latency, and every bus event
+  // triggers an immediate resample so switches that coincide with session
+  // activity are caught event-fast. Leaving the session view publishes an
+  // explicit retraction (FocusCleared) instead of waiting for the registry's
+  // TTL. Publish state only advances when the write was actually accepted, so
+  // a lost declaration or retraction is retried at the next sample.
   let lastSession;
   let lastSentAt = 0;
-  const timer = setInterval(() => {
+
+  function sample() {
     try {
       const route = api.route && api.route.current;
       const sessionID =
         route && route.name === "session" && route.params && typeof route.params.sessionID === "string"
           ? route.params.sessionID
           : undefined;
+      const nowMillis = Date.now();
       if (!sessionID) {
-        lastSession = undefined;
+        if (lastSession && publish(record("FocusCleared", lastSession, undefined, tty))) {
+          lastSession = undefined;
+          lastSentAt = 0;
+        }
         return;
       }
-      const nowMillis = Date.now();
       if (sessionID === lastSession && nowMillis - lastSentAt < FOCUS_HEARTBEAT_MS) return;
-      lastSession = sessionID;
-      lastSentAt = nowMillis;
-      publish(record("FocusChanged", sessionID, undefined, tty));
+      if (publish(record("FocusChanged", sessionID, undefined, tty))) {
+        lastSession = sessionID;
+        lastSentAt = nowMillis;
+      }
     } catch {}
-  }, FOCUS_POLL_MS);
+  }
+
+  const timer = setInterval(sample, FOCUS_POLL_MS);
   if (timer && typeof timer.unref === "function") timer.unref();
+
+  const unsubscribes = [];
+  if (api.event && typeof api.event.on === "function") {
+    // Resample-on-event: TuiEventBus.on requires a concrete type per
+    // subscription, so cover the events a session switch tends to ride on.
+    for (const type of [
+      "session.created",
+      "session.deleted",
+      "session.status",
+      "session.idle",
+      "message.updated",
+    ]) {
+      try {
+        unsubscribes.push(api.event.on(type, sample));
+      } catch {}
+    }
+  }
 
   if (api.lifecycle && typeof api.lifecycle.onDispose === "function") {
     api.lifecycle.onDispose(() => {
       try {
         clearInterval(timer);
+        for (const unsubscribe of unsubscribes) {
+          try {
+            unsubscribe();
+          } catch {}
+        }
+        if (lastSession) {
+          publish(record("FocusCleared", lastSession, undefined, tty));
+          lastSession = undefined;
+        }
         closeSocket();
       } catch {}
     });
