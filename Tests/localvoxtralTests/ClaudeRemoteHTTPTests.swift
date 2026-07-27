@@ -199,8 +199,10 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
     }
 
     func testAnUninterpolatedEnvVarPlaceholderIsNotAToken() throws {
-        // What ships when `allowedEnvVars` is missing from the manifest. It must
-        // read as "no credential", not as a credential that happens to fail.
+        // What shipped from the plugin's original http-hook shape, where header
+        // `${VAR}`s went out uninterpolated (and what any misconfigured client
+        // could still send). It must read as "no credential", not as a
+        // credential that happens to fail.
         let raw = request(headers: [
             "Authorization: Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}",
             "Content-Length: 2",

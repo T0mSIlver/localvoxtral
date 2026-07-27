@@ -27,11 +27,11 @@ public enum ClaudePluginAssets {
     public static let pluginName = "localvoxtral"
     /// The second plugin in the same marketplace, installed on a REMOTE host.
     ///
-    /// Structurally separate from `pluginName` and not a mode of it: it declares
-    /// HTTP hooks against the tunnelled loopback listener rather than a command
-    /// shim, it authenticates with a token instead of peer credentials, and the
-    /// context it delivers is opaque. One plugin with a switch would put those
-    /// two trust models one config typo apart.
+    /// Structurally separate from `pluginName` and not a mode of it: its shim
+    /// curls the tunnelled loopback listener rather than running the publisher
+    /// binary, it authenticates with a token instead of peer credentials, and
+    /// the context it delivers is opaque. One plugin with a switch would put
+    /// those two trust models one config typo apart.
     public static let remotePluginName = "localvoxtral-remote"
     /// Marketplace name, as it appears in marketplace.json.
     public static let marketplaceName = "localvoxtral"

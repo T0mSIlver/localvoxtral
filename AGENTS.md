@@ -379,10 +379,25 @@ Key subsystems:
     `ClaudeContextBroker` verifies peer UID *before reading*, and only ever
     unlinks a socket it has PROVED stale by connect-probe — a second live
     instance owns its socket legitimately.
-  - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): declares
-    `type: "http"` hooks, so Claude Code itself POSTs to
-    `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH `RemoteForward` — no
-    binary, no shim, no `jq`/`nc`/Node on that host. `ClaudeRemoteContextListener`
+  - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): command
+    hooks running the bundled POSIX-sh shim `hooks/post.sh`, which curls the
+    event JSON to `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH
+    `RemoteForward` — no localvoxtral binary and no `jq`/`nc`/Node on that
+    host, but it does need `sh` and `curl` (fail-open when absent). It was
+    `type: "http"` hooks until 2026-07-27: Claude Code expands http-hook
+    header `${VAR}`s from the process environment only and never injects
+    plugin userConfig options there (verified on 2.1.220), so every hook
+    authenticated as `Bearer ` and was 401'd — command hooks are the only
+    surface that receives `CLAUDE_PLUGIN_OPTION_TOKEN`. The shim keeps the
+    token out of every argv (`curl --header @tempfile`, 0600, heredoc-written),
+    and its stdout FAILS CLOSED — the mirror image of delivery failing open:
+    it prints a 200 body only when it matches exactly the one grammar the
+    listener can emit (`markerResponseBody` — `suppressOutput:true` plus an
+    optional lvx-marker `terminalSequence`), one line, size-capped; anything
+    else prints nothing. Command-hook stdout is appended to the user's prompt
+    when it is not control JSON (and `additionalContext` when it is), so
+    whatever answers on 8473 must never be able to put a byte into the prompt
+    (owner rule 2026-07-27). `ClaudeRemoteContextListener`
     (loopback-bound POSIX, dedicated port 8473; 8471/8472 remain the managed
     backends) authenticates the Bearer token *before retaining a body* against
     `ClaudeRemoteHostRegistry` (0600 atomic file, token hashes only,
@@ -546,7 +561,11 @@ Key subsystems:
   live), so a second enrollment cannot drop the first host's tunnel.
   A bind conflict is reported, never routed around onto another port: a
   squatter on 8473 receives the remote's bearer token before anything rejects
-  it, so the user must learn it is there. Note also what is NOT defensible: a
+  it, so the user must learn it is there. What the squatter does NOT get is a
+  path into the prompt: the remote shim's stdout gate (post.sh) rejects any
+  200 body that is not exactly the listener's allowlisted control JSON, and a
+  forged well-formed marker is inert because markers are broker-allocated —
+  an unknown one joins nothing. Note also what is NOT defensible: a
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.

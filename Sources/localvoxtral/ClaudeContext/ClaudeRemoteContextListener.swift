@@ -47,8 +47,9 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
 ///
 /// The topology: an OpenSSH `RemoteForward 8473 127.0.0.1:8473` makes the remote
 /// host's `127.0.0.1:8473` come out of the local ssh client and connect here.
-/// Claude Code on the remote host runs `type: "http"` hooks against that address
-/// — no publisher binary, no shell shim, no `curl`/`jq`/Node on the remote side.
+/// Claude Code on the remote host runs the plugin's command-hook curl shim
+/// against that address — no publisher binary and no `jq`/Node on the remote
+/// side, just POSIX `sh` and `curl`.
 ///
 /// Everything below is the consequence of one fact: *we cannot see who is on the
 /// other end.* The local broker asks the kernel for a peer UID and gets an

@@ -264,9 +264,10 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     }
 
     func testTheInstallCommandInstallsTheRemotePluginNotTheLocalOne() throws {
-        // The two plugins are structurally different — HTTP hooks and a token
-        // versus a command shim and peer credentials. Installing the local one
-        // on a remote host would fail open forever and look like a tunnel bug.
+        // The two plugins are structurally different — a curl shim and a token
+        // versus a publisher-binary shim and peer credentials. Installing the
+        // local one on a remote host would fail open forever and look like a
+        // tunnel bug.
         let commands = try plan().remoteCommands
         XCTAssertTrue(commands[1].contains(ClaudePluginAssets.remotePluginName))
         XCTAssertFalse(
@@ -345,6 +346,10 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(
             notes.contains("plain `ssh`") || notes.contains("plain ssh"),
             "unenrolled SSH must be documented as unchanged: no tunnel, screen-only, unjoined"
+        )
+        XCTAssertTrue(
+            notes.contains("curl") && notes.contains("fail open"),
+            "the host dependency (sh + curl) and its fail-open behavior must be stated honestly"
         )
     }
 

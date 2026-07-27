@@ -4,13 +4,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8473/v1/hook/UserPromptSubmit",
-            "headers": {
-              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
-            },
-            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
-            "timeout": 1
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post.sh\" UserPromptSubmit",
+            "timeout": 3
           }
         ]
       }
@@ -19,13 +15,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8473/v1/hook/Stop",
-            "headers": {
-              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
-            },
-            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
-            "timeout": 1
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post.sh\" Stop",
+            "timeout": 3
           }
         ]
       }
@@ -34,13 +26,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8473/v1/hook/CwdChanged",
-            "headers": {
-              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
-            },
-            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
-            "timeout": 1
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post.sh\" CwdChanged",
+            "timeout": 3
           }
         ]
       }
@@ -50,13 +38,9 @@
         "matcher": "Read|Edit|Write|NotebookEdit",
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8473/v1/hook/PostToolUse",
-            "headers": {
-              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
-            },
-            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
-            "timeout": 1
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post.sh\" PostToolUse",
+            "timeout": 3
           }
         ]
       }
@@ -65,13 +49,9 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "http://127.0.0.1:8473/v1/hook/SessionEnd",
-            "headers": {
-              "Authorization": "Bearer ${CLAUDE_PLUGIN_OPTION_TOKEN}"
-            },
-            "allowedEnvVars": ["CLAUDE_PLUGIN_OPTION_TOKEN"],
-            "timeout": 1
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post.sh\" SessionEnd",
+            "timeout": 3
           }
         ]
       }
