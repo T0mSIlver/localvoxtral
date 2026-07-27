@@ -45,6 +45,9 @@ private final class StubListener: ClaudeRemoteListenerControlling {
     var reconcileCount = 0
     /// Thrown on the next reconcile that would bind.
     var bindError: (any Error)?
+    /// What the real listener would have counted. Set by a test to stand in for
+    /// a night of rejected connections.
+    var rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot()
 
     init(hosts: ClaudeRemoteHostRegistry) {
         self.hosts = hosts
@@ -107,7 +110,11 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         registry: ClaudeRemoteHostRegistry?,
         listener: (any ClaudeRemoteListenerControlling)?,
         plugin: StubPluginService = StubPluginService(),
-        enrollmentService: ClaudeRemoteEnrollmentService = ClaudeRemoteEnrollmentService()
+        enrollmentService: ClaudeRemoteEnrollmentService = ClaudeRemoteEnrollmentService(),
+        // Frozen by default (AGENTS: no wall-clock in tests). The registry's
+        // own clock is pinned to the same instant, so a host that just reported
+        // reads as "just now" rather than as whatever the machine's clock did.
+        now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 1_000_000) }
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -134,7 +141,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                         failure: ClaudeEnrollmentActionFailure(error)
                     )
                 }
-            }
+            },
+            now: now
         )
     }
 
@@ -536,7 +544,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                         failure: ClaudeEnrollmentActionFailure(error)
                     )
                 }
-            }
+            },
+            now: { Date(timeIntervalSince1970: 1_000_000) }
         )
         model.enrollLabel = "buildhost"
         model.enrollSSHAlias = "builder"
@@ -972,6 +981,122 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertTrue(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .listening(port: 8473))
+    }
+
+    // MARK: Last-heard and rejection diagnostics
+
+    /// The row has to answer "is this host still sending me context", because a
+    /// tunnel that quietly stopped looks exactly like one that works.
+    func testTheHostRowAgesLastContextAgainstTheInjectedClock() {
+        let seen = Date(timeIntervalSince1970: 1_000_000)
+        let format = { (offset: TimeInterval) in
+            ClaudeIntegrationSettingsModel.hostStatusText(
+                isRevoked: false, lastSeenAt: seen, now: seen.addingTimeInterval(offset)
+            )
+        }
+        XCTAssertEqual(format(0), "Last context: just now")
+        XCTAssertEqual(format(59), "Last context: just now")
+        XCTAssertEqual(format(60), "Last context: 1 min ago")
+        XCTAssertEqual(format(2 * 60 + 30), "Last context: 2 min ago")
+        XCTAssertEqual(format(59 * 60), "Last context: 59 min ago")
+        XCTAssertEqual(format(3600), "Last context: 1 hour ago")
+        XCTAssertEqual(format(5 * 3600), "Last context: 5 hours ago")
+        XCTAssertEqual(format(26 * 3600), "Last context: 1 day ago")
+        XCTAssertEqual(format(3 * 86_400), "Last context: 3 days ago")
+        // A clock that stepped backwards must not print a negative age.
+        XCTAssertEqual(format(-600), "Last context: just now")
+    }
+
+    func testAHostThatHasNeverReportedSaysSoAndARevokedOneSaysOnlyThat() {
+        XCTAssertEqual(
+            ClaudeIntegrationSettingsModel.hostStatusText(
+                isRevoked: false, lastSeenAt: nil, now: Date(timeIntervalSince1970: 1_000_000)
+            ),
+            "Last context: never"
+        )
+        XCTAssertEqual(
+            ClaudeIntegrationSettingsModel.hostStatusText(
+                isRevoked: true,
+                lastSeenAt: Date(timeIntervalSince1970: 999_000),
+                now: Date(timeIntervalSince1970: 1_000_000)
+            ),
+            "Revoked",
+            "a revoked host's age is not the fact the user needs"
+        )
+    }
+
+    func testRefreshBuildsTheRowStatusFromTheRegistrysActivity() async throws {
+        let registry = try makeRegistry()
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            // 10 minutes after the registry's frozen clock.
+            now: { Date(timeIntervalSince1970: 1_000_600) }
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        XCTAssertEqual(model.hosts.first?.statusText, "Last context: never")
+
+        registry.noteActivity(hostID: try XCTUnwrap(model.hosts.first?.id))
+        model.refreshHosts()
+        XCTAssertEqual(model.hosts.first?.statusText, "Last context: 10 min ago")
+    }
+
+    /// Tonight's failure, made visible: the app knew connections were being
+    /// rejected and said nothing anywhere the user would look.
+    func testRejectedConnectionsSurfaceAsOneShortInlineMessage() throws {
+        let registry = try makeRegistry()
+        let listener = StubListener(hosts: registry)
+        let model = makeModel(registry: registry, listener: listener)
+        XCTAssertNil(model.rejectionHint, "nothing rejected, nothing to say")
+
+        listener.rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot(missingToken: 42)
+        model.refreshHosts()
+
+        let hint = try XCTUnwrap(model.rejectionHint)
+        XCTAssertTrue(hint.contains("outdated plugin"))
+        XCTAssertFalse(hint.contains("42"), "a count is noise; the KIND is the diagnosis")
+        // Owner rule: no long text in the pane.
+        XCTAssertLessThan(hint.count, 110)
+        XCTAssertFalse(hint.contains("\n"))
+    }
+
+    func testTheHintNamesWhichKindOfRejectionItWas() {
+        let hint = { (snapshot: ClaudeRemoteRejectionTally.Snapshot) in
+            ClaudeIntegrationSettingsModel.rejectionHint(for: snapshot)
+        }
+        XCTAssertNil(hint(ClaudeRemoteRejectionTally.Snapshot()))
+        XCTAssertEqual(
+            hint(ClaudeRemoteRejectionTally.Snapshot(missingToken: 1)),
+            "Rejected connections detected — a host may have an outdated plugin — use Update Plugin."
+        )
+        XCTAssertEqual(
+            hint(ClaudeRemoteRejectionTally.Snapshot(unknownToken: 1)),
+            "Rejected connections detected — a host may have a stale token — rotate it and re-run setup."
+        )
+        XCTAssertEqual(
+            hint(ClaudeRemoteRejectionTally.Snapshot(missingToken: 1, unknownToken: 1)),
+            "Rejected connections detected — a host may have an outdated plugin or a stale token."
+        )
+        XCTAssertEqual(
+            hint(ClaudeRemoteRejectionTally.Snapshot(malformedAuthorization: 1)),
+            "Rejected connections detected — a host may have a malformed authorization header."
+        )
+        for snapshot in [
+            ClaudeRemoteRejectionTally.Snapshot(missingToken: 1),
+            ClaudeRemoteRejectionTally.Snapshot(unknownToken: 1),
+            ClaudeRemoteRejectionTally.Snapshot(missingToken: 1, unknownToken: 1),
+            ClaudeRemoteRejectionTally.Snapshot(malformedAuthorization: 1),
+        ] {
+            XCTAssertLessThan(hint(snapshot)?.count ?? .max, 110)
+        }
+    }
+
+    func testAModelWithNoListenerNeverInventsAHint() {
+        let model = makeModel(registry: nil, listener: nil)
+        model.refreshRejectionHint()
+        XCTAssertNil(model.rejectionHint)
     }
 
     func testAnUnreadableRegistryDisablesTheRemoteSurfaceRatherThanFailingSilently() {
