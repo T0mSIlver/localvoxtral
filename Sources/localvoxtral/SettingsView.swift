@@ -1041,6 +1041,9 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                             .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                            .controlSize(.small)
+                            .disabled(model.isPerformingEnrollmentAction)
                         Button("Rotate Token") { Task { await model.rotate(hostID: host.id) } }
                             .controlSize(.small)
                         if !host.isRevoked {
@@ -1050,8 +1053,78 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         Button("Remove") { Task { await model.remove(hostID: host.id) } }
                             .controlSize(.small)
                     }
+                    pluginUpdatePanel(for: host)
                 }
             }
+        }
+    }
+
+    /// One host's plugin-update commands, disclosed in that host's row.
+    ///
+    /// In the row rather than a new group, and confirmed and reported where the
+    /// button is (PR #194): a result the user has to go looking for is a result
+    /// they conclude never happened.
+    @ViewBuilder
+    private func pluginUpdatePanel(for host: ClaudeIntegrationSettingsModel.HostRow) -> some View {
+        if let update = model.presentedPluginUpdate, update.hostID == host.id {
+            let commands = update.commands.joined(separator: "\n")
+            let action = ClaudeIntegrationSettingsModel.EnrollmentAction.updateRemotePlugin(hostID: host.id)
+            let pendingConfirmation = model.enrollmentConfirmation.flatMap {
+                $0.action == action ? $0 : nil
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Update the plugin on \(host.label)").font(.caption).bold()
+                    Spacer()
+                    Button("Copy") {
+                        // No token here — the update keeps the stored one — but
+                        // concealed anyway, so a Settings copy cannot ride into
+                        // the next polish prompt's clipboard context.
+                        ConcealedPasteboardWriter.write(commands)
+                    }
+                    .controlSize(.small)
+                    Button("Close") { model.dismissPluginUpdate() }
+                        .controlSize(.small)
+                        .disabled(model.isPerformingEnrollmentAction)
+                }
+                // The displayed block IS the confirmation preview, highlighted
+                // while the question is pending, so confirming still repeats the
+                // exact commands it authorizes.
+                Text(commands)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(
+                        pendingConfirmation != nil
+                            ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 4)
+                    )
+                if let confirmation = pendingConfirmation {
+                    Text(confirmation.title).font(.caption).bold()
+                    HStack {
+                        Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                        Button(confirmation.confirmButtonTitle) {
+                            Task { await model.confirmEnrollmentAction() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .controlSize(.small)
+                } else if update.canRun {
+                    Button("Run on SSH host") { model.requestPluginUpdateRun() }
+                        .controlSize(.small)
+                        .disabled(model.isPerformingEnrollmentAction)
+                } else {
+                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then run these two commands yourself.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if model.enrollmentResultsAction == action {
+                    ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
+                }
+            }
+            .padding(.leading, 8)
+            .padding(.bottom, 4)
         }
     }
 
@@ -1085,6 +1158,43 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
+        }
+    }
+}
+
+/// One action's outcome, rendered inside the section whose button ran it.
+///
+/// A pooled results area below step 2 is how a step-1 success went unseen in the
+/// field and got re-confirmed — so the caller places this, and the model's
+/// `enrollmentResultsAction` decides which caller gets to.
+private struct ClaudeEnrollmentStepResults: View {
+    let statuses: [ClaudeIntegrationSettingsModel.EnrollmentStepStatus]
+
+    var body: some View {
+        if !statuses.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(statuses) { step in
+                    Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
+                        .font(.caption)
+                        .foregroundStyle(step.succeeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                        .lineLimit(1)
+                }
+                let details = statuses
+                    .map(\.detail)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n")
+                if !details.isEmpty {
+                    ScrollView {
+                        Text(details)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 90)
+                    .padding(6)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
         }
     }
 }
@@ -1138,6 +1248,11 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         action: { model.requestRemoteSetup() }
                     )
                     section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
+                    section(
+                        "Update later",
+                        body: plan.updateCommands.joined(separator: "\n"),
+                        note: "Also available per host in Settings, once localvoxtral ships a newer plugin."
+                    )
                     section("Uninstall", body: plan.uninstallCommands.joined(separator: "\n"), note: nil)
 
                     VStack(alignment: .leading, spacing: 4) {
@@ -1163,35 +1278,10 @@ private struct ClaudeRemoteEnrollmentSheet: View {
         .frame(width: 560, height: 520)
     }
 
-    /// One step's outcome, rendered inside the section whose button ran it.
-    /// A pooled results area below step 2 is how a step-1 success went unseen
-    /// in the field and got re-confirmed.
     @ViewBuilder
     private func sectionResults(for enrollmentAction: ClaudeIntegrationSettingsModel.EnrollmentAction) -> some View {
-        if model.enrollmentResultsAction == enrollmentAction, !model.enrollmentStepStatuses.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(model.enrollmentStepStatuses) { step in
-                    Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
-                        .font(.caption)
-                        .foregroundStyle(step.succeeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
-                        .lineLimit(1)
-                }
-                let details = model.enrollmentStepStatuses
-                    .map(\.detail)
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n\n")
-                if !details.isEmpty {
-                    ScrollView {
-                        Text(details)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: 90)
-                    .padding(6)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-                }
-            }
+        if model.enrollmentResultsAction == enrollmentAction {
+            ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
         }
     }
 

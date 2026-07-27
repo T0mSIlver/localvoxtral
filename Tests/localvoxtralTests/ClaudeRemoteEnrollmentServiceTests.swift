@@ -333,6 +333,79 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    // MARK: Update
+
+    /// Verified on Claude Code 2.1.220: re-running the enrollment pair on an
+    /// enrolled host exits 0 and changes nothing — `marketplace add` says
+    /// "already on disk" without refreshing the clone, and `plugin install`
+    /// says "already installed" without touching the version. `marketplace
+    /// update` + `plugin update` is the only pair that delivers a plugin fix,
+    /// and the order matters: `plugin update` installs whatever the local
+    /// marketplace clone currently offers.
+    func testUpdateCommandsRefreshTheMarketplaceThenThePlugin() throws {
+        let commands = try plan().updateCommands
+        let runnable = commands.filter { !$0.hasPrefix("#") }
+        XCTAssertEqual(runnable.count, 2)
+        XCTAssertTrue(runnable[0].hasPrefix("ssh builder '"))
+        XCTAssertTrue(runnable[1].hasPrefix("ssh builder '"))
+        XCTAssertTrue(
+            runnable[0].contains(
+                "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)"
+            )
+        )
+        XCTAssertTrue(runnable[1].contains("claude plugin update localvoxtral-remote@localvoxtral"))
+        XCTAssertTrue(
+            runnable[1].contains(ClaudeRemoteEnrollmentService.remotePluginReference),
+            "the reference must come from the shared constants, not a second literal"
+        )
+        XCTAssertFalse(
+            runnable[1].contains(" \(ClaudePluginAssets.pluginName)@"),
+            "the local plugin is not what a remote host runs"
+        )
+    }
+
+    func testUpdateCommandsNeverCarryTheToken() throws {
+        // `plugin update` preserves the stored config, so this path has no
+        // reason to hold the credential — and a command with no token in it
+        // cannot leak one into a log, a screenshot, or shell history.
+        let commands = try plan().updateCommands
+        for command in commands {
+            XCTAssertFalse(command.contains(token))
+            XCTAssertFalse(command.contains("--config"))
+            XCTAssertFalse(command.contains(ClaudeRemoteEnrollmentService.tokenConfigKey + "="))
+        }
+    }
+
+    func testUpdateCommandsSurviveANonInteractiveSSHPath() throws {
+        // Same failure the verify probe hit: `ssh host 'claude …'` skips the
+        // login rc, so claude is routinely off PATH there.
+        let runnable = try plan().updateCommands.filter { !$0.hasPrefix("#") }
+        for command in runnable {
+            XCTAssertTrue(
+                command.contains("PATH=\"$HOME/.claude/local:$HOME/.local/bin"),
+                "an update must not depend on the remote shell's rc-file PATH"
+            )
+            XCTAssertTrue(
+                command.contains(ClaudeRemoteEnrollmentService.nonInteractiveClaudePathPrefix),
+                "the prefix is shared with the verify commands, not re-spelled"
+            )
+        }
+    }
+
+    func testUpdateCommandsSayWhyReinstallingIsNotAnUpdate() throws {
+        // These are pasted by a person who has already run the install command
+        // once and seen it exit 0. Without this, "I re-ran setup" reads as "I
+        // updated", and the host silently stays on the old plugin.
+        let joined = try plan().updateCommands.joined(separator: "\n")
+        XCTAssertTrue(joined.contains("plugin install"))
+        XCTAssertTrue(joined.contains("already"))
+        XCTAssertTrue(joined.contains("2.1.220"), "the behavior is version-specific and dated as such")
+        XCTAssertTrue(
+            joined.lowercased().contains("token is kept"),
+            "the first question is whether updating costs the user their token"
+        )
+    }
+
     // MARK: Notes
 
     func testNotesCoverTheCaveatsThatBiteFirst() throws {
@@ -673,7 +746,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 ClaudeRemoteEnrollmentService.SetupPlan(
                     sshConfigSnippet: "",
                     remoteCommands: ClaudeRemoteEnrollmentService.remoteCommands(token: token),
-                    verifyCommands: [], uninstallCommands: [], notes: []
+                    verifyCommands: [], updateCommands: [], uninstallCommands: [], notes: []
                 ),
                 sshHostAlias: "builder",
                 token: token
@@ -711,7 +784,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 ClaudeRemoteEnrollmentService.SetupPlan(
                     sshConfigSnippet: "",
                     remoteCommands: ClaudeRemoteEnrollmentService.remoteCommands(token: token),
-                    verifyCommands: [], uninstallCommands: [], notes: []
+                    verifyCommands: [], updateCommands: [], uninstallCommands: [], notes: []
                 ),
                 sshHostAlias: "builder",
                 token: token
@@ -756,12 +829,93 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             try service.executeRemoteSetup(
                 ClaudeRemoteEnrollmentService.SetupPlan(
                     sshConfigSnippet: "", remoteCommands: ["echo hi"], verifyCommands: [],
-                    uninstallCommands: [], notes: []
+                    updateCommands: [], uninstallCommands: [], notes: []
                 ),
                 sshHostAlias: "a b",
                 token: token
             )
         )
+    }
+
+    // MARK: Update execution
+
+    func testPluginUpdateExecutionIsRefusedWithoutAnInjectedRunner() throws {
+        let service = ClaudeRemoteEnrollmentService()
+        XCTAssertThrowsError(try service.executeRemotePluginUpdate(sshHostAlias: "builder")) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .executionNotConfigured
+            )
+        }
+    }
+
+    func testPluginUpdateRunsExactlyTheTwoClaudeCommandsOverSSH() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "")
+        })
+
+        let steps = try service.executeRemotePluginUpdate(sshHostAlias: "builder")
+
+        let recorded = calls.withLock { $0 }
+        XCTAssertEqual(steps.count, 2)
+        for invocation in recorded {
+            XCTAssertEqual(
+                invocation.argv,
+                [
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    "builder", "/bin/sh", "-s",
+                ]
+            )
+        }
+        XCTAssertEqual(
+            recorded.map { String(decoding: $0.standardInput, as: UTF8.self) },
+            ClaudeRemoteEnrollmentService.remotePluginUpdateCommands.map {
+                "set -eu\n\(ClaudeRemoteEnrollmentService.claudePathResolverPreamble)\($0)\n"
+            }
+        )
+        // Nothing on this path has the credential, so nothing on it can spill
+        // one: no argv, no script, no captured step.
+        for invocation in recorded {
+            XCTAssertFalse(invocation.argv.joined(separator: " ").contains("token"))
+            XCTAssertFalse(String(decoding: invocation.standardInput, as: UTF8.self).contains("--config"))
+        }
+    }
+
+    func testPluginUpdateStopsAtTheFirstFailure() throws {
+        // A `plugin update` against a marketplace clone that failed to refresh
+        // would "succeed" onto the version the host already has.
+        let calls = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            calls.withLock { $0 += 1 }
+            return .init(exitCode: 1, message: "marketplace not found")
+        })
+        XCTAssertThrowsError(try service.executeRemotePluginUpdate(sshHostAlias: "builder")) { error in
+            guard case .commandFailed(let step, let command, let exitCode, let message)? =
+                error as? ClaudeRemoteEnrollmentService.ServiceError
+            else {
+                return XCTFail("expected commandFailed, got \(error)")
+            }
+            XCTAssertEqual(step, 0)
+            XCTAssertEqual(exitCode, 1)
+            XCTAssertEqual(message, "marketplace not found")
+            XCTAssertTrue(command.contains("marketplace update"))
+        }
+        XCTAssertEqual(calls.withLock { $0 }, 1)
+    }
+
+    func testPluginUpdateRefusesAnInvalidAlias() {
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            XCTFail("the runner must never be reached with an invalid alias")
+            return .init(exitCode: 0, message: "")
+        })
+        XCTAssertThrowsError(try service.executeRemotePluginUpdate(sshHostAlias: "a b")) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .invalidHostAlias
+            )
+        }
     }
 
     func testExecutionNeverTouchesTheSSHConfig() throws {

@@ -154,9 +154,33 @@ public final class ClaudeIntegrationSettingsModel {
         public var isRotation: Bool
     }
 
+    /// The two commands that bring one enrolled host to the plugin version this
+    /// app ships, plus the host they belong to.
+    ///
+    /// Carries no token — `claude plugin update` keeps the config the install
+    /// stored — so unlike `EnrollmentPresentation` this can be shown at any
+    /// time, which is the point: the user needs it long after the one-time
+    /// token is gone.
+    public struct PluginUpdatePresentation: Identifiable, Equatable, Sendable {
+        public var id: String { hostID }
+        public var hostID: String
+        /// The alias one-click execution would use, or nil when the host's
+        /// label is not a usable one. The alias belongs to the user's ssh
+        /// config and is never persisted, so the label is the only guess
+        /// available; when it does not qualify the commands are copy-only and
+        /// name a placeholder instead of pretending.
+        public var sshHostAlias: String?
+        public var commands: [String]
+
+        public var canRun: Bool { sshHostAlias != nil }
+    }
+
     public enum EnrollmentAction: Sendable, Equatable {
         case insertSSHConfig
         case runRemoteSetup
+        /// Per-host, because the pane shows one row per host and the outcome
+        /// has to render in the row whose button ran it.
+        case updateRemotePlugin(hostID: String)
     }
 
     public struct EnrollmentConfirmation: Identifiable, Equatable, Sendable {
@@ -191,6 +215,8 @@ public final class ClaudeIntegrationSettingsModel {
     public private(set) var pluginResult: String?
     public private(set) var isPerformingPluginAction = false
     public private(set) var presentedPlan: EnrollmentPresentation?
+    /// The update commands the user asked to see, for one host at a time.
+    public private(set) var presentedPluginUpdate: PluginUpdatePresentation?
     public private(set) var enrollmentConfirmation: EnrollmentConfirmation?
     public private(set) var enrollmentStepStatuses: [EnrollmentStepStatus] = []
     /// Which action produced `enrollmentStepStatuses`. The sheet renders each
@@ -467,6 +493,8 @@ public final class ClaudeIntegrationSettingsModel {
         guard let registry else { return }
         do {
             try registry.remove(hostID: hostID)
+            // The row is going away; its open update panel must not outlive it.
+            if presentedPluginUpdate?.hostID == hostID { dismissPluginUpdate() }
             refreshHosts()
             reconcileListener()
         } catch {
@@ -493,6 +521,59 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentConfirmation = nil
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+    }
+
+    /// Show one host's plugin-update commands in its row.
+    ///
+    /// Needed because `claude plugin install` is not an update: on an installed
+    /// plugin it exits 0 and leaves the old version in place (Claude Code
+    /// 2.1.220), so re-running enrollment does nothing and a host stays on a
+    /// plugin the app has since fixed — silently, because the hooks fail open.
+    public func requestPluginUpdate(hostID: String) {
+        guard !isPerformingEnrollmentAction, hosts.contains(where: { $0.id == hostID }) else { return }
+        let alias = hosts.first { $0.id == hostID }
+            .map(\.label)
+            .flatMap { ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil }
+        // A fresh panel must not inherit another action's results, for the same
+        // reason a fresh enrollment sheet must not (field report 2026-07-26).
+        enrollmentConfirmation = nil
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        presentedPluginUpdate = PluginUpdatePresentation(
+            hostID: hostID,
+            sshHostAlias: alias,
+            commands: ClaudeRemoteEnrollmentService.updateCommands(
+                sshHostAlias: alias ?? "your-ssh-host"
+            )
+        )
+    }
+
+    public func dismissPluginUpdate() {
+        if case .updateRemotePlugin? = enrollmentResultsAction {
+            enrollmentStepStatuses = []
+            enrollmentResultsAction = nil
+        }
+        if case .updateRemotePlugin? = enrollmentConfirmation?.action {
+            enrollmentConfirmation = nil
+        }
+        presentedPluginUpdate = nil
+    }
+
+    /// Ask before running the update commands, repeating the exact pair.
+    public func requestPluginUpdateRun() {
+        guard let presentation = presentedPluginUpdate,
+              presentation.canRun,
+              !isPerformingEnrollmentAction
+        else { return }
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .updateRemotePlugin(hostID: presentation.hostID),
+            title: "Update the plugin on this SSH host?",
+            preview: presentation.commands.joined(separator: "\n"),
+            confirmButtonTitle: "Confirm Update"
+        )
+        Log.claudeContext.info("Claude remote plugin update confirmation requested")
     }
 
     public func requestSSHConfigInsertion() {
@@ -526,30 +607,45 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     public func confirmEnrollmentAction() async {
-        guard let confirmation = enrollmentConfirmation,
-              let presentation = presentedPlan,
-              !isPerformingEnrollmentAction
-        else { return }
+        guard let confirmation = enrollmentConfirmation, !isPerformingEnrollmentAction else { return }
+        switch confirmation.action {
+        case .insertSSHConfig, .runRemoteSetup:
+            await performPlanAction(confirmation)
+        case .updateRemotePlugin:
+            await performPluginUpdate(confirmation)
+        }
+    }
+
+    private func performPlanAction(_ confirmation: EnrollmentConfirmation) async {
+        guard let presentation = presentedPlan else { return }
+        let service = enrollmentService
+        let work: @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]
+        switch confirmation.action {
+        case .insertSSHConfig:
+            work = {
+                try service.insertSSHConfig(presentation.plan, hostID: presentation.host.id)
+                return []
+            }
+        case .runRemoteSetup:
+            work = {
+                try service.executeRemoteSetup(
+                    presentation.plan,
+                    sshHostAlias: presentation.sshHostAlias,
+                    token: presentation.token
+                )
+            }
+        case .updateRemotePlugin:
+            // Routed to performPluginUpdate: that action belongs to a host row,
+            // has no plan and no token, and must not run against one.
+            return
+        }
         enrollmentConfirmation = nil
         isPerformingEnrollmentAction = true
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
         defer { isPerformingEnrollmentAction = false }
 
-        let service = enrollmentService
-        let attempt = await performEnrollmentAsync {
-            switch confirmation.action {
-            case .insertSSHConfig:
-                try service.insertSSHConfig(presentation.plan, hostID: presentation.host.id)
-                return []
-            case .runRemoteSetup:
-                return try service.executeRemoteSetup(
-                    presentation.plan,
-                    sshHostAlias: presentation.sshHostAlias,
-                    token: presentation.token
-                )
-            }
-        }
+        let attempt = await performEnrollmentAsync(work)
 
         // The sheet may have been dismissed (window close) and even replaced
         // while the detached work ran; a late result must not surface under a
@@ -559,14 +655,39 @@ public final class ClaudeIntegrationSettingsModel {
         // mints a fresh token, so value equality distinguishes generations.
         guard presentedPlan == presentation else { return }
 
+        publish(attempt, action: confirmation.action)
+    }
+
+    private func performPluginUpdate(_ confirmation: EnrollmentConfirmation) async {
+        guard let presentation = presentedPluginUpdate,
+              let alias = presentation.sshHostAlias
+        else { return }
+        enrollmentConfirmation = nil
+        isPerformingEnrollmentAction = true
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        defer { isPerformingEnrollmentAction = false }
+
+        let service = enrollmentService
+        let attempt = await performEnrollmentAsync {
+            try service.executeRemotePluginUpdate(sshHostAlias: alias)
+        }
+
+        // Same rule as the sheet: the row may have been closed, or another
+        // host's opened, while ssh was still running — one host's outcome must
+        // never render under another host's commands.
+        guard presentedPluginUpdate == presentation else { return }
+
+        publish(attempt, action: confirmation.action)
+    }
+
+    /// Turn one finished attempt into the statuses its section renders.
+    private func publish(_ attempt: ClaudeEnrollmentActionAttempt, action: EnrollmentAction) {
         if let failure = attempt.failure {
-            enrollmentStepStatuses = Self.failureStatuses(
-                failure,
-                action: confirmation.action
-            )
-            enrollmentResultsAction = confirmation.action
+            enrollmentStepStatuses = Self.failureStatuses(failure, action: action)
+            enrollmentResultsAction = action
             alert = DetailAlert(
-                title: "Remote Claude Code setup",
+                title: Self.failureAlertTitle(for: action),
                 detail: Self.enrollmentFailureDetail(failure)
             )
             Log.claudeContext.error(
@@ -575,14 +696,14 @@ public final class ClaudeIntegrationSettingsModel {
             return
         }
 
-        switch confirmation.action {
+        switch action {
         case .insertSSHConfig:
             enrollmentStepStatuses = [
                 EnrollmentStepStatus(
                     id: 0, text: "Inserted this host's block into ~/.ssh/config.", succeeded: true, detail: ""
                 )
             ]
-        case .runRemoteSetup:
+        case .runRemoteSetup, .updateRemotePlugin:
             enrollmentStepStatuses = attempt.steps.map {
                 EnrollmentStepStatus(
                     id: $0.index,
@@ -592,7 +713,14 @@ public final class ClaudeIntegrationSettingsModel {
                 )
             }
         }
-        enrollmentResultsAction = confirmation.action
+        enrollmentResultsAction = action
+    }
+
+    static func failureAlertTitle(for action: EnrollmentAction) -> String {
+        switch action {
+        case .insertSSHConfig, .runRemoteSetup: return "Remote Claude Code setup"
+        case .updateRemotePlugin: return "Remote Claude Code plugin"
+        }
     }
 
     public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
@@ -605,7 +733,7 @@ public final class ClaudeIntegrationSettingsModel {
         _ failure: ClaudeEnrollmentActionFailure,
         action: EnrollmentAction
     ) -> [EnrollmentStepStatus] {
-        guard action == .runRemoteSetup else {
+        guard action != .insertSSHConfig else {
             return [EnrollmentStepStatus(id: 0, text: "SSH config update failed.", succeeded: false, detail: failure.describedError)]
         }
 
@@ -622,7 +750,9 @@ public final class ClaudeIntegrationSettingsModel {
             failedStep = step
             detail = message
         default:
-            return [EnrollmentStepStatus(id: 0, text: "Remote setup failed.", succeeded: false, detail: failure.describedError)]
+            var text = "Remote setup failed."
+            if case .updateRemotePlugin = action { text = "Plugin update failed." }
+            return [EnrollmentStepStatus(id: 0, text: text, succeeded: false, detail: failure.describedError)]
         }
         let succeeded = (0..<failedStep).map {
             EnrollmentStepStatus(id: $0, text: "Step \($0 + 1) succeeded.", succeeded: true, detail: "")
