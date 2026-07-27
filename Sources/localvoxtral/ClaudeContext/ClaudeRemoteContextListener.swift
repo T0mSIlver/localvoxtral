@@ -423,8 +423,16 @@ public final class ClaudeRemoteContextListener: Sendable {
         let candidate = request.bearerToken
         let authenticatedHost = candidate.flatMap { hosts.authenticate(token: $0) }
         guard let token = candidate, let host = authenticatedHost else {
-            let category = ClaudeRemoteRejectionCategory.category(for: shape, authenticated: false)
-                ?? .unknownToken
+            // The REAL authentication result, not a constant `false`: the
+            // mapping's contract includes "an accepted credential is not a
+            // rejection", and its only production caller should exercise that
+            // rather than assert it. Reaching the fallback would mean
+            // `bearerToken` and `authorizationShape` disagreed about one header
+            // — impossible while the former is implemented on the latter, and
+            // `unknownToken` is the conservative reading if it ever were not.
+            let category = ClaudeRemoteRejectionCategory.category(
+                for: shape, authenticated: authenticatedHost != nil
+            ) ?? .unknownToken
             rejections.record(category)
             Log.claudeContext.error("\(category.logLine, privacy: .public)")
             respond(fd: fd, status: 401)

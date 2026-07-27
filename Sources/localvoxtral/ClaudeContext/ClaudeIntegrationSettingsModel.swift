@@ -103,6 +103,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// Coarse on purpose: the question is "is this host still talking to me",
     /// and a to-the-second answer would only invite the user to read precision
     /// into a timestamp that is refreshed when the pane appears.
+    ///
+    /// `lastSeenAt` is the registry's IN-MEMORY value, persisted only on the
+    /// next persisting mutation (see `ClaudeRemoteHostRegistry.noteActivity` —
+    /// a disk write per hook event would be steady write amplification for a
+    /// dictation nicety). So a host that was active before a relaunch reads
+    /// "never" until its next hook event. That is the existing trade, not a
+    /// missing write.
     static func hostStatusText(isRevoked: Bool, lastSeenAt: Date?, now: Date) -> String {
         if isRevoked { return "Revoked" }
         guard let lastSeenAt else { return "Last context: never" }
@@ -452,6 +459,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// the popover does — and count-free on purpose: the number of rejections is
     /// noise (a busy session produces one every few minutes), while WHICH KIND
     /// they were is the whole diagnosis. The detail stays in the log.
+    ///
+    /// The hedge in "a host MAY have" is deliberate. The listener counts every
+    /// rejected connection, and an enrolled host is not the only thing that can
+    /// reach a loopback port: a probe or a curl with no `Authorization` header
+    /// lands in `.missingToken` exactly like a pre-1.1.0 plugin does. Naming a
+    /// cause with certainty would sometimes accuse a host of a fault it does
+    /// not have.
     static func rejectionHint(for snapshot: ClaudeRemoteRejectionTally.Snapshot) -> String? {
         guard !snapshot.isEmpty else { return nil }
         let cause: String
