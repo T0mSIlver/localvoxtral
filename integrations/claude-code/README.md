@@ -319,7 +319,12 @@ Order matters: `plugin update` installs whatever the local marketplace clone
 currently offers, so refreshing the clone first is what makes it an update at
 all. In the app, each row in **Remote Claude Code over SSH** has an **Update
 Plugin…** button that shows these two commands with a Copy button, and can run
-them over SSH after you confirm. Non-interactive SSH skips your login shell's
+them over SSH after you confirm. One-click runs against the **SSH alias you
+enrolled with**, which is recorded with the host — the display name is never
+used as a substitute, since the two are separate fields and can name different
+machines. A host enrolled before localvoxtral recorded aliases has none on file:
+its commands are copy-only (and so is its rotation sheet) until you re-enroll it.
+Non-interactive SSH skips your login shell's
 rc, so the app's version of these commands sets `PATH` to the usual `claude`
 install locations first; add that yourself if `claude` is off the PATH a plain
 `ssh host 'claude …'` sees.

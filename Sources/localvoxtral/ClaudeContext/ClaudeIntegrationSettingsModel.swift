@@ -78,6 +78,11 @@ public final class ClaudeIntegrationSettingsModel {
     public struct HostRow: Identifiable, Equatable, Sendable {
         public var id: String
         public var label: String
+        /// Nil for hosts enrolled before the alias was persisted. Never
+        /// substituted with `label`: they are different fields on the form, so
+        /// guessing one from the other can ssh to a machine the user did not
+        /// pick.
+        public var sshHostAlias: String?
         public var isRevoked: Bool
         public var lastSeenAt: Date?
 
@@ -152,6 +157,12 @@ public final class ClaudeIntegrationSettingsModel {
         /// Rotation reuses this sheet; the copy differs because the user's
         /// situation does (their remote is currently broken, on purpose).
         public var isRotation: Bool
+        /// False when `sshHostAlias` is the sheet's placeholder rather than an
+        /// alias the user gave us — a legacy host rotated before the alias was
+        /// persisted. The commands are still copyable; what is withheld is
+        /// one-click execution, which would otherwise hand a fresh token to
+        /// whichever machine happened to answer to a guessed name.
+        public var canRunRemoteSetup: Bool = true
     }
 
     /// The two commands that bring one enrolled host to the plugin version this
@@ -376,7 +387,13 @@ public final class ClaudeIntegrationSettingsModel {
 
     public func refreshHosts() {
         hosts = (registry?.hosts() ?? []).map {
-            HostRow(id: $0.id, label: $0.label, isRevoked: $0.isRevoked, lastSeenAt: $0.lastSeenAt)
+            HostRow(
+                id: $0.id,
+                label: $0.label,
+                sshHostAlias: $0.sshHostAlias,
+                isRevoked: $0.isRevoked,
+                lastSeenAt: $0.lastSeenAt
+            )
         }
     }
 
@@ -413,7 +430,7 @@ public final class ClaudeIntegrationSettingsModel {
             return
         }
         do {
-            let enrollment = try registry.enroll(label: label)
+            let enrollment = try registry.enroll(label: label, sshHostAlias: alias)
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
                 sshHostAlias: alias,
@@ -447,14 +464,16 @@ public final class ClaudeIntegrationSettingsModel {
         guard let registry else { return }
         do {
             let enrollment = try registry.rotateToken(hostID: hostID)
+            // The alias the user enrolled with, or nothing. The label is NOT a
+            // fallback: name and alias are separate fields, so `prod` named
+            // over alias `builder` would have sent the new token to whatever
+            // answers to `prod` (review finding, PR #197). A host enrolled
+            // before the alias was persisted gets the placeholder and copy-only
+            // commands, which is honest about what we know.
+            let alias = enrollment.host.sshHostAlias
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
-                // The alias is not persisted — it is the user's ssh config, not
-                // ours — so the label is the best guess we have, and the sheet
-                // says so rather than pretending.
-                sshHostAlias: ClaudeRemoteEnrollmentService.isValidHostAlias(enrollment.host.label)
-                    ? enrollment.host.label
-                    : "your-ssh-host",
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 token: enrollment.token,
                 port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
             )
@@ -464,11 +483,10 @@ public final class ClaudeIntegrationSettingsModel {
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
-                sshHostAlias: ClaudeRemoteEnrollmentService.isValidHostAlias(enrollment.host.label)
-                    ? enrollment.host.label
-                    : "your-ssh-host",
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 plan: plan,
-                isRotation: true
+                isRotation: true,
+                canRunRemoteSetup: alias != nil
             )
             refreshHosts()
             // Rotation reinstates a revoked host, so it can be a 0→1 transition.
@@ -530,10 +548,17 @@ public final class ClaudeIntegrationSettingsModel {
     /// 2.1.220), so re-running enrollment does nothing and a host stays on a
     /// plugin the app has since fixed — silently, because the hooks fail open.
     public func requestPluginUpdate(hostID: String) {
-        guard !isPerformingEnrollmentAction, hosts.contains(where: { $0.id == hostID }) else { return }
-        let alias = hosts.first { $0.id == hostID }
-            .map(\.label)
-            .flatMap { ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil }
+        guard !isPerformingEnrollmentAction,
+              let host = hosts.first(where: { $0.id == hostID })
+        else { return }
+        // The ENROLLED alias, never the label: a host named `prod` may be
+        // reached over alias `builder`, and `ssh prod …` would then update
+        // whatever machine answers to that name (review finding, PR #197).
+        // Hosts enrolled before the alias was persisted have none, and get
+        // copy-only commands rather than a guess.
+        let alias = host.sshHostAlias.flatMap {
+            ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil
+        }
         // A fresh panel must not inherit another action's results, for the same
         // reason a fresh enrollment sheet must not (field report 2026-07-26).
         enrollmentConfirmation = nil
@@ -543,10 +568,15 @@ public final class ClaudeIntegrationSettingsModel {
             hostID: hostID,
             sshHostAlias: alias,
             commands: ClaudeRemoteEnrollmentService.updateCommands(
-                sshHostAlias: alias ?? "your-ssh-host"
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder
             )
         )
     }
+
+    /// Stands in for an alias we were never told. Not a valid target and not
+    /// meant to be one — it is there so the copyable commands read correctly
+    /// with an obvious blank to fill in.
+    static let unknownAliasPlaceholder = "your-ssh-host"
 
     public func dismissPluginUpdate() {
         if case .updateRemotePlugin? = enrollmentResultsAction {
@@ -590,7 +620,12 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     public func requestRemoteSetup() {
-        guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
+        guard let presentation = presentedPlan,
+              // A placeholder alias must not reach ssh: one-click would hand
+              // the new token to whatever answers to a name we invented.
+              presentation.canRunRemoteSetup,
+              !isPerformingEnrollmentAction
+        else { return }
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
@@ -688,7 +723,7 @@ public final class ClaudeIntegrationSettingsModel {
             enrollmentResultsAction = action
             alert = DetailAlert(
                 title: Self.failureAlertTitle(for: action),
-                detail: Self.enrollmentFailureDetail(failure)
+                detail: Self.enrollmentFailureDetail(failure, action: action)
             )
             Log.claudeContext.error(
                 "Claude remote enrollment action failed: \(failure.describedError, privacy: .public)"
@@ -767,15 +802,23 @@ public final class ClaudeIntegrationSettingsModel {
         ]
     }
 
-    static func enrollmentFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
+    /// The alert body. `action` names the work in the user's terms — an alert
+    /// that says "SSH setup" after they pressed Update Plugin reads as a
+    /// different failure than the one they are looking at.
+    static func enrollmentFailureDetail(
+        _ failure: ClaudeEnrollmentActionFailure,
+        action: EnrollmentAction
+    ) -> String {
+        var subject = "SSH setup"
+        if case .updateRemotePlugin = action { subject = "Plugin update" }
         switch failure.serviceError {
         case .commandTimedOut(_, _, let seconds, let message):
             let output = message.isEmpty ? "" : "\n\n\(message)"
-            return "SSH setup did not finish within \(Int(seconds))s and was stopped.\(output)"
+            return "\(subject) did not finish within \(Int(seconds))s and was stopped.\(output)"
         case .commandFailed(_, _, let exitCode, let message):
-            return "SSH setup exited with code \(exitCode).\n\n\(message)"
+            return "\(subject) exited with code \(exitCode).\n\n\(message)"
         case .runnerFailed(_, _, let message):
-            return "SSH setup could not run.\n\n\(message)"
+            return "\(subject) could not run.\n\n\(message)"
         case .invalidSSHConfigEncoding:
             return "~/.ssh/config is not valid UTF-8, so localvoxtral left it unchanged."
         case .sshConfigIsSymlink:
@@ -789,7 +832,7 @@ public final class ClaudeIntegrationSettingsModel {
         case .sshConfigEditingNotConfigured:
             return "Editing ~/.ssh/config is not available in this build."
         case .executionNotConfigured:
-            return "Running SSH setup is not available in this build."
+            return "Running commands over SSH is not available in this build."
         case .invalidHostAlias:
             return "The SSH host alias is invalid."
         case .none:

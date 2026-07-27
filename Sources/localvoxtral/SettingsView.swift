@@ -1052,6 +1052,10 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         }
                         Button("Remove") { Task { await model.remove(hostID: host.id) } }
                             .controlSize(.small)
+                            // Removing the row an action is reporting into is
+                            // handled (the late-result guard drops the outcome),
+                            // but offering it mid-run is still offering a race.
+                            .disabled(model.isPerformingEnrollmentAction)
                     }
                     pluginUpdatePanel(for: host)
                 }
@@ -1238,14 +1242,19 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         enrollmentAction: .insertSSHConfig,
                         action: { model.requestSSHConfigInsertion() }
                     )
+                    // No Run button when the alias is the placeholder: this host
+                    // was enrolled before the alias was persisted, so we do not
+                    // know where to send a token. Copy still works.
                     section(
                         "2. Run on the remote host",
                         body: plan.remoteCommands.joined(separator: "\n"),
                         displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
-                        note: "One-click execution sends the token through SSH stdin, never process arguments.",
-                        actionTitle: "Run on SSH host",
+                        note: presentation.canRunRemoteSetup
+                            ? "One-click execution sends the token through SSH stdin, never process arguments."
+                            : "Replace \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder) with the alias from your ~/.ssh/config and run these yourself — this host was enrolled before localvoxtral recorded its alias.",
+                        actionTitle: presentation.canRunRemoteSetup ? "Run on SSH host" : nil,
                         enrollmentAction: .runRemoteSetup,
-                        action: { model.requestRemoteSetup() }
+                        action: presentation.canRunRemoteSetup ? { model.requestRemoteSetup() } : nil
                     )
                     section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
                     section(

@@ -118,6 +118,47 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
     }
 
+    /// Review finding (PR #197): the charset allowed `-` anywhere, so `-V`
+    /// passed validation and reached `ssh`'s argv as an OPTION. OpenSSH then
+    /// prints its version and exits 0 without connecting — every step reports
+    /// success while nothing ran on any host, which is the worst possible
+    /// failure for a setup tool. Reachable on the pre-existing setup path too,
+    /// not only on the update path this PR adds.
+    func testAnAliasCanNeverBeMistakenForAnSSHOption() {
+        for alias in ["-V", "-v", "-oProxyCommand", "--", "-", "-F", ".", "..", "..."] {
+            XCTAssertFalse(
+                ClaudeRemoteEnrollmentService.isValidHostAlias(alias),
+                "'\(alias)' must not be accepted as an alias"
+            )
+        }
+        // Hyphens and dots INSIDE a name stay legal — they are ordinary in real
+        // host aliases, and rejecting them would push users off the one-click
+        // path for no gain.
+        for alias in ["build-host", "build.host.local", "a-1.b_2", "x"] {
+            XCTAssertTrue(
+                ClaudeRemoteEnrollmentService.isValidHostAlias(alias),
+                "'\(alias)' is an ordinary alias"
+            )
+        }
+    }
+
+    func testTheSpawnedArgvTerminatesOptionParsingBeforeTheAlias() throws {
+        // Second layer under the validator: whatever reaches argv is positional.
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "")
+        })
+        try service.executeRemoteSetup(try plan(), sshHostAlias: "builder", token: token)
+        try service.executeRemotePluginUpdate(sshHostAlias: "builder")
+
+        for invocation in calls.withLock({ $0 }) {
+            let terminator = try XCTUnwrap(invocation.argv.firstIndex(of: "--"))
+            let alias = try XCTUnwrap(invocation.argv.firstIndex(of: "builder"))
+            XCTAssertLessThan(terminator, alias, "the alias must sit after `--`")
+        }
+    }
+
     func testPlanRefusesAnInvalidAlias() {
         XCTAssertThrowsError(try plan(alias: "host\nRemoteForward 22 evil:22")) { error in
             XCTAssertEqual(
@@ -622,7 +663,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             XCTAssertEqual(
                 invocation.argv,
                 [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
                     "builder", "/bin/sh", "-s",
                 ]
             )
@@ -864,7 +905,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             XCTAssertEqual(
                 invocation.argv,
                 [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
                     "builder", "/bin/sh", "-s",
                 ]
             )

@@ -207,8 +207,20 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// block), no quotes. This is the only user-supplied string that reaches the
     /// generated config, so it is checked rather than escaped — an alias that
     /// needs escaping is not an alias.
+    ///
+    /// A leading `-` is refused separately from the charset, because `-` is
+    /// legal INSIDE a hostname and fatal in front of one: an alias of `-V`
+    /// reaches `ssh`'s argv as an option, and OpenSSH then prints its version
+    /// and exits 0 without connecting — every step reports success while
+    /// nothing ran on any host (review finding, PR #197). Argv termination in
+    /// `execute` is the second layer; this is the first, and it is the one that
+    /// also covers the commands the user pastes by hand.
     public static func isValidHostAlias(_ alias: String) -> Bool {
         guard !alias.isEmpty, alias.count <= 128 else { return false }
+        guard !alias.hasPrefix("-") else { return false }
+        // "." and ".." would name a directory, not a host, and an all-dot alias
+        // resolves to nothing anyone meant.
+        guard alias.contains(where: { $0 != "." }) else { return false }
         let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
         return alias.allSatisfy { allowed.contains($0) }
     }
@@ -564,8 +576,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 // it, attempting the forward here only produced a scary
                 // "remote port forwarding failed" warning inside setup errors
                 // (field report 2026-07-26).
+                // `--` ends OpenSSH's option parsing: the alias is validated
+                // above and cannot start with `-`, and this makes an alias that
+                // somehow did reach here a failed connection rather than a
+                // silently successful option.
                 argv: [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
                     sshHostAlias, "/bin/sh", "-s",
                 ],
                 standardInput: Self.remoteScript(command: command),
