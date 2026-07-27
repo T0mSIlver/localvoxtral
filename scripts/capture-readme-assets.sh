@@ -35,7 +35,14 @@ PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
 TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing")
+# SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
+# (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
+# identifier scheme.
+TAB_IDS=("general" "endpoints" "dictation" "textProcessing")
 TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
+# Resolved from this script's location, not the cwd.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
@@ -271,15 +278,21 @@ OSA
 SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)" || { echo "Settings window never appeared." >&2; exit 1; }
 sleep 1
 
+# Tab selection presses the sidebar row by AXIdentifier. The old selector
+# (`button "<name>" of toolbar 1 of window 1`) died with the TabView — the
+# hand-rolled sidebar has no toolbar. The display name is passed as an AXTitle
+# fallback, and the probe prints which route it used.
+[[ -f "$AX_PROBE" ]] || { echo "AX probe helper not found: $AX_PROBE" >&2; exit 1; }
+
 for i in "${!TAB_NAMES[@]}"; do
   tab="${TAB_NAMES[$i]}"
+  tab_id="${TAB_IDS[$i]}"
   out="$ASSETS_DIR/${TAB_FILES[$i]}"
   echo "Capturing $out"
-  osascript >/dev/null <<OSA
-tell application "System Events" to tell process "$APP_PROCESS"
-  click button "$tab" of toolbar 1 of window 1
-end tell
-OSA
+  swift "$AX_PROBE" "$APP_PID" \
+    --press "settings.tab.${tab_id}" --title "$tab" \
+    --timeout 10 --dump-on-fail \
+    || { echo "Could not select the $tab tab." >&2; exit 1; }
   sleep 1
   SETTINGS_ID="$(window_id "$APP_PID" 0)" || { echo "Lost the settings window." >&2; exit 1; }
   screencapture -o -x -l "$SETTINGS_ID" "$out"

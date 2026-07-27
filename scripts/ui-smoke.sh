@@ -17,7 +17,10 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-ui-smoke.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 PREFLIGHT_HELPER=""
-AX_PROBE_HELPER=""
+# Resolved from this script's location, not the cwd: the drill is invoked both
+# from the repo root and by CI steps with their own working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
 APP_PID=""
 FAILED=0
 CLEANED_UP=0
@@ -172,7 +175,6 @@ cleanup() {
     printf 'WARNING: failed to restore defaults backup at %s; leaving it in place for the next run.\n' "$PERSISTENT_DEFAULTS_BACKUP" >&2
   fi
   [[ -n "$PREFLIGHT_HELPER" ]] && rm -f "$PREFLIGHT_HELPER"
-  [[ -n "$AX_PROBE_HELPER" ]] && rm -f "$AX_PROBE_HELPER"
   [[ -n "$BACKEND_SAMPLE_FILE" ]] && rm -f "$BACKEND_SAMPLE_FILE"
 }
 
@@ -418,150 +420,68 @@ fi
 # returns 0 elements on the macOS 26 runner) while the AX API sees the full
 # tree, so the AppleScript approach is dropped rather than fixed.
 #
-# The helper polls the app's windows until <needle> appears in any element's
-# title/value/description or the deadline passes; with --dump-on-fail it prints
-# the AX tree so the uploaded log shows what was actually on screen.
-write_ax_probe_helper() {
-  local stem
-  stem="$(mktemp -t localvoxtral-ax-probe)" || return 1
-  AX_PROBE_HELPER="${stem}.swift"
-  mv "$stem" "$AX_PROBE_HELPER" || return 1
-  cat >"$AX_PROBE_HELPER" <<'SWIFT'
-import ApplicationServices
-import Foundation
-
-let args = CommandLine.arguments
-guard args.count >= 4, let pid = Int32(args[1]), let timeoutSeconds = Double(args[3]) else {
-    print("usage: ax-probe <pid> <needle> <timeout-seconds> [--dump-on-fail]")
-    exit(2)
-}
-let needle = args[2]
-let dumpOnFail = args.contains("--dump-on-fail")
-let app = AXUIElementCreateApplication(pid)
-
-func copyAttr(_ element: AXUIElement, _ name: String) -> AnyObject? {
-    var value: AnyObject?
-    return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
-}
-
-func windows() -> [AXUIElement] {
-    (copyAttr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
-}
-
-func texts(_ element: AXUIElement) -> (role: String, title: String, value: String, desc: String) {
-    let role = copyAttr(element, kAXRoleAttribute) as? String ?? "?"
-    let title = copyAttr(element, kAXTitleAttribute) as? String ?? ""
-    let desc = copyAttr(element, kAXDescriptionAttribute) as? String ?? ""
-    var value = ""
-    if let raw = copyAttr(element, kAXValueAttribute) { value = String(describing: raw) }
-    return (role, title, value, desc)
-}
-
-// Only text-bearing roles count as visible pane content. The toolbar tab
-// AXButtons (titled "General", "Endpoints", "Dictation", ...) exist on every
-// pane, so an unscoped match would let e.g. the Endpoints check pass off the
-// "Dictation" tab button without the pane ever rendering.
-let textRoles: Set<String> = ["AXStaticText", "AXTextField", "AXTextArea"]
-
-func containsNeedle(_ element: AXUIElement, depth: Int, budget: inout Int) -> Bool {
-    if depth > 40 || budget <= 0 { return false }
-    budget -= 1
-    let t = texts(element)
-    if textRoles.contains(t.role),
-       t.title.contains(needle) || t.value.contains(needle) || t.desc.contains(needle) {
-        return true
-    }
-    for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
-        if containsNeedle(child, depth: depth + 1, budget: &budget) { return true }
-    }
-    return false
-}
-
-func dump(_ element: AXUIElement, depth: Int, budget: inout Int) {
-    if depth > 40 || budget <= 0 { return }
-    budget -= 1
-    let t = texts(element)
-    let indent = String(repeating: "  ", count: depth)
-    print("\(indent)\(t.role) title=\(t.title.prefix(60)) value=\(t.value.prefix(100)) desc=\(t.desc.prefix(60))")
-    for child in (copyAttr(element, kAXChildrenAttribute) as? [AXUIElement]) ?? [] {
-        dump(child, depth: depth + 1, budget: &budget)
-    }
-}
-
-let deadline = Date().addingTimeInterval(timeoutSeconds)
-repeat {
-    for window in windows() {
-        var budget = 20000
-        if containsNeedle(window, depth: 0, budget: &budget) { exit(0) }
-    }
-    usleep(250_000)
-} while Date() < deadline
-
-if dumpOnFail {
-    let wins = windows()
-    print("AXPROBE: needle \"\(needle)\" not visible after \(timeoutSeconds)s; windows=\(wins.count)")
-    for (index, window) in wins.enumerated() {
-        print("AXPROBE: === window \(index) ===")
-        var budget = 8000
-        dump(window, depth: 0, budget: &budget)
-    }
-}
-exit(1)
-SWIFT
-}
-
-window_shows_text() {
-  local expected="$1" timeout_seconds="${2:-10}"
-  shift 2 || true
-  swift "$AX_PROBE_HELPER" "$APP_PID" "$expected" "$timeout_seconds" "$@"
-}
-
-select_tab() {
-  local tab_name="$1"
-  run_osascript >/dev/null <<OSA
-tell application "System Events" to tell process "$APP_PROCESS"
-  click button "$tab_name" of toolbar 1 of window 1
-end tell
-OSA
-}
-
-assert_tab() {
-  local tab_name="$1"
-  local expected_text="$2"
-
-  if ! select_tab "$tab_name"; then
-    record_fail "Could not select Settings tab: $tab_name."
-    return
-  fi
-
-  if window_shows_text "$expected_text" 10 --dump-on-fail; then
-    record_pass "Settings tab shows expected content: $tab_name -> $expected_text."
-  else
-    record_fail "Settings tab selected but expected text was not visible: $tab_name -> $expected_text."
-  fi
-}
-
-if ! write_ax_probe_helper; then
-  record_fail "Could not write the AX text-probe helper."
+# The probe now lives in scripts/lib/ax-probe.swift, shared with
+# capture-readme-assets.sh. See its header for the flags.
+if [[ ! -f "$AX_PROBE" ]]; then
+  record_fail "AX probe helper not found: $AX_PROBE"
   print_summary
   exit 1
 fi
 
-assert_tab "General" "Permissions"
-assert_tab "Endpoints" "Dictation"
-assert_tab "Dictation" "Start dictation with"
-assert_tab "Text Processing" "Replacements"
+# Asserts <needle> inside the subtree identified by <scope-identifier>, so a
+# sidebar row label (AXStaticText, present on every pane) can never satisfy a
+# pane assertion.
+pane_shows_text() {
+  local scope="$1" expected="$2" timeout_seconds="${3:-10}"
+  swift "$AX_PROBE" "$APP_PID" \
+    --find "$expected" --scope "$scope" \
+    --timeout "$timeout_seconds" --dump-on-fail
+}
+
+# Presses the sidebar row by its AXIdentifier. The old selector
+# (`button "<name>" of toolbar 1 of window 1`) died with the TabView: the
+# hand-rolled sidebar has no toolbar. The display name is passed as an AXTitle
+# fallback so the drill still selects the tab (and says so in the log) if
+# SwiftUI ever stops surfacing identifiers on plain-styled buttons.
+select_tab() {
+  local tab_id="$1" tab_name="$2"
+  swift "$AX_PROBE" "$APP_PID" \
+    --press "settings.tab.${tab_id}" --title "$tab_name" \
+    --timeout 10 --dump-on-fail
+}
+
+assert_tab() {
+  local tab_id="$1"
+  local tab_name="$2"
+  local expected_text="$3"
+
+  if ! select_tab "$tab_id" "$tab_name"; then
+    record_fail "Could not select Settings tab: $tab_name (settings.tab.$tab_id)."
+    return
+  fi
+
+  if pane_shows_text "settings.pane.${tab_id}" "$expected_text" 10; then
+    record_pass "Settings tab shows expected content: $tab_name -> $expected_text."
+  else
+    record_fail "Settings tab selected but expected text was not visible in settings.pane.$tab_id: $tab_name -> $expected_text."
+  fi
+}
+
+assert_tab "general" "General" "Permissions"
+assert_tab "endpoints" "Endpoints" "Dictation"
+assert_tab "dictation" "Dictation" "Start dictation with"
+assert_tab "textProcessing" "Text Processing" "Replacements"
 # The polish feature toggles live on Text Processing (moved from Endpoints).
-assert_tab "Text Processing" "Polishing"
-assert_tab "About" "Diagnostics"
+assert_tab "textProcessing" "Text Processing" "Polishing"
+assert_tab "about" "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns
 # at launch), so the Endpoints pane renders endpoint configuration fields, not
 # the managed status rows. Managed-row AX coverage would need a second launch
 # that tolerates the eager spawn.
-select_tab "Endpoints" >/dev/null 2>&1 || true
-if window_shows_text "Endpoint" 10 --dump-on-fail \
-  && window_shows_text "API key" 10 --dump-on-fail; then
+select_tab "endpoints" "Endpoints" >/dev/null 2>&1 || true
+if pane_shows_text "settings.pane.endpoints" "Endpoint" 10 \
+  && pane_shows_text "settings.pane.endpoints" "API key" 10; then
   record_pass "External-mode Endpoints pane shows endpoint configuration fields."
 else
   record_fail "External-mode Endpoints pane did not show endpoint configuration fields."

@@ -106,9 +106,18 @@ struct localvoxtralApp: App {
                 backendManager: appDelegate.backendManager,
                 navigator: appDelegate.settingsNavigator
             )
-            .frame(minWidth: 560, idealWidth: 580, minHeight: 380, idealHeight: 420)
+            // Fixed width, resizable height: the two-column layout has a fixed
+            // 208pt sidebar and dense right-hand rows, so horizontal resizing
+            // only ever makes the panes worse. Height stays free because pane
+            // content differs by hundreds of points.
+            //
+            // Deliberately NOT `.windowResizability(.contentSize)` — that makes
+            // the window snap to whichever pane is showing, so switching tabs
+            // resizes the window under the pointer.
+            .frame(width: 780)
+            .frame(minHeight: 480, idealHeight: 560, maxHeight: .infinity)
         }
-        .defaultSize(width: 580, height: 420)
+        .defaultSize(width: 780, height: 560)
         .restorationBehavior(.disabled)
     }
 }
