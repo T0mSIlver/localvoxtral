@@ -37,7 +37,10 @@ public struct ClaudeBrokerResponse: Sendable, Equatable, Codable {
         guard let response = try? JSONDecoder().decode(ClaudeBrokerResponse.self, from: line) else {
             return nil
         }
-        guard response.version == ClaudeHookWire.version else { return nil }
+        // Any readable wire version, not just the current one: a publisher one
+        // release ahead of or behind the app must degrade to "no marker", not
+        // lose the marker channel entirely until both halves are updated.
+        guard ClaudeHookWire.readableVersions.contains(response.version) else { return nil }
         return response
     }
 }

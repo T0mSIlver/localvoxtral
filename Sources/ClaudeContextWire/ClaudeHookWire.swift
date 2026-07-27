@@ -12,7 +12,59 @@ import Foundation
 /// dropped, never partially trusted.
 public enum ClaudeHookWire {
     /// Current wire version. Bump on any incompatible field change.
-    public static let version = 1
+    ///
+    /// v2 added the `agent` field (absent = `.claude`) and the `FocusChanged`
+    /// event for the opencode integration.
+    public static let version = 2
+
+    /// Versions this build still reads. v1 is the pre-agent wire: every v1
+    /// record is, by definition, a Claude Code record, so v1 lines decode with
+    /// `agent == .claude` rather than being dropped — the publisher binary and
+    /// the app usually ship together, but a stale installed plugin pointing at
+    /// an old publisher must not silently lose all context after an update.
+    public static let readableVersions: Set<Int> = [1, 2]
+}
+
+/// Which coding agent published a record. Content, not trust: trust stays a
+/// property of the transport (`ClaudeTransportOrigin`), and every local agent
+/// publishes over the same peer-authenticated socket. What the agent tag
+/// decides is session-id namespacing (`ClaudeAgentSessionScope`) and
+/// per-agent channel rules — e.g. the broker never returns a title marker to
+/// an opencode session, because opencode owns its window title the way herdr
+/// owns its pane titles.
+///
+/// Decoding an unknown agent name is a drop, mirroring unknown events: a
+/// newer plugin talking to an older app degrades to "ignored", and an agent
+/// whose channel rules we do not know must not inherit another's.
+public enum ClaudeHookAgent: String, Sendable, Equatable, CaseIterable, Codable {
+    case claude
+    case opencode
+}
+
+/// Namespacing for per-agent session ids, mirroring `ClaudeRemoteSessionScope`.
+///
+/// Two agents pick their own session ids and cannot coordinate — Claude Code
+/// uses bare UUIDs, opencode uses `ses_…` — so a bare id is a claim, not a
+/// key. Scoping opencode ids under a prefix no Claude-published UUID can carry
+/// makes cross-agent collision structurally impossible. Applied by the
+/// RECEIVER (`ClaudeSessionRegistry.ingest`), never trusted from the wire, so
+/// a publisher cannot pre-scope itself into another namespace being honest or
+/// otherwise — the registry recomputes the key from the agent tag every time.
+/// (A local peer lying about its agent tag is a same-UID process and already
+/// outside the threat model, same as the remote scope's note on host ids.)
+public enum ClaudeAgentSessionScope {
+    /// Distinct from `ClaudeRemoteSessionScope.prefix` ("remote:") — the two
+    /// namespaces must never alias.
+    public static let opencodePrefix = "opencode:"
+
+    public static func scopedSessionID(agent: ClaudeHookAgent, sessionID: String) -> String {
+        switch agent {
+        case .claude:
+            return sessionID
+        case .opencode:
+            return opencodePrefix + sessionID
+        }
+    }
 }
 
 /// Hook events the plugin publishes. Cases map 1:1 to Claude Code hook names.
@@ -36,6 +88,13 @@ public enum ClaudeHookEvent: String, Sendable, Equatable, CaseIterable, Codable 
     case fileChanged = "FileChanged"
     case stop = "Stop"
     case sessionEnd = "SessionEnd"
+    /// Published by the opencode plugin's TUI half only (v2): "the pane on
+    /// this TTY currently displays this session". One opencode process hosts
+    /// several sessions on one terminal, so per-session TTY claims cannot
+    /// disambiguate them — an explicit, freshness-bounded focus declaration
+    /// can. Claude Code never sends this; nothing in its hook set knows what a
+    /// pane displays.
+    case focusChanged = "FocusChanged"
 }
 
 /// Hard bounds applied at BOTH ends of the wire.
@@ -155,6 +214,10 @@ public struct ClaudeFileTouch: Sendable, Equatable, Codable {
 public struct ClaudeHookRecord: Sendable, Equatable {
     public var version: Int
     public var event: ClaudeHookEvent
+    /// Which coding agent published this. Encoded only when it is not the
+    /// default `.claude`, so v1 readers' "absent field" and v2's default agree
+    /// byte-for-byte on every Claude record.
+    public var agent: ClaudeHookAgent
     public var sessionID: String
     /// Seconds since the UNIX epoch, as stamped by the publisher.
     public var timestamp: Double
@@ -170,6 +233,7 @@ public struct ClaudeHookRecord: Sendable, Equatable {
     public init(
         version: Int = ClaudeHookWire.version,
         event: ClaudeHookEvent,
+        agent: ClaudeHookAgent = .claude,
         sessionID: String,
         timestamp: Double,
         rawCwd: String? = nil,
@@ -180,6 +244,7 @@ public struct ClaudeHookRecord: Sendable, Equatable {
     ) {
         self.version = version
         self.event = event
+        self.agent = agent
         self.sessionID = sessionID
         self.timestamp = timestamp
         self.rawCwd = rawCwd
@@ -194,6 +259,7 @@ extension ClaudeHookRecord: Codable {
     enum CodingKeys: String, CodingKey {
         case version = "v"
         case event
+        case agent
         case sessionID = "session_id"
         case timestamp = "ts"
         case rawCwd = "cwd"
@@ -207,6 +273,11 @@ extension ClaudeHookRecord: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decode(Int.self, forKey: .version)
         event = try container.decode(ClaudeHookEvent.self, forKey: .event)
+        // Absent means the default agent — that is what makes every v1 line
+        // (which predates the field) a Claude record by construction. An
+        // unknown agent NAME never reaches this decoder: `decodeLine` probes
+        // and rejects it first, the same way it handles unknown events.
+        agent = try container.decodeIfPresent(ClaudeHookAgent.self, forKey: .agent) ?? .claude
         sessionID = try container.decode(String.self, forKey: .sessionID)
         timestamp = try container.decode(Double.self, forKey: .timestamp)
         rawCwd = try container.decodeIfPresent(String.self, forKey: .rawCwd)
@@ -216,6 +287,24 @@ extension ClaudeHookRecord: Codable {
         process = try container.decodeIfPresent(ClaudeHookProcessInfo.self, forKey: .process)
         // Any other key on the wire — notably an `origin`-shaped one — is
         // silently discarded here. That is the point: trust is not a field.
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(event, forKey: .event)
+        // Omitted when `.claude`: absence IS the default, so a Claude record's
+        // bytes carry no agent key — the exact shape a v1 reader expects.
+        if agent != .claude {
+            try container.encode(agent, forKey: .agent)
+        }
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encodeIfPresent(rawCwd, forKey: .rawCwd)
+        try container.encodeIfPresent(prompt, forKey: .prompt)
+        try container.encodeIfPresent(toolName, forKey: .toolName)
+        try container.encode(files, forKey: .files)
+        try container.encodeIfPresent(process, forKey: .process)
     }
 }
 
@@ -227,6 +316,11 @@ public enum ClaudeHookWireError: Error, Equatable {
     case unsupportedVersion(Int?)
     /// Event name we do not know (e.g. from a newer plugin).
     case unknownEvent(String?)
+    /// Agent name we do not know. Dropped for the same reason as an unknown
+    /// event — and additionally because per-agent channel rules (marker
+    /// emission, session namespacing) cannot be applied to an agent this build
+    /// has never heard of.
+    case unknownAgent(String?)
     /// Malformed JSON, or a required field missing.
     case malformed
     /// `session_id` was empty — the record cannot be attributed.
@@ -275,12 +369,21 @@ public enum ClaudeHookWireCodec {
             throw ClaudeHookWireError.malformed
         }
         let claimedVersion = dictionary["v"] as? Int
-        guard claimedVersion == ClaudeHookWire.version else {
+        guard let claimedVersion, ClaudeHookWire.readableVersions.contains(claimedVersion) else {
             throw ClaudeHookWireError.unsupportedVersion(claimedVersion)
         }
         let eventName = dictionary["event"] as? String
         guard let eventName, ClaudeHookEvent(rawValue: eventName) != nil else {
             throw ClaudeHookWireError.unknownEvent(eventName)
+        }
+        // Probed like the event: an unknown agent must be a precise "ignored",
+        // not a generic decode failure — and never a fallthrough to `.claude`,
+        // which would hand a future agent Claude's channel rules.
+        if let agentValue = dictionary["agent"] {
+            let agentName = agentValue as? String
+            guard let agentName, ClaudeHookAgent(rawValue: agentName) != nil else {
+                throw ClaudeHookWireError.unknownAgent(agentName)
+            }
         }
 
         guard let record = try? JSONDecoder().decode(ClaudeHookRecord.self, from: trimmed) else {

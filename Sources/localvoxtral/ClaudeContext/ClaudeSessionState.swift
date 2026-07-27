@@ -57,6 +57,12 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var sessionID: String
     /// Assigned by the broker from peer credentials. Never from the record.
     public var origin: ClaudeTransportOrigin
+    /// Which coding agent this session belongs to, fixed at first sight like
+    /// `origin`. Decides per-agent channel rules — most importantly, the
+    /// broker never returns a title marker to a non-Claude session, because
+    /// only Claude Code has a writable title channel (opencode rewrites its
+    /// own OSC titles mid-turn, like herdr does inside its panes).
+    public var agent: ClaudeHookAgent
     public var marker: ClaudeSessionMarker
     /// Local path or opaque remote label — the type enforces which.
     public var workspace: ClaudeWorkspaceReference?
@@ -102,11 +108,13 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     init(
         sessionID: String,
         origin: ClaudeTransportOrigin,
+        agent: ClaudeHookAgent = .claude,
         marker: ClaudeSessionMarker,
         firstSeen: Date
     ) {
         self.sessionID = sessionID
         self.origin = origin
+        self.agent = agent
         self.marker = marker
         self.workspace = nil
         self.latestPriorUserPrompt = nil
@@ -152,7 +160,13 @@ public enum ClaudeSessionReducer {
         if let workspace = ClaudeWorkspaceReference.make(rawCwd: record.rawCwd, origin: origin) {
             snapshot.workspace = workspace
         }
-        if let process = record.process {
+        // Never absorbed from a focus record: its process block describes the
+        // PANE (the declarer's tty and pid), not the session. Folding it in
+        // would hand the session a per-session TTY claim its publisher
+        // deliberately never makes — the opencode server half publishes no tty
+        // precisely because it cannot prove it owns a pane — and would let a
+        // focus record overwrite the pid that liveness probes.
+        if let process = record.process, record.event != .focusChanged {
             snapshot.process = process
         }
 
@@ -179,6 +193,13 @@ public enum ClaudeSessionReducer {
             snapshot.activity = .working
         case .stop:
             snapshot.activity = .idle
+        case .focusChanged:
+            // Focus is registry-level state (a TTY→session binding, held in
+            // `ClaudeSessionRegistry`'s focus table) — a pane DISPLAYING a
+            // session says nothing about whether its model is working, so the
+            // per-session state here changes only by the lastActivity bump
+            // applied above.
+            break
         case .sessionEnd:
             snapshot.activity = .ended
         }

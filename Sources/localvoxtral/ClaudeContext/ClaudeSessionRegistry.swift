@@ -31,6 +31,17 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     /// than this many sessions. Eight covers a generous set of terminal tabs
     /// while leaving most of the global registry available to other origins.
     public static let defaultMaxSessionsPerOrigin = 8
+    /// How long a focus declaration stays credible. The opencode TUI half
+    /// heartbeats its focused session roughly every 20 seconds, so two minutes
+    /// tolerates a few lost beats while bounding how long a pane that stopped
+    /// declaring anything (TUI quit, machine slept) can keep steering the TTY
+    /// join. Stale focus is treated as ABSENT information, never as "probably
+    /// still the same one".
+    public static let defaultFocusDeclarationTTL: TimeInterval = 2 * 60
+    /// Focus declarations are keyed by TTY device, one live entry per pane.
+    /// Matches the session cap: there is no reason to remember more panes than
+    /// we would remember sessions.
+    public static let defaultMaxFocusDeclarations = 32
 
     /// Hard cap on retained sessions. Beyond this, the least-recently-active is
     /// evicted — a user with hundreds of stale sessions must not grow the app.
@@ -44,17 +55,23 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     /// PID liveness — not SessionEnd alone — is what keeps the registry honest.
     public var sessionTTL: TimeInterval
     public var pidlessLocalSessionTTL: TimeInterval
+    public var focusDeclarationTTL: TimeInterval
+    public var maxFocusDeclarations: Int
 
     public init(
         maxSessions: Int = 32,
         maxSessionsPerOrigin: Int = Self.defaultMaxSessionsPerOrigin,
         sessionTTL: TimeInterval = 4 * 60 * 60,
-        pidlessLocalSessionTTL: TimeInterval = Self.defaultPIDLessLocalSessionTTL
+        pidlessLocalSessionTTL: TimeInterval = Self.defaultPIDLessLocalSessionTTL,
+        focusDeclarationTTL: TimeInterval = Self.defaultFocusDeclarationTTL,
+        maxFocusDeclarations: Int = Self.defaultMaxFocusDeclarations
     ) {
         self.maxSessions = maxSessions
         self.maxSessionsPerOrigin = maxSessionsPerOrigin
         self.sessionTTL = sessionTTL
         self.pidlessLocalSessionTTL = pidlessLocalSessionTTL
+        self.focusDeclarationTTL = focusDeclarationTTL
+        self.maxFocusDeclarations = maxFocusDeclarations
     }
 
     public static let `default` = ClaudeRegistryLimits()
@@ -65,9 +82,23 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
 /// `Mutex` + `Sendable` per repo convention (no custom actors): the broker's
 /// accept thread writes, the main actor reads, and neither should await.
 public final class ClaudeSessionRegistry: Sendable {
+    /// One pane's declared focus: "the TTY this is keyed by currently displays
+    /// this session", as published by an agent that can actually see its own
+    /// pane (the opencode TUI half). Held per TTY, not per session — focus is
+    /// a property of the pane.
+    private struct FocusDeclaration {
+        var sessionID: String
+        /// The declaring process's pid. Cross-checked against the focused
+        /// session's registered pid at resolution: a declaration that outlived
+        /// its process must not steer a recycled TTY.
+        var declaredPID: Int32
+        var declaredAt: Date
+    }
+
     private struct State {
         var sessions: [String: ClaudeSessionSnapshot] = [:]
         var markerIndex: [String: String] = [:] // marker value -> session id
+        var focusByTTY: [String: FocusDeclaration] = [:]
     }
 
     private let state = Mutex(State())
@@ -112,8 +143,27 @@ public final class ClaudeSessionRegistry: Sendable {
         snippets: [ClaudeContentSnippet] = []
     ) -> ClaudeSessionSnapshot? {
         let timestamp = now()
+        // Receiver-side namespacing, recomputed on EVERY ingest from the agent
+        // tag — mirroring how the remote listener scopes ids under the host
+        // that authenticated them. The registry keys, the focus table, and
+        // every snapshot all speak scoped ids from here on.
+        var record = record
+        record.sessionID = ClaudeAgentSessionScope.scopedSessionID(
+            agent: record.agent, sessionID: record.sessionID
+        )
         return state.withLock { state -> ClaudeSessionSnapshot? in
             pruneLocked(&state, now: timestamp)
+
+            if record.event == .focusChanged {
+                // Focus is pane state, not session state: record the TTY→session
+                // binding, bump the named session if we know it, but NEVER mint
+                // a session from a focus record — a pane can display a session
+                // whose own records were lost, and inventing an empty snapshot
+                // for it would let the focus join "resolve" to a session we know
+                // nothing about.
+                recordFocusLocked(&state, record: record, origin: origin, now: timestamp)
+                guard state.sessions[record.sessionID] != nil else { return nil }
+            }
 
             var snapshot: ClaudeSessionSnapshot
             if let existing = state.sessions[record.sessionID] {
@@ -130,12 +180,19 @@ public final class ClaudeSessionRegistry: Sendable {
                 // transport naming the same id is, by construction, someone
                 // spelling an id that is not theirs.
                 if snapshot.origin != origin { return nil }
+                // The agent is likewise fixed at first sight. Agent scoping
+                // makes an honest collision impossible (the scoped keys
+                // differ), so a mismatch here is a record spelling another
+                // agent's scoped id — drop it rather than let one agent's
+                // records mutate another's session.
+                if snapshot.agent != record.agent { return nil }
             } else {
                 if record.event == .sessionEnd { return nil } // nothing to start
                 let marker = ClaudeSessionMarker(value: allocateUniqueMarkerLocked(&state))
                 snapshot = ClaudeSessionSnapshot(
                     sessionID: record.sessionID,
                     origin: origin,
+                    agent: record.agent,
                     marker: marker,
                     firstSeen: timestamp
                 )
@@ -209,9 +266,28 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Only LOCAL sessions are candidates: a remote session's TTY names a
     /// device on another machine, where it can collide with an unrelated local
     /// pane — matching it here would let an SSH host claim a local pane by
-    /// publishing that pane's TTY. Abstains `.ambiguous` when two live local
-    /// sessions claim one TTY (a suspended Claude beneath a new one in the same
-    /// pane); the caller's marker fallback may still disambiguate.
+    /// publishing that pane's TTY.
+    ///
+    /// Two kinds of evidence can bind a TTY to a session, and they must agree:
+    ///
+    /// * **Per-session claims** (Claude Code): each hook record carries the
+    ///   session's controlling TTY, so a device usually maps to one session.
+    ///   Two live claims on one TTY (a suspended Claude beneath a new one in
+    ///   the same pane) abstain `.ambiguous`; the caller's marker fallback may
+    ///   still disambiguate.
+    /// * **Focus declarations** (opencode): one opencode process hosts many
+    ///   sessions on one TTY and its TUI shows one at a time, so its sessions
+    ///   carry no TTY at all — the TUI half instead declares which session the
+    ///   pane DISPLAYS (`FocusChanged`, freshness-bounded). A fresh declaration
+    ///   resolves the TTY to that session iff the session is live and its
+    ///   registered pid matches the declarer's; a declaration whose session is
+    ///   gone or unverifiable abstains rather than falling back to guesswork,
+    ///   and a stale declaration is ABSENT information, not a hint.
+    ///
+    /// When both kinds of evidence exist for one TTY and disagree — a live
+    /// per-session claim next to a fresh focus declaration naming a different
+    /// session — that is two agents each positively claiming the same pane,
+    /// and the only safe answer is `.ambiguous`.
     public func resolve(tty: String) -> ClaudeMarkerResolution {
         let timestamp = now()
         return state.withLock { state in
@@ -220,6 +296,27 @@ public final class ClaudeSessionRegistry: Sendable {
                     && snapshot.process?.tty == tty
                     && isFresh(snapshot, now: timestamp)
             }
+
+            if let focus = state.focusByTTY[tty],
+               timestamp.timeIntervalSince(focus.declaredAt) <= limits.focusDeclarationTTL {
+                guard let focused = state.sessions[focus.sessionID],
+                      focused.origin.isLocalAuthenticated,
+                      isFresh(focused, now: timestamp),
+                      focused.process?.claudePID == focus.declaredPID
+                else {
+                    // A fresh declaration for a session that is dead, unknown,
+                    // or from a different process than the declarer. The pane
+                    // positively told us what it displays and we cannot verify
+                    // it — trusting any OTHER candidate now would contradict
+                    // the freshest evidence we have, so abstain outright.
+                    return .stale
+                }
+                if matches.isEmpty || matches.contains(where: { $0.sessionID == focus.sessionID }) {
+                    return .resolved(focused)
+                }
+                return .ambiguous
+            }
+
             switch matches.count {
             case 0:
                 let hadStale = state.sessions.values.contains {
@@ -342,6 +439,7 @@ public final class ClaudeSessionRegistry: Sendable {
         state.withLock { state in
             state.sessions.removeAll()
             state.markerIndex.removeAll()
+            state.focusByTTY.removeAll()
         }
     }
 
@@ -372,6 +470,42 @@ public final class ClaudeSessionRegistry: Sendable {
     private func pruneLocked(_ state: inout State, now: Date) {
         for (sessionID, snapshot) in state.sessions where !isFresh(snapshot, now: now) {
             removeLocked(&state, sessionID: sessionID)
+        }
+        // Expired focus declarations are dead weight: resolution already treats
+        // them as absent, this just keeps the table from accumulating panes.
+        for (tty, focus) in state.focusByTTY
+        where now.timeIntervalSince(focus.declaredAt) > limits.focusDeclarationTTL {
+            state.focusByTTY.removeValue(forKey: tty)
+        }
+    }
+
+    /// Record one pane's declared focus. LOCAL transport only — a remote
+    /// host's TTY names a device on another machine, exactly the reason
+    /// `resolve(tty:)` refuses remote candidates — and only when the record
+    /// carries the declaring pane's device; a focus claim with no TTY binds
+    /// nothing.
+    private func recordFocusLocked(
+        _ state: inout State,
+        record: ClaudeHookRecord,
+        origin: ClaudeTransportOrigin,
+        now: Date
+    ) {
+        guard origin.isLocalAuthenticated,
+              let process = record.process,
+              let tty = process.tty, !tty.isEmpty
+        else { return }
+        state.focusByTTY[tty] = FocusDeclaration(
+            sessionID: record.sessionID,
+            declaredPID: process.claudePID,
+            declaredAt: now
+        )
+        // Bounded like everything else a peer can grow: beyond the cap the
+        // oldest declaration goes — it is the one closest to expiring anyway.
+        while state.focusByTTY.count > limits.maxFocusDeclarations {
+            guard let oldest = state.focusByTTY.min(by: {
+                ($0.value.declaredAt, $0.key) < ($1.value.declaredAt, $1.key)
+            }) else { break }
+            state.focusByTTY.removeValue(forKey: oldest.key)
         }
     }
 

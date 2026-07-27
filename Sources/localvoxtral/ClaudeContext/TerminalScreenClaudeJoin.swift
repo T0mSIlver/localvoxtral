@@ -270,7 +270,17 @@ struct ClaudeSessionJoinResolver {
             return nil
         }
 
-        if let claimed = pane.claimedClaudeSessionID, claimed != snapshot.sessionID {
+        // herdr reports the agent's RAW session id; the registry speaks
+        // agent-scoped ids (`ClaudeAgentSessionScope`). Scope the claim by the
+        // resolved session's own agent before comparing — for Claude that is
+        // the identity function, for opencode it adds the same prefix ingest
+        // did. Scoping by the snapshot's agent (not by anything herdr says)
+        // keeps this a pure cross-check: a claim can only ever CONFIRM the
+        // pane-id join, never redirect it.
+        if let claimed = pane.claimedClaudeSessionID,
+           ClaudeAgentSessionScope.scopedSessionID(
+               agent: snapshot.agent, sessionID: claimed
+           ) != snapshot.sessionID {
             Self.abstainedHerdrJoin(outcome: "pane session claim disagrees")
             return nil
         }
