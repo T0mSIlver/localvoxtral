@@ -201,6 +201,37 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         )
     }
 
+    func testBrokerWithholdsTheMarkerForAnOpencodeRecord() throws {
+        // The herdr rule, per agent: opencode rewrites its own OSC titles
+        // mid-turn (and clears them on exit), so a marker sent there could
+        // never survive in a title — and the plugin never writes to the
+        // terminal anyway. Allocation is unchanged; only emission is gated.
+        try broker.start()
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            agent: .opencode,
+            sessionID: "ses_1",
+            timestamp: 1,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: getpid())
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)),
+            to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertNil(response.marker)
+        XCTAssertEqual(
+            registry.snapshot(sessionID: "opencode:ses_1")?.marker,
+            ClaudeSessionMarker(value: "lvx-deadbeef"),
+            "agent gating changes reply emission only; the scoped session keeps its registry marker"
+        )
+    }
+
     func testRejectedRecordRepliesWithNoMarker() throws {
         // A reply still comes back so the publisher is not left waiting, but it
         // carries nothing to put in a title.

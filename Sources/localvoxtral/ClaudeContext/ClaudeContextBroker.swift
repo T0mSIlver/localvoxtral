@@ -607,7 +607,15 @@ public final class ClaudeContextBroker: Sendable {
             #if DEBUG
             debugNotify(.success(record))
             #endif
-            return (snapshot?.marker, record.process?.herdrPaneID != nil)
+            // Only Claude Code has a writable title channel, so only Claude
+            // sessions ever receive their marker back — the herdr rule,
+            // generalized per agent: opencode rewrites its own OSC titles
+            // mid-turn (and clears them on exit), so a marker sent there could
+            // never survive to identify a pane, and its plugin deliberately
+            // never writes to the terminal at all. Allocation is unchanged —
+            // the registry marker remains every join's liveness handle.
+            let marker = snapshot?.agent == .claude ? snapshot?.marker : nil
+            return (marker, record.process?.herdrPaneID != nil)
         } catch let error as ClaudeHookWireError {
             Log.claudeContext.error("Rejected record: \(String(describing: error), privacy: .public)")
             #if DEBUG
