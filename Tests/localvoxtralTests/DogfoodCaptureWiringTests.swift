@@ -273,6 +273,87 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(try recordsOnDisk(in: harness.captureDirectory).count, 0)
     }
 
+    // MARK: - Post-commit edit signal
+
+    /// The commit path arms the watch and hands it the record it just wrote: a
+    /// Backspace inside the window patches THAT record, in place.
+    func testCommitArmsTheEditWatchAndPatchesItsOwnRecord() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 1, "the commit opened a window")
+        // "polished output text" is three words: the 1–5 rung of the ladder.
+        await signals.sleeper.waitForSleepRequest()
+        XCTAssertEqual(signals.sleeper.requestedDurations, [.seconds(2.0)])
+
+        signals.clock.advance(0.5)
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+
+        let records = try recordsOnDisk(in: harness.captureDirectory)
+        XCTAssertEqual(records.count, 1, "the signal patches the record, never adds one")
+        let behavior = try XCTUnwrap(records[0].behavior)
+        XCTAssertEqual(behavior.outcome, .edited)
+        XCTAssertEqual(behavior.signal, .backspace)
+        XCTAssertEqual(behavior.secondsSinceCommitBucket, "0-1")
+        XCTAssertEqual(behavior.wordCountBucket, "1-5")
+        XCTAssertEqual(behavior.outputMode, DictationOutputMode.overlayBuffer.rawValue)
+
+        // The rest of the record is untouched by the patch.
+        XCTAssertEqual(records[0].text.committedText, "polished output text")
+        XCTAssertNotNil(records[0].timings.captureMilliseconds)
+    }
+
+    /// A window that closes unobserved still patches its record: the clean
+    /// outcome is the denominator an edit rate needs.
+    func testUneventfulWindowPatchesTheCleanOutcome() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        let windowTask = signals.watcher.windowTask
+        signals.clock.advance(2)
+        signals.sleeper.fireAll()
+        await windowTask?.value
+        await signals.watcher.flushTask?.value
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertEqual(record.behavior?.outcome, .clean)
+        XCTAssertNil(record.behavior?.signal)
+    }
+
+    /// The compile flag alone must not watch either: with the runtime opt-in
+    /// off, no observer is ever installed.
+    func testDisarmedRuntimeFlagNeverInstallsAnObserver() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(dogfoodArmed: false, editSignal: signals)
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0)
+        XCTAssertFalse(signals.watcher.isWatching)
+        XCTAssertTrue(signals.sleeper.requestedDurations.isEmpty)
+    }
+
+    /// A stopped-with-no-speech session has nothing to attribute and nothing to
+    /// watch — the guard that skips the record skips the observer too.
+    func testEmptyDictationNeverInstallsAnObserver() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        harness.viewModel.currentDictationEventText = "   "
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0)
+    }
+
     // MARK: - Builder
 
     func testEndpointClassBuckets() {
@@ -401,9 +482,31 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let captureDirectory: URL
     }
 
+    /// The injected seams of the post-commit edit watch, bundled so a test can
+    /// drive the window without wall-clock.
+    @MainActor
+    private struct EditSignalHarness {
+        let monitor = DogfoodEditSignalTestMonitor()
+        let sleeper = DogfoodManualSleeper()
+        let clock = DogfoodTestClock()
+        let watcher: DogfoodEditSignalWatcher
+
+        init() {
+            let monitor = self.monitor
+            let sleeper = self.sleeper
+            let clock = self.clock
+            watcher = DogfoodEditSignalWatcher(
+                monitor: monitor,
+                now: { clock.now() },
+                sleepFor: { await sleeper.sleep($0) }
+            )
+        }
+    }
+
     private func makeHarness(
         dogfoodArmed: Bool,
-        blockCaptureDirectory: Bool = false
+        blockCaptureDirectory: Bool = false,
+        editSignal: EditSignalHarness? = nil
     ) throws -> Harness {
         let settings = makeSettings()
         settings.llmPolishingEnabled = true
@@ -432,6 +535,17 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         viewModel.appConfigStore = WiringMockAppConfigStore()
         viewModel.llmPolishingService = SucceedingPolishingService()
         viewModel.dogfoodCaptureStore = DogfoodCaptureStore(directoryURL: captureDirectory)
+        // Always injected, even for the tests that ignore it: the production
+        // watcher would arm a REAL 2 s timer on a process-retained view model,
+        // and this suite does not add wall-clock timers (AGENTS.md).
+        let signals = editSignal ?? EditSignalHarness()
+        viewModel.dogfoodEditSignalWatcher = signals.watcher
+        let sleeper = signals.sleeper
+        addTeardownBlock {
+            // Release a window the test never closed, so no continuation is
+            // left unresumed behind it.
+            sleeper.fireAll()
+        }
         viewModel.isShowingConnectionFailureAlert = true
         Self.retainedViewModels.append(viewModel)
 

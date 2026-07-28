@@ -317,6 +317,11 @@ final class DictationViewModel {
     /// temp directory. Production uses the Application Support default.
     @ObservationIgnored
     var dogfoodCaptureStore = DogfoodCaptureStore()
+    /// Watches the seconds after a commit for an immediate erase, and patches
+    /// that dictation's record with what it saw. `var` for the same reason as
+    /// the store: tests inject the clock and the event source.
+    @ObservationIgnored
+    var dogfoodEditSignalWatcher = DogfoodEditSignalWatcher()
     #endif
     /// Warms the managed polishing helper's prompt-prefix cache on every
     /// helper launch (see `PolishPromptWarmupCoordinator`). Created only when
@@ -806,6 +811,13 @@ final class DictationViewModel {
                 if self.isDictating {
                     self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
                 }
+                #if LOCALVOXTRAL_DOGFOOD
+                // Last chance for a still-open post-commit watch to patch its
+                // record: after this the process is gone and the dictation
+                // would keep no behavior block at all. Written inline — a Task
+                // spawned at terminate is not guaranteed to run.
+                self.dogfoodEditSignalWatcher.flushForTermination()
+                #endif
                 await self.backendManager.stopAll()
             }
         }
@@ -1879,6 +1891,10 @@ final class DictationViewModel {
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
         // note from the PREVIOUS session must not describe this one.
         DogfoodCaptureTap.shared.beginSession()
+        // Same rule for the post-commit edit watch: the previous dictation's
+        // window closes here rather than reading this session's keys. It still
+        // flushes its own record, as `superseded`.
+        dogfoodEditSignalWatcher.supersede()
         #endif
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil

@@ -58,6 +58,17 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
     var text: Text
     var timings: Timings
 
+    /// What the user DID with the insertion, patched in after the commit — see
+    /// `Behavior` and `DogfoodEditSignalWatcher`. Absent on records written
+    /// before the field existed, on a dictation whose watch could not install a
+    /// monitor, and on one whose patch write failed; in none of those is it safe
+    /// to read the absence as "the user kept the text".
+    ///
+    /// Additive and optional, so `currentSchemaVersion` stays where it is: the
+    /// version exists to stop a reader MISREADING an older shape, and no field
+    /// above changed meaning. An older record decodes unchanged.
+    var behavior: Behavior?
+
     struct Session: Codable, Equatable, Sendable {
         /// Bundle identifier of the app the text was inserted into.
         var targetBundleID: String?
@@ -178,6 +189,36 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
         var polishedOutput: String?
         /// What was actually committed to the focused app.
         var committedText: String?
+    }
+
+    /// Did the user immediately take the insertion back?
+    ///
+    /// Every other field in this record describes what the pipeline DID; none of
+    /// them says whether the answer was good. A record whose retrieval, budget,
+    /// and prompt all look correct reads identically to one the owner erased
+    /// half a second later, and the second is the one worth reviewing.
+    ///
+    /// Content-free by construction: two recognized gestures, everything else
+    /// bucketed, nothing about any other key. The four-way attribution above
+    /// says WHERE a term was lost; this says whether anything was lost at all.
+    struct Behavior: Codable, Equatable, Sendable {
+        /// `edited`, `clean`, or `superseded`. `clean` is recorded on purpose —
+        /// without the negative there is no denominator for an edit rate.
+        var outcome: DogfoodEditSignalOutcome
+        /// Which gesture ended the window. Nil unless `outcome == .edited`.
+        var signal: DogfoodEditSignal?
+        /// Bucketed delay from commit to gesture (`0-1`, `1-2`, `2-5`, `5-15`).
+        /// Nil unless `outcome == .edited`.
+        var secondsSinceCommitBucket: String?
+        /// Transcript length as a bucket (`1-5`, `6-15`, `16-40`, `41+`) — the
+        /// same ladder step that chose the window.
+        var wordCountBucket: String
+        /// The window this dictation actually got, so a review can tell a clean
+        /// 2 s from a clean 15 s.
+        var watchWindowSeconds: Double
+        /// Overlay Buffer vs Live Auto-Paste, duplicated from `Session` so the
+        /// behavior block reads on its own in an aggregate.
+        var outputMode: String
     }
 
     struct Timings: Codable, Equatable, Sendable {

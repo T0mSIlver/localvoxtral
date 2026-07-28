@@ -126,7 +126,18 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   the join outcome, the screen decision and its cause, each source's harvest and
   proposals, budget demands vs. grants, the rendered prompts, and the model's
   reply, so a wrong term can be blamed on exactly one of four stages
-  (retrieval / matcher / conflict / budget). It is behind a COMPILE flag
+  (retrieval / matcher / conflict / budget). Records also carry a content-free
+  behavioral signal (`DogfoodEditSignalWatcher`): a bounded post-commit window
+  — 2 s for 1–5 words up to 15 s for very long transcripts — watching for the
+  user immediately erasing what was inserted (Backspace, forward delete, or ⌘A).
+  Only the gesture, a bucketed delay, the word-count bucket, and the output mode are
+  recorded; no key content and no other key at all. It is a GLOBAL `NSEvent`
+  keyDown observer (no new permission — the same Accessibility trust insertion
+  already needs), installed only while a window is open and torn down the
+  instant it closes, and the record is patched in place afterwards rather than
+  held back for the window (a held record is lost to any quit). The `clean` and
+  `superseded` outcomes are recorded too: without the negative there is no
+  denominator. It is behind a COMPILE flag
   (`LOCALVOXTRAL_DOGFOOD`, or the gitignored `.dogfood-capture-enable` marker
   that crosses the build gate) plus a runtime opt-in
   (`defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`).
