@@ -590,6 +590,329 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.alert?.detail.contains("connection stalled") ?? false)
     }
 
+    // MARK: Remote plugin update
+
+    private func enrolledModel(
+        label: String,
+        alias: String = "builder",
+        registry: ClaudeRemoteHostRegistry,
+        service: ClaudeRemoteEnrollmentService
+    ) async -> ClaudeIntegrationSettingsModel {
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = label
+        model.enrollSSHAlias = alias
+        await model.enroll()
+        model.dismissPlan()
+        return model
+    }
+
+    /// `claude plugin install` is not an update — on Claude Code 2.1.220 it
+    /// exits 0 on an installed plugin and leaves the old version in place — so
+    /// an enrolled host has no way to receive a plugin fix without this action.
+    func testPluginUpdateShowsThatHostsCommandsAndRunsNothingYet() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "ok")
+        })
+        // Name and SSH alias are separate fields on the enrollment form, and
+        // this is the pairing that made the review finding concrete: a host
+        // NAMED prod, REACHED as builder.
+        let model = await enrolledModel(
+            label: "prod", alias: "builder", registry: registry, service: service
+        )
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        model.requestPluginUpdate(hostID: hostID)
+
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertEqual(update.hostID, hostID)
+        XCTAssertEqual(
+            update.sshHostAlias, "builder",
+            "the update must target the enrolled alias, never the display name"
+        )
+        XCTAssertTrue(update.canRun)
+        let commands = update.commands.joined(separator: "\n")
+        XCTAssertTrue(commands.contains("ssh builder "))
+        XCTAssertFalse(commands.contains("ssh prod "), "updating the wrong host is the whole risk")
+        XCTAssertTrue(commands.contains("claude plugin update"))
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty, "disclosure must not run anything")
+        XCTAssertNil(model.enrollmentConfirmation)
+    }
+
+    /// The same confusion on the rotation path, which is worse: it hands a
+    /// FRESH token to whatever answers to the guessed name.
+    func testRotationTargetsTheEnrolledAliasNotTheDisplayName() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in .init(exitCode: 0, message: "ok") })
+        let model = await enrolledModel(
+            label: "prod", alias: "builder", registry: registry, service: service
+        )
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        await model.rotate(hostID: hostID)
+
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        XCTAssertEqual(presentation.sshHostAlias, "builder")
+        XCTAssertTrue(presentation.canRunRemoteSetup)
+        XCTAssertTrue(presentation.plan.verifyCommands.joined().contains("ssh builder"))
+        XCTAssertFalse(presentation.plan.updateCommands.joined().contains("ssh prod"))
+    }
+
+    func testRotatingAHostEnrolledBeforeAliasesWereRecordedIsCopyOnly() async throws {
+        // No alias on file means we do not know where to send the new token,
+        // and a guess is exactly what this PR removed. Copy still works.
+        let registry = try makeRegistry()
+        let calls = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            calls.withLock { $0 += 1 }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let enrollment = try registry.enroll(label: "buildhost")
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+
+        await model.rotate(hostID: enrollment.host.id)
+
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        XCTAssertFalse(presentation.canRunRemoteSetup)
+        XCTAssertEqual(
+            presentation.sshHostAlias,
+            ClaudeIntegrationSettingsModel.unknownAliasPlaceholder,
+            "the label is not a stand-in for an alias we were never told"
+        )
+
+        model.requestRemoteSetup()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertEqual(calls.withLock { $0 }, 0, "a placeholder alias must never reach ssh")
+    }
+
+    func testPluginUpdateRunsOnlyAfterAnExplicitConfirmation() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let model = await enrolledModel(label: "buildhost", registry: registry, service: service)
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.requestPluginUpdate(hostID: hostID)
+
+        model.requestPluginUpdateRun()
+
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty)
+        let confirmation = try XCTUnwrap(model.enrollmentConfirmation)
+        XCTAssertEqual(confirmation.action, .updateRemotePlugin(hostID: hostID))
+        XCTAssertEqual(
+            confirmation.preview,
+            model.presentedPluginUpdate?.commands.joined(separator: "\n"),
+            "the confirmation must repeat the exact commands the row displays"
+        )
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(calls.withLock { $0 }.count, 2)
+        XCTAssertEqual(model.enrollmentStepStatuses.map(\.text), [
+            "Step 1 succeeded.", "Step 2 succeeded.",
+        ])
+        XCTAssertEqual(model.enrollmentResultsAction, .updateRemotePlugin(hostID: hostID))
+    }
+
+    func testCancellingThePluginUpdateConfirmationRunsNothing() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let model = await enrolledModel(label: "buildhost", registry: registry, service: service)
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestPluginUpdateRun()
+
+        model.cancelEnrollmentActionConfirmation()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty)
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+    }
+
+    /// The results render in the row whose button ran them (PR #194), so the
+    /// tag has to name the HOST as well as the action — and opening another
+    /// host's panel must not leave the first host's outcome sitting under it.
+    func testAnotherHostsPanelDoesNotInheritThePreviousResults() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in .init(exitCode: 0, message: "ok") })
+        let model = await enrolledModel(label: "buildhost", registry: registry, service: service)
+        model.enrollLabel = "laptop"
+        model.enrollSSHAlias = "laptop"
+        await model.enroll()
+        model.dismissPlan()
+        let firstID = try XCTUnwrap(model.hosts.first).id
+        let secondID = try XCTUnwrap(model.hosts.last).id
+        XCTAssertNotEqual(firstID, secondID)
+
+        model.requestPluginUpdate(hostID: firstID)
+        model.requestPluginUpdateRun()
+        await model.confirmEnrollmentAction()
+        XCTAssertEqual(model.enrollmentResultsAction, .updateRemotePlugin(hostID: firstID))
+
+        model.requestPluginUpdate(hostID: secondID)
+
+        XCTAssertEqual(model.presentedPluginUpdate?.hostID, secondID)
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+        XCTAssertNil(model.enrollmentResultsAction)
+        XCTAssertNil(model.enrollmentConfirmation)
+    }
+
+    func testPluginUpdateIsCopyOnlyForAHostWithNoRecordedAlias() async throws {
+        // Hosts enrolled before the alias was persisted. The row says what it
+        // does not know instead of ssh-ing at a name it made up.
+        let registry = try makeRegistry()
+        let calls = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            calls.withLock { $0 += 1 }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let enrollment = try registry.enroll(label: "buildhost")
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+
+        model.requestPluginUpdate(hostID: enrollment.host.id)
+
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertNil(update.sshHostAlias)
+        XCTAssertFalse(update.canRun)
+        XCTAssertTrue(
+            update.commands.joined(separator: "\n")
+                .contains(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder)
+        )
+
+        model.requestPluginUpdateRun()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertEqual(calls.withLock { $0 }, 0, "a placeholder alias must never reach ssh")
+    }
+
+    /// Review finding (PR #197): the removal test below waits for the update to
+    /// FINISH, so it never exercised the late-result guard. This is the
+    /// interleaving that guard exists for — the row goes away while ssh is
+    /// still running — and it is asserted the same way rotation's is: a gate
+    /// the test releases, no wall-clock.
+    func testAResultFromAHostRemovedMidUpdateNeverSurfaces() async throws {
+        let registry = try makeRegistry()
+        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
+        // Failing, so a leaked result would be loud: statuses AND an alert.
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 1, message: "remote said no")
+        })
+        let model = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            pluginService: { StubPluginService() },
+            enrollmentService: service,
+            performAsync: { body in
+                do {
+                    try body()
+                    return nil
+                } catch {
+                    return ClaudePluginActionFailure(error)
+                }
+            },
+            performEnrollmentAsync: { body in
+                var latch = gate.makeAsyncIterator()
+                _ = await latch.next()
+                do {
+                    return ClaudeEnrollmentActionAttempt(steps: try body(), failure: nil)
+                } catch {
+                    return ClaudeEnrollmentActionAttempt(
+                        steps: [],
+                        failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            }
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.dismissPlan()
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestPluginUpdateRun()
+        let inFlight = Task { await model.confirmEnrollmentAction() }
+        while !model.isPerformingEnrollmentAction { await Task.yield() }
+
+        await model.remove(hostID: hostID)
+
+        releaseGate.yield(())
+        releaseGate.finish()
+        await inFlight.value
+
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertNil(model.presentedPluginUpdate)
+        XCTAssertTrue(
+            model.enrollmentStepStatuses.isEmpty,
+            "a removed host's outcome has no row to render in"
+        )
+        XCTAssertNil(model.enrollmentResultsAction)
+        XCTAssertNil(model.alert, "and no alert about a host that is gone")
+    }
+
+    func testRemovingAHostClosesItsOpenUpdatePanel() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in .init(exitCode: 0, message: "ok") })
+        let model = await enrolledModel(label: "buildhost", registry: registry, service: service)
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestPluginUpdateRun()
+        await model.confirmEnrollmentAction()
+
+        await model.remove(hostID: hostID)
+
+        XCTAssertNil(model.presentedPluginUpdate, "the row is gone; its panel must not outlive it")
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+        XCTAssertNil(model.enrollmentResultsAction)
+    }
+
+    func testAFailedPluginUpdateIsAShortStatusAndADetailedAlert() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 1, message: "plugin localvoxtral-remote not found")
+        })
+        let model = await enrolledModel(label: "buildhost", registry: registry, service: service)
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestPluginUpdateRun()
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(model.enrollmentStepStatuses.map(\.text), ["Step 1 failed."])
+        XCTAssertEqual(model.enrollmentResultsAction, .updateRemotePlugin(hostID: hostID))
+        XCTAssertEqual(model.alert?.title, "Remote Claude Code plugin")
+        let detail = try XCTUnwrap(model.alert?.detail)
+        XCTAssertTrue(detail.contains("plugin localvoxtral-remote not found"))
+        // The body has to name what the user pressed. "SSH setup exited with
+        // code 1" under an Update Plugin button reads as a different failure.
+        XCTAssertTrue(detail.hasPrefix("Plugin update exited with code 1."))
+        XCTAssertFalse(detail.contains("SSH setup"))
+    }
+
     // MARK: Validation and failures
 
     func testEnrollIsRefusedUntilBothFieldsAreUsable() {

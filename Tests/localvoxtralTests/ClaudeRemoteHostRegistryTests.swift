@@ -144,6 +144,61 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         XCTAssertEqual(persisted.hosts.first?.hashVersion, ClaudeRemoteHostRegistry.currentHashVersion)
     }
 
+    /// Review finding (PR #197): the update/rotate paths had to guess the ssh
+    /// alias from the display name, so a host NAMED `prod` and REACHED over
+    /// alias `builder` would have been acted on as `prod` — a different
+    /// machine. The alias the user enrolled with is persisted for exactly this,
+    /// and survives the relaunch that separates enrollment from an update.
+    func testTheEnrolledSSHAliasIsPersistedSeparatelyFromTheLabel() throws {
+        let first = try makeRegistry()
+        let enrollment = try first.enroll(label: "prod", sshHostAlias: "builder")
+        XCTAssertEqual(enrollment.host.label, "prod")
+        XCTAssertEqual(enrollment.host.sshHostAlias, "builder")
+
+        let second = try makeRegistry()
+        XCTAssertEqual(second.hosts().first?.sshHostAlias, "builder")
+    }
+
+    func testAnUnusableSSHAliasIsNotStoredAtAll() throws {
+        // A stored alias is later allowed to reach ssh's argv, so the registry
+        // stores only what the validator accepts — nil, never a repaired value
+        // that some caller would then trust.
+        let registry = try makeRegistry()
+        for alias in ["-V", "two words", "host#comment", ""] {
+            let enrollment = try registry.enroll(label: "host", sshHostAlias: alias)
+            XCTAssertNil(enrollment.host.sshHostAlias, "'\(alias)' must not be stored")
+        }
+    }
+
+    func testAHostStoredBeforeAliasesWereRecordedLoadsWithoutOne() throws {
+        // The key is absent in files written by earlier builds. That must read
+        // back as "no alias" — not as a decode failure, which would report the
+        // whole store unreadable and strand every enrolled host.
+        let storedHost = ClaudeRemoteHostRegistry.StoredHost(
+            id: "hlegacy02",
+            label: "legacy",
+            createdAt: clock.now(),
+            lastSeenAt: nil,
+            revokedAt: nil,
+            tokenSalt: "legacySalt_1234567890",
+            tokenHash: "abc",
+            hashVersion: nil
+        )
+        let storedFile = ClaudeRemoteHostRegistry.StoredFile(
+            version: ClaudeRemoteHostRegistry.fileVersion,
+            hosts: [storedHost]
+        )
+        let json = try XCTUnwrap(
+            String(data: try JSONEncoder.claudeRemote.encode(storedFile), encoding: .utf8)
+        )
+        XCTAssertFalse(json.contains("sshHostAlias"), "an absent alias must not be written as null")
+        io.seed(Data(json.utf8), at: fileURL)
+
+        let registry = try makeRegistry()
+        XCTAssertEqual(registry.hosts().map(\.id), ["hlegacy02"])
+        XCTAssertNil(registry.hosts().first?.sshHostAlias)
+    }
+
     func testLabelIsSanitized() throws {
         let registry = try makeRegistry()
         // Anything that could act is dropped, not escaped. There is no host
@@ -206,8 +261,15 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         // The public type is what a UI, a log line, and a diagnostics export all
         // see. Reflection over it is the check that no secret property was added
         // later by someone who only meant to make debugging easier.
+        // `sshHostAlias` joined this allowlist deliberately (PR #197): it is
+        // the name of a host in the user's own ssh config, not a credential,
+        // and the alternative — guessing it from the label — acted on the wrong
+        // machine.
         let properties = Mirror(reflecting: enrollment.host).children.compactMap(\.label)
-        XCTAssertEqual(Set(properties), ["id", "label", "createdAt", "lastSeenAt", "revokedAt"])
+        XCTAssertEqual(
+            Set(properties),
+            ["id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt"]
+        )
         let described = String(describing: enrollment.host)
         XCTAssertFalse(described.contains(enrollment.token))
     }

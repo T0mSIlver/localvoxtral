@@ -233,8 +233,8 @@ In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, shows it once alongside every command below with a Copy button on each,
 and binds the listener immediately — there is no relaunch step. The list in that
-row shows each enrolled host, when it was last seen, and gives you **Rotate
-Token**, **Revoke** and **Remove**.
+row shows each enrolled host, when it was last seen, and gives you **Update
+Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
 
 The app hands you every command as copyable text, and can also do the two
 steps for you — **only after showing you exactly what will happen and asking
@@ -294,6 +294,40 @@ claude plugin list
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
   -d '{}' http://127.0.0.1:8473/v1/hook/SessionStart
 ```
+
+## Updating an enrolled host
+
+When localvoxtral ships a newer version of this plugin, an already-enrolled host
+does **not** pick it up by re-running the setup commands. Verified on Claude Code
+2.1.220:
+
+- `claude plugin marketplace add …` on a marketplace it already has exits 0,
+  says it is already on disk, and does **not** refresh the clone.
+- `claude plugin install …` on an installed plugin exits 0, says it is already
+  installed, and does **not** change the version. (It *does* apply a new
+  `--config token=…`, which is why rotating a token reuses that same command.)
+
+So the update is its own pair, and it keeps your token — `plugin update`
+preserves the stored config:
+
+```sh
+ssh builder 'claude plugin marketplace update localvoxtral'
+ssh builder 'claude plugin update localvoxtral-remote@localvoxtral'
+```
+
+Order matters: `plugin update` installs whatever the local marketplace clone
+currently offers, so refreshing the clone first is what makes it an update at
+all. In the app, each row in **Remote Claude Code over SSH** has an **Update
+Plugin…** button that shows these two commands with a Copy button, and can run
+them over SSH after you confirm. One-click runs against the **SSH alias you
+enrolled with**, which is recorded with the host — the display name is never
+used as a substitute, since the two are separate fields and can name different
+machines. A host enrolled before localvoxtral recorded aliases has none on file:
+its commands are copy-only (and so is its rotation sheet) until you re-enroll it.
+Non-interactive SSH skips your login shell's
+rc, so the app's version of these commands sets `PATH` to the usual `claude`
+install locations first; add that yourself if `claude` is off the PATH a plain
+`ssh host 'claude …'` sees.
 
 ## Uninstall and revoke
 

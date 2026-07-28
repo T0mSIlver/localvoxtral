@@ -18,6 +18,15 @@ public struct ClaudeRemoteHost: Sendable, Equatable, Identifiable {
     public let id: String
     /// User-facing name (typically the SSH host alias). Sanitized on enroll.
     public var label: String
+    /// The alias the user enrolled with, when it is still a valid one.
+    ///
+    /// Nil for hosts enrolled before this was persisted. The label is NOT a
+    /// usable substitute: the two are separate fields on the enrollment form,
+    /// so a host named `prod` can have alias `builder`, and running setup
+    /// against the name would act on a machine the user never chose (review
+    /// finding, PR #197). Anything that would ssh somewhere therefore needs
+    /// this, and treats nil as "ask, or copy only".
+    public var sshHostAlias: String?
     public var createdAt: Date
     public var lastSeenAt: Date?
     public var revokedAt: Date?
@@ -315,11 +324,17 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         /// Absent means the legacy unframed SHA-256 construction. New and
         /// rotated credentials are HMAC v2; legacy hosts migrate on rotation.
         var hashVersion: Int? = nil
+        /// Absent for hosts enrolled before the alias was persisted. Optional
+        /// rather than a new file version: an older build reading this file
+        /// ignores the key, and a newer build reading an older file gets nil
+        /// and degrades to copy-only — neither loses a host.
+        var sshHostAlias: String? = nil
 
         var publicView: ClaudeRemoteHost {
             ClaudeRemoteHost(
                 id: id,
                 label: label,
+                sshHostAlias: sshHostAlias,
                 createdAt: createdAt,
                 lastSeenAt: lastSeenAt,
                 revokedAt: revokedAt
@@ -509,9 +524,15 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     ///
     /// - Returns: the host and its plaintext token. This is the only time the
     ///   token is knowable; show it, then let it go.
-    public func enroll(label: String) throws -> ClaudeRemoteEnrollment {
+    /// - Parameter sshHostAlias: the alias the user typed. Stored only when it
+    ///   is a valid alias — a stored value is later allowed to reach `ssh`'s
+    ///   argv, so it is checked here rather than trusted from a caller.
+    public func enroll(label: String, sshHostAlias: String? = nil) throws -> ClaudeRemoteEnrollment {
         let cleanLabel = Self.sanitizeLabel(label)
         guard !cleanLabel.isEmpty else { throw StoreError.invalidLabel }
+        let cleanAlias = sshHostAlias.flatMap {
+            ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil
+        }
         let token = makeToken()
         let salt = makeToken()
         let timestamp = now()
@@ -533,7 +554,8 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 revokedAt: nil,
                 tokenSalt: salt,
                 tokenHash: ClaudeRemoteTokenDigest.hash(token: token, salt: salt),
-                hashVersion: Self.currentHashVersion
+                hashVersion: Self.currentHashVersion,
+                sshHostAlias: cleanAlias
             )
             hosts.append(host)
             return host

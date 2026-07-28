@@ -52,6 +52,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         public var remoteCommands: [String]
         /// Run to check the setup without changing it.
         public var verifyCommands: [String]
+        /// Bring an already-enrolled host to the plugin version this app ships.
+        /// Carries no token: `claude plugin update` keeps the config the install
+        /// already stored.
+        public var updateCommands: [String]
         /// Undo, in order: remote first, then local revocation.
         public var uninstallCommands: [String]
         /// Caveats worth reading before the first surprise.
@@ -190,6 +194,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             sshConfigSnippet: sshConfigSnippet(host: host, sshHostAlias: sshHostAlias, port: port),
             remoteCommands: remoteCommands(token: token),
             verifyCommands: verifyCommands(sshHostAlias: sshHostAlias, port: port),
+            updateCommands: updateCommands(sshHostAlias: sshHostAlias),
             uninstallCommands: uninstallCommands(host: host, sshHostAlias: sshHostAlias),
             notes: notes(port: port)
         )
@@ -202,8 +207,20 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// block), no quotes. This is the only user-supplied string that reaches the
     /// generated config, so it is checked rather than escaped — an alias that
     /// needs escaping is not an alias.
+    ///
+    /// A leading `-` is refused separately from the charset, because `-` is
+    /// legal INSIDE a hostname and fatal in front of one: an alias of `-V`
+    /// reaches `ssh`'s argv as an option, and OpenSSH then prints its version
+    /// and exits 0 without connecting — every step reports success while
+    /// nothing ran on any host (review finding, PR #197). Argv termination in
+    /// `execute` is the second layer; this is the first, and it is the one that
+    /// also covers the commands the user pastes by hand.
     public static func isValidHostAlias(_ alias: String) -> Bool {
         guard !alias.isEmpty, alias.count <= 128 else { return false }
+        guard !alias.hasPrefix("-") else { return false }
+        // "." and ".." would name a directory, not a host, and an all-dot alias
+        // resolves to nothing anyone meant.
+        guard alias.contains(where: { $0 != "." }) else { return false }
         let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
         return alias.allSatisfy { allowed.contains($0) }
     }
@@ -232,6 +249,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         """
     }
 
+    /// The first-time setup pair.
+    ///
+    /// Both are idempotent, but only in the weak sense: on a host that already
+    /// has them, `marketplace add` exits 0 without refreshing the clone and
+    /// `plugin install` exits 0 without changing the installed version (verified
+    /// on Claude Code 2.1.220). `install` DOES apply a new `--config token=`,
+    /// which is why rotation reuses this exact command — and why shipping a new
+    /// plugin version needs `updateCommands` instead.
     static func remoteCommands(token: String) -> [String] {
         [
             "claude plugin marketplace add \(repositoryMarketplaceReference)",
@@ -257,13 +282,49 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             "ssh -v \(sshHostAlias) true 2>&1 | grep -i 'remote forward'",
             "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
             "# here even though it runs fine when you are logged in.",
-            "ssh \(sshHostAlias) 'PATH=\"$HOME/.claude/local:$HOME/.local/bin:$HOME/bin"
-                + ":/opt/homebrew/bin:/usr/local/bin:$PATH\" claude plugin list'",
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)claude plugin list'",
             "# 401 = SUCCESS: the tunnel is up and localvoxtral answered (an",
             "# unauthenticated probe must be refused). A connection error means",
             "# no live session holds the forward right now.",
             "ssh \(sshHostAlias) 'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST "
                 + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(port)/v1/hook/SessionStart'",
+        ]
+    }
+
+    /// PATH prefix for a `claude` invocation inside `ssh <host> '<command>'`.
+    ///
+    /// Non-interactive SSH skips the login rc, so `claude` is routinely off PATH
+    /// there on a host where it works fine interactively. The stdin script has
+    /// its own resolver (`claudePathResolverPreamble`); this is the one-liner
+    /// equivalent for the commands a person pastes.
+    static let nonInteractiveClaudePathPrefix =
+        "PATH=\"$HOME/.claude/local:$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" "
+
+    /// The remote-side commands, in order, with nothing wrapped around them.
+    /// Execution sends these through the SSH stdin script;
+    /// `updateCommands(sshHostAlias:)` is the same pair written for a person to
+    /// paste from this Mac.
+    static let remotePluginUpdateCommands = [
+        "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)",
+        "claude plugin update \(remotePluginReference)",
+    ]
+
+    /// Bring an enrolled host to the plugin version this app ships.
+    ///
+    /// The comments are part of the deliverable, as in `verifyCommands`: nothing
+    /// else in the product tells the user that re-running setup is not an
+    /// update, and a host silently left on an old plugin fails open — i.e. it
+    /// looks like nothing at all.
+    static func updateCommands(sshHostAlias: String) -> [String] {
+        [
+            "# Run after updating localvoxtral on this Mac. This pair is the ONLY",
+            "# way a plugin fix reaches a host that is already enrolled: on Claude",
+            "# Code 2.1.220, re-running `plugin install` exits 0 with \"already",
+            "# installed\" and leaves the old version in place, and `marketplace",
+            "# add` does not refresh a clone it already has. Your token is kept —",
+            "# `plugin update` preserves the stored config.",
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(remotePluginUpdateCommands[0])'",
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(remotePluginUpdateCommands[1])'",
         ]
     }
 
@@ -442,18 +503,59 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         token: String,
         timeout: TimeInterval = defaultRemoteSetupTimeout
     ) throws -> [ExecutionStep] {
-        Log.claudeContext.info("Claude remote setup execution requested")
+        try execute(
+            commands: plan.remoteCommands,
+            sshHostAlias: sshHostAlias,
+            token: token,
+            timeout: timeout,
+            label: "setup"
+        )
+    }
+
+    /// Update the remote plugin on an already-enrolled host.
+    ///
+    /// Token-free by construction: `claude plugin update` preserves the config
+    /// the install stored, so this path never has the credential to leak. It is
+    /// a separate entry point rather than a plan step because the user runs it
+    /// long after enrollment — when the app ships a new plugin version — and by
+    /// then the one-time token is gone.
+    @discardableResult
+    public func executeRemotePluginUpdate(
+        sshHostAlias: String,
+        timeout: TimeInterval = defaultRemoteSetupTimeout
+    ) throws -> [ExecutionStep] {
+        try execute(
+            commands: Self.remotePluginUpdateCommands,
+            sshHostAlias: sshHostAlias,
+            token: "",
+            timeout: timeout,
+            label: "plugin update"
+        )
+    }
+
+    private func execute(
+        commands: [String],
+        sshHostAlias: String,
+        token: String,
+        timeout: TimeInterval,
+        label: String
+    ) throws -> [ExecutionStep] {
+        Log.claudeContext.info("Claude remote \(label, privacy: .public) execution requested")
         guard let runner else {
-            Log.claudeContext.error("Claude remote setup execution failed: runner not configured")
+            Log.claudeContext.error(
+                "Claude remote \(label, privacy: .public) execution failed: runner not configured"
+            )
             throw ServiceError.executionNotConfigured
         }
         guard Self.isValidHostAlias(sshHostAlias) else {
-            Log.claudeContext.error("Claude remote setup execution failed: invalid host alias")
+            Log.claudeContext.error(
+                "Claude remote \(label, privacy: .public) execution failed: invalid host alias"
+            )
             throw ServiceError.invalidHostAlias
         }
         let deadline = Date().addingTimeInterval(max(timeout, 0))
         var completed: [ExecutionStep] = []
-        for (index, command) in plan.remoteCommands.enumerated() {
+        for (index, command) in commands.enumerated() {
             let displayCommand = ClaudeRemoteTokenRedaction.redact(
                 command.trimmingCharacters(in: .whitespaces),
                 token: token
@@ -464,25 +566,29 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                     step: index, command: displayCommand, seconds: timeout, message: ""
                 )
                 Log.claudeContext.error(
-                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
+                    "Claude remote \(label, privacy: .public) step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
                 )
                 throw failure
             }
             let invocation = Invocation(
-                // ClearAllForwardings: the setup connection has no use for the
+                // ClearAllForwardings: this connection has no use for the
                 // 8473 tunnel, and with the user's own session usually holding
                 // it, attempting the forward here only produced a scary
                 // "remote port forwarding failed" warning inside setup errors
                 // (field report 2026-07-26).
+                // `--` ends OpenSSH's option parsing: the alias is validated
+                // above and cannot start with `-`, and this makes an alias that
+                // somehow did reach here a failed connection rather than a
+                // silently successful option.
                 argv: [
-                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                    "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
                     sshHostAlias, "/bin/sh", "-s",
                 ],
                 standardInput: Self.remoteScript(command: command),
                 timeout: remaining
             )
             Log.claudeContext.info(
-                "Claude remote setup step \(index + 1, privacy: .public) requested"
+                "Claude remote \(label, privacy: .public) step \(index + 1, privacy: .public) requested"
             )
             let result: RunResult
             do {
@@ -505,7 +611,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                     )
                 }
                 Log.claudeContext.error(
-                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: error), privacy: .public)"
+                    "Claude remote \(label, privacy: .public) step \(index + 1, privacy: .public) failed: \(String(describing: error), privacy: .public)"
                 )
                 throw error
             } catch {
@@ -514,7 +620,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                     step: index, command: displayCommand, message: redacted
                 )
                 Log.claudeContext.error(
-                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
+                    "Claude remote \(label, privacy: .public) step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
                 )
                 throw failure
             }
@@ -526,7 +632,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                     message: ClaudeRemoteTokenRedaction.redact(result.message, token: token)
                 )
                 Log.claudeContext.error(
-                    "Claude remote setup step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
+                    "Claude remote \(label, privacy: .public) step \(index + 1, privacy: .public) failed: \(String(describing: failure), privacy: .public)"
                 )
                 throw failure
             }
@@ -538,10 +644,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 )
             )
             Log.claudeContext.info(
-                "Claude remote setup step \(index + 1, privacy: .public) completed"
+                "Claude remote \(label, privacy: .public) step \(index + 1, privacy: .public) completed"
             )
         }
-        Log.claudeContext.info("Claude remote setup execution completed")
+        Log.claudeContext.info("Claude remote \(label, privacy: .public) execution completed")
         return completed
     }
 
