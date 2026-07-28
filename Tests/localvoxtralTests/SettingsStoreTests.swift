@@ -351,9 +351,14 @@ final class SettingsStoreTests: XCTestCase {
             store.effectiveModelName,
             SpeechModelCatalog.defaultOption.repoID
         )
+        // The literal is deliberately spelled out rather than read from
+        // RealtimeProvider: this assertion exists to catch an accidental change
+        // to the External URL default. Updating it is a pin change (the qhead
+        // checkpoint replaced the stale MLX-4bit conversion), not a weakening —
+        // the assertion is exactly as strict as before.
         XCTAssertEqual(
             store.modelPlaceholder,
-            "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit",
+            "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
             "external endpoint placeholder remains independent from managed speechd"
         )
     }

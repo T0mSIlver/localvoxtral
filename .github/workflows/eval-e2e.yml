@@ -111,7 +111,7 @@ jobs:
         env:
           LV_AGENT_EVAL_E2E_ENABLE: "1"
           LV_AGENT_EVAL_E2E_HELPER_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
-          LV_AGENT_EVAL_E2E_ASR_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+          LV_AGENT_EVAL_E2E_ASR_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
         run: |
           mkdir -p logs
           set -o pipefail

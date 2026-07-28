@@ -406,7 +406,7 @@ jobs:
         if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
-          VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+          VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
         # --enable-code-coverage matches the unit step's build flags exactly:
         # without it SwiftPM treats the coverage-instrumented products as
         # stale and recompiles the whole app+test module a second time

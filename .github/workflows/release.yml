@@ -109,7 +109,7 @@ jobs:
       - name: Gate — live integration (STT service)
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
-          VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+          VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
         run: swift test --filter RealtimeAPIVLLMIntegrationTests
 
       - name: Gate — package app bundle
