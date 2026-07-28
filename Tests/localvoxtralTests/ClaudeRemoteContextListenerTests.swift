@@ -138,16 +138,24 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         return Response(status: status, body: body)
     }
 
+    /// - Parameter rawAuthorization: the `Authorization` value verbatim, for the
+    ///   shapes a token argument cannot express — an empty credential (what a
+    ///   pre-1.1.0 plugin sent) or another scheme entirely.
     private func hookRequest(
         event: String = "SessionStart",
         token: String?,
         payload: [String: Any] = ["session_id": "s-1", "cwd": "/srv/app"],
         contentLengthOverride: Int? = nil,
-        extraHeaders: [String] = []
+        extraHeaders: [String] = [],
+        rawAuthorization: String? = nil
     ) -> Data {
         var body = try! JSONSerialization.data(withJSONObject: payload)
         var text = "POST /v1/hook/\(event) HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-        if let token { text += "Authorization: Bearer \(token)\r\n" }
+        if let rawAuthorization {
+            text += "Authorization: \(rawAuthorization)\r\n"
+        } else if let token {
+            text += "Authorization: Bearer \(token)\r\n"
+        }
         for header in extraHeaders { text += header + "\r\n" }
         text += "Content-Type: application/json\r\n"
         text += "Content-Length: \(contentLengthOverride ?? body.count)\r\n\r\n"
@@ -329,6 +337,136 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             "a 400 here would mean the body was read before the token was checked"
         )
         XCTAssertTrue(sessions.liveSessions().isEmpty)
+    }
+
+    // MARK: - Rejection diagnosis
+
+    /// The field case (2026-07-26): hours of rejections from remote sessions
+    /// still running the pre-1.1.0 plugin, whose http hook sent `Bearer ` with
+    /// nothing after it. The old single log line could not tell that apart from
+    /// a rotated token, so the remedy was unknowable from the log.
+    func testAnEmptyBearerCredentialIsDiagnosedAsAPluginProblem() throws {
+        try startListener()
+        let response = try XCTUnwrap(try send(hookRequest(token: nil, rawAuthorization: "Bearer ")))
+        XCTAssertEqual(response.status, 401)
+
+        let tally = listener.rejectionSnapshot
+        XCTAssertEqual(tally.missingToken, 1)
+        XCTAssertEqual(tally.unknownToken, 0)
+        XCTAssertEqual(tally.malformedAuthorization, 0)
+    }
+
+    func testAnAbsentAuthorizationHeaderCountsAsAMissingToken() throws {
+        try startListener()
+        XCTAssertEqual(try send(hookRequest(token: nil))?.status, 401)
+        XCTAssertEqual(listener.rejectionSnapshot.missingToken, 1)
+    }
+
+    /// The other half of the same night's ambiguity: a credential that is a
+    /// perfectly good token and simply is not ours any more.
+    func testAnUnrecognizedTokenIsDiagnosedAsAStaleCredential() throws {
+        try startListener()
+        XCTAssertEqual(try send(hookRequest(token: ClaudeRemoteTokenDigest.makeToken()))?.status, 401)
+
+        let tally = listener.rejectionSnapshot
+        XCTAssertEqual(tally.unknownToken, 1)
+        XCTAssertEqual(tally.missingToken, 0, "a token DID arrive; blaming the plugin would misdirect")
+        XCTAssertEqual(tally.malformedAuthorization, 0)
+    }
+
+    func testARotatedTokenIsReportedAsUnknownRatherThanMissing() throws {
+        try startListener()
+        _ = try hosts.rotateToken(hostID: hostID)
+        XCTAssertEqual(try send(hookRequest(token: token))?.status, 401)
+        XCTAssertEqual(listener.rejectionSnapshot.unknownToken, 1)
+        XCTAssertEqual(listener.rejectionSnapshot.missingToken, 0)
+    }
+
+    func testANonBearerSchemeIsItsOwnCategory() throws {
+        try startListener()
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: nil, rawAuthorization: "Basic ZGV2Omh1bnRlcjI="))
+        )
+        XCTAssertEqual(response.status, 401)
+
+        let tally = listener.rejectionSnapshot
+        XCTAssertEqual(tally.malformedAuthorization, 1)
+        XCTAssertEqual(tally.missingToken, 0)
+        XCTAssertEqual(tally.unknownToken, 0)
+    }
+
+    func testTheThreeCategoriesAccumulateIndependently() throws {
+        try startListener()
+        _ = try send(hookRequest(token: nil, rawAuthorization: "Bearer "))
+        _ = try send(hookRequest(token: nil, rawAuthorization: "Bearer "))
+        _ = try send(hookRequest(token: ClaudeRemoteTokenDigest.makeToken()))
+        _ = try send(hookRequest(token: nil, rawAuthorization: "Basic ZGV2"))
+        // A successful request must not be counted as anything.
+        XCTAssertEqual(try send(hookRequest(token: token))?.status, 200)
+
+        XCTAssertEqual(
+            listener.rejectionSnapshot,
+            ClaudeRemoteRejectionTally.Snapshot(
+                missingToken: 2, unknownToken: 1, malformedAuthorization: 1
+            )
+        )
+    }
+
+    /// Whatever the category, the response is still silent. A rejection that
+    /// explained itself on the wire would explain it to an attacker too; the
+    /// diagnosis is for the local log and the local UI.
+    func testTheDiagnosisNeverLeavesTheMachine() throws {
+        try startListener()
+        for authorization in ["Bearer ", "Basic ZGV2", "Bearer \(ClaudeRemoteTokenDigest.makeToken())"] {
+            let response = try XCTUnwrap(
+                try send(hookRequest(token: nil, rawAuthorization: authorization))
+            )
+            XCTAssertEqual(response.status, 401)
+            XCTAssertEqual(response.body, "", "a rejection must say nothing at all")
+        }
+    }
+
+    func testShapeAndAuthenticationResultDecideTheCategory() {
+        XCTAssertEqual(
+            ClaudeRemoteRejectionCategory.category(for: .missing, authenticated: false), .missingToken
+        )
+        XCTAssertEqual(
+            ClaudeRemoteRejectionCategory.category(for: .malformed, authenticated: false),
+            .malformedAuthorization
+        )
+        XCTAssertEqual(
+            ClaudeRemoteRejectionCategory.category(for: .bearer("t"), authenticated: false), .unknownToken
+        )
+        XCTAssertNil(
+            ClaudeRemoteRejectionCategory.category(for: .bearer("t"), authenticated: true),
+            "an accepted credential is not a rejection"
+        )
+    }
+
+    /// Each line names its own remedy, stays on one line, and — the rule that
+    /// matters — is a constant, so no token, header, or length can reach it.
+    func testEveryRejectionLineIsOneShortActionableSentence() {
+        for category in ClaudeRemoteRejectionCategory.allCases {
+            let line = category.logLine
+            XCTAssertFalse(line.contains("\n"), "\(category): one line")
+            XCTAssertLessThan(line.count, 180, "\(category): the detail belongs in the code, not the log")
+        }
+        XCTAssertTrue(ClaudeRemoteRejectionCategory.missingToken.logLine.contains("update the plugin"))
+        XCTAssertTrue(ClaudeRemoteRejectionCategory.unknownToken.logLine.contains("re-run enrollment"))
+    }
+
+    func testAnUnparseablePayloadNamesItsEventAndNothingElse() throws {
+        XCTAssertEqual(
+            ClaudeRemoteContextListener.knownEventLabel(inPath: "/v1/hook/PostToolUse"),
+            "PostToolUse"
+        )
+        // Peer-supplied text never reaches the log: an event this app does not
+        // know reads as `unknown`, not as whatever was in the URL.
+        XCTAssertEqual(
+            ClaudeRemoteContextListener.knownEventLabel(inPath: "/v1/hook/DROP TABLE hosts"),
+            "unknown"
+        )
+        XCTAssertEqual(ClaudeRemoteContextListener.knownEventLabel(inPath: "/admin"), "unknown")
     }
 
     // MARK: - Routing and bounds

@@ -49,6 +49,19 @@ public struct ClaudeRemoteHTTPLimits: Sendable, Equatable {
     public static let `default` = ClaudeRemoteHTTPLimits()
 }
 
+/// What a request's `Authorization` header turned out to be.
+///
+/// Carries the credential in `.bearer` and NOTHING derived from it in the other
+/// cases — no length, no prefix, no digest. A diagnostic that narrows a secret
+/// is not a diagnostic worth having.
+public enum ClaudeRemoteAuthorizationShape: Sendable, Equatable {
+    /// No `Authorization` header, or a `Bearer` scheme with an empty credential.
+    case missing
+    /// Present, but not a `Bearer` credential we are willing to read.
+    case malformed
+    case bearer(String)
+}
+
 /// A parsed request head. The body is deliberately NOT part of this type: the
 /// listener authenticates on the head alone and only then reads bytes.
 public struct ClaudeRemoteHTTPRequest: Sendable, Equatable {
@@ -197,11 +210,42 @@ public enum ClaudeRemoteHTTPCodec {
         in headerValue: String?,
         limits: ClaudeRemoteHTTPLimits = .default
     ) -> String? {
-        guard let headerValue, headerValue.utf8.count <= limits.maxTokenBytes else { return nil }
+        guard case .bearer(let token) = authorizationShape(in: headerValue, limits: limits) else {
+            return nil
+        }
+        return token
+    }
+
+    /// WHY an `Authorization` header did not yield a credential — the same walk
+    /// as `bearerToken`, keeping its answer instead of collapsing every failure
+    /// to nil.
+    ///
+    /// The distinction is not cosmetic. A remote host on a pre-1.1.0 plugin sends
+    /// `Authorization: Bearer ` with nothing after it (the http hook could never
+    /// present the token), and a host whose token was rotated sends a perfectly
+    /// well-formed one that no longer matches. Both used to log the same line, so
+    /// hours of rejections said nothing about which of the two fixes — update the
+    /// plugin, or re-run enrollment — the user actually needed.
+    ///
+    /// It classifies SHAPE only. The credential is returned for the caller to
+    /// authenticate; nothing here measures, hashes, or reports it.
+    public static func authorizationShape(
+        in headerValue: String?,
+        limits: ClaudeRemoteHTTPLimits = .default
+    ) -> ClaudeRemoteAuthorizationShape {
+        guard let headerValue else { return .missing }
+        // Oversized before anything else: a header this long is not a credential
+        // we failed to read, it is a header we refuse to read.
+        guard headerValue.utf8.count <= limits.maxTokenBytes else { return .malformed }
         let parts = headerValue.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count == 2, parts[0].lowercased() == "bearer" else { return nil }
+        guard let scheme = parts.first else { return .missing }
+        guard scheme.lowercased() == "bearer" else { return .malformed }
+        // `Bearer` with an empty credential — including the header parser's
+        // already-trimmed `Bearer ` — is the pre-1.1.0 plugin's exact shape, and
+        // is reported as a missing token rather than a malformed header.
+        guard parts.count == 2 else { return .missing }
         let token = parts[1].trimmingCharacters(in: .whitespaces)
-        return token.isEmpty ? nil : token
+        return token.isEmpty ? .missing : .bearer(token)
     }
 
     /// The event name a hook URL carries, e.g. `/v1/hook/SessionStart`.

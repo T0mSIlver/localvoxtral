@@ -984,6 +984,12 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     )
                 } else {
                     hostList
+                    // The only place a rejected connection is visible without
+                    // the unified log. It is what an hours-long stream of
+                    // rejections looked like from the app: nothing at all.
+                    if let hint = model.rejectionHint {
+                        SettingsInlineMessage(hint, color: .orange)
+                    }
                     enrollmentForm
                     listenerStatus
                 }
@@ -1030,15 +1036,13 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(host.label).font(.callout)
-                            HStack(spacing: 3) {
-                                Text(host.statusText)
-                                // Self-updating, and no formatter to cache.
-                                if let lastSeenAt = host.lastSeenAt, !host.isRevoked {
-                                    Text(lastSeenAt, style: .relative)
-                                }
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            // Rendered by the model against its injected clock —
+                            // "Last context: 2 min ago" — and refreshed with the
+                            // rest of the section. A tunnel that quietly stopped
+                            // delivering context is otherwise invisible here.
+                            Text(host.statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }

@@ -215,6 +215,45 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
         )
     }
 
+    // MARK: Authorization shape
+
+    /// Why a header yielded no credential, which decides which of two fixes the
+    /// user needs: update the plugin, or re-run enrollment.
+    func testAuthorizationShapeSeparatesAMissingCredentialFromAMalformedHeader() {
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: nil), .missing)
+        // The pre-1.1.0 plugin's exact wire shape. The head parser trims the
+        // trailing space, so this arrives as a bare scheme.
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer"), .missing)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer   "), .missing)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: ""), .missing)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Basic abc"), .malformed)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "abc"), .malformed)
+        XCTAssertEqual(
+            ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer " + String(repeating: "a", count: 4096)),
+            .malformed,
+            "an oversized header is refused, not classified as a credential we failed to read"
+        )
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "bearer abc"), .bearer("abc"))
+    }
+
+    /// The classifier IS the bearer path, so the two can never disagree about
+    /// which strings are credentials.
+    func testBearerTokenAndShapeAgreeOnEveryCase() {
+        let cases: [String?] = [
+            nil, "", "Bearer", "Bearer ", "Bearer abc", "bearer abc", "Basic abc", "abc",
+            "Bearer a b", "Bearer " + String(repeating: "a", count: 4096),
+        ]
+        for value in cases {
+            let shape = ClaudeRemoteHTTPCodec.authorizationShape(in: value)
+            let token = ClaudeRemoteHTTPCodec.bearerToken(in: value)
+            if case .bearer(let credential) = shape {
+                XCTAssertEqual(token, credential, "disagreed on \(value ?? "nil")")
+            } else {
+                XCTAssertNil(token, "disagreed on \(value ?? "nil")")
+            }
+        }
+    }
+
     // MARK: Event path
 
     func testEventNameIsRecoveredFromThePath() {

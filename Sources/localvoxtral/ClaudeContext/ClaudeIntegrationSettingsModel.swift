@@ -85,17 +85,44 @@ public final class ClaudeIntegrationSettingsModel {
         public var sshHostAlias: String?
         public var isRevoked: Bool
         public var lastSeenAt: Date?
-
-        /// The part of the status that is not a date.
+        /// The whole status, resolved against the model's injected clock when
+        /// the row was built.
         ///
-        /// A `RelativeDateTimeFormatter` cached in a `static let` here would be
-        /// non-Sendable global state — a Swift 6 error — and building one per
-        /// row per redraw is worse. The view renders `lastSeenAt` with
-        /// `Text(_:style:)`, which also keeps ticking on its own.
-        public var statusText: String {
-            if isRevoked { return "Revoked" }
-            return lastSeenAt == nil ? "Enrolled — not seen yet" : "Last seen"
-        }
+        /// Rendered rather than computed in the view for two reasons. A
+        /// `RelativeDateTimeFormatter` cached in a `static let` would be
+        /// non-Sendable global state (a Swift 6 error), and building one per row
+        /// per redraw is worse — but mostly, "when did this host last send
+        /// context" is the answer a user needs to tell a silent tunnel from a
+        /// working one, and an answer with a test beats an answer with a
+        /// formatter.
+        public var statusText: String
+    }
+
+    /// "Last context: 2 min ago", from a clock the caller supplies.
+    ///
+    /// Coarse on purpose: the question is "is this host still talking to me",
+    /// and a to-the-second answer would only invite the user to read precision
+    /// into a timestamp that is refreshed when the pane appears.
+    ///
+    /// `lastSeenAt` is the registry's IN-MEMORY value, persisted only on the
+    /// next persisting mutation (see `ClaudeRemoteHostRegistry.noteActivity` —
+    /// a disk write per hook event would be steady write amplification for a
+    /// dictation nicety). So a host that was active before a relaunch reads
+    /// "never" until its next hook event. That is the existing trade, not a
+    /// missing write.
+    static func hostStatusText(isRevoked: Bool, lastSeenAt: Date?, now: Date) -> String {
+        if isRevoked { return "Revoked" }
+        guard let lastSeenAt else { return "Last context: never" }
+        let elapsed = now.timeIntervalSince(lastSeenAt)
+        // A clock that stepped backwards (NTP, a DST correction) must not print
+        // a negative age. "Just now" is the honest reading of "not in the past".
+        guard elapsed >= 60 else { return "Last context: just now" }
+        let minutes = Int(elapsed / 60)
+        if minutes < 60 { return "Last context: \(minutes) min ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "Last context: \(hours) \(hours == 1 ? "hour" : "hours") ago" }
+        let days = hours / 24
+        return "Last context: \(days) \(days == 1 ? "day" : "days") ago"
     }
 
     /// What the pane says about the listener, in one short line.
@@ -221,6 +248,9 @@ public final class ClaudeIntegrationSettingsModel {
 
     public private(set) var hosts: [HostRow] = []
     public private(set) var listenerStatus: ListenerStatus = .idle
+    /// One short sentence when connections have been rejected since launch, nil
+    /// otherwise. See `rejectionHint(for:)`.
+    public private(set) var rejectionHint: String?
     /// Short result copy for the local plugin action, e.g. "Installed." Cleared
     /// when a new action starts.
     public private(set) var pluginResult: String?
@@ -265,6 +295,10 @@ public final class ClaudeIntegrationSettingsModel {
     private let performEnrollmentAsync:
         @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]) async
             -> ClaudeEnrollmentActionAttempt
+    /// Injected wall clock, read once per refresh to age the host rows. No
+    /// `Date()` in the view, and no timer: the rows are rebuilt when the pane
+    /// appears and after every action that touches a host.
+    private let now: @Sendable () -> Date
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -300,7 +334,8 @@ public final class ClaudeIntegrationSettingsModel {
                     )
                 }
             }.value
-        }
+        },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.registry = registry
         self.listener = listener
@@ -308,6 +343,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.enrollmentService = enrollmentService
         self.performAsync = performAsync
         self.performEnrollmentAsync = performEnrollmentAsync
+        self.now = now
         refreshHosts()
         refreshListenerStatus()
     }
@@ -386,15 +422,64 @@ public final class ClaudeIntegrationSettingsModel {
     // MARK: - Remote hosts
 
     public func refreshHosts() {
+        // One clock reading for the whole list, so two rows of the same age
+        // cannot disagree about what "now" was.
+        let timestamp = now()
         hosts = (registry?.hosts() ?? []).map {
             HostRow(
                 id: $0.id,
                 label: $0.label,
                 sshHostAlias: $0.sshHostAlias,
                 isRevoked: $0.isRevoked,
-                lastSeenAt: $0.lastSeenAt
+                lastSeenAt: $0.lastSeenAt,
+                statusText: Self.hostStatusText(
+                    isRevoked: $0.isRevoked, lastSeenAt: $0.lastSeenAt, now: timestamp
+                )
             )
         }
+        refreshRejectionHint()
+    }
+
+    /// Re-read the listener's rejection counters.
+    ///
+    /// Deliberately part of `refreshHosts` rather than a timer of its own: that
+    /// is what the pane already calls on appear and after every host action, and
+    /// a background timer redrawing Settings is a cost with no reader.
+    public func refreshRejectionHint() {
+        guard let listener else {
+            rejectionHint = nil
+            return
+        }
+        rejectionHint = Self.rejectionHint(for: listener.rejectionSnapshot)
+    }
+
+    /// One sentence naming the likely cause, or nil when nothing was rejected.
+    ///
+    /// Short by owner rule — a Settings row has the same "no long text" problem
+    /// the popover does — and count-free on purpose: the number of rejections is
+    /// noise (a busy session produces one every few minutes), while WHICH KIND
+    /// they were is the whole diagnosis. The detail stays in the log.
+    ///
+    /// The hedge in "a host MAY have" is deliberate. The listener counts every
+    /// rejected connection, and an enrolled host is not the only thing that can
+    /// reach a loopback port: a probe or a curl with no `Authorization` header
+    /// lands in `.missingToken` exactly like a pre-1.1.0 plugin does. Naming a
+    /// cause with certainty would sometimes accuse a host of a fault it does
+    /// not have.
+    static func rejectionHint(for snapshot: ClaudeRemoteRejectionTally.Snapshot) -> String? {
+        guard !snapshot.isEmpty else { return nil }
+        let cause: String
+        switch (snapshot.missingToken > 0, snapshot.unknownToken > 0) {
+        case (true, true):
+            cause = "an outdated plugin or a stale token"
+        case (true, false):
+            cause = "an outdated plugin — use Update Plugin"
+        case (false, true):
+            cause = "a stale token — rotate it and re-run setup"
+        case (false, false):
+            cause = "a malformed authorization header"
+        }
+        return "Rejected connections detected — a host may have \(cause)."
     }
 
     public func refreshListenerStatus() {
