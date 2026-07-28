@@ -40,7 +40,10 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 
 SOURCE_REPO = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
-SOURCE_REVISION = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"  # SpeechModelCatalog pin
+# Frozen conversion-input snapshot of SOURCE_REPO. SpeechModelCatalog now pins the
+# qhead OUTPUT repo (T0mSIlver/...-4bit-qhead @ 247f2eec...), not this one — do not
+# sync these two. Changing this SHA re-derives qhead from a different source snapshot.
+SOURCE_REVISION = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
 EMBED_KEY = "decoder.tok_embeddings.weight"
 
 
