@@ -454,15 +454,28 @@ final class TextInsertionService {
     ///
     /// The stop flush is the complete choke point for a terminal session: with
     /// newline sanitization on, `LiveHoldBackReplacementStream` buffers every
-    /// trailing space run until the next non-whitespace character, so no
-    /// mid-session release can ever END in whitespace — the only trailing space
-    /// a terminal ever sees is the one emitted here.
+    /// trailing whitespace run — the full `Character.isWhitespace` set, NBSP
+    /// included — until the next non-whitespace character, so no mid-session
+    /// release can ever END in whitespace — the only trailing space a terminal
+    /// ever sees is the one emitted here.
     ///
     /// The verdict is taken on the whole session's text, but only the
     /// not-yet-typed tail may be cut (`min` below). That is the same
     /// never-un-type invariant the hold-back stream enforces: text already
     /// handed to the field is in the user's app and there are no backspaces in
     /// the insertion path.
+    ///
+    /// ACCEPTED LIMITATION (codex review of #198): "the whole session's text"
+    /// is exactly that — text the FIELD already held before dictation started
+    /// is invisible here. The insertion path cannot read field content and no
+    /// popup-state signal exists, so dictating a command-shaped utterance
+    /// (`/compact `) after a hand-typed `fix ` prefix withholds a space no
+    /// popup consumed, and the user's next keystroke glues to `/compact`.
+    /// Accepted deliberately: mid-line command-shaped dictation into a
+    /// pre-populated prompt is rare, while the dismissed-popup case this
+    /// policy exists for — a genuinely lone command — is the common one.
+    /// Pinned by `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`;
+    /// changing that behavior is a policy revision, not a refactor.
     private func withholdingTUIAutocompleteTrailingSpace(_ releasedText: String) -> String {
         let sessionText = liveTypedTextForSession + releasedText
         let stripped = TUIAutocompleteTrailingSpace.stripped(sessionText)

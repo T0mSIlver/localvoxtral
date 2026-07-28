@@ -288,6 +288,25 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
+    /// French typography: the NBSP before `?` is dictated content. It is
+    /// buffered like a plain space (so no release ends in whitespace) and
+    /// re-emitted VERBATIM — sanitization must not rewrite it to an ASCII
+    /// space, which would change the user's French spacing.
+    func testNonBreakingSpaceIsBufferedAndReemittedVerbatim() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("oui\u{00A0}"), "oui")
+        XCTAssertEqual(stream.ingest("? "), "\u{00A0}?")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    /// An NBSP adjacent to a newline joins the run: the whole run collapses
+    /// to exactly one ASCII space, same as adjacent plain spaces.
+    func testNonBreakingSpaceAdjacentToNewlineCollapsesWithTheRun() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("a\u{00A0}\nb "), "a b")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
     func testFlushedRemainderIsSanitized() {
         var stream = makeStream(
             entries: [ReplacementEntry(replaceWith: "X", matches: ["run something"])],
@@ -356,6 +375,15 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
             ["\n\nleading "],
             [" "],
             ["\t\n "],
+            // Non-ASCII whitespace (codex review of #198, finding 3): French
+            // typography puts NBSP (U+00A0) / narrow NBSP (U+202F) before
+            // `?!:;`, and the ASR path never normalizes them away — they are
+            // whitespace and must be buffered exactly like a plain space,
+            // never emitted at the tail of a mid-session release.
+            ["mot\u{00A0}"],
+            ["/compact\u{00A0}"],
+            ["continuer\u{202F}"],
+            ["oui\u{00A0}", "? "],
         ]
 
         for chunks in chunkSequences {

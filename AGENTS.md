@@ -430,6 +430,17 @@ Key subsystems:
 
 ## Known tradeoffs — deliberate, not bugs
 
+- **The TUI trailing-space policy judges this dictation's text only.** The
+  terminal stop-flush verdict (`TUIAutocompleteTrailingSpace`, applied in
+  `TextInsertionService`) cannot see text the field already held before
+  dictation started, so dictating a lone command shape (`/compact `) into a
+  prompt line pre-populated by hand withholds a trailing space no popup
+  consumed. Accepted: the insertion path has no field-read capability and no
+  popup-state signal exists, mid-line command-shaped dictation is rare, and
+  the dismissed-popup case the policy exists for is the common one (pinned by
+  `testPrePopulatedFieldTextCannotRescueTheTrailingSpace`). Single-component
+  tokens naming an EXISTING absolute path (`/tmp `) abstain via a
+  filesystem-existence seam; non-existing ones (`/compact`) stay commands.
 - **Live Auto-Paste holds back the tail of the transcript.** Replacements are
   applied before typing (nothing is ever un-typed — there are no backspaces in
   the insertion path, and terminals can't support them: field bug 2026-07-06),

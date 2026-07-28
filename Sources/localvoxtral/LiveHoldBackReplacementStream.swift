@@ -44,13 +44,18 @@ import Foundation
 /// and submit a prompt mid-dictation, and a typed Tab can trigger shell
 /// completion UI — both mutate terminal state. When `sanitizesNewlines` is
 /// on, every whitespace run containing a newline or tab — including all
-/// adjacent spaces/tabs on BOTH sides of it — collapses to exactly one
+/// adjacent whitespace on BOTH sides of it — collapses to exactly one
 /// space, even when the run spans release boundaries or ends in the flushed
-/// remainder. To decide a run's fate, trailing spaces/tabs are buffered
-/// until the next non-whitespace character (or the remainder flush); plain
-/// space runs are then re-emitted verbatim, so no dictated text is ever
-/// dropped. Collapse runs at the very start of the session produce no
-/// leading space.
+/// remainder. To decide a run's fate, EVERY trailing whitespace character —
+/// not just ASCII space, but also the NBSP/narrow-NBSP French typography
+/// puts before `?!:;` — is buffered until the next non-whitespace character
+/// (or the remainder flush); runs without a newline or tab are then
+/// re-emitted verbatim, so no dictated text is ever dropped or rewritten.
+/// Buffering the full whitespace set is load-bearing: it is what makes
+/// `flushRemainder()` the only path that can emit a trailing whitespace
+/// character to a terminal, which the TUI-autocomplete trailing-space policy
+/// relies on (`TUIAutocompleteTrailingSpace`). Collapse runs at the very
+/// start of the session produce no leading space.
 struct LiveHoldBackReplacementStream {
     /// How much text `safeReleaseLimit()` may release mid-session, chosen
     /// once per rule set (see the type doc's caveats, most conservative
@@ -83,11 +88,12 @@ struct LiveHoldBackReplacementStream {
     // Newline/tab sanitization state, persisted across releases so whitespace
     // runs spanning chunk boundaries still collapse to a single space.
     // Starts "as if a space was emitted" so leading collapse runs are
-    // dropped. `pendingPlainSpaces` buffers spaces whose run fate (verbatim
-    // vs collapsed) is not yet known; `pendingRunNeedsCollapse` marks the
-    // current whitespace run as containing a newline or tab.
+    // dropped. `pendingPlainWhitespace` buffers whitespace (space, NBSP, …)
+    // whose run fate (verbatim vs collapsed) is not yet known;
+    // `pendingRunNeedsCollapse` marks the current whitespace run as
+    // containing a newline or tab.
     private var lastEmittedCharacterWasSpace = true
-    private var pendingPlainSpaces = ""
+    private var pendingPlainWhitespace = ""
     private var pendingRunNeedsCollapse = false
 
     init(dictionary: ReplacementDictionary, sanitizesNewlines: Bool) {
@@ -279,11 +285,13 @@ struct LiveHoldBackReplacementStream {
     }
 
     /// Collapses every whitespace run containing a newline or tab — with all
-    /// adjacent spaces/tabs on both sides — into a single space, without ever
-    /// producing double spaces. Trailing spaces are buffered (not emitted)
-    /// until the next non-whitespace character or the remainder flush decides
-    /// whether the run stays verbatim or collapses; state persists across
-    /// release boundaries.
+    /// adjacent whitespace on both sides — into a single space, without ever
+    /// producing double spaces. Every trailing whitespace character (the full
+    /// `Character.isWhitespace` set — ASCII space, NBSP, narrow NBSP, …) is
+    /// buffered (not emitted) until the next non-whitespace character or the
+    /// remainder flush decides whether the run stays verbatim or collapses;
+    /// state persists across release boundaries. Verbatim re-emission
+    /// preserves the exact characters, so French NBSP spacing survives.
     private mutating func sanitizingNewlines(in text: String) -> String {
         var output = ""
         output.reserveCapacity(text.count)
@@ -291,12 +299,12 @@ struct LiveHoldBackReplacementStream {
         for character in text {
             if character.isNewline || character == "\t" {
                 pendingRunNeedsCollapse = true
-                pendingPlainSpaces = ""
+                pendingPlainWhitespace = ""
                 continue
             }
-            if character == " " {
+            if character.isWhitespace {
                 if !pendingRunNeedsCollapse {
-                    pendingPlainSpaces.append(" ")
+                    pendingPlainWhitespace.append(character)
                 }
                 continue
             }
@@ -314,11 +322,11 @@ struct LiveHoldBackReplacementStream {
                 output.append(" ")
                 lastEmittedCharacterWasSpace = true
             }
-        } else if !pendingPlainSpaces.isEmpty {
-            output.append(pendingPlainSpaces)
+        } else if !pendingPlainWhitespace.isEmpty {
+            output.append(pendingPlainWhitespace)
             lastEmittedCharacterWasSpace = true
         }
-        pendingPlainSpaces = ""
+        pendingPlainWhitespace = ""
         pendingRunNeedsCollapse = false
     }
 }

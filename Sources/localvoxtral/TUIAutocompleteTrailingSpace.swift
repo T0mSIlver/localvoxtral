@@ -19,7 +19,13 @@ import Foundation
 ///   `[A-Za-z0-9_-]`. A token holding a SECOND `/` is a filesystem path
 ///   (`/usr/bin`, `/tmp/x`), never a slash command, and is left alone — as is
 ///   any text with other words in it (`fix /compact please`), where the popup
-///   is already closed and the trailing space is dictated content. Slash
+///   is already closed and the trailing space is dictated content. A
+///   single-component token satisfies the same syntax, so a token naming an
+///   EXISTING absolute path (`/tmp`, `/Applications`) abstains too: no agent
+///   TUI ships a command that collides with a root-level entry on the same
+///   machine, so existence is decisive, and a NON-existing token stays a
+///   command — dictating a path to a file that is not there is far rarer than
+///   dictating the command whose popup is open. Slash
 ///   command names are ASCII by construction in every agent TUI we target, so
 ///   a non-ASCII token (`/compacté`) abstains rather than guessing.
 /// - **Trailing mention**: the last whitespace-separated token is `@` plus a
@@ -59,7 +65,15 @@ enum TUIAutocompleteTrailingSpace {
 
     /// Returns `text` with its trailing whitespace removed when the text is one
     /// of the two autocomplete shapes above; otherwise returns `text` unchanged.
-    static func stripped(_ text: String) -> String {
+    ///
+    /// `isExistingAbsolutePath` is the filesystem-existence seam for the
+    /// single-component-path abstention (tests inject a fixed set so they do
+    /// not depend on the host filesystem); production uses the default, one
+    /// `FileManager` stat on the stop flush.
+    static func stripped(
+        _ text: String,
+        isExistingAbsolutePath: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> String {
         var body = text
         while let last = body.last, last.isWhitespace {
             body.removeLast()
@@ -70,7 +84,12 @@ enum TUIAutocompleteTrailingSpace {
         // Leading whitespace belongs to neither shape's recognition (and is
         // preserved either way — only the tail is ever cut).
         let candidate = body.drop(while: \.isWhitespace)
-        guard isLoneSlashCommand(candidate) || endsWithMentionToken(candidate) else {
+        if isLoneSlashCommand(candidate) {
+            // `/tmp` passes the syntax test but names a root-level entry: it
+            // is the path the user dictated, not a command (see the type doc).
+            return isExistingAbsolutePath(String(candidate)) ? text : body
+        }
+        guard endsWithMentionToken(candidate) else {
             return text
         }
         return body
