@@ -721,7 +721,7 @@ payload_starts_with_command() {
 
 allow_build_payload() {
   local payload="$1"
-  local integration_prefix="env VLLM_REALTIME_TEST_ENABLE=1 VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit swift test --filter RealtimeAPIVLLMIntegrationTests"
+  local integration_prefix="env VLLM_REALTIME_TEST_ENABLE=1 VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead swift test --filter RealtimeAPIVLLMIntegrationTests"
 
   payload_has_safe_chars "$payload" || return 1
 

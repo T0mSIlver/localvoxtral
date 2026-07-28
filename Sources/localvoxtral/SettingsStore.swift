@@ -239,7 +239,11 @@ final class SettingsStore {
 
         var defaultEndpoint: String { "ws://127.0.0.1:8000/v1/realtime" }
 
-        var defaultModelName: String { "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" }
+        /// Placeholder/default for External URL mode only (managed mode always
+        /// uses `SpeechModelCatalog.defaultOption`). The default endpoint above
+        /// is the local speechd test service, so this tracks the same checkpoint
+        /// the rest of the project pins.
+        var defaultModelName: String { "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" }
     }
 
     private enum Keys {
