@@ -270,7 +270,17 @@ struct ClaudeSessionJoinResolver {
             return nil
         }
 
-        if let claimed = pane.claimedClaudeSessionID, claimed != snapshot.sessionID {
+        // herdr reports the agent's RAW session id; the registry speaks
+        // agent-scoped ids (`ClaudeAgentSessionScope`). Scope the claim by the
+        // resolved session's own agent before comparing — for Claude that is
+        // the identity function, for opencode it adds the same prefix ingest
+        // did. Scoping by the snapshot's agent (not by anything herdr says)
+        // keeps this a pure cross-check: a claim can only ever CONFIRM the
+        // pane-id join, never redirect it.
+        if let claimed = pane.claimedClaudeSessionID,
+           ClaudeAgentSessionScope.scopedSessionID(
+               agent: snapshot.agent, sessionID: claimed
+           ) != snapshot.sessionID {
             Self.abstainedHerdrJoin(outcome: "pane session claim disagrees")
             return nil
         }
@@ -284,7 +294,7 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedHerdrJoin(outcome: "foreground process detection unavailable")
             return nil
         }
-        guard Self.registeredClaudeIsForeground(
+        guard Self.registeredAgentIsForeground(
             snapshot: snapshot, foregroundPIDs: foregroundPIDs
         ) else { return nil }
 
@@ -324,7 +334,10 @@ struct ClaudeSessionJoinResolver {
     /// Pure pid cross-check kept visible to tests because a snapshot with no
     /// process cannot be produced by a successful pane-id registry lookup, but
     /// the resolver must still fail closed if that invariant ever changes.
-    static func registeredClaudeIsForeground(
+    /// Agent-neutral (review F3): the pane may host Claude Code or opencode,
+    /// and the registered pid is whichever agent process the session's records
+    /// named — the abstention wording must not claim Claude for both.
+    static func registeredAgentIsForeground(
         snapshot: ClaudeSessionSnapshot,
         foregroundPIDs: [Int32]
     ) -> Bool {
@@ -333,7 +346,9 @@ struct ClaudeSessionJoinResolver {
             return false
         }
         guard foregroundPIDs.contains(process.claudePID) else {
-            abstainedHerdrJoin(outcome: "registered Claude process is not foreground")
+            abstainedHerdrJoin(
+                outcome: "registered \(snapshot.agent.rawValue) process is not foreground"
+            )
             return false
         }
         return true
