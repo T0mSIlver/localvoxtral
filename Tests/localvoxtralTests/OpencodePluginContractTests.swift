@@ -214,17 +214,29 @@ final class OpencodePluginContractTests: XCTestCase {
 
     /// Deliver one broker reply line on the most recently created socket —
     /// the shape `ClaudeContextBroker.reply` sends for an opencode record.
-    private func deliverBrokerReply() {
+    /// `accepted: nil` produces a reply with no `accepted` key at all: the
+    /// pre-accepted-era broker shape, which must settle callbacks true.
+    private func deliverBrokerReply(accepted: Bool? = nil) {
         let line = String(
-            decoding: ClaudeBrokerResponse.encodeLine(ClaudeBrokerResponse(marker: nil))!,
+            decoding: ClaudeBrokerResponse.encodeLine(
+                ClaudeBrokerResponse(marker: nil, accepted: accepted)
+            )!,
             as: UTF8.self
         ).replacingOccurrences(of: "\n", with: "\\n")
-        run(#"""
-        (() => {
-          const socket = globalThis.__sockets[globalThis.__sockets.length - 1];
-          socket.handlers.data('\#(line)');
-        })();
-        """#)
+        deliverRawReplyChunks([line])
+    }
+
+    /// Deliver raw bytes on the most recently created socket, one data event
+    /// per chunk — for unparseable replies and chunk-boundary splits.
+    private func deliverRawReplyChunks(_ chunks: [String]) {
+        for chunk in chunks {
+            run(#"""
+            (() => {
+              const socket = globalThis.__sockets[globalThis.__sockets.length - 1];
+              socket.handlers.data('\#(chunk)');
+            })();
+            """#)
+        }
     }
 
     /// Fail the most recently created socket the way a dead broker does:
@@ -287,6 +299,9 @@ final class OpencodePluginContractTests: XCTestCase {
     }
 
     func testFocusStateAdvancesOnReplyAndHeartbeatSuppressesResends() throws {
+        // Doubles as the old-broker compat pin: this reply carries no
+        // `accepted` field (a pre-accepted-era broker never sends one), and
+        // it must settle true — an old broker must not cause retry storms.
         try startTUI()
         setRoute(sessionID: "sesA")
         sample()
@@ -296,6 +311,66 @@ final class OpencodePluginContractTests: XCTestCase {
         XCTAssertEqual(
             try records(event: "FocusChanged", session: "sesA").count, 1,
             "an acknowledged declaration must be heartbeat-suppressed, not resent every sample"
+        )
+    }
+
+    func testRegistryRejectedFocusDeclarationIsRetriedUntilAccepted() throws {
+        // The declaration-before-session race #209 documented as residual,
+        // now closed: the broker replies `accepted:false` when the registry
+        // refused the declaration (it only honors declarations for sessions
+        // it knows), and the plugin must treat that as NOT delivered — retry
+        // at the next 500ms sample instead of letting the 20s heartbeat
+        // suppress the repair while dictation grounds on the previous
+        // session's context.
+        try startTUI()
+        setRoute(sessionID: "sesB")
+        sample()
+        XCTAssertEqual(try records(event: "FocusChanged", session: "sesB").count, 1)
+
+        deliverBrokerReply(accepted: false)
+        sample()
+        XCTAssertEqual(
+            try records(event: "FocusChanged", session: "sesB").count, 2,
+            "a registry-rejected declaration must be retried at the next sample"
+        )
+
+        deliverBrokerReply(accepted: true)
+        sample()
+        sample()
+        XCTAssertEqual(
+            try records(event: "FocusChanged", session: "sesB").count, 2,
+            "once the reply says accepted, the heartbeat takes over"
+        )
+    }
+
+    func testUnparseableReplyLineSettlesTrueLikeAPreAcceptedEraBroker() throws {
+        // The tolerant end of the new contract: a reply line the plugin
+        // cannot parse must behave exactly like one with no `accepted` field
+        // — settle true. Anything else turns an odd-but-live broker into a
+        // permanent retry storm inside the user's agent process.
+        try startTUI()
+        setRoute(sessionID: "sesA")
+        sample()
+        deliverRawReplyChunks(["this is not json\\n"])
+        sample()
+        sample()
+        XCTAssertEqual(
+            try records(event: "FocusChanged", session: "sesA").count, 1,
+            "an unparseable reply must settle true, exactly the pre-accepted behavior"
+        )
+    }
+
+    func testAcceptedFalseIsParsedAcrossChunkBoundaries() throws {
+        // Reply bytes arrive on whatever read boundaries the runtime picked;
+        // the verdict must survive a line split mid-key.
+        try startTUI()
+        setRoute(sessionID: "sesA")
+        sample()
+        deliverRawReplyChunks([#"{"accep"#, #"ted":false,"v":2}\n"#])
+        sample()
+        XCTAssertEqual(
+            try records(event: "FocusChanged", session: "sesA").count, 2,
+            "a rejection split across data events must still be read as one line"
         )
     }
 

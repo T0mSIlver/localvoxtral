@@ -21,6 +21,38 @@ final class ClaudeBrokerResponseTests: XCTestCase {
         XCTAssertNil(decoded.marker)
     }
 
+    func testRoundTripsTheAcceptanceVerdict() throws {
+        for accepted in [true, false] {
+            let line = try XCTUnwrap(
+                ClaudeBrokerResponse.encodeLine(ClaudeBrokerResponse(marker: nil, accepted: accepted))
+            )
+            let decoded = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(line.dropLast()))
+            XCTAssertEqual(decoded.accepted, accepted)
+        }
+    }
+
+    func testNilAcceptanceEncodesNoKeyAndDecodesBackAsNil() throws {
+        let line = try XCTUnwrap(ClaudeBrokerResponse.encodeLine(ClaudeBrokerResponse(marker: nil)))
+        XCTAssertFalse(
+            String(decoding: line, as: UTF8.self).contains("accepted"),
+            "nil must keep the key off the wire — its absence IS the pre-accepted-era shape"
+        )
+        let decoded = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(line.dropLast()))
+        XCTAssertNil(decoded.accepted)
+    }
+
+    func testPreAcceptedEraReplyStillDecodesWithNilAcceptance() throws {
+        // A reply from a broker built before the field existed. It must keep
+        // decoding, with `accepted == nil` — the compat promise the plugin's
+        // settle-true fallback rests on. No version bump guards this; the
+        // shape itself is the guarantee.
+        let json = #"{"v":1,"marker":"lvx-abcd1234"}"#
+        let decoded = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(Data(json.utf8)))
+        XCTAssertEqual(decoded.version, 1)
+        XCTAssertEqual(decoded.marker, "lvx-abcd1234")
+        XCTAssertNil(decoded.accepted)
+    }
+
     func testRejectsForeignVersion() {
         let json = #"{"v":99,"marker":"lvx-abcd1234"}"#
         XCTAssertNil(ClaudeBrokerResponse.decodeLine(Data(json.utf8)))

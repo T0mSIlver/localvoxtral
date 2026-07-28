@@ -293,6 +293,7 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
         XCTAssertNil(response.marker)
+        XCTAssertEqual(response.accepted, false, "the pid cross-check is a rejection and must say so")
         XCTAssertNil(
             registry.snapshot(sessionID: "opencode:ses_forged"),
             "a pid-forged opencode record must never reach the registry"
@@ -301,7 +302,7 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
 
     func testRejectedRecordRepliesWithNoMarker() throws {
         // A reply still comes back so the publisher is not left waiting, but it
-        // carries nothing to put in a title.
+        // carries nothing to put in a title — and says the record was refused.
         try broker.start()
         let result = UnixSocketPublisher(timeout: 2.0)
             .publishAndReadReply(line: Data("{not json}\n".utf8), to: socketPath)
@@ -310,6 +311,78 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
         XCTAssertNil(response.marker)
+        XCTAssertEqual(response.accepted, false)
+    }
+
+    // MARK: Acceptance verdict — the reply says what actually happened
+
+    func testRegistryRejectedFocusDeclarationRepliesNotAccepted() throws {
+        // The gap #209 documented as residual: a FocusChanged for a session
+        // the registry has never seen is refused by the registry, but the
+        // reply used to be shape-identical to success — the opencode plugin
+        // advanced its focus state and heartbeat-suppressed the retry for
+        // 20s, so a fresh session could dictate with the PREVIOUS session's
+        // context. The reply now carries the verdict.
+        try broker.start()
+        let declaration = ClaudeHookRecord(
+            event: .focusChanged,
+            agent: .opencode,
+            sessionID: "ses_unseen",
+            timestamp: 1,
+            process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: getpid(), tty: "/dev/ttys004")
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(declaration)),
+            to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertEqual(
+            response.accepted, false,
+            "a registry-refused declaration must not read as delivered"
+        )
+    }
+
+    func testCommittedRecordAndValidFocusDeclarationReplyAccepted() throws {
+        try broker.start()
+        // A committed regular record replies accepted — the positive pin.
+        let start = ClaudeHookRecord(
+            event: .sessionStart,
+            agent: .opencode,
+            sessionID: "ses_focus",
+            timestamp: 1,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: getpid())
+        )
+        let startResult = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(start)),
+            to: socketPath
+        )
+        guard case .success(let startReply) = startResult else {
+            return XCTFail("publish failed: \(startResult)")
+        }
+        let startResponse = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(startReply)))
+        XCTAssertEqual(startResponse.accepted, true, "a committed record must read as accepted")
+
+        // And a declaration for a session the registry KNOWS is accepted too.
+        let declaration = ClaudeHookRecord(
+            event: .focusChanged,
+            agent: .opencode,
+            sessionID: "ses_focus",
+            timestamp: 2,
+            process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: getpid(), tty: "/dev/ttys004")
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(declaration)),
+            to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertEqual(response.accepted, true)
     }
 
     func testPublisherEmitsMarkerOutputWhenLocalTitleFallbackIsEnabled() throws {

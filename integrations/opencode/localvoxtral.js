@@ -14,9 +14,9 @@
 // is the worst possible failure. Hence the hard rules below:
 //
 //   * No network-shaped waiting inside hooks. One lazily (re)connected
-//     socket, unref()ed, fire-and-forget writes. Broker reply lines are only
-//     ever COUNTED (one reply per record, in order) to settle callbacks —
-//     never parsed for content, never surfaced anywhere.
+//     socket, unref()ed, fire-and-forget writes. Broker reply lines settle
+//     callbacks (one reply per record, in order); each is read only for the
+//     broker's `accepted` verdict and never surfaced anywhere.
 //   * Every handler body is wrapped in try/catch and swallows everything.
 //   * Nothing is ever written to the terminal: no stdout, no stderr, no
 //     logging. opencode's TUI owns those descriptors.
@@ -117,14 +117,15 @@ function socketPath() {
 // blocks a hook on the dial.
 //
 // The socket is request/response: the broker writes exactly one reply line
-// per record it reads, in order (ClaudeBrokerResponse). publish() exploits
-// only that SHAPE — replies are counted, never parsed: this plugin has no
-// title channel and must never surface a byte anywhere a terminal could see
-// it. A caller that passes an onReply callback gets it settled exactly once,
-// with true when this record's reply line arrived (the broker read the
-// record) or false when the connection failed, was reset, or closed first.
-// A reply does NOT mean the registry accepted the record — see the focus
-// declaration notes in the TUI half for what that leaves unguaranteed.
+// per record it reads, in order (ClaudeBrokerResponse). A caller that passes
+// an onReply callback gets it settled exactly once: false when the reply says
+// `accepted:false` (the broker read the record but the registry refused it —
+// e.g. a focus declaration racing ahead of its session record) or when the
+// connection failed, was reset, or closed first; true otherwise. A reply
+// with no `accepted` field, or one that does not parse, settles TRUE — that
+// is a pre-`accepted`-era broker, and an old broker must look like the old
+// contract, not like a rejection storm. Reply content is never surfaced
+// anywhere a terminal could see it; this plugin has no title channel.
 
 let socket;
 
@@ -143,15 +144,31 @@ function connectSocket(path) {
       } catch {}
     }
   };
+  // Partial reply line carried between data events. Real replies are tiny,
+  // so the buffer is capped: past the cap the line stops accumulating and
+  // will not parse, which settles true (the tolerant fallback below).
+  let replyLine = "";
   created.on("data", (chunk) => {
     try {
       if (!chunk) return;
       for (let index = 0; index < chunk.length; index += 1) {
         const byte = typeof chunk === "string" ? chunk.charCodeAt(index) : chunk[index];
-        if (byte !== 10) continue; // count newline-terminated reply lines only
+        if (byte !== 10) {
+          if (replyLine.length < 512) replyLine += String.fromCharCode(byte);
+          continue;
+        }
+        const line = replyLine;
+        replyLine = "";
+        // `accepted === false` is the ONLY rejecting shape. A missing field
+        // or an unparseable line is a pre-`accepted`-era broker and settles
+        // true — exactly the old contract.
+        let verdict = true;
+        try {
+          verdict = JSON.parse(line).accepted !== false;
+        } catch {}
         const settle = pending.shift();
         try {
-          if (settle) settle(true);
+          if (settle) settle(verdict);
         } catch {}
       }
     } catch {}
@@ -458,12 +475,12 @@ const TuiHalf = async (api) => {
   // (reply, connection error, or close — the broker's own deadline bounds
   // the quiet case) re-enables sampling.
   //
-  // What a reply still cannot promise on this wire: REGISTRY acceptance. A
-  // rejected record earns the same nil-marker reply line as an accepted one
-  // (ClaudeContextBroker.handle), so a FocusChanged racing ahead of its
-  // session record — the registry refuses declarations for sessions it does
-  // not know — is indistinguishable from success here. That residual window
-  // is bounded by the 20s heartbeat re-declaration and by every route change.
+  // The reply also carries the REGISTRY's verdict (`accepted`, broker-side
+  // ClaudeContextBroker.handle): a FocusChanged racing ahead of its session
+  // record — the registry refuses declarations for sessions it does not
+  // know — settles false like any lost write, so the next sample retries
+  // instead of the 20s heartbeat suppressing the repair while dictation
+  // grounds on the previous session. Old brokers omit the field: settle true.
   let lastSession;
   let lastSentAt = 0;
   let inflight = false;
