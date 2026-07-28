@@ -48,6 +48,44 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/ "), "/ ")
     }
 
+    /// A SINGLE-component token satisfies the slash-command syntax too, but
+    /// `/tmp` or `/Applications` is a filesystem path the user dictated, not a
+    /// command (codex review of #198, finding 2). The default existence seam
+    /// is the real filesystem: `/tmp` and `/Applications` exist on every macOS
+    /// host this suite runs on, so their trailing space must stay.
+    func testSingleComponentExistingAbsolutePathKeepsItsTrailingSpace() {
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/tmp "), "/tmp ")
+        XCTAssertEqual(TUIAutocompleteTrailingSpace.stripped("/bin "), "/bin ")
+        XCTAssertEqual(
+            TUIAutocompleteTrailingSpace.stripped("/Applications "),
+            "/Applications "
+        )
+    }
+
+    /// Same rule, host-independent via the injected existence seam: existence
+    /// is decisive in BOTH directions — an existing path abstains, and a
+    /// non-existing token (a real command like `/compact`, or nonsense like
+    /// `/frobnicate`) is still treated as the command whose popup is open.
+    func testExistenceSeamDecidesSingleComponentTokens() {
+        let exists: (String) -> Bool = { ["/tmp", "/Applications"].contains($0) }
+        XCTAssertEqual(
+            TUIAutocompleteTrailingSpace.stripped("/tmp ", isExistingAbsolutePath: exists),
+            "/tmp "
+        )
+        XCTAssertEqual(
+            TUIAutocompleteTrailingSpace.stripped(" /Applications ", isExistingAbsolutePath: exists),
+            " /Applications "
+        )
+        XCTAssertEqual(
+            TUIAutocompleteTrailingSpace.stripped("/compact ", isExistingAbsolutePath: exists),
+            "/compact"
+        )
+        XCTAssertEqual(
+            TUIAutocompleteTrailingSpace.stripped("/frobnicate ", isExistingAbsolutePath: exists),
+            "/frobnicate"
+        )
+    }
+
     func testMultiWordTextIsUntouched() {
         XCTAssertEqual(
             TUIAutocompleteTrailingSpace.stripped(" /cmd extra words "),
@@ -291,6 +329,38 @@ final class TUIAutocompleteTrailingSpaceTests: XCTestCase {
         service.flushFinalLiveReplacementCorrections()
 
         XCTAssertEqual(typed.value.joined(), "/compact now")
+        service.endLiveReplacementSession()
+    }
+
+    /// ACCEPTED LIMITATION, pinned (codex review of #198, finding 1): the
+    /// stop-flush verdict sees only THIS session's text. Here the focused
+    /// field already holds a hand-typed "fix " before dictation starts — the
+    /// real prompt line is "fix /compact", mid-line, no popup open — but the
+    /// insertion path cannot read field content and no popup-state signal
+    /// exists, so the dictated "/compact " still looks like a lone slash
+    /// command and its trailing space is withheld. Accepted because mid-line
+    /// command-shaped dictation into a pre-populated prompt is rare and the
+    /// dismissed-popup case the policy exists for is the common one. If this
+    /// test starts failing, someone changed that judgment — make sure it was
+    /// a conscious decision, not a refactor side effect.
+    func testPrePopulatedFieldTextCannotRescueTheTrailingSpace() {
+        let typed = Box<[String]>([])
+        let service = makeService(capturing: typed)
+        // Nothing models the pre-existing "fix " on purpose: there is no seam
+        // through which the service could ever observe it.
+        service.beginLiveReplacementSession(
+            dictionary: nil,
+            preferredAppPID: nil,
+            isTerminalLikeTarget: true
+        )
+
+        service.enqueueRealtimeInsertion("/compact ")
+        service.flushFinalLiveReplacementCorrections()
+
+        XCTAssertEqual(
+            typed.value.joined(), "/compact",
+            "the session-local verdict must strip: field content is invisible by design"
+        )
         service.endLiveReplacementSession()
     }
 
