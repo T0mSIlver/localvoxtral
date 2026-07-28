@@ -100,6 +100,18 @@ final class OpencodePluginManifestTests: XCTestCase {
         )
     }
 
+    func testPendingBrokerRepliesAreBoundedByAReset() throws {
+        // The reply-callback queue must be bounded the same way queued bytes
+        // are: a peer that reads but never answers must reset the connection,
+        // not grow a callback queue inside the agent process.
+        let text = try source()
+        XCTAssertTrue(text.contains("const MAX_PENDING_REPLIES = 16;"))
+        XCTAssertTrue(
+            text.contains("pendingReplies.length >= MAX_PENDING_REPLIES"),
+            "the pending-reply watermark must gate every write"
+        )
+    }
+
     // MARK: Wire contract — pinned to the Swift constants, not to copies
 
     func testWireVersionAndAgentMatchTheSwiftWire() throws {

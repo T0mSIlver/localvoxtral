@@ -68,8 +68,11 @@ and remove the line from `~/.config/opencode/tui.json`.
 - **No title markers.** opencode owns and rewrites its window title mid-turn,
   so the title channel Claude Code uses cannot work here; localvoxtral never
   sends this plugin one.
-- **Subagent sessions are filtered.** Child (task-tool) sessions never
-  masquerade as the session you are typing into.
+- **Subagent sessions are filtered, fail-closed.** The plugin publishes a
+  session's activity only while it is in a bounded allowlist of known
+  top-level sessions, so a child (task-tool) session — or any session whose
+  parentage it never observed — never masquerades as the session you are
+  typing into.
 - **herdr panes keep working.** The plugin forwards the herdr pane identity
   it inherited from the environment, so localvoxtral's existing herdr join
   applies to opencode panes unchanged.

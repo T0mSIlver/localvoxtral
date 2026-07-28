@@ -14,7 +14,9 @@
 // is the worst possible failure. Hence the hard rules below:
 //
 //   * No network-shaped waiting inside hooks. One lazily (re)connected
-//     socket, unref()ed, fire-and-forget writes, broker replies discarded.
+//     socket, unref()ed, fire-and-forget writes. Broker reply lines are only
+//     ever COUNTED (one reply per record, in order) to settle callbacks —
+//     never parsed for content, never surfaced anywhere.
 //   * Every handler body is wrapped in try/catch and swallows everything.
 //   * Nothing is ever written to the terminal: no stdout, no stderr, no
 //     logging. opencode's TUI owns those descriptors.
@@ -78,8 +80,17 @@ const MAX_TRACKED_SESSIONS = 64;
 // Hard cap on bytes queued in the socket before the runtime flushed them. A
 // broker that stops reading must never grow this process's memory: past the
 // cap the connection is reset and records are DROPPED — context is a
-// nice-to-have, the user's agent process is not.
+// nice-to-have, the user's agent process is not. (Soft by one record: the
+// check runs before each write, so the queue can exceed the cap by at most
+// one MAX_LINE_BYTES record before the reset triggers.)
 const MAX_QUEUED_BYTES = 64 * 1024;
+
+// Cap on reply callbacks outstanding on one connection. The real broker
+// answers every record it reads and closes a connection after 8 records or
+// a 2s read deadline (ClaudeContextBroker limits), so a queue anywhere near
+// this deep means the peer is not behaving like the broker: reset the
+// connection (settling every pending callback as failed) rather than grow.
+const MAX_PENDING_REPLIES = 16;
 
 // ---------------------------------------------------------------------------
 // Socket path — mirrors ClaudeHookSocketPath.swift exactly.
@@ -97,21 +108,75 @@ function socketPath() {
 }
 
 // ---------------------------------------------------------------------------
-// Publisher — lazy connection, fire and forget, replies discarded.
+// Publisher — lazy connection, fire and forget, replies settle callbacks.
 //
 // The broker serves short connections (whole-connection read deadline, a
 // per-connection record cap), so the socket naturally closes between bursts;
 // the next publish reconnects. Writes issued right after createConnection are
 // buffered by the runtime until the connect completes — nothing here ever
 // blocks a hook on the dial.
+//
+// The socket is request/response: the broker writes exactly one reply line
+// per record it reads, in order (ClaudeBrokerResponse). publish() exploits
+// only that SHAPE — replies are counted, never parsed: this plugin has no
+// title channel and must never surface a byte anywhere a terminal could see
+// it. A caller that passes an onReply callback gets it settled exactly once,
+// with true when this record's reply line arrived (the broker read the
+// record) or false when the connection failed, was reset, or closed first.
+// A reply does NOT mean the registry accepted the record — see the focus
+// declaration notes in the TUI half for what that leaves unguaranteed.
 
 let socket;
 
-/// Returns true only when the line was actually handed to a healthy socket —
-/// callers that track publish state (the focus declarations) must not advance
-/// on a dropped write, or a lost switch would go unrepaired until the next
-/// heartbeat.
-function publish(record) {
+function connectSocket(path) {
+  const created = net.createConnection(path);
+  created.unref();
+  // Reply callbacks for records written on THIS connection, oldest first —
+  // per-connection state, so a reset can never settle a successor's writes.
+  const pending = [];
+  created.pendingReplies = pending;
+  const settleAllFailed = () => {
+    while (pending.length > 0) {
+      const settle = pending.shift();
+      try {
+        if (settle) settle(false);
+      } catch {}
+    }
+  };
+  created.on("data", (chunk) => {
+    try {
+      if (!chunk) return;
+      for (let index = 0; index < chunk.length; index += 1) {
+        const byte = typeof chunk === "string" ? chunk.charCodeAt(index) : chunk[index];
+        if (byte !== 10) continue; // count newline-terminated reply lines only
+        const settle = pending.shift();
+        try {
+          if (settle) settle(true);
+        } catch {}
+      }
+    } catch {}
+  });
+  created.on("error", () => {
+    try {
+      created.destroy();
+    } catch {}
+    settleAllFailed();
+  });
+  // Fires after destroy() and after a broker-side FIN (the broker closes
+  // every connection within seconds by design). Unreplied records on this
+  // connection are lost for good at that point; settle them as failed so
+  // their callers can retry. Idempotent with the error path above.
+  created.on("close", settleAllFailed);
+  return created;
+}
+
+/// Fire-and-forget publish. Returns true only when the line was actually
+/// handed to a healthy socket. `onReply`, when given, is settled exactly once
+/// per the connection contract above — callers that track publish state (the
+/// focus declarations) must advance ONLY in a `true` settlement: a write the
+/// runtime buffered while connecting, or one the broker never read, would
+/// otherwise mark a lost switch as delivered until the next heartbeat.
+function publish(record, onReply) {
   try {
     if (!record) return false;
     const line = JSON.stringify(record) + "\n";
@@ -119,29 +184,23 @@ function publish(record) {
     if (!socket || socket.destroyed) {
       const path = socketPath();
       if (!path) return false;
-      socket = net.createConnection(path);
-      socket.unref();
-      // Broker replies (marker lines for Claude publishers) are read and
-      // dropped: this plugin has no title channel and must never surface a
-      // byte anywhere a terminal could see it.
-      socket.on("data", () => {});
-      socket.on("error", () => {
-        try {
-          socket.destroy();
-        } catch {}
-      });
+      socket = connectSocket(path);
     }
-    // Backpressure is a drop, never a wait: if the broker stopped draining,
-    // reset the connection (the next publish lazily reconnects) and lose
-    // this record rather than queue unboundedly inside the agent process.
-    if (socket.writableLength > MAX_QUEUED_BYTES) {
-      try {
-        socket.destroy();
-      } catch {}
+    // Backpressure is a drop, never a wait: if the broker stopped draining
+    // (queued bytes) or stopped answering (pending replies), reset the
+    // connection (the next publish lazily reconnects) and lose this record
+    // rather than queue unboundedly inside the agent process. The reset
+    // settles every pending reply callback as failed via the close event.
+    if (socket.writableLength > MAX_QUEUED_BYTES || socket.pendingReplies.length >= MAX_PENDING_REPLIES) {
+      const stale = socket;
       socket = undefined;
+      try {
+        stale.destroy();
+      } catch {}
       return false;
     }
     socket.write(line);
+    socket.pendingReplies.push(typeof onReply === "function" ? onReply : undefined);
     return true;
   } catch {
     return false;
@@ -237,15 +296,25 @@ const ServerHalf = async () => {
   // When the directory is unknown the record goes out WITHOUT a cwd — fail
   // closed on the field, not the record.
   const directoryBySession = new Map();
-  // Subagent (task tool) sessions carry parentID; their lifecycle must not
-  // masquerade as user-facing sessions (same rule herdr's plugin applies).
-  const childSessions = new Set();
+  // The bounded ALLOWLIST of known top-level sessions. Parentage is only
+  // observable on session.created (info.parentID marks a subagent / task-tool
+  // child; nothing after that event carries it), so a session publishes only
+  // while its id is in here: children are never added, and an id this half
+  // never saw created — or one evicted by the bound — fails CLOSED, dropped.
+  // The previous shape (a bounded blocklist of child ids) failed OPEN after
+  // eviction: an evicted child's later activity looked top-level and was
+  // published as the session the user is typing into. The deliberate cost of
+  // the inversion: a top-level session predating this plugin's load (or past
+  // the bound) stops publishing entirely — dictation abstains for it instead
+  // of risking a child session's content grounding someone's prompt.
+  const topLevelSessions = new Set();
 
-  function remember(map, key, value) {
-    map.set(key, value);
-    if (map.size > MAX_TRACKED_SESSIONS) {
-      const oldest = map.keys().next().value;
-      map.delete(oldest);
+  function rememberTopLevel(sessionID) {
+    topLevelSessions.add(sessionID);
+    if (topLevelSessions.size > MAX_TRACKED_SESSIONS) {
+      const oldest = topLevelSessions.values().next().value;
+      topLevelSessions.delete(oldest);
+      directoryBySession.delete(oldest);
     }
   }
 
@@ -261,15 +330,10 @@ const ServerHalf = async () => {
         if (type === "session.created") {
           const info = properties.info || {};
           if (!info.id) return;
-          if (info.parentID) {
-            childSessions.add(info.id);
-            if (childSessions.size > MAX_TRACKED_SESSIONS) {
-              childSessions.delete(childSessions.values().next().value);
-            }
-            return;
-          }
+          if (info.parentID) return; // child: never enters the allowlist
+          rememberTopLevel(info.id);
           if (typeof info.directory === "string" && info.directory) {
-            remember(directoryBySession, info.id, info.directory);
+            directoryBySession.set(info.id, info.directory);
           }
           publish(record("SessionStart", info.id, { cwd: directoryFor(info.id) }));
           return;
@@ -277,14 +341,14 @@ const ServerHalf = async () => {
         if (type === "session.deleted") {
           const info = properties.info || {};
           if (!info.id) return;
-          if (childSessions.delete(info.id)) return;
+          if (!topLevelSessions.delete(info.id)) return;
           publish(record("SessionEnd", info.id, { cwd: directoryFor(info.id) }));
           directoryBySession.delete(info.id);
           return;
         }
         if (type === "session.idle") {
           const sessionID = properties.sessionID;
-          if (!sessionID || childSessions.has(sessionID)) return;
+          if (!sessionID || !topLevelSessions.has(sessionID)) return;
           publish(record("Stop", sessionID, { cwd: directoryFor(sessionID) }));
         }
       } catch {}
@@ -295,7 +359,7 @@ const ServerHalf = async () => {
     "chat.message": async (input, output) => {
       try {
         const sessionID = input && input.sessionID;
-        if (!sessionID || childSessions.has(sessionID)) return;
+        if (!sessionID || !topLevelSessions.has(sessionID)) return;
         const parts = (output && output.parts) || [];
         const prompt = parts
           .filter((part) => part && part.type === "text" && typeof part.text === "string")
@@ -314,7 +378,7 @@ const ServerHalf = async () => {
       try {
         const sessionID = input && input.sessionID;
         const tool = input && input.tool;
-        if (!sessionID || childSessions.has(sessionID)) return;
+        if (!sessionID || !topLevelSessions.has(sessionID)) return;
         // File-bearing tools only, mirroring the Claude plugin's
         // Read|Edit|Write matcher. Everything else (bash, grep, glob) carries
         // command strings, not file touches.
@@ -380,10 +444,29 @@ const TuiHalf = async (api) => {
   // triggers an immediate resample so switches that coincide with session
   // activity are caught event-fast. Leaving the session view publishes an
   // explicit retraction (FocusCleared) instead of waiting for the registry's
-  // TTL. Publish state only advances when the write was actually accepted, so
-  // a lost declaration or retraction is retried at the next sample.
+  // TTL.
+  //
+  // Publish state advances ONLY when the broker's reply line for that exact
+  // record arrives (publish's onReply contract — one reply per record, in
+  // order). A bare successful write proves nothing: the runtime buffers
+  // writes while the dial is still in flight, and the broker resets
+  // connections routinely (8 records / 2s deadline), so advancing on the
+  // write would mark a lost declaration as delivered — and a lost RETRACTION
+  // as retracted — and heartbeat-suppress the repair for 20 seconds. On any
+  // failed settlement the local state is left alone, so the next sample
+  // simply retries. One focus record is in flight at a time; its settlement
+  // (reply, connection error, or close — the broker's own deadline bounds
+  // the quiet case) re-enables sampling.
+  //
+  // What a reply still cannot promise on this wire: REGISTRY acceptance. A
+  // rejected record earns the same nil-marker reply line as an accepted one
+  // (ClaudeContextBroker.handle), so a FocusChanged racing ahead of its
+  // session record — the registry refuses declarations for sessions it does
+  // not know — is indistinguishable from success here. That residual window
+  // is bounded by the 20s heartbeat re-declaration and by every route change.
   let lastSession;
   let lastSentAt = 0;
+  let inflight = false;
 
   function sample() {
     try {
@@ -392,19 +475,28 @@ const TuiHalf = async (api) => {
         route && route.name === "session" && route.params && typeof route.params.sessionID === "string"
           ? route.params.sessionID
           : undefined;
+      if (inflight) return;
       const nowMillis = Date.now();
       if (!sessionID) {
-        if (lastSession && publish(record("FocusCleared", lastSession, undefined, tty))) {
-          lastSession = undefined;
-          lastSentAt = 0;
-        }
+        if (!lastSession) return;
+        const cleared = lastSession;
+        inflight = publish(record("FocusCleared", cleared, undefined, tty), (replied) => {
+          inflight = false;
+          if (replied && lastSession === cleared) {
+            lastSession = undefined;
+            lastSentAt = 0;
+          }
+        });
         return;
       }
       if (sessionID === lastSession && nowMillis - lastSentAt < FOCUS_HEARTBEAT_MS) return;
-      if (publish(record("FocusChanged", sessionID, undefined, tty))) {
-        lastSession = sessionID;
-        lastSentAt = nowMillis;
-      }
+      inflight = publish(record("FocusChanged", sessionID, undefined, tty), (replied) => {
+        inflight = false;
+        if (replied) {
+          lastSession = sessionID;
+          lastSentAt = nowMillis;
+        }
+      });
     } catch {}
   }
 
