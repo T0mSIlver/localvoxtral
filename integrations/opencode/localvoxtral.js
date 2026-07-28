@@ -1,0 +1,456 @@
+// localvoxtral opencode plugin — dictation context for opencode sessions.
+//
+// Install (see README.md beside this file): copy this ONE file into
+// ~/.config/opencode/plugins/ (the server half auto-discovers from there),
+// and list it in ~/.config/opencode/tui.json (the TUI half loads only
+// explicitly listed plugins — verified on opencode 1.17.12). Uninstall:
+// delete the file and the tui.json line. No dependencies.
+//
+// It publishes bounded NDJSON records (wire v2, `agent: "opencode"`) over the
+// localvoxtral app's private AF_UNIX socket — the same wire the Claude Code
+// hook publisher speaks (Sources/ClaudeContextWire/ClaudeHookWire.swift).
+// When the app is not running, every write fails silently: this plugin runs
+// INSIDE the user's agent process, and a hang or throw that stalls their turn
+// is the worst possible failure. Hence the hard rules below:
+//
+//   * No network-shaped waiting inside hooks. One lazily (re)connected
+//     socket, unref()ed, fire-and-forget writes, broker replies discarded.
+//   * Every handler body is wrapped in try/catch and swallows everything.
+//   * Nothing is ever written to the terminal: no stdout, no stderr, no
+//     logging. opencode's TUI owns those descriptors.
+//   * Bounded everything: prompts, paths, per-record file lists, line bytes,
+//     session caches.
+//
+// TWO HALVES, ONE FILE, chosen per JS realm. opencode's local TUI runs its
+// server in a Bun Worker thread (opencode source: packages/opencode/src/cli/
+// cmd/tui.ts, `new Worker(file)`), so the server plugin loader executes in
+// the worker realm and the TUI plugin loader executes in the main realm — and
+// a module may default-export either `server()` or `tui()`, never both
+// (packages/opencode/src/plugin/shared.ts, readV1Plugin). The realm split is
+// exactly the gate we need:
+//
+//   * Worker realm (never a TUI) -> the server half. It publishes session
+//     content and NEVER a TTY: under `opencode serve` a naive isatty answer
+//     would name a device whose pane does not display the session — the
+//     mis-join the whole design exists to prevent. Positive evidence or
+//     abstain, like the app's HerdrClientTTYProbe.
+//   * Main realm -> the TUI half. Only a realm that renders a pane loads it,
+//     and only it publishes the pane's TTY — inside FocusChanged records that
+//     declare which session the pane currently displays. One opencode process
+//     hosts many sessions on one TTY; the focus declaration is what lets the
+//     app's registry resolve that TTY to exactly one of them, or abstain.
+//
+// Headless realms (`opencode serve` / `opencode run` main thread) find a
+// `tui` module where the server loader wants `server()` and skip this plugin
+// with a log entry. Deliberate: `run` has no pane to dictate into, and a
+// serve process must not publish TTYs. See README.md ("What does not
+// publish") before "fixing" this.
+
+import net from "node:net";
+import fs from "node:fs";
+import { isatty } from "node:tty";
+import { isMainThread } from "node:worker_threads";
+
+// Wire constants — must mirror ClaudeHookWire.swift / ClaudeHookLimits. The
+// repo's OpencodePluginManifestTests pin these against the Swift constants.
+const WIRE_VERSION = 2;
+const AGENT = "opencode";
+const MAX_LINE_BYTES = 64 * 1024;
+const MAX_PROMPT_BYTES = 8 * 1024;
+const MAX_PATH_BYTES = 4 * 1024;
+const MAX_FILES_PER_RECORD = 16;
+
+// The registry treats a focus declaration as stale after 45 seconds
+// (ClaudeRegistryLimits.defaultFocusDeclarationTTL); a 20-second heartbeat
+// keeps a steadily displayed session fresh across one lost write, and the
+// half-second sample keeps a session SWITCH visible almost immediately —
+// opencode's TUI plugin API exposes the displayed session only as the
+// `api.route.current` getter (no route-change event exists on any bus in
+// 1.17.x), so sampling cadence is the switch latency. Bus events additionally
+// trigger an immediate resample, so any switch that coincides with session
+// activity is caught event-fast.
+const FOCUS_POLL_MS = 500;
+const FOCUS_HEARTBEAT_MS = 20000;
+
+// Bounds on in-process caches, so a very long-lived opencode cannot grow.
+const MAX_TRACKED_SESSIONS = 64;
+
+// Hard cap on bytes queued in the socket before the runtime flushed them. A
+// broker that stops reading must never grow this process's memory: past the
+// cap the connection is reset and records are DROPPED — context is a
+// nice-to-have, the user's agent process is not.
+const MAX_QUEUED_BYTES = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Socket path — mirrors ClaudeHookSocketPath.swift exactly.
+
+function socketPath() {
+  const override = process.env.LOCALVOXTRAL_CLAUDE_SOCKET;
+  if (override) return override;
+  const home = process.env.HOME;
+  if (!home) return undefined;
+  if (process.platform === "darwin") {
+    return home + "/Library/Application Support/localvoxtral/run/claude-context.sock";
+  }
+  const base = process.env.XDG_RUNTIME_DIR || home + "/.local/state";
+  return base + "/localvoxtral/claude-context.sock";
+}
+
+// ---------------------------------------------------------------------------
+// Publisher — lazy connection, fire and forget, replies discarded.
+//
+// The broker serves short connections (whole-connection read deadline, a
+// per-connection record cap), so the socket naturally closes between bursts;
+// the next publish reconnects. Writes issued right after createConnection are
+// buffered by the runtime until the connect completes — nothing here ever
+// blocks a hook on the dial.
+
+let socket;
+
+/// Returns true only when the line was actually handed to a healthy socket —
+/// callers that track publish state (the focus declarations) must not advance
+/// on a dropped write, or a lost switch would go unrepaired until the next
+/// heartbeat.
+function publish(record) {
+  try {
+    if (!record) return false;
+    const line = JSON.stringify(record) + "\n";
+    if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) return false;
+    if (!socket || socket.destroyed) {
+      const path = socketPath();
+      if (!path) return false;
+      socket = net.createConnection(path);
+      socket.unref();
+      // Broker replies (marker lines for Claude publishers) are read and
+      // dropped: this plugin has no title channel and must never surface a
+      // byte anywhere a terminal could see it.
+      socket.on("data", () => {});
+      socket.on("error", () => {
+        try {
+          socket.destroy();
+        } catch {}
+      });
+    }
+    // Backpressure is a drop, never a wait: if the broker stopped draining,
+    // reset the connection (the next publish lazily reconnects) and lose
+    // this record rather than queue unboundedly inside the agent process.
+    if (socket.writableLength > MAX_QUEUED_BYTES) {
+      try {
+        socket.destroy();
+      } catch {}
+      socket = undefined;
+      return false;
+    }
+    socket.write(line);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function closeSocket() {
+  try {
+    // end(), not destroy(): a final retraction may still be in the buffer,
+    // and end() flushes before FIN while an unref()ed socket cannot keep the
+    // process alive anyway.
+    if (socket && !socket.destroyed) socket.end();
+  } catch {}
+  socket = undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Record shaping. The broker re-applies every bound on decode; truncating
+// here as well keeps oversized payloads from ever crossing the wire.
+
+function truncateBytes(value, limit) {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  if (Buffer.byteLength(value, "utf8") <= limit) return value;
+  const bytes = Buffer.from(value, "utf8").subarray(0, limit);
+  let end = bytes.length;
+  // Never cut inside a UTF-8 sequence: drop continuation bytes, then a
+  // dangling lead byte.
+  while (end > 0 && (bytes[end - 1] & 0b11000000) === 0b10000000) end -= 1;
+  if (end > 0 && (bytes[end - 1] & 0b11000000) === 0b11000000) end -= 1;
+  return bytes.subarray(0, end).toString("utf8");
+}
+
+/// Safe process metadata only — identity and (for the TUI half) location of
+/// the pane, mirroring what the Claude hook publisher sends. The plugin runs
+/// inside the agent process, so `process.pid` IS the liveness pid the app
+/// probes; there is no shim ancestry to unwind here.
+function processBlock(tty) {
+  const block = {
+    hook_pid: process.pid,
+    claude_pid: process.pid,
+  };
+  if (typeof tty === "string" && tty) block.tty = tty;
+  const term = process.env.TERM_PROGRAM;
+  if (term) block.term_program = term;
+  // Inherited herdr pane identity keeps the app's existing herdr join arm
+  // working for opencode panes, unchanged.
+  const herdrPane = process.env.HERDR_PANE_ID;
+  const herdrSocket = process.env.HERDR_SOCKET_PATH;
+  if (herdrPane) block.herdr_pane_id = truncateBytes(herdrPane, MAX_PATH_BYTES);
+  if (herdrSocket) block.herdr_socket_path = truncateBytes(herdrSocket, MAX_PATH_BYTES);
+  return block;
+}
+
+function record(event, sessionID, fields, tty) {
+  // Bounded, not scoped: namespacing ("opencode:…") is applied by the
+  // RECEIVER from the agent tag, by design. The plugin sends raw ids.
+  const boundedID = truncateBytes(sessionID, MAX_PATH_BYTES);
+  if (!boundedID) return undefined;
+  const result = {
+    v: WIRE_VERSION,
+    event,
+    agent: AGENT,
+    session_id: boundedID,
+    ts: Date.now() / 1000,
+    process: processBlock(tty),
+  };
+  if (fields && typeof fields.cwd === "string" && fields.cwd) {
+    result.cwd = truncateBytes(fields.cwd, MAX_PATH_BYTES);
+  }
+  if (fields && typeof fields.prompt === "string" && fields.prompt) {
+    result.prompt = truncateBytes(fields.prompt, MAX_PROMPT_BYTES);
+  }
+  if (fields && typeof fields.toolName === "string" && fields.toolName) {
+    result.tool_name = truncateBytes(fields.toolName, MAX_PATH_BYTES);
+  }
+  if (fields && Array.isArray(fields.files) && fields.files.length > 0) {
+    result.files = fields.files.slice(0, MAX_FILES_PER_RECORD).map((file) => ({
+      path: truncateBytes(file.path, MAX_PATH_BYTES),
+      kind: file.kind,
+    }));
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Server half (worker realm): session content, never a TTY.
+
+const ServerHalf = async () => {
+  // session id -> directory, learned from session.created (the session's cwd
+  // is not on chat.message). There is deliberately NO fallback — not even the
+  // plugin-load directory: an instance-less server hosts sessions from many
+  // directories, and a wrong cwd would ground dictation on the wrong repo.
+  // When the directory is unknown the record goes out WITHOUT a cwd — fail
+  // closed on the field, not the record.
+  const directoryBySession = new Map();
+  // Subagent (task tool) sessions carry parentID; their lifecycle must not
+  // masquerade as user-facing sessions (same rule herdr's plugin applies).
+  const childSessions = new Set();
+
+  function remember(map, key, value) {
+    map.set(key, value);
+    if (map.size > MAX_TRACKED_SESSIONS) {
+      const oldest = map.keys().next().value;
+      map.delete(oldest);
+    }
+  }
+
+  function directoryFor(sessionID) {
+    return directoryBySession.get(sessionID);
+  }
+
+  return {
+    event: async ({ event }) => {
+      try {
+        const type = event && event.type;
+        const properties = (event && event.properties) || {};
+        if (type === "session.created") {
+          const info = properties.info || {};
+          if (!info.id) return;
+          if (info.parentID) {
+            childSessions.add(info.id);
+            if (childSessions.size > MAX_TRACKED_SESSIONS) {
+              childSessions.delete(childSessions.values().next().value);
+            }
+            return;
+          }
+          if (typeof info.directory === "string" && info.directory) {
+            remember(directoryBySession, info.id, info.directory);
+          }
+          publish(record("SessionStart", info.id, { cwd: directoryFor(info.id) }));
+          return;
+        }
+        if (type === "session.deleted") {
+          const info = properties.info || {};
+          if (!info.id) return;
+          if (childSessions.delete(info.id)) return;
+          publish(record("SessionEnd", info.id, { cwd: directoryFor(info.id) }));
+          directoryBySession.delete(info.id);
+          return;
+        }
+        if (type === "session.idle") {
+          const sessionID = properties.sessionID;
+          if (!sessionID || childSessions.has(sessionID)) return;
+          publish(record("Stop", sessionID, { cwd: directoryFor(sessionID) }));
+        }
+      } catch {}
+    },
+
+    // Fires in createUserMessage AFTER @-mention resolution and BEFORE the
+    // model call; the prompt text is the join of the text parts.
+    "chat.message": async (input, output) => {
+      try {
+        const sessionID = input && input.sessionID;
+        if (!sessionID || childSessions.has(sessionID)) return;
+        const parts = (output && output.parts) || [];
+        const prompt = parts
+          .filter((part) => part && part.type === "text" && typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n");
+        publish(
+          record("UserPromptSubmit", sessionID, {
+            prompt,
+            cwd: directoryFor(sessionID),
+          })
+        );
+      } catch {}
+    },
+
+    "tool.execute.after": async (input) => {
+      try {
+        const sessionID = input && input.sessionID;
+        const tool = input && input.tool;
+        if (!sessionID || childSessions.has(sessionID)) return;
+        // File-bearing tools only, mirroring the Claude plugin's
+        // Read|Edit|Write matcher. Everything else (bash, grep, glob) carries
+        // command strings, not file touches.
+        const kinds = { read: "read", edit: "edited", write: "edited" };
+        const kind = kinds[tool];
+        if (!kind) return;
+        const filePath = input.args && typeof input.args.filePath === "string" ? input.args.filePath : undefined;
+        if (!filePath) return;
+        publish(
+          record("PostToolUse", sessionID, {
+            toolName: tool,
+            files: [{ path: filePath, kind }],
+            cwd: directoryFor(sessionID),
+          })
+        );
+      } catch {}
+    },
+
+    dispose: async () => {
+      try {
+        closeSocket();
+      } catch {}
+    },
+  };
+};
+
+// ---------------------------------------------------------------------------
+// TUI half (main realm): the pane's TTY plus which session it displays.
+
+/// This process's controlling terminal, read child-free from fd 0 — the TUI
+/// realm owns the pane by construction (it renders into it). Positive
+/// verification or abstain: on macOS the candidate device's rdev must match
+/// fd 0's before it is ever published.
+function ownTTY() {
+  try {
+    if (!isatty(0)) return undefined;
+    if (process.platform === "linux") {
+      const link = fs.readlinkSync("/proc/self/fd/0");
+      return link.startsWith("/dev/") ? link : undefined;
+    }
+    if (process.platform === "darwin") {
+      const stat = fs.fstatSync(0);
+      if (!stat.isCharacterDevice()) return undefined;
+      // macOS device numbers: minor is the low 24 bits; pseudo-terminals are
+      // named /dev/ttysNNN, zero-padded to three digits.
+      const minor = stat.rdev & 0xffffff;
+      const candidate = "/dev/ttys" + String(minor).padStart(3, "0");
+      return fs.statSync(candidate).rdev === stat.rdev ? candidate : undefined;
+    }
+  } catch {}
+  return undefined;
+}
+
+const TuiHalf = async (api) => {
+  const tty = ownTTY();
+  if (!tty) return; // No pane evidence, nothing to declare. Ever.
+
+  // opencode's TUI exposes the displayed session only as the
+  // `api.route.current` getter (@opencode-ai/plugin/tui: TuiRouteCurrent) —
+  // no route-change event exists on any bus in 1.17.x, so event-driven focus
+  // is approximated from both ends: a half-second sample of the getter (pure
+  // in-memory read, no IO) bounds switch latency, and every bus event
+  // triggers an immediate resample so switches that coincide with session
+  // activity are caught event-fast. Leaving the session view publishes an
+  // explicit retraction (FocusCleared) instead of waiting for the registry's
+  // TTL. Publish state only advances when the write was actually accepted, so
+  // a lost declaration or retraction is retried at the next sample.
+  let lastSession;
+  let lastSentAt = 0;
+
+  function sample() {
+    try {
+      const route = api.route && api.route.current;
+      const sessionID =
+        route && route.name === "session" && route.params && typeof route.params.sessionID === "string"
+          ? route.params.sessionID
+          : undefined;
+      const nowMillis = Date.now();
+      if (!sessionID) {
+        if (lastSession && publish(record("FocusCleared", lastSession, undefined, tty))) {
+          lastSession = undefined;
+          lastSentAt = 0;
+        }
+        return;
+      }
+      if (sessionID === lastSession && nowMillis - lastSentAt < FOCUS_HEARTBEAT_MS) return;
+      if (publish(record("FocusChanged", sessionID, undefined, tty))) {
+        lastSession = sessionID;
+        lastSentAt = nowMillis;
+      }
+    } catch {}
+  }
+
+  const timer = setInterval(sample, FOCUS_POLL_MS);
+  if (timer && typeof timer.unref === "function") timer.unref();
+
+  const unsubscribes = [];
+  if (api.event && typeof api.event.on === "function") {
+    // Resample-on-event: TuiEventBus.on requires a concrete type per
+    // subscription, so cover the events a session switch tends to ride on.
+    for (const type of [
+      "session.created",
+      "session.deleted",
+      "session.status",
+      "session.idle",
+      "message.updated",
+    ]) {
+      try {
+        unsubscribes.push(api.event.on(type, sample));
+      } catch {}
+    }
+  }
+
+  if (api.lifecycle && typeof api.lifecycle.onDispose === "function") {
+    api.lifecycle.onDispose(() => {
+      try {
+        clearInterval(timer);
+        for (const unsubscribe of unsubscribes) {
+          try {
+            unsubscribe();
+          } catch {}
+        }
+        if (lastSession) {
+          publish(record("FocusCleared", lastSession, undefined, tty));
+          lastSession = undefined;
+        }
+        closeSocket();
+      } catch {}
+    });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// One default export per realm — see the header for why this split is the
+// TUI-ownership gate, not a convenience.
+
+export default isMainThread
+  ? { id: "localvoxtral", tui: TuiHalf }
+  : { id: "localvoxtral", server: ServerHalf };

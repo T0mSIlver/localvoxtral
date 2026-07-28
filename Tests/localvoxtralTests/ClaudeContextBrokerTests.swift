@@ -201,6 +201,104 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         )
     }
 
+    func testBrokerWithholdsTheMarkerForAnOpencodeRecord() throws {
+        // The herdr rule, per agent: opencode rewrites its own OSC titles
+        // mid-turn (and clears them on exit), so a marker sent there could
+        // never survive in a title — and the plugin never writes to the
+        // terminal anyway. Allocation is unchanged; only emission is gated.
+        try broker.start()
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            agent: .opencode,
+            sessionID: "ses_1",
+            timestamp: 1,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: getpid())
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)),
+            to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertNil(response.marker)
+        XCTAssertEqual(
+            registry.snapshot(sessionID: "opencode:ses_1")?.marker,
+            ClaudeSessionMarker(value: "lvx-deadbeef"),
+            "agent gating changes reply emission only; the scoped session keeps its registry marker"
+        )
+    }
+
+    func testBrokerEchoesAV1RequestsVersionSoAStalePublisherKeepsItsMarker() throws {
+        // Mixed-version end-to-end (review C4): a machine can run an OLD
+        // installed plugin (v1 publisher binary) against a NEW app. The old
+        // publisher rejects any reply that does not say v1, so the broker must
+        // shape each reply as the REQUEST's version — or every stale install
+        // silently loses the marker channel until it updates.
+        try broker.start()
+        let v1Line = Data(
+            (#"{"v":1,"event":"SessionStart","session_id":"old-publisher","ts":1,"cwd":"/repo"}"# + "\n").utf8
+        )
+        let result = UnixSocketPublisher(timeout: 2.0)
+            .publishAndReadReply(line: v1Line, to: socketPath)
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        let raw = try XCTUnwrap(reply)
+        XCTAssertTrue(
+            String(decoding: raw, as: UTF8.self).contains(#""v":1"#),
+            "the reply must be v1-shaped for a v1 request"
+        )
+        // And it still round-trips through the response codec with the marker.
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(raw))
+        XCTAssertEqual(response.version, 1)
+        XCTAssertEqual(response.marker, "lvx-deadbeef")
+
+        // A v2 request gets a v2-shaped reply.
+        let v2Record = ClaudeHookRecord(event: .stop, sessionID: "old-publisher", timestamp: 2)
+        let v2Result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(v2Record)),
+            to: socketPath
+        )
+        guard case .success(let v2Reply) = v2Result else {
+            return XCTFail("publish failed: \(v2Result)")
+        }
+        let v2Response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(v2Reply)))
+        XCTAssertEqual(v2Response.version, 2)
+    }
+
+    func testOpencodeRecordClaimingAForeignPidIsRejectedByThePeerPidCheck() throws {
+        // The opencode plugin runs inside the agent process and dials the
+        // socket from it, so the kernel's peer pid must equal the record's
+        // claimed pid. This connection comes from the TEST process, so a
+        // claim of pid 1 is a forgery and must not reach the registry.
+        try broker.start()
+        let forged = ClaudeHookRecord(
+            event: .sessionStart,
+            agent: .opencode,
+            sessionID: "ses_forged",
+            timestamp: 1,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(hookPID: 1, claudePID: 1)
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(forged)),
+            to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertNil(response.marker)
+        XCTAssertNil(
+            registry.snapshot(sessionID: "opencode:ses_forged"),
+            "a pid-forged opencode record must never reach the registry"
+        )
+    }
+
     func testRejectedRecordRepliesWithNoMarker() throws {
         // A reply still comes back so the publisher is not left waiting, but it
         // carries nothing to put in a title.
