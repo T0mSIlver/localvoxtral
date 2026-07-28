@@ -515,6 +515,7 @@ public final class ClaudeContextBroker: Sendable {
                 reply(
                     to: fd,
                     marker: handled.marker,
+                    accepted: handled.accepted,
                     isHerdrHosted: handled.isHerdrHosted,
                     version: handled.replyVersion
                 )
@@ -583,6 +584,7 @@ public final class ClaudeContextBroker: Sendable {
     private func reply(
         to fd: Int32,
         marker: ClaudeSessionMarker?,
+        accepted: Bool,
         isHerdrHosted: Bool,
         version: Int
     ) {
@@ -592,7 +594,9 @@ public final class ClaudeContextBroker: Sendable {
             // v1 publisher rejects any reply that does not say v1, so replying
             // with the broker's own version would silently kill the marker
             // channel for every stale plugin install until it updated.
-            ClaudeBrokerResponse(version: version, marker: responseMarker)
+            // `accepted` rides along in every reply shape — old decoders
+            // ignore the unknown key (synthesized Codable), so no bump.
+            ClaudeBrokerResponse(version: version, marker: responseMarker, accepted: accepted)
         ) else { return }
         _ = line.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }
@@ -609,15 +613,30 @@ public final class ClaudeContextBroker: Sendable {
     }
 
     /// - Returns: the marker for the session this record belongs to, whether
-    ///   herdr must intercept title changes, and the wire version to shape the
-    ///   reply as (the request's own — see `reply`), or nil marker metadata
-    ///   when the record was rejected.
+    ///   the record was committed to the registry (`accepted` — carried back
+    ///   in the reply so a publisher can distinguish "read" from "took
+    ///   effect"), whether herdr must intercept title changes, and the wire
+    ///   version to shape the reply as (the request's own — see `reply`).
+    ///
+    /// `accepted` is truthful for every layer that still produces a reply. A
+    /// reply is per complete LINE, so exactly three rejection layers can
+    /// answer `false`:
+    ///   1. wire-shape rejection of a complete line (`decodeLine` throws —
+    ///      malformed JSON, unsupported version, over-limit fields);
+    ///   2. the opencode peer-pid cross-check below;
+    ///   3. the registry refusing the record (`ingest` returns nil: focus
+    ///      declarations/clears for sessions it has never seen, origin or
+    ///      agent mismatch, `SessionEnd` for an unknown session, and the
+    ///      namespace-prefix aliasing drop).
+    /// Connection-level rejections (foreign uid, unterminated over-cap line,
+    /// too many records, read deadline) drop the connection WITHOUT a reply,
+    /// unchanged — publishers observe those as an error/close, not a verdict.
     @discardableResult
     private func handle(
         line: Data,
         origin: ClaudeTransportOrigin,
         peerPID: pid_t?
-    ) -> (marker: ClaudeSessionMarker?, isHerdrHosted: Bool, replyVersion: Int) {
+    ) -> (marker: ClaudeSessionMarker?, accepted: Bool, isHerdrHosted: Bool, replyVersion: Int) {
         do {
             let record = try ClaudeHookWireCodec.decodeLine(line, limits: limits.wire)
             // Per-agent pid cross-check against the KERNEL's answer. The
@@ -639,13 +658,18 @@ public final class ClaudeContextBroker: Sendable {
                     #if DEBUG
                     debugNotify(.failure(.malformed))
                     #endif
-                    return (nil, false, record.version)
+                    return (nil, false, false, record.version)
                 }
             }
             let snapshot = registry.ingest(record, origin: origin)
+            let accepted = snapshot != nil
             // Content is never logged — only its shape. A hook record carries
             // the user's prompt and their file paths.
-            Log.claudeContext.debug("Ingested \(record.event.rawValue, privacy: .public)")
+            if accepted {
+                Log.claudeContext.debug("Ingested \(record.event.rawValue, privacy: .public)")
+            } else {
+                Log.claudeContext.debug("Registry refused \(record.event.rawValue, privacy: .public)")
+            }
             #if DEBUG
             debugNotify(.success(record))
             #endif
@@ -657,21 +681,21 @@ public final class ClaudeContextBroker: Sendable {
             // never writes to the terminal at all. Allocation is unchanged —
             // the registry marker remains every join's liveness handle.
             let marker = snapshot?.agent == .claude ? snapshot?.marker : nil
-            return (marker, record.process?.herdrPaneID != nil, record.version)
+            return (marker, accepted, record.process?.herdrPaneID != nil, record.version)
         } catch let error as ClaudeHookWireError {
             Log.claudeContext.error("Rejected record: \(String(describing: error), privacy: .public)")
             #if DEBUG
             debugNotify(.failure(error))
             #endif
-            // A rejected record carries no marker, so its reply shape is
-            // inert; the current version is as good as any guess.
-            return (nil, false, ClaudeHookWire.version)
+            // A rejected record carries no marker; the current version is as
+            // good as any guess for the reply shape.
+            return (nil, false, false, ClaudeHookWire.version)
         } catch {
             Log.claudeContext.error("Rejected record: undecodable")
             #if DEBUG
             debugNotify(.failure(.malformed))
             #endif
-            return (nil, false, ClaudeHookWire.version)
+            return (nil, false, false, ClaudeHookWire.version)
         }
     }
 }
