@@ -354,6 +354,116 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         XCTAssertEqual(signals.monitor.startCount, 0)
     }
 
+    /// A commit that never landed must not be watched: `.failed` leaves nothing
+    /// in the target app to erase, so a Backspace typed there would be recorded
+    /// as erasing an insertion that never happened — and an uneventful window
+    /// would pad the `clean` denominator with unwatchable dictations. The
+    /// record itself is still written; it just carries no behavior block.
+    func testFailedCommitNeverArmsTheWatch() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(
+            dogfoodArmed: true,
+            editSignal: signals,
+            commitOutcome: .failed(message: "insertion failed")
+        )
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0, "nothing was inserted; nothing to watch")
+        XCTAssertFalse(signals.watcher.isWatching)
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertNil(record.behavior, "an unwatched dictation keeps no behavior block")
+    }
+
+    /// Same rule for the Secure Keyboard Entry fallback: the text went to the
+    /// clipboard, not the target app, so post-commit keys say nothing about it.
+    func testClipboardFallbackCommitNeverArmsTheWatch() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(
+            dogfoodArmed: true,
+            editSignal: signals,
+            commitOutcome: .copiedToClipboard(message: "Copied to clipboard")
+        )
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        XCTAssertEqual(signals.monitor.startCount, 0)
+        XCTAssertFalse(signals.watcher.isWatching)
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertNil(record.behavior)
+    }
+
+    /// The watch window must scale with what was actually inserted. A
+    /// clipboard-payload commit inserts the substituted payload, not the
+    /// placeholder — a 100-word paste takes far longer to judge than one
+    /// placeholder token, so it gets the 15 s rung, not 2 s. The payload
+    /// itself must still never reach the record: only the window length (and
+    /// the bucket it implies) may reflect it.
+    func testClipboardPayloadWindowScalesWithTheInsertedPayload() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        harness.viewModel.settings.clipboardPayloadMacroEnabled = true
+        let payload = (0..<100).map { "word\($0)" }.joined(separator: " ")
+        harness.viewModel.debugClipboardPayloadPasteboardReaderOverride = {
+            WiringPasteboardStub(text: payload)
+        }
+        // The polish stub returns text without the placeholder, so the
+        // placeholder-count guard discards the polish and commits the
+        // placeholder-bearing grounded text — payload-substituted at commit.
+        harness.viewModel.currentDictationEventText = "paste clipboard"
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+
+        await signals.sleeper.waitForSleepRequest()
+        XCTAssertEqual(
+            signals.sleeper.requestedDurations, [.seconds(15.0)],
+            "the window measures the substituted commit, not its placeholder"
+        )
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertEqual(
+            record.text.committedText, ClipboardPayloadMacro.placeholder,
+            "measuring the payload must not persist it"
+        )
+
+        signals.clock.advance(1)
+        signals.monitor.send(.backspace)
+        await signals.watcher.flushTask?.value
+        let behavior = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last?.behavior)
+        XCTAssertEqual(behavior.wordCountBucket, "41+", "buckets follow the inserted length")
+        XCTAssertEqual(behavior.watchWindowSeconds, 15)
+    }
+
+    /// FINDING 3, at the notification wiring: the flush must run INLINE in the
+    /// `willTerminateNotification` observer. The observer's synchronous return
+    /// is the last execution the process guarantees — a Task spawned there is
+    /// not guaranteed to run — so the record must already be patched when
+    /// `post` returns, with deliberately no await in between. A private
+    /// notification center keeps the post from reaching every other retained
+    /// view model in the suite.
+    func testWillTerminateNotificationFlushesTheOpenWatchInline() async throws {
+        let signals = EditSignalHarness()
+        let harness = try makeHarness(dogfoodArmed: true, editSignal: signals)
+        let center = NotificationCenter()
+        harness.viewModel.debugRegisterLifecycleObservers(on: center)
+
+        harness.viewModel.finishStoppedSession(promotePendingSegment: false)
+        await harness.viewModel.polishAndCommitTask?.value
+        XCTAssertTrue(signals.watcher.isWatching, "the commit opened a window")
+
+        center.post(name: NSApplication.willTerminateNotification, object: nil)
+
+        let record = try XCTUnwrap(recordsOnDisk(in: harness.captureDirectory).last)
+        XCTAssertEqual(
+            record.behavior?.outcome, .superseded,
+            "the patch must be on disk when the observer returns"
+        )
+        XCTAssertFalse(signals.watcher.isWatching)
+    }
+
     // MARK: - Builder
 
     func testEndpointClassBuckets() {
@@ -506,7 +616,8 @@ final class DogfoodCaptureWiringTests: XCTestCase {
     private func makeHarness(
         dogfoodArmed: Bool,
         blockCaptureDirectory: Bool = false,
-        editSignal: EditSignalHarness? = nil
+        editSignal: EditSignalHarness? = nil,
+        commitOutcome: OverlayBufferCommitOutcome = .succeeded
     ) throws -> Harness {
         let settings = makeSettings()
         settings.llmPolishingEnabled = true
@@ -527,9 +638,11 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             try? FileManager.default.removeItem(at: base)
         }
 
+        let overlayCoordinator = WiringMockOverlayCoordinator()
+        overlayCoordinator.commitOutcome = commitOutcome
         let viewModel = DictationViewModel(
             settings: settings,
-            overlayBufferCoordinator: WiringMockOverlayCoordinator(),
+            overlayBufferCoordinator: overlayCoordinator,
             startRuntimeServices: false
         )
         viewModel.appConfigStore = WiringMockAppConfigStore()
@@ -624,6 +737,9 @@ private final class WiringMockAppConfigStore: AppConfigServing {
 @MainActor
 private final class WiringMockOverlayCoordinator: OverlayBufferSessionCoordinating {
     var commitTargetAppPID: pid_t? = nil
+    /// What `commitIfNeeded` reports — the seam for the failed / clipboard-
+    /// fallback arming tests.
+    var commitOutcome: OverlayBufferCommitOutcome = .succeeded
 
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(
@@ -640,7 +756,7 @@ private final class WiringMockOverlayCoordinator: OverlayBufferSessionCoordinati
         using _: OverlayTextCommitting,
         autoCopyEnabled _: Bool
     ) -> OverlayBufferCommitOutcome {
-        .succeeded
+        commitOutcome
     }
 
     func dismissAfterHold(minimumVisibility _: TimeInterval) {}
