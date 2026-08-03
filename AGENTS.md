@@ -563,6 +563,31 @@ Key subsystems:
     reconcile, vocab-always / raw-excerpt-only-after-authorized-join). A TTY
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
     contents; a herdr join still never attaches surface text on any terminal.
+  - A Claude Code "Remote Control" session (the agent runs on a machine of the
+    user's, `claude.ai/code` in a browser is the UI) has no pane, no TTY, and no
+    title, so it joins from the FOCUSED BROWSER TAB: the tab's
+    `https://claude.ai/code/session_…` URL, read over AppleScript behind
+    `FocusedBrowserTabURLReading` (Chrome, Brave, Safari —
+    `BrowserTabAllowlist`, deliberately a SEPARATE list from
+    `TerminalScreenAllowlist`; Firefox has no such AppleScript surface), parsed
+    strictly (`ClaudeBridgeSessionURL`: https only, host exactly `claude.ai`,
+    no userinfo/port, `session_[A-Za-z0-9_-]+` on the percent-ENCODED path) and
+    matched by exact equality against the `CLAUDE_CODE_BRIDGE_SESSION_ID` the
+    session's own hooks publish (Claude Code ≥ 2.1.199). This is the ONE arm
+    that spans local and remote sessions, because the id is bridge-allocated and
+    globally unique — unlike a tty/pane id/pid, which another machine can mirror;
+    `ClaudeSessionSnapshot.bridgeSessionID` still routes the read by origin.
+    A `.browserTab` join authorizes NO screen capture of any kind (the
+    authorizer's mechanism switch is exhaustive, so a new arm must decide), and
+    carries no window identity because there is no capture to pair one with.
+    Liveness re-checks the binding, not just the marker: Claude Code REMOVES the
+    variable when the connection ends and the reducer replaces the reported
+    metadata whole, so a disconnected session ages the join out on its own next
+    hook rather than on a timer of ours. The browser is asked ONLY under
+    `claudeRepoContextEnabled` (the screen setting alone must not automate a
+    browser), and each browser needs its own TCC Automation grant — pre-warmed
+    by its own `TerminalAutomationConsentPrewarmSettingsObserver` under that
+    same setting, since the consent sheet dies with the 1 s read that raised it.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

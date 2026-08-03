@@ -269,6 +269,36 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
         XCTAssertFalse(authorizer.isAuthorized(target: ghostty, windowID: 101))
     }
 
+    // The MECHANISM is what refuses, not the missing window identity. A browser
+    // join resolved by the production arm carries no window id, so the window
+    // check would refuse it anyway and hide a regression in the mechanism gate —
+    // this hands the authorizer a browser join that satisfies every OTHER
+    // condition (same target, matching established window, live session) and
+    // still requires a refusal.
+    func testTheMechanismItselfRefusesEvenWhenEveryOtherConditionHolds() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(), origin: local))
+        let joinResolver = resolver(registry: registry, tabURL: sessionURL)
+        let resolved = await joinResolver.resolve(target: chrome)
+        let arm = try XCTUnwrap(resolved)
+        let joinWithWindow = ClaudeSessionJoin(
+            target: arm.target,
+            marker: arm.marker,
+            snapshot: arm.snapshot,
+            windowID: 101,
+            mechanism: .browserTab,
+            browserTab: arm.browserTab
+        )
+        let authorizer = TerminalScreenClaudeJoinAuthorizer(
+            resolver: joinResolver, currentJoin: { joinWithWindow }
+        )
+        XCTAssertTrue(
+            joinResolver.isStillLive(joinWithWindow),
+            "precondition: only the mechanism can be what refuses below"
+        )
+        XCTAssertFalse(authorizer.isAuthorized(target: chrome, windowID: 101))
+    }
+
     // A browser join carries no window identity on purpose: a window id exists
     // to pair a screen capture with the join that authorized it, and there is
     // no capture.
