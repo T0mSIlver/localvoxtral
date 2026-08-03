@@ -363,6 +363,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         process.arguments = [shimURL.path, event]
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment.removeValue(forKey: "CLAUDE_PLUGIN_OPTION_TOKEN")
+        // The enrichment allowlist is cleared unless a test sets it: a runner
+        // that happens to be inside tmux (or herdr) would otherwise leak its own
+        // pane into every "nothing is set" assertion.
+        for field in ClaudeRemoteEnvironmentField.allCases {
+            processEnvironment.removeValue(forKey: String(field.shellSource.dropFirst()))
+        }
         processEnvironment["XDG_RUNTIME_DIR"] = isolatedState.path
         processEnvironment.merge(environment) { _, new in new }
         process.environment = processEnvironment
@@ -495,6 +501,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         previous=""
         for argument in "$@"; do
           [ "$previous" = "--output" ] && out="$argument"
+          if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
+            case "$argument" in
+            @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
+            esac
+          fi
           previous="$argument"
         done
         cat >/dev/null
@@ -514,6 +525,182 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         ]
         environment.merge(extraEnvironment) { _, new in new }
         return try runShim(event: event, environment: environment)
+    }
+
+    // MARK: Shim environment enrichment
+    //
+    // The shim adds an allowlisted set of env values as `X-Lvx-Env-*` headers
+    // (the body must stay Claude Code's event JSON byte-for-byte — there is no
+    // jq on the remote host to merge anything into it). Two properties are
+    // tested by RUNNING the shim against the stub curl and reading the header
+    // file it actually wrote: the values arrive in the exact spelling the
+    // listener's parser reads, and a hostile value cannot forge a header line.
+
+    /// Runs the shim with the given extra environment and returns the header
+    /// file curl was handed, verbatim. This is the real artifact — not the
+    /// shim's source, and not a reconstruction.
+    private func capturedRequestHeaders(
+        environment: [String: String], event: String = "Stop"
+    ) throws -> String {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-headers-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let dump = directory.appendingPathComponent("headers")
+        var extra = environment
+        extra["FAKE_CURL_HEADER_DUMP"] = dump.path
+        let result = try runShimWithStubCurl(
+            event: event,
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: extra
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "", "enrichment must not make the shim noisy")
+        return (try? String(contentsOf: dump, encoding: .utf8)) ?? ""
+    }
+
+    /// The captured header block, re-parsed by the REAL request-head parser and
+    /// read by the REAL env codec — the two sides of the contract meeting on
+    /// bytes the shim produced.
+    private func parseCapturedHeaders(_ captured: String) throws -> ClaudeRemoteHTTPRequest {
+        let lines = captured.split(separator: "\n").map(String.init)
+        var head = "POST /v1/hook/Stop HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        for line in lines { head += line + "\r\n" }
+        head += "Content-Length: 2\r\n\r\n{}"
+        return try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8)).request
+    }
+
+    func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
+        // One distinct value per variable, so a copy-pasted header name shows
+        // up as a swap rather than as a test that still passes.
+        var environment: [String: String] = [:]
+        var expected = ClaudeRemoteSessionEnvironment()
+        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+            let variable = String(field.shellSource.dropFirst())
+            environment[variable] = "value-\(field.rawValue)"
+            expected[field] = "value-\(field.rawValue)"
+        }
+        let captured = try capturedRequestHeaders(environment: environment)
+        let request = try parseCapturedHeaders(captured)
+        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
+
+        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+            XCTAssertEqual(
+                parsed[field], expected[field],
+                "\(field.shellSource) did not arrive as \(field.headerName)"
+            )
+        }
+        // `$PPID` is the shell's own, so it cannot be injected — assert its
+        // SHAPE instead. Without it, a later arm would have no handle at all on
+        // the Claude Code process on the remote host.
+        let parentPID = try XCTUnwrap(parsed.hookParentPID, "the shim must report its parent pid")
+        XCTAssertFalse(parentPID.isEmpty)
+        XCTAssertTrue(parentPID.allSatisfy(\.isNumber), "a pid is digits: \(parentPID)")
+        // The token header is still the first thing in the file and untouched.
+        XCTAssertEqual(request.bearerToken, "unit-test-token")
+    }
+
+    func testShimSendsNoEnvHeadersWhenNoneOfTheVariablesAreSet() throws {
+        // Everything unset (the stub environment inherits the runner's, which
+        // has none of these) leaves only Authorization and the always-present
+        // parent pid: a plain host must not pay for a feature it is not using.
+        let captured = try capturedRequestHeaders(environment: [:])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
+        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+            XCTAssertNil(parsed?[field], "\(field.headerName) must not be sent when unset")
+        }
+    }
+
+    func testShimTreatsAnExportedButEmptyVariableAsAbsent() throws {
+        let captured = try capturedRequestHeaders(environment: [
+            "HERDR_PANE_ID": "", "CMUX_SURFACE_ID": "",
+        ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Herdr-Pane-Id"))
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Cmux-Surface-Id"))
+    }
+
+    func testShimRefusesToWriteAnEnvValueThatCouldForgeAHeaderLine() throws {
+        // The header-injection cases. Each of these, written unvalidated, would
+        // let the remote host add headers of its own — including a second
+        // Authorization, which the listener's duplicate rejection would then
+        // turn into a hard 400 on every hook. The charset whitelist makes it
+        // impossible before a byte is written.
+        let hostile: [(String, String)] = [
+            ("CRLF", "pane\r\nAuthorization: Bearer stolen"),
+            ("bare LF", "pane\nX-Evil: 1"),
+            ("bare CR", "pane\rX-Evil: 1"),
+            ("space", "pane 7"),
+            ("tab", "pane\tX-Evil: 1"),
+            ("quote", "pane\"7"),
+            ("backslash", "pane\\7"),
+            ("command substitution", "pane$(id)"),
+            ("backtick", "pane`id`"),
+            ("non-ASCII", "pane-\u{e9}"),
+            ("over the length cap", String(repeating: "a", count: 201)),
+        ]
+        for (name, value) in hostile {
+            let captured = try capturedRequestHeaders(environment: ["HERDR_PANE_ID": value])
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
+                "\(name): the value must be dropped, not escaped"
+            )
+            XCTAssertFalse(captured.contains("X-Evil"), "\(name): forged a header")
+            XCTAssertFalse(
+                captured.contains("Bearer stolen"), "\(name): forged an Authorization"
+            )
+            // The request still parses, and still carries exactly one token —
+            // fail-open means a bad env value costs a hint, never the hook.
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(name)")
+        }
+    }
+
+    func testShimSendsAValueExactlyAtTheLengthCap() throws {
+        // The other side of the cap: a real herdr socket path is long, and an
+        // off-by-one here would silently drop every one of them.
+        let atCap = String(repeating: "a", count: 200)
+        let captured = try capturedRequestHeaders(environment: ["HERDR_PANE_ID": atCap])
+        let request = try parseCapturedHeaders(captured)
+        XCTAssertEqual(
+            ClaudeRemoteEnvironmentCodec.environment(in: request.headers)?.herdrPaneID, atCap
+        )
+    }
+
+    func testShimSourceCoversTheWholeAllowlistWithNoDrift() throws {
+        // Source-level, because a variable the shim never reads is invisible to
+        // every behavioural test above: it simply never appears. This is the
+        // assertion that fails when the Swift allowlist grows and the shim does
+        // not, which would otherwise ship as a join arm that never joins.
+        let source = try shimSource()
+        for field in ClaudeRemoteEnvironmentField.allCases {
+            let expected = field == .hookParentPID
+                ? "'\(field.headerName)' \"${PPID:-}\""
+                : "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
+            XCTAssertTrue(
+                source.contains(expected),
+                "the shim must publish \(field.shellSource) as \(field.headerName): \(expected)"
+            )
+        }
+    }
+
+    func testShimKeepsTheEnvHeadersOutOfArgvAndInThePrivateHeaderFile() throws {
+        // Same rule as the token, for the same reason: /proc/<pid>/cmdline is
+        // world-readable. It also keeps the curl invocation itself untouched.
+        let source = try shimSource()
+        for field in ClaudeRemoteEnvironmentField.allCases {
+            for line in source.split(separator: "\n") where line.contains("curl") {
+                XCTAssertFalse(
+                    line.contains(field.headerName),
+                    "no curl argument may carry \(field.headerName): \(line)"
+                )
+            }
+        }
+        XCTAssertTrue(
+            source.contains(">>\"$WORK/header\""),
+            "env headers must be appended to the same private header file as the token"
+        )
     }
 
     // MARK: Shim transport backoff

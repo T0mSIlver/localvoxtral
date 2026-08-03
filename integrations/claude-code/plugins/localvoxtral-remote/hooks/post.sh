@@ -110,6 +110,56 @@ cat 2>/dev/null >"$WORK/header" <<EOF || fail_open
 Authorization: Bearer $TOKEN
 EOF
 
+# --- Allowlisted environment enrichment --------------------------------------
+# A handful of values naming WHERE this session runs — a herdr pane, a cmux
+# surface, a tmux pane, the SSH tty, the browser-side bridge session — so the
+# Mac can later tell whether the surface the user is dictating into is the one
+# this session lives in. Never content, never argv, never the whole environment.
+#
+# They ride as HEADERS because the body must stay Claude Code's event JSON
+# BYTE-FOR-BYTE: the remote host is not assumed to have jq (or any JSON tool),
+# so there is no way to merge a field into the body here. They go into the same
+# 0600 header file as the token, which also keeps them out of every argv and
+# leaves the curl invocation below untouched.
+#
+# Validation is a WHITELIST, applied before a byte is written: ASCII
+# alphanumerics plus `._:/@+,=%-` only (`%` is in because a tmux pane id IS
+# `%3`, and dropping it would silently disable the tmux arm). CR, LF, NUL,
+# every other control byte,
+# space and tab are all outside it, so a value that passes cannot terminate this
+# header line or forge a new one — header injection is impossible by
+# construction rather than by escaping. Anything failing validation, or longer
+# than 200 characters, is silently DROPPED: this is enrichment, and losing a
+# hint is nothing next to delivering the hook itself. The app re-applies the
+# identical charset and caps on arrival and trusts none of this.
+lvx_env_header() {
+  _lvx_name="$1"
+  _lvx_value="${2:-}"
+  [ -n "$_lvx_value" ] || return 0
+  case "$_lvx_value" in
+  *[!A-Za-z0-9._:/@+,=%-]*) return 0 ;;
+  esac
+  # Charset-checked first, so every remaining character is one ASCII byte and
+  # this length is also the byte length.
+  [ "${#_lvx_value}" -le 200 ] || return 0
+  cat 2>/dev/null >>"$WORK/header" <<EOF || return 0
+$_lvx_name: $_lvx_value
+EOF
+}
+
+lvx_env_header 'X-Lvx-Env-Herdr-Pane-Id' "${HERDR_PANE_ID:-}"
+lvx_env_header 'X-Lvx-Env-Herdr-Socket-Path' "${HERDR_SOCKET_PATH:-}"
+lvx_env_header 'X-Lvx-Env-Herdr-Session' "${HERDR_SESSION:-}"
+lvx_env_header 'X-Lvx-Env-Cmux-Surface-Id' "${CMUX_SURFACE_ID:-}"
+lvx_env_header 'X-Lvx-Env-Cmux-Socket-Path' "${CMUX_SOCKET_PATH:-}"
+lvx_env_header 'X-Lvx-Env-Bridge-Session-Id' "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
+lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
+lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
+lvx_env_header 'X-Lvx-Env-Ssh-Tty' "${SSH_TTY:-}"
+# Best effort: the shim's parent is the Claude Code process on THIS host. It is
+# a pid in this machine's namespace and the Mac treats it as a label only.
+lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
+
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
 # host whose forward silently failed must not stall every turn. --max-filesize
 # (recognized since curl 7.10.8) belts the body the stdout gate below already

@@ -19,6 +19,9 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
     public var http: ClaudeRemoteHTTPLimits
     public var wire: ClaudeHookLimits
     public var snippets: ClaudeSnippetLimits
+    /// Caps on the allowlisted env headers the shim adds. Re-applied here on
+    /// arrival: the shim validating first is a courtesy, not a guarantee.
+    public var environment: ClaudeRemoteEnvironmentLimits
 
     public init(
         port: UInt16 = 8473,
@@ -27,7 +30,8 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
         connectionTimeout: TimeInterval = 3.0,
         http: ClaudeRemoteHTTPLimits = .default,
         wire: ClaudeHookLimits = .default,
-        snippets: ClaudeSnippetLimits = .default
+        snippets: ClaudeSnippetLimits = .default,
+        environment: ClaudeRemoteEnvironmentLimits = .default
     ) {
         self.port = port
         self.maxConcurrentConnections = maxConcurrentConnections
@@ -36,6 +40,7 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
         self.http = http
         self.wire = wire
         self.snippets = snippets
+        self.environment = environment
     }
 
     public static let `default` = ClaudeRemoteListenerLimits()
@@ -491,6 +496,7 @@ public final class ClaudeRemoteContextListener: Sendable {
     private struct PreparedIngest {
         let record: ClaudeHookRecord
         let snippets: [ClaudeContentSnippet]
+        let environment: ClaudeRemoteSessionEnvironment?
         let hostID: String
     }
 
@@ -528,7 +534,36 @@ public final class ClaudeRemoteContextListener: Sendable {
             hostID: host.id,
             sessionID: record.sessionID
         )
-        return PreparedIngest(record: record, snippets: payload.snippets, hostID: host.id)
+
+        // Enrichment rides as HEADERS, not in the body: the shim has no jq and
+        // must hand Claude Code's event JSON on byte-for-byte, so there is
+        // nowhere in the body to put this without parsing and re-serializing it
+        // on a host where we cannot count on a JSON tool existing.
+        //
+        // The header VALUES stay what they were on the wire — opaque labels
+        // about another machine — and they land in their own snapshot field,
+        // never in `process`. Re-validated here against the same charset and
+        // caps the shim applies; the shim's own validation is a courtesy from a
+        // machine we do not control.
+        let environment = ClaudeRemoteEnvironmentCodec.environment(
+            in: request.headers, limits: limits.environment
+        )
+        // Count only. The values name panes, sockets and TTYs on the user's
+        // other machine; the log is not the place for them, and a count is what
+        // makes "the shim is on an old version" diagnosable.
+        if let environment {
+            let count = ClaudeRemoteEnvironmentField.allCases.filter { environment[$0] != nil }.count
+            Log.claudeContext.debug(
+                "Remote record carried \(count, privacy: .public) allowlisted env labels"
+            )
+        }
+
+        return PreparedIngest(
+            record: record,
+            snippets: payload.snippets,
+            environment: environment,
+            hostID: host.id
+        )
     }
 
     /// The session-registry half of ingest. Runs under the host-registry lock
@@ -542,7 +577,10 @@ public final class ClaudeRemoteContextListener: Sendable {
             channel: ClaudeRemoteSessionScope.channel(hostID: prepared.hostID)
         )
         let snapshot = registry.ingest(
-            prepared.record, origin: origin, snippets: prepared.snippets
+            prepared.record,
+            origin: origin,
+            snippets: prepared.snippets,
+            environment: prepared.environment
         )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.

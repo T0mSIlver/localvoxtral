@@ -166,6 +166,17 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
     public var herdrPaneID: String?
     /// The herdr JSON API socket path herdr injected into the pane environment.
     public var herdrSocketPath: String?
+    /// cmux surface identity, published only when the hook ran inside a cmux
+    /// surface. Same shape and same trust as the herdr pair: a LOCAL session's
+    /// values, vouched for by the AF_UNIX peer-UID check, naming things on this
+    /// machine. A remote session's equivalents never land here — they arrive as
+    /// request headers and stay in `ClaudeRemoteSessionEnvironment`.
+    public var cmuxSurfaceID: String?
+    /// The cmux control socket path from the surface environment.
+    public var cmuxSocketPath: String?
+    /// `$CLAUDE_CODE_BRIDGE_SESSION_ID` — the browser-side session handle a
+    /// Remote Control bridge injects, when this session is driven by one.
+    public var bridgeSessionID: String?
 
     public init(
         hookPID: Int32,
@@ -173,7 +184,10 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         tty: String? = nil,
         termProgram: String? = nil,
         herdrPaneID: String? = nil,
-        herdrSocketPath: String? = nil
+        herdrSocketPath: String? = nil,
+        cmuxSurfaceID: String? = nil,
+        cmuxSocketPath: String? = nil,
+        bridgeSessionID: String? = nil
     ) {
         self.hookPID = hookPID
         self.claudePID = claudePID
@@ -181,6 +195,9 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         self.termProgram = termProgram
         self.herdrPaneID = herdrPaneID
         self.herdrSocketPath = herdrSocketPath
+        self.cmuxSurfaceID = cmuxSurfaceID
+        self.cmuxSocketPath = cmuxSocketPath
+        self.bridgeSessionID = bridgeSessionID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -190,6 +207,9 @@ public struct ClaudeHookProcessInfo: Sendable, Equatable, Codable {
         case termProgram = "term_program"
         case herdrPaneID = "herdr_pane_id"
         case herdrSocketPath = "herdr_socket_path"
+        case cmuxSurfaceID = "cmux_surface_id"
+        case cmuxSocketPath = "cmux_socket_path"
+        case bridgeSessionID = "bridge_session_id"
     }
 }
 
@@ -449,6 +469,15 @@ public enum ClaudeHookWireCodec {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
             }
             process.herdrSocketPath = process.herdrSocketPath.map {
+                truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            process.cmuxSurfaceID = process.cmuxSurfaceID.map {
+                truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            process.cmuxSocketPath = process.cmuxSocketPath.map {
+                truncate($0, toUTF8Bytes: limits.maxPathBytes)
+            }
+            process.bridgeSessionID = process.bridgeSessionID.map {
                 truncate($0, toUTF8Bytes: limits.maxPathBytes)
             }
             clamped.process = process

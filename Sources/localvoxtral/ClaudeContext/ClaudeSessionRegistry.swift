@@ -137,12 +137,18 @@ public final class ClaudeSessionRegistry: Sendable {
     ///     field to consult.
     ///   - snippets: sanitized excerpts the transport extracted. Always empty
     ///     from the local NDJSON wire, which has no field for them.
+    ///   - environment: allowlisted env labels the REMOTE listener read off the
+    ///     request headers, likewise absent from the local wire. Untrusted
+    ///     labels about another machine: the reducer stores them only for a
+    ///     `.remote` origin and NEVER in `process`, which is what the
+    ///     local-only arms below read.
     /// - Returns: the resulting snapshot, or nil if the record was dropped.
     @discardableResult
     public func ingest(
         _ record: ClaudeHookRecord,
         origin: ClaudeTransportOrigin,
-        snippets: [ClaudeContentSnippet] = []
+        snippets: [ClaudeContentSnippet] = [],
+        environment: ClaudeRemoteSessionEnvironment? = nil
     ) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         // A LOCAL Claude record whose raw id spells another namespace's prefix
@@ -236,6 +242,7 @@ public final class ClaudeSessionRegistry: Sendable {
                 record: record,
                 origin: snapshot.origin,
                 snippets: snippets,
+                environment: environment,
                 now: timestamp
             )
 

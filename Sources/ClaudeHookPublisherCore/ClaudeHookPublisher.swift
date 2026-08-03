@@ -126,8 +126,14 @@ public struct ClaudeHookPublisher: Sendable {
     }
 
     /// Safe metadata only: identity and location of the terminal, never its
-    /// contents and never argv/env beyond `$TERM_PROGRAM`,
-    /// `$HERDR_PANE_ID`, and `$HERDR_SOCKET_PATH`.
+    /// contents and never argv/env beyond an ALLOWLIST — `$TERM_PROGRAM` plus
+    /// the multiplexer/bridge handles below.
+    ///
+    /// Every one of these names WHERE the session runs (a pane, a surface, a
+    /// socket, a browser-side session handle) on THIS machine, which is what
+    /// makes a later join arm able to ask "is the thing the user is looking at
+    /// the thing this session lives in". None of them is content, and the list
+    /// grows only for values that answer that question.
     func processInfo() -> ClaudeHookProcessInfo {
         // ONE ppid resolution feeds both fields: the published claudePID and
         // the tty's process-table fallback must describe the same process.
@@ -136,12 +142,22 @@ public struct ClaudeHookPublisher: Sendable {
             hookPID: environment.pid(),
             claudePID: claudePID,
             tty: environment.ttyName(claudePID),
-            termProgram: environment.variables["TERM_PROGRAM"].flatMap { $0.isEmpty ? nil : $0 },
-            herdrPaneID: environment.variables["HERDR_PANE_ID"].flatMap { $0.isEmpty ? nil : $0 },
-            herdrSocketPath: environment.variables["HERDR_SOCKET_PATH"].flatMap {
-                $0.isEmpty ? nil : $0
-            }
+            termProgram: nonEmptyVariable("TERM_PROGRAM"),
+            herdrPaneID: nonEmptyVariable("HERDR_PANE_ID"),
+            herdrSocketPath: nonEmptyVariable("HERDR_SOCKET_PATH"),
+            cmuxSurfaceID: nonEmptyVariable("CMUX_SURFACE_ID"),
+            cmuxSocketPath: nonEmptyVariable("CMUX_SOCKET_PATH"),
+            bridgeSessionID: nonEmptyVariable("CLAUDE_CODE_BRIDGE_SESSION_ID")
         )
+    }
+
+    /// An environment variable's value, treating empty as absent.
+    ///
+    /// An exported-but-empty variable is how a shell says "not in one of
+    /// these", and publishing `""` would make a later join arm compare two
+    /// empty strings and call it a match.
+    private func nonEmptyVariable(_ name: String) -> String? {
+        environment.variables[name].flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Environment variable the shim uses to hand us the real Claude Code pid.

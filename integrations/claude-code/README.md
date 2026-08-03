@@ -154,7 +154,11 @@ An allowlist, not a filter:
 * the event name, session id, timestamp, and cwd
 * your prompt text (`UserPromptSubmit` only)
 * absolute file paths from the tools above
-* safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`
+* safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`, and the
+  multiplexer/bridge handles that say which pane the session lives in —
+  `$HERDR_PANE_ID`, `$HERDR_SOCKET_PATH`, `$CMUX_SURFACE_ID`,
+  `$CMUX_SOCKET_PATH`, `$CLAUDE_CODE_BRIDGE_SESSION_ID`. Never the rest of the
+  environment.
 
 What never crosses, by construction:
 
@@ -422,10 +426,22 @@ with no enrolled host, the app binds no port at all.
 
 ## What crosses the tunnel
 
-The same allowlist as the local plugin, plus one addition:
+The same allowlist as the local plugin, plus two additions:
 
 * bounded, sanitized excerpts of `Read`/`Edit`/`Write` tool input and output
   (≤512 bytes each, ≤8 kept per session)
+* an allowlisted set of environment values, sent as `X-Lvx-Env-*` request
+  headers rather than in the body (the body stays Claude Code's event JSON
+  byte-for-byte, because the host is not assumed to have `jq`):
+  `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
+  `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `TMUX`, `TMUX_PANE`,
+  `SSH_TTY`, and the shim's own parent pid. Each is sent only if it is
+  non-empty, at most 200 characters, and made purely of ASCII alphanumerics
+  plus `._:/@+,=%-`; anything else is dropped rather than escaped. They tell the
+  app WHERE the session runs so it can tell whether the pane you are dictating
+  into is this one — never what it contains. The rest of the environment is not
+  read, and these values are labels on the Mac: they can never become a local
+  path, a socket the app dials, or a process it probes.
 
 These exist only for remote sessions. A local session's files are on your Mac
 and the app reads them properly; a remote session's are on a machine the app has
