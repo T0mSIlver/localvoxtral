@@ -73,6 +73,13 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
 - **Trying a PR build on the Mac**: `./scripts/try-pr.sh <pr-number|main>`
   downloads the exact CI-built artifact and launches it. No checkout, no
   build. Push → CI (~1.5 min) → try-pr.sh is the whole owner iteration loop.
+  `--dogfood` fetches the instrumented `localvoxtral-app-dogfood` artifact
+  instead, verifies its `LVXDogfoodCapture` stamp, arms the runtime capture
+  default, and launches — the one-command dogfood install. That artifact is
+  opt-in in CI (`[dogfood-package]` in the PR body / head commit message, or
+  a `workflow_dispatch` with `dogfood=true`); when the target run lacks it,
+  the script offers to trigger a dispatch build and shows the latest run
+  that has one.
 - **Code signing (why TCC used to reset)**: `package_app.sh` signs with
   `$LOCALVOXTRAL_CODESIGN_IDENTITY` when set, else ad-hoc. The owner's Mac
   has a self-signed code-signing cert `localvoxtral-dev`; the identity env
@@ -142,10 +149,12 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   that crosses the build gate) plus a runtime opt-in
   (`defaults write com.localvoxtral.app debug.dogfood_capture_enabled -bool true`).
   Shipped releases do not contain it, and there is deliberately no uploader —
-  records are local files under Application Support. Use `dogfood-package` for a
-  hand-testable build; it keeps the bundle id so the TCC grant survives and
-  stamps `LVXDogfoodCapture` into Info.plist so you can tell which binary you
-  are running.
+  records are local files under Application Support. Fastest install:
+  `./scripts/try-pr.sh main --dogfood` (CI-built opt-in artifact, stamp
+  verified, capture default armed automatically). `dogfood-package` remains
+  the local-build equivalent; both keep the bundle id so the TCC grant
+  survives and stamp `LVXDogfoodCapture` into Info.plist so you can tell
+  which binary you are running.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
   descriptor errors and aborts the app (field crash, PR #60). Use
@@ -319,7 +328,8 @@ rather than silently treating it as a model failure.
   documentation, presentation, or operational-script path per the conservative
   allowlist in `scripts/ci/docs-only-filter.sh`. Unknown/ambiguous diffs,
   packaging inputs (`assets/icons/**`), lane-filter-relevant paths, the
-  `[run-llm-eval]`/`[run-speechd-integration]` markers, and changes to the
+  `[run-llm-eval]`/`[run-speechd-integration]`/`[dogfood-package]` markers,
+  and changes to the
   filter or other `scripts/ci/**` paths all fail open to the full run. Release
   and all other workflows remain fully gated.
 - Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
