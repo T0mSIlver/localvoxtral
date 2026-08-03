@@ -419,6 +419,43 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Look up by Claude Code "Remote Control" bridge session id — the browser
+    /// tab join.
+    ///
+    /// This is the ONE arm that spans LOCAL and REMOTE sessions, and that is a
+    /// property of the key rather than a relaxed rule. Every other local arm
+    /// keys on a per-machine name (a TTY device, a herdr pane id, a pid) that
+    /// another machine can hold identically, so matching a remote session on one
+    /// would let an SSH host claim a local pane by echoing it. A bridge session
+    /// id is allocated by Anthropic's bridge, is globally unique, and is what
+    /// the browser's address bar shows — a remote host reporting one is
+    /// reporting its own, and the tab the user is looking at IS that session's
+    /// UI whichever machine runs it. `ClaudeSessionSnapshot.bridgeSessionID`
+    /// still routes the read by origin (local reads `process`, remote reads
+    /// `remoteEnvironment`), so neither side reaches the other's storage.
+    ///
+    /// Exact equality, and zero or several matches abstain: two sessions
+    /// reporting one bridge id means we cannot tell which the tab belongs to.
+    public func resolve(bridgeSessionID: String) -> ClaudeMarkerResolution {
+        let timestamp = now()
+        return state.withLock { state in
+            let matches = state.sessions.values.filter { snapshot in
+                snapshot.bridgeSessionID == bridgeSessionID && isFresh(snapshot, now: timestamp)
+            }
+            switch matches.count {
+            case 0:
+                let hadStale = state.sessions.values.contains {
+                    $0.bridgeSessionID == bridgeSessionID
+                }
+                return hadStale ? .stale : .unknown
+            case 1:
+                return .resolved(matches[0])
+            default:
+                return .ambiguous
+            }
+        }
+    }
+
     /// Distinct herdr socket paths across live LOCAL sessions. The resolver
     /// refuses to guess between multiple herdr sessions, so it needs the count,
     /// not just one path.

@@ -130,6 +130,31 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         return remoteEnvironment
     }
 
+    /// The Claude Code "Remote Control" bridge session id this session last
+    /// reported, from whichever side reported it.
+    ///
+    /// This is the ONE join key that legitimately spans local and remote, and
+    /// the reason is a property of the value, not a relaxation of the rule: the
+    /// id is allocated by Anthropic's bridge, is globally unique, and appears in
+    /// the browser URL the user is looking at. A remote host publishing an id
+    /// can therefore not collide with a local session's — unlike a TTY path, a
+    /// pane id, or a pid, all of which are per-machine names that another
+    /// machine can mirror by accident or on purpose. What it can do is claim an
+    /// id that is genuinely its own, which is exactly the case this arm is for:
+    /// the browser tab is the UI of whichever machine runs that session.
+    ///
+    /// The origin still decides WHICH field is read — `process` for a local
+    /// session (peer-UID authenticated), `remoteEnvironment` for a remote one —
+    /// so neither side can reach into the other's storage.
+    public var bridgeSessionID: String? {
+        switch origin {
+        case .localAuthenticated:
+            return process?.bridgeSessionID
+        case .remote:
+            return remoteSessionEnvironment?.bridgeSessionID
+        }
+    }
+
     init(
         sessionID: String,
         origin: ClaudeTransportOrigin,

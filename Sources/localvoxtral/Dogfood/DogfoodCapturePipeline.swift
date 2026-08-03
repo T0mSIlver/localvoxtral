@@ -170,6 +170,7 @@ enum DogfoodCaptureBuilder {
         case .ttyDevice: arm = "tty"
         case .titleMarker: arm = "titleMarker"
         case .herdrPane: arm = "herdrPane"
+        case .browserTab: arm = "browserTab"
         }
         return DogfoodCaptureRecord.Join(
             arm: arm,

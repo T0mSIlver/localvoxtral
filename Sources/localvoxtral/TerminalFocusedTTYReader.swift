@@ -220,15 +220,27 @@ struct AppleScriptTerminalTTYReader: TerminalFocusedTTYReading {
 final class TerminalAutomationConsentPrewarmSettingsObserver {
     private let settings: SettingsStore
     private let prewarm: @MainActor @Sendable () -> Void
+    private let enablement: @MainActor @Sendable (SettingsStore) -> Bool
     private var started = false
     private var wasEnabled = false
 
+    /// - Parameter enablement: which settings make this pre-warm relevant.
+    ///   Defaults to the terminal pair (either context feature can want a
+    ///   focused-pane join). The BROWSER pre-warm passes a narrower one: a
+    ///   browser join can only ever produce session/repo context, so a user who
+    ///   enabled screen context alone must never be asked to let us automate
+    ///   their browser. One observer per predicate, so enabling the second
+    ///   feature later still fires its own pre-warm.
     init(
         settings: SettingsStore,
-        prewarm: @escaping @MainActor @Sendable () -> Void
+        prewarm: @escaping @MainActor @Sendable () -> Void,
+        enablement: @escaping @MainActor @Sendable (SettingsStore) -> Bool = {
+            $0.terminalScreenContextEnabled || $0.claudeRepoContextEnabled
+        }
     ) {
         self.settings = settings
         self.prewarm = prewarm
+        self.enablement = enablement
     }
 
     func start() {
@@ -241,9 +253,7 @@ final class TerminalAutomationConsentPrewarmSettingsObserver {
         observeSettings()
     }
 
-    private var isEnabled: Bool {
-        settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled
-    }
+    private var isEnabled: Bool { enablement(settings) }
 
     /// Observation's onChange fires once, immediately before a tracked value
     /// mutates. Re-read and re-arm on the next main-actor turn, matching the
@@ -300,8 +310,14 @@ enum TerminalAutomationConsentPrewarm {
     /// executor and logs how consent settled. Result text is discarded — this
     /// exists only to park in the sheet so the user can answer it.
     static func performConsentProbe(bundleID: String) async {
+        // The probe is the app's REAL question under a human-answerable
+        // timeout, so it is looked up from the same tables the dictation path
+        // uses: the focused-pane tty for a terminal, the focused tab's URL for
+        // a browser. The two allowlists are disjoint, so at most one answers.
         guard
             let source = AppleScriptTerminalTTYReader.consentPrewarmScriptSource(
+                forBundleID: bundleID
+            ) ?? AppleScriptFocusedBrowserTabURLReader.consentPrewarmScriptSource(
                 forBundleID: bundleID
             )
         else { return }

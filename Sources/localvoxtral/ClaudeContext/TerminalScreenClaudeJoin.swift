@@ -18,6 +18,10 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     case ttyDevice
     case titleMarker
     case herdrPane
+    /// The focused browser tab's `claude.ai/code/session_…` URL matched a live
+    /// session's Remote Control bridge session id. No screen is ever read for
+    /// this mechanism — see `TerminalScreenClaudeJoinAuthorizer`.
+    case browserTab
 }
 
 /// The herdr pane a `.herdrPane` join resolved to. Captured at resolution so
@@ -26,6 +30,13 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
 struct ClaudeHerdrPaneBinding: Sendable, Equatable {
     let paneID: String
     let socketPath: String
+}
+
+/// The Remote Control bridge session id a `.browserTab` join resolved on.
+/// Captured at resolution so commit-time liveness can ask whether the SAME
+/// binding still holds, rather than re-reading a tab the user may have changed.
+struct ClaudeBrowserTabBinding: Sendable, Equatable {
+    let bridgeSessionID: String
 }
 
 struct ClaudeSessionJoin: Sendable, Equatable {
@@ -50,6 +61,11 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// Non-nil exactly for `.herdrPane` joins: the pane whose clean, per-pane
     /// text (`pane.read`) may stand in for the composite screen capture.
     let herdrPane: ClaudeHerdrPaneBinding?
+    /// Non-nil exactly for `.browserTab` joins: the bridge session id the tab
+    /// URL and the session's hooks agreed on. Commit-time liveness re-checks it
+    /// (`isStillLive`), which is how a Remote Control disconnect ages the join
+    /// out on the session's own next hook rather than on a timer of ours.
+    let browserTab: ClaudeBrowserTabBinding?
 
     init(
         target: TerminalScreenTarget,
@@ -57,7 +73,8 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         snapshot: ClaudeSessionSnapshot,
         windowID: CGWindowID?,
         mechanism: ClaudeSessionJoinMechanism,
-        herdrPane: ClaudeHerdrPaneBinding? = nil
+        herdrPane: ClaudeHerdrPaneBinding? = nil,
+        browserTab: ClaudeBrowserTabBinding? = nil
     ) {
         self.target = target
         self.marker = marker
@@ -65,6 +82,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         self.windowID = windowID
         self.mechanism = mechanism
         self.herdrPane = herdrPane
+        self.browserTab = browserTab
     }
 
     /// The workspace path, non-nil only for a locally authenticated session.
@@ -111,6 +129,7 @@ struct ClaudeSessionJoinResolver {
     private let registry: ClaudeSessionRegistry
     private let markerInWindowTitle: (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead?
     private let focusedTerminalTTY: (String) async -> String?
+    private let focusedBrowserTabURL: (String) async -> String?
     private let focusedWindowID: (pid_t) -> CGWindowID?
     private let herdrClientProbe: @Sendable (String) -> Bool
     private let herdrPanes: HerdrPaneQuerying?
@@ -130,6 +149,13 @@ struct ClaudeSessionJoinResolver {
     ///     and a defaulted live reader would send real events (and hang the
     ///     suite on that prompt) from any test that forgets to inject. The app
     ///     wires `AppleScriptTerminalTTYReader` explicitly.
+    ///   - focusedBrowserTabURL: reads the focused window's active-tab URL for
+    ///     an allowlisted browser over AppleScript. DEFAULTS TO ABSTAIN for the
+    ///     same reason `focusedTerminalTTY` does — it sends a real Apple event
+    ///     and can raise the Automation consent sheet — and additionally
+    ///     because a browser tab URL is user CONTENT: no test may reach the
+    ///     live reader by forgetting an injection. The app wires
+    ///     `AppleScriptFocusedBrowserTabURLReader` explicitly.
     ///   - focusedWindowID: the tty join's window identity. A marker join
     ///     learns its window from the marker read itself, but a tty join never
     ///     consults the title — so the focused window is identified by this
@@ -150,6 +176,7 @@ struct ClaudeSessionJoinResolver {
             TerminalScreenAXReader.markerInFocusedWindowTitle(applicationPID: $0)
         },
         focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
+        focusedBrowserTabURL: @escaping (String) async -> String? = { _ in nil },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = {
             TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
         },
@@ -159,6 +186,7 @@ struct ClaudeSessionJoinResolver {
         self.registry = registry
         self.markerInWindowTitle = markerInWindowTitle
         self.focusedTerminalTTY = focusedTerminalTTY
+        self.focusedBrowserTabURL = focusedBrowserTabURL
         self.focusedWindowID = focusedWindowID
         self.herdrClientProbe = herdrClientProbe
         self.herdrPanes = herdrPanes
@@ -181,6 +209,13 @@ struct ClaudeSessionJoinResolver {
     /// This remains the only place a join is resolved, once per dictation, at
     /// start — whichever mechanism answers.
     func resolve(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        // A browser is a different kind of target with a different capability:
+        // one short URL string, no screen, no pane. The two allowlists are
+        // disjoint (pinned by a test), so this branch and the terminal path
+        // below can never both apply to one app.
+        if BrowserTabAllowlist.isSupported(target.bundleID) {
+            return await resolveViaBrowserTab(target: target)
+        }
         // The allowlist is re-checked here even though the capture gate already
         // enforced it. This object is reachable independently of that gate, and
         // "only a terminal with a verified focused-pane surface" (Ghostty's
@@ -235,6 +270,75 @@ struct ClaudeSessionJoinResolver {
         )
         #if LOCALVOXTRAL_DOGFOOD
         DogfoodCaptureTap.shared.noteJoinAbstention("tty: \(outcome)")
+        #endif
+    }
+
+    /// The browser arm: the focused tab's `claude.ai/code/session_…` URL
+    /// matched, by exact equality, against the bridge session id a live
+    /// session's own hooks published.
+    ///
+    /// Claude Code "Remote Control" runs the agent on a machine (this one, or a
+    /// remote host over SSH) while the browser is its UI, so there is no pane,
+    /// no TTY, and no title to join on — but since Claude Code 2.1.199 every
+    /// hook subprocess of such a session carries
+    /// `CLAUDE_CODE_BRIDGE_SESSION_ID`, whose value IS the `session_…`
+    /// component of the URL in the address bar. That makes this the same kind
+    /// of join as the TTY arm: two independent reports of one identifier,
+    /// compared for equality, with no heuristic in between.
+    ///
+    /// Everything abstains rather than guesses, in particular: a tab that is
+    /// not a Claude Code session URL (the user is reading docs), an id no live
+    /// session reports (the Remote Control connection ended, or that session is
+    /// on a machine we have no hooks from), and two sessions reporting one id.
+    private func resolveViaBrowserTab(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        guard let tabURL = await focusedBrowserTabURL(target.bundleID) else {
+            Self.abstainedBrowserTabJoin(outcome: "focused tab url unavailable")
+            return nil
+        }
+        guard let bridgeSessionID = ClaudeBridgeSessionURL.sessionID(inTabURL: tabURL) else {
+            // Never the URL itself: it names a page the user is looking at.
+            Self.abstainedBrowserTabJoin(outcome: "focused tab is not a Claude Code session")
+            return nil
+        }
+
+        switch registry.resolve(bridgeSessionID: bridgeSessionID) {
+        case .resolved(let snapshot):
+            Log.claudeContext.info(
+                "Browser tab joined to a live Claude session via Remote Control bridge session id"
+            )
+            return ClaudeSessionJoin(
+                target: target,
+                marker: snapshot.marker,
+                snapshot: snapshot,
+                // Deliberately nil. A window identity exists to pair a SCREEN
+                // capture with the join that authorized it, and there is no
+                // screen route for a browser — the authorizer refuses this
+                // mechanism outright. Supplying one would imply a raw read we
+                // never make (and cost an AX round trip to say so).
+                windowID: nil,
+                mechanism: .browserTab,
+                browserTab: ClaudeBrowserTabBinding(bridgeSessionID: bridgeSessionID)
+            )
+        case .unknown:
+            Self.abstainedBrowserTabJoin(outcome: "no live session reports this bridge session")
+            return nil
+        case .stale:
+            Self.abstainedBrowserTabJoin(outcome: "stale")
+            return nil
+        case .ambiguous:
+            Self.abstainedBrowserTabJoin(outcome: "ambiguous")
+            return nil
+        }
+    }
+
+    /// Outcome only. A bridge session id is a live handle to a session's
+    /// context and a tab URL is page content; neither belongs in the log.
+    private static func abstainedBrowserTabJoin(outcome: String) {
+        Log.claudeContext.info(
+            "Browser tab matched no session (\(outcome, privacy: .public)); Claude context withheld"
+        )
+        #if LOCALVOXTRAL_DOGFOOD
+        DogfoodCaptureTap.shared.noteJoinAbstention("browserTab: \(outcome)")
         #endif
     }
 
@@ -408,11 +512,40 @@ struct ClaudeSessionJoinResolver {
     /// the join stale, and a stale join must not attach. So this asks the
     /// registry about the SAME marker rather than asking the screen a second
     /// question, which would let the answer drift to a different pane.
+    /// A `.browserTab` join additionally re-checks its BINDING: the session
+    /// must still report the bridge session id the tab named at start.
+    ///
+    /// This is what makes a Remote Control disconnect age the join out without
+    /// a timer of ours. `CLAUDE_CODE_BRIDGE_SESSION_ID` is REMOVED from the
+    /// hook environment when the browser connection ends, and the reducer
+    /// replaces a session's reported metadata WHOLE on every non-focus record
+    /// (`process` locally, `remoteEnvironment` for a remote host) — so the very
+    /// next hook of a disconnected session carries no bridge id, and this
+    /// comparison fails on the session's own activity. A session that stops
+    /// reporting entirely is covered by the registry's existing freshness (TTL
+    /// plus, locally, process liveness) exactly like every other arm. Both
+    /// clocks are the registry's injected one; nothing here reads a wall clock.
     func isStillLive(_ join: ClaudeSessionJoin) -> Bool {
-        if case .resolved(let snapshot) = registry.resolve(marker: join.marker) {
-            return snapshot.sessionID == join.snapshot.sessionID
+        guard case .resolved(let snapshot) = registry.resolve(marker: join.marker),
+              snapshot.sessionID == join.snapshot.sessionID
+        else { return false }
+        guard join.mechanism == .browserTab else { return true }
+        guard let binding = join.browserTab else {
+            // Unreachable through `resolveViaBrowserTab`, which always binds.
+            // Fail closed anyway: a browser join with nothing to re-check is
+            // not a join we can still vouch for.
+            Log.claudeContext.info(
+                "Browser tab join carries no bridge binding; treating it as ended"
+            )
+            return false
         }
-        return false
+        guard snapshot.bridgeSessionID == binding.bridgeSessionID else {
+            Log.claudeContext.info(
+                "Remote Control bridge session changed since dictation start; Claude context withheld"
+            )
+            return false
+        }
+        return true
     }
 }
 
@@ -437,12 +570,26 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
 
     func isAuthorized(target: TerminalScreenTarget, windowID: CGWindowID?) -> Bool {
         guard let join = currentJoin() else { return false }
-        // AX sees herdr's composite TUI. Attaching it would let neighboring
-        // panes — potentially other Claude sessions — ride into this session's
-        // prompt, so a correct pane join still cannot authorize raw capture.
-        guard join.mechanism != .herdrPane else {
+        // Exhaustive on purpose: a new join mechanism must DECIDE here rather
+        // than inherit authorization from whichever arm was written first.
+        switch join.mechanism {
+        case .ttyDevice, .titleMarker:
+            break
+        case .herdrPane:
+            // AX sees herdr's composite TUI. Attaching it would let neighboring
+            // panes — potentially other Claude sessions — ride into this
+            // session's prompt, so a correct pane join still cannot authorize
+            // raw capture.
             Log.claudeContext.info(
                 "Herdr pane join cannot authorize composite raw screen attachment; withheld"
+            )
+            return false
+        case .browserTab:
+            // There is no verified screen route for a browser, and the thing on
+            // screen is an arbitrary web page rather than a terminal grid. A
+            // browser join buys session/repository context only.
+            Log.claudeContext.info(
+                "Browser tab join cannot authorize raw screen attachment; withheld"
             )
             return false
         }
