@@ -383,9 +383,10 @@ Key subsystems:
   spawn, health-check, and stop both managed processes; launch cleanup removes
   retired app-managed backend artifacts from existing installs. User-facing
   backend copy (pinned models, fork
-  optimizations, vLLM example) lives in the README "Under the hood" section
-  (`/docs` is gitignored local notes — nothing user-facing goes there); keep
-  it in sync when pins change.
+  optimizations, vLLM example) lives in the README "Under the hood" section;
+  keep it in sync when pins change. `docs/*` is gitignored local scratch by
+  default; committed user-facing docs are the files explicitly negated in
+  `.gitignore` (see `docs/README.md` for the convention).
 - Settings/config: `SettingsStore` (UserDefaults), `AppConfigStore` (TOML at
   `~/Library/Application Support/localvoxtral/config`)
 - Hotkey: `HotKeyManager` (Carbon, single global hotkey)
