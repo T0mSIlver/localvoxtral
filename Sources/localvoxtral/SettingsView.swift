@@ -120,7 +120,7 @@ struct SettingsView: View {
             }
             .tag(SettingsTab.textProcessing)
 
-            AboutSettingsPane(viewModel: viewModel)
+            AboutSettingsPane(settings: settings, viewModel: viewModel)
                 .tabItem {
                     Label("About", systemImage: "info.circle")
                 }
@@ -1364,11 +1364,24 @@ private struct ClaudeRemoteEnrollmentSheet: View {
 }
 
 private struct AboutSettingsPane: View {
+    let settings: SettingsStore
     let viewModel: DictationViewModel
 
     private var appName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? "localvoxtral"
+    }
+
+    /// Shows the in-memory value the capture pipeline actually consults
+    /// (DictationViewModel+DogfoodCapture), not a live defaults read — a
+    /// `defaults write` while the app runs takes effect on relaunch, and the
+    /// row must describe what THIS process is doing.
+    private var dogfoodCaptureArmed: Bool {
+        #if LOCALVOXTRAL_DOGFOOD
+        settings.dogfoodCaptureEnabled
+        #else
+        false
+        #endif
     }
 
     private var appVersion: String {
@@ -1390,6 +1403,29 @@ private struct AboutSettingsPane: View {
 
                 SettingsFieldRow(title: "Version") {
                     Text("\(appVersion) (build \(appBuild))")
+                }
+
+                // Constant row, variant-dependent content: "which binary am I
+                // running" is exactly the question that has cost field-debug
+                // time before (AGENTS.md), and version alone can't answer it —
+                // dogfood builds keep the same version and bundle id.
+                SettingsFieldRow(title: "Build") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(
+                            DogfoodBuildStatus.label(
+                                isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
+                                captureArmed: dogfoodCaptureArmed
+                            )
+                        )
+                        .foregroundStyle(DogfoodBuildStatus.isDogfoodBuild ? Color.orange : Color.primary)
+
+                        if let detail = DogfoodBuildStatus.detail(
+                            isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
+                            captureArmed: dogfoodCaptureArmed
+                        ) {
+                            SettingsHelpText(detail)
+                        }
+                    }
                 }
 
                 SettingsFieldRow(title: "Project") {
