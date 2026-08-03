@@ -4,6 +4,16 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Manual dispatch exists to produce artifacts on demand — today that means
+  # the opt-in dogfood build (scripts/try-pr.sh --dogfood offers to trigger
+  # one). The dispatched ref already had its own push/PR run, so the
+  # conditional live-model lanes skip on dispatch (see the lane decide steps).
+  workflow_dispatch:
+    inputs:
+      dogfood:
+        description: "Also package the dogfood-instrumented app (artifact: localvoxtral-app-dogfood)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -99,7 +109,8 @@ jobs:
           # filter can decide otherwise.
           MARKER_TEXT="${PR_BODY}"$'\n'"${PUSH_HEAD_MESSAGE}"
           if grep -qF '[run-llm-eval]' <<<"$MARKER_TEXT" \
-              || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT"; then
+              || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
 
@@ -206,6 +217,15 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Manual dispatch exists to (re)produce artifacts (try-pr.sh
+            # --dogfood). The dispatched ref's own push/PR run already made
+            # this lane's diff-based decision; don't reload 4B weights here.
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "LLM eval lane: SKIPPED (manual dispatch — decided by the ref's own push/PR run)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           FILES="$RUNNER_TEMP/llm-lane-changed-files.txt"
           MARKER_TEXT="$RUNNER_TEMP/llm-lane-marker-text.txt"
 
@@ -262,6 +282,14 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Same rationale as the LLM lane above: dispatch produces
+            # artifacts; the ref's own push/PR run decided this lane.
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Speechd integration lane: SKIPPED (manual dispatch — decided by the ref's own push/PR run)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           FILES="$RUNNER_TEMP/speechd-lane-changed-files.txt"
           MARKER_TEXT="$RUNNER_TEMP/speechd-lane-marker-text.txt"
 
@@ -293,6 +321,57 @@ jobs:
             echo "Speechd integration lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "Speechd integration lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Decide dogfood artifact lane ([dogfood-package] marker / dispatch input)
+        # The instrumented (LOCALVOXTRAL_DOGFOOD) app is packaged and uploaded
+        # only on explicit opt-in: the literal marker [dogfood-package] in the
+        # PR body / head commit message, or the workflow_dispatch `dogfood`
+        # input (which is what scripts/try-pr.sh --dogfood offers to trigger).
+        # Opt-in because the second packaging pass recompiles the root app
+        # under the extra define — and flips the incremental cache, so the
+        # NEXT clean run recompiles it back. No path filter: dogfooding is a
+        # human decision, not a diff property.
+        id: dogfood_lane
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          # env indirection, not inline ${{ }} in the script body: PR bodies
+          # and commit messages are attacker-shaped strings.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DISPATCH_DOGFOOD: ${{ inputs.dogfood }}
+        run: |
+          set -euo pipefail
+          RUN=false
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ "$DISPATCH_DOGFOOD" == "true" ]]; then
+              RUN=true; REASON="workflow_dispatch with dogfood=true"
+            else
+              REASON="workflow_dispatch without dogfood=true"
+            fi
+          else
+            # Marker sources mirror the LLM lane: PR body + PR head commit
+            # message (HEAD is the synthetic merge commit on PRs), or the
+            # head commit message on push.
+            MARKER_TEXT="$RUNNER_TEMP/dogfood-lane-marker-text.txt"
+            printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+            if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+              git log -1 --format=%B "$PR_HEAD_SHA" >> "$MARKER_TEXT" || true
+            else
+              printf '%s\n' "$PUSH_HEAD_MESSAGE" >> "$MARKER_TEXT"
+            fi
+            if grep -qF '[dogfood-package]' "$MARKER_TEXT"; then
+              RUN=true; REASON="[dogfood-package] marker present"
+            else
+              REASON="no [dogfood-package] marker in PR body / head commit message"
+            fi
+          fi
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          if [[ "$RUN" == "true" ]]; then
+            echo "Dogfood artifact lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Dogfood artifact lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Setup Swift
@@ -598,6 +677,40 @@ jobs:
             process.kill()
             process.wait(timeout=5)
           PY
+
+      - name: Package dogfood app bundle (opt-in instrumented artifact)
+        # Second packaging pass with the dogfood capture COMPILE flag. Fetch
+        # and launch with `scripts/try-pr.sh <pr|main> --dogfood`.
+        # - Enablement is the step env, NEVER the .dogfood-capture-enable
+        #   marker file: this workspace is persistent (clean: false), and a
+        #   marker file surviving a cancelled run would silently instrument
+        #   every later build. A step env cannot leak.
+        # - Runs AFTER the launch smoke so the smoke exercises the artifact
+        #   end users get, and the clean dist/localvoxtral.app is already
+        #   zipped and uploaded before this pass overwrites dist/. The helper
+        #   xcodebuild lanes are incremental no-ops; only the root app
+        #   recompiles under the define.
+        # - Same bundle id and signing identity as the clean build, so the
+        #   designated requirement — and the owner's Accessibility (TCC)
+        #   grant — is identical when switching between the two.
+        # - package_app.sh self-verifies the LVXDogfoodCapture Info.plist
+        #   stamp and fails loudly on mismatch; no re-check needed here.
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "1"
+          LOCALVOXTRAL_DOGFOOD: "1"
+        run: |
+          ./scripts/package_app.sh release
+          ditto -c -k --sequesterRsrc --keepParent dist/localvoxtral.app dist/localvoxtral-app-dogfood.zip
+
+      - name: Upload dogfood app artifact
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-app-dogfood
+          path: dist/localvoxtral-app-dogfood.zip
+          retention-days: 7
 
       - name: Process leak check (informational)
         # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up
