@@ -16,12 +16,9 @@ DerivedData/
 # biometric voice data and are synced to the private Mac build host only.
 /EvalRecordings/
 
-# docs/ is local scratch notes by default (owner machines carry private
-# setup/handoff notes there). Committed, user-facing docs are explicitly
-# negated below — add a `!/docs/<file>` line when adding one.
-/docs/*
-!/docs/README.md
-!/docs/dogfood-builds.md
+# Machine-local scratch (setup runbooks, handoff notes, drafts) — never
+# commit. Committed documentation lives in docs/, which is tracked normally.
+/local-notes/
 
 # Agent runtime dirs (opencode/Claude workers) — never commit
 .agent-runs/

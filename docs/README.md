@@ -1,10 +1,8 @@
 # docs/
 
-Committed, user-facing documentation. Note the unusual arrangement: `docs/*`
-is **gitignored by default** — this directory doubles as local scratch space
-for machine-specific notes (Mac setup, handoff notes) that must never be
-committed. A doc becomes part of the repo by adding a `!/docs/<file>` line to
-`.gitignore` next to the existing ones.
+Committed, user-facing documentation — tracked normally. Machine-local
+scratch (setup runbooks, handoff notes, drafts) goes in the gitignored
+`local-notes/` directory instead, never here.
 
 ## Index
 
