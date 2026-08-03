@@ -154,7 +154,9 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   verified, capture default armed automatically). `dogfood-package` remains
   the local-build equivalent; both keep the bundle id so the TCC grant
   survives and stamp `LVXDogfoodCapture` into Info.plist so you can tell
-  which binary you are running.
+  which binary you are running — as does Settings > About's constant "Build"
+  row (`DogfoodBuildStatus`), which also shows whether capture is armed in
+  this process.
 - **Pipes from child processes**: never read with
   `FileHandle.availableData` — it raises an uncatchable ObjC exception on
   descriptor errors and aborts the app (field crash, PR #60). Use
