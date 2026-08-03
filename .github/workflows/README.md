@@ -15,7 +15,9 @@ Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
 PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
 the job packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle after
 the launch smoke and uploads it as `localvoxtral-app-dogfood` (7-day
-retention). Fetch and launch it with `scripts/try-pr.sh <pr|main> --dogfood`,
+retention) plus `localvoxtral-dsym-dogfood` (30-day — the instrumented
+binary's UUID differs from the clean dSYM's). Fetch and launch it with
+`scripts/try-pr.sh <pr|main> --dogfood`,
 which also arms the runtime capture default. On manual dispatch the
 conditional live-model lanes (polishd/speechd) skip — the dispatched ref's
 own push/PR run already decided them.

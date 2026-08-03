@@ -75,8 +75,18 @@ if [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]]; then
 fi
 
 run_has_artifact() {
-  gh api "repos/{owner}/{repo}/actions/runs/$1/artifacts" \
-    --jq '.artifacts[].name' | grep -qxF "$ARTIFACT"
+  # Capture first, grep second: `gh | grep -q` under pipefail can turn an
+  # early grep exit into a spurious SIGPIPE "failure", and a gh error must
+  # abort loudly rather than read as "artifact missing".
+  local names
+  # Expired artifacts keep their listing row but download as 410 Gone, so
+  # they must not count as present.
+  if ! names="$(gh api "repos/{owner}/{repo}/actions/runs/$1/artifacts" \
+      --jq '.artifacts[] | select(.expired | not) | .name')"; then
+    echo "Failed to list artifacts for run $1 (gh api error)." >&2
+    exit 1
+  fi
+  grep -qxF "$ARTIFACT" <<<"$names"
 }
 
 if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
@@ -86,8 +96,10 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
 
   # Newest non-expired dogfood artifact anywhere in the repo, so there is
   # always a concrete "latest build that HAS one" to point at (or use).
-  LATEST="$(gh api "repos/{owner}/{repo}/actions/artifacts?name=localvoxtral-app-dogfood&per_page=50" \
-    --jq '[.artifacts[] | select(.expired | not)][0]
+  # sort_by(.created_at) because the REST endpoint documents no response
+  # ordering; 7-day retention keeps the population well inside one page.
+  LATEST="$(gh api "repos/{owner}/{repo}/actions/artifacts?name=localvoxtral-app-dogfood&per_page=100" \
+    --jq '[.artifacts[] | select(.expired | not)] | sort_by(.created_at) | last
           | if . == null then ""
             else "\(.workflow_run.id)\t\(.workflow_run.head_branch)\t\(.workflow_run.head_sha[0:7])\t\(.created_at)"
             end')"
@@ -105,7 +117,8 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
     if [[ -n "$BRANCH" ]]; then
       echo "  gh workflow run CI --ref $BRANCH -f dogfood=true" >&2
     else
-      echo "  (cross-repo fork PR: push the [dogfood-package] marker instead)" >&2
+      echo "  (cross-repo fork PR: fork PRs run on GitHub-hosted runners and never build" >&2
+      echo "   dogfood artifacts — push the branch to this repo instead)" >&2
     fi
     exit 1
   fi
@@ -118,7 +131,9 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
   case "$CHOICE" in
     t|T)
       if [[ -z "$BRANCH" ]]; then
-        echo "Can't dispatch for a cross-repo fork PR — push the [dogfood-package] marker instead." >&2
+        echo "Can't dispatch for a cross-repo fork PR — and fork PRs run on GitHub-hosted" >&2
+        echo "runners, which never build dogfood artifacts (the lane is self-hosted-only)." >&2
+        echo "Push the branch to this repo instead." >&2
         exit 1
       fi
       # gh workflow run doesn't return the run id; detect the new run by
@@ -144,6 +159,14 @@ if (( DOGFOOD )) && ! run_has_artifact "$RUN_ID"; then
       echo "Watching run $NEW_RUN (full CI + dogfood packaging; ~a few minutes on a warm runner)..."
       if ! gh run watch "$NEW_RUN" --exit-status; then
         echo "CI run failed — see: gh run view $NEW_RUN" >&2
+        exit 1
+      fi
+      # The newest-dispatch heuristic above can pick up someone else's
+      # concurrent dispatch (possibly without dogfood=true); verify the
+      # watched run actually produced the artifact before downloading.
+      if ! run_has_artifact "$NEW_RUN"; then
+        echo "Run $NEW_RUN finished green but has no dogfood artifact — a concurrent" >&2
+        echo "dispatch may have been picked up instead of ours. Rerun this script." >&2
         exit 1
       fi
       RUN_ID="$NEW_RUN"

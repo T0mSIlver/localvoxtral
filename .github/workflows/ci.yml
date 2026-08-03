@@ -56,6 +56,7 @@ jobs:
           # the lane-decide steps below).
           PR_BODY: ${{ github.event.pull_request.body }}
           PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -uo pipefail
           FILES="$RUNNER_TEMP/ci-fast-path-changed-files.txt"
@@ -108,6 +109,15 @@ jobs:
           # diff itself is docs-only, so they force the full path BEFORE the
           # filter can decide otherwise.
           MARKER_TEXT="${PR_BODY}"$'\n'"${PUSH_HEAD_MESSAGE}"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_HEAD_SHA" ]]; then
+            # On PRs, head_commit.message is empty and HEAD is the synthetic
+            # merge commit. The marker contract includes the PR's real head
+            # commit message (the lane decide steps below read it), so this
+            # fast-path escape hatch must read it too — otherwise a marker
+            # carried only by the head commit of a docs-only diff would be
+            # skipped straight past the lane it asked for.
+            MARKER_TEXT+=$'\n'"$(git log -1 --format=%B "$PR_HEAD_SHA" 2>/dev/null || true)"
+          fi
           if grep -qF '[run-llm-eval]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
@@ -703,6 +713,12 @@ jobs:
         run: |
           ./scripts/package_app.sh release
           ditto -c -k --sequesterRsrc --keepParent dist/localvoxtral.app dist/localvoxtral-app-dogfood.zip
+          # The instrumented root binary has its own UUID, so the clean
+          # localvoxtral-dsym artifact can't symbolicate a crash that happens
+          # while hand-dogfooding — ship this pass's dSYM too. The helper
+          # dSYMs are unchanged by this pass (incremental xcodebuild no-ops)
+          # and already ship in localvoxtral-dsym.
+          ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dsym-dogfood.zip
 
       - name: Upload dogfood app artifact
         if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
@@ -711,6 +727,16 @@ jobs:
           name: localvoxtral-app-dogfood
           path: dist/localvoxtral-app-dogfood.zip
           retention-days: 7
+
+      - name: Upload dogfood dSYM artifact
+        # Same longer retention rationale as localvoxtral-dsym: field crashes
+        # surface days after the build that produced them.
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-dsym-dogfood
+          path: dist/localvoxtral-dsym-dogfood.zip
+          retention-days: 30
 
       - name: Process leak check (informational)
         # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up
