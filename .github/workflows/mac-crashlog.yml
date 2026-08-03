@@ -146,8 +146,16 @@ jobs:
           marker_like="$(grep -c '^# \(BEGIN\|END\) localvoxtral claude context' "$cfg" 2>/dev/null)"
           well_formed="$(grep -c "$marker_grammar" "$cfg" 2>/dev/null)"
           echo "marker-like lines: ${marker_like:-0} (well-formed: ${well_formed:-0})"
-          echo "--- RemoteForward 8473 count:"
-          grep -c 'RemoteForward 8473' "$cfg" 2>/dev/null
+          # Ports, not hosts. Since per-Mac allocation (issue #215) the listen
+          # port is derived per install, and "which port does this Mac claim"
+          # is the first question when a host silently stops delivering — so
+          # print the listen ports themselves (a loopback port number is not
+          # private; the target and the alias are, and neither is printed).
+          # A remaining `8473` here means the block predates the fix.
+          echo "--- RemoteForward listen ports (count, then distinct ports):"
+          grep -c '^[[:space:]]*RemoteForward ' "$cfg" 2>/dev/null
+          awk '/^[[:space:]]*RemoteForward /{print $2}' "$cfg" 2>/dev/null | sort -u \
+            || echo "<none>"
           [ -f "$cfg" ] || echo "<no config file>"
           echo "--- leftover atomic-write temp files (count only):"
           /usr/bin/find "$HOME/.ssh" -maxdepth 1 -name '.config.localvoxtral.*' 2>/dev/null \

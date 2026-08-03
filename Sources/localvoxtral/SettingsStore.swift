@@ -563,6 +563,18 @@ final class SettingsStore {
         }
     }
 
+    /// The remote listen port this Mac's SSH `RemoteForward` binds on an
+    /// enrolled host — derived once from a persisted per-install identity, and
+    /// stable from then on (`ClaudeRemoteForwardPort`). Not a preference: there
+    /// is nothing to choose, and a value the user could edit here would silently
+    /// disagree with the `port` option already installed on the remote host.
+    ///
+    /// Reading it is what creates the identity, so it is cheap to read and
+    /// never returns a different answer on a later launch.
+    var claudeRemoteForwardPort: UInt16 {
+        ClaudeRemoteForwardPortAllocator(defaults: defaults).allocatedPort()
+    }
+
     /// A sendable, live view of the preference for the broker's background
     /// connection threads. The synchronized mirror keeps actor-isolated UI
     /// state and non-Sendable `UserDefaults` out of the socket service, while a

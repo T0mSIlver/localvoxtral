@@ -114,7 +114,11 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // Frozen by default (AGENTS: no wall-clock in tests). The registry's
         // own clock is pinned to the same instant, so a host that just reported
         // reads as "just now" rather than as whatever the machine's clock did.
-        now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 1_000_000) }
+        now: @escaping @Sendable () -> Date = { Date(timeIntervalSince1970: 1_000_000) },
+        // Pinned, never derived here: the model must use what it is handed, and
+        // a test that computed the allocation would only prove the derivation
+        // twice.
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -142,7 +146,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                     )
                 }
             },
-            now: now
+            now: now,
+            remoteForwardPort: remoteForwardPort
         )
     }
 
@@ -605,12 +610,14 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         label: String,
         alias: String = "builder",
         registry: ClaudeRemoteHostRegistry,
-        service: ClaudeRemoteEnrollmentService
+        service: ClaudeRemoteEnrollmentService,
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) async -> ClaudeIntegrationSettingsModel {
         let model = makeModel(
             registry: registry,
             listener: StubListener(hosts: registry),
-            enrollmentService: service
+            enrollmentService: service,
+            remoteForwardPort: remoteForwardPort
         )
         model.enrollLabel = label
         model.enrollSSHAlias = alias
@@ -652,6 +659,52 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(commands.contains("claude plugin update"))
         XCTAssertTrue(calls.withLock { $0 }.isEmpty, "disclosure must not run anything")
         XCTAssertNil(model.enrollmentConfirmation)
+    }
+
+    /// Every artifact the pane hands the user must name the SAME remote port —
+    /// this Mac's allocation (#215). One that names a different port than
+    /// another is a tunnel to nothing, and it fails open, i.e. silently.
+    func testEveryGeneratedArtifactUsesThisMacsAllocatedRemotePort() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "ok")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service,
+            remoteForwardPort: 28542
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+
+        await model.enroll()
+
+        let plan = try XCTUnwrap(model.presentedPlan).plan
+        XCTAssertTrue(
+            plan.sshConfigSnippet.contains("RemoteForward 28542 127.0.0.1:8473"),
+            plan.sshConfigSnippet
+        )
+        XCTAssertTrue(plan.remoteCommands.joined().contains("--config 'port=28542'"))
+        XCTAssertTrue(plan.verifyCommands.joined().contains("127.0.0.1:28542"))
+        XCTAssertTrue(plan.updateCommands.joined().contains("--config 'port=28542'"))
+        model.dismissPlan()
+
+        // …and so must the standalone update panel and what it actually runs.
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.requestPluginUpdate(hostID: hostID)
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertTrue(update.commands.joined().contains("--config 'port=28542'"))
+
+        model.requestPluginUpdateRun()
+        await model.confirmEnrollmentAction()
+        let scripts = calls.withLock { $0 }.map { String(decoding: $0.standardInput, as: UTF8.self) }
+        XCTAssertTrue(
+            scripts.contains { $0.contains("--config 'port=28542'") },
+            "the executed update must migrate the port, not just the panel text: \(scripts)"
+        )
     }
 
     /// The same confusion on the rotation path, which is worse: it hands a
@@ -730,9 +783,12 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         await model.confirmEnrollmentAction()
 
-        XCTAssertEqual(calls.withLock { $0 }.count, 2)
+        // Three since per-Mac ports (#215): marketplace update, plugin update,
+        // and the token-free `--config port=` migration for a host enrolled
+        // before that option existed.
+        XCTAssertEqual(calls.withLock { $0 }.count, 3)
         XCTAssertEqual(model.enrollmentStepStatuses.map(\.text), [
-            "Step 1 succeeded.", "Step 2 succeeded.",
+            "Step 1 succeeded.", "Step 2 succeeded.", "Step 3 succeeded.",
         ])
         XCTAssertEqual(model.enrollmentResultsAction, .updateRemotePlugin(hostID: hostID))
     }

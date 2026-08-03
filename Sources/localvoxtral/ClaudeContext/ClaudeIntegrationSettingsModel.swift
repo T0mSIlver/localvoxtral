@@ -299,6 +299,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// `Date()` in the view, and no timer: the rows are rebuilt when the pane
     /// appears and after every action that touches a host.
     private let now: @Sendable () -> Date
+    /// This Mac's allocated port on the remote side of the tunnel
+    /// (`ClaudeRemoteForwardPort`), passed in rather than read here so the pane
+    /// has no opinion about where it comes from — and so a test can pin it.
+    /// Every generated artifact that names a remote port takes it from this one
+    /// value: the ssh block, the install command, the verify probe, the
+    /// update/migration commands.
+    private let remoteForwardPort: UInt16
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -335,7 +342,11 @@ public final class ClaudeIntegrationSettingsModel {
                 }
             }.value
         },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        // Defaults to the legacy shared port: a caller that has not been taught
+        // about per-Mac allocation describes exactly the pre-#215 setup, which
+        // still works. Production passes the allocation.
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) {
         self.registry = registry
         self.listener = listener
@@ -344,6 +355,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.performAsync = performAsync
         self.performEnrollmentAsync = performEnrollmentAsync
         self.now = now
+        self.remoteForwardPort = remoteForwardPort
         refreshHosts()
         refreshListenerStatus()
     }
@@ -520,7 +532,8 @@ public final class ClaudeIntegrationSettingsModel {
                 host: enrollment.host,
                 sshHostAlias: alias,
                 token: enrollment.token,
-                port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
             )
             // A fresh sheet must not inherit a previous host's step results —
             // a still-running earlier action can repopulate the statuses after
@@ -560,7 +573,8 @@ public final class ClaudeIntegrationSettingsModel {
                 host: enrollment.host,
                 sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 token: enrollment.token,
-                port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
             )
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
@@ -653,7 +667,8 @@ public final class ClaudeIntegrationSettingsModel {
             hostID: hostID,
             sshHostAlias: alias,
             commands: ClaudeRemoteEnrollmentService.updateCommands(
-                sshHostAlias: alias ?? Self.unknownAliasPlaceholder
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
+                remoteForwardPort: remoteForwardPort
             )
         )
     }
@@ -789,8 +804,11 @@ public final class ClaudeIntegrationSettingsModel {
         defer { isPerformingEnrollmentAction = false }
 
         let service = enrollmentService
+        // Copied out of self before the detached hop, like `service`: the
+        // closure is @Sendable and must not capture the main-actor model.
+        let port = remoteForwardPort
         let attempt = await performEnrollmentAsync {
-            try service.executeRemotePluginUpdate(sshHostAlias: alias)
+            try service.executeRemotePluginUpdate(sshHostAlias: alias, remoteForwardPort: port)
         }
 
         // Same rule as the sheet: the row may have been closed, or another

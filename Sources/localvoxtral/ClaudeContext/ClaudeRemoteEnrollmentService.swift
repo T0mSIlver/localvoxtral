@@ -157,6 +157,17 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// plugin uses a command shim at all; verified on 2.1.220.)
     public static let tokenConfigKey = "token"
 
+    /// The plugin's non-sensitive userConfig key: which loopback port on the
+    /// REMOTE host the shim posts to. Reaches the shim as
+    /// `CLAUDE_PLUGIN_OPTION_PORT` exactly like the token does (both are
+    /// command-hook environment; verified end to end on Claude Code 2.1.220 —
+    /// a hook run with `--config port=28777` dialed 127.0.0.1:28777).
+    ///
+    /// It must equal the listen port of this Mac's `RemoteForward`. The plan
+    /// always emits both halves together for that reason; changing one alone
+    /// fails open, which looks exactly like nothing happening.
+    public static let portConfigKey = "port"
+
     private let runner: Runner?
     private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
 
@@ -182,21 +193,39 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     ///     we should surface rather than quietly rewrite.
     ///   - token: the plaintext used to generate the copyable command and, after
     ///     confirmation, its SSH stdin script. Not stored or logged.
+    ///   - listenerPort: the port the app listens on, HERE, on this Mac. The
+    ///     forward's target.
+    ///   - remoteForwardPort: the port the forward binds THERE, on the remote
+    ///     host — this Mac's per-install allocation
+    ///     (`ClaudeRemoteForwardPort`), which is what keeps two Macs from
+    ///     contending for one bind (issue #215). Defaults to the legacy shared
+    ///     port so every existing caller and fixture describes the pre-#215
+    ///     setup, which still works.
     public static func plan(
         host: ClaudeRemoteHost,
         sshHostAlias: String,
         token: String,
-        port: UInt16 = ClaudeRemoteListenerLimits.default.port
+        listenerPort: UInt16 = ClaudeRemoteListenerLimits.default.port,
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) throws -> SetupPlan {
         guard isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
 
         return SetupPlan(
-            sshConfigSnippet: sshConfigSnippet(host: host, sshHostAlias: sshHostAlias, port: port),
-            remoteCommands: remoteCommands(token: token),
-            verifyCommands: verifyCommands(sshHostAlias: sshHostAlias, port: port),
-            updateCommands: updateCommands(sshHostAlias: sshHostAlias),
+            sshConfigSnippet: sshConfigSnippet(
+                host: host,
+                sshHostAlias: sshHostAlias,
+                listenerPort: listenerPort,
+                remoteForwardPort: remoteForwardPort
+            ),
+            remoteCommands: remoteCommands(token: token, remoteForwardPort: remoteForwardPort),
+            verifyCommands: verifyCommands(
+                sshHostAlias: sshHostAlias, remoteForwardPort: remoteForwardPort
+            ),
+            updateCommands: updateCommands(
+                sshHostAlias: sshHostAlias, remoteForwardPort: remoteForwardPort
+            ),
             uninstallCommands: uninstallCommands(host: host, sshHostAlias: sshHostAlias),
-            notes: notes(port: port)
+            notes: notes(listenerPort: listenerPort, remoteForwardPort: remoteForwardPort)
         )
     }
 
@@ -233,17 +262,28 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         "# END localvoxtral claude context (\(hostID))"
     }
 
-    static func sshConfigSnippet(host: ClaudeRemoteHost, sshHostAlias: String, port: UInt16) -> String {
+    static func sshConfigSnippet(
+        host: ClaudeRemoteHost,
+        sshHostAlias: String,
+        listenerPort: UInt16,
+        remoteForwardPort: UInt16
+    ) -> String {
         """
         \(blockBegin(hostID: host.id))
         Host \(sshHostAlias)
-            RemoteForward \(port) 127.0.0.1:\(port)
+            # \(remoteForwardPort) is THIS Mac's allocated port on the remote host, and
+            # it must match the plugin's `port` option there. Another Mac gets a
+            # different one, so the two can never fight over one bind — the fight
+            # nobody wins twice: the first connection keeps the forward and the
+            # second delivers this host's events, and its token, to the wrong Mac.
+            RemoteForward \(remoteForwardPort) 127.0.0.1:\(listenerPort)
             # ExitOnForwardFailure no (the default) is deliberate: if the remote
-            # already has \(port) bound — usually another localvoxtral tunnel from a
-            # second window — `yes` would refuse to open the SSH session at all.
+            # already has \(remoteForwardPort) bound — now only by another session from
+            # this same Mac — `yes` would refuse to open the SSH session at all.
             # A dictation nicety must never cost you the shell. The cost of `no`
             # is that a failed forward is silent: the hooks get connection
-            # refused, fail open, and you simply get no context.
+            # refused, fail open, and you simply get no context. The verify step
+            # below is how you check.
             ExitOnForwardFailure no
         \(blockEnd(hostID: host.id))
         """
@@ -257,13 +297,19 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// on Claude Code 2.1.220). `install` DOES apply a new `--config token=`,
     /// which is why rotation reuses this exact command — and why shipping a new
     /// plugin version needs `updateCommands` instead.
-    static func remoteCommands(token: String) -> [String] {
+    /// `--config` is repeatable and MERGES per key on an already-installed
+    /// plugin: verified on Claude Code 2.1.220 (`--help` documents "repeatable";
+    /// a second install with only `--config port=` kept the stored token and
+    /// replaced only the port). That is what makes the port migratable without
+    /// ever re-sending a credential.
+    static func remoteCommands(token: String, remoteForwardPort: UInt16) -> [String] {
         [
             "claude plugin marketplace add \(repositoryMarketplaceReference)",
             // Leading space: with HISTCONTROL=ignorespace (bash) or
             // HIST_IGNORE_SPACE (zsh) the token stays out of the remote shell
             // history. See `notes` — it is a habit, not a guarantee.
-            " claude plugin install \(remotePluginReference) --config '\(tokenConfigKey)=\(token)'",
+            " claude plugin install \(remotePluginReference) --config '\(tokenConfigKey)=\(token)'"
+                + " --config '\(portConfigKey)=\(remoteForwardPort)'",
         ]
     }
 
@@ -272,14 +318,20 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// broken — a forward "failure" that just means another session already
     /// holds the tunnel, and a 401 that is the success signal. Say so in the
     /// output they are pasting, not in a note they have scrolled past.
-    static func verifyCommands(sshHostAlias: String, port: UInt16) -> [String] {
+    static func verifyCommands(sshHostAlias: String, remoteForwardPort: UInt16) -> [String] {
         [
             // -v because a failed RemoteForward is otherwise invisible when
-            // ExitOnForwardFailure is `no`.
-            "# Forward check — 'remote forward success' means this probe owns the",
-            "# tunnel. A failure here is EXPECTED while another live session to",
-            "# this host holds it; the port check below is the truth either way.",
-            "ssh -v \(sshHostAlias) true 2>&1 | grep -i 'remote forward'",
+            // ExitOnForwardFailure is `no`. The `grep -q … && echo` shape is
+            // deliberate: a person pasting this must be told the FIX, not handed
+            // an OpenSSH debug line to interpret. The message is deliberately
+            // apostrophe-free so it survives single-quoted shell.
+            "# Forward check — does this Mac actually own port \(remoteForwardPort) over there?",
+            "# A failure here is EXPECTED while another live session from THIS Mac",
+            "# holds it; anything else means this Mac is receiving nothing.",
+            "ssh -v \(sshHostAlias) true 2>&1 | grep -q '\(ClaudeRemoteForwardPort.forwardFailureSignature)'"
+                + " && echo 'localvoxtral: \(ClaudeRemoteForwardPort.contentionMessage(port: remoteForwardPort, host: sshHostAlias))"
+                + " Close that session, or wait for sshd to reap it, then retry — until then this Mac gets no context from \(sshHostAlias).'"
+                + " || echo 'localvoxtral: port \(remoteForwardPort) forwards cleanly to this Mac.'",
             "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
             "# here even though it runs fine when you are logged in.",
             "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)claude plugin list'",
@@ -287,7 +339,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             "# unauthenticated probe must be refused). A connection error means",
             "# no live session holds the forward right now.",
             "ssh \(sshHostAlias) 'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST "
-                + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(port)/v1/hook/SessionStart'",
+                + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(remoteForwardPort)/v1/hook/SessionStart'",
         ]
     }
 
@@ -302,12 +354,23 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
 
     /// The remote-side commands, in order, with nothing wrapped around them.
     /// Execution sends these through the SSH stdin script;
-    /// `updateCommands(sshHostAlias:)` is the same pair written for a person to
-    /// paste from this Mac.
-    static let remotePluginUpdateCommands = [
-        "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)",
-        "claude plugin update \(remotePluginReference)",
-    ]
+    /// `updateCommands(sshHostAlias:remoteForwardPort:)` is the same set written
+    /// for a person to paste from this Mac.
+    ///
+    /// The third command is the port MIGRATION, and it is why update takes a
+    /// port at all: a host enrolled before #215 has no `port` option, so its
+    /// shim posts to the legacy 8473 while this Mac has moved its forward to an
+    /// allocated one — two halves that disagree, failing open in silence.
+    /// `plugin update` has no `--config` (Claude Code 2.1.220), and `install`
+    /// on an installed plugin merges config per key without touching the stored
+    /// token, so this line is both the only way and a token-free one.
+    static func remotePluginUpdateCommands(remoteForwardPort: UInt16) -> [String] {
+        [
+            "claude plugin marketplace update \(ClaudePluginAssets.marketplaceName)",
+            "claude plugin update \(remotePluginReference)",
+            "claude plugin install \(remotePluginReference) --config '\(portConfigKey)=\(remoteForwardPort)'",
+        ]
+    }
 
     /// Bring an enrolled host to the plugin version this app ships.
     ///
@@ -315,16 +378,21 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// else in the product tells the user that re-running setup is not an
     /// update, and a host silently left on an old plugin fails open — i.e. it
     /// looks like nothing at all.
-    static func updateCommands(sshHostAlias: String) -> [String] {
-        [
-            "# Run after updating localvoxtral on this Mac. This pair is the ONLY",
+    static func updateCommands(sshHostAlias: String, remoteForwardPort: UInt16) -> [String] {
+        let commands = remotePluginUpdateCommands(remoteForwardPort: remoteForwardPort)
+        return [
+            "# Run after updating localvoxtral on this Mac. This set is the ONLY",
             "# way a plugin fix reaches a host that is already enrolled: on Claude",
             "# Code 2.1.220, re-running `plugin install` exits 0 with \"already",
             "# installed\" and leaves the old version in place, and `marketplace",
             "# add` does not refresh a clone it already has. Your token is kept —",
-            "# `plugin update` preserves the stored config.",
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(remotePluginUpdateCommands[0])'",
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(remotePluginUpdateCommands[1])'",
+            "# `plugin update` preserves the stored config, and the third command",
+            "# below sets only the port (install merges config per key).",
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(commands[0])'",
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(commands[1])'",
+            "# Point this host at THIS Mac's allocated port \(remoteForwardPort). Required once",
+            "# for a host enrolled before per-Mac ports; harmless every time after.",
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(commands[2])'",
         ]
     }
 
@@ -338,8 +406,18 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         ]
     }
 
-    static func notes(port: UInt16) -> [String] {
+    static func notes(listenerPort: UInt16, remoteForwardPort: UInt16) -> [String] {
         [
+            "This Mac forwards port \(remoteForwardPort) on the remote host to localvoxtral on "
+                + "127.0.0.1:\(listenerPort) here. The ssh-config block and the plugin's `port` option "
+                + "must name the same \(remoteForwardPort): change one without the other and the hooks "
+                + "post into a port nothing forwards — which fails open, i.e. looks like nothing at "
+                + "all. The setup commands always carry both halves.",
+            "The port is allocated per Mac, so a second Mac enrolled against this same host gets a "
+                + "different one and the two can never contend for one bind. What they still share is "
+                + "the host: one Claude Code install stores one `port`, so the most recently installed "
+                + "config is the Mac that receives events. The other simply sees no traffic — no "
+                + "longer someone else's events, and never someone else's token.",
             "The token authorizes remote context only. A host that presents it can never "
                 + "make localvoxtral read a local file: the listener tags every session it accepts "
                 + "as remote regardless of what the payload says, and a remote cwd cannot be turned "
@@ -361,13 +439,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 + "Its hooks fail open silently when either is missing, the tunnel is down, or the app "
                 + "is not answering: you simply get no context, never a blocked Claude turn.",
             "While a session holds the tunnel and localvoxtral is not running, ssh itself — on this "
-                + "Mac — prints `connect_to 127.0.0.1 port \(port): failed.` into the remote terminal on "
-                + "every dial; the plugin cannot silence another process. So after a failed dial its "
-                + "hooks back off for five minutes; prompt submits still try, so context returns with "
-                + "your first prompt once the app is back.",
-            "A second concurrent SSH session to the same host will fail to bind \(port) on the "
-                + "remote and — because ExitOnForwardFailure is `no` — will connect anyway with no "
-                + "tunnel. The first session keeps the forward.",
+                + "Mac — prints `connect_to 127.0.0.1 port \(listenerPort): failed.` into the remote "
+                + "terminal on every dial; the plugin cannot silence another process. So after a "
+                + "failed dial its hooks back off for five minutes; prompt submits still try, so "
+                + "context returns with your first prompt once the app is back.",
+            "A second concurrent SSH session from this Mac to the same host will fail to bind "
+                + "\(remoteForwardPort) on the remote and — because ExitOnForwardFailure is `no` — will "
+                + "connect anyway with no tunnel. The first session keeps the forward, and the verify "
+                + "step above is how you tell that apart from a broken setup.",
             "One-click setup connects with forwarding disabled (the tunnel belongs to your real "
                 + "sessions, not setup) and first resolves `claude` from common install locations — "
                 + "non-interactive SSH shells often lack the user-local PATH entries an interactive "
@@ -527,10 +606,11 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     @discardableResult
     public func executeRemotePluginUpdate(
         sshHostAlias: String,
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
         timeout: TimeInterval = defaultRemoteSetupTimeout
     ) throws -> [ExecutionStep] {
         try execute(
-            commands: Self.remotePluginUpdateCommands,
+            commands: Self.remotePluginUpdateCommands(remoteForwardPort: remoteForwardPort),
             sshHostAlias: sshHostAlias,
             token: "",
             timeout: timeout,

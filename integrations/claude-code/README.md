@@ -231,7 +231,7 @@ plugin installed on the wrong side fails open silently forever.
 remote host                            your Mac
 ┌───────────────────────┐              ┌────────────────────────────┐
 │ Claude Code           │              │ localvoxtral               │
-│   command hook (curl)►│ 127.0.0.1:8473              ▲             │
+│   command hook (curl)►│ 127.0.0.1:28511             ▲             │
 │   Bearer <token>      │   │          │              │             │
 └───────────────────────┘   │          │   ClaudeRemoteContextListener
                             └── ssh RemoteForward ────┘             │
@@ -239,11 +239,14 @@ remote host                            your Mac
 ```
 
 Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
-curls the hook's event JSON to `http://127.0.0.1:8473/v1/hook/<Event>` on the
-*remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
-loopback, where the app is listening. The shim reads the token from the
-`CLAUDE_PLUGIN_OPTION_TOKEN` environment variable Claude Code injects into
-command-hook subprocesses, and passes it to curl through a private tempfile
+curls the hook's event JSON to `http://127.0.0.1:<your Mac's port>/v1/hook/<Event>`
+on the *remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
+loopback port 8473, where the app is listening. That remote port is **allocated
+per Mac** (a stable number in 28473–28572, derived from a per-install identity)
+so two Macs enrolled against one host can never ask for the same bind — see
+"Two Macs, one host" below. The shim reads the token and the port from the
+`CLAUDE_PLUGIN_OPTION_TOKEN` / `CLAUDE_PLUGIN_OPTION_PORT` environment variables
+Claude Code injects into command-hook subprocesses, and passes it to curl through a private tempfile
 (`--header @file`) so it never appears in any process's argument list. It
 needs only `sh` and `curl` on the host, and fails open — silently, printing
 nothing — when either is missing, the token is unset, the tunnel is down, or
@@ -302,25 +305,35 @@ rotate — that is what rotation is for. Then:
 ```
 # BEGIN localvoxtral claude context (h1a2b3c4)
 Host builder
-    RemoteForward 8473 127.0.0.1:8473
+    RemoteForward 28511 127.0.0.1:8473
     ExitOnForwardFailure no
 # END localvoxtral claude context (h1a2b3c4)
 ```
 
+`28511` is an example — the app generates *your* Mac's number and puts it in
+both the block and the install command below. The two must always name the same
+port: change one alone and the hooks post into a port nothing forwards, which
+fails open, which looks exactly like nothing happening.
+
 `ExitOnForwardFailure no` is deliberate and is the default. With `yes`, SSH
-refuses to open the session at all when the remote's 8473 is already bound —
-usually by your own second window to the same host. **A dictation nicety must
+refuses to open the session at all when that port is already bound on the remote
+— now only by your own second window to the same host. **A dictation nicety must
 never cost you the shell.** The price of `no` is that a failed forward is
 silent: the hooks get connection refused, fail open, and you simply get no
-context. `ssh -v builder true 2>&1 | grep -i 'remote forward'` is where you see
-whether it took.
+context. This is where you see whether it took:
+
+```sh
+ssh -v builder true 2>&1 | grep -q 'remote port forwarding failed' \
+  && echo 'port 28511 is already held on builder' \
+  || echo 'port 28511 forwards cleanly'
+```
 
 **2. Install the plugin on the remote host:**
 
 ```sh
 ssh builder
 claude plugin marketplace add T0mSIlver/localvoxtral
- claude plugin install localvoxtral-remote@localvoxtral --config 'token=<YOUR-TOKEN>'
+ claude plugin install localvoxtral-remote@localvoxtral --config 'token=<YOUR-TOKEN>' --config 'port=28511'
 ```
 
 Note the leading space on the second line: with `HISTCONTROL=ignorespace` (bash)
@@ -340,7 +353,7 @@ claude plugin list
 # the tunnel is up and the app is answering. A connection error means the
 # forward did not take.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
-  -d '{}' http://127.0.0.1:8473/v1/hook/SessionStart
+  -d '{}' http://127.0.0.1:28511/v1/hook/SessionStart
 ```
 
 ## Updating an enrolled host
@@ -361,6 +374,10 @@ preserves the stored config:
 ```sh
 ssh builder 'claude plugin marketplace update localvoxtral'
 ssh builder 'claude plugin update localvoxtral-remote@localvoxtral'
+# Only needed once, for a host enrolled before per-Mac ports existed — and
+# harmless every time after. `plugin update` has no `--config`, and `install`
+# merges config per key, so this sets the port without touching your token.
+ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'port=28511'"
 ```
 
 Order matters: `plugin update` installs whatever the local marketplace clone
@@ -425,6 +442,17 @@ involving localvoxtral at all. Enrolling a host means trusting that host's user
 account to the extent it is already trusted. What the token bounds is what a
 host can do to *localvoxtral* (remote context only, never a local file read),
 not what a compromised account can do to itself.
+
+**Two Macs enrolled against one host.** Each Mac forwards its *own* port, so
+they cannot contend for one remote bind — which used to be a silent
+cross-delivery: the first connection kept the forward, the second connected
+anyway (`ExitOnForwardFailure no`) and every event on that host, bearer token
+included, went to the *first* Mac, which 401'd it, which the shim reads as a
+completed exchange. Nothing reported it (issue #215). What per-Mac ports do
+**not** change: one host runs one Claude Code install storing one `port`, so the
+most recently installed config is the Mac that receives events. The other one
+simply sees no traffic — visible single tenancy, not someone else's credential
+in someone else's listener.
 
 **A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
 Loopback ports are first-come, first-served on macOS; there is no ownership. A

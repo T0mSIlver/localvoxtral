@@ -367,11 +367,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         claudeRemoteListenerCoordinator = coordinator
 
+        // The per-Mac remote listen port (issue #215). Read once, here, so
+        // every generated artifact in this launch agrees; reading it is also
+        // what mints the install identity on a first run, and it must not be
+        // minted lazily inside a sheet that a test could reach.
+        let remoteForwardPort = viewModel.settings.claudeRemoteForwardPort
+        Log.claudeContext.info(
+            "Claude remote forward port allocated: \(remoteForwardPort, privacy: .public)"
+        )
+
         viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: coordinator,
             pluginService: { ClaudePluginInstallService.live() },
-            enrollmentService: ClaudeRemoteEnrollmentService.live()
+            enrollmentService: ClaudeRemoteEnrollmentService.live(),
+            remoteForwardPort: remoteForwardPort
         )
 
         // Route launch through the same model that owns the Settings status.
