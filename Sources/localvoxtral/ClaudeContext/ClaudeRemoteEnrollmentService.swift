@@ -360,6 +360,11 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             "The plugin needs only POSIX `sh` and `curl` on the remote host — no localvoxtral binary. "
                 + "Its hooks fail open silently when either is missing, the tunnel is down, or the app "
                 + "is not answering: you simply get no context, never a blocked Claude turn.",
+            "While a session holds the tunnel and localvoxtral is not running, ssh itself — on this "
+                + "Mac — prints `connect_to 127.0.0.1 port \(port): failed.` into the remote terminal on "
+                + "every dial; the plugin cannot silence another process. So after a failed dial its "
+                + "hooks back off for five minutes; prompt submits still try, so context returns with "
+                + "your first prompt once the app is back.",
             "A second concurrent SSH session to the same host will fail to bind \(port) on the "
                 + "remote and — because ExitOnForwardFailure is `no` — will connect anyway with no "
                 + "tunnel. The first session keeps the forward.",

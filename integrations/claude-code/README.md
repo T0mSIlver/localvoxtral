@@ -227,6 +227,25 @@ Code writes to its terminal — so the marker rides the SSH PTY back into Ghostt
 and the pane identifies itself. Nothing else opens a port, and nothing is
 reachable from your LAN.
 
+## When the app is not running on your Mac
+
+The shim's own failures are always silent, but there is one message it cannot
+reach: while an SSH session holds the forward and localvoxtral is not running,
+each dial makes **ssh itself, on your Mac**, print
+`connect_to 127.0.0.1 port 8473: failed.`
+onto the terminal — over whatever is drawn there (a herdr pane, the Claude Code
+screen), once per hook. That stderr belongs to another process on another
+machine; no plugin-side redirect can touch it, and silencing it in ssh would
+take `LogLevel QUIET`, which also hides host-key warnings — not a trade this
+plugin will make for you.
+
+So the shim stops dialing instead: after a transport-level failure, every hook
+except `UserPromptSubmit` skips the tunnel for the next 5 minutes.
+`UserPromptSubmit` still dials every time — one line per submitted prompt while
+the app is down is the honest signal that context is off, and it means your
+first prompt after the app comes back is grounded immediately; that completed
+exchange (any HTTP status, even a 401) clears the backoff for everything else.
+
 ## Set it up
 
 In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH"**,

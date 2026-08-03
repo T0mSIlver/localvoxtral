@@ -465,6 +465,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             notes.contains("curl") && notes.contains("fail open"),
             "the host dependency (sh + curl) and its fail-open behavior must be stated honestly"
         )
+        XCTAssertTrue(
+            notes.contains("connect_to") && notes.contains("back off"),
+            "the app-down ssh noise (`connect_to … failed`, printed by ssh on this Mac, not by "
+                + "the plugin) and the shim's backoff must be stated — the symptom reads as a "
+                + "plugin bug and the user must learn whose stderr it is"
+        )
     }
 
     func testNotesStateThatARemoteTokenCannotReachLocalFiles() throws {
