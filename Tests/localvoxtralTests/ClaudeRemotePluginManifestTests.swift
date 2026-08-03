@@ -347,15 +347,23 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     /// Runs the shim under `/bin/sh` with exactly the given extra environment
     /// (a nil-token run REMOVES the variable), a `{}` event body on stdin, and
-    /// captures everything.
+    /// captures everything. Unless the caller supplies its own state dir, the
+    /// backoff stamp is pointed at a throwaway `XDG_RUNTIME_DIR` so no test
+    /// run ever reads or writes real per-user state under `~/.cache`.
     private func runShim(
+        event: String = "Stop",
         environment: [String: String]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let isolatedState = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: isolatedState, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: isolatedState) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [shimURL.path, "Stop"]
+        process.arguments = [shimURL.path, event]
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment.removeValue(forKey: "CLAUDE_PLUGIN_OPTION_TOKEN")
+        processEnvironment["XDG_RUNTIME_DIR"] = isolatedState.path
         processEnvironment.merge(environment) { _, new in new }
         process.environment = processEnvironment
         let stdin = Pipe()
@@ -458,12 +466,20 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     /// Runs the shim with a stub `curl` first on PATH that "answers" with the
     /// given status and body: it honors `--output <path>` the way the real curl
-    /// does, drains stdin, and prints the status as `--write-out` would. The
-    /// real system PATH stays behind it, so `grep`/`cat`/`wc` resolve normally.
-    /// A nil body means curl "succeeded" without ever writing the output file —
-    /// the shape a reset tunnel produces.
+    /// does, drains stdin, prints the status as `--write-out` would, and exits
+    /// with `curlExitCode` (nonzero = the transport-level failure a dead tunnel
+    /// produces; the shim then clears `STATUS`). The real system PATH stays
+    /// behind it, so `grep`/`cat`/`wc` resolve normally. A nil body means curl
+    /// "succeeded" without ever writing the output file — the shape a reset
+    /// tunnel produces. When `extraEnvironment` sets `FAKE_CURL_LOG`, the stub
+    /// appends one line per invocation, so a test can prove curl was — or was
+    /// NOT — dialed at all.
     private func runShimWithStubCurl(
-        status: String, body: Data?
+        event: String = "Stop",
+        status: String,
+        body: Data?,
+        curlExitCode: Int32 = 0,
+        extraEnvironment: [String: String] = [:]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let stubDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-stub-\(UUID().uuidString)")
@@ -474,6 +490,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let stub = stubDirectory.appendingPathComponent("curl")
         let script = """
         #!/bin/sh
+        [ -n "${FAKE_CURL_LOG:-}" ] && printf 'dial\\n' >>"$FAKE_CURL_LOG"
         out=""
         previous=""
         for argument in "$@"; do
@@ -483,16 +500,179 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         cat >/dev/null
         [ -n "$out" ] && cp "$FAKE_CURL_BODY" "$out" 2>/dev/null
         printf '%s' "$FAKE_CURL_STATUS"
+        exit "${FAKE_CURL_EXIT:-0}"
         """
         try script.write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-        return try runShim(environment: [
+        var environment = [
             "CLAUDE_PLUGIN_OPTION_TOKEN": "unit-test-token",
             "PATH": "\(stubDirectory.path):\(systemPath)",
             "FAKE_CURL_BODY": bodyFixture.path,
             "FAKE_CURL_STATUS": status,
-        ])
+            "FAKE_CURL_EXIT": String(curlExitCode),
+        ]
+        environment.merge(extraEnvironment) { _, new in new }
+        return try runShim(event: event, environment: environment)
+    }
+
+    // MARK: Shim transport backoff
+    //
+    // While an SSH session holds the RemoteForward but the app is not running,
+    // every dial makes the ssh client ON THE MAC print
+    // `connect_to 127.0.0.1 port 8473 failed` onto the user's terminal — over
+    // the herdr pane or the Claude Code TUI, once per hook. That stderr is
+    // another process on another machine; the shim's only lever is to stop
+    // dialing a tunnel that just proved dead. These tests RUN the shim against
+    // the stub curl and prove the contract: a transport failure arms a stamp,
+    // later events skip curl entirely, UserPromptSubmit always dials through,
+    // and any completed HTTP exchange clears the stamp. Every odd stamp state
+    // fails toward dialing — the pre-backoff behavior.
+
+    /// A throwaway backoff-state home shared across several shim runs, plus
+    /// the stamp path the shim derives from it.
+    private func makeBackoffState() throws -> (dir: URL, stamp: URL, environment: [String: String]) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-backoff-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return (
+            dir,
+            dir.appendingPathComponent("localvoxtral/hook-backoff"),
+            ["XDG_RUNTIME_DIR": dir.path]
+        )
+    }
+
+    private func writeStamp(_ contents: String, at stamp: URL) throws {
+        try FileManager.default.createDirectory(
+            at: stamp.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try contents.write(to: stamp, atomically: true, encoding: .utf8)
+    }
+
+    private func freshEpochStamp(secondsAgo: Int = 0) -> String {
+        "\(Int(Date().timeIntervalSince1970) - secondsAgo)\n"
+    }
+
+    func testTransportFailureArmsTheBackoffAndLaterEventsSkipTheDialEntirely() throws {
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+
+        // A dead tunnel: curl exits 7, no status, no body. Silent as ever —
+        // and the stamp is now armed with epoch seconds.
+        let failure = try runShimWithStubCurl(
+            event: "Stop", status: "", body: nil, curlExitCode: 7,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(failure.exitCode, 0)
+        XCTAssertEqual(failure.stdout, "")
+        XCTAssertEqual(failure.stderr, "")
+        let stampText = try String(contentsOf: state.stamp, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(stampText.isEmpty, "a transport failure must arm the backoff stamp")
+        XCTAssertTrue(stampText.allSatisfy(\.isNumber), "the stamp must be epoch seconds: \(stampText)")
+
+        // Inside the window, an ordinary event must not invoke curl AT ALL —
+        // the dial itself is what makes ssh print. The stub would both log the
+        // invocation and answer a perfectly valid marker body; neither may
+        // happen.
+        let log = state.dir.appendingPathComponent("curl.log")
+        let backedOff = try runShimWithStubCurl(
+            event: "PostToolUse", status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+        )
+        XCTAssertEqual(backedOff.exitCode, 0)
+        XCTAssertEqual(backedOff.stdout, "", "a backed-off event must print nothing")
+        XCTAssertEqual(backedOff.stderr, "")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: log.path),
+            "curl must not be dialed during the backoff window"
+        )
+    }
+
+    func testUserPromptSubmitDialsThroughAnArmedBackoffAndSuccessClearsIt() throws {
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        try writeStamp(freshEpochStamp(), at: state.stamp)
+
+        // The prompt event is exempt: it must dial straight through the armed
+        // stamp, deliver the marker, and — having completed an exchange —
+        // clear the backoff.
+        let body = ClaudeRemoteHTTPCodec.markerResponseBody(marker: "lvx-441e1124")
+        let prompt = try runShimWithStubCurl(
+            event: "UserPromptSubmit", status: "200", body: body,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(prompt.exitCode, 0)
+        XCTAssertEqual(
+            Data(prompt.stdout.utf8), body,
+            "UserPromptSubmit must dial straight through an armed backoff"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: state.stamp.path),
+            "a completed exchange must clear the stamp"
+        )
+
+        // With the stamp gone, ordinary events dial again.
+        let log = state.dir.appendingPathComponent("curl.log")
+        let stop = try runShimWithStubCurl(
+            event: "Stop", status: "200", body: body,
+            extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+        )
+        XCTAssertEqual(stop.exitCode, 0)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: log.path),
+            "Stop must dial again once the backoff is cleared"
+        )
+    }
+
+    func testEvenA401ClearsTheBackoffBecauseTheExchangeCompleted() throws {
+        // A 401 proves the tunnel terminates at a listener — nothing will make
+        // ssh complain — so it must clear the stamp exactly like a 200.
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        try writeStamp(freshEpochStamp(), at: state.stamp)
+
+        let result = try runShimWithStubCurl(
+            event: "UserPromptSubmit", status: "401", body: nil,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr, "")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: state.stamp.path),
+            "any completed HTTP exchange must clear the stamp"
+        )
+    }
+
+    func testExpiredCorruptAndFutureStampsAllFailTowardDialing() throws {
+        // Backoff must only ever SUBTRACT noise. An expired stamp, garbage
+        // content, or a clock that jumped backwards (stamp in the future) all
+        // mean the same thing: dial, exactly as before the backoff existed.
+        let stamps = [
+            ("expired", freshEpochStamp(secondsAgo: 3600)),
+            ("corrupt", "not-a-number\n"),
+            ("future", freshEpochStamp(secondsAgo: -100_000)),
+            ("oversized", "99999999999999999999999999\n"),
+        ]
+        for (name, contents) in stamps {
+            let state = try makeBackoffState()
+            defer { try? FileManager.default.removeItem(at: state.dir) }
+            try writeStamp(contents, at: state.stamp)
+            let log = state.dir.appendingPathComponent("curl.log")
+            let result = try runShimWithStubCurl(
+                event: "Stop", status: "200",
+                body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+                extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+            )
+            XCTAssertEqual(result.exitCode, 0, "\(name): must still exit 0")
+            XCTAssertEqual(result.stderr, "", "\(name): must never print on stderr")
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: log.path),
+                "\(name): a \(name) stamp must fail toward dialing"
+            )
+        }
     }
 
     func testPostToolUseMatchesOnlyFileBearingTools() throws {
@@ -622,6 +802,28 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         try assertReadmeHasLine(
             containing: "silent",
             "the cost of `no` is a silently absent tunnel; a user who is not told will not look"
+        )
+    }
+
+    func testReadmeDocumentsTheAppDownSSHNoiseAndTheBackoff() throws {
+        // The failure mode reads as "the plugin is printing errors" when the
+        // printer is actually ssh on the Mac. Name the exact message a user
+        // will see, say the shim backs off rather than dialing, and keep the
+        // UserPromptSubmit exemption stated — it is the one residual line a
+        // user WILL still see per prompt while the app is down.
+        // OpenSSH's exact format string is `connect_to %.100s port %d: failed.`
+        // (channels.c) — quote it verbatim so a user can search for it.
+        try assertReadmeHasLine(
+            containing: "connect_to 127.0.0.1 port 8473: failed.",
+            "name the exact ssh message so a user can search for it"
+        )
+        try assertReadmeHasLine(
+            containing: "stops dialing",
+            "the fix is not dialing, and the doc must say so"
+        )
+        try assertReadmeHasLine(
+            containing: "`UserPromptSubmit` still dials every time",
+            "the residual one-line-per-prompt signal is deliberate and must be stated"
         )
     }
 

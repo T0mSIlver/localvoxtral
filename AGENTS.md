@@ -394,7 +394,13 @@ Key subsystems:
     hooks running the bundled POSIX-sh shim `hooks/post.sh`, which curls the
     event JSON to `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH
     `RemoteForward` — no localvoxtral binary and no `jq`/`nc`/Node on that
-    host, but it does need `sh` and `curl` (fail-open when absent). It was
+    host, but it does need `sh` and `curl` (fail-open when absent). After a
+    transport-level failure the shim backs off for 5 minutes (epoch stamp
+    under `$XDG_RUNTIME_DIR`/`~/.cache`) for every event except
+    `UserPromptSubmit`: each dial against a live forward with no app behind
+    it makes the Mac-side ssh client print `connect_to …: failed.` onto the
+    user's terminal — stderr the remote side can never redirect — and any
+    completed HTTP exchange (even a 401) clears the backoff. It was
     `type: "http"` hooks until 2026-07-27: Claude Code expands http-hook
     header `${VAR}`s from the process environment only and never injects
     plugin userConfig options there (verified on 2.1.220), so every hook

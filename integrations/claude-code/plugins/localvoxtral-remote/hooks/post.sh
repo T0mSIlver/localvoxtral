@@ -18,7 +18,12 @@
 # Everything here is fail-open. Missing curl, an unset/empty token, a tunnel
 # that is down, a Mac that is asleep, a timeout, a non-200 answer — all of it
 # exits 0 with NO stdout and NO stderr, so Claude Code never blocks, warns, or
-# fails a turn because dictation context is unavailable.
+# fails a turn because dictation context is unavailable. After a
+# transport-level failure the shim additionally BACKS OFF (see below): the ssh
+# client on the Mac prints a `connect_to …: failed.` line onto the user's
+# terminal for every dial against a live forward with no app behind it, and
+# that stderr is another process on another machine — un-redirectable from
+# here. Not dialing is the only silence we can buy.
 #
 # The token must never enter any process's argv: /proc/<pid>/cmdline is
 # world-readable on Linux, so `curl -H "Authorization: Bearer $TOKEN"` would
@@ -40,6 +45,54 @@ fail_open() {
 TOKEN="${CLAUDE_PLUGIN_OPTION_TOKEN:-}"
 [ -n "$TOKEN" ] || fail_open
 command -v curl >/dev/null 2>&1 || fail_open
+
+# --- Transport backoff -------------------------------------------------------
+# The one noise no redirect in this file can reach: while an SSH session holds
+# the RemoteForward but localvoxtral is not running on the Mac, every dial
+# makes the ssh CLIENT — on the other machine — print
+# `connect_to 127.0.0.1 port 8473: failed.` straight onto
+# the terminal, over whatever TUI is drawn there (a herdr pane, the Claude
+# Code screen), once per hook, dozens of times a turn via PostToolUse. The
+# only lever on this side is to stop dialing a tunnel that just proved dead:
+# after a transport-level failure, every event EXCEPT UserPromptSubmit skips
+# the dial for BACKOFF_SECONDS.
+#
+# UserPromptSubmit always dials, deliberately: it is user-paced (one ssh line
+# per submitted prompt while the app is down — an honest, bounded signal, not
+# a storm), it is the event that joins the session and carries the prompt, so
+# the first prompt after the app comes back is grounded immediately — and its
+# completed exchange clears the backoff for every other event.
+#
+# State is one epoch-seconds stamp in a private per-user dir. Anything odd —
+# no usable dir, no epoch from date, garbage content, a clock that jumped
+# backwards — disables the backoff and the shim simply dials: exactly the
+# pre-backoff behavior, fail-open as ever.
+BACKOFF_SECONDS=300
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  STAMP_DIR="$XDG_RUNTIME_DIR/localvoxtral"
+elif [ -n "${HOME:-}" ]; then
+  STAMP_DIR="$HOME/.cache/localvoxtral"
+else
+  STAMP_DIR=""
+fi
+STAMP="$STAMP_DIR/hook-backoff"
+NOW="$(date +%s 2>/dev/null)" || NOW=""
+# Digits only, at most 12 of them (epoch seconds are 10 until year 2286): a
+# damaged value must never reach `[` or $(( )), where an oversized constant
+# aborts some shells — with output on stderr.
+case "$NOW" in *[!0-9]* | ?????????????*) NOW="" ;; esac
+if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$EVENT" != "UserPromptSubmit" ] \
+  && [ -r "$STAMP" ]; then
+  LAST="$(cat "$STAMP" 2>/dev/null)" || LAST=""
+  case "$LAST" in
+  "" | *[!0-9]* | ?????????????*) ;;
+  *)
+    if [ "$LAST" -le "$NOW" ] && [ $((NOW - LAST)) -lt "$BACKOFF_SECONDS" ]; then
+      fail_open
+    fi
+    ;;
+  esac
+fi
 
 # 0700 directory / 0600 files for the header tempfile; removed on every exit.
 # Known, accepted leak: a SIGKILL (Claude Code escalating past the hook
@@ -67,6 +120,19 @@ STATUS="$(curl --silent --output "$WORK/body" --write-out '%{http_code}' \
   --header @"$WORK/header" \
   --data-binary @- \
   "http://127.0.0.1:8473/v1/hook/$EVENT" 2>/dev/null)" || STATUS=""
+
+# Arm the backoff on a transport-level failure (curl died: refused, reset,
+# timed out); clear it the moment ANY HTTP exchange completes — even a 401
+# proves the tunnel terminates at a listener instead of making ssh complain.
+# Both sides are best-effort and silent: failing to record state just means
+# the next event dials again.
+if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
+  if [ -z "$STATUS" ] || [ "$STATUS" = "000" ]; then
+    { mkdir -p "$STAMP_DIR" && echo "$NOW" >"$STAMP"; } 2>/dev/null || :
+  else
+    rm -f "$STAMP" 2>/dev/null || :
+  fi
+fi
 
 # stdout is control JSON to Claude Code, and it cuts BOTH ways: a
 # UserPromptSubmit hook's non-JSON stdout is APPENDED TO THE USER'S PROMPT,
