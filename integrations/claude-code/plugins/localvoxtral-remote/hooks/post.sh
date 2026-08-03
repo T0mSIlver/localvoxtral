@@ -125,10 +125,17 @@ STATUS="$(curl --silent --output "$WORK/body" --write-out '%{http_code}' \
 # timed out); clear it the moment ANY HTTP exchange completes — even a 401
 # proves the tunnel terminates at a listener instead of making ssh complain.
 # Both sides are best-effort and silent: failing to record state just means
-# the next event dials again.
+# the next event dials again. The stamp lands via a private tempfile + mv —
+# rename(2) replaces a pre-planted symlink at the stamp path instead of
+# writing through it, and a concurrent reader never sees a half-written
+# value. chmod tightens a stamp dir that pre-existed with looser modes;
+# if any step fails the arm is skipped, which just means dialing again.
 if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
   if [ -z "$STATUS" ] || [ "$STATUS" = "000" ]; then
-    { mkdir -p "$STAMP_DIR" && echo "$NOW" >"$STAMP"; } 2>/dev/null || :
+    {
+      mkdir -p "$STAMP_DIR" && chmod 700 "$STAMP_DIR" \
+        && echo "$NOW" >"$STAMP.$$" && mv -f "$STAMP.$$" "$STAMP"
+    } 2>/dev/null || { rm -f "$STAMP.$$"; } 2>/dev/null || :
   else
     rm -f "$STAMP" 2>/dev/null || :
   fi

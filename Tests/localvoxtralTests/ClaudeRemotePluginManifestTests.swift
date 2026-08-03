@@ -675,6 +675,71 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
+    func testArmingReplacesAPrePlantedSymlinkInsteadOfWritingThroughIt() throws {
+        // The stamp write must be tempfile + mv: rename(2) replaces a symlink
+        // planted at the stamp path, where a direct `>` redirect would follow
+        // it and clobber whatever the link points at. Same-user scope, but the
+        // shim's own hygiene bar (mktemp, umask 077, 0600 header) demands it.
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        let victim = state.dir.appendingPathComponent("victim")
+        let victimContents = "precious user data\n"
+        try victimContents.write(to: victim, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(
+            at: state.stamp.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: state.stamp, withDestinationURL: victim)
+
+        let result = try runShimWithStubCurl(
+            event: "Stop", status: "", body: nil, curlExitCode: 7,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "")
+        XCTAssertEqual(
+            try String(contentsOf: victim, encoding: .utf8), victimContents,
+            "arming the backoff must never write through a symlink at the stamp path"
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.stamp.path)
+        XCTAssertEqual(
+            attributes[.type] as? FileAttributeType, .typeRegular,
+            "the symlink must have been replaced by a regular stamp file"
+        )
+        let stampText = try String(contentsOf: state.stamp, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertTrue(stampText.allSatisfy(\.isNumber), "the stamp must be epoch seconds: \(stampText)")
+    }
+
+    func testArmingTightensAPreExistingLooseStampDirectory() throws {
+        // `mkdir -p` leaves an existing directory's mode alone, so a stamp dir
+        // that pre-existed at 0777 (misconfig, prior tool) would let another
+        // local user replace the stamp or plant a symlink. Arming must chmod
+        // it to 0700.
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        let stampDirectory = state.stamp.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: stampDirectory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o777]
+        )
+
+        let result = try runShimWithStubCurl(
+            event: "Stop", status: "", body: nil, curlExitCode: 7,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "")
+        let attributes = try FileManager.default.attributesOfItem(atPath: stampDirectory.path)
+        XCTAssertEqual(
+            (attributes[.posixPermissions] as? NSNumber)?.int16Value, 0o700,
+            "arming must tighten a pre-existing loose stamp directory to 0700"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: state.stamp.path),
+            "the stamp must still be armed after the chmod"
+        )
+    }
+
     func testPostToolUseMatchesOnlyFileBearingTools() throws {
         let matchers = try XCTUnwrap(try hooksByEvent()["PostToolUse"])
         let matcher = try XCTUnwrap(matchers.first?["matcher"] as? String)
