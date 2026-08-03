@@ -657,6 +657,77 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
+    func testShimDropsMultibyteValuesUnderAUTF8Locale() throws {
+        // Review finding: a bracket RANGE (`[A-Za-z]`) follows the active
+        // COLLATION, so under a UTF-8 locale `[a-z]` can match `é` — and
+        // `${#var}` counts CHARACTERS, so 200 accented characters would have
+        // become a ~400-byte header line while passing a "200 byte" cap. The
+        // shim now enumerates the charset (no ranges to collate) and runs the
+        // checks under `LC_ALL=C`.
+        //
+        // The locale is set for the shim process. On a host without
+        // `en_US.UTF-8` the shell falls back to C and the value is rejected for
+        // the plain reason instead — the assertion holds either way, and on the
+        // macOS runner (where the locale exists) it exercises the real path.
+        let cases: [(String, String)] = [
+            ("one accented character", "pan\u{c9}7"),
+            ("200 accented characters, ~400 bytes", String(repeating: "\u{c9}", count: 200)),
+        ]
+        for (name, value) in cases {
+            let captured = try capturedRequestHeaders(environment: [
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
+                "HERDR_PANE_ID": value,
+                "SSH_TTY": "/dev/pts/3",
+            ])
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
+                "\(name): a multibyte value must be dropped in every locale"
+            )
+            XCTAssertTrue(
+                captured.utf8.allSatisfy { $0 < 0x80 },
+                "\(name): no non-ASCII byte may reach the header file"
+            )
+            // Fail-open is unchanged: the neighbour and the token still go.
+            XCTAssertTrue(captured.contains("X-Lvx-Env-Ssh-Tty: /dev/pts/3"), name)
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", name)
+        }
+    }
+
+    func testShimValidationIsWrittenToBeLocaleIndependent() throws {
+        // Source-level, because the behavioural test above cannot fail on a
+        // runner whose locale data is missing. These two properties are what
+        // make the check locale-independent, and both are easy to undo by
+        // "simplifying" the pattern back to ranges.
+        let source = try shimSource()
+        XCTAssertTrue(
+            source.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
+            "the charset must be ENUMERATED; a bracket range follows collation"
+        )
+        // Scoped to the env-validation function's own body: the comment above
+        // it necessarily quotes the range syntax it warns against, and the
+        // unrelated backoff code legitimately digit-checks an epoch stamp.
+        let body = try XCTUnwrap(
+            source.range(of: "lvx_env_header() {").map { start in
+                let rest = source[start.upperBound...]
+                let end = rest.range(of: "\n}")?.lowerBound ?? rest.endIndex
+                return String(rest[..<end])
+            },
+            "the env-validation function must still be called lvx_env_header"
+        )
+        for range in ["A-Za-z", "a-z]", "0-9]"] {
+            XCTAssertFalse(
+                body.contains(range),
+                "no collation-sensitive range may validate an env value: \(range)"
+            )
+        }
+        XCTAssertTrue(
+            source.contains("LC_ALL=C"),
+            "the validation must run under LC_ALL=C so ${#var} is a byte count"
+        )
+    }
+
     func testShimSendsAValueExactlyAtTheLengthCap() throws {
         // The other side of the cap: a real herdr socket path is long, and an
         // off-by-one here would silently drop every one of them.

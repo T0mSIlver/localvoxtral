@@ -294,6 +294,21 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(environment.sshTTY, "/dev/pts/3", "the good neighbour still arrives")
     }
 
+    func testAnEnvValuePaddedWithUnicodeWhitespaceIsRejectedOverTheRealSocket() throws {
+        // Review finding, end to end: `pane-7<NBSP>` used to be trimmed by the
+        // head parser (Foundation's Unicode whitespace set) into a value the
+        // byte-level charset check then accepted. The hook itself must still
+        // succeed — a bad enrichment value never costs delivery.
+        try startListener()
+        let response = try XCTUnwrap(try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Env-Herdr-Pane-Id: pane-7\u{A0}",
+        ])))
+        XCTAssertEqual(response.status, 200)
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        XCTAssertNil(snapshot.remoteSessionEnvironment)
+        XCTAssertEqual(sessions.resolve(herdrPaneID: "pane-7"), .unknown)
+    }
+
     func testARequestWithNoEnvHeadersCarriesNoEnvironment() throws {
         try startListener()
         _ = try send(hookRequest(token: token))

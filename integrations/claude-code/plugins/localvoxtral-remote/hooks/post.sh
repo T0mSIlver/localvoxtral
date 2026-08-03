@@ -132,12 +132,26 @@ EOF
 # than 200 characters, is silently DROPPED: this is enrichment, and losing a
 # hint is nothing next to delivering the hook itself. The app re-applies the
 # identical charset and caps on arrival and trusts none of this.
+#
+# The charset is ENUMERATED, not written as `[A-Za-z0-9…]` ranges. A bracket
+# RANGE follows the active collation (POSIX leaves range expressions
+# locale-dependent, and bash documents exactly this), so under a UTF-8 locale
+# `[a-z]` can match `é` — which would have let a multibyte value through and,
+# because `${#var}` counts CHARACTERS rather than bytes, let 200 such
+# characters become a ~400-byte header line. An enumerated set has no collation
+# to follow and matches the same bytes in every locale. The `LC_ALL=C` around
+# the calls is the belt to that braces: with it, `${#var}` is a byte count too,
+# so the cap means what it says even on a shell that resolves the enumeration
+# oddly. It is scoped to a subshell — one fork, and the stdout gate below keeps
+# the locale it was tested under.
 lvx_env_header() {
   _lvx_name="$1"
   _lvx_value="${2:-}"
   [ -n "$_lvx_value" ] || return 0
   case "$_lvx_value" in
-  *[!A-Za-z0-9._:/@+,=%-]*) return 0 ;;
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:/@+,=%-]*)
+    return 0
+    ;;
   esac
   # Charset-checked first, so every remaining character is one ASCII byte and
   # this length is also the byte length.
@@ -147,18 +161,22 @@ $_lvx_name: $_lvx_value
 EOF
 }
 
-lvx_env_header 'X-Lvx-Env-Herdr-Pane-Id' "${HERDR_PANE_ID:-}"
-lvx_env_header 'X-Lvx-Env-Herdr-Socket-Path' "${HERDR_SOCKET_PATH:-}"
-lvx_env_header 'X-Lvx-Env-Herdr-Session' "${HERDR_SESSION:-}"
-lvx_env_header 'X-Lvx-Env-Cmux-Surface-Id' "${CMUX_SURFACE_ID:-}"
-lvx_env_header 'X-Lvx-Env-Cmux-Socket-Path' "${CMUX_SOCKET_PATH:-}"
-lvx_env_header 'X-Lvx-Env-Bridge-Session-Id' "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
-lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
-lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
-lvx_env_header 'X-Lvx-Env-Ssh-Tty' "${SSH_TTY:-}"
-# Best effort: the shim's parent is the Claude Code process on THIS host. It is
-# a pid in this machine's namespace and the Mac treats it as a label only.
-lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
+(
+  LC_ALL=C
+  export LC_ALL
+  lvx_env_header 'X-Lvx-Env-Herdr-Pane-Id' "${HERDR_PANE_ID:-}"
+  lvx_env_header 'X-Lvx-Env-Herdr-Socket-Path' "${HERDR_SOCKET_PATH:-}"
+  lvx_env_header 'X-Lvx-Env-Herdr-Session' "${HERDR_SESSION:-}"
+  lvx_env_header 'X-Lvx-Env-Cmux-Surface-Id' "${CMUX_SURFACE_ID:-}"
+  lvx_env_header 'X-Lvx-Env-Cmux-Socket-Path' "${CMUX_SOCKET_PATH:-}"
+  lvx_env_header 'X-Lvx-Env-Bridge-Session-Id' "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
+  lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
+  lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
+  lvx_env_header 'X-Lvx-Env-Ssh-Tty' "${SSH_TTY:-}"
+  # Best effort: the shim's parent is the Claude Code process on THIS host. It
+  # is a pid in this machine's namespace and the Mac treats it as a label only.
+  lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"
+) 2>/dev/null || :
 
 # --max-time 1 mirrors the old http hooks' one-second fail-open ceiling: a
 # host whose forward silently failed must not stall every turn. --max-filesize

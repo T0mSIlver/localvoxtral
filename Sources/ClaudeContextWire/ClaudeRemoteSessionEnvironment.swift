@@ -228,6 +228,14 @@ public enum ClaudeRemoteEnvironmentCodec {
 
     /// Whether a single value is acceptable: non-empty, within the byte cap,
     /// and entirely inside the charset above.
+    ///
+    /// Applied to the value as the PEER WROTE IT, minus HTTP's own OWS. That
+    /// ordering is load-bearing: while the head parser trimmed with Foundation's
+    /// Unicode whitespace set, `pane-7<NBSP>` reached here already trimmed to
+    /// `pane-7` and passed — a malformed wire value laundered into a
+    /// well-formed one before the byte check could see it. The parser now trims
+    /// SP/HTAB only (`ClaudeRemoteHTTPCodec.trimmingOWS`), so a non-ASCII byte
+    /// anywhere in the value arrives intact and is rejected here.
     public static func isAcceptableValue(
         _ value: String,
         limits: ClaudeRemoteEnvironmentLimits = .default

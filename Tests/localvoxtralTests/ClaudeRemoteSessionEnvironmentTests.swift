@@ -170,6 +170,37 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
         XCTAssertEqual(kept, [.herdrPaneID, .herdrSocketPath])
     }
 
+    func testUnicodeWhitespacePaddingIsRejectedRatherThanTrimmedIntoAcceptance() throws {
+        // Review finding: the head parser used to trim with Foundation's
+        // UNICODE whitespace set, so `pane-7<NBSP>` arrived here already
+        // trimmed to `pane-7` and passed the byte check — a malformed wire
+        // value laundered into a well-formed one. Asserted end to end, through
+        // the real parser, because the bug lived in the seam between the two.
+        let padding = ["\u{A0}", "\u{2007}", "\u{3000}", "\u{200B}"]
+        for pad in padding {
+            XCTAssertFalse(
+                ClaudeRemoteEnvironmentCodec.isAcceptableValue("pane-7" + pad),
+                "U+\(String(pad.unicodeScalars.first!.value, radix: 16)) is not ASCII and not whitespace to us"
+            )
+            var head = "POST /v1/hook/Stop HTTP/1.1\r\nAuthorization: Bearer token\r\n"
+            head += "X-Lvx-Env-Herdr-Pane-Id: pane-7\(pad)\r\n"
+            head += "Content-Length: 2\r\n\r\n{}"
+            let (request, _) = try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8))
+            XCTAssertNil(
+                ClaudeRemoteEnvironmentCodec.environment(in: request.headers),
+                "a non-ASCII pad must reach the validator and be rejected"
+            )
+        }
+        // The legal ASCII pad is still tolerated — this is OWS, not an attack.
+        var head = "POST /v1/hook/Stop HTTP/1.1\r\nAuthorization: Bearer token\r\n"
+        head += "X-Lvx-Env-Herdr-Pane-Id:  pane-7 \r\n"
+        head += "Content-Length: 2\r\n\r\n{}"
+        let (request, _) = try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8))
+        XCTAssertEqual(
+            ClaudeRemoteEnvironmentCodec.environment(in: request.headers)?.herdrPaneID, "pane-7"
+        )
+    }
+
     // MARK: Agreement with the real HTTP head parser
 
     func testEnvHeadersSurviveTheRealHeadParserAsWrittenOnTheWire() throws {
