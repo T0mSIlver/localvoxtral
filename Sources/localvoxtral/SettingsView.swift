@@ -1075,7 +1075,11 @@ private struct ClaudeRemoteHostsSettingsRow: View {
     @ViewBuilder
     private func pluginUpdatePanel(for host: ClaudeIntegrationSettingsModel.HostRow) -> some View {
         if let update = model.presentedPluginUpdate, update.hostID == host.id {
-            let commands = update.commands.joined(separator: "\n")
+            // BOTH mutations, in order — not just the remote commands. The
+            // copy-only paths (no recorded alias; the symlink refusal that
+            // sends the user here) are exactly where showing only the commands
+            // recreated the split brain this feature exists to remove.
+            let commands = update.applicationText
             let action = ClaudeIntegrationSettingsModel.EnrollmentAction.updateRemotePlugin(hostID: host.id)
             let pendingConfirmation = model.enrollmentConfirmation.flatMap {
                 $0.action == action ? $0 : nil
@@ -1123,7 +1127,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         .controlSize(.small)
                         .disabled(model.isPerformingEnrollmentAction)
                 } else {
-                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then run these two commands yourself.")
+                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then apply both steps above yourself — the ssh-config block first.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

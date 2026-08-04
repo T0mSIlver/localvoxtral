@@ -116,12 +116,18 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             }
             let argument = String(rest[rest.startIndex...closing])
             let after = rest[rest.index(after: closing)...]
-            // The command may itself be wrapped in the ssh single-quoting, so a
-            // closing quote can be followed by the wrapper's own quote. What
-            // must NOT follow is anything else — `'port=1'token=…` is exactly
-            // the smuggling this assertion exists to reject.
+            // The command may itself be wrapped in the ssh single-quoting, so
+            // the closing quote can be followed by the wrapper's CLOSING quote
+            // — and by nothing else after that. Accepting any `'` was still too
+            // lax: shell concatenation makes `--config 'port=1''token=secret'`
+            // one argument, and the earlier check validated `'port=1'`, saw the
+            // next quote, and ignored the remainder (review finding,
+            // 2026-08-04). So a trailing quote is allowed only when it is the
+            // last thing on the line.
+            let tail: Substring = after.first == "'" ? after.dropFirst() : after
             XCTAssertTrue(
-                after.isEmpty || after.first == " " || after.first == "\n" || after.first == "'",
+                after.isEmpty || after.first == " " || after.first == "\n"
+                    || (after.first == "'" && (tail.isEmpty || tail.first == " " || tail.first == "\n")),
                 "a --config argument must END at its closing quote: \(text)"
             )
             let digits = argument.dropFirst("'\(key)=".count).dropLast()
@@ -131,6 +137,22 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
                 "the only config this path may write is a numeric port, got \(argument)",
                 line: line
             )
+        }
+    }
+
+    /// The anchoring above is load-bearing, so it gets its own test: these are
+    /// the exact shapes a prefix check (and then a lone-quote check) let past.
+    func testTheConfigArgumentCheckRejectsSmuggledExtras() {
+        let key = ClaudeRemoteEnrollmentService.portConfigKey
+        for smuggled in [
+            "ssh builder 'claude plugin install ref --config '\(key)=1'\(ClaudeRemoteEnrollmentService.tokenConfigKey)=secret''",
+            "ssh builder 'claude plugin install ref --config '\(key)=28511'garbage'",
+            "ssh builder 'claude plugin install ref --config '\(key)=28511x''",
+            "ssh builder 'claude plugin install ref --config 'token=secret''",
+        ] {
+            XCTExpectFailure("this shape must be rejected by the anchoring: \(smuggled)") {
+                assertEveryConfigArgumentIsThePort(in: smuggled)
+            }
         }
     }
 

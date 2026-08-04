@@ -222,6 +222,25 @@ public final class ClaudeIntegrationSettingsModel {
         /// by the fix for it.
         public var sshConfigSnippet: String?
         public var canRun: Bool { sshHostAlias != nil }
+
+        /// Everything this update consists of, in the order it must be applied.
+        ///
+        /// ONE rendering, used by all three surfaces — the panel's text, its
+        /// Copy button, and the confirmation preview. They diverged once
+        /// already: the executable path wrote the ssh block while the panel
+        /// showed and copied only the commands, so the copy-only paths (a host
+        /// with no recorded alias, and the symlink refusal that explicitly
+        /// tells the user to copy) updated the remote port and left this Mac on
+        /// 8473 — the original split brain, reachable by exactly the users most
+        /// likely to hit it. A single source is the fix; three call sites that
+        /// "should stay in sync" is what produced the bug.
+        public var applicationText: String {
+            guard let sshConfigSnippet else { return commands.joined(separator: "\n") }
+            return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
+                + sshConfigSnippet
+                + "\n\n# 2. Then, on the SSH host:\n"
+                + commands.joined(separator: "\n")
+        }
     }
 
     public enum EnrollmentAction: Sendable, Equatable {
@@ -701,15 +720,10 @@ public final class ClaudeIntegrationSettingsModel {
         )
     }
 
-    /// Exactly what `performPluginUpdate` will do, in order.
+    /// Exactly what `performPluginUpdate` will do, in order — and exactly what
+    /// the panel shows and copies. Same text, one source.
     static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
-        guard let snippet = presentation.sshConfigSnippet else {
-            return presentation.commands.joined(separator: "\n")
-        }
-        return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
-            + snippet
-            + "\n\n# 2. Then, on the SSH host:\n"
-            + presentation.commands.joined(separator: "\n")
+        presentation.applicationText
     }
 
     /// Stands in for an alias we were never told. Not a valid target and not

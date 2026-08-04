@@ -46,16 +46,45 @@ final class ClaudeRemoteForwardPortTests: XCTestCase {
         )
     }
 
-    func testDistinctIdentitiesSpreadAcrossTheRange() {
-        // Two Macs must be very unlikely to collide, and the derivation must
-        // not degenerate to one value. 100 slots, 500 identities: every slot
-        // should be hit by a sane hash.
-        let ports = Set((0..<500).map {
-            ClaudeRemoteForwardPort.port(forInstallIdentity: UUID(uuidString: String(
-                format: "00000000-0000-4000-8000-%012d", $0
-            ))?.uuidString ?? "identity-\($0)")
+    func testDistinctIdentitiesSpreadAcrossTheWholeWidenedRange() {
+        // This test was a v1 remnant: written for 100 slots, it demanded only
+        // ">80 distinct" and the OLD 100-slot implementation passed it
+        // unchanged — so it pinned nothing about the widening. Two properties
+        // now, both of which the old implementation fails:
+        //
+        //   1. the ports actually SPREAD over 2000 slots, not 100, and
+        //   2. the great majority land ABOVE 28572 — the old ceiling — which is
+        //      the single cheapest way to detect a silent revert to v1.
+        let ports = (0..<3000).map {
+            ClaudeRemoteForwardPort.port(forInstallIdentity: "install-\($0)")
+        }
+        let distinct = Set(ports)
+        XCTAssertGreaterThan(
+            distinct.count, 1400,
+            "3000 identities over 2000 slots should hit ~1550 of them; got \(distinct.count)"
+        )
+        let aboveOldCeiling = ports.filter { $0 > 28572 }.count
+        XCTAssertGreaterThan(
+            aboveOldCeiling, 2500,
+            "the old 100-slot range could not produce these at all; got \(aboveOldCeiling)"
+        )
+        XCTAssertTrue(ports.allSatisfy {
+            (ClaudeRemoteForwardPort.rangeLowerBound...ClaudeRemoteForwardPort.rangeUpperBound)
+                .contains($0)
         })
-        XCTAssertGreaterThan(ports.count, 80, "the derivation must use the whole range")
+    }
+
+    func testTheV2DerivationIsPinnedToExactValues() {
+        // Golden values. The derivation is a two-sided contract with text a
+        // user already pasted into ~/.ssh/config and into a remote plugin
+        // config, so it must not drift silently: a changed domain string, a
+        // changed fold width, or a reverted range all show up here as a
+        // different number. (The v1 answers for these identities were 28508,
+        // 28568, 28486 — inside the old 100-slot window, and nothing like
+        // these.)
+        XCTAssertEqual(ClaudeRemoteForwardPort.port(forInstallIdentity: "mac-a"), 28486)
+        XCTAssertEqual(ClaudeRemoteForwardPort.port(forInstallIdentity: "mac-b"), 28761)
+        XCTAssertEqual(ClaudeRemoteForwardPort.port(forInstallIdentity: "fixed-identity"), 29201)
     }
 
     func testTheLegacyPortIsOutsideTheAllocationRange() {

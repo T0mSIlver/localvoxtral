@@ -809,6 +809,122 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.enrollmentStepStatuses.allSatisfy(\.succeeded))
     }
 
+    /// The half of the blocker that the first fix missed: the executable path
+    /// wrote the ssh block, but the PANEL displayed and copied only the remote
+    /// commands. Both copy-only routes lead straight back to the split brain —
+    /// a host with no recorded alias can ONLY be updated by hand, and the
+    /// symlink refusal deliberately sends the user to that same Copy button.
+    /// So the copy payload has to carry both mutations, in order.
+    func testTheCopyPayloadForAnAliaslessHostCarriesTheSSHBlockToo() async throws {
+        let registry = try makeRegistry()
+        let filesystem = RecordingSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { _ in .init(exitCode: 0, message: "ok") },
+            sshConfigFileSystem: filesystem
+        )
+        // Enrolled before aliases were recorded: copy-only, forever, until the
+        // user re-enrolls. This is the population most likely to still be on a
+        // legacy 8473 block.
+        let enrollment = try registry.enroll(label: "buildhost")
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service,
+            remoteForwardPort: 28542
+        )
+
+        model.requestPluginUpdate(hostID: enrollment.host.id)
+
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertFalse(update.canRun, "no alias means nothing may be run for them")
+        let payload = update.applicationText
+        XCTAssertTrue(
+            payload.contains("RemoteForward 28542 127.0.0.1:8473"),
+            "a copy that omits the ssh block updates the remote and strands this Mac: \(payload)"
+        )
+        XCTAssertTrue(payload.contains("--config 'port=28542'"), payload)
+        // Order matters as much as presence: the block first, the remote second.
+        let blockIndex = try XCTUnwrap(payload.range(of: "RemoteForward 28542")).lowerBound
+        let commandIndex = try XCTUnwrap(payload.range(of: "--config 'port=28542'")).lowerBound
+        XCTAssertLessThan(blockIndex, commandIndex)
+        XCTAssertTrue(payload.contains("~/.ssh/config"), "and it must say where the block goes")
+    }
+
+    /// The recovery path after the app refuses to write a symlinked config: the
+    /// user is told to copy, so what they copy must be enough to finish the job.
+    func testTheCopyPayloadAfterASymlinkRefusalStillCarriesTheSSHBlock() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let filesystem = RecordingSSHConfigFileSystem()
+        filesystem.setSymlinked(true)
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { invocation in
+                calls.withLock { $0.append(invocation) }
+                return .init(exitCode: 0, message: "ok")
+            },
+            sshConfigFileSystem: filesystem
+        )
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service,
+            remoteForwardPort: 28542
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.dismissPlan()
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestPluginUpdateRun()
+        await model.confirmEnrollmentAction()
+
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty, "the remote must stay untouched")
+        // The panel is still open, and what it offers to copy is the whole job.
+        let payload = try XCTUnwrap(model.presentedPluginUpdate).applicationText
+        XCTAssertTrue(
+            payload.contains("RemoteForward 28542 127.0.0.1:8473"),
+            "the refusal tells the user to copy; copying must hand them both halves: \(payload)"
+        )
+        XCTAssertTrue(payload.contains("--config 'port=28542'"))
+    }
+
+    func testThePanelTheConfirmationAndTheCopyAllShowTheSameText() async throws {
+        // Three surfaces rendered the same thing by hand once, and diverged —
+        // that divergence WAS the blocker. One source now.
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { _ in .init(exitCode: 0, message: "ok") },
+            sshConfigFileSystem: RecordingSSHConfigFileSystem()
+        )
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service,
+            remoteForwardPort: 28542
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.dismissPlan()
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        model.requestPluginUpdate(hostID: hostID)
+        model.requestPluginUpdateRun()
+
+        let update = try XCTUnwrap(model.presentedPluginUpdate)
+        XCTAssertEqual(
+            try XCTUnwrap(model.enrollmentConfirmation).preview,
+            update.applicationText,
+            "the confirmation must be the same text the panel shows and copies"
+        )
+        XCTAssertEqual(
+            ClaudeIntegrationSettingsModel.updatePreview(for: update),
+            update.applicationText
+        )
+    }
+
     func testAHostWhoseBlockIsAlreadyCurrentIsNotRewritten() async throws {
         let registry = try makeRegistry()
         let filesystem = RecordingSSHConfigFileSystem()
