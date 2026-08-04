@@ -38,7 +38,7 @@ Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/local
 
 ## Features
 
-- **Built for coding agents** — prompt [Claude Code](docs/coding-agents.md#dictating-into-claude-code), [opencode](integrations/opencode/README.md), or any CLI agent by voice in Ghostty, iTerm2, Terminal.app, Warp, WezTerm, kitty, and more; polishing understands developer speech: "dash dash force" → `--force`, "use auth dot t s" → `useAuth.ts` ([details](docs/coding-agents.md))
+- **Built for coding agents** — dictate prompts straight into any CLI agent ([opencode](integrations/opencode/README.md) gets its own plugin), in any terminal — Warp, WezTerm, kitty, Alacritty, and more; polishing understands developer speech: "dash dash force" → `--force`, "use auth dot t s" → `useAuth.ts` ([details](docs/coding-agents.md))
 - **Claude Code aware** — dictation joins the *exact* session under your cursor — Ghostty, iTerm2, Terminal.app, a single [herdr](https://herdr.dev) or [cmux](https://github.com/manaflow-ai/cmux) pane, over SSH, or a [claude.ai/code](https://claude.ai/code) Remote Control tab in your browser — and grounds polishing in its screen, your last prompt, the files Claude just touched, and that repo's vocabulary ([details](docs/coding-agents.md#dictating-into-claude-code))
 - **One key, two modes** — tap for a reviewable overlay with optional LLM polishing, hold to stream words live into the focused app ([shortcuts](docs/dictation.md))
 - **Private by default** — audio, transcription, and polishing are local processes; no telemetry, no account, no cloud fallback ([how it works](docs/under-the-hood.md))
