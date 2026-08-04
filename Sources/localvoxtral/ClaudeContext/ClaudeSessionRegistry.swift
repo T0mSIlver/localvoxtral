@@ -561,6 +561,42 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Live sessions from ONE enrolled remote host that reported both halves of
+    /// a herdr pane identity, most recently active first.
+    ///
+    /// The mirror image of `liveLocalHerdrSocketPaths()`, and deliberately its
+    /// opposite in every filter: `.remote` origin only, scoped to one host's
+    /// channel, reading `remoteSessionEnvironment` rather than `process`. Those
+    /// two fields never mix (PR #216), so this cannot see a local session's
+    /// pane and the local arms cannot see one of these.
+    ///
+    /// Nothing here is trusted. Both values are opaque labels naming things on
+    /// the host that reported them: this returns candidates, and the join arm
+    /// still has to prove — over the forwarded socket, against that host's own
+    /// herdr — that the focused pane is this session's.
+    ///
+    /// SEVERAL candidates is the expected shape, not an ambiguity: two Claude
+    /// sessions in two herdr panes is the ordinary multiplexer workflow. The
+    /// caller narrows by the herdr's own FOCUSED pane id and requires exactly
+    /// one match there; what it refuses is two candidates claiming the same
+    /// pane id, and two distinct herdr sockets on the host.
+    public func liveRemoteHerdrSessions(hostID: String) -> [ClaudeSessionSnapshot] {
+        let channel = ClaudeRemoteSessionScope.channel(hostID: hostID)
+        let timestamp = now()
+        return state.withLock { state in
+            state.sessions.values
+                .filter { snapshot in
+                    guard case .remote(let sessionChannel) = snapshot.origin,
+                          sessionChannel == channel,
+                          isFresh(snapshot, now: timestamp)
+                    else { return false }
+                    let environment = snapshot.remoteSessionEnvironment
+                    return environment?.herdrPaneID != nil && environment?.herdrSocketPath != nil
+                }
+                .sorted { $0.lastActivity > $1.lastActivity }
+        }
+    }
+
     public func snapshot(sessionID: String) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         return state.withLock { state in

@@ -693,10 +693,13 @@ extension DictationViewModel {
                     capturedSocketPaneStart = nil
                     // No endpoint: nothing to ground for, and neither the
                     // capture nor the join must survive into a later session's
-                    // reconciliation.
+                    // reconciliation. Nothing will read this join's remote
+                    // herdr tunnel either, so it goes now rather than at the
+                    // handle's deinit.
                     terminalScreenStartCapture = nil
                     claudeSessionJoin = nil
                     socketPaneStartCapture = nil
+                    closeRemoteHerdrForwards()
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -748,6 +751,13 @@ extension DictationViewModel {
                                 self.settings.polishContextTrustedEndpointEnabled
                         )
                     }
+                    // The stop-side pane read above was the LAST reader of a
+                    // remote herdr join's `ssh -L`; everything downstream works
+                    // from text already in hand. Closed through the view model,
+                    // which OWNS the handle — the join was consumed pre-Task,
+                    // so closing "the join's" tunnel here would leave the owner
+                    // holding a closed handle it still had to forget.
+                    self.closeRemoteHerdrForwards()
 
                     // The polish request is assembled HERE, inside the Task, so
                     // the opt-in repo-vocabulary indexing — whose git subprocess
@@ -2031,6 +2041,12 @@ extension DictationViewModel {
     }
 
     func abortConnectingSession(disconnectSocket: Bool = true) {
+        // An aborted connect never reaches stopped-session cleanup, so a remote
+        // herdr tunnel opened at start would otherwise stay up with nothing
+        // left to read from it (review finding 4). Every abort route — the
+        // connect timeout, a mic-start failure, a thrown connect, the escape
+        // cancel — funnels through here.
+        closeRemoteHerdrForwards()
         cancelConnectTimeout()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil

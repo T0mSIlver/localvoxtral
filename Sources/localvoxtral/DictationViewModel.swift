@@ -387,6 +387,10 @@ final class DictationViewModel {
     /// prompt. Cleared on every session exit, like the screen capture.
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
+    /// Remote herdr `ssh -L` children this process has open. See
+    /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
+    /// the join that travels.
+    private var liveRemoteHerdrForwards: [ClaudeRemoteHerdrForwardHandle] = []
 
     /// The JOINED pane's visible text at dictation start, read over its own
     /// multiplexer socket (herdr `pane.read` / cmux `surface.read_text`,
@@ -1910,10 +1914,17 @@ final class DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
-        // Only a socket-routed pane join — herdr or cmux — produces a sample
-        // here (the function refuses everything else before any socket
-        // request), and it reads exactly the joined pane. Fetched at start for
-        // the same reason the AX screen is:
+        // Ownership of the join's `ssh -L` is taken HERE, at the one place a
+        // join is ever assigned, and never given back to whoever happens to
+        // hold the join later. The commit path CONSUMES the join, so an owner
+        // that reached the child only through `claudeSessionJoin` was nil at
+        // exactly the moments it mattered — quit during polish, an aborted
+        // connect — and the ssh outlived the app (review finding 4).
+        retainRemoteHerdrForward(of: claudeSessionJoin)
+        // Only a socket-routed pane join — herdr, remote herdr, or cmux —
+        // produces a sample here (the function refuses everything else before
+        // any socket request), and it reads exactly the joined pane. Fetched at
+        // start for the same reason the AX screen is:
         // this text is evidence of what the user could see while choosing
         // their words, and only a start sample can be that.
         socketPaneStartCapture = await SocketPaneScreenContext.captureAtStart(
@@ -2003,10 +2014,43 @@ final class DictationViewModel {
         // the session being abandoned, and a stale join surviving into the next
         // dictation is precisely how the wrong repo's context would get
         // attached to an unrelated sentence.
+        //
         claudeSessionJoin = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
+        // Every open `ssh -L`, not just this join's — the view model owns them
+        // all, so abandoning a dictation cannot leave one behind for a holder
+        // that no longer exists.
+        closeRemoteHerdrForwards()
     }
+
+    /// Takes ownership of a join's remote herdr tunnel, if it has one.
+    ///
+    /// One owner, deliberately: the join object travels (it is consumed by the
+    /// commit path and captured into a Task), and a resource whose owner is
+    /// "whoever currently holds the value" has no owner at all.
+    func retainRemoteHerdrForward(of join: ClaudeSessionJoin?) {
+        guard let forward = join?.remoteHerdrForward else { return }
+        liveRemoteHerdrForwards.append(forward)
+    }
+
+    /// Closes every open remote herdr tunnel. Idempotent, and safe from any
+    /// path — including ones that never knew a tunnel existed.
+    ///
+    /// Called from every dictation exit (`discardTerminalScreenCapture`, the
+    /// commit path once the stop-side pane read is done, `abortConnectingSession`)
+    /// and from `applicationWillTerminate`. Closing ALL of them rather than one
+    /// is what makes a leaked handle from some path nobody thought of
+    /// self-healing at the next exit.
+    func closeRemoteHerdrForwards() {
+        guard !liveRemoteHerdrForwards.isEmpty else { return }
+        let forwards = liveRemoteHerdrForwards
+        liveRemoteHerdrForwards = []
+        for forward in forwards { forward.close() }
+    }
+
+    /// Test seam: how many tunnels this view model is holding open.
+    var openRemoteHerdrForwardCount: Int { liveRemoteHerdrForwards.count }
 
     /// Reconciles the start capture against a stop-time re-read of the SAME
     /// PID/bundle and clears it. See `TerminalScreenContext.reconcile` for the
