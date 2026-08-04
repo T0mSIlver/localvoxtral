@@ -156,6 +156,18 @@ final class SettingsTabTests: XCTestCase {
         return entries
     }
 
+    /// Presentation order is a UX contract of its own: the coverage tests
+    /// above compare Sets, so an accidental reorder (an alphabetical sort, a
+    /// careless merge) would pass every other test while moving rows the user
+    /// has already built muscle memory for.
+    func testSidebarOrderIsThePresentationContract() {
+        XCTAssertEqual(
+            SettingsTab.primarySidebarItems,
+            [.general, .dictation, .endpoints, .textProcessing, .context]
+        )
+        XCTAssertEqual(SettingsTab.metaSidebarItems, [.about])
+    }
+
     /// The scripts hardcode these strings; renaming a case silently breaks the
     /// AX drills, which is exactly the failure this pins.
     func testRawValuesAreStable() {
