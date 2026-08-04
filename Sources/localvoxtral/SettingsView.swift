@@ -186,6 +186,10 @@ private enum SettingsLayout {
     /// Horizontal inset of a row inside its group card. Owned by the ROW, not
     /// by the card: the dividers between rows have to run the full card width.
     static let rowHorizontalPadding: CGFloat = 14
+    /// Keep this above 4pt. `SettingsGroup` hides the last row's trailing
+    /// divider by making the card 1pt shorter than its content and clipping;
+    /// with a smaller inset the last row's focus ring would reach into that
+    /// clipped pixel and be cut off.
     static let rowVerticalPadding: CGFloat = 11
     /// Gap between a row's label and its control.
     static let rowSpacing: CGFloat = 14
@@ -196,6 +200,12 @@ private enum SettingsLayout {
     /// an inline row's trailing column (`layoutPriority(1)`) an unbounded field
     /// takes the whole card and starves the label to zero width (field report,
     /// PR #201 review — the External URL rows rendered as tall empty bands).
+    ///
+    /// A CAP, not a fixed width: apply it as `.frame(maxWidth:)`. A greedy field
+    /// still fills to the cap wherever the card is wide enough (which, at the
+    /// Settings window's fixed 780pt, is everywhere), so the look is unchanged —
+    /// but a rigid width would crumple the label instead of the field if the
+    /// card ever got narrower.
     static let textFieldWidth: CGFloat = 280
     static let cornerRadius: CGFloat = 8
 }
@@ -296,19 +306,19 @@ private struct ConnectionSettingsPane: View {
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: SettingsLayout.textFieldWidth)
+                            .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "Model") {
                         TextField(settings.modelPlaceholder, text: modelBinding)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: SettingsLayout.textFieldWidth)
+                            .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "API key") {
                         SecureField("Required for remote providers", text: $settings.apiKey)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: SettingsLayout.textFieldWidth)
+                            .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Memory limit") {
@@ -368,7 +378,7 @@ private struct ConnectionSettingsPane: View {
                             text: polishingEndpointBinding
                         )
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: SettingsLayout.textFieldWidth)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "API key") {
@@ -377,7 +387,7 @@ private struct ConnectionSettingsPane: View {
                             text: $settings.llmPolishingAPIKey
                         )
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: SettingsLayout.textFieldWidth)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "Model") {
@@ -386,7 +396,7 @@ private struct ConnectionSettingsPane: View {
                             text: $settings.llmPolishingModel
                         )
                         .textFieldStyle(.roundedBorder)
-                        .frame(width: SettingsLayout.textFieldWidth)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Model", help: managedPolishingModelHelp) {
@@ -600,7 +610,12 @@ private struct DictationSettingsPane: View {
                         }
                     }
                 } else {
-                    SettingsFieldRow(title: "Overlay Buffer") {
+                    // `.top`: the recorder is a 24pt bordered field with a button
+                    // beside it, the tallest inline control in the pane.
+                    SettingsFieldRow(
+                        title: "Overlay Buffer",
+                        controlAlignment: .top
+                    ) {
                         HStack(alignment: .center, spacing: 8) {
                             ShortcutRecorderField(
                                 shortcut: overlayBufferShortcutBinding,
@@ -617,7 +632,10 @@ private struct DictationSettingsPane: View {
                             .disabled(
                                 settings.overlayBufferShortcut == SettingsStore.defaultDictationShortcut)
                         }
-
+                    } footer: {
+                        // A footer, not a third item in the control column: a
+                        // validation sentence right-aligned under the recorder
+                        // wraps in a 200pt column and reads as unattached.
                         if let overlayValidationError {
                             SettingsInlineMessage(overlayValidationError, color: .red)
                         } else if settings.overlayBufferShortcut == nil {
@@ -628,7 +646,10 @@ private struct DictationSettingsPane: View {
                         }
                     }
 
-                    SettingsFieldRow(title: "Live Auto-Paste") {
+                    SettingsFieldRow(
+                        title: "Live Auto-Paste",
+                        controlAlignment: .top
+                    ) {
                         HStack(alignment: .center, spacing: 8) {
                             ShortcutRecorderField(
                                 shortcut: livePasteShortcutBinding,
@@ -645,7 +666,7 @@ private struct DictationSettingsPane: View {
                             }
                             .disabled(settings.livePasteShortcut == nil)
                         }
-
+                    } footer: {
                         if let livePasteValidationError {
                             SettingsInlineMessage(livePasteValidationError, color: .red)
                         } else if settings.livePasteShortcut == nil {
@@ -892,7 +913,7 @@ private struct ContextSettingsPane: View {
                     SettingsFieldRow(
                         title: "Use Claude Code terminal screen as polish context",
                         help:
-                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Ghostty only, local polishing endpoints only."
+                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Supported terminals (Ghostty, iTerm2, Terminal.app, cmux) only; local polishing endpoints only."
                     ) {
                         Toggle("", isOn: $settings.terminalScreenContextEnabled)
                             .labelsHidden()
@@ -1072,16 +1093,16 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
                     .textFieldStyle(.roundedBorder)
                     // Bounded like every other inline field: unbounded, it
                     // takes the whole card and starves the label (PR #201).
-                    .frame(width: SettingsLayout.textFieldWidth)
+                    .frame(maxWidth: SettingsLayout.textFieldWidth)
 
                 Button("Save") {
                     model.saveCmuxPassword()
                 }
             }
-
-            // Its own line rather than a fourth item in the bar: the status is
-            // a sentence, and beside a 280pt field it would push the row past
-            // the card.
+        } footer: {
+            // The footer, not a trailing item in the control column: the status
+            // is a sentence about the row, and in that trailing column it hung
+            // flush-right under the Save button.
             Text(model.cmuxStatusText)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1811,25 +1832,64 @@ private enum SettingsFieldRowLayout {
     case stacked
 }
 
-private struct SettingsFieldRow<Content: View>: View {
+private struct SettingsFieldRow<Content: View, Footer: View>: View {
     let title: String
     /// The secondary explanation. A parameter rather than a view inside
     /// `content`: a row cannot pull a nested view out of its control column, and
     /// the whole point is that this text is NOT in that column.
+    ///
+    /// This is the STATIC explanation of what the row does. Anything that
+    /// changes with the row's state — "Not set.", a validation error, "Password
+    /// saved." — belongs in `footer:` instead, which is the same shape of line
+    /// but built from a view rather than a string.
     var help: String?
     var layout: SettingsFieldRowLayout
+    /// How the label sits against the control in an `.inline` row. See
+    /// `inlineRow` for why the default is `.center`.
+    var controlAlignment: VerticalAlignment
     @ViewBuilder var content: Content
+    /// Dynamic per-row status, rendered full-width and LEADING-aligned on its
+    /// own line under the control. Not a member of `content`: the control column
+    /// is trailing-aligned and only ~200pt wide, so a status sentence placed
+    /// there is right-aligned, wraps early, and reads as detached from the row
+    /// it describes (PR #201 review).
+    @ViewBuilder var footer: Footer
+    /// Whether `footer` is a real view. `EmptyView` renders nothing but would
+    /// still be a child of the stack; rows built without a footer must lay out
+    /// exactly as they did before this slot existed.
+    private let hasFooter: Bool
 
     init(
         title: String,
         help: String? = nil,
         layout: SettingsFieldRowLayout = .inline,
-        @ViewBuilder content: () -> Content
+        controlAlignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder footer: () -> Footer
     ) {
         self.title = title
         self.help = help
         self.layout = layout
+        self.controlAlignment = controlAlignment
         self.content = content()
+        self.footer = footer()
+        self.hasFooter = true
+    }
+
+    init(
+        title: String,
+        help: String? = nil,
+        layout: SettingsFieldRowLayout = .inline,
+        controlAlignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content
+    ) where Footer == EmptyView {
+        self.title = title
+        self.help = help
+        self.layout = layout
+        self.controlAlignment = controlAlignment
+        self.content = content()
+        self.footer = EmptyView()
+        self.hasFooter = false
     }
 
     var body: some View {
@@ -1840,6 +1900,14 @@ private struct SettingsFieldRow<Content: View>: View {
                     inlineRow
                 case .stacked:
                     stackedRow
+                }
+
+                // Status first, explanation last: the footer reports what the
+                // control above it currently is, so it belongs next to it; the
+                // help text explains the row as a whole and closes it.
+                if hasFooter {
+                    footer
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if let help {
@@ -1856,10 +1924,13 @@ private struct SettingsFieldRow<Content: View>: View {
     }
 
     private var inlineRow: some View {
-        // Top-aligned, not centered: some rows' controls are tall (recorder +
-        // button pairs, status blocks) and a centered short label next to those
-        // reads as misaligned.
-        HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
+        // Centered by default, top-aligned only where a row asks for it. The
+        // default used to be `.top`, which is right for a tall composite control
+        // but wrong for the ~10 rows whose control is a lone switch or picker:
+        // the 13pt label's cap then sits above the switch's centerline and reads
+        // misaligned against System Settings (PR #201 review). A row with a
+        // genuinely tall control passes `controlAlignment: .top`.
+        HStack(alignment: controlAlignment, spacing: SettingsLayout.rowSpacing) {
             label
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(0)
