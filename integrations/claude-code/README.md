@@ -84,6 +84,14 @@ If the socket refuses the app, the settings row says
 `cmux socket requires password mode.` and the dictation simply falls back to
 the title marker — nothing is attached on a failed join.
 
+Two deliberate limits. The app cross-checks the surface's terminal device
+against the one your session reported, and **abstains when either side does not
+report one** — which is the case for opencode (its server half never claims a
+pane), so opencode inside cmux does not join over this arm. And a session on a
+remote host joins only while cmux itself reports that surface's workspace as a
+live `cmux ssh` workspace, so a stale surface id from an earlier remote session
+cannot attach itself to whatever you are looking at now.
+
 **Title marker (opt-in local fallback, always on for SSH).** For an older
 (stable-channel) Ghostty build, enable **Settings → Text Processing →
 Polishing → Local Claude title fallback** and export

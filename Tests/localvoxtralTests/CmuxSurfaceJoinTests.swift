@@ -11,6 +11,7 @@ private final class JoinTestCmuxSurfaces: CmuxSurfaceQuerying, @unchecked Sendab
     private let texts: Mutex<[CmuxQueryResult<String>]>
     private let focusedCalls = Mutex<Int>(0)
     private let textRequests = Mutex<[String]>([])
+    private let peerPIDs = Mutex<[pid_t]>([])
 
     init(
         focused: CmuxQueryResult<CmuxFocusedSurface>,
@@ -22,14 +23,21 @@ private final class JoinTestCmuxSurfaces: CmuxSurfaceQuerying, @unchecked Sendab
 
     var focusedSurfaceCallCount: Int { focusedCalls.withLock { $0 } }
     var requestedSurfaceIDs: [String] { textRequests.withLock { $0 } }
+    /// Every pid the client was told the peer must turn out to be. The stored
+    /// password never leaves the process unless the peer IS that pid.
+    var expectedPeerPIDs: [pid_t] { peerPIDs.withLock { $0 } }
 
-    func focusedSurface() async -> CmuxQueryResult<CmuxFocusedSurface> {
+    func focusedSurface(expectedPeerPID: pid_t) async -> CmuxQueryResult<CmuxFocusedSurface> {
         focusedCalls.withLock { $0 += 1 }
+        peerPIDs.withLock { $0.append(expectedPeerPID) }
         return focused
     }
 
-    func surfaceText(surfaceID: String) async -> CmuxQueryResult<String> {
+    func surfaceText(
+        surfaceID: String, expectedPeerPID: pid_t
+    ) async -> CmuxQueryResult<String> {
         textRequests.withLock { $0.append(surfaceID) }
+        peerPIDs.withLock { $0.append(expectedPeerPID) }
         return texts.withLock { $0.isEmpty ? .unavailable : $0.removeFirst() }
     }
 }
@@ -70,7 +78,7 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         _ registry: ClaudeSessionRegistry,
         sessionID: String = "local-1",
         surfaceID: String,
-        tty: String? = nil,
+        tty: String? = "/dev/ttys004",
         claudePID: Int32 = 9001
     ) -> ClaudeSessionSnapshot? {
         registry.ingest(
@@ -136,11 +144,16 @@ final class CmuxSurfaceJoinTests: XCTestCase {
     }
 
     private func makeSurfaces(
-        tty: String? = nil,
+        tty: String? = "/dev/ttys004",
+        workspaceIsRemote: Bool? = false,
         texts: [CmuxQueryResult<String>] = []
     ) -> JoinTestCmuxSurfaces {
         JoinTestCmuxSurfaces(
-            focused: .value(CmuxFocusedSurface(surfaceID: surfaceID, tty: tty)),
+            focused: .value(
+                CmuxFocusedSurface(
+                    surfaceID: surfaceID, tty: tty, workspaceIsRemote: workspaceIsRemote
+                )
+            ),
             texts: texts
         )
     }
@@ -207,15 +220,66 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         )
     }
 
-    func testRemoteCmuxSSHSessionJoinsBySurfaceID() async throws {
+    /// A remote session joins only while cmux says the focused surface really
+    /// is hosted by a live remote workspace.
+    func testRemoteCmuxSSHSessionJoinsWhileTheSurfaceIsRemoteHosted() async throws {
         let registry = makeRegistry()
         ingestRemoteSession(registry, surfaceID: surfaceID)
-        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces())
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: true)
+        )
 
         let resolvedJoin = await resolver.resolve(target: cmux)
         let join = try XCTUnwrap(resolvedJoin)
         XCTAssertEqual(join.mechanism, .cmuxSurface)
         XCTAssertEqual(join.snapshot.sessionID, "remote-1")
+    }
+
+    /// The replay attack the remote arm has to survive: a compromised enrolled
+    /// host publishes a `CMUX_SURFACE_ID` it saw during an EARLIER `cmux ssh`
+    /// session, after that surface has gone back to a local shell. It is the
+    /// sole remote candidate, so nothing but fresh evidence from cmux can stop
+    /// it joining and pairing attacker-chosen context with the user's current
+    /// local screen.
+    func testAReplayedSurfaceIDFromARemoteHostDoesNotJoinALocalSurface() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(registry, surfaceID: surfaceID)
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: false)
+        )
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(
+            join,
+            "a remembered label must not join a surface cmux reports as locally hosted"
+        )
+    }
+
+    /// cmux not answering the remote-ness question is not permission either —
+    /// an older cmux without `workspace.remote.status`, or an errored one.
+    func testUnknownRemoteHostingRefusesTheRemoteClaim() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(registry, surfaceID: surfaceID)
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: nil)
+        )
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(join)
+    }
+
+    /// The local arm is unaffected by the remote-hosting answer: a local
+    /// session joins its own surface whatever cmux says about workspaces.
+    func testLocalJoinDoesNotDependOnTheRemoteHostingAnswer() async throws {
+        let registry = makeRegistry()
+        ingestLocalSession(registry, surfaceID: surfaceID)
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: nil)
+        )
+
+        let resolvedJoin = await resolver.resolve(target: cmux)
+        let join = try XCTUnwrap(resolvedJoin)
+        XCTAssertEqual(join.snapshot.sessionID, "local-1")
     }
 
     /// The whole point of the remote arm's opacity: joining a `cmux ssh`
@@ -224,7 +288,9 @@ final class CmuxSurfaceJoinTests: XCTestCase {
     func testRemoteCmuxJoinNeverYieldsALocalWorkspacePath() async throws {
         let registry = makeRegistry()
         ingestRemoteSession(registry, surfaceID: surfaceID)
-        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces())
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: true)
+        )
 
         let resolvedJoin = await resolver.resolve(target: cmux)
         let join = try XCTUnwrap(resolvedJoin)
@@ -248,16 +314,58 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         XCTAssertEqual(join.mechanism, .cmuxSurface)
     }
 
-    func testUnknownSurfaceTTYDoesNotBlockTheJoin() async throws {
+    /// The join carries the pid the socket peer must turn out to be — the
+    /// frontmost cmux app. Without it the client has nothing to authenticate
+    /// against before sending the Keychain password.
+    func testTheFocusedCmuxAppsPIDIsWhatThePeerMustMatch() async throws {
         let registry = makeRegistry()
-        ingestLocalSession(registry, surfaceID: surfaceID, tty: "/dev/ttys004")
-        // cmux reported no tty for the surface: absent evidence, not contrary
-        // evidence.
-        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces(tty: nil))
+        ingestLocalSession(registry, surfaceID: surfaceID)
+        let cmuxSocket = makeSurfaces(texts: [.value("text")])
+        let resolver = makeResolver(registry: registry, surfaces: cmuxSocket)
 
         let resolvedJoin = await resolver.resolve(target: cmux)
         let join = try XCTUnwrap(resolvedJoin)
-        XCTAssertEqual(join.mechanism, .cmuxSurface)
+        _ = await resolver.cmuxSurfaceVisibleText(for: join)
+
+        XCTAssertEqual(cmuxSocket.expectedPeerPIDs, [cmux.pid, cmux.pid])
+    }
+
+    // MARK: - The TTY cross-check is mandatory, not best-effort
+
+    /// Absent evidence is not permission. A process that inherited a stale
+    /// `CMUX_SURFACE_ID` and moved to another pane publishes no tty we can
+    /// contradict — so "no tty" must abstain, not wave the check through.
+    func testMissingSurfaceTTYAbstains() async {
+        let registry = makeRegistry()
+        ingestLocalSession(registry, surfaceID: surfaceID, tty: "/dev/ttys004")
+        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces(tty: nil))
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(join, "cmux reporting no tty for the surface is not evidence of agreement")
+    }
+
+    /// The inverse direction, previously untested: the SESSION published no
+    /// tty. That is what an opencode session looks like — its server half
+    /// deliberately never claims a pane — so opencode inside cmux does not join
+    /// over this arm, by design.
+    func testMissingSessionTTYAbstains() async {
+        let registry = makeRegistry()
+        ingestLocalSession(registry, surfaceID: surfaceID, tty: nil)
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(tty: "/dev/ttys004")
+        )
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(join, "a session that never claimed a tty cannot be cross-checked")
+    }
+
+    func testNeitherSideKnowingATTYAbstains() async {
+        let registry = makeRegistry()
+        ingestLocalSession(registry, surfaceID: surfaceID, tty: nil)
+        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces(tty: nil))
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(join)
     }
 
     // MARK: - The abstention matrix
@@ -351,7 +459,11 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         let registry = makeRegistry()
         ingestRemoteSession(registry, sessionID: "remote-1", surfaceID: surfaceID)
         ingestRemoteSession(registry, sessionID: "remote-2", surfaceID: surfaceID)
-        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces())
+        // Remote-hosted, so the abstention is about the ambiguity and not
+        // about the hosting check.
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: true)
+        )
 
         let join = await resolver.resolve(target: cmux)
         XCTAssertNil(join)
@@ -362,10 +474,48 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         let registry = makeRegistry()
         ingestLocalSession(registry, surfaceID: surfaceID)
         ingestRemoteSession(registry, surfaceID: surfaceID)
-        let resolver = makeResolver(registry: registry, surfaces: makeSurfaces())
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: true)
+        )
 
         let join = await resolver.resolve(target: cmux)
         XCTAssertNil(join)
+    }
+
+    /// Ambiguity on EITHER side must abstain, not hand the join to the other
+    /// origin. Two local claimants make the local side `.ambiguous`; the single
+    /// remote claimant used to win by default.
+    func testTwoLocalCandidatesPlusOneRemoteAbstain() async {
+        let registry = makeRegistry()
+        ingestLocalSession(registry, sessionID: "local-1", surfaceID: surfaceID, claudePID: 9001)
+        ingestLocalSession(registry, sessionID: "local-2", surfaceID: surfaceID, claudePID: 9002)
+        ingestRemoteSession(registry, surfaceID: surfaceID)
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: true)
+        )
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(
+            join,
+            "an ambiguous local side must not promote the remote claim to the answer"
+        )
+    }
+
+    /// The mirror image, which used to join the LOCAL session.
+    func testTwoRemoteCandidatesPlusOneLocalAbstain() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(registry, sessionID: "remote-1", surfaceID: surfaceID)
+        ingestRemoteSession(registry, sessionID: "remote-2", surfaceID: surfaceID)
+        ingestLocalSession(registry, surfaceID: surfaceID)
+        let resolver = makeResolver(
+            registry: registry, surfaces: makeSurfaces(workspaceIsRemote: true)
+        )
+
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(
+            join,
+            "an ambiguous remote side must not promote the local claim to the answer"
+        )
     }
 
     func testDeadLocalSessionAbstains() async {

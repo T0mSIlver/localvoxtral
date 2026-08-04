@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 #if canImport(Darwin)
@@ -26,6 +27,17 @@ struct CmuxFocusedSurface: Sendable, Equatable {
     /// non-answer must stay distinguishable from a disagreement: the resolver
     /// cross-checks only when both sides know a tty.
     var tty: String?
+    /// Whether the workspace HOSTING this surface is a live remote (`cmux ssh`)
+    /// workspace, as cmux reports it right now. Nil when cmux would not say.
+    ///
+    /// This is the only remote-ness signal cmux exposes to a client, and it is
+    /// deliberately read fresh per dictation. The surface node itself carries
+    /// nothing: a `cmux ssh` surface is an ordinary `type: "terminal"` whose
+    /// remoteness lives on the WORKSPACE (`workspace.remote.configure` stores
+    /// it; `Workspace.isRemoteWorkspace` is `remoteConfiguration != nil`), so
+    /// it takes a second method to see it. Nil is not "local" — it is "cmux did
+    /// not answer", which the resolver treats as refusing every remote claim.
+    var workspaceIsRemote: Bool?
 }
 
 /// One socket answer. Three cases rather than an optional because exactly one
@@ -69,12 +81,19 @@ enum CmuxSocketStatus: Sendable, Equatable {
 }
 
 /// Read-only access to cmux's control socket, as the join arm needs it.
+///
+/// Every call carries the pid the CONNECTED PEER must turn out to be — the
+/// running cmux app the join is about. It is a required argument rather than
+/// client state because it is a per-dictation fact (the frontmost app), and
+/// because a credential must never be sent to a peer nobody named.
 protocol CmuxSurfaceQuerying: Sendable {
     /// The surface the user is currently looking at.
-    func focusedSurface() async -> CmuxQueryResult<CmuxFocusedSurface>
+    func focusedSurface(expectedPeerPID: pid_t) async -> CmuxQueryResult<CmuxFocusedSurface>
     /// The visible text of EXACTLY `surfaceID`. Raw wire text: the caller owns
     /// sanitization, bounding, and every consent gate.
-    func surfaceText(surfaceID: String) async -> CmuxQueryResult<String>
+    func surfaceText(
+        surfaceID: String, expectedPeerPID: pid_t
+    ) async -> CmuxQueryResult<String>
 }
 
 #if canImport(Darwin)
@@ -110,6 +129,8 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
     private let timeout: TimeInterval
     private let uptimeNanos: @Sendable () -> UInt64
     private let socketMetadata: @Sendable (String) -> ClaudeSocketGuard.PathMetadata?
+    private let peerPID: @Sendable (Int32) -> pid_t?
+    private let bundleIDOfRunningPID: @Sendable (pid_t) -> String?
 
     /// - Parameters:
     ///   - socketPaths: candidate control sockets, most specific first.
@@ -126,6 +147,11 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
     ///   - timeout: one absolute deadline for the WHOLE exchange (connect,
     ///     login, request, response) — a per-phase budget would let each phase
     ///     spend it in turn.
+    ///   - peerPID: reads `LOCAL_PEERPID` off a CONNECTED descriptor. Injected
+    ///     so the impostor cases are testable — a test process cannot easily
+    ///     arrange to be a different pid on the other end of its own socket.
+    ///   - bundleIDOfRunningPID: LaunchServices' answer for which bundle a pid
+    ///     is running. Injected for the same reason.
     init(
         socketPaths: [String] = CmuxSocketClient.defaultSocketPaths(),
         password: @escaping @Sendable () -> String? = { nil },
@@ -135,6 +161,10 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         },
         socketMetadata: @escaping @Sendable (String) -> ClaudeSocketGuard.PathMetadata? = {
             ClaudeSocketGuard.metadata(ofPath: $0)
+        },
+        peerPID: @escaping @Sendable (Int32) -> pid_t? = { CmuxSocketClient.localPeerPID($0) },
+        bundleIDOfRunningPID: @escaping @Sendable (pid_t) -> String? = {
+            NSRunningApplication(processIdentifier: $0)?.bundleIdentifier
         }
     ) {
         self.socketPaths = socketPaths
@@ -142,6 +172,21 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         self.timeout = timeout
         self.uptimeNanos = uptimeNanos
         self.socketMetadata = socketMetadata
+        self.peerPID = peerPID
+        self.bundleIDOfRunningPID = bundleIDOfRunningPID
+    }
+
+    /// `LOCAL_PEERPID` for a connected AF_UNIX descriptor: the kernel's answer
+    /// for which process is on the other end of THIS connection. Unlike a path
+    /// check it cannot be raced — it describes the established connection, not
+    /// a name that something else may since have rebound.
+    static func localPeerPID(_ fd: Int32) -> pid_t? {
+        var pid: pid_t = 0
+        var length = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0, pid > 0 else {
+            return nil
+        }
+        return pid
     }
 
     /// cmux's stable socket locations, in the order cmux itself prefers them.
@@ -166,39 +211,85 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         ]
     }
 
-    func focusedSurface() async -> CmuxQueryResult<CmuxFocusedSurface> {
+    func focusedSurface(expectedPeerPID: pid_t) async -> CmuxQueryResult<CmuxFocusedSurface> {
         await Task.detached(priority: .userInitiated) { [self] in
-            // `system.tree` answers both halves in ONE request: `active` is the
-            // same focused payload `system.identify` returns, and the window
-            // walk carries each surface's tty. Two methods would mean two
-            // main-actor round trips and — worse — two moments, so the tty
-            // could describe a surface that is no longer the focused one.
-            let outcome = exchange(
-                method: "system.tree",
-                params: EmptyParams(),
-                resultType: SystemTreeResult.self
-            )
-            switch outcome {
-            case .authenticationRequired:
-                return .authenticationRequired
-            case .unavailable:
-                return .unavailable
-            case .value(let tree):
+            // Both requests ride ONE authenticated connection. Not just to save
+            // a login: cmux authorizes per connection, so a second connection
+            // would be a second login with the password sent twice, and — worse
+            // — a second moment, in which the focused workspace could have
+            // changed under the answer we are about to trust.
+            openAuthenticated(
+                expectedPeerPID: expectedPeerPID
+            ) { fd, deadline -> CmuxQueryResult<CmuxFocusedSurface> in
+                // `system.tree` answers the focus question in ONE request:
+                // `active` is the same payload `system.identify` returns, and
+                // the window walk carries each surface's tty.
+                let treeOutcome = request(
+                    fd: fd, deadline: deadline,
+                    method: "system.tree", params: EmptyParams(),
+                    resultType: SystemTreeResult.self
+                )
+                let tree: SystemTreeResult
+                switch treeOutcome {
+                case .value(let value): tree = value
+                case .authenticationRequired: return .authenticationRequired
+                case .unavailable: return .unavailable
+                }
                 guard let surfaceID = tree.active?.surfaceID, !surfaceID.isEmpty else {
-                    Log.claudeContext.info("cmux focused-surface query abstained: no focused surface")
+                    Log.claudeContext.info(
+                        "cmux focused-surface query abstained: no focused surface"
+                    )
                     return .unavailable
                 }
-                // The tty is a bonus cross-check, never a requirement: a
-                // surface node we cannot find (another window, a shape we do
-                // not walk) leaves it nil, and the resolver then simply has
-                // one fewer thing to compare.
+                // The tty is a cross-check the resolver REQUIRES; a surface
+                // node we cannot find leaves it nil, and the resolver abstains
+                // rather than joining on the id alone.
                 let tty = tree.surface(id: surfaceID)?.tty
-                return .value(CmuxFocusedSurface(surfaceID: surfaceID, tty: tty))
+                let remoteHosting = tree.active?.workspaceID.flatMap {
+                    workspaceIsRemote(fd: fd, deadline: deadline, workspaceID: $0)
+                }
+                return .value(
+                    CmuxFocusedSurface(
+                        surfaceID: surfaceID,
+                        tty: tty,
+                        workspaceIsRemote: remoteHosting
+                    )
+                )
             }
         }.value
     }
 
-    func surfaceText(surfaceID: String) async -> CmuxQueryResult<String> {
+    /// Whether cmux currently considers `workspaceID` a live remote workspace.
+    ///
+    /// Returns nil — never false — when cmux does not answer cleanly, so "cmux
+    /// said local" and "cmux said nothing" stay distinguishable all the way to
+    /// the resolver, which refuses remote claims on either but only for the
+    /// right reason.
+    ///
+    /// Both `enabled` and `connected` are required. A remote workspace whose
+    /// link is down is not currently hosting anything, so a claim to own its
+    /// surface is not evidence of anything either.
+    private func workspaceIsRemote(
+        fd: Int32, deadline: UInt64, workspaceID: String
+    ) -> Bool? {
+        let status = request(
+            fd: fd, deadline: deadline,
+            method: "workspace.remote.status",
+            params: WorkspaceRemoteStatusParams(workspaceID: workspaceID),
+            resultType: WorkspaceRemoteStatusResult.self
+        )
+        guard case .value(let status) = status, let remote = status.remote else {
+            // An older cmux without the method, an error, a shape we do not
+            // recognize: all "unknown", which fails closed downstream.
+            Log.claudeContext.info("cmux workspace remote status unavailable")
+            return nil
+        }
+        return remote.enabled && remote.connected
+    }
+
+    func surfaceText(
+        surfaceID: String, expectedPeerPID: pid_t
+    ) async -> CmuxQueryResult<String> {
         await Task.detached(priority: .userInitiated) { [self] in
             // `scrollback` is sent explicitly false — that is cmux's default,
             // but this caller DEPENDS on getting the viewport rather than the
@@ -206,11 +297,14 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             // deliberately never sent: in cmux it IMPLIES `scrollback: true`,
             // so the parameter that looks like a bound is actually a request
             // for more.
-            let outcome = exchange(
-                method: "surface.read_text",
-                params: SurfaceReadTextParams(surfaceID: surfaceID),
-                resultType: SurfaceReadTextResult.self
-            )
+            let outcome = openAuthenticated(expectedPeerPID: expectedPeerPID) { fd, deadline in
+                request(
+                    fd: fd, deadline: deadline,
+                    method: "surface.read_text",
+                    params: SurfaceReadTextParams(surfaceID: surfaceID),
+                    resultType: SurfaceReadTextResult.self
+                )
+            }
             switch outcome {
             case .authenticationRequired:
                 return .authenticationRequired
@@ -233,20 +327,26 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
 
     // MARK: - Exchange
 
-    private func exchange<Params: Encodable, Result: Decodable>(
-        method: String,
-        params: Params,
-        resultType: Result.Type
-    ) -> CmuxQueryResult<Result> {
+    /// Opens ONE peer-authenticated, logged-in connection and runs `body` on
+    /// it. Every request a query needs must happen inside that closure — the
+    /// connection closes when it returns.
+    private func openAuthenticated<Value: Sendable>(
+        expectedPeerPID: pid_t,
+        _ body: (Int32, UInt64) -> CmuxQueryResult<Value>
+    ) -> CmuxQueryResult<Value> {
         let deadline = makeDeadline()
-        guard let fd = connectToSoleSocket(deadline: deadline) else {
+        guard let fd = connectToSoleSocket(
+            deadline: deadline, expectedPeerPID: expectedPeerPID
+        ) else {
             return .unavailable
         }
         defer { close(fd) }
 
         // Login FIRST and on this same connection: cmux authorizes the
         // connection, not the message, and answers everything before the login
-        // with `auth_required`.
+        // with `auth_required`. By here the peer is already PROVEN to be the
+        // cmux process this join is about (`connectToSoleSocket`), which is the
+        // precondition for the password leaving this process at all.
         if let password = password() {
             switch login(fd: fd, password: password, deadline: deadline) {
             case .ok:
@@ -257,7 +357,17 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
                 return .unavailable
             }
         }
+        return body(fd, deadline)
+    }
 
+    /// One request/response on an already-authenticated connection.
+    private func request<Params: Encodable, Result: Decodable>(
+        fd: Int32,
+        deadline: UInt64,
+        method: String,
+        params: Params,
+        resultType: Result.Type
+    ) -> CmuxQueryResult<Result> {
         let request = Request(id: Self.requestID(), method: method, params: params)
         guard let line = send(fd: fd, request: request, deadline: deadline) else {
             return .unavailable
@@ -325,13 +435,20 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             return .unavailable
         }
         if let code = envelope.errorCode {
+            // The code is SERVER-CONTROLLED text. A hostile peer can put
+            // anything in it — including the password we just sent it — so only
+            // a code we recognize is ever logged verbatim; everything else is
+            // logged as a constant. A credential must not be laundered into the
+            // unified log through an error field.
             if Self.authenticationErrorCodes.contains(code) {
-                Log.claudeContext.info(
-                    "cmux query refused: \(code, privacy: .public)"
-                )
+                Log.claudeContext.info("cmux query refused: \(code, privacy: .public)")
                 return .authenticationRequired
             }
-            Log.claudeContext.info("cmux query abstained: error \(code, privacy: .public)")
+            if Self.knownErrorCodes.contains(code) {
+                Log.claudeContext.info("cmux query abstained: error \(code, privacy: .public)")
+            } else {
+                Log.claudeContext.info("cmux query abstained: unrecognized error code")
+            }
             return .unavailable
         }
         guard let result = envelope.result else {
@@ -348,43 +465,104 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         "auth_required", "auth_failed", "auth_unconfigured",
     ]
 
+    /// The rest of cmux's documented codes. Membership is the ONLY thing that
+    /// makes a code loggable — see `decode(line:id:resultType:)`.
+    private static let knownErrorCodes: Set<String> = [
+        "invalid_params", "method_not_found", "not_found", "internal_error",
+        "unsupported", "timeout",
+    ]
+
     private static func isPlainTextError(_ line: Data) -> Bool {
         line.starts(with: Array("ERROR:".utf8))
     }
 
     // MARK: - Transport
 
-    /// Connects to the ONE cmux socket we are sure about.
+    /// Connects to the ONE cmux socket we are sure about, and PROVES who is on
+    /// the other end before returning it.
     ///
-    /// Every candidate that passes the file guard is dialed. A stale socket
-    /// file left by a crashed cmux refuses the connection and is skipped, so it
-    /// costs nothing; but if TWO of them accept, there are two live cmux
-    /// instances and no way to tell which one drew the surface the user is
-    /// looking at — so we abstain rather than pick. (cmux's development builds
-    /// use their own socket names, which are not candidates, so this is a
-    /// belt-and-braces path rather than an expected one.)
-    private func connectToSoleSocket(deadline: UInt64) -> Int32? {
-        var connected: [Int32] = []
+    /// The path checks below are a cheap pre-filter and nothing more. They are
+    /// inherently TOCTOU — `lstat` names a path, and between that call and
+    /// `connect` any process running as this user can unlink it and bind its
+    /// own socket there, which then passes an owner check trivially because it
+    /// IS owned by this user. The legacy `/tmp` candidates make that easy: a
+    /// same-user process only has to get there while the real cmux socket is
+    /// elsewhere or absent. So the authoritative check is on the ESTABLISHED
+    /// connection (`LOCAL_PEERPID`), which names the process actually holding
+    /// the other end and cannot be raced by a later rebind.
+    ///
+    /// Two things must hold, and both are about the app the user is LOOKING at:
+    /// the peer's pid must be `expectedPeerPID` — the frontmost cmux
+    /// application this dictation already resolved — and LaunchServices must
+    /// still say that pid is running the cmux bundle. The second is not
+    /// redundant: it fails closed if the pid died and was recycled between the
+    /// join resolving and this connection.
+    ///
+    /// Deliberately NOT a code-signature check. `SecCode`'s signing identifier
+    /// is not guaranteed to equal the bundle identifier, so requiring equality
+    /// would silently kill the feature against a legitimately signed cmux whose
+    /// identifiers differ, and a signature we do not pin to a specific team
+    /// proves little that the pid identity does not already prove. What the pid
+    /// binding gives is stronger than a signature check anyway: the peer must
+    /// be the exact process macOS reports as frontmost.
+    ///
+    /// A candidate that connects but does not authenticate is DROPPED rather
+    /// than counted, so an impostor cannot manufacture the "multiple live
+    /// sockets" ambiguity either. If two candidates both authenticate as the
+    /// same expected pid, that is one process listening twice, which is fine
+    /// and takes the first.
+    private func connectToSoleSocket(deadline: UInt64, expectedPeerPID: pid_t) -> Int32? {
+        var authenticated: [Int32] = []
+        var connectedCount = 0
         for path in socketPaths {
             guard path.hasPrefix("/"),
                   let metadata = socketMetadata(path),
                   metadata.isSocket,
                   metadata.ownerUID == UInt32(getuid())
             else { continue }
-            if let fd = openConnection(to: path, deadline: deadline) {
-                connected.append(fd)
+            guard let fd = openConnection(to: path, deadline: deadline) else { continue }
+            connectedCount += 1
+            if isExpectedPeer(fd: fd, expectedPeerPID: expectedPeerPID) {
+                authenticated.append(fd)
+            } else {
+                close(fd)
             }
         }
-        guard connected.count == 1, let fd = connected.first else {
-            for fd in connected { close(fd) }
+        guard let fd = authenticated.first else {
             // Outcome only: a socket path is a live handle and never belongs in
             // the unified log.
             Log.claudeContext.info(
-                "cmux query abstained: \(connected.isEmpty ? "no reachable socket" : "multiple live sockets", privacy: .public)"
+                "cmux query abstained: \(connectedCount == 0 ? "no reachable socket" : "no socket answered as the focused cmux process", privacy: .public)"
             )
             return nil
         }
+        for extra in authenticated.dropFirst() { close(extra) }
         return fd
+    }
+
+    /// Whether the process on the other end of `fd` is the cmux app this join
+    /// is about. Nothing may be written to the socket before this returns true.
+    private func isExpectedPeer(fd: Int32, expectedPeerPID: pid_t) -> Bool {
+        guard let peer = peerPID(fd) else {
+            Log.claudeContext.info("cmux peer check failed: peer pid unavailable")
+            return false
+        }
+        guard peer == expectedPeerPID else {
+            // Count-only: a pid is not secret, but naming the impostor's pid in
+            // the log invites treating this as a diagnostic rather than a
+            // refusal. The outcome is the fact that matters.
+            Log.claudeContext.info(
+                "cmux peer check failed: socket is held by another process, not the focused cmux app"
+            )
+            return false
+        }
+        guard bundleIDOfRunningPID(peer) == TerminalScreenAllowlist.cmuxBundleID else {
+            Log.claudeContext.info(
+                "cmux peer check failed: peer pid is no longer running the cmux bundle"
+            )
+            return false
+        }
+        return true
     }
 
     /// One request line out, one response line back. The connection stays open
@@ -581,6 +759,35 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         var password: String
     }
 
+    private struct WorkspaceRemoteStatusParams: Encodable {
+        var workspaceID: String
+
+        enum CodingKeys: String, CodingKey { case workspaceID = "workspace_id" }
+    }
+
+    /// `workspace.remote.status` — only the two fields that decide whether a
+    /// workspace is CURRENTLY hosting a remote session are decoded. The rest of
+    /// that payload (destination, ports, transport, daemon) names another
+    /// machine and is deliberately never retained.
+    private struct WorkspaceRemoteStatusResult: Decodable {
+        var remote: Remote?
+
+        struct Remote: Decodable {
+            var enabled: Bool
+            var connected: Bool
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                // Absent means "not remote" for `enabled`, but a MISSING
+                // `connected` must not read as connected.
+                enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+                connected = try container.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+            }
+
+            enum CodingKeys: String, CodingKey { case enabled, connected }
+        }
+    }
+
     private struct SurfaceReadTextParams: Encodable {
         var surfaceID: String
         /// Viewport, not history. See `surfaceText(surfaceID:)`.
@@ -629,8 +836,14 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         /// The focused payload, identical in shape to `system.identify`'s.
         struct Active: Decodable {
             var surfaceID: String?
+            /// The workspace hosting the focused surface — the only handle
+            /// through which remote-ness can be asked about at all.
+            var workspaceID: String?
 
-            enum CodingKeys: String, CodingKey { case surfaceID = "surface_id" }
+            enum CodingKeys: String, CodingKey {
+                case surfaceID = "surface_id"
+                case workspaceID = "workspace_id"
+            }
         }
 
         struct Window: Decodable {

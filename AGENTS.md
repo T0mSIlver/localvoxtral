@@ -581,14 +581,48 @@ Key subsystems:
     `scrollback`, and never `lines` — in cmux that parameter implies
     scrollback). Auth is per CONNECTION, not per message: `auth.login` is the
     first line and the query follows on the same connection.
+    **The password never leaves the process until the CONNECTED PEER is
+    proved.** A same-UID path check cannot do that job — it is TOCTOU by
+    construction, and any process running as the user can bind one of the
+    candidate paths (the legacy `/tmp` ones especially), pass an owner check
+    trivially, and harvest the credential. So the authoritative gate is
+    `LOCAL_PEERPID` on the established connection: the peer must BE the
+    frontmost cmux app's pid (the same target the join is about), and
+    LaunchServices must still report that pid as the cmux bundle. A candidate
+    that connects but fails this is dropped, not counted, so an impostor cannot
+    manufacture ambiguity either. Deliberately not a code-signature check:
+    `SecCode`'s signing identifier is not guaranteed to equal the bundle id, so
+    requiring equality could kill the feature against a legitimately signed
+    cmux, and the pid binding is the stronger claim anyway.
     Both origins join here, and only here does a REMOTE session join by
     something other than a marker: cmux's ssh relay puts the surface id into a
     `cmux ssh` shell's environment, so the id is ours travelling out and back
-    (`resolveRemote(cmuxSurfaceID:)`; a compromised enrolled host could replay
-    one — the same trust class as the remote marker join, no worse). Local
-    matches use `resolve(cmuxSurfaceID:)` (`process`-backed, local-only, like
-    the herdr arm) plus a tty cross-check when both sides know one. Two
-    candidates, or one of each origin, abstain. `CMUX_WORKSPACE_ID` is never
+    (`resolveRemote(cmuxSurfaceID:)`). But a remembered label is NOT evidence
+    that the session still holds the surface — a compromised enrolled host can
+    replay an id from an earlier `cmux ssh` session after that surface returned
+    to a local shell, and as sole remote candidate it would join, pairing
+    attacker-chosen context with the user's current local screen. That is
+    strictly weaker than the marker fallback, which at least has to ride the
+    PTY the session presently controls. So a remote claim additionally requires
+    FRESH evidence from cmux that the focused surface is currently
+    remote-hosted. cmux exposes none of that on the surface (a `cmux ssh`
+    surface is an ordinary `type: "terminal"`; remoteness lives on the
+    WORKSPACE), so the client reads `workspace.remote.status` for the focused
+    surface's workspace on the same connection and requires `enabled` AND
+    `connected`; unknown fails closed. What remains unproved, and is stated in
+    the code: with two enrolled hosts, a compromised one can still claim a
+    surface hosted by the other.
+    Local matches use `resolve(cmuxSurfaceID:)` (`process`-backed, local-only,
+    like the herdr arm) plus a tty cross-check that is MANDATORY on both sides:
+    absent tty evidence abstains rather than waiving the check, because a
+    process that inherited a stale surface id and moved panes publishes no tty
+    to contradict. The cost is stated where it is paid — an opencode session
+    inside cmux never joins over this arm (its server half publishes no tty by
+    design, and opencode receives no title marker either).
+    Ambiguity on EITHER origin abstains: exactly one side may resolve, and the
+    other must have no candidate at all. Rejecting only resolved/resolved made
+    it asymmetric — two local claimants plus one remote used to join the
+    remote, and the mirror case joined the local. `CMUX_WORKSPACE_ID` is never
     consulted (regenerated on restore), and `CMUX_SURFACE_ID` is itself
     session-scoped — cmux re-mints it on restore, which is safe here only
     because both sides of the match come from the same cmux run and stale

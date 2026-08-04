@@ -412,11 +412,21 @@ private final class ScreenTestCmuxSurfaces: CmuxSurfaceQuerying, @unchecked Send
 
     var readRequests: [String] { requests.withLock { $0 } }
 
-    func focusedSurface() async -> CmuxQueryResult<CmuxFocusedSurface> {
-        .value(CmuxFocusedSurface(surfaceID: focusedSurfaceID, tty: nil))
+    func focusedSurface(expectedPeerPID: pid_t) async -> CmuxQueryResult<CmuxFocusedSurface> {
+        .value(
+            CmuxFocusedSurface(
+                surfaceID: focusedSurfaceID,
+                // The local sub-arm REQUIRES both ttys, so the fixture's
+                // session tty and this one agree.
+                tty: "/dev/ttys004",
+                workspaceIsRemote: false
+            )
+        )
     }
 
-    func surfaceText(surfaceID: String) async -> CmuxQueryResult<String> {
+    func surfaceText(
+        surfaceID: String, expectedPeerPID: pid_t
+    ) async -> CmuxQueryResult<String> {
         requests.withLock { $0.append(surfaceID) }
         return texts.withLock { $0.isEmpty ? .unavailable : $0.removeFirst() }
     }
@@ -452,6 +462,7 @@ final class CmuxSurfaceScreenContextTests: XCTestCase {
                 process: ClaudeHookProcessInfo(
                     hookPID: 777,
                     claudePID: 9001,
+                    tty: "/dev/ttys004",
                     cmuxSurfaceID: surfaceID
                 )
             ),

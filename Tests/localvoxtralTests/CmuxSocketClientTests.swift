@@ -137,6 +137,11 @@ private final class CmuxTestServer: @unchecked Sendable {
 
 private let testSurfaceID = "22222222-2222-2222-2222-222222222222"
 
+/// The pid the tests pretend cmux is running as. The peer seams are injected
+/// because a test process cannot arrange to be a DIFFERENT pid on the other end
+/// of its own socket, and the impostor cases are the whole point.
+private let testCmuxPID: pid_t = 4242
+
 private func cmuxRequest(_ data: Data) -> [String: Any]? {
     (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
 }
@@ -162,7 +167,8 @@ private func cmuxError(for request: Data, code: String, message: String = "no") 
 /// surface it sees fails.
 private func treeResult(
     activeSurfaceID: String?,
-    focusedTTY: String? = "/dev/ttys004"
+    focusedTTY: String? = "/dev/ttys004",
+    activeWorkspaceID: String? = nil
 ) -> [String: Any] {
     var focusedSurface: [String: Any] = [
         "id": activeSurfaceID ?? "unused",
@@ -207,7 +213,16 @@ private func treeResult(
         ],
         "caller": NSNull(),
     ]
-    result["active"] = activeSurfaceID.map { ["surface_id": $0] as [String: Any] } ?? NSNull()
+    if let activeSurfaceID {
+        var active: [String: Any] = ["surface_id": activeSurfaceID]
+        // Only present when the test wants the remote-hosting question asked:
+        // without a workspace id there is nothing to ask about, and the client
+        // sends no second request.
+        if let activeWorkspaceID { active["workspace_id"] = activeWorkspaceID }
+        result["active"] = active
+    } else {
+        result["active"] = NSNull()
+    }
     return result
 }
 
@@ -219,12 +234,16 @@ final class CmuxSocketClientTests: XCTestCase {
 
     private func client(
         server: CmuxTestServer,
-        password: String? = nil
+        password: String? = nil,
+        peerPID: pid_t? = testCmuxPID,
+        peerBundleID: String? = TerminalScreenAllowlist.cmuxBundleID
     ) -> CmuxSocketClient {
         CmuxSocketClient(
             socketPaths: [server.socketPath],
             password: { password },
-            timeout: 5
+            timeout: 5,
+            peerPID: { _ in peerPID },
+            bundleIDOfRunningPID: { _ in peerBundleID }
         )
     }
 
@@ -236,7 +255,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
 
         XCTAssertEqual(
             result,
@@ -258,7 +277,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        _ = await client(server: server).focusedSurface()
+        _ = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
 
         let line = try XCTUnwrap(server.requestLines.first)
         XCTAssertFalse(line.contains(0x0D), "a CR anywhere in the line breaks cmux's framing")
@@ -274,7 +293,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .value(CmuxFocusedSurface(surfaceID: surfaceID, tty: nil)))
     }
 
@@ -284,7 +303,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
     func testAResponseAnsweringADifferentRequestIDIsRefused() async throws {
@@ -297,14 +316,14 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
     func testAGarbageLineIsRefused() async throws {
         let server = try CmuxTestServer { _, _ in Data("not json\n".utf8) }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
     func testAnOversizedResponseLineIsRefused() async throws {
@@ -320,7 +339,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
     // MARK: - Password login
@@ -336,7 +355,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server, password: "hunter2").focusedSurface()
+        let result = await client(server: server, password: "hunter2").focusedSurface(expectedPeerPID: testCmuxPID)
 
         XCTAssertEqual(
             result,
@@ -363,7 +382,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server, password: "wrong").focusedSurface()
+        let result = await client(server: server, password: "wrong").focusedSurface(expectedPeerPID: testCmuxPID)
 
         XCTAssertEqual(result, .authenticationRequired)
         XCTAssertEqual(
@@ -378,7 +397,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server, password: "hunter2").focusedSurface()
+        let result = await client(server: server, password: "hunter2").focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .authenticationRequired)
     }
 
@@ -392,7 +411,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .authenticationRequired)    }
 
     func testAnUnconfiguredPasswordSurfacesAuthRequired() async throws {
@@ -401,7 +420,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server, password: "hunter2").focusedSurface()
+        let result = await client(server: server, password: "hunter2").focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .authenticationRequired)
     }
 
@@ -414,7 +433,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .authenticationRequired)    }
 
     func testANonCredentialErrorIsAnAbstentionNotAPasswordProblem() async throws {
@@ -423,7 +442,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).focusedSurface()
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
     // MARK: - surface.read_text
@@ -443,7 +462,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).surfaceText(surfaceID: surfaceID)
+        let result = await client(server: server).surfaceText(surfaceID: surfaceID, expectedPeerPID: testCmuxPID)
 
         XCTAssertEqual(result, .value("swift build\nerror: FooBar.swift:12"))
         let request = try XCTUnwrap(server.requestLines.first.flatMap(cmuxRequest))
@@ -472,7 +491,7 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).surfaceText(surfaceID: surfaceID)
+        let result = await client(server: server).surfaceText(surfaceID: surfaceID, expectedPeerPID: testCmuxPID)
         XCTAssertEqual(
             result, .unavailable,
             "text that does not name the requested surface must never be attributed to it"
@@ -485,8 +504,258 @@ final class CmuxSocketClientTests: XCTestCase {
         }
         defer { server.stop() }
 
-        let result = await client(server: server).surfaceText(surfaceID: surfaceID)
+        let result = await client(server: server).surfaceText(surfaceID: surfaceID, expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)
+    }
+
+    // MARK: - Remote-hosting evidence
+
+    /// cmux exposes NO remote-ness on the surface node itself — a `cmux ssh`
+    /// surface is an ordinary `type: "terminal"`, and the state lives on the
+    /// workspace. So the client asks `workspace.remote.status` for the focused
+    /// surface's workspace, ON THE SAME CONNECTION as the focus answer.
+    func testRemoteHostingIsReadFromTheWorkspaceOnTheSameConnection() async throws {
+        let server = try CmuxTestServer { request, index in
+            switch index {
+            case 0:
+                return cmuxOK(
+                    for: request,
+                    result: treeResult(
+                        activeSurfaceID: testSurfaceID,
+                        activeWorkspaceID: "ws-1"
+                    )
+                )
+            default:
+                return cmuxOK(
+                    for: request,
+                    result: ["remote": ["enabled": true, "connected": true]]
+                )
+            }
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(
+                CmuxFocusedSurface(
+                    surfaceID: testSurfaceID, tty: "/dev/ttys004", workspaceIsRemote: true
+                )
+            )
+        )
+        XCTAssertEqual(server.requestLines.count, 2)
+        let status = try XCTUnwrap(server.requestLines.last.flatMap(cmuxRequest))
+        XCTAssertEqual(status["method"] as? String, "workspace.remote.status")
+        XCTAssertEqual(
+            (status["params"] as? [String: Any])?["workspace_id"] as? String, "ws-1"
+        )
+    }
+
+    /// A remote workspace whose link is DOWN is not currently hosting anything,
+    /// so it must not vouch for a remote claim either.
+    func testARemoteWorkspaceThatIsNotConnectedDoesNotCountAsRemoteHosted() async throws {
+        let server = try CmuxTestServer { request, index in
+            index == 0
+                ? cmuxOK(
+                    for: request,
+                    result: treeResult(activeSurfaceID: testSurfaceID, activeWorkspaceID: "ws-1")
+                )
+                : cmuxOK(for: request, result: ["remote": ["enabled": true, "connected": false]])
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(
+                CmuxFocusedSurface(
+                    surfaceID: testSurfaceID, tty: "/dev/ttys004", workspaceIsRemote: false
+                )
+            )
+        )
+    }
+
+    func testALocalWorkspaceReportsNotRemoteHosted() async throws {
+        let server = try CmuxTestServer { request, index in
+            index == 0
+                ? cmuxOK(
+                    for: request,
+                    result: treeResult(activeSurfaceID: testSurfaceID, activeWorkspaceID: "ws-1")
+                )
+                : cmuxOK(for: request, result: ["remote": ["enabled": false, "connected": false]])
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(
+                CmuxFocusedSurface(
+                    surfaceID: testSurfaceID, tty: "/dev/ttys004", workspaceIsRemote: false
+                )
+            )
+        )
+    }
+
+    /// An older cmux without the method — "unknown", NOT "local". The resolver
+    /// refuses remote claims on unknown, but the distinction is what lets it
+    /// say why.
+    func testAnUnsupportedRemoteStatusMethodLeavesRemoteHostingUnknown() async throws {
+        let server = try CmuxTestServer { request, index in
+            index == 0
+                ? cmuxOK(
+                    for: request,
+                    result: treeResult(activeSurfaceID: testSurfaceID, activeWorkspaceID: "ws-1")
+                )
+                : cmuxError(for: request, code: "method_not_found")
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(
+                CmuxFocusedSurface(
+                    surfaceID: testSurfaceID, tty: "/dev/ttys004", workspaceIsRemote: nil
+                )
+            )
+        )
+    }
+
+    /// A `remote` object that omits `connected` must not read as connected.
+    func testAMissingConnectedFlagIsNotConnected() async throws {
+        let server = try CmuxTestServer { request, index in
+            index == 0
+                ? cmuxOK(
+                    for: request,
+                    result: treeResult(activeSurfaceID: testSurfaceID, activeWorkspaceID: "ws-1")
+                )
+                : cmuxOK(for: request, result: ["remote": ["enabled": true]])
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server).focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(
+                CmuxFocusedSurface(
+                    surfaceID: testSurfaceID, tty: "/dev/ttys004", workspaceIsRemote: false
+                )
+            )
+        )
+    }
+
+    // MARK: - Peer authentication (the password's precondition)
+
+    /// The blocker this arm was rebuilt around: the path check proves only that
+    /// a same-UID socket EXISTS at a name. Any process running as this user can
+    /// bind one of the candidate paths — the legacy `/tmp` ones especially —
+    /// pass that check trivially, and harvest the Keychain password. The
+    /// connected peer's pid is what actually decides.
+    func testAnImpostorSocketOwnedByThisUserNeverReceivesThePassword() async throws {
+        let impostor = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: ["authenticated": true])
+        }
+        defer { impostor.stop() }
+        // Same uid, same path shape, real socket — and a different process.
+        let client = client(
+            server: impostor,
+            password: "hunter2",
+            peerPID: testCmuxPID &+ 1
+        )
+
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertTrue(
+            impostor.requestLines.isEmpty,
+            "not one byte — and above all not the password — may reach a peer that is not the focused cmux app"
+        )
+    }
+
+    /// The TOCTOU half: the path passed the guard, and by the time we are
+    /// connected the peer is somebody else. Only the post-connect check can
+    /// catch this, which is why it is the one that gates the password.
+    func testAPeerThatCannotBeIdentifiedNeverReceivesThePassword() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: ["authenticated": true])
+        }
+        defer { server.stop() }
+        let client = client(server: server, password: "hunter2", peerPID: nil)
+
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertTrue(server.requestLines.isEmpty)
+    }
+
+    /// A pid that died and was recycled between the join resolving and this
+    /// connection: right number, wrong process.
+    func testAPeerPIDNoLongerRunningCmuxIsRefused() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: ["authenticated": true])
+        }
+        defer { server.stop() }
+        let client = client(
+            server: server,
+            password: "hunter2",
+            peerBundleID: "com.example.something-else"
+        )
+
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertTrue(server.requestLines.isEmpty)
+    }
+
+    /// An impostor must not be able to manufacture the "multiple live sockets"
+    /// ambiguity either — it is dropped, not counted, so the real cmux still
+    /// answers.
+    func testAnImpostorCandidateDoesNotBlockTheRealCmuxSocket() async throws {
+        let real = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: treeResult(activeSurfaceID: testSurfaceID))
+        }
+        defer { real.stop() }
+        let impostor = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: treeResult(activeSurfaceID: "impostor-surface"))
+        }
+        defer { impostor.stop() }
+        let realPath = real.socketPath
+        let client = CmuxSocketClient(
+            // Impostor first in the candidate order, so a client that took the
+            // first thing that connected would take the wrong one.
+            socketPaths: [impostor.socketPath, real.socketPath],
+            timeout: 5,
+            peerPID: { fd in
+                // Only the real server's connection reports the cmux pid.
+                var address = sockaddr_un()
+                var length = socklen_t(MemoryLayout<sockaddr_un>.size)
+                let named = withUnsafeMutablePointer(to: &address) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        getpeername(fd, $0, &length)
+                    }
+                }
+                guard named == 0 else { return nil }
+                let path = withUnsafeBytes(of: &address.sun_path) { raw in
+                    String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+                }
+                return path == realPath ? testCmuxPID : 9999
+            },
+            bundleIDOfRunningPID: { _ in TerminalScreenAllowlist.cmuxBundleID }
+        )
+
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(CmuxFocusedSurface(surfaceID: testSurfaceID, tty: "/dev/ttys004"))
+        )
+        XCTAssertTrue(impostor.requestLines.isEmpty)
     }
 
     // MARK: - The socket file guard
@@ -507,10 +776,12 @@ final class CmuxSocketClientTests: XCTestCase {
                     ownerUID: UInt32(getuid()) &+ 1,
                     mode: 0o600
                 )
-            }
+            },
+            peerPID: { _ in testCmuxPID },
+            bundleIDOfRunningPID: { _ in TerminalScreenAllowlist.cmuxBundleID }
         )
 
-        let result = await foreign.focusedSurface()
+        let result = await foreign.focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)
         XCTAssertTrue(server.requestLines.isEmpty, "not one byte may reach a foreign-owned socket")
     }
@@ -531,17 +802,24 @@ final class CmuxSocketClientTests: XCTestCase {
                     ownerUID: UInt32(getuid()),
                     mode: 0o600
                 )
-            }
+            },
+            peerPID: { _ in testCmuxPID },
+            bundleIDOfRunningPID: { _ in TerminalScreenAllowlist.cmuxBundleID }
         )
 
-        let result = await regularFile.focusedSurface()
+        let result = await regularFile.focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)
         XCTAssertTrue(server.requestLines.isEmpty)
     }
 
     func testARelativeSocketPathIsRefused() async {
-        let client = CmuxSocketClient(socketPaths: ["relative/cmux.sock"], timeout: 5)
-        let result = await client.focusedSurface()
+        let client = CmuxSocketClient(
+            socketPaths: ["relative/cmux.sock"],
+            timeout: 5,
+            peerPID: { _ in testCmuxPID },
+            bundleIDOfRunningPID: { _ in TerminalScreenAllowlist.cmuxBundleID }
+        )
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
     func testNoReachableSocketIsUnavailable() async throws {
@@ -569,31 +847,52 @@ final class CmuxSocketClientTests: XCTestCase {
         // Bound but never listening.
         defer { close(fd) }
 
-        let client = CmuxSocketClient(socketPaths: [path], timeout: 5)
-        let result = await client.focusedSurface()
+        let client = CmuxSocketClient(
+            socketPaths: [path],
+            timeout: 5,
+            peerPID: { _ in testCmuxPID },
+            bundleIDOfRunningPID: { _ in TerminalScreenAllowlist.cmuxBundleID }
+        )
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
         XCTAssertEqual(result, .unavailable)    }
 
-    /// Two live cmux instances answer, and nothing says which one drew the
-    /// surface the user is looking at.
-    func testTwoLiveSocketsAbstain() async throws {
+    /// Two live sockets are no longer decided by COUNTING them.
+    ///
+    /// The earlier rule abstained on two reachable candidates because it had no
+    /// way to tell the instances apart. Peer identity is a stronger answer to
+    /// the same question: two candidates held by DIFFERENT processes cannot
+    /// both be the frontmost cmux app, so at most one survives authentication
+    /// (`testAnImpostorCandidateDoesNotBlockTheRealCmuxSocket` pins that). Two
+    /// candidates held by the SAME process are one cmux listening on two paths,
+    /// which is not ambiguous at all — either answers for the app the user is
+    /// looking at, and the query proceeds.
+    func testTwoSocketsHeldByTheSameCmuxProcessAreNotAmbiguous() async throws {
         let first = try CmuxTestServer { request, _ in
             cmuxOK(for: request, result: treeResult(activeSurfaceID: testSurfaceID))
         }
         defer { first.stop() }
         let second = try CmuxTestServer { request, _ in
-            cmuxOK(for: request, result: treeResult(activeSurfaceID: "other"))
+            cmuxOK(for: request, result: treeResult(activeSurfaceID: testSurfaceID))
         }
         defer { second.stop() }
 
         let client = CmuxSocketClient(
             socketPaths: [first.socketPath, second.socketPath],
-            timeout: 5
+            timeout: 5,
+            peerPID: { _ in testCmuxPID },
+            bundleIDOfRunningPID: { _ in TerminalScreenAllowlist.cmuxBundleID }
         )
 
-        let result = await client.focusedSurface()
-        XCTAssertEqual(result, .unavailable)
-        XCTAssertTrue(first.requestLines.isEmpty)
-        XCTAssertTrue(second.requestLines.isEmpty)
+        let result = await client.focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(
+            result,
+            .value(CmuxFocusedSurface(surfaceID: testSurfaceID, tty: "/dev/ttys004"))
+        )
+        XCTAssertEqual(
+            first.requestLines.count + second.requestLines.count, 1,
+            "exactly one of the two is used; the other is closed unquestioned"
+        )
     }
 
     // MARK: - Default paths

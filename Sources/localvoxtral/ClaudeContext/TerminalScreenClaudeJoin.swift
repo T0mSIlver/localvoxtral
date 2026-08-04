@@ -560,7 +560,10 @@ struct ClaudeSessionJoinResolver {
         }
 
         let surface: CmuxFocusedSurface
-        switch await cmuxSurfaces.focusedSurface() {
+        // The peer the socket must turn out to be: the frontmost cmux process
+        // this join is already about. The client refuses to send the stored
+        // password to anything else.
+        switch await cmuxSurfaces.focusedSurface(expectedPeerPID: target.pid) {
         case .value(let focused):
             surface = focused
         case .authenticationRequired:
@@ -579,23 +582,52 @@ struct ClaudeSessionJoinResolver {
         let local = registry.resolve(cmuxSurfaceID: surface.surfaceID)
         let remote = registry.resolveRemote(cmuxSurfaceID: surface.surfaceID)
 
-        // Should be impossible: one surface hosts one shell, and a local shell
-        // and a `cmux ssh` shell cannot both be it. Abstain anyway — an
-        // impossible state reached is a state we do not understand, and the
-        // wrong answer here attaches one machine's session to another's screen.
-        if case .resolved = local, case .resolved = remote {
-            Self.abstainedCmuxJoin(outcome: "a local and a remote session both claim this surface")
+        // EXACTLY ONE side may have a candidate at all, and it must be a clean
+        // `.resolved` while the other is a clean `.unknown`.
+        //
+        // The earlier rule only rejected `.resolved`/`.resolved`, which made
+        // ambiguity asymmetric: two local sessions claiming the surface
+        // (`.ambiguous`) next to one remote claim would fall through and join
+        // the REMOTE one, and the mirror image joined the local one. Ambiguity
+        // on either side is the registry saying it cannot name the session, and
+        // a claim from the other origin is not the tie-breaker — it is a
+        // different machine answering a question about this surface.
+        // `.stale` is treated the same way: a dead claimant on one side is
+        // evidence the surface changed hands, which is exactly when the other
+        // side's claim deserves the least trust.
+        guard Self.isCleanlyResolved(local, other: remote)
+            || Self.isCleanlyResolved(remote, other: local)
+        else {
+            Self.abstainedCmuxJoin(outcome: Self.cmuxOutcome(local: local, remote: remote))
             return nil
         }
 
         if case .resolved(let snapshot) = local {
-            // Belt and braces: when cmux reports the surface's tty AND the hook
-            // published the session's, a disagreement means the environment we
-            // matched on is stale (a surface reused by a new shell, an id
-            // inherited by a child that moved). Only compared when BOTH are
-            // known — an absent tty is not evidence of anything.
-            if let sessionTTY = snapshot.process?.tty, let surfaceTTY = surface.tty,
-               sessionTTY != surfaceTTY {
+            // Belt and braces, and REQUIRED on both sides: the surface's tty
+            // and the session's must both be known and equal.
+            //
+            // Treating an absent tty as "no evidence, carry on" waived the
+            // check precisely when it was needed — a process that inherited a
+            // stale `CMUX_SURFACE_ID` and then moved to another pane publishes
+            // no tty we can contradict, so id-alone would join it to whatever
+            // surface now carries that id. Absent evidence is not permission.
+            //
+            // Cost, stated plainly: a session whose publisher reports no tty
+            // cannot join over this arm. That is every opencode session (its
+            // server half deliberately publishes no tty, because it cannot
+            // prove it owns a pane), and opencode never receives a title
+            // marker either — so opencode inside cmux gets no join at all. A
+            // missed join costs an excerpt; a wrong one puts another session's
+            // screen in this prompt.
+            guard let sessionTTY = snapshot.process?.tty else {
+                Self.abstainedCmuxJoin(outcome: "session published no tty to cross-check")
+                return nil
+            }
+            guard let surfaceTTY = surface.tty else {
+                Self.abstainedCmuxJoin(outcome: "cmux reported no tty for the focused surface")
+                return nil
+            }
+            guard sessionTTY == surfaceTTY else {
                 Self.abstainedCmuxJoin(outcome: "surface tty disagrees with the session's tty")
                 return nil
             }
@@ -606,10 +638,7 @@ struct ClaudeSessionJoinResolver {
         }
 
         if case .resolved(let snapshot) = remote {
-            // No tty cross-check here, on purpose: the remote session's tty
-            // names a pty on ANOTHER machine, and the local surface's tty names
-            // the ssh client's device on this one. They describe different
-            // things, and comparing them would abstain on every correct join.
+            guard Self.remoteClaimIsCurrentlyHosted(surface: surface) else { return nil }
             Log.claudeContext.info(
                 "Terminal pane joined to a live remote Claude session via cmux surface"
             )
@@ -618,6 +647,57 @@ struct ClaudeSessionJoinResolver {
 
         Self.abstainedCmuxJoin(outcome: Self.cmuxOutcome(local: local, remote: remote))
         return nil
+    }
+
+    /// Whether cmux says the focused surface is CURRENTLY hosted by a live
+    /// remote workspace — the precondition for accepting any remote claim.
+    ///
+    /// Without it, a remote session's surface id is a REMEMBERED LABEL and
+    /// nothing more: a compromised enrolled host can publish an id it saw
+    /// during an earlier `cmux ssh` session, and once that surface has gone
+    /// back to a local shell the replayed claim is the sole remote candidate
+    /// and joins — pairing attacker-chosen context with whatever the user is
+    /// now looking at. That made this arm strictly weaker than the title
+    /// marker, which at least has to ride the PTY the session presently
+    /// controls.
+    ///
+    /// cmux exposes no remote-ness on the surface itself (a `cmux ssh` surface
+    /// is an ordinary `type: "terminal"`; the state lives on the workspace), so
+    /// the evidence comes from `workspace.remote.status` for the focused
+    /// surface's own workspace, read in the same connection as the focus
+    /// answer. Unknown fails closed.
+    ///
+    /// What this does NOT prove, stated plainly: that the remote session
+    /// claiming the surface is the one on the other end of THAT ssh link. With
+    /// two enrolled hosts, a compromised one can still claim a surface hosted
+    /// by the other. It is bounded to genuinely-remote surfaces and to enrolled
+    /// hosts, which is the same bound the remote marker join has.
+    private static func remoteClaimIsCurrentlyHosted(surface: CmuxFocusedSurface) -> Bool {
+        switch surface.workspaceIsRemote {
+        case true:
+            return true
+        case false:
+            abstainedCmuxJoin(
+                outcome: "a remote session claims a surface cmux reports as local"
+            )
+            return false
+        default:
+            abstainedCmuxJoin(
+                outcome: "cmux would not say whether the focused surface is remote-hosted"
+            )
+            return false
+        }
+    }
+
+    /// One side resolved to exactly one session, and the other side had no
+    /// candidate whatsoever.
+    private static func isCleanlyResolved(
+        _ resolution: ClaudeMarkerResolution,
+        other: ClaudeMarkerResolution
+    ) -> Bool {
+        guard case .resolved = resolution else { return false }
+        guard case .unknown = other else { return false }
+        return true
     }
 
     private func cmuxJoin(
@@ -643,6 +723,13 @@ struct ClaudeSessionJoinResolver {
         remote: ClaudeMarkerResolution
     ) -> String {
         switch (local, remote) {
+        case (.resolved, .resolved):
+            return "a local and a remote session both claim this surface"
+        case (.resolved, _), (_, .resolved):
+            // One side named a session and the other side had SOMETHING —
+            // ambiguous or stale. Named separately from plain ambiguity because
+            // this is the case that used to join the resolved side.
+            return "one origin resolved but the other also claims this surface"
         case (.ambiguous, _), (_, .ambiguous):
             return "focused surface matches several sessions"
         case (.stale, _), (_, .stale):
@@ -672,7 +759,9 @@ struct ClaudeSessionJoinResolver {
             Log.claudeContext.info("cmux surface read refused: surface query capability unavailable")
             return nil
         }
-        switch await cmuxSurfaces.surfaceText(surfaceID: binding.surfaceID) {
+        switch await cmuxSurfaces.surfaceText(
+            surfaceID: binding.surfaceID, expectedPeerPID: join.target.pid
+        ) {
         case .value(let text):
             return text
         case .authenticationRequired:
