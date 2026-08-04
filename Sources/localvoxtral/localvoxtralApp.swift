@@ -219,6 +219,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // resolving joins against sessions nothing is feeding any more.
         viewModel.claudeSessionJoinResolver = nil
         viewModel.claudeSessionJoin = nil
+        // Quitting mid-dictation must take every remote herdr `ssh -L` with us.
+        // Asked of the view model, which OWNS them: during polish the join has
+        // already been consumed, so a quit that reached the child only through
+        // `claudeSessionJoin` found nil and left the ssh running past app exit
+        // (review finding 4).
+        viewModel.closeRemoteHerdrForwards()
     }
 
     /// Spin the run loop until every forward teardown has finished, or the
@@ -303,7 +309,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 reportCmuxStatus: { [weak viewModel] status in
                     viewModel?.claudeIntegrationSettings?.cmuxStatus = status
-                }
+                },
+                sshDestinationProbe: {
+                    SSHDestinationTTYProbe.connection(onTTYDevicePath: $0)
+                },
+                // Read through the property rather than captured: the host
+                // registry is built later in launch than this resolver (and not
+                // at all for a user with no enrolled host), so the lookup has
+                // to be asked at dictation time, not wired at launch time. No
+                // registry ⇒ no candidates ⇒ the remote herdr arm never runs.
+                enrolledHosts: { [weak self] destination in
+                    self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
+                },
+                remoteHerdrForwards: ClaudeRemoteHerdrForwardService(
+                    spawner: ClaudeRemoteHerdrForwardSpawner(),
+                    workspaces: ClaudeRemoteHerdrForwardWorkspaces()
+                )
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start

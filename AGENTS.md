@@ -564,8 +564,12 @@ Key subsystems:
     is herdr-or-nothing: no
     marker fallback, because a lingering title marker could only mis-join.
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
-    `HerdrSocketClient` (hand-written, read-only — herdr is AGPL, never vendor
-    its code) asks that one socket for the focused pane and the join is exact
+    `HerdrSocketClient` (hand-written and READ-ONLY — only `pane.current`,
+    `pane.process_info`, `pane.read` are ever sent. herdr was AGPL when this
+    was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
+    docs and source are freely readable; the client stays hand-written anyway,
+    because a vendored dependency would be a second implementation of the trust
+    rules) asks that one socket for the focused pane and the join is exact
     pane-id equality (`resolve(herdrPaneID:)`, local sessions only), guarded
     by two fail-closed cross-checks: herdr's own `agent_session` claim must
     not disagree, and the registered Claude pid must be in the pane's
@@ -578,8 +582,10 @@ Key subsystems:
     the joined pane (`SocketPaneScreenContext`, shared with cmux), fetched at
     start and stop
     behind the same consent gate and sanitize/cap pipeline as an AX read;
-    `pane.read` fires only after the herdrPane join resolved and never for
-    any other pane or mechanism. On any pane.read failure the session falls
+    `pane.read` fires only after a herdr join (local or remote) resolved, and
+    only ever for THAT join's pane — the request is keyed by the binding the
+    arm captured at resolution, so no other pane and no other mechanism can
+    reach a herdr socket through it. On any pane.read failure the session falls
     back to the pre-existing behavior — composite AX text, vocabulary-only,
     nothing attached.
   - cmux (github.com/manaflow-ai/cmux — a native Swift/AppKit terminal on
@@ -647,6 +653,128 @@ Key subsystems:
     cmux exposes no AX text at all, so the join never authorizes raw AX
     attachment and its screen context is `surface.read_text` through the same
     `SocketPaneScreenContext` gate as herdr's `pane.read`.
+  - A herdr running on an ENROLLED REMOTE host is its own arm
+    (`.remoteHerdrPane`), tried only after every local arm declined, and it
+    reaches that herdr over an app-managed, on-demand `ssh -L`
+    (`ClaudeRemoteHerdrForward`) opened at dictation start and closed when the
+    dictation is done with it. The bindings, ALL required, in cost order so an
+    ordinary ssh session never pays for a tunnel:
+    (1) the focused surface's own TTY hosts a FOREGROUND `ssh` session whose
+    destination is exactly one enrolled host's alias. `SSHDestinationTTYProbe`
+    is deliberately paranoid here, because every way an argv can name one host
+    while the connection goes elsewhere is a mis-join: it verifies the
+    EXECUTABLE against three EXACT absolute paths (`/usr/bin/ssh` and
+    Homebrew's two `bin/ssh`, via `proc_pidpath` — not `p_comm`, not argv[0],
+    and never by directory prefix, since `/opt/homebrew` and `/usr/local` are
+    user-writable and a prefix rule trusted `/opt/homebrew/tmp/ssh`; a symlink
+    target is accepted only when resolving a canonical path produces exactly
+    it, its basename is `ssh`, and it stays inside that canonical path's own
+    installation root — anyone who can repoint that symlink already controls
+    what the user's own `ssh` runs, so this is defense-in-depth, not a
+    privilege boundary), requires the
+    process to be in its terminal's foreground process group (so a stopped ssh,
+    a background one, or `scp`/`rsync`'s helper is not mistaken for the screen),
+    and ABSTAINS on `-o`/`-F`/`-O`/`-S`/`-N`/`-f`/`-M`/`-D`/`-W`/`-w` rather
+    than skipping them — `ssh -o HostName=other builder` must never answer
+    `builder`;
+    (2) THIS TERMINAL holds the ONLY ssh connection to that destination on the
+    machine (a `KERN_PROC_ALL` scan). Host-level binding alone was a mis-join:
+    with a plain shell to `builder` in one window and a herdr on `builder` in
+    another, both surfaces answer "ssh to builder" and every remaining check is
+    about the REMOTE side, so the plain shell would join the other window's
+    session. A remote command that IS herdr (first argv token, by basename) is
+    recorded as corroboration but NEVER substitutes for uniqueness — argv is
+    written by whoever launched the process, and treating it as sufficient let
+    `ssh host sh -lc 'printf herdr; exec claude'` claim to be a herdr
+    connection;
+    (3) that host has live remote sessions reporting a herdr pane, all from ONE
+    herdr socket (`liveRemoteHerdrSessions(hostID:)`, the mirror of the local
+    single-socket rule). The count that matters is SOCKETS, not sessions:
+    several live sessions on one herdr are expected and fine — panes are what a
+    multiplexer is for, and serving that workflow is the point of this arm — so
+    only two herdr SERVERS leave the surface ambiguous;
+    (4) over the forward, exactly ONE of those candidates claims that herdr's
+    FOCUSED pane id (two candidates claiming the same pane id abstain), and that
+    pane's captured `terminal_title` carries exactly that session's
+    broker-allocated marker;
+    (5) herdr's own `agent_session` claim for the pane does not disagree, and
+    the pane is running that session's agent.
+    Herdr-or-nothing begins at CONFIRMATION, not before: everything up to and
+    including step 4 falls THROUGH to the title marker on failure, and only
+    steps after it abstain. Registry candidates existing on the host is not a
+    binding for this connection — a detached herdr, or one whose sessions are
+    merely still inside their TTL, would otherwise cost a sole plain ssh session
+    the outer marker join it has always had. Once the pane id AND our own
+    broker-allocated marker both match, the connection IS displaying that
+    session, and from there a marker in the outer window could only describe
+    something else, so a later fail-closed refusal joins nothing at all. The
+    residual: while the arm has not confirmed, a marker left in the outer title
+    by a pre-herdr session on the same host can still win — exactly the behavior
+    that predates this arm.
+    Note WHY the marker works here and not locally: herdr captures an inner
+    pane's OSC 2 into `PaneInfo.terminal_title`, and the remote listener
+    already returns a marker to every remote session unconditionally — so the
+    marker is sitting in the joined pane's title, invisible to the outer
+    terminal. The `agent_session` cross-check is fail-closed exactly like the
+    local arm's and is what catches a REUSED pane (a session that died without
+    a SessionEnd leaves a live entry, its marker and its pane id behind).
+    The foreground check takes EITHER a `hookParentPID` (the shim's `$PPID`,
+    compared as a STRING — a remote pid is another machine's number) or a
+    process named for the agent; requiring both would fail closed forever on
+    two ordinary installs (Claude Code spawns hooks through a shell, so `$PPID`
+    is often that shell, and an npm install appears as `node`).
+    The tunnel is owned by `DictationViewModel`, never by the join value that
+    travels: the commit path CONSUMES the join, so an owner reaching the child
+    through `claudeSessionJoin` was nil at exactly the moments that mattered
+    (quit during polish, an aborted connect) and the ssh outlived the app.
+  - **The remote herdr forward is a trust inversion, and it is bounded by what
+    we SEND, not by what the socket allows.** herdr's JSON socket is
+    full-control: over that same forwarded stream one could create panes, write
+    keystrokes into them, kill them. We dial OUT to it and send only
+    `pane.current` / `pane.process_info` / `pane.read`, and that restraint —
+    plus the one client in the codebase being hand-written — is the whole
+    boundary. In exchange, `ClaudeRemoteSessionEnvironment.herdrSocketPath`
+    stays what PR #216 made it: a label that is NEVER handed to `FileManager`,
+    never `stat`ed, never dialed locally. Its one and only use is as an argv
+    token for `ssh`, resolved on the host that named it, after re-validation
+    (absolute, no `:` — that would re-split the `-L` spec — and PR #216's
+    header charset). The argv deliberately omits two options an earlier design
+    called for, both falsified against OpenSSH 10.0: `ClearAllForwardings=yes`
+    clears command-line forwardings too and deletes the very `-L` (measured: no
+    socket ever appears), and `ExitOnForwardFailure=yes` turns the enrolled
+    host's own `RemoteForward` — normally already held by the user's live
+    session — into a fatal error for this connection (measured: ssh exits).
+    Readiness is a bounded connect-poll of the local socket instead, on an
+    injected clock, with a ~2 s ceiling that is a dictation-start latency
+    budget as much as a correctness one. The RESIDUAL of dropping them: this
+    short-lived connection still requests whatever forwards the alias's own
+    `Host` block declares, including the enrollment `RemoteForward` — since
+    #217 that is this Mac's own port, so a collision with the user's live
+    session is a warning on a stderr we send to `/dev/null`, not a failure.
+    Three options ARE forced, because the alias's config would otherwise reach
+    into this child: `ControlPath=none` (so the forward belongs to our own
+    process and killing it IS the teardown, at the cost of one handshake per
+    dictation), `ForkAfterAuthentication=no` (a detached ssh is an orphan we
+    can neither observe nor kill), and `PermitLocalCommand=no` (a dictation
+    must not be able to trigger `LocalCommand` on this machine). Teardown
+    signals the process GROUP — the child is spawned as its own group leader
+    via `posix_spawn`'s `POSIX_SPAWN_SETPGROUP`, so `kill(-pgid)` can only ever
+    reach our own ssh and its descendants — and it ends with an UNCONDITIONAL
+    group SIGKILL. We observe only the leader, so its exit satisfies the
+    bounded wait while a descendant that ignored SIGTERM is still holding the
+    tunnel; gating that final kill on leader liveness (as the first version
+    did) suppressed exactly the signal that clears it. The pairing rule that
+    makes "unconditional" safe: the exit handler does NOT reap. A pid — and
+    with it the pgid — is reserved only while the child is unreaped, so the
+    zombie is what keeps `-pid` meaning OUR group; teardown signals first and
+    reaps last, and once reaped NOTHING may signal that group again (a tunnel
+    that exits by itself mid-dictation is closed at stop time seconds later,
+    which is exactly when a reused pid would be someone else's). Cost: one
+    zombie per open forward, for the life of one dictation.
+    A remote herdr join authorizes no more than a local one: never the raw AX
+    capture (that grid is the composite herdr TUI, on someone else's machine),
+    and never local repo collection — the origin is remote, so
+    `localWorkspacePath` is nil by type.
   - Screen capture is split by ROUTE (`TerminalScreenAllowlist`): raw AX grid
     capture remains Ghostty-only (its single-`AXTextArea` grid is verified;
     iTerm2's AX tree is ambiguous across splits, Terminal.app's unverified).
@@ -721,9 +849,13 @@ Key subsystems:
   cannot reach `resolve(tty:)`, `resolve(herdrPaneID:)`, or
   `liveLocalHerdrSocketPaths()` — the local-only arms all read `process`. A
   remote `HERDR_SOCKET_PATH` is a label, not a socket `HerdrSocketClient` may
-  dial (its guard still requires a local socket owned by `getuid()`), and
+  dial (its guard still requires a local socket owned by `getuid()`) — the
+  remote herdr arm reaches it only by handing it to `ssh -L` as a forward
+  target, so the path is resolved on the host that named it and the socket the
+  client actually dials is the LOCAL end our own child created. And
   `hookParentPID` is a String on purpose: a pid in another host's namespace is
-  not a number this process may probe.
+  not a number this process may probe, only a label to compare against another
+  label.
 - **Remote enrollment execution is opt-in, preview-first, and keeps the token
   out of process arguments.** `ClaudeRemoteEnrollmentService` generates a
   copyable plan (idempotent ssh config block, `claude plugin` commands,

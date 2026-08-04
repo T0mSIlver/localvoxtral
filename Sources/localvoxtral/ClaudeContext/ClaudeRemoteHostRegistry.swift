@@ -457,6 +457,31 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         state.withLock { $0.first { $0.id == id }?.publicView }
     }
 
+    /// Active hosts whose enrolled ssh alias IS this destination.
+    ///
+    /// The join side of the alias: the process table says the focused terminal
+    /// is an ssh client going to `builder`, and this answers "and is `builder`
+    /// a host the user enrolled?". Revoked hosts are not candidates — a
+    /// credential the user withdrew must not keep authorizing a context join.
+    ///
+    /// Compared case-insensitively, because a hostname is, and an ssh config
+    /// alias is used as one in practice. That makes the comparison WIDER, which
+    /// is safe only because a match is a precondition of the remote herdr arm
+    /// and never the join: the pane id, the marker, and the foreground process
+    /// all still have to agree afterwards.
+    ///
+    /// Returns the STORED alias, not the destination the user typed: that is
+    /// the string `ClaudeRemoteEnrollmentService.isValidHostAlias` vetted at
+    /// enrollment, and it is the one allowed to reach an argv.
+    public func hosts(matchingSSHDestination destination: String) -> [ClaudeRemoteHost] {
+        let needle = destination.lowercased()
+        guard !needle.isEmpty else { return [] }
+        return hosts().filter { host in
+            guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
+            return alias.lowercased() == needle
+        }
+    }
+
     /// Whether binding the listener is worth doing at all.
     ///
     /// No enrolled host means no port is opened. A feature nobody has set up

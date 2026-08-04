@@ -172,7 +172,11 @@ enum SocketPaneScreenContext {
         resolver: ClaudeSessionJoinResolver
     ) async -> String? {
         switch join.mechanism {
-        case .herdrPane:
+        case .herdrPane, .remoteHerdrPane:
+            // One route for both herdr arms: a remote herdr differs only in
+            // WHERE its socket is — the local end of an app-managed `ssh -L`,
+            // captured in the same binding — so the request, the sanitizing and
+            // the caps are identical.
             return await resolver.herdrPaneVisibleText(for: join)
         case .cmuxSurface:
             return await resolver.cmuxSurfaceVisibleText(for: join)
