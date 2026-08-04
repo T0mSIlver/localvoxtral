@@ -388,14 +388,15 @@ final class DictationViewModel {
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
 
-    /// The JOINED herdr pane's visible text at dictation start (`pane.read`,
+    /// The JOINED pane's visible text at dictation start, read over its own
+    /// multiplexer socket (herdr `pane.read` / cmux `surface.read_text`,
     /// sanitized + capped like an AX read). Non-nil only when the session's
-    /// join is a `.herdrPane` join AND the screen-context consent gate cleared
-    /// at start. At commit it replaces the composite-AX screen decision (see
-    /// `HerdrPaneScreenContext.reconcileAtStop`); cleared on every session
+    /// join is a `.herdrPane`/`.cmuxSurface` join AND the screen-context consent
+    /// gate cleared at start. At commit it replaces the AX screen decision (see
+    /// `SocketPaneScreenContext.reconcileAtStop`); cleared on every session
     /// exit, exactly like the screen capture and the join above.
     @ObservationIgnored
-    var herdrPaneStartCapture: HerdrPaneScreenCapture?
+    var socketPaneStartCapture: SocketPaneScreenCapture?
 
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
@@ -1899,7 +1900,7 @@ final class DictationViewModel {
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
-            herdrPaneStartCapture = nil
+            socketPaneStartCapture = nil
             return
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -1909,12 +1910,13 @@ final class DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
-        // Only a herdr pane join produces a sample here (the function refuses
-        // everything else before any socket request), and it reads exactly the
-        // joined pane. Fetched at start for the same reason the AX screen is:
+        // Only a socket-routed pane join — herdr or cmux — produces a sample
+        // here (the function refuses everything else before any socket
+        // request), and it reads exactly the joined pane. Fetched at start for
+        // the same reason the AX screen is:
         // this text is evidence of what the user could see while choosing
         // their words, and only a start sample can be that.
-        herdrPaneStartCapture = await HerdrPaneScreenContext.captureAtStart(
+        socketPaneStartCapture = await SocketPaneScreenContext.captureAtStart(
             join: claudeSessionJoin,
             resolver: claudeSessionJoinResolver,
             settingEnabled: settings.terminalScreenContextEnabled,
@@ -2003,7 +2005,7 @@ final class DictationViewModel {
         // attached to an unrelated sentence.
         claudeSessionJoin = nil
         // And the pane text with the join: it is that session's screen.
-        herdrPaneStartCapture = nil
+        socketPaneStartCapture = nil
     }
 
     /// Reconciles the start capture against a stop-time re-read of the SAME
@@ -2033,12 +2035,12 @@ final class DictationViewModel {
         return join
     }
 
-    /// Takes this dictation's herdr pane start sample and clears it. Consumed
+    /// Takes this dictation's socket pane start sample and clears it. Consumed
     /// alongside the join at commit; a sample must never survive into another
     /// session's reconciliation.
-    func consumeHerdrPaneStartCapture() -> HerdrPaneScreenCapture? {
-        let capture = herdrPaneStartCapture
-        herdrPaneStartCapture = nil
+    func consumeSocketPaneStartCapture() -> SocketPaneScreenCapture? {
+        let capture = socketPaneStartCapture
+        socketPaneStartCapture = nil
         return capture
     }
 

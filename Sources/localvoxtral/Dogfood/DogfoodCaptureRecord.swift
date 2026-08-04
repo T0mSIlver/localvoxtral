@@ -94,7 +94,8 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
         var abstentionReason: String?
         /// `local` or `remote`. Governs which context is even eligible.
         var origin: String?
-        /// Terminal the surface belonged to (Ghostty, iTerm2, Terminal.app).
+        /// Terminal the surface belonged to (Ghostty, iTerm2, Terminal.app,
+        /// cmux).
         var terminal: String?
         /// True when the surface TTY positively bound to a herdr client, which
         /// makes the join herdr-or-nothing from that point.
@@ -104,7 +105,8 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
 
     /// The screen read and what the reconciliation decided to do with it.
     struct Screen: Codable, Equatable, Sendable {
-        /// `axGrid`, `appleScriptContents`, or `herdrPaneRead`.
+        /// `axGrid`, `appleScriptContents`, `herdrPaneRead`, or
+        /// `cmuxSurfaceRead`.
         var route: String?
         /// `render`, `vocabularyOnly`, or `drop`.
         var decision: String

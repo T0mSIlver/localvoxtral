@@ -298,6 +298,29 @@ public final class ClaudeIntegrationSettingsModel {
     public private(set) var isPerformingEnrollmentAction = false
     public var alert: DetailAlert?
 
+    /// What the cmux control socket last told us, as one short sentence in the
+    /// pane. Written by the join resolver on every attempt, so a user who
+    /// dictates and sees no cmux context can read WHY here instead of in the
+    /// log. `.ok` renders nothing — a working feature says nothing.
+    var cmuxStatus: CmuxSocketStatus = .ok
+
+    /// The password field's live text. Never seeded from the Keychain: the
+    /// stored secret is not shown back to anyone, and an empty field on a
+    /// machine that HAS a password must not read as "no password set" — which
+    /// is what `hasCmuxPassword` is for.
+    var cmuxPasswordField = ""
+
+    /// Whether a password is stored, refreshed after every save. A Bool, never
+    /// the value or its length.
+    private(set) var hasCmuxPassword = false
+
+    /// One short line under the cmux row: the socket's last word, or the setup
+    /// state when it has not spoken yet.
+    var cmuxStatusText: String {
+        if let message = cmuxStatus.message { return message }
+        return hasCmuxPassword ? "Password saved." : "No password saved."
+    }
+
     /// Enrollment form. Free-form because the user is typing; validated on
     /// submit, not on every keystroke — a field that shouts while you are still
     /// typing the second character is hostile.
@@ -336,6 +359,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// value: the ssh block, the install command, the verify probe, the
     /// update/migration commands.
     private let remoteForwardPort: UInt16
+    /// Keychain-backed cmux password storage. Nil in previews and in tests that
+    /// do not exercise the cmux row — the row then reports that it cannot save,
+    /// rather than silently pretending it did.
+    private let cmuxPasswords: (any CmuxPasswordStoring)?
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -376,7 +403,8 @@ public final class ClaudeIntegrationSettingsModel {
         // Defaults to the legacy shared port: a caller that has not been taught
         // about per-Mac allocation describes exactly the pre-#215 setup, which
         // still works. Production passes the allocation.
-        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
+        cmuxPasswords: (any CmuxPasswordStoring)? = nil
     ) {
         self.registry = registry
         self.listener = listener
@@ -386,8 +414,46 @@ public final class ClaudeIntegrationSettingsModel {
         self.performEnrollmentAsync = performEnrollmentAsync
         self.now = now
         self.remoteForwardPort = remoteForwardPort
+        self.cmuxPasswords = cmuxPasswords
         refreshHosts()
         refreshListenerStatus()
+        // A presence check, not a read into any field: this is the one place
+        // the stored secret is touched at construction, and only to answer
+        // "is one set".
+        hasCmuxPassword = cmuxPasswords?.password() != nil
+    }
+
+    // MARK: - cmux socket
+
+    /// Saves (or clears) the cmux socket password and forgets the typed text.
+    ///
+    /// Clearing on save is deliberate: the field is an input, not a display,
+    /// and a secret left sitting in a SwiftUI string is one screen-share away
+    /// from being read out loud. An empty or rejected value REMOVES the stored
+    /// password rather than leaving the previous one quietly in force.
+    func saveCmuxPassword() {
+        guard let cmuxPasswords else {
+            alert = DetailAlert(
+                title: "Could not save the cmux password",
+                detail: "The keychain is unavailable in this build."
+            )
+            return
+        }
+        let accepted = CmuxPasswordValidation.normalized(cmuxPasswordField) != nil
+        let stored = cmuxPasswords.setPassword(cmuxPasswordField)
+        cmuxPasswordField = ""
+        hasCmuxPassword = accepted && stored
+        if !stored {
+            alert = DetailAlert(
+                title: "Could not save the cmux password",
+                detail: "The keychain refused the item. See Console for the OSStatus."
+            )
+            return
+        }
+        // A stored password says nothing about whether cmux will accept it, so
+        // the socket's verdict is reset rather than assumed good: the next
+        // dictation writes the real answer.
+        cmuxStatus = .ok
     }
 
     public var isRemoteAvailable: Bool { registry != nil }

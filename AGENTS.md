@@ -518,8 +518,9 @@ Key subsystems:
     the session block, repo collection — shares that one answer. Three
     resolutions could each answer honestly about a different moment; that is
     how one session's screen ends up next to another's repo. Joins support
-    three terminals (`TerminalScreenAllowlist`, owner decision 2026-07-22):
-    Ghostty, iTerm2, and Terminal.app. Resolution is
+    four terminals (`TerminalScreenAllowlist`, owner decision 2026-07-22):
+    Ghostty, iTerm2, Terminal.app, and cmux (whose arm is its own — see the
+    cmux bullet). Resolution is
     TTY-first: the focused pane's controlling TTY, read per terminal over
     AppleScript (`AppleScriptTerminalTTYReader` — Ghostty ≥ 1.4's focused
     terminal, iTerm2's current session, Terminal.app's selected tab; sdef- or
@@ -559,23 +560,94 @@ Key subsystems:
     raw screen attachment of the AX capture: that is the composite herdr TUI,
     and neighboring panes must not ride into this session's prompt. Instead,
     a herdr join's screen context is a clean `pane.read` excerpt of EXACTLY
-    the joined pane (`HerdrPaneScreenContext`), fetched at start and stop
+    the joined pane (`SocketPaneScreenContext`, shared with cmux), fetched at
+    start and stop
     behind the same consent gate and sanitize/cap pipeline as an AX read;
     `pane.read` fires only after the herdrPane join resolved and never for
     any other pane or mechanism. On any pane.read failure the session falls
     back to the pre-existing behavior — composite AX text, vocabulary-only,
     nothing attached.
+  - cmux (github.com/manaflow-ai/cmux — a native Swift/AppKit terminal on
+    libghostty) is a join target with its OWN arm, keyed on the surface id
+    cmux injects into the session environment. It is opt-in
+    (`cmuxSurfaceJoinEnabled`, default off) because the arm talks to ANOTHER
+    app's automation socket, which the user must first switch to `password`
+    mode with a password (cmux's default `cmuxOnly` mode does a peer-ancestry
+    check we cannot pass — we are not a cmux child). The password lives in the
+    Keychain (`CmuxSocketPasswordStore`); the socket is dialed by
+    `CmuxSocketClient` (hand-written, read-only — cmux is GPL-3, never vendor
+    its code), which asks `system.tree` for the focused surface (and its tty)
+    and `surface.read_text` for that one surface's VIEWPORT (never
+    `scrollback`, and never `lines` — in cmux that parameter implies
+    scrollback). Auth is per CONNECTION, not per message: `auth.login` is the
+    first line and the query follows on the same connection.
+    **The password never leaves the process until the CONNECTED PEER is
+    proved.** A same-UID path check cannot do that job — it is TOCTOU by
+    construction, and any process running as the user can bind one of the
+    candidate paths (the legacy `/tmp` ones especially), pass an owner check
+    trivially, and harvest the credential. So the authoritative gate is
+    `LOCAL_PEERPID` on the established connection: the peer must BE the
+    frontmost cmux app's pid (the same target the join is about), and
+    LaunchServices must still report that pid as the cmux bundle. A candidate
+    that connects but fails this is dropped, not counted, so an impostor cannot
+    manufacture ambiguity either. Deliberately not a code-signature check:
+    `SecCode`'s signing identifier is not guaranteed to equal the bundle id, so
+    requiring equality could kill the feature against a legitimately signed
+    cmux, and the pid binding is the stronger claim anyway.
+    Both origins join here, and only here does a REMOTE session join by
+    something other than a marker: cmux's ssh relay puts the surface id into a
+    `cmux ssh` shell's environment, so the id is ours travelling out and back
+    (`resolveRemote(cmuxSurfaceID:)`). But a remembered label is NOT evidence
+    that the session still holds the surface — a compromised enrolled host can
+    replay an id from an earlier `cmux ssh` session after that surface returned
+    to a local shell, and as sole remote candidate it would join, pairing
+    attacker-chosen context with the user's current local screen. That is
+    strictly weaker than the marker fallback, which at least has to ride the
+    PTY the session presently controls. So a remote claim additionally requires
+    FRESH evidence from cmux that the focused surface is currently
+    remote-hosted. cmux exposes none of that on the surface (a `cmux ssh`
+    surface is an ordinary `type: "terminal"`; remoteness lives on the
+    WORKSPACE), so the client reads `workspace.remote.status` for the focused
+    surface's workspace on the same connection and requires `enabled` AND
+    `connected`; unknown fails closed. What remains unproved, and is stated in
+    the code: with two enrolled hosts, a compromised one can still claim a
+    surface hosted by the other.
+    Local matches use `resolve(cmuxSurfaceID:)` (`process`-backed, local-only,
+    like the herdr arm) plus a tty cross-check that is MANDATORY on both sides:
+    absent tty evidence abstains rather than waiving the check, because a
+    process that inherited a stale surface id and moved panes publishes no tty
+    to contradict. The cost is stated where it is paid — an opencode session
+    inside cmux never joins over this arm (its server half publishes no tty by
+    design, and opencode receives no title marker either).
+    Ambiguity on EITHER origin abstains: exactly one side may resolve, and the
+    other must have no candidate at all. Rejecting only resolved/resolved made
+    it asymmetric — two local claimants plus one remote used to join the
+    remote, and the mirror case joined the local. `CMUX_WORKSPACE_ID` is never
+    consulted (regenerated on restore), and `CMUX_SURFACE_ID` is itself
+    session-scoped — cmux re-mints it on restore, which is safe here only
+    because both sides of the match come from the same cmux run and stale
+    UUIDs cannot collide. Unlike herdr's, a cmux abstention DOES fall through
+    to the marker arm: cmux forwards inner OSC 2 to the window title (defeated
+    by custom names and AI auto-naming, which is why the surface arm exists).
+    cmux exposes no AX text at all, so the join never authorizes raw AX
+    attachment and its screen context is `surface.read_text` through the same
+    `SocketPaneScreenContext` gate as herdr's `pane.read`.
   - Screen capture is split by ROUTE (`TerminalScreenAllowlist`): raw AX grid
     capture remains Ghostty-only (its single-`AXTextArea` grid is verified;
     iTerm2's AX tree is ambiguous across splits, Terminal.app's unverified).
     iTerm2/Terminal.app screen context comes ONLY from the AppleScript
     `contents` of the focused session/tab (`TerminalScreenAppleScriptReader`
     — visible screen, never `history`/scrollback; answered by the terminal
-    process itself, same trust class as the TTY read, per-pane clean). Both
+    process itself, same trust class as the TTY read, per-pane clean). cmux is
+    the third route: its control socket, and nothing else — no AX (there is no
+    text area), no Apple events (no scripting dictionary, so it is excluded
+    from `appleEventBundleIDs` and from the Automation consent pre-warm). Every
+    supported bundle has EXACTLY one route, asserted by test. All
     routes share one downstream pipeline (sanitization, caps, start/stop
     reconcile, vocab-always / raw-excerpt-only-after-authorized-join). A TTY
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
-    contents; a herdr join still never attaches surface text on any terminal.
+    contents; herdr and cmux joins never attach AX surface text on any
+    terminal.
   - A Claude Code "Remote Control" session (the agent runs on a machine of the
     user's, `claude.ai/code` in a browser is the UI) has no pane, no TTY, and no
     title, so it joins from the FOCUSED BROWSER TAB: the tab's

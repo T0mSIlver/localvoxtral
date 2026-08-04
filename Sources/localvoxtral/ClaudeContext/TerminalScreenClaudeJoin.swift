@@ -22,6 +22,10 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     /// session's Remote Control bridge session id. No screen is ever read for
     /// this mechanism — see `TerminalScreenClaudeJoinAuthorizer`.
     case browserTab
+    /// A cmux surface, matched by the surface id cmux injected into the
+    /// session's environment. Local surfaces and `cmux ssh` remote shells both
+    /// arrive here — see `ClaudeSessionJoinResolver.resolveViaCmux`.
+    case cmuxSurface
 }
 
 /// The herdr pane a `.herdrPane` join resolved to. Captured at resolution so
@@ -37,6 +41,13 @@ struct ClaudeHerdrPaneBinding: Sendable, Equatable {
 /// binding still holds, rather than re-reading a tab the user may have changed.
 struct ClaudeBrowserTabBinding: Sendable, Equatable {
     let bridgeSessionID: String
+}
+
+/// The cmux surface a `.cmuxSurface` join resolved to. Same role as
+/// `ClaudeHerdrPaneBinding`: captured at resolution so the surface-text fetch
+/// can only ever be keyed by the surface the join is ABOUT.
+struct ClaudeCmuxSurfaceBinding: Sendable, Equatable {
+    let surfaceID: String
 }
 
 struct ClaudeSessionJoin: Sendable, Equatable {
@@ -66,6 +77,9 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// (`isStillLive`), which is how a Remote Control disconnect ages the join
     /// out on the session's own next hook rather than on a timer of ours.
     let browserTab: ClaudeBrowserTabBinding?
+    /// Non-nil exactly for `.cmuxSurface` joins: the surface whose clean,
+    /// per-surface text (`surface.read_text`) is the ONLY screen route cmux has.
+    let cmuxSurface: ClaudeCmuxSurfaceBinding?
 
     init(
         target: TerminalScreenTarget,
@@ -74,7 +88,8 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         windowID: CGWindowID?,
         mechanism: ClaudeSessionJoinMechanism,
         herdrPane: ClaudeHerdrPaneBinding? = nil,
-        browserTab: ClaudeBrowserTabBinding? = nil
+        browserTab: ClaudeBrowserTabBinding? = nil,
+        cmuxSurface: ClaudeCmuxSurfaceBinding? = nil
     ) {
         self.target = target
         self.marker = marker
@@ -83,6 +98,18 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         self.mechanism = mechanism
         self.herdrPane = herdrPane
         self.browserTab = browserTab
+        self.cmuxSurface = cmuxSurface
+    }
+
+    /// The per-pane socket route this join owns, if any: the herdr pane id or
+    /// the cmux surface id. Lets the shared socket-pane screen path key its
+    /// start/stop reconciliation without knowing which multiplexer answered.
+    var socketPaneKey: String? {
+        switch mechanism {
+        case .herdrPane: return herdrPane?.paneID
+        case .cmuxSurface: return cmuxSurface?.surfaceID
+        case .ttyDevice, .titleMarker, .browserTab: return nil
+        }
     }
 
     /// The workspace path, non-nil only for a locally authenticated session.
@@ -133,6 +160,9 @@ struct ClaudeSessionJoinResolver {
     private let focusedWindowID: (pid_t) -> CGWindowID?
     private let herdrClientProbe: @Sendable (String) -> Bool
     private let herdrPanes: HerdrPaneQuerying?
+    private let cmuxSurfaces: CmuxSurfaceQuerying?
+    private let cmuxJoinEnabled: @MainActor () -> Bool
+    private let reportCmuxStatus: @MainActor (CmuxSocketStatus) -> Void
 
     /// - Parameters:
     ///   - markerInWindowTitle: reads the PID-pinned focused window title,
@@ -170,6 +200,15 @@ struct ClaudeSessionJoinResolver {
     ///     binding succeeds. It likewise DEFAULTS TO ABSTAIN so a test that
     ///     forgets to inject cannot connect to a real user socket. The app is
     ///     the only place that installs the live client.
+    ///   - cmuxSurfaces: queries cmux's control socket for the focused surface
+    ///     and its text. DEFAULTS TO ABSTAIN (nil) for the same reason as
+    ///     `herdrPanes`: no test may dial a real user's socket.
+    ///   - cmuxJoinEnabled: the user's cmux opt-in, read live so turning the
+    ///     toggle off stops the next dictation from dialing. DEFAULTS TO
+    ///     ABSTAIN — a second, independent reason a forgetful test cannot reach
+    ///     that socket.
+    ///   - reportCmuxStatus: one short sentence for the Settings row when the
+    ///     socket refuses us (details go to the log, never the popover).
     init(
         registry: ClaudeSessionRegistry,
         markerInWindowTitle: @escaping (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead? = {
@@ -181,7 +220,10 @@ struct ClaudeSessionJoinResolver {
             TerminalScreenAXReader.focusedWindowIdentity(applicationPID: $0)
         },
         herdrClientProbe: @escaping @Sendable (String) -> Bool = { _ in false },
-        herdrPanes: HerdrPaneQuerying? = nil
+        herdrPanes: HerdrPaneQuerying? = nil,
+        cmuxSurfaces: CmuxSurfaceQuerying? = nil,
+        cmuxJoinEnabled: @escaping @MainActor () -> Bool = { false },
+        reportCmuxStatus: @escaping @MainActor (CmuxSocketStatus) -> Void = { _ in }
     ) {
         self.registry = registry
         self.markerInWindowTitle = markerInWindowTitle
@@ -190,6 +232,9 @@ struct ClaudeSessionJoinResolver {
         self.focusedWindowID = focusedWindowID
         self.herdrClientProbe = herdrClientProbe
         self.herdrPanes = herdrPanes
+        self.cmuxSurfaces = cmuxSurfaces
+        self.cmuxJoinEnabled = cmuxJoinEnabled
+        self.reportCmuxStatus = reportCmuxStatus
     }
 
     /// The join for `target`, or nil on any abstention.
@@ -255,6 +300,19 @@ struct ClaudeSessionJoinResolver {
             if herdrClientProbe(tty) {
                 return await resolveViaHerdr(target: target)
             }
+        }
+
+        // cmux has no AppleScript TTY reader, so the block above never answers
+        // for it and this is where its surface arm runs. Unlike herdr's, an
+        // abstention here FALLS THROUGH to the marker: cmux forwards an inner
+        // OSC 2 to the window title, so a local session under the title-fallback
+        // opt-in can still be joined the old way. (It is not reliable — a custom
+        // workspace name or cmux's AI auto-naming replaces the title — which is
+        // exactly why the surface arm exists, and exactly why it must not be the
+        // only chance.)
+        if TerminalScreenAllowlist.isSocketCaptureSupported(target.bundleID),
+           let join = await resolveViaCmux(target: target) {
+            return join
         }
 
         return resolveViaMarker(target: target)
@@ -420,7 +478,7 @@ struct ClaudeSessionJoinResolver {
     /// herdr arm captured at resolution time, so no other pane — and no other
     /// join mechanism — can reach herdr's socket through it. The returned text
     /// is RAW wire text; the caller owns sanitization, bounding, and every
-    /// consent gate (see `HerdrPaneScreenContext`).
+    /// consent gate (see `SocketPaneScreenContext`).
     func herdrPaneVisibleText(for join: ClaudeSessionJoin) async -> String? {
         guard join.mechanism == .herdrPane, let binding = join.herdrPane else {
             Log.claudeContext.info("Herdr pane read refused: join is not a herdr pane join")
@@ -466,6 +524,264 @@ struct ClaudeSessionJoinResolver {
         )
         #if LOCALVOXTRAL_DOGFOOD
         DogfoodCaptureTap.shared.noteJoinAbstention("herdr: \(outcome)")
+        #endif
+    }
+
+    /// The cmux arm: bind the FOCUSED cmux surface to a live session by the
+    /// surface id cmux itself injected into that session's environment.
+    ///
+    /// cmux mints `CMUX_SURFACE_ID` and puts it in the surface's process
+    /// environment — and, through its own ssh relay, in the environment of a
+    /// `cmux ssh` shell on another host. So the same id can come back to us from
+    /// two different transports, and this arm accepts both:
+    ///
+    /// * LOCAL: the id arrived in `process` over the peer-UID-authenticated
+    ///   AF_UNIX socket. Where both sides know a tty, they must agree — a free
+    ///   cross-check that costs nothing and catches a stale environment.
+    /// * REMOTE: the id arrived as an `X-Lvx-Env-*` header over the enrolled
+    ///   host's authenticated channel. Nothing local is read for it; the join
+    ///   only unlocks that session's own prompt/excerpts, and
+    ///   `localWorkspacePath` still refuses to hand a remote cwd to the
+    ///   filesystem. A compromised enrolled host could replay a surface id and
+    ///   claim the focused pane — the same trust class as the existing remote
+    ///   marker join, no worse, and bounded by enrollment the user can revoke.
+    ///
+    /// `CMUX_WORKSPACE_ID` is deliberately never consulted: cmux regenerates it
+    /// when a workspace is restored, so a join keyed on it would silently start
+    /// pointing at nothing after a relaunch.
+    private func resolveViaCmux(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
+        guard cmuxJoinEnabled() else {
+            Self.abstainedCmuxJoin(outcome: "cmux join not enabled")
+            return nil
+        }
+        guard let cmuxSurfaces else {
+            Self.abstainedCmuxJoin(outcome: "surface query capability unavailable")
+            return nil
+        }
+
+        let surface: CmuxFocusedSurface
+        // The peer the socket must turn out to be: the frontmost cmux process
+        // this join is already about. The client refuses to send the stored
+        // password to anything else.
+        switch await cmuxSurfaces.focusedSurface(expectedPeerPID: target.pid) {
+        case .value(let focused):
+            surface = focused
+        case .authenticationRequired:
+            // The one failure the user can fix, so it is the one failure that
+            // gets a sentence in Settings instead of only a log line.
+            reportCmuxStatus(.authenticationRequired)
+            Self.abstainedCmuxJoin(outcome: "socket requires password mode")
+            return nil
+        case .unavailable:
+            reportCmuxStatus(.unavailable)
+            Self.abstainedCmuxJoin(outcome: "focused surface unavailable")
+            return nil
+        }
+        reportCmuxStatus(.ok)
+
+        let local = registry.resolve(cmuxSurfaceID: surface.surfaceID)
+        let remote = registry.resolveRemote(cmuxSurfaceID: surface.surfaceID)
+
+        // EXACTLY ONE side may have a candidate at all, and it must be a clean
+        // `.resolved` while the other is a clean `.unknown`.
+        //
+        // The earlier rule only rejected `.resolved`/`.resolved`, which made
+        // ambiguity asymmetric: two local sessions claiming the surface
+        // (`.ambiguous`) next to one remote claim would fall through and join
+        // the REMOTE one, and the mirror image joined the local one. Ambiguity
+        // on either side is the registry saying it cannot name the session, and
+        // a claim from the other origin is not the tie-breaker — it is a
+        // different machine answering a question about this surface.
+        // `.stale` is treated the same way: a dead claimant on one side is
+        // evidence the surface changed hands, which is exactly when the other
+        // side's claim deserves the least trust.
+        guard Self.isCleanlyResolved(local, other: remote)
+            || Self.isCleanlyResolved(remote, other: local)
+        else {
+            Self.abstainedCmuxJoin(outcome: Self.cmuxOutcome(local: local, remote: remote))
+            return nil
+        }
+
+        if case .resolved(let snapshot) = local {
+            // Belt and braces, and REQUIRED on both sides: the surface's tty
+            // and the session's must both be known and equal.
+            //
+            // Treating an absent tty as "no evidence, carry on" waived the
+            // check precisely when it was needed — a process that inherited a
+            // stale `CMUX_SURFACE_ID` and then moved to another pane publishes
+            // no tty we can contradict, so id-alone would join it to whatever
+            // surface now carries that id. Absent evidence is not permission.
+            //
+            // Cost, stated plainly: a session whose publisher reports no tty
+            // cannot join over this arm. That is every opencode session (its
+            // server half deliberately publishes no tty, because it cannot
+            // prove it owns a pane), and opencode never receives a title
+            // marker either — so opencode inside cmux gets no join at all. A
+            // missed join costs an excerpt; a wrong one puts another session's
+            // screen in this prompt.
+            guard let sessionTTY = snapshot.process?.tty else {
+                Self.abstainedCmuxJoin(outcome: "session published no tty to cross-check")
+                return nil
+            }
+            guard let surfaceTTY = surface.tty else {
+                Self.abstainedCmuxJoin(outcome: "cmux reported no tty for the focused surface")
+                return nil
+            }
+            guard sessionTTY == surfaceTTY else {
+                Self.abstainedCmuxJoin(outcome: "surface tty disagrees with the session's tty")
+                return nil
+            }
+            Log.claudeContext.info(
+                "Terminal pane joined to a live local Claude session via cmux surface"
+            )
+            return cmuxJoin(target: target, snapshot: snapshot, surface: surface)
+        }
+
+        if case .resolved(let snapshot) = remote {
+            guard Self.remoteClaimIsCurrentlyHosted(surface: surface) else { return nil }
+            Log.claudeContext.info(
+                "Terminal pane joined to a live remote Claude session via cmux surface"
+            )
+            return cmuxJoin(target: target, snapshot: snapshot, surface: surface)
+        }
+
+        Self.abstainedCmuxJoin(outcome: Self.cmuxOutcome(local: local, remote: remote))
+        return nil
+    }
+
+    /// Whether cmux says the focused surface is CURRENTLY hosted by a live
+    /// remote workspace — the precondition for accepting any remote claim.
+    ///
+    /// Without it, a remote session's surface id is a REMEMBERED LABEL and
+    /// nothing more: a compromised enrolled host can publish an id it saw
+    /// during an earlier `cmux ssh` session, and once that surface has gone
+    /// back to a local shell the replayed claim is the sole remote candidate
+    /// and joins — pairing attacker-chosen context with whatever the user is
+    /// now looking at. That made this arm strictly weaker than the title
+    /// marker, which at least has to ride the PTY the session presently
+    /// controls.
+    ///
+    /// cmux exposes no remote-ness on the surface itself (a `cmux ssh` surface
+    /// is an ordinary `type: "terminal"`; the state lives on the workspace), so
+    /// the evidence comes from `workspace.remote.status` for the focused
+    /// surface's own workspace, read in the same connection as the focus
+    /// answer. Unknown fails closed.
+    ///
+    /// What this does NOT prove, stated plainly: that the remote session
+    /// claiming the surface is the one on the other end of THAT ssh link. With
+    /// two enrolled hosts, a compromised one can still claim a surface hosted
+    /// by the other. It is bounded to genuinely-remote surfaces and to enrolled
+    /// hosts, which is the same bound the remote marker join has.
+    private static func remoteClaimIsCurrentlyHosted(surface: CmuxFocusedSurface) -> Bool {
+        switch surface.workspaceIsRemote {
+        case true:
+            return true
+        case false:
+            abstainedCmuxJoin(
+                outcome: "a remote session claims a surface cmux reports as local"
+            )
+            return false
+        default:
+            abstainedCmuxJoin(
+                outcome: "cmux would not say whether the focused surface is remote-hosted"
+            )
+            return false
+        }
+    }
+
+    /// One side resolved to exactly one session, and the other side had no
+    /// candidate whatsoever.
+    private static func isCleanlyResolved(
+        _ resolution: ClaudeMarkerResolution,
+        other: ClaudeMarkerResolution
+    ) -> Bool {
+        guard case .resolved = resolution else { return false }
+        guard case .unknown = other else { return false }
+        return true
+    }
+
+    private func cmuxJoin(
+        target: TerminalScreenTarget,
+        snapshot: ClaudeSessionSnapshot,
+        surface: CmuxFocusedSurface
+    ) -> ClaudeSessionJoin {
+        ClaudeSessionJoin(
+            target: target,
+            marker: snapshot.marker,
+            snapshot: snapshot,
+            windowID: focusedWindowID(target.pid),
+            mechanism: .cmuxSurface,
+            cmuxSurface: ClaudeCmuxSurfaceBinding(surfaceID: surface.surfaceID)
+        )
+    }
+
+    /// Names WHICH side had nothing, so a hook that never published the surface
+    /// id is distinguishable from an ambiguous registry — the herdr arm's
+    /// silent abstention cost a field afternoon (2026-07-20).
+    private static func cmuxOutcome(
+        local: ClaudeMarkerResolution,
+        remote: ClaudeMarkerResolution
+    ) -> String {
+        switch (local, remote) {
+        case (.resolved, .resolved):
+            return "a local and a remote session both claim this surface"
+        case (.resolved, _), (_, .resolved):
+            // One side named a session and the other side had SOMETHING —
+            // ambiguous or stale. Named separately from plain ambiguity because
+            // this is the case that used to join the resolved side.
+            return "one origin resolved but the other also claims this surface"
+        case (.ambiguous, _), (_, .ambiguous):
+            return "focused surface matches several sessions"
+        case (.stale, _), (_, .stale):
+            return "focused surface session stale"
+        default:
+            return "focused surface has no live session"
+        }
+    }
+
+    /// The joined cmux surface's visible text, or nil on any refusal or failure.
+    ///
+    /// The mirror of `herdrPaneVisibleText(for:)`, and the ONLY path that issues
+    /// a `surface.read_text`: the request is keyed by the binding the cmux arm
+    /// captured at resolution, so no other surface — and no other join
+    /// mechanism — can reach cmux's socket through it. Returns RAW wire text;
+    /// the caller owns sanitization, bounding, and every consent gate.
+    func cmuxSurfaceVisibleText(for join: ClaudeSessionJoin) async -> String? {
+        guard join.mechanism == .cmuxSurface, let binding = join.cmuxSurface else {
+            Log.claudeContext.info("cmux surface read refused: join is not a cmux surface join")
+            return nil
+        }
+        guard cmuxJoinEnabled() else {
+            Log.claudeContext.info("cmux surface read refused: cmux join not enabled")
+            return nil
+        }
+        guard let cmuxSurfaces else {
+            Log.claudeContext.info("cmux surface read refused: surface query capability unavailable")
+            return nil
+        }
+        switch await cmuxSurfaces.surfaceText(
+            surfaceID: binding.surfaceID, expectedPeerPID: join.target.pid
+        ) {
+        case .value(let text):
+            return text
+        case .authenticationRequired:
+            reportCmuxStatus(.authenticationRequired)
+            Log.claudeContext.info("cmux surface read refused: socket requires password mode")
+            return nil
+        case .unavailable:
+            Log.claudeContext.info("cmux surface read failed: surface text unavailable")
+            return nil
+        }
+    }
+
+    /// Outcome only: surface ids and surface text are live join material and
+    /// never belong in the unified log.
+    private static func abstainedCmuxJoin(outcome: String) {
+        Log.claudeContext.info(
+            "cmux surface matched no session (\(outcome, privacy: .public)); trying title marker"
+        )
+        #if LOCALVOXTRAL_DOGFOOD
+        DogfoodCaptureTap.shared.noteJoinAbstention("cmux: \(outcome)")
         #endif
     }
 
@@ -597,13 +913,21 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
         switch join.mechanism {
         case .ttyDevice, .titleMarker:
             break
-        case .herdrPane:
+        case .herdrPane, .cmuxSurface:
             // AX sees herdr's composite TUI. Attaching it would let neighboring
             // panes — potentially other Claude sessions — ride into this
             // session's prompt, so a correct pane join still cannot authorize
             // raw capture.
+            //
+            // A cmux join is refused for a different reason with the same
+            // answer: cmux draws with libghostty into a custom view that
+            // exposes no AX text at all, so there is nothing here to authorize
+            // — and if some future cmux build ever did expose a composite
+            // surface, it must not become attachable by default. Both
+            // multiplexers' screen text arrives through their own per-pane
+            // socket route instead (`SocketPaneScreenContext`).
             Log.claudeContext.info(
-                "Herdr pane join cannot authorize composite raw screen attachment; withheld"
+                "Socket-pane join cannot authorize raw AX screen attachment; withheld"
             )
             return false
         case .browserTab:

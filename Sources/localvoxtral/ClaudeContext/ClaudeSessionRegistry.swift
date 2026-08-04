@@ -456,6 +456,96 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Look up by cmux surface id — the LOCAL half of the cmux focus join.
+    ///
+    /// Exactly the shape of `resolve(herdrPaneID:)`, and local-only for exactly
+    /// the same reason: `process` is written only from a peer-UID-authenticated
+    /// AF_UNIX record, so a surface id here was observed by a process running as
+    /// this user on this machine. A remote session's cmux surface id lives in
+    /// `remoteEnvironment` and is reachable only through
+    /// `resolveRemote(cmuxSurfaceID:)` — two methods rather than one, so neither
+    /// origin filter can be lost in a future edit without deleting a whole
+    /// function.
+    ///
+    /// Multi-candidate panes get the same focus-declaration arbitration as
+    /// herdr: one opencode TUI hosts many sessions on one surface, and without
+    /// it the arm would silently stop joining those panes (review C3).
+    public func resolve(cmuxSurfaceID: String) -> ClaudeMarkerResolution {
+        let timestamp = now()
+        return state.withLock { state in
+            let matches = state.sessions.values.filter { snapshot in
+                snapshot.origin.isLocalAuthenticated
+                    && snapshot.process?.cmuxSurfaceID == cmuxSurfaceID
+                    && isFresh(snapshot, now: timestamp)
+            }
+            switch matches.count {
+            case 0:
+                let hadStale = state.sessions.values.contains {
+                    $0.origin.isLocalAuthenticated && $0.process?.cmuxSurfaceID == cmuxSurfaceID
+                }
+                return hadStale ? .stale : .unknown
+            case 1:
+                return .resolved(matches[0])
+            default:
+                let focused = Set(state.focusByTTY.values.compactMap { focus -> String? in
+                    guard timestamp.timeIntervalSince(focus.declaredAt) <= limits.focusDeclarationTTL,
+                          let candidate = matches.first(where: { $0.sessionID == focus.sessionID }),
+                          candidate.process?.claudePID == focus.declaredPID
+                    else { return nil }
+                    return focus.sessionID
+                })
+                guard focused.count == 1, let winner = focused.first,
+                      let snapshot = matches.first(where: { $0.sessionID == winner })
+                else { return .ambiguous }
+                return .resolved(snapshot)
+            }
+        }
+    }
+
+    /// Look up by cmux surface id among REMOTE sessions — the `cmux ssh` half.
+    ///
+    /// This is the one join where a remote session may be selected by something
+    /// other than a broker-allocated marker, and it is sound for a specific
+    /// reason: the surface id was MINTED by the cmux app on this Mac and pushed
+    /// into the remote shell's environment by cmux's own ssh relay. The remote
+    /// hook then reports it back over the authenticated listener. So the value
+    /// is ours, travelling out and back, and the equality test is between two
+    /// labels — nothing here reads a remote filesystem, and
+    /// `ClaudeSessionSnapshot.localWorkspacePath` still refuses to hand a remote
+    /// cwd to anything that could.
+    ///
+    /// A remembered label is NOT by itself evidence that the session still holds
+    /// the surface: a compromised ENROLLED host can replay an id from an earlier
+    /// `cmux ssh` session after that surface returned to a local shell. The
+    /// resolver therefore additionally requires cmux to report the focused
+    /// surface's workspace as a live remote workspace before accepting anything
+    /// this method returns (`remoteClaimIsCurrentlyHosted`). What remains is
+    /// bounded by host enrollment, which the user controls and can revoke.
+    ///
+    /// Mirrors the local method's shape, minus focus arbitration: focus
+    /// declarations are a LOCAL opencode mechanism keyed by a local TTY, and a
+    /// remote candidate must never be resolvable by one.
+    public func resolveRemote(cmuxSurfaceID: String) -> ClaudeMarkerResolution {
+        let timestamp = now()
+        return state.withLock { state in
+            let matches = state.sessions.values.filter { snapshot in
+                snapshot.remoteSessionEnvironment?.cmuxSurfaceID == cmuxSurfaceID
+                    && isFresh(snapshot, now: timestamp)
+            }
+            switch matches.count {
+            case 0:
+                let hadStale = state.sessions.values.contains {
+                    $0.remoteSessionEnvironment?.cmuxSurfaceID == cmuxSurfaceID
+                }
+                return hadStale ? .stale : .unknown
+            case 1:
+                return .resolved(matches[0])
+            default:
+                return .ambiguous
+            }
+        }
+    }
+
     /// Distinct herdr socket paths across live LOCAL sessions. The resolver
     /// refuses to guess between multiple herdr sessions, so it needs the count,
     /// not just one path.

@@ -91,13 +91,20 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
     }
 
     /// The capture routes are exclusive and exhaustive over the supported
-    /// set — a bundle with both routes would read twice, one with neither
-    /// would silently never capture.
+    /// set — a bundle with two routes would read twice, one with none would
+    /// silently never capture. Three routes now: the AX grid, the AppleScript
+    /// contents, and cmux's control socket.
     func testEverySupportedBundleHasExactlyOneCaptureRoute() {
         for bundleID in TerminalScreenAllowlist.supportedBundleIDs {
-            let ax = TerminalScreenAllowlist.isAXCaptureSupported(bundleID)
-            let appleScript = TerminalScreenAllowlist.isAppleScriptCaptureSupported(bundleID)
-            XCTAssertTrue(ax != appleScript, "\(bundleID) must have exactly one capture route")
+            let routes = [
+                TerminalScreenAllowlist.isAXCaptureSupported(bundleID),
+                TerminalScreenAllowlist.isAppleScriptCaptureSupported(bundleID),
+                TerminalScreenAllowlist.isSocketCaptureSupported(bundleID),
+            ]
+            XCTAssertEqual(
+                routes.filter { $0 }.count, 1,
+                "\(bundleID) must have exactly one capture route"
+            )
         }
     }
 

@@ -879,7 +879,28 @@ private struct TextProcessingSettingsPane: View {
                     }
                 }
 
+                // A row in the EXISTING group, never a new group: pane group
+                // structure is constant (owner rule, 2026-07-04).
+                SettingsFieldRow(title: "Join Claude Code sessions in cmux") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+
+                        // Names the prerequisite AND the send. cmux exposes no
+                        // accessible text, so the socket is the only way to
+                        // read the pane the user is dictating into — and that
+                        // socket refuses everyone by default, which is a setup
+                        // step in ANOTHER app that the user has to know about
+                        // or this toggle will look broken.
+                        SettingsHelpText(
+                            "Uses cmux's automation socket to tell which session you are dictating into, and to read that one surface as context. In cmux, set Settings → Automation socket mode to Password and choose a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
+                        )
+                    }
+                }
+
                 if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudeCmuxPasswordSettingsRow(model: claude)
                     ClaudePluginSettingsRow(model: claude)
                     ClaudeRemoteHostsSettingsRow(model: claude)
                 }
@@ -964,6 +985,41 @@ private struct ClaudePluginSettingsRow: View {
 
                 SettingsHelpText(
                     "Lets localvoxtral see which Claude Code session owns your terminal, so dictation lands in the right one. Runs `claude plugin` — nothing is installed until you press this."
+                )
+            }
+        }
+    }
+}
+
+/// The cmux automation-socket password, stored in the Keychain.
+///
+/// A write-only field on purpose: the stored secret is never read back into the
+/// UI, so what the user typed leaves the process the moment they save it, and
+/// the row reports only whether one is stored.
+private struct ClaudeCmuxPasswordSettingsRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        SettingsFieldRow(title: "cmux socket password") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    SecureField("cmux socket password", text: $model.cmuxPasswordField)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+
+                    Button("Save") {
+                        model.saveCmuxPassword()
+                    }
+
+                    Text(model.cmuxStatusText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                SettingsHelpText(
+                    "Stored in your Keychain and sent only to cmux's local socket. Save an empty field to remove it."
                 )
             }
         }

@@ -241,6 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // test that forgot to inject — constructs them.
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
+            // The cmux password is read from the Keychain lazily, per query, so
+            // a user who never enables the arm is never prompted for keychain
+            // access and the secret is not held in memory between dictations.
+            let cmuxPasswords = CmuxSocketPasswordStore()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
@@ -248,7 +252,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
-                herdrPanes: HerdrSocketClient()
+                herdrPanes: HerdrSocketClient(),
+                cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
+                cmuxJoinEnabled: { [weak viewModel] in
+                    viewModel?.settings.cmuxSurfaceJoinEnabled ?? false
+                },
+                reportCmuxStatus: { [weak viewModel] status in
+                    viewModel?.claudeIntegrationSettings?.cmuxStatus = status
+                }
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start
@@ -262,7 +273,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let prewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
                 settings: settings,
                 prewarm: {
-                    for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
+                    // Apple-event terminals only: cmux is joinable but has no
+                    // scripting dictionary, so pre-warming it would raise a
+                    // consent prompt for something we never ask it.
+                    for bundleID in TerminalScreenAllowlist.appleEventBundleIDs.sorted() {
                         TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
                             bundleID: bundleID,
                             isStillEnabled: { [weak settings] in
@@ -381,7 +395,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             listener: coordinator,
             pluginService: { ClaudePluginInstallService.live() },
             enrollmentService: ClaudeRemoteEnrollmentService.live(),
-            remoteForwardPort: remoteForwardPort
+            remoteForwardPort: remoteForwardPort,
+            cmuxPasswords: CmuxSocketPasswordStore()
         )
 
         // Route launch through the same model that owns the Settings status.

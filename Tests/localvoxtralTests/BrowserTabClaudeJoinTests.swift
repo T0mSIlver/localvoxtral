@@ -667,9 +667,18 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
 
     // The consent pre-warm must find a probe for a BROWSER too, or the sheet
     // could never be answered and the join would never become usable.
+    //
+    // The terminal half is `appleEventBundleIDs`, NOT every supported bundle:
+    // a supported terminal need not be an automated one. cmux is joined and
+    // read entirely over its own control socket and ships no scripting
+    // dictionary, so an Apple event to it could only raise a consent prompt
+    // for a capability that does not exist — and a probe would be the thing
+    // raising it. That cmux is never sent one is asserted separately
+    // (`CmuxSurfaceJoinTests.testCmuxIsNeverSentAnAppleEvent`), so this test
+    // keeps its own meaning: everything we DO automate can be consented to.
     func testConsentPrewarmHasAProbeForEveryAutomatedApp() {
         for bundleID in BrowserTabAllowlist.supportedBundleIDs
-            .union(TerminalScreenAllowlist.supportedBundleIDs) {
+            .union(TerminalScreenAllowlist.appleEventBundleIDs) {
             let source = AppleScriptTerminalTTYReader.consentPrewarmScriptSource(
                 forBundleID: bundleID
             ) ?? AppleScriptFocusedBrowserTabURLReader.consentPrewarmScriptSource(

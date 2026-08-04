@@ -57,6 +57,41 @@ join, deliberately marker-free: any ambiguity, including two live herdr
 sessions, attaches nothing. Other terminals abstain entirely rather than
 half-join.
 
+**cmux surface join (opt-in).** [cmux](https://github.com/manaflow-ai/cmux)
+draws its terminal with libghostty into a custom view: it exposes no
+accessible text and no scripting dictionary, so neither the TTY read nor any
+screen read above works there. Instead the app asks cmux's own automation
+socket which surface is focused, and matches that surface id against the one
+cmux injected into the session's environment — including into shells opened
+with `cmux ssh`, which is the one place a REMOTE session joins by something
+other than its title marker. That surface is also the only readable screen
+context, fetched per-surface (`surface.read_text`, the visible viewport, never
+the scrollback).
+
+Two things must be set up, because cmux's socket refuses outside clients by
+default:
+
+1. In **cmux → Settings → Automation**, set the socket mode to **Password**
+   and choose a socket password. (The default `cmuxOnly` mode admits only
+   processes cmux itself started, which localvoxtral is not. `allowAll` is
+   developer-only and is not required.)
+2. In localvoxtral, enable **Settings → Text Processing → Polishing → "Join
+   Claude Code sessions in cmux"** and enter the same password in **cmux
+   socket password**. It is stored in your Keychain and sent only to cmux's
+   local socket.
+
+If the socket refuses the app, the settings row says
+`cmux socket requires password mode.` and the dictation simply falls back to
+the title marker — nothing is attached on a failed join.
+
+Two deliberate limits. The app cross-checks the surface's terminal device
+against the one your session reported, and **abstains when either side does not
+report one** — which is the case for opencode (its server half never claims a
+pane), so opencode inside cmux does not join over this arm. And a session on a
+remote host joins only while cmux itself reports that surface's workspace as a
+live `cmux ssh` workspace, so a stale surface id from an earlier remote session
+cannot attach itself to whatever you are looking at now.
+
 **Title marker (opt-in local fallback, always on for SSH).** For an older
 (stable-channel) Ghostty build, enable **Settings → Text Processing →
 Polishing → Local Claude title fallback** and export
