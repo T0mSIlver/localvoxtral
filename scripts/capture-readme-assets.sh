@@ -48,9 +48,18 @@ TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing" "Context")
 # identifier scheme.
 TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "context")
 TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-context.png")
+# The three arrays are indexed together below; a mismatch would silently capture
+# one tab's window into another tab's file.
+if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then
+  echo "Tab tables disagree: ${#TAB_NAMES[@]} names, ${#TAB_IDS[@]} ids, ${#TAB_FILES[@]} files. Fix them together." >&2
+  exit 1
+fi
 # Resolved from this script's location, not the cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AX_PROBE="${SCRIPT_DIR}/lib/ax-probe.swift"
+# Pins the probe's shape-matched fallbacks to the Settings window; the app has
+# other windows the wrong AXButton/AXScrollArea could be found in.
+SETTINGS_WINDOW_TITLE="Settings"
 
 [[ -d "$APP_PATH" ]] || { echo "App bundle not found: $APP_PATH (build with ./scripts/package_app.sh)" >&2; exit 1; }
 [[ -d "$ASSETS_DIR" ]] || { echo "Run from the repo root ($ASSETS_DIR/ not found)." >&2; exit 1; }
@@ -304,6 +313,7 @@ for i in "${!TAB_NAMES[@]}"; do
   echo "Capturing $out"
   swift "$AX_PROBE" "$APP_PID" \
     --press "settings.tab.${tab_id}" --title "$tab" \
+    --window "$SETTINGS_WINDOW_TITLE" \
     --timeout 10 --dump-on-fail \
     || { echo "Could not select the $tab tab." >&2; exit 1; }
   sleep 1
@@ -338,6 +348,8 @@ tell application "System Events" to tell process "$APP_PROCESS"
   click menu item "Settings…" of menu 1 of menu bar item 1 of menu bar 2
 end tell
 OSA
+ENROLLMENT_SHOT="$ASSETS_DIR/settings-enrollment.png"
+rm -f "$ENROLLMENT_SHOT"
 if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
   sleep 1
   if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.context" --title "Context" \
@@ -346,17 +358,25 @@ if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
     # window that is NOT the settings window.
     if SHEET_ID="$(wait_for_window "$APP_PID" 0 10 "$SETTINGS_ID")"; then
       sleep 0.5
-      screencapture -o -x -l "$SHEET_ID" "$ASSETS_DIR/settings-enrollment.png"
+      screencapture -o -x -l "$SHEET_ID" "$ENROLLMENT_SHOT" || true
     else
-      echo "WARNING: the enrollment sheet never appeared; skipped settings-enrollment.png" >&2
+      echo "ERROR: the enrollment sheet never appeared." >&2
     fi
   else
-    echo "WARNING: could not select the Context tab; skipped settings-enrollment.png" >&2
+    echo "ERROR: could not select the Context tab for the enrollment sheet." >&2
   fi
 else
-  echo "WARNING: Settings never reopened; skipped settings-enrollment.png" >&2
+  echo "ERROR: Settings never reopened for the enrollment sheet." >&2
 fi
 defaults delete "$BUNDLE_ID" "debug.enrollment_sheet_preview" >/dev/null 2>&1 || true
+
+# Fail LOUDLY rather than leaving a stale (or absent) asset behind. A capture
+# script that warns and exits 0 is how a run "succeeds" with nothing to show
+# for it — the missing shot is only noticed by whoever needed it.
+if [[ ! -s "$ENROLLMENT_SHOT" ]]; then
+  echo "$ENROLLMENT_SHOT was expected but not produced." >&2
+  exit 1
+fi
 
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
 CAPTURE_COMPLETED=1

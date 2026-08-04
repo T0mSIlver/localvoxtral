@@ -146,8 +146,22 @@ jobs:
           marker_like="$(grep -c '^# \(BEGIN\|END\) localvoxtral claude context' "$cfg" 2>/dev/null)"
           well_formed="$(grep -c "$marker_grammar" "$cfg" 2>/dev/null)"
           echo "marker-like lines: ${marker_like:-0} (well-formed: ${well_formed:-0})"
-          echo "--- RemoteForward 8473 count:"
-          grep -c 'RemoteForward 8473' "$cfg" 2>/dev/null
+          # Ports, not hosts, and ONLY OURS. Since per-Mac allocation (issue
+          # #215) the listen port is derived per install, and "which port does
+          # this Mac claim" is the first question when a host silently stops
+          # delivering. But this log is public: the user's own RemoteForward
+          # lines can carry socket paths and bind addresses that are nobody
+          # else's business, so the awk below only looks BETWEEN this app's
+          # BEGIN/END markers and prints only the numeric listen-port field
+          # (anything non-numeric is dropped rather than echoed). A remaining
+          # `8473` here means the block predates the fix.
+          echo "--- localvoxtral RemoteForward listen ports (ours only):"
+          awk '
+            /^[[:space:]]*# BEGIN localvoxtral claude context \(/ { inside = 1; next }
+            /^[[:space:]]*# END localvoxtral claude context \(/   { inside = 0; next }
+            inside && $1 == "RemoteForward" && $2 ~ /^[0-9]+$/    { print $2 }
+          ' "$cfg" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//'
+          echo
           [ -f "$cfg" ] || echo "<no config file>"
           echo "--- leftover atomic-write temp files (count only):"
           /usr/bin/find "$HOME/.ssh" -maxdepth 1 -name '.config.localvoxtral.*' 2>/dev/null \

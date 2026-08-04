@@ -12,6 +12,10 @@ import Foundation
 public protocol ClaudeRemoteListenerControlling: AnyObject {
     var isListening: Bool { get }
     var boundPort: UInt16 { get }
+    /// Connections turned away since launch, by category. Settings turns a
+    /// nonzero count into one short, actionable line — the failure this
+    /// diagnoses used to be visible only in the unified log.
+    var rejectionSnapshot: ClaudeRemoteRejectionTally.Snapshot { get }
 
     /// Bring the listener AND the cached sessions in line with the registry:
     /// bind if a host is now enrolled, stop if the last one just went away, and
@@ -47,13 +51,22 @@ public protocol ClaudeRemoteListenerControlling: AnyObject {
 public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControlling {
     private let hosts: ClaudeRemoteHostRegistry
     private let sessions: ClaudeSessionRegistry
-    private let makeListener: @MainActor (ClaudeRemoteHostRegistry) -> ClaudeRemoteContextListener
+    private let makeListener:
+        @MainActor (ClaudeRemoteHostRegistry, ClaudeRemoteRejectionTally) -> ClaudeRemoteContextListener
     private var listener: ClaudeRemoteContextListener?
+    /// Held HERE, not in the listener, because `reconcile` replaces the listener
+    /// object on every 0→1 transition. A tally that lived in the listener would
+    /// forget a night of rejections the moment the user enrolled another host.
+    private let rejections = ClaudeRemoteRejectionTally()
 
+    /// - Parameter makeListener: handed the tally as well as the registry, so
+    ///   every listener this coordinator builds reports into the SAME counters.
     public init(
         hosts: ClaudeRemoteHostRegistry,
         sessions: ClaudeSessionRegistry,
-        makeListener: @escaping @MainActor (ClaudeRemoteHostRegistry) -> ClaudeRemoteContextListener
+        makeListener: @escaping @MainActor (
+            ClaudeRemoteHostRegistry, ClaudeRemoteRejectionTally
+        ) -> ClaudeRemoteContextListener
     ) {
         self.hosts = hosts
         self.sessions = sessions
@@ -61,13 +74,14 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
     }
 
     public convenience init(hosts: ClaudeRemoteHostRegistry, sessions: ClaudeSessionRegistry) {
-        self.init(hosts: hosts, sessions: sessions) { registry in
-            ClaudeRemoteContextListener(registry: sessions, hosts: registry)
+        self.init(hosts: hosts, sessions: sessions) { registry, rejections in
+            ClaudeRemoteContextListener(registry: sessions, hosts: registry, rejections: rejections)
         }
     }
 
     public var isListening: Bool { listener?.isRunning ?? false }
     public var boundPort: UInt16 { listener?.port ?? ClaudeRemoteListenerLimits.default.port }
+    public var rejectionSnapshot: ClaudeRemoteRejectionTally.Snapshot { rejections.snapshot() }
 
     public func reconcile() throws {
         // Before the listener, and unconditionally: a bind that throws must not
@@ -82,7 +96,7 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
             // A listener that died on its own (a failed poll) reports
             // `isRunning == false` while `listener` is still non-nil, so this
             // deliberately builds a fresh one rather than restarting the corpse.
-            let listener = makeListener(hosts)
+            let listener = makeListener(hosts, rejections)
             try listener.start()
             self.listener = listener
         } else {

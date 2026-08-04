@@ -45,14 +45,15 @@ Enrolling a host does three things.
 ```
 # BEGIN localvoxtral claude context (<host-id>)
 Host <your-alias>
-    RemoteForward 8473 127.0.0.1:8473
+    RemoteForward <this-Mac's-port> 127.0.0.1:8473
     ExitOnForwardFailure no
 # END localvoxtral claude context (<host-id>)
 ```
 
-`RemoteForward` means: while you have an SSH session open to that host, port
-8473 *on the host* is a private pipe back to localvoxtral on your Mac. Nothing
-listens on the network; nothing is exposed.
+`RemoteForward` means: while you have an SSH session open to that host, that
+port *on the host* is a private pipe back to localvoxtral on your Mac. Nothing
+listens on the network; nothing is exposed. The Mac-side end is always 8473 —
+the app's own listener — and only the remote end varies.
 
 The two `#` lines are not commentary — they are delimiters. localvoxtral finds
 and replaces exactly the block between them, so applying the config twice is a
@@ -70,8 +71,13 @@ those cases, copy and paste.
 
 ```
 claude plugin marketplace add T0mSIlver/localvoxtral
- claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>'
+ claude plugin install localvoxtral-remote@localvoxtral --config 'token=<token>' --config 'port=<this-Mac's-port>'
 ```
+
+Both options travel together, always. The `port` is the same number the
+ssh-config block binds: change one without the other and every hook on that
+host posts into a port nothing forwards, which fails open — that is, looks
+exactly like nothing happening.
 
 `localvoxtral-remote` is a different plugin from the local `localvoxtral` one,
 not a mode of it. It declares hooks only — no skill, no command, no agent, no
@@ -115,17 +121,61 @@ The price of `no` is that a failed forward is *silent*. The hooks get connection
 refused, fail open, and you simply get no context. That silence is exactly what
 step 3's **Check Setup** exists to break.
 
+## The forward port is per-Mac
+
+The remote end of the tunnel is not a fixed 8473. Each localvoxtral install
+derives its own port in the range **28473–30472** from a per-install identity
+stored on that Mac, and every artifact that names a port takes it from that one
+value: the ssh-config block, the install command's `port` option, the in-app
+check, and the update commands.
+
+That is not tidiness — it closes a real failure. Two SSH connections asking for
+the same remote listen port do not both get it: the first wins and keeps
+winning, and the second stays connected with only a warning (our block sets
+`ExitOnForwardFailure no` on purpose — see below). Before per-Mac ports, that
+meant a second Mac's enrollment silently delivered *this* host's events — and
+its `Authorization: Bearer` token — to the first Mac, which rejected them with
+a 401, which the remote shim reads as a completed exchange. Nothing anywhere
+reported a problem. Distinct ports make that state unreachable.
+
+What per-Mac ports do **not** fix, stated plainly: one remote host runs one
+Claude Code install with one plugin config, so its `port` names exactly one
+Mac. Enrol two Macs against the same host and only the most recently installed
+config receives events. The other's tunnel binds fine and simply sees no
+traffic — visible single-tenancy, not a silent cross-delivery of someone else's
+credentials.
+
 ## A second session to the same host
 
-The first SSH session to a host wins the forward. A second concurrent session
-tries to bind the same port on the remote, fails, and — because
-`ExitOnForwardFailure` is `no` — connects anyway with no tunnel of its own. That
-is fine: the first session's tunnel is still up and still carries the host's
-events.
+Within one Mac, the first SSH session wins the forward. A second concurrent
+session tries to bind the same port on the remote, fails, and — because
+`ExitOnForwardFailure` is `no` — connects anyway with no tunnel of its own.
+That is fine and expected: the first session's tunnel is still up and still
+carries the host's events. This is why a raw `ssh -v` forward check is
+misleading on a healthy setup, and why the in-app check probes the port instead
+of grepping ssh's warnings.
 
-The port itself is per-Mac (8473 on the Mac side; the remote-side port is
-derived from a per-install identity), so two different Macs asking one host for
-a forward do not collide.
+## Sessions with no terminal
+
+Hook events only reach your Mac while something holds the tunnel — normally one
+of your own SSH sessions. A session a harness starts on the host (t3 code,
+`claude remote-control` services, any headless runner) has no such terminal, so
+its context goes nowhere. Turn on **Keep the tunnel open** in that host's row
+and the app holds the forward itself, reconnecting as needed.
+
+## Hosts enrolled before per-Mac ports
+
+An enrollment made before this existed uses the legacy shared 8473 on both
+ends, and keeps working — migration is never forced. Use **Update Plugin…** in
+the host's row when you want it: it updates the marketplace clone and the
+plugin, then stores this Mac's allocated port, and it rewrites this host's
+ssh-config block in the same action so the two halves can never disagree. Your
+token is preserved — `claude plugin update` keeps the stored config, and
+`--config` merges per key.
+
+Re-running step 2 is *not* an update: on Claude Code 2.1.220 `plugin install`
+exits 0 with "already installed" and `marketplace add` does not refresh a clone
+it already has.
 
 ## Shell history and rotation
 
@@ -162,6 +212,13 @@ is never blocked or delayed by this feature.
 Plain `ssh` to a host you have not enrolled keeps working exactly as before: no
 tunnel, no token, no hooks.
 
+One case is noisier than the rest, and not by our choice: while a session holds
+the tunnel and localvoxtral is *not running*, `ssh` on your Mac prints
+`connect_to 127.0.0.1 port 8473: failed.` into the remote terminal on every
+dial — that is another process's stderr, which the plugin cannot silence. So
+after a failed dial the shim backs off for five minutes. Prompt submits still
+try, so context returns with your first prompt once the app is back.
+
 ---
 
 ## Checking the setup
@@ -172,15 +229,26 @@ interprets them for you. If you would rather run them by hand:
 ### Is the tunnel live, and is localvoxtral behind it?
 
 ```
-ssh <alias> 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:8473/v1/hook/SessionStart'
+ssh <alias> 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:<this-Mac-s-port>/v1/hook/SessionStart'
 ```
 
-**`401` is the success answer.** The probe deliberately sends no credential, so
-being refused is the proof: the request reached localvoxtral (which alone holds
-the token hashes) through the tunnel. `000` — or a curl connection error — means
-no tunnel is live right now, which usually just means you have no SSH session
-open to that host at this moment. Any other status code means something that is
-not localvoxtral answered on that port; find it and quit it.
+**`401` is the success answer** — provided localvoxtral is listening on this
+Mac. The probe deliberately sends no credential, so being refused is the proof
+that the request crossed the tunnel and something on the Mac side answered. It
+does not by itself prove that the something was localvoxtral: if our own bind
+failed, whatever holds port 8473 here receives the forwarded request instead,
+and its rejection looks identical from the host. Check the listener line in
+Settings › Context › Remote hosts as well — the in-app check does exactly this,
+which is why it can tell you which of the two you are looking at.
+
+`000` — or a curl connection error — means nothing answered: usually just that
+you have no SSH session open to that host at this moment. Any other status code
+means something that is not localvoxtral answered on that port; find it and
+quit it.
+
+If the host has no `curl` at all, the plugin can never deliver anything no
+matter how healthy the tunnel is — the shim is a curl one-liner. `command -v
+curl` on the host settles that; the in-app check reports it as its own verdict.
 
 ### Is the plugin installed on the host?
 

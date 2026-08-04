@@ -170,6 +170,9 @@ enum DogfoodCaptureBuilder {
         case .ttyDevice: arm = "tty"
         case .titleMarker: arm = "titleMarker"
         case .herdrPane: arm = "herdrPane"
+        case .browserTab: arm = "browserTab"
+        case .cmuxSurface: arm = "cmuxSurface"
+        case .remoteHerdrPane: arm = "remoteHerdrPane"
         }
         return DogfoodCaptureRecord.Join(
             arm: arm,
@@ -188,11 +191,14 @@ enum DogfoodCaptureBuilder {
     static func screen(
         from decision: TerminalScreenContextDecision,
         targetBundleID: String?,
-        herdrSwapApplied: Bool
+        socketPaneSwapApplied: Bool
     ) -> DogfoodCaptureRecord.Screen {
         let route: String?
-        if herdrSwapApplied {
-            route = "herdrPaneRead"
+        if socketPaneSwapApplied {
+            // The swap only ever comes from the joined pane's own socket, so
+            // the target app names which one answered.
+            route = targetBundleID == TerminalScreenAllowlist.cmuxBundleID
+                ? "cmuxSurfaceRead" : "herdrPaneRead"
         } else if let targetBundleID,
                   TerminalScreenAllowlist.axCaptureBundleIDs.contains(targetBundleID)
         {
@@ -323,7 +329,7 @@ struct DogfoodCaptureInputs: Sendable {
     var join: ClaudeSessionJoin?
     var joinAbstentions: [String]
     var screenDecision: TerminalScreenContextDecision
-    var herdrSwapApplied: Bool
+    var socketPaneSwapApplied: Bool
     var targetBundleID: String?
 
     var demands: [PolishContextSource: Int]
@@ -418,7 +424,7 @@ extension DogfoodCaptureBuilder {
             screen: screen(
                 from: inputs.screenDecision,
                 targetBundleID: inputs.targetBundleID,
-                herdrSwapApplied: inputs.herdrSwapApplied
+                socketPaneSwapApplied: inputs.socketPaneSwapApplied
             ),
             allocation: allocations(
                 demands: inputs.demands,
@@ -442,20 +448,57 @@ extension DogfoodCaptureBuilder {
 /// the commit. The write itself is synchronous file IO on the generic executor
 /// — the user's text was already committed before the capture is assembled.
 enum DogfoodCaptureWriter {
+    /// Where the record landed, or nil when the write failed (loudly).
+    @discardableResult
     nonisolated static func write(
         _ record: DogfoodCaptureRecord,
         store: DogfoodCaptureStore
-    ) async {
+    ) async -> URL? {
         do {
             let url = try store.write(record)
             Log.polishing.info(
                 "Dogfood capture written: \(url.lastPathComponent, privacy: .public)"
             )
+            return url
         } catch {
             // Loud by convention (AGENTS.md): a silent failure path here means
             // dogfooding quietly collects nothing.
             Log.polishing.error(
                 "Dogfood capture write failed: \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    /// Patches one already-written record with the post-commit behavior signal.
+    /// Off the commit path entirely — by the time this runs the dictation has
+    /// been finished for seconds — and, like `write`, it can only ever cost the
+    /// record.
+    nonisolated static func attach(
+        _ behavior: DogfoodCaptureRecord.Behavior,
+        toRecordAt url: URL,
+        store: DogfoodCaptureStore
+    ) async {
+        attachSynchronously(behavior, toRecordAt: url, store: store)
+    }
+
+    /// The same patch, without the hop. Used at app termination, where a `Task`
+    /// is not guaranteed to run — see
+    /// `DogfoodEditSignalWatcher.flushForTermination`. The work is one small
+    /// JSON rewrite either way; only the caller's urgency differs.
+    nonisolated static func attachSynchronously(
+        _ behavior: DogfoodCaptureRecord.Behavior,
+        toRecordAt url: URL,
+        store: DogfoodCaptureStore
+    ) {
+        do {
+            try store.attachBehavior(behavior, toRecordAt: url)
+            Log.polishing.info(
+                "Dogfood capture behavior: \(behavior.outcome.rawValue, privacy: .public) (\(behavior.signal?.rawValue ?? "none", privacy: .public), window \(behavior.watchWindowSeconds, privacy: .public)s) -> \(url.lastPathComponent, privacy: .public)"
+            )
+        } catch {
+            Log.polishing.error(
+                "Dogfood capture behavior patch failed: \(error.localizedDescription, privacy: .public)"
             )
         }
     }

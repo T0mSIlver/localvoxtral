@@ -49,6 +49,19 @@ public struct ClaudeRemoteHTTPLimits: Sendable, Equatable {
     public static let `default` = ClaudeRemoteHTTPLimits()
 }
 
+/// What a request's `Authorization` header turned out to be.
+///
+/// Carries the credential in `.bearer` and NOTHING derived from it in the other
+/// cases — no length, no prefix, no digest. A diagnostic that narrows a secret
+/// is not a diagnostic worth having.
+public enum ClaudeRemoteAuthorizationShape: Sendable, Equatable {
+    /// No `Authorization` header, or a `Bearer` scheme with an empty credential.
+    case missing
+    /// Present, but not a `Bearer` credential we are willing to read.
+    case malformed
+    case bearer(String)
+}
+
 /// A parsed request head. The body is deliberately NOT part of this type: the
 /// listener authenticates on the head alone and only then reads bytes.
 public struct ClaudeRemoteHTTPRequest: Sendable, Equatable {
@@ -149,10 +162,8 @@ public enum ClaudeRemoteHTTPCodec {
                 // will not reassemble.
                 throw ClaudeRemoteHTTPError.malformed
             }
-            let name = line[line.startIndex..<colon]
-                .trimmingCharacters(in: .whitespaces)
-                .lowercased()
-            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            let name = trimmingOWS(line[line.startIndex..<colon]).lowercased()
+            let value = trimmingOWS(line[line.index(after: colon)...])
             guard !name.isEmpty else { throw ClaudeRemoteHTTPError.malformed }
             // Duplicates are rejected rather than last-wins. Two Content-Lengths
             // or two Authorizations mean the sender and we would have to agree on
@@ -192,16 +203,75 @@ public enum ClaudeRemoteHTTPCodec {
         return (request, terminator.upperBound - buffer.startIndex)
     }
 
+    /// Strip HTTP optional whitespace — ASCII SP and HTAB, and nothing else.
+    ///
+    /// NOT `trimmingCharacters(in: .whitespaces)`, which is a UNICODE set: it
+    /// eats U+00A0 NBSP, U+2007, U+3000 and friends. Two bugs follow from that,
+    /// and only the second is obvious:
+    ///
+    /// 1. It rewrites the field NAME. `Content-Length<NBSP>: 5` would trim to
+    ///    `content-length` here while a conforming proxy reads a different (or
+    ///    invalid) header — the parsers-disagree shape this file exists to
+    ///    avoid.
+    /// 2. It launders a field VALUE past a byte-level validator. The env
+    ///    enrichment rejects any non-ASCII byte, but `pane-7<NBSP>` was being
+    ///    trimmed to `pane-7` BEFORE that check ever ran, so a malformed wire
+    ///    value was accepted as a well-formed one.
+    ///
+    /// RFC 9110 defines OWS as `*( SP / HTAB )`. Trimming exactly that means a
+    /// value's bytes reach a validator as the peer actually wrote them.
+    static func trimmingOWS(_ value: Substring) -> String {
+        var slice = value
+        while let first = slice.first, first == " " || first == "\t" {
+            slice = slice.dropFirst()
+        }
+        while let last = slice.last, last == " " || last == "\t" {
+            slice = slice.dropLast()
+        }
+        return String(slice)
+    }
+
     /// The `Bearer` credential, or nil for any other scheme/shape.
     public static func bearerToken(
         in headerValue: String?,
         limits: ClaudeRemoteHTTPLimits = .default
     ) -> String? {
-        guard let headerValue, headerValue.utf8.count <= limits.maxTokenBytes else { return nil }
+        guard case .bearer(let token) = authorizationShape(in: headerValue, limits: limits) else {
+            return nil
+        }
+        return token
+    }
+
+    /// WHY an `Authorization` header did not yield a credential — the same walk
+    /// as `bearerToken`, keeping its answer instead of collapsing every failure
+    /// to nil.
+    ///
+    /// The distinction is not cosmetic. A remote host on a pre-1.1.0 plugin sends
+    /// `Authorization: Bearer ` with nothing after it (the http hook could never
+    /// present the token), and a host whose token was rotated sends a perfectly
+    /// well-formed one that no longer matches. Both used to log the same line, so
+    /// hours of rejections said nothing about which of the two fixes — update the
+    /// plugin, or re-run enrollment — the user actually needed.
+    ///
+    /// It classifies SHAPE only. The credential is returned for the caller to
+    /// authenticate; nothing here measures, hashes, or reports it.
+    public static func authorizationShape(
+        in headerValue: String?,
+        limits: ClaudeRemoteHTTPLimits = .default
+    ) -> ClaudeRemoteAuthorizationShape {
+        guard let headerValue else { return .missing }
+        // Oversized before anything else: a header this long is not a credential
+        // we failed to read, it is a header we refuse to read.
+        guard headerValue.utf8.count <= limits.maxTokenBytes else { return .malformed }
         let parts = headerValue.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard parts.count == 2, parts[0].lowercased() == "bearer" else { return nil }
+        guard let scheme = parts.first else { return .missing }
+        guard scheme.lowercased() == "bearer" else { return .malformed }
+        // `Bearer` with an empty credential — including the header parser's
+        // already-trimmed `Bearer ` — is the pre-1.1.0 plugin's exact shape, and
+        // is reported as a missing token rather than a malformed header.
+        guard parts.count == 2 else { return .missing }
         let token = parts[1].trimmingCharacters(in: .whitespaces)
-        return token.isEmpty ? nil : token
+        return token.isEmpty ? .missing : .bearer(token)
     }
 
     /// The event name a hook URL carries, e.g. `/v1/hook/SessionStart`.

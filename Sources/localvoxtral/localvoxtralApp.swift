@@ -1,6 +1,7 @@
 import AppKit
 import ClaudeContextWire
 import SwiftUI
+import Synchronization
 
 @main
 struct localvoxtralApp: App {
@@ -147,6 +148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var claudeContextBroker: ClaudeContextBroker?
     private var terminalConsentPrewarmObserver:
         TerminalAutomationConsentPrewarmSettingsObserver?
+    /// The browser half of the same pre-warm, kept separate because it is armed
+    /// by a NARROWER setting: only the Claude session/repo context feature can
+    /// use a browser tab join.
+    private var browserConsentPrewarmObserver:
+        TerminalAutomationConsentPrewarmSettingsObserver?
     /// Remote (SSH) Claude Code sessions. Both the host registry and the
     /// listener are lazy and optional: a user who has never enrolled a host has
     /// no file to read and no port bound.
@@ -155,6 +161,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// through it on every enroll/revoke, so the port follows enrollment without
     /// a relaunch.
     private var claudeRemoteListenerCoordinator: ClaudeRemoteListenerCoordinator?
+    /// Owns the opt-in app-held `ssh -N -R` forwards. Started only after the
+    /// listener binds, and torn down before the app exits so no orphan ssh
+    /// outlives the process that spawned it.
+    private var claudeRemoteForwards: ClaudeRemoteForwardCoordinator?
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -196,9 +206,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudeContextBroker?.stop()
         claudeContextBroker = nil
         terminalConsentPrewarmObserver = nil
+        browserConsentPrewarmObserver = nil
         // Closes the port, so a hook from a surviving remote session gets a
         // connection refused through the tunnel and fails open. Quitting says
         // nothing about enrollment — the hosts stay enrolled for next launch.
+        // Forwards first, listener second — the mirror of startup order.
+        claudeRemoteForwards?.stopAll()
+        // `stopAll` only STARTS each SIGTERM→SIGKILL escalation. Returning
+        // here without it finishing is how an ssh that is slow to die outlives
+        // the app: reparented to launchd, still holding the remote bind, and
+        // no longer reachable by anything that could kill it — so the next
+        // launch finds its own port taken. The wait is bounded and short; a
+        // quit must never hang on a wedged network.
+        drainRemoteForwardTeardowns(within: 3.0)
+        claudeRemoteForwards = nil
         claudeRemoteListenerCoordinator?.shutdown()
         claudeRemoteListenerCoordinator = nil
         viewModel.claudeIntegrationSettings = nil
@@ -207,6 +228,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // resolving joins against sessions nothing is feeding any more.
         viewModel.claudeSessionJoinResolver = nil
         viewModel.claudeSessionJoin = nil
+        // Quitting mid-dictation must take every remote herdr `ssh -L` with us.
+        // Asked of the view model, which OWNS them: during polish the join has
+        // already been consumed, so a quit that reached the child only through
+        // `claudeSessionJoin` found nil and left the ssh running past app exit
+        // (review finding 4).
+        viewModel.closeRemoteHerdrForwards()
+    }
+
+    /// Spin the run loop until every forward teardown has finished, or the
+    /// deadline passes.
+    ///
+    /// `applicationWillTerminate` is synchronous and cannot await, but the
+    /// escalation it just started is asynchronous — so this pumps the main run
+    /// loop, which is what lets those tasks make progress while we wait. The
+    /// deadline is the point: a wedged ssh must cost the user a bounded pause
+    /// at quit, never a hang, and the escalation's own SIGKILL means the
+    /// ordinary case finishes far inside it.
+    private func drainRemoteForwardTeardowns(within seconds: TimeInterval) {
+        guard let teardowns = claudeRemoteForwards?.drainingTeardowns, !teardowns.isEmpty else {
+            return
+        }
+        let deadline = Date().addingTimeInterval(seconds)
+        let finished = Mutex(false)
+        Task { @MainActor in
+            for teardown in teardowns { await teardown.value }
+            finished.withLock { $0 = true }
+        }
+        while !finished.withLock({ $0 }), Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if !finished.withLock({ $0 }) {
+            Log.claudeContext.error(
+                "Claude remote forward teardown did not finish before quit; an ssh may survive this process"
+            )
+        }
     }
 
     /// Binds the hook socket and installs the pane authorizer that depends on it.
@@ -243,13 +299,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // local socket are live capabilities, so only the app — never a
             // test that forgot to inject — constructs them.
             let ttyReader = AppleScriptTerminalTTYReader()
+            let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
+            // The cmux password is read from the Keychain lazily, per query, so
+            // a user who never enables the arm is never prompted for keychain
+            // access and the secret is not held in memory between dictations.
+            let cmuxPasswords = CmuxSocketPasswordStore()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
+                focusedBrowserTabURL: { await browserTabReader.focusedTabURL(bundleID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
-                herdrPanes: HerdrSocketClient()
+                herdrPanes: HerdrSocketClient(),
+                cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
+                cmuxJoinEnabled: { [weak viewModel] in
+                    viewModel?.settings.cmuxSurfaceJoinEnabled ?? false
+                },
+                reportCmuxStatus: { [weak viewModel] status in
+                    viewModel?.claudeIntegrationSettings?.cmuxStatus = status
+                },
+                sshDestinationProbe: {
+                    SSHDestinationTTYProbe.connection(onTTYDevicePath: $0)
+                },
+                // Read through the property rather than captured: the host
+                // registry is built later in launch than this resolver (and not
+                // at all for a user with no enrolled host), so the lookup has
+                // to be asked at dictation time, not wired at launch time. No
+                // registry ⇒ no candidates ⇒ the remote herdr arm never runs.
+                enrolledHosts: { [weak self] destination in
+                    self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
+                },
+                remoteHerdrForwards: ClaudeRemoteHerdrForwardService(
+                    spawner: ClaudeRemoteHerdrForwardSpawner(),
+                    workspaces: ClaudeRemoteHerdrForwardWorkspaces()
+                )
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start
@@ -259,18 +343,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // firing only while that terminal is running. Only for users who
             // opted into a context feature — the pre-warm is itself the
             // consent prompt, and an opted-out user must never see it.
+            let settings = viewModel.settings
             let prewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
-                settings: viewModel.settings,
+                settings: settings,
                 prewarm: {
-                    for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
+                    // Apple-event terminals only: cmux is joinable but has no
+                    // scripting dictionary, so pre-warming it would raise a
+                    // consent prompt for something we never ask it.
+                    for bundleID in TerminalScreenAllowlist.appleEventBundleIDs.sorted() {
                         TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
-                            bundleID: bundleID
+                            bundleID: bundleID,
+                            isStillEnabled: { [weak settings] in
+                                settings?.terminalScreenContextEnabled == true
+                                    || settings?.claudeRepoContextEnabled == true
+                            }
                         )
+                    }
+                },
+                // Turning both context features off disarms whatever is still
+                // waiting for a terminal to launch: consent is only ever asked
+                // for a feature that is ON.
+                disarm: {
+                    for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.cancelPendingPrewarm(bundleID: bundleID)
                     }
                 }
             )
             terminalConsentPrewarmObserver = prewarmObserver
             prewarmObserver.start()
+            // The same pre-warm for the browsers a Claude Code "Remote
+            // Control" tab can live in — each is its own TCC Automation pair,
+            // and the consent sheet dies with the 1 s read that raised it, so
+            // without this the browser join could never become grantable.
+            // Armed by the session-context setting ALONE: a browser join
+            // authorizes no screen read, so a user who enabled only screen
+            // context is never asked to let us automate their browser.
+            let browserPrewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
+                settings: settings,
+                prewarm: {
+                    for bundleID in BrowserTabAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
+                            bundleID: bundleID,
+                            // Re-read when the sheet would actually be raised.
+                            // A browser that launches days after the user
+                            // turned the feature back off must not be asked.
+                            isStillEnabled: { [weak settings] in
+                                settings?.claudeRepoContextEnabled == true
+                            }
+                        )
+                    }
+                },
+                disarm: {
+                    for bundleID in BrowserTabAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.cancelPendingPrewarm(bundleID: bundleID)
+                    }
+                },
+                enablement: { $0.claudeRepoContextEnabled }
+            )
+            browserConsentPrewarmObserver = browserPrewarmObserver
+            browserPrewarmObserver.start()
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to
@@ -324,11 +455,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         claudeRemoteListenerCoordinator = coordinator
 
+        // The per-Mac remote listen port (issue #215). Read once, here, so
+        // every generated artifact in this launch agrees; reading it is also
+        // what mints the install identity on a first run, and it must not be
+        // minted lazily inside a sheet that a test could reach.
+        let remoteForwardPort = viewModel.settings.claudeRemoteForwardPort
+        Log.claudeContext.info(
+            "Claude remote forward port allocated: \(remoteForwardPort, privacy: .public)"
+        )
+
+        // App-held ssh forwards, for hosts that opted in. Constructed with the
+        // listener coordinator's bind state as its gate: a forward into an
+        // unbound port is worse than no forward (silent fail-open on the remote,
+        // plus ssh noise in the user's terminal), so it refuses to run without
+        // one. The listener is reconciled FIRST, below.
+        let forwards = registry.map { hosts in
+            ClaudeRemoteForwardCoordinator(
+                hosts: hosts,
+                remoteForwardPort: remoteForwardPort,
+                isListenerBound: { coordinator?.isListening ?? false }
+            )
+        }
+        claudeRemoteForwards = forwards
+
         viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: coordinator,
             pluginService: { ClaudePluginInstallService.live() },
-            enrollmentService: ClaudeRemoteEnrollmentService.live()
+            enrollmentService: ClaudeRemoteEnrollmentService.live(),
+            remoteForwardPort: remoteForwardPort,
+            cmuxPasswords: CmuxSocketPasswordStore(),
+            forwards: forwards
         )
 
         // Route launch through the same model that owns the Settings status.

@@ -24,6 +24,14 @@ private final class GateSpyCollector: ClaudeRepoCollecting, @unchecked Sendable 
     }
 }
 
+/// Counts live-seam calls; a class because `Mutex` is noncopyable and cannot
+/// be an optional parameter.
+private final class GateTabURLReadCounter: Sendable {
+    private let value = Mutex(0)
+    var count: Int { value.withLock { $0 } }
+    func increment() { value.withLock { $0 += 1 } }
+}
+
 private final class GateTestMarkers: Sendable {
     private let queue: Mutex<[String]>
     init(_ values: [String]) { queue = Mutex(values) }
@@ -44,6 +52,10 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     private let ghostty = TerminalScreenTarget(
         pid: 4242,
         bundleID: TerminalScreenAllowlist.ghosttyBundleID
+    )
+    private let chrome = TerminalScreenTarget(
+        pid: 5150,
+        bundleID: BrowserTabAllowlist.chromeBundleID
     )
 
     private func makeViewModel() -> DictationViewModel {
@@ -582,6 +594,147 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         await viewModel.captureTerminalScreenContextForSession()
         XCTAssertNotNil(viewModel.claudeSessionJoin, "the opt-in admits the join")
         XCTAssertEqual(reads.withLock { $0 }, 1)
+    }
+
+    // MARK: - Browser tab entry path
+
+    /// A view model whose resolver can only answer through the browser arm, over
+    /// a session that reports a Remote Control bridge id.
+    private func wiredBrowserTab(
+        origin: ClaudeTransportOrigin = .localAuthenticated(peerUID: 501),
+        cwd: String? = "/repo",
+        urlReads: GateTabURLReadCounter? = nil
+    ) -> (DictationViewModel, GateSpyCollector) {
+        let viewModel = makeViewModel()
+        let collector = GateSpyCollector()
+        viewModel.claudeRepoCollector = collector
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in true },
+            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
+        )
+        let isLocal = origin.isLocalAuthenticated
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: "s1",
+                timestamp: 0,
+                rawCwd: cwd,
+                prompt: "the prior prompt",
+                process: ClaudeHookProcessInfo(
+                    hookPID: 777,
+                    claudePID: 9001,
+                    bridgeSessionID: isLocal ? "session_abc123" : nil
+                )
+            ),
+            origin: origin,
+            environment: isLocal
+                ? nil : ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
+        )
+        viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in nil },
+            focusedTerminalTTY: { _ in nil },
+            focusedBrowserTabURL: { _ in
+                urlReads?.increment()
+                return "https://claude.ai/code/session_abc123"
+            },
+            focusedWindowID: { _ in nil }
+        )
+        return (viewModel, collector)
+    }
+
+    // A browser join can only ever produce the session/repo blocks — the
+    // authorizer refuses raw attachment for it — so the SCREEN setting alone
+    // must not send an Apple event to the user's browser (which is also what
+    // raises its Automation consent sheet).
+    func testBrowserTargetIsNeverAskedWithoutTheSessionContextSetting() async {
+        let reads = GateTabURLReadCounter()
+        let (viewModel, _) = wiredBrowserTab(urlReads: reads)
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
+        viewModel.settings.terminalScreenContextEnabled = true
+        viewModel.settings.claudeRepoContextEnabled = false
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { self.chrome }
+
+        await viewModel.captureTerminalScreenContextForSession()
+
+        XCTAssertNil(viewModel.claudeSessionJoin)
+        XCTAssertEqual(reads.count, 0, "the browser must not be automated for this")
+
+        // The setting the browser arm actually serves admits it.
+        viewModel.settings.claudeRepoContextEnabled = true
+        await viewModel.captureTerminalScreenContextForSession()
+        XCTAssertEqual(viewModel.claudeSessionJoin?.mechanism, .browserTab)
+        XCTAssertEqual(reads.count, 1)
+    }
+
+    // The end-to-end entry path: frontmost Chrome, session context on, and the
+    // dictation's ONE join is the browser arm's.
+    func testFrontmostBrowserResolvesTheJoinAtStart() async throws {
+        let (viewModel, _) = wiredBrowserTab()
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { self.chrome }
+
+        await viewModel.captureTerminalScreenContextForSession()
+
+        let join = try XCTUnwrap(viewModel.claudeSessionJoin)
+        XCTAssertEqual(join.mechanism, .browserTab)
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertNil(
+            viewModel.terminalScreenStartCapture,
+            "a browser is not screen-readable: nothing may be captured for it"
+        )
+    }
+
+    // A LOCAL session joined through the browser has a real workspace, so repo
+    // collection proceeds under exactly the existing local-join rules.
+    func testBrowserJoinToALocalSessionReachesTheCollector() async throws {
+        let (viewModel, collector) = wiredBrowserTab()
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { self.chrome }
+        await viewModel.captureTerminalScreenContextForSession()
+        let join = try XCTUnwrap(viewModel.claudeSessionJoin)
+
+        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+            join: join, endpointURL: loopback, transcript: "hello"
+        )
+
+        XCTAssertNotNil(snapshot)
+        XCTAssertEqual(collector.collectedPaths, ["/repo"])
+    }
+
+    // A REMOTE Remote Control session joins (the bridge id is globally unique,
+    // so this is the one arm where a remote session legitimately matches) but
+    // still cannot reach the filesystem — while its off-screen session block,
+    // which opens nothing, does attach.
+    func testBrowserJoinToARemoteSessionNeverReachesTheCollector() async throws {
+        let (viewModel, collector) = wiredBrowserTab(origin: .remote(channel: "ssh:host-a"))
+        viewModel.settings.llmPolishingEnabled = true
+        viewModel.settings.claudeRepoContextEnabled = true
+        viewModel.textInsertion.debugSetAccessibilityTrusted(true)
+        addTeardownBlock { viewModel.textInsertion.debugSetAccessibilityTrusted(nil) }
+        TerminalScreenContextSource.debugFrontmostTargetOverride = { self.chrome }
+        await viewModel.captureTerminalScreenContextForSession()
+        let join = try XCTUnwrap(viewModel.claudeSessionJoin)
+
+        let snapshot = await viewModel.claudeRepoSnapshotIfEnabled(
+            join: join, endpointURL: loopback, transcript: "hello"
+        )
+
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(collector.collectedPaths, [], "no file of a remote host may be opened")
+        XCTAssertFalse(
+            viewModel.claudeSessionTextIfEnabled(join: join, endpointURL: loopback).isEmpty,
+            "the session's own off-screen facts are exactly what the block is for"
+        )
     }
 
     override func tearDown() async throws {

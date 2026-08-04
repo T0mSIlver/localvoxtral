@@ -40,8 +40,9 @@ model touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
-Two mechanisms. The resolver always tries both in order; the opt-in setting
-only controls whether local sessions write the marker the second one looks for:
+Two mechanisms for a terminal, plus one for a browser. The resolver always
+tries the terminal pair in order; the opt-in setting only controls whether
+local sessions write the marker the second one looks for:
 
 **TTY join (the default — Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
 and Terminal.app).** The hooks report
@@ -56,9 +57,44 @@ join, deliberately marker-free: any ambiguity, including two live herdr
 sessions, attaches nothing. Other terminals abstain entirely rather than
 half-join.
 
+**cmux surface join (opt-in).** [cmux](https://github.com/manaflow-ai/cmux)
+draws its terminal with libghostty into a custom view: it exposes no
+accessible text and no scripting dictionary, so neither the TTY read nor any
+screen read above works there. Instead the app asks cmux's own automation
+socket which surface is focused, and matches that surface id against the one
+cmux injected into the session's environment — including into shells opened
+with `cmux ssh`, which is the one place a REMOTE session joins by something
+other than its title marker. That surface is also the only readable screen
+context, fetched per-surface (`surface.read_text`, the visible viewport, never
+the scrollback).
+
+Two things must be set up, because cmux's socket refuses outside clients by
+default:
+
+1. In **cmux → Settings → Automation**, set the socket mode to **Password**
+   and choose a socket password. (The default `cmuxOnly` mode admits only
+   processes cmux itself started, which localvoxtral is not. `allowAll` is
+   developer-only and is not required.)
+2. In localvoxtral, enable **Settings → Text Processing → Polishing → "Join
+   Claude Code sessions in cmux"** and enter the same password in **cmux
+   socket password**. It is stored in your Keychain and sent only to cmux's
+   local socket.
+
+If the socket refuses the app, the settings row says
+`cmux socket requires password mode.` and the dictation simply falls back to
+the title marker — nothing is attached on a failed join.
+
+Two deliberate limits. The app cross-checks the surface's terminal device
+against the one your session reported, and **abstains when either side does not
+report one** — which is the case for opencode (its server half never claims a
+pane), so opencode inside cmux does not join over this arm. And a session on a
+remote host joins only while cmux itself reports that surface's workspace as a
+live `cmux ssh` workspace, so a stale surface id from an earlier remote session
+cannot attach itself to whatever you are looking at now.
+
 **Title marker (opt-in local fallback, always on for SSH).** For an older
-(stable-channel) Ghostty build, enable **Settings → Text Processing →
-Polishing → Local Claude title fallback** and export
+(stable-channel) Ghostty build, enable **Settings → Context →
+Claude Code → Local Claude title fallback** and export
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs.
 The app then replies to local hooks with
 the session marker, which Claude Code writes into the window title as an OSC 2
@@ -70,6 +106,30 @@ per pane, so a marker could only mis-join). Remote hooks always receive the
 marker regardless of this setting because it is the ONLY join for SSH
 sessions: their tty names a device on another machine.
 
+**Browser tab join (Claude Code "Remote Control").** A Remote Control session
+runs the `claude` process on one of your machines while
+[claude.ai/code](https://claude.ai/code) in a browser is its UI — there is no
+pane, no tty, and no title to join on. Since Claude Code 2.1.199 the hooks of
+such a session carry `CLAUDE_CODE_BRIDGE_SESSION_ID`, whose value is exactly
+the `session_…` component of that browser URL, so when the frontmost app is a
+browser the app reads its focused tab's URL over AppleScript and matches the
+id by exact equality against what the session's own hooks reported. Local and
+remote (SSH) sessions can both join this way — the id is allocated by
+Anthropic's bridge and is globally unique, unlike a tty or pane id. Claude Code
+REMOVES the variable when the Remote Control connection ends, so the join ages
+out on the session's next hook.
+
+Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
+its OWN Automation grant the first time it is used (System Settings → Privacy &
+Security → Automation → localvoxtral). The grant is requested only while
+**Settings → Text Processing → Polishing → Claude Code project context** is on
+— that is the only feature a browser join can serve. Firefox is not supported:
+it exposes no AppleScript surface for the focused tab's URL. A browser join
+never reads anything on your screen (a web page is not a terminal grid, and
+there is no verified per-tab capture route) — it attaches the session's own
+off-screen context only, and for a local session its repository, exactly like a
+terminal join does.
+
 The marker grammar is `lvx-<hex>` and nothing else is ever emitted — an escape
 sequence is code as much as data, so the marker is allowlist-validated and
 length-bounded before it goes anywhere near your terminal. If anything is off,
@@ -77,7 +137,7 @@ the hook prints nothing at all.
 
 ## Install / update / uninstall
 
-The app way: **Settings → Text Processing → Polishing → "Claude Code plugin
+The app way: **Settings → Context → Claude Code → "Claude Code plugin
 (this Mac)" → Install or Update**. That button registers the bundled marketplace
 and installs the plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
@@ -154,7 +214,11 @@ An allowlist, not a filter:
 * the event name, session id, timestamp, and cwd
 * your prompt text (`UserPromptSubmit` only)
 * absolute file paths from the tools above
-* safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`
+* safe process metadata: pid, ppid, controlling TTY, `$TERM_PROGRAM`, and the
+  multiplexer/bridge handles that say which pane the session lives in —
+  `$HERDR_PANE_ID`, `$HERDR_SOCKET_PATH`, `$CMUX_SURFACE_ID`,
+  `$CMUX_SOCKET_PATH`, `$CLAUDE_CODE_BRIDGE_SESSION_ID`. Never the rest of the
+  environment.
 
 What never crosses, by construction:
 
@@ -202,7 +266,7 @@ plugin installed on the wrong side fails open silently forever.
 remote host                            your Mac
 ┌───────────────────────┐              ┌────────────────────────────┐
 │ Claude Code           │              │ localvoxtral               │
-│   command hook (curl)►│ 127.0.0.1:8473              ▲             │
+│   command hook (curl)►│ 127.0.0.1:28511             ▲             │
 │   Bearer <token>      │   │          │              │             │
 └───────────────────────┘   │          │   ClaudeRemoteContextListener
                             └── ssh RemoteForward ────┘             │
@@ -210,11 +274,14 @@ remote host                            your Mac
 ```
 
 Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
-curls the hook's event JSON to `http://127.0.0.1:8473/v1/hook/<Event>` on the
-*remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
-loopback, where the app is listening. The shim reads the token from the
-`CLAUDE_PLUGIN_OPTION_TOKEN` environment variable Claude Code injects into
-command-hook subprocesses, and passes it to curl through a private tempfile
+curls the hook's event JSON to `http://127.0.0.1:<your Mac's port>/v1/hook/<Event>`
+on the *remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
+loopback port 8473, where the app is listening. That remote port is **allocated
+per Mac** (a stable number in 28473–30472, derived from a per-install identity)
+so two Macs enrolled against one host can never ask for the same bind — see
+"Two Macs, one host" below. The shim reads the token and the port from the
+`CLAUDE_PLUGIN_OPTION_TOKEN` / `CLAUDE_PLUGIN_OPTION_PORT` environment variables
+Claude Code injects into command-hook subprocesses, and passes it to curl through a private tempfile
 (`--header @file`) so it never appears in any process's argument list. It
 needs only `sh` and `curl` on the host, and fails open — silently, printing
 nothing — when either is missing, the token is unset, the tunnel is down, or
@@ -227,52 +294,82 @@ Code writes to its terminal — so the marker rides the SSH PTY back into Ghostt
 and the pane identifies itself. Nothing else opens a port, and nothing is
 reachable from your LAN.
 
+## When the app is not running on your Mac
+
+The shim's own failures are always silent, but there is one message it cannot
+reach: while an SSH session holds the forward and localvoxtral is not running,
+each dial makes **ssh itself, on your Mac**, print
+`connect_to 127.0.0.1 port 8473: failed.`
+onto the terminal — over whatever is drawn there (a herdr pane, the Claude Code
+screen), once per hook. That stderr belongs to another process on another
+machine; no plugin-side redirect can touch it, and silencing it in ssh would
+take `LogLevel QUIET`, which also hides host-key warnings — not a trade this
+plugin will make for you.
+
+So the shim stops dialing instead: after a transport-level failure, every hook
+except `UserPromptSubmit` skips the tunnel for the next 5 minutes.
+`UserPromptSubmit` still dials every time — one line per submitted prompt while
+the app is down is the honest signal that context is off, and it means your
+first prompt after the app comes back is grounded immediately; that completed
+exchange (any HTTP status, even a 401) clears the backoff for everything else.
+
 ## Set it up
 
-In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH"**,
+In **Settings → Context → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
-token, shows it once alongside every command below with a Copy button on each,
-and binds the listener immediately — there is no relaunch step. The list in that
-row shows each enrolled host, when it was last seen, and gives you **Rotate
-Token**, **Revoke** and **Remove**.
+token, binds the listener immediately — there is no relaunch step — and opens a
+sheet with three numbered steps: add the SSH config, install on the host, check
+the setup. The list in that row shows each enrolled host, when it was last seen,
+and gives you **Update Plugin…**, **Rotate Token**, **Revoke** and **Remove**.
 
-The app hands you every command as copyable text, and can also do the two
-steps for you — **only after showing you exactly what will happen and asking
-you to confirm**: *Insert into ~/.ssh/config* previews the exact block (an
-idempotent, marker-delimited splice; the rest of the file is never touched)
-before atomically writing it, and *Run on SSH host* previews the commands
-(token redacted) before running them through `ssh -o BatchMode=yes` with the
-token fed over stdin — it never appears in any process's argument list, on
-either machine. Nothing runs or is written without that explicit confirmation,
-and the Copy buttons remain if you prefer to do it yourself.
+Steps 1 and 2 each offer a button that does the work and a Copy button that
+does not. The button paths act **only after showing you exactly what will happen
+and asking you to confirm**: *Insert into ~/.ssh/config* previews the exact
+block (an idempotent, marker-delimited splice; the rest of the file is never
+touched) before atomically writing it, and *Run on SSH host* previews the
+commands (token redacted) before running them through `ssh -o BatchMode=yes`
+with the token fed over stdin — it never appears in any process's argument
+list, on either machine. Nothing runs or is written without that explicit
+confirmation.
+
+Everything the sheet gives you to copy is exactly what you run: no `#`
+commentary, no output to interpret. Step 3 is why — instead of handing you
+probe commands and explaining their output, the app runs them and reports two
+verdicts (see below). The full reference — what the token authorizes, the
+per-Mac port, tmux titles, uninstalling — is
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md).
 
 The token is shown exactly once, because only its hash is stored. If you lose it,
-rotate — that is what rotation is for. Then:
+rotate — that is what rotation is for. What the three steps amount to:
 
 **1. Add the tunnel to `~/.ssh/config`:**
 
 ```
 # BEGIN localvoxtral claude context (h1a2b3c4)
 Host builder
-    RemoteForward 8473 127.0.0.1:8473
+    RemoteForward 28511 127.0.0.1:8473
     ExitOnForwardFailure no
 # END localvoxtral claude context (h1a2b3c4)
 ```
 
+`28511` is an example — the app generates *your* Mac's number and puts it in
+both the block and the install command below. The two must always name the same
+port: change one alone and the hooks post into a port nothing forwards, which
+fails open, which looks exactly like nothing happening.
+
 `ExitOnForwardFailure no` is deliberate and is the default. With `yes`, SSH
-refuses to open the session at all when the remote's 8473 is already bound —
-usually by your own second window to the same host. **A dictation nicety must
+refuses to open the session at all when that port is already bound on the remote
+— now only by your own second window to the same host. **A dictation nicety must
 never cost you the shell.** The price of `no` is that a failed forward is
 silent: the hooks get connection refused, fail open, and you simply get no
-context. `ssh -v builder true 2>&1 | grep -i 'remote forward'` is where you see
-whether it took.
+context. Breaking that silence is exactly what step 3 is for.
 
 **2. Install the plugin on the remote host:**
 
 ```sh
 ssh builder
 claude plugin marketplace add T0mSIlver/localvoxtral
- claude plugin install localvoxtral-remote@localvoxtral --config 'token=<YOUR-TOKEN>'
+ claude plugin install localvoxtral-remote@localvoxtral --config 'token=<YOUR-TOKEN>' --config 'port=28511'
 ```
 
 Note the leading space on the second line: with `HISTCONTROL=ignorespace` (bash)
@@ -284,16 +381,118 @@ Nothing else is installed. The marketplace add resolves the repository root's
 `.claude-plugin/marketplace.json`; the plugin is two JSON files and one
 POSIX-sh script that needs only `sh` and `curl` on the host.
 
-**3. Check it:**
+**3. Check it — press "Check Setup" in the sheet.**
+
+The app runs two read-only checks over SSH and tells you what they mean:
+
+* **Connection & tunnel.** An unauthenticated `POST /v1/hook/SessionStart`
+  through the forward. HTTP 401 is the pass — being refused is what proves the
+  request crossed the tunnel and localvoxtral answered — but only when this Mac's
+  listener is actually bound, which the app also knows; a 401 arriving while our
+  bind failed came from whatever else holds the port, and is reported as that.
+  Nothing answering means no live tunnel right now, and a host with no `curl`
+  gets its own verdict, because the plugin's shim is a curl one-liner.
+* **Claude plugin on the host.** `claude plugin list` behind a PATH prefix, since
+  a non-interactive SSH command skips your login rc. "Not installed" and "Claude
+  Code was not found here" are separate answers with separate fixes.
+
+No probe output is shown, logged, or copied — only verdicts the app composed.
+`claude plugin list` prints the plugin's stored config, and after a rotation
+that is a token this app no longer knows and therefore could not redact.
+
+The equivalent commands, if you would rather run them by hand, are in
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md#checking-the-setup).
+
+## Sessions nobody is sitting in front of
+
+The tunnel exists only while *something* holds it, and normally that something
+is your own `ssh builder` session. Anything the host starts on its own has no
+such session:
+
+* `claude remote-control` servers (systemd user services, lingering enabled)
+* t3 code and other harnesses that spawn Claude Code into a worktree
+* cron jobs, CI runners, anything headless
+
+Those sessions publish hooks exactly like an interactive one — into a tunnel
+that is not there. The result is silent, as always: dictation just is not
+grounded.
+
+So each enrolled host's row in Settings has **Keep the tunnel open**. With it
+on, localvoxtral holds that host's forward itself:
+
+```
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ClearAllForwardings=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -R 28511:127.0.0.1:8473 -- builder
+```
+
+It is off by default, per host — an app that opened SSH connections you did not
+ask for would be a worse bug than the one it fixes. No token is involved
+anywhere on this path; the credential lives in the remote plugin's config and
+this process only carries bytes for it. Notes on the flags, since they differ
+from the ones in your `~/.ssh/config` block deliberately:
+
+* **`ExitOnForwardFailure=yes`** — the opposite of your config block, on
+  purpose. Your block says `no` because a dictation nicety must never cost you
+  a shell; this process *is* the nicety and nothing else, so a forward it
+  cannot bind is a process with no reason to live. The exit is the signal: the
+  row then reads **Port already held on the host.** with a **Retry** button,
+  instead of pretending to work.
+* **`ClearAllForwardings=yes`** — your config block already declares this
+  forward for this alias. Without this flag the process would request the port
+  twice, and the second request failing would kill it under the line above.
+* **`ServerAliveInterval=30` / `ServerAliveCountMax=3`** — a NAT or a sleeping
+  laptop otherwise leaves a half-dead connection holding the remote bind, which
+  is precisely the state that makes the next connection fail.
+* Restarts back off exponentially (0.5s, 1s, 2s… capped at 30s) and give up
+  after five consecutive failures rather than hammering your SSH server
+  forever. A **refused bind never retries at all** — something else holds that
+  port and will keep holding it.
+
+The listener binds first and the forwards start second, always: a forward
+opened into an unbound port would give every hook connection-refused (silent,
+fail-open) while making ssh print `connect_to … failed.` into your remote
+terminal on every dial. Turning the toggle on or off takes effect immediately —
+there is no relaunch step — and revoking a host, or quitting the app, stops its
+forward.
+
+## Updating an enrolled host
+
+When localvoxtral ships a newer version of this plugin, an already-enrolled host
+does **not** pick it up by re-running the setup commands. Verified on Claude Code
+2.1.220:
+
+- `claude plugin marketplace add …` on a marketplace it already has exits 0,
+  says it is already on disk, and does **not** refresh the clone.
+- `claude plugin install …` on an installed plugin exits 0, says it is already
+  installed, and does **not** change the version. (It *does* apply a new
+  `--config token=…`, which is why rotating a token reuses that same command.)
+
+So the update is its own pair, and it keeps your token — `plugin update`
+preserves the stored config:
 
 ```sh
-claude plugin list
-# From the remote, through the tunnel. 401 is the RIGHT answer here — it proves
-# the tunnel is up and the app is answering. A connection error means the
-# forward did not take.
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
-  -d '{}' http://127.0.0.1:8473/v1/hook/SessionStart
+ssh builder 'claude plugin marketplace update localvoxtral'
+ssh builder 'claude plugin update localvoxtral-remote@localvoxtral'
+# Only needed once, for a host enrolled before per-Mac ports existed — and
+# harmless every time after. `plugin update` has no `--config`, and `install`
+# merges config per key, so this sets the port without touching your token.
+ssh builder "claude plugin install localvoxtral-remote@localvoxtral --config 'port=28511'"
 ```
+
+Order matters: `plugin update` installs whatever the local marketplace clone
+currently offers, so refreshing the clone first is what makes it an update at
+all. In the app, each row in **Remote Claude Code over SSH** has an **Update
+Plugin…** button that shows these two commands with a Copy button, and can run
+them over SSH after you confirm. One-click runs against the **SSH alias you
+enrolled with**, which is recorded with the host — the display name is never
+used as a substitute, since the two are separate fields and can name different
+machines. A host enrolled before localvoxtral recorded aliases has none on file:
+its commands are copy-only (and so is its rotation sheet) until you re-enroll it.
+Non-interactive SSH skips your login shell's
+rc, so the app's version of these commands sets `PATH` to the usual `claude`
+install locations first; add that yourself if `claude` is off the PATH a plain
+`ssh host 'claude …'` sees.
 
 ## Uninstall and revoke
 
@@ -344,6 +543,17 @@ account to the extent it is already trusted. What the token bounds is what a
 host can do to *localvoxtral* (remote context only, never a local file read),
 not what a compromised account can do to itself.
 
+**Two Macs enrolled against one host.** Each Mac forwards its *own* port, so
+they cannot contend for one remote bind — which used to be a silent
+cross-delivery: the first connection kept the forward, the second connected
+anyway (`ExitOnForwardFailure no`) and every event on that host, bearer token
+included, went to the *first* Mac, which 401'd it, which the shim reads as a
+completed exchange. Nothing reported it (issue #215). What per-Mac ports do
+**not** change: one host runs one Claude Code install storing one `port`, so the
+most recently installed config is the Mac that receives events. The other one
+simply sees no traffic — visible single tenancy, not someone else's credential
+in someone else's listener.
+
 **A process on your Mac that squats 127.0.0.1:8473 before the app binds it.**
 Loopback ports are first-come, first-served on macOS; there is no ownership. A
 squatter cannot authenticate your hosts — it does not have the token hashes,
@@ -369,10 +579,22 @@ with no enrolled host, the app binds no port at all.
 
 ## What crosses the tunnel
 
-The same allowlist as the local plugin, plus one addition:
+The same allowlist as the local plugin, plus two additions:
 
 * bounded, sanitized excerpts of `Read`/`Edit`/`Write` tool input and output
   (≤512 bytes each, ≤8 kept per session)
+* an allowlisted set of environment values, sent as `X-Lvx-Env-*` request
+  headers rather than in the body (the body stays Claude Code's event JSON
+  byte-for-byte, because the host is not assumed to have `jq`):
+  `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
+  `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `TMUX`, `TMUX_PANE`,
+  `SSH_TTY`, and the shim's own parent pid. Each is sent only if it is
+  non-empty, at most 200 characters, and made purely of ASCII alphanumerics
+  plus `._:/@+,=%-`; anything else is dropped rather than escaped. They tell the
+  app WHERE the session runs so it can tell whether the pane you are dictating
+  into is this one — never what it contains. The rest of the environment is not
+  read, and these values are labels on the Mac: they can never become a local
+  path, a socket the app dials, or a process it probes.
 
 These exist only for remote sessions. A local session's files are on your Mac
 and the app reads them properly; a remote session's are on a machine the app has

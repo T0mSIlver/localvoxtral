@@ -16,10 +16,8 @@ DerivedData/
 # biometric voice data and are synced to the private Mac build host only.
 /EvalRecordings/
 
-# Machine-local scratch notes. `docs/` is TRACKED (AGENTS.md: committed
-# user-facing docs live there); `/docs` was ignored here from the first
-# release, before that split existed, which silently swallowed the first
-# committed docs page.
+# Machine-local scratch (setup runbooks, handoff notes, drafts) — never
+# commit. Committed documentation lives in docs/, which is tracked normally.
 /local-notes/
 
 # Agent runtime dirs (opencode/Claude workers) — never commit
