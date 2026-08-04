@@ -16,7 +16,9 @@ DerivedData/
 # biometric voice data and are synced to the private Mac build host only.
 /EvalRecordings/
 
-/docs
+# Machine-local scratch (setup runbooks, handoff notes, drafts) — never
+# commit. Committed documentation lives in docs/, which is tracked normally.
+/local-notes/
 
 # Agent runtime dirs (opencode/Claude workers) — never commit
 .agent-runs/

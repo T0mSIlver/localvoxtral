@@ -78,19 +78,61 @@ public final class ClaudeIntegrationSettingsModel {
     public struct HostRow: Identifiable, Equatable, Sendable {
         public var id: String
         public var label: String
+        /// Nil for hosts enrolled before the alias was persisted. Never
+        /// substituted with `label`: they are different fields on the form, so
+        /// guessing one from the other can ssh to a machine the user did not
+        /// pick.
+        public var sshHostAlias: String?
         public var isRevoked: Bool
         public var lastSeenAt: Date?
-
-        /// The part of the status that is not a date.
+        /// The whole status, resolved against the model's injected clock when
+        /// the row was built.
         ///
-        /// A `RelativeDateTimeFormatter` cached in a `static let` here would be
-        /// non-Sendable global state — a Swift 6 error — and building one per
-        /// row per redraw is worse. The view renders `lastSeenAt` with
-        /// `Text(_:style:)`, which also keeps ticking on its own.
-        public var statusText: String {
-            if isRevoked { return "Revoked" }
-            return lastSeenAt == nil ? "Enrolled — not seen yet" : "Last seen"
-        }
+        /// Rendered rather than computed in the view for two reasons. A
+        /// `RelativeDateTimeFormatter` cached in a `static let` would be
+        /// non-Sendable global state (a Swift 6 error), and building one per row
+        /// per redraw is worse — but mostly, "when did this host last send
+        /// context" is the answer a user needs to tell a silent tunnel from a
+        /// working one, and an answer with a test beats an answer with a
+        /// formatter.
+        public var statusText: String
+        /// Whether this host opted into the app-held SSH forward, and what that
+        /// forward is doing right now. Both live on the row so the view stays a
+        /// renderer: the toggle reads one Bool, the status line reads one
+        /// already-rendered sentence.
+        public var persistentForwardEnabled: Bool = false
+        public var forwardStatusText: String?
+        public var forwardIsFailure: Bool = false
+        /// A forward can only be offered where we know where to ssh. The label
+        /// is not a substitute for an alias (PR #197).
+        public var canHoldForward: Bool = false
+    }
+
+    /// "Last context: 2 min ago", from a clock the caller supplies.
+    ///
+    /// Coarse on purpose: the question is "is this host still talking to me",
+    /// and a to-the-second answer would only invite the user to read precision
+    /// into a timestamp that is refreshed when the pane appears.
+    ///
+    /// `lastSeenAt` is the registry's IN-MEMORY value, persisted only on the
+    /// next persisting mutation (see `ClaudeRemoteHostRegistry.noteActivity` —
+    /// a disk write per hook event would be steady write amplification for a
+    /// dictation nicety). So a host that was active before a relaunch reads
+    /// "never" until its next hook event. That is the existing trade, not a
+    /// missing write.
+    static func hostStatusText(isRevoked: Bool, lastSeenAt: Date?, now: Date) -> String {
+        if isRevoked { return "Revoked" }
+        guard let lastSeenAt else { return "Last context: never" }
+        let elapsed = now.timeIntervalSince(lastSeenAt)
+        // A clock that stepped backwards (NTP, a DST correction) must not print
+        // a negative age. "Just now" is the honest reading of "not in the past".
+        guard elapsed >= 60 else { return "Last context: just now" }
+        let minutes = Int(elapsed / 60)
+        if minutes < 60 { return "Last context: \(minutes) min ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "Last context: \(hours) \(hours == 1 ? "hour" : "hours") ago" }
+        let days = hours / 24
+        return "Last context: \(days) \(days == 1 ? "day" : "days") ago"
     }
 
     /// What the pane says about the listener, in one short line.
@@ -152,11 +194,71 @@ public final class ClaudeIntegrationSettingsModel {
         /// Rotation reuses this sheet; the copy differs because the user's
         /// situation does (their remote is currently broken, on purpose).
         public var isRotation: Bool
+        /// False when `sshHostAlias` is the sheet's placeholder rather than an
+        /// alias the user gave us — a legacy host rotated before the alias was
+        /// persisted. The commands are still copyable; what is withheld is
+        /// one-click execution, which would otherwise hand a fresh token to
+        /// whichever machine happened to answer to a guessed name.
+        public var canRunRemoteSetup: Bool = true
+    }
+
+    /// The two commands that bring one enrolled host to the plugin version this
+    /// app ships, plus the host they belong to.
+    ///
+    /// Carries no token — `claude plugin update` keeps the config the install
+    /// stored — so unlike `EnrollmentPresentation` this can be shown at any
+    /// time, which is the point: the user needs it long after the one-time
+    /// token is gone.
+    public struct PluginUpdatePresentation: Identifiable, Equatable, Sendable {
+        public var id: String { hostID }
+        public var hostID: String
+        /// The alias one-click execution would use, or nil when the host's
+        /// label is not a usable one. The alias belongs to the user's ssh
+        /// config and is never persisted, so the label is the only guess
+        /// available; when it does not qualify the commands are copy-only and
+        /// name a placeholder instead of pretending.
+        public var sshHostAlias: String?
+        public var commands: [String]
+        /// This host's regenerated ssh-config block, when the local one does
+        /// not already forward the port these commands are about to store on
+        /// the remote — nil when it already matches and there is nothing to
+        /// write.
+        ///
+        /// The two are ONE migration and the review that caught this was right
+        /// to call it a blocker: storing `port=285xx` in the plugin while
+        /// `~/.ssh/config` still says `RemoteForward 8473` points every hook on
+        /// that host at a port this Mac does not forward, and the result fails
+        /// open — silently, which is the whole #215 failure class reintroduced
+        /// by the fix for it.
+        public var sshConfigSnippet: String?
+        public var canRun: Bool { sshHostAlias != nil }
+
+        /// Everything this update consists of, in the order it must be applied.
+        ///
+        /// ONE rendering, used by all three surfaces — the panel's text, its
+        /// Copy button, and the confirmation preview. They diverged once
+        /// already: the executable path wrote the ssh block while the panel
+        /// showed and copied only the commands, so the copy-only paths (a host
+        /// with no recorded alias, and the symlink refusal that explicitly
+        /// tells the user to copy) updated the remote port and left this Mac on
+        /// 8473 — the original split brain, reachable by exactly the users most
+        /// likely to hit it. A single source is the fix; three call sites that
+        /// "should stay in sync" is what produced the bug.
+        public var applicationText: String {
+            guard let sshConfigSnippet else { return commands.joined(separator: "\n") }
+            return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
+                + sshConfigSnippet
+                + "\n\n# 2. Then, on the SSH host:\n"
+                + commands.joined(separator: "\n")
+        }
     }
 
     public enum EnrollmentAction: Sendable, Equatable {
         case insertSSHConfig
         case runRemoteSetup
+        /// Per-host, because the pane shows one row per host and the outcome
+        /// has to render in the row whose button ran it.
+        case updateRemotePlugin(hostID: String)
     }
 
     public struct EnrollmentConfirmation: Identifiable, Equatable, Sendable {
@@ -186,11 +288,16 @@ public final class ClaudeIntegrationSettingsModel {
 
     public private(set) var hosts: [HostRow] = []
     public private(set) var listenerStatus: ListenerStatus = .idle
+    /// One short sentence when connections have been rejected since launch, nil
+    /// otherwise. See `rejectionHint(for:)`.
+    public private(set) var rejectionHint: String?
     /// Short result copy for the local plugin action, e.g. "Installed." Cleared
     /// when a new action starts.
     public private(set) var pluginResult: String?
     public private(set) var isPerformingPluginAction = false
     public private(set) var presentedPlan: EnrollmentPresentation?
+    /// The update commands the user asked to see, for one host at a time.
+    public private(set) var presentedPluginUpdate: PluginUpdatePresentation?
     public private(set) var enrollmentConfirmation: EnrollmentConfirmation?
     public private(set) var enrollmentStepStatuses: [EnrollmentStepStatus] = []
     /// Which action produced `enrollmentStepStatuses`. The sheet renders each
@@ -200,6 +307,29 @@ public final class ClaudeIntegrationSettingsModel {
     public private(set) var enrollmentResultsAction: EnrollmentAction?
     public private(set) var isPerformingEnrollmentAction = false
     public var alert: DetailAlert?
+
+    /// What the cmux control socket last told us, as one short sentence in the
+    /// pane. Written by the join resolver on every attempt, so a user who
+    /// dictates and sees no cmux context can read WHY here instead of in the
+    /// log. `.ok` renders nothing — a working feature says nothing.
+    var cmuxStatus: CmuxSocketStatus = .ok
+
+    /// The password field's live text. Never seeded from the Keychain: the
+    /// stored secret is not shown back to anyone, and an empty field on a
+    /// machine that HAS a password must not read as "no password set" — which
+    /// is what `hasCmuxPassword` is for.
+    var cmuxPasswordField = ""
+
+    /// Whether a password is stored, refreshed after every save. A Bool, never
+    /// the value or its length.
+    private(set) var hasCmuxPassword = false
+
+    /// One short line under the cmux row: the socket's last word, or the setup
+    /// state when it has not spoken yet.
+    var cmuxStatusText: String {
+        if let message = cmuxStatus.message { return message }
+        return hasCmuxPassword ? "Password saved." : "No password saved."
+    }
 
     /// Enrollment form. Free-form because the user is typing; validated on
     /// submit, not on every keystroke — a field that shouts while you are still
@@ -228,6 +358,25 @@ public final class ClaudeIntegrationSettingsModel {
     private let performEnrollmentAsync:
         @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]) async
             -> ClaudeEnrollmentActionAttempt
+    /// Injected wall clock, read once per refresh to age the host rows. No
+    /// `Date()` in the view, and no timer: the rows are rebuilt when the pane
+    /// appears and after every action that touches a host.
+    private let now: @Sendable () -> Date
+    /// This Mac's allocated port on the remote side of the tunnel
+    /// (`ClaudeRemoteForwardPort`), passed in rather than read here so the pane
+    /// has no opinion about where it comes from — and so a test can pin it.
+    /// Every generated artifact that names a remote port takes it from this one
+    /// value: the ssh block, the install command, the verify probe, the
+    /// update/migration commands.
+    private let remoteForwardPort: UInt16
+    /// Keychain-backed cmux password storage. Nil in previews and in tests that
+    /// do not exercise the cmux row — the row then reports that it cannot save,
+    /// rather than silently pretending it did.
+    private let cmuxPasswords: (any CmuxPasswordStoring)?
+    /// Owns the app-held ssh forwards. Optional for the same reason `listener`
+    /// is: previews and plugin-only tests have none, and the pane then simply
+    /// does not offer the toggle.
+    private let forwards: ClaudeRemoteForwardCoordinator?
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -263,7 +412,14 @@ public final class ClaudeIntegrationSettingsModel {
                     )
                 }
             }.value
-        }
+        },
+        now: @escaping @Sendable () -> Date = { Date() },
+        // Defaults to the legacy shared port: a caller that has not been taught
+        // about per-Mac allocation describes exactly the pre-#215 setup, which
+        // still works. Production passes the allocation.
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
+        cmuxPasswords: (any CmuxPasswordStoring)? = nil,
+        forwards: ClaudeRemoteForwardCoordinator? = nil
     ) {
         self.registry = registry
         self.listener = listener
@@ -271,8 +427,70 @@ public final class ClaudeIntegrationSettingsModel {
         self.enrollmentService = enrollmentService
         self.performAsync = performAsync
         self.performEnrollmentAsync = performEnrollmentAsync
+        self.now = now
+        self.remoteForwardPort = remoteForwardPort
+        self.cmuxPasswords = cmuxPasswords
+        self.forwards = forwards
         refreshHosts()
         refreshListenerStatus()
+        // A presence check, not a read into any field: this is the one place
+        // the stored secret is touched at construction, and only to answer
+        // "is one set".
+        hasCmuxPassword = cmuxPasswords?.password() != nil
+        // The pane renders COPIES of the rows, so without this the tunnel
+        // status is whatever it happened to be when Settings appeared: the
+        // first "Connecting…" snapshot, frozen, while the real supervisor goes
+        // on to forward, retry, or fail where nobody can see it. Every
+        // transition now patches its row in place.
+        forwards?.onStateChange = { [weak self] hostID in
+            self?.applyForwardState(hostID: hostID)
+        }
+    }
+
+    /// Patch one row's forward fields from the coordinator.
+    ///
+    /// Deliberately NOT `refreshHosts()`: that re-reads the registry file and
+    /// re-derives every row's age text, which is a lot of work to do on a
+    /// transition that changed one string — and it would move the "last seen"
+    /// times under the user mid-read for a reason they never asked for.
+    private func applyForwardState(hostID: String) {
+        guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+        let state = forwards?.states[hostID]
+        hosts[index].forwardStatusText = state?.text
+        hosts[index].forwardIsFailure = state?.isFailure ?? false
+    }
+
+    // MARK: - cmux socket
+
+    /// Saves (or clears) the cmux socket password and forgets the typed text.
+    ///
+    /// Clearing on save is deliberate: the field is an input, not a display,
+    /// and a secret left sitting in a SwiftUI string is one screen-share away
+    /// from being read out loud. An empty or rejected value REMOVES the stored
+    /// password rather than leaving the previous one quietly in force.
+    func saveCmuxPassword() {
+        guard let cmuxPasswords else {
+            alert = DetailAlert(
+                title: "Could not save the cmux password",
+                detail: "The keychain is unavailable in this build."
+            )
+            return
+        }
+        let accepted = CmuxPasswordValidation.normalized(cmuxPasswordField) != nil
+        let stored = cmuxPasswords.setPassword(cmuxPasswordField)
+        cmuxPasswordField = ""
+        hasCmuxPassword = accepted && stored
+        if !stored {
+            alert = DetailAlert(
+                title: "Could not save the cmux password",
+                detail: "The keychain refused the item. See Console for the OSStatus."
+            )
+            return
+        }
+        // A stored password says nothing about whether cmux will accept it, so
+        // the socket's verdict is reset rather than assumed good: the next
+        // dictation writes the real answer.
+        cmuxStatus = .ok
     }
 
     public var isRemoteAvailable: Bool { registry != nil }
@@ -349,9 +567,75 @@ public final class ClaudeIntegrationSettingsModel {
     // MARK: - Remote hosts
 
     public func refreshHosts() {
-        hosts = (registry?.hosts() ?? []).map {
-            HostRow(id: $0.id, label: $0.label, isRevoked: $0.isRevoked, lastSeenAt: $0.lastSeenAt)
+        // One clock reading for the whole list, so two rows of the same age
+        // cannot disagree about what "now" was.
+        let timestamp = now()
+        hosts = (registry?.hosts() ?? []).map { host in
+            let forwardState = forwards?.states[host.id]
+            return HostRow(
+                id: host.id,
+                label: host.label,
+                sshHostAlias: host.sshHostAlias,
+                isRevoked: host.isRevoked,
+                lastSeenAt: host.lastSeenAt,
+                statusText: Self.hostStatusText(
+                    isRevoked: host.isRevoked, lastSeenAt: host.lastSeenAt, now: timestamp
+                ),
+                persistentForwardEnabled: host.persistentForwardEnabled,
+                // Nil when this host has no forward running, which is not the
+                // same as a forward that is off: a row with the toggle off has
+                // nothing to report, and a status line saying so would be noise
+                // in a list of hosts.
+                forwardStatusText: forwardState?.text,
+                forwardIsFailure: forwardState?.isFailure ?? false,
+                canHoldForward: forwards != nil
+                    && !host.isRevoked
+                    && host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true
+            )
         }
+        refreshRejectionHint()
+    }
+
+    /// Re-read the listener's rejection counters.
+    ///
+    /// Deliberately part of `refreshHosts` rather than a timer of its own: that
+    /// is what the pane already calls on appear and after every host action, and
+    /// a background timer redrawing Settings is a cost with no reader.
+    public func refreshRejectionHint() {
+        guard let listener else {
+            rejectionHint = nil
+            return
+        }
+        rejectionHint = Self.rejectionHint(for: listener.rejectionSnapshot)
+    }
+
+    /// One sentence naming the likely cause, or nil when nothing was rejected.
+    ///
+    /// Short by owner rule — a Settings row has the same "no long text" problem
+    /// the popover does — and count-free on purpose: the number of rejections is
+    /// noise (a busy session produces one every few minutes), while WHICH KIND
+    /// they were is the whole diagnosis. The detail stays in the log.
+    ///
+    /// The hedge in "a host MAY have" is deliberate. The listener counts every
+    /// rejected connection, and an enrolled host is not the only thing that can
+    /// reach a loopback port: a probe or a curl with no `Authorization` header
+    /// lands in `.missingToken` exactly like a pre-1.1.0 plugin does. Naming a
+    /// cause with certainty would sometimes accuse a host of a fault it does
+    /// not have.
+    static func rejectionHint(for snapshot: ClaudeRemoteRejectionTally.Snapshot) -> String? {
+        guard !snapshot.isEmpty else { return nil }
+        let cause: String
+        switch (snapshot.missingToken > 0, snapshot.unknownToken > 0) {
+        case (true, true):
+            cause = "an outdated plugin or a stale token"
+        case (true, false):
+            cause = "an outdated plugin — use Update Plugin"
+        case (false, true):
+            cause = "a stale token — rotate it and re-run setup"
+        case (false, false):
+            cause = "a malformed authorization header"
+        }
+        return "Rejected connections detected — a host may have \(cause)."
     }
 
     public func refreshListenerStatus() {
@@ -387,12 +671,13 @@ public final class ClaudeIntegrationSettingsModel {
             return
         }
         do {
-            let enrollment = try registry.enroll(label: label)
+            let enrollment = try registry.enroll(label: label, sshHostAlias: alias)
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
                 sshHostAlias: alias,
                 token: enrollment.token,
-                port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
             )
             // A fresh sheet must not inherit a previous host's step results —
             // a still-running earlier action can repopulate the statuses after
@@ -421,16 +706,19 @@ public final class ClaudeIntegrationSettingsModel {
         guard let registry else { return }
         do {
             let enrollment = try registry.rotateToken(hostID: hostID)
+            // The alias the user enrolled with, or nothing. The label is NOT a
+            // fallback: name and alias are separate fields, so `prod` named
+            // over alias `builder` would have sent the new token to whatever
+            // answers to `prod` (review finding, PR #197). A host enrolled
+            // before the alias was persisted gets the placeholder and copy-only
+            // commands, which is honest about what we know.
+            let alias = enrollment.host.sshHostAlias
             let plan = try ClaudeRemoteEnrollmentService.plan(
                 host: enrollment.host,
-                // The alias is not persisted — it is the user's ssh config, not
-                // ours — so the label is the best guess we have, and the sheet
-                // says so rather than pretending.
-                sshHostAlias: ClaudeRemoteEnrollmentService.isValidHostAlias(enrollment.host.label)
-                    ? enrollment.host.label
-                    : "your-ssh-host",
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 token: enrollment.token,
-                port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
             )
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
@@ -438,11 +726,10 @@ public final class ClaudeIntegrationSettingsModel {
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
-                sshHostAlias: ClaudeRemoteEnrollmentService.isValidHostAlias(enrollment.host.label)
-                    ? enrollment.host.label
-                    : "your-ssh-host",
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 plan: plan,
-                isRotation: true
+                isRotation: true,
+                canRunRemoteSetup: alias != nil
             )
             refreshHosts()
             // Rotation reinstates a revoked host, so it can be a 0→1 transition.
@@ -450,6 +737,30 @@ public final class ClaudeIntegrationSettingsModel {
         } catch {
             presentRegistryFailure(error, verb: "rotate the token for")
         }
+    }
+
+    /// Turn the app-held forward on or off for one host.
+    ///
+    /// Order matters and is the same as everywhere else in this feature: the
+    /// registry is the source of truth, so it is written FIRST and the
+    /// coordinator reconciles against what was actually persisted. A coordinator
+    /// started before the write could be left running a forward for a flag that
+    /// never made it to disk.
+    public func setPersistentForward(_ enabled: Bool, hostID: String) {
+        guard let registry else { return }
+        do {
+            try registry.setPersistentForwardEnabled(enabled, hostID: hostID)
+            forwards?.reconcile()
+            refreshHosts()
+        } catch {
+            presentRegistryFailure(error, verb: enabled ? "enable the tunnel for" : "disable the tunnel for")
+        }
+    }
+
+    /// Retry one host's failed forward — the move after freeing the port.
+    public func retryPersistentForward(hostID: String) {
+        forwards?.retry(hostID: hostID)
+        refreshHosts()
     }
 
     public func revoke(hostID: String) async {
@@ -467,6 +778,8 @@ public final class ClaudeIntegrationSettingsModel {
         guard let registry else { return }
         do {
             try registry.remove(hostID: hostID)
+            // The row is going away; its open update panel must not outlive it.
+            if presentedPluginUpdate?.hostID == hostID { dismissPluginUpdate() }
             refreshHosts()
             reconcileListener()
         } catch {
@@ -495,6 +808,100 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentResultsAction = nil
     }
 
+    /// Show one host's plugin-update commands in its row.
+    ///
+    /// Needed because `claude plugin install` is not an update: on an installed
+    /// plugin it exits 0 and leaves the old version in place (Claude Code
+    /// 2.1.220), so re-running enrollment does nothing and a host stays on a
+    /// plugin the app has since fixed — silently, because the hooks fail open.
+    public func requestPluginUpdate(hostID: String) {
+        guard !isPerformingEnrollmentAction,
+              let host = hosts.first(where: { $0.id == hostID })
+        else { return }
+        // The ENROLLED alias, never the label: a host named `prod` may be
+        // reached over alias `builder`, and `ssh prod …` would then update
+        // whatever machine answers to that name (review finding, PR #197).
+        // Hosts enrolled before the alias was persisted have none, and get
+        // copy-only commands rather than a guess.
+        let alias = host.sshHostAlias.flatMap {
+            ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil
+        }
+        // A fresh panel must not inherit another action's results, for the same
+        // reason a fresh enrollment sheet must not (field report 2026-07-26).
+        enrollmentConfirmation = nil
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        // Regenerate the block unless it is already current. `nil` from the
+        // service means "cannot tell", and cannot-tell must regenerate: the
+        // cost of a redundant idempotent rewrite is nothing, and the cost of
+        // assuming a stale block is current is a silently dead host.
+        let alreadyForwards =
+            registry?.host(id: hostID).flatMap { host in
+                enrollmentService.sshConfigForwardsPort(remoteForwardPort, hostID: host.id)
+            } ?? false
+        let snippet: String? = alreadyForwards ? nil : registry?.host(id: hostID).map { host in
+            ClaudeRemoteEnrollmentService.sshConfigSnippet(
+                host: host,
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
+            )
+        }
+        presentedPluginUpdate = PluginUpdatePresentation(
+            hostID: hostID,
+            sshHostAlias: alias,
+            commands: ClaudeRemoteEnrollmentService.updateCommands(
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
+                remoteForwardPort: remoteForwardPort
+            ),
+            sshConfigSnippet: snippet
+        )
+    }
+
+    /// Exactly what `performPluginUpdate` will do, in order — and exactly what
+    /// the panel shows and copies. Same text, one source.
+    static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
+        presentation.applicationText
+    }
+
+    /// Stands in for an alias we were never told. Not a valid target and not
+    /// meant to be one — it is there so the copyable commands read correctly
+    /// with an obvious blank to fill in.
+    static let unknownAliasPlaceholder = "your-ssh-host"
+
+    public func dismissPluginUpdate() {
+        if case .updateRemotePlugin? = enrollmentResultsAction {
+            enrollmentStepStatuses = []
+            enrollmentResultsAction = nil
+        }
+        if case .updateRemotePlugin? = enrollmentConfirmation?.action {
+            enrollmentConfirmation = nil
+        }
+        presentedPluginUpdate = nil
+    }
+
+    /// Ask before running the update commands, repeating the exact pair.
+    public func requestPluginUpdateRun() {
+        guard let presentation = presentedPluginUpdate,
+              presentation.canRun,
+              !isPerformingEnrollmentAction
+        else { return }
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .updateRemotePlugin(hostID: presentation.hostID),
+            title: presentation.sshConfigSnippet == nil
+                ? "Update the plugin on this SSH host?"
+                : "Update ~/.ssh/config on this Mac and the plugin on this SSH host?",
+            // Both halves, verbatim, in the order they will run. The rule that
+            // one-click actions repeat their exact text does not get weaker
+            // because an action now has two parts — it gets more important.
+            preview: Self.updatePreview(for: presentation),
+            confirmButtonTitle: "Confirm Update"
+        )
+        Log.claudeContext.info("Claude remote plugin update confirmation requested")
+    }
+
     public func requestSSHConfigInsertion() {
         guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
         enrollmentStepStatuses = []
@@ -509,7 +916,12 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     public func requestRemoteSetup() {
-        guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
+        guard let presentation = presentedPlan,
+              // A placeholder alias must not reach ssh: one-click would hand
+              // the new token to whatever answers to a name we invented.
+              presentation.canRunRemoteSetup,
+              !isPerformingEnrollmentAction
+        else { return }
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
@@ -526,30 +938,45 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     public func confirmEnrollmentAction() async {
-        guard let confirmation = enrollmentConfirmation,
-              let presentation = presentedPlan,
-              !isPerformingEnrollmentAction
-        else { return }
+        guard let confirmation = enrollmentConfirmation, !isPerformingEnrollmentAction else { return }
+        switch confirmation.action {
+        case .insertSSHConfig, .runRemoteSetup:
+            await performPlanAction(confirmation)
+        case .updateRemotePlugin:
+            await performPluginUpdate(confirmation)
+        }
+    }
+
+    private func performPlanAction(_ confirmation: EnrollmentConfirmation) async {
+        guard let presentation = presentedPlan else { return }
+        let service = enrollmentService
+        let work: @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]
+        switch confirmation.action {
+        case .insertSSHConfig:
+            work = {
+                try service.insertSSHConfig(presentation.plan, hostID: presentation.host.id)
+                return []
+            }
+        case .runRemoteSetup:
+            work = {
+                try service.executeRemoteSetup(
+                    presentation.plan,
+                    sshHostAlias: presentation.sshHostAlias,
+                    token: presentation.token
+                )
+            }
+        case .updateRemotePlugin:
+            // Routed to performPluginUpdate: that action belongs to a host row,
+            // has no plan and no token, and must not run against one.
+            return
+        }
         enrollmentConfirmation = nil
         isPerformingEnrollmentAction = true
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
         defer { isPerformingEnrollmentAction = false }
 
-        let service = enrollmentService
-        let attempt = await performEnrollmentAsync {
-            switch confirmation.action {
-            case .insertSSHConfig:
-                try service.insertSSHConfig(presentation.plan, hostID: presentation.host.id)
-                return []
-            case .runRemoteSetup:
-                return try service.executeRemoteSetup(
-                    presentation.plan,
-                    sshHostAlias: presentation.sshHostAlias,
-                    token: presentation.token
-                )
-            }
-        }
+        let attempt = await performEnrollmentAsync(work)
 
         // The sheet may have been dismissed (window close) and even replaced
         // while the detached work ran; a late result must not surface under a
@@ -559,15 +986,56 @@ public final class ClaudeIntegrationSettingsModel {
         // mints a fresh token, so value equality distinguishes generations.
         guard presentedPlan == presentation else { return }
 
-        if let failure = attempt.failure {
-            enrollmentStepStatuses = Self.failureStatuses(
-                failure,
-                action: confirmation.action
+        publish(attempt, action: confirmation.action)
+    }
+
+    private func performPluginUpdate(_ confirmation: EnrollmentConfirmation) async {
+        guard let presentation = presentedPluginUpdate,
+              let alias = presentation.sshHostAlias
+        else { return }
+        enrollmentConfirmation = nil
+        isPerformingEnrollmentAction = true
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        defer { isPerformingEnrollmentAction = false }
+
+        let service = enrollmentService
+        // Copied out of self before the detached hop, like `service`: the
+        // closure is @Sendable and must not capture the main-actor model.
+        let port = remoteForwardPort
+        let snippet = presentation.sshConfigSnippet
+        let hostID = presentation.hostID
+        // ORDER IS THE SAFETY PROPERTY. The local block is rewritten first, and
+        // the remote is touched only if that succeeded. Reverse them and a
+        // refused local write (symlinked config, untrusted ~/.ssh) leaves the
+        // remote posting to a port this Mac does not forward — silently. This
+        // way the worst case is "nothing changed anywhere, with an error on
+        // screen", which is a state a user can act on.
+        let attempt = await performEnrollmentAsync {
+            if let snippet {
+                try service.insertSSHConfig(snippet: snippet, hostID: hostID)
+            }
+            return try service.executeRemotePluginUpdate(
+                sshHostAlias: alias, remoteForwardPort: port
             )
-            enrollmentResultsAction = confirmation.action
+        }
+
+        // Same rule as the sheet: the row may have been closed, or another
+        // host's opened, while ssh was still running — one host's outcome must
+        // never render under another host's commands.
+        guard presentedPluginUpdate == presentation else { return }
+
+        publish(attempt, action: confirmation.action)
+    }
+
+    /// Turn one finished attempt into the statuses its section renders.
+    private func publish(_ attempt: ClaudeEnrollmentActionAttempt, action: EnrollmentAction) {
+        if let failure = attempt.failure {
+            enrollmentStepStatuses = Self.failureStatuses(failure, action: action)
+            enrollmentResultsAction = action
             alert = DetailAlert(
-                title: "Remote Claude Code setup",
-                detail: Self.enrollmentFailureDetail(failure)
+                title: Self.failureAlertTitle(for: action),
+                detail: Self.enrollmentFailureDetail(failure, action: action)
             )
             Log.claudeContext.error(
                 "Claude remote enrollment action failed: \(failure.describedError, privacy: .public)"
@@ -575,14 +1043,14 @@ public final class ClaudeIntegrationSettingsModel {
             return
         }
 
-        switch confirmation.action {
+        switch action {
         case .insertSSHConfig:
             enrollmentStepStatuses = [
                 EnrollmentStepStatus(
                     id: 0, text: "Inserted this host's block into ~/.ssh/config.", succeeded: true, detail: ""
                 )
             ]
-        case .runRemoteSetup:
+        case .runRemoteSetup, .updateRemotePlugin:
             enrollmentStepStatuses = attempt.steps.map {
                 EnrollmentStepStatus(
                     id: $0.index,
@@ -592,7 +1060,14 @@ public final class ClaudeIntegrationSettingsModel {
                 )
             }
         }
-        enrollmentResultsAction = confirmation.action
+        enrollmentResultsAction = action
+    }
+
+    static func failureAlertTitle(for action: EnrollmentAction) -> String {
+        switch action {
+        case .insertSSHConfig, .runRemoteSetup: return "Remote Claude Code setup"
+        case .updateRemotePlugin: return "Remote Claude Code plugin"
+        }
     }
 
     public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
@@ -605,7 +1080,7 @@ public final class ClaudeIntegrationSettingsModel {
         _ failure: ClaudeEnrollmentActionFailure,
         action: EnrollmentAction
     ) -> [EnrollmentStepStatus] {
-        guard action == .runRemoteSetup else {
+        guard action != .insertSSHConfig else {
             return [EnrollmentStepStatus(id: 0, text: "SSH config update failed.", succeeded: false, detail: failure.describedError)]
         }
 
@@ -622,7 +1097,9 @@ public final class ClaudeIntegrationSettingsModel {
             failedStep = step
             detail = message
         default:
-            return [EnrollmentStepStatus(id: 0, text: "Remote setup failed.", succeeded: false, detail: failure.describedError)]
+            var text = "Remote setup failed."
+            if case .updateRemotePlugin = action { text = "Plugin update failed." }
+            return [EnrollmentStepStatus(id: 0, text: text, succeeded: false, detail: failure.describedError)]
         }
         let succeeded = (0..<failedStep).map {
             EnrollmentStepStatus(id: $0, text: "Step \($0 + 1) succeeded.", succeeded: true, detail: "")
@@ -637,15 +1114,23 @@ public final class ClaudeIntegrationSettingsModel {
         ]
     }
 
-    static func enrollmentFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
+    /// The alert body. `action` names the work in the user's terms — an alert
+    /// that says "SSH setup" after they pressed Update Plugin reads as a
+    /// different failure than the one they are looking at.
+    static func enrollmentFailureDetail(
+        _ failure: ClaudeEnrollmentActionFailure,
+        action: EnrollmentAction
+    ) -> String {
+        var subject = "SSH setup"
+        if case .updateRemotePlugin = action { subject = "Plugin update" }
         switch failure.serviceError {
         case .commandTimedOut(_, _, let seconds, let message):
             let output = message.isEmpty ? "" : "\n\n\(message)"
-            return "SSH setup did not finish within \(Int(seconds))s and was stopped.\(output)"
+            return "\(subject) did not finish within \(Int(seconds))s and was stopped.\(output)"
         case .commandFailed(_, _, let exitCode, let message):
-            return "SSH setup exited with code \(exitCode).\n\n\(message)"
+            return "\(subject) exited with code \(exitCode).\n\n\(message)"
         case .runnerFailed(_, _, let message):
-            return "SSH setup could not run.\n\n\(message)"
+            return "\(subject) could not run.\n\n\(message)"
         case .invalidSSHConfigEncoding:
             return "~/.ssh/config is not valid UTF-8, so localvoxtral left it unchanged."
         case .sshConfigIsSymlink:
@@ -659,7 +1144,7 @@ public final class ClaudeIntegrationSettingsModel {
         case .sshConfigEditingNotConfigured:
             return "Editing ~/.ssh/config is not available in this build."
         case .executionNotConfigured:
-            return "Running SSH setup is not available in this build."
+            return "Running commands over SSH is not available in this build."
         case .invalidHostAlias:
             return "The SSH host alias is invalid."
         case .none:
@@ -669,10 +1154,32 @@ public final class ClaudeIntegrationSettingsModel {
 
     private func reconcileListener(presentAlert: Bool = true) {
         guard let listener else { return }
+        // Shutdown is the MIRROR of startup, and this is the shutdown case:
+        // revoking the last host is about to close the port, so the forwards
+        // into it come down first. Reversed — the documented order everywhere
+        // else in this feature — a hook arriving during `listener.stop()` rides
+        // a live tunnel into a socket that is already gone, and the Mac's ssh
+        // client answers it by printing `connect_to … failed.` into the user's
+        // remote terminal.
+        if listener.isListening, registry?.hasActiveHosts != true {
+            forwards?.stopAll()
+        }
         do {
             try listener.reconcile()
             listenerStatus = listener.isListening ? .listening(port: listener.boundPort) : .idle
+            // Listener FIRST, forwards second — always, including here. A
+            // forward opened before the bind terminates at a closed port: the
+            // hooks get connection-refused and fail open (silently), while
+            // ssh on this Mac prints `connect_to … failed.` into the user's
+            // remote terminal on every dial. The coordinator enforces the same
+            // rule itself by refusing to run while the listener is unbound;
+            // this ordering is what makes the enabled case take effect without
+            // a relaunch.
+            forwards?.reconcile()
         } catch {
+            // A listener that failed to bind must not leave forwards running
+            // into a dead port.
+            forwards?.stopAll()
             listenerStatus = Self.status(for: error, port: listener.boundPort)
             if presentAlert {
                 alert = DetailAlert(

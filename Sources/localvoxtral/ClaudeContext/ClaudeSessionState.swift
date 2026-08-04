@@ -57,6 +57,12 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var sessionID: String
     /// Assigned by the broker from peer credentials. Never from the record.
     public var origin: ClaudeTransportOrigin
+    /// Which coding agent this session belongs to, fixed at first sight like
+    /// `origin`. Decides per-agent channel rules — most importantly, the
+    /// broker never returns a title marker to a non-Claude session, because
+    /// only Claude Code has a writable title channel (opencode rewrites its
+    /// own OSC titles mid-turn, like herdr does inside its panes).
+    public var agent: ClaudeHookAgent
     public var marker: ClaudeSessionMarker
     /// Local path or opaque remote label — the type enforces which.
     public var workspace: ClaudeWorkspaceReference?
@@ -75,6 +81,19 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var recentSnippets: [ClaudeContentSnippet]
     public var activity: ClaudeSessionActivity
     public var process: ClaudeHookProcessInfo?
+    /// Allowlisted environment labels a REMOTE session's hooks reported.
+    ///
+    /// Deliberately NOT folded into `process`: that block is what the local
+    /// join arms read, and every one of them (`resolve(tty:)`,
+    /// `resolve(herdrPaneID:)`, `liveLocalHerdrSocketPaths()`) pairs an
+    /// `origin.isLocalAuthenticated` filter with a `process` field. Keeping the
+    /// remote labels in their own field means a remote host cannot reach those
+    /// arms even if a future edit forgot the origin filter — there is nothing
+    /// of its in the field they read.
+    ///
+    /// Only ever populated for a `.remote` origin (`ClaudeSessionReducer`), and
+    /// `remoteSessionEnvironment` re-states that at the read side.
+    public var remoteEnvironment: ClaudeRemoteSessionEnvironment?
     public var firstSeen: Date
     public var lastActivity: Date
 
@@ -99,14 +118,53 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         return recentFiles
     }
 
+    /// The remote env labels, and nil for any local session — the mirror image
+    /// of `localWorkspacePath`.
+    ///
+    /// A local session's pane identity arrives inside `process`, vouched for by
+    /// peer-UID authentication on the AF_UNIX socket. Anything reading this
+    /// accessor is by definition reasoning about another machine, and the gate
+    /// makes that impossible to forget.
+    public var remoteSessionEnvironment: ClaudeRemoteSessionEnvironment? {
+        guard case .remote = origin else { return nil }
+        return remoteEnvironment
+    }
+
+    /// The Claude Code "Remote Control" bridge session id this session last
+    /// reported, from whichever side reported it.
+    ///
+    /// This is the ONE join key that legitimately spans local and remote, and
+    /// the reason is a property of the value, not a relaxation of the rule: the
+    /// id is allocated by Anthropic's bridge, is globally unique, and appears in
+    /// the browser URL the user is looking at. A remote host publishing an id
+    /// can therefore not collide with a local session's — unlike a TTY path, a
+    /// pane id, or a pid, all of which are per-machine names that another
+    /// machine can mirror by accident or on purpose. What it can do is claim an
+    /// id that is genuinely its own, which is exactly the case this arm is for:
+    /// the browser tab is the UI of whichever machine runs that session.
+    ///
+    /// The origin still decides WHICH field is read — `process` for a local
+    /// session (peer-UID authenticated), `remoteEnvironment` for a remote one —
+    /// so neither side can reach into the other's storage.
+    public var bridgeSessionID: String? {
+        switch origin {
+        case .localAuthenticated:
+            return process?.bridgeSessionID
+        case .remote:
+            return remoteSessionEnvironment?.bridgeSessionID
+        }
+    }
+
     init(
         sessionID: String,
         origin: ClaudeTransportOrigin,
+        agent: ClaudeHookAgent = .claude,
         marker: ClaudeSessionMarker,
         firstSeen: Date
     ) {
         self.sessionID = sessionID
         self.origin = origin
+        self.agent = agent
         self.marker = marker
         self.workspace = nil
         self.latestPriorUserPrompt = nil
@@ -115,6 +173,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.recentSnippets = []
         self.activity = .idle
         self.process = nil
+        self.remoteEnvironment = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
     }
@@ -140,11 +199,17 @@ public enum ClaudeSessionReducer {
     /// - Parameter snippets: sanitized excerpts, supplied by the transport that
     ///   parsed them. The local NDJSON wire has no field for these, so in
     ///   practice only the remote HTTP listener ever passes a non-empty array.
+    /// - Parameter environment: allowlisted env labels the REMOTE listener read
+    ///   off the request headers. Applied only for a `.remote` origin — a local
+    ///   caller passing one is ignored rather than trusted, so the remote-only
+    ///   property of `ClaudeSessionSnapshot.remoteEnvironment` holds at the one
+    ///   place that writes it.
     public static func reduce(
         _ snapshot: inout ClaudeSessionSnapshot,
         record: ClaudeHookRecord,
         origin: ClaudeTransportOrigin,
         snippets: [ClaudeContentSnippet] = [],
+        environment: ClaudeRemoteSessionEnvironment? = nil,
         now: Date
     ) {
         snapshot.lastActivity = now
@@ -152,8 +217,25 @@ public enum ClaudeSessionReducer {
         if let workspace = ClaudeWorkspaceReference.make(rawCwd: record.rawCwd, origin: origin) {
             snapshot.workspace = workspace
         }
-        if let process = record.process {
+        // Never absorbed from a focus record (declaration or retraction): its
+        // process block describes the PANE (the declarer's tty and pid), not
+        // the session. Folding it in would hand the session a per-session TTY
+        // claim its publisher deliberately never makes — the opencode server
+        // half publishes no tty precisely because it cannot prove it owns a
+        // pane — and would let a focus record overwrite the pid that liveness
+        // probes.
+        if let process = record.process,
+           record.event != .focusChanged, record.event != .focusCleared {
             snapshot.process = process
+        }
+        // Remote only, and replace-whole rather than merge-per-field: the shim
+        // publishes everything it can see on every event, so the newest report
+        // is the honest one — a merge would keep resurrecting a pane the user
+        // has since left. Skipped for focus records for the same reason the
+        // process block is: they describe a pane, not the session.
+        if case .remote = origin, let environment, !environment.isEmpty,
+           record.event != .focusChanged, record.event != .focusCleared {
+            snapshot.remoteEnvironment = environment
         }
 
         switch record.event {
@@ -179,6 +261,13 @@ public enum ClaudeSessionReducer {
             snapshot.activity = .working
         case .stop:
             snapshot.activity = .idle
+        case .focusChanged, .focusCleared:
+            // Focus is registry-level state (a TTY→session binding, held in
+            // `ClaudeSessionRegistry`'s focus table) — a pane DISPLAYING or
+            // leaving a session says nothing about whether its model is
+            // working, so the per-session state here changes only by the
+            // lastActivity bump applied above.
+            break
         case .sessionEnd:
             snapshot.activity = .ended
         }

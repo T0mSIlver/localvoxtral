@@ -10,7 +10,7 @@ final class ClaudeHookWireCodecTests: XCTestCase {
     }
 
     private func validJSON(
-        version: Int = 1,
+        version: Int = 2,
         event: String = "UserPromptSubmit",
         sessionID: String = "sess-1",
         extra: String = ""
@@ -62,7 +62,7 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
         XCTAssertEqual(
             String(decoding: encoded, as: UTF8.self),
-            #"{"event":"SessionStart","files":[],"process":{"claude_pid":41,"herdr_pane_id":"pane-7","herdr_socket_path":"herdr.sock","hook_pid":42},"session_id":"sess-herdr","ts":1.5,"v":1}"# + "\n"
+            #"{"event":"SessionStart","files":[],"process":{"claude_pid":41,"herdr_pane_id":"pane-7","herdr_socket_path":"herdr.sock","hook_pid":42},"session_id":"sess-herdr","ts":1.5,"v":2}"# + "\n"
         )
         let decoded = try ClaudeHookWireCodec.decodeLine(encoded)
         XCTAssertEqual(decoded.process?.herdrPaneID, "pane-7")
@@ -88,6 +88,73 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         )
         XCTAssertEqual(clamped.process?.herdrPaneID, "ppppp")
         XCTAssertEqual(clamped.process?.herdrSocketPath, "sssss")
+    }
+
+    func testCmuxAndBridgeProcessFieldsUseGoldenWireNamesAndDecode() throws {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "sess-cmux",
+            timestamp: 1.5,
+            process: ClaudeHookProcessInfo(
+                hookPID: 42,
+                claudePID: 41,
+                cmuxSurfaceID: "surface-3",
+                cmuxSocketPath: "cmux.sock",
+                bridgeSessionID: "bridge-abc"
+            )
+        )
+
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"SessionStart","files":[],"process":{"bridge_session_id":"bridge-abc","claude_pid":41,"cmux_socket_path":"cmux.sock","cmux_surface_id":"surface-3","hook_pid":42},"session_id":"sess-cmux","ts":1.5,"v":2}"# + "\n"
+        )
+        let decoded = try ClaudeHookWireCodec.decodeLine(encoded)
+        XCTAssertEqual(decoded.process?.cmuxSurfaceID, "surface-3")
+        XCTAssertEqual(decoded.process?.cmuxSocketPath, "cmux.sock")
+        XCTAssertEqual(decoded.process?.bridgeSessionID, "bridge-abc")
+    }
+
+    func testClampTruncatesTheCmuxAndBridgeProcessFields() {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "s",
+            timestamp: 1,
+            process: ClaudeHookProcessInfo(
+                hookPID: 2,
+                claudePID: 1,
+                cmuxSurfaceID: String(repeating: "u", count: 20),
+                cmuxSocketPath: String(repeating: "k", count: 20),
+                bridgeSessionID: String(repeating: "b", count: 20)
+            )
+        )
+
+        let clamped = ClaudeHookWireCodec.clamp(record, limits: ClaudeHookLimits(maxPathBytes: 5))
+        XCTAssertEqual(clamped.process?.cmuxSurfaceID, "uuuuu")
+        XCTAssertEqual(clamped.process?.cmuxSocketPath, "kkkkk")
+        XCTAssertEqual(clamped.process?.bridgeSessionID, "bbbbb")
+    }
+
+    func testAWireLineWithoutTheCmuxAndBridgeFieldsIsUnchangedByThem() throws {
+        // The compatibility property: an install running an older publisher
+        // still sends lines with no such keys, and re-encoding one must not
+        // invent them — a broker/publisher version skew is the normal state
+        // during an update, not an edge case.
+        let oldLine = line(
+            #"{"event":"SessionStart","process":{"claude_pid":1,"herdr_pane_id":"pane-7","hook_pid":2},"session_id":"old","ts":1,"v":2}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(oldLine)
+        XCTAssertEqual(record.process?.herdrPaneID, "pane-7")
+        XCTAssertNil(record.process?.cmuxSurfaceID)
+        XCTAssertNil(record.process?.cmuxSocketPath)
+        XCTAssertNil(record.process?.bridgeSessionID)
+
+        let reencoded = String(
+            decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)), as: UTF8.self
+        )
+        for key in ["cmux_surface_id", "cmux_socket_path", "bridge_session_id"] {
+            XCTAssertFalse(reencoded.contains(key), "an absent field must stay absent")
+        }
     }
 
     func testAbsentHerdrProcessFieldsDecodeAsNil() throws {
@@ -118,8 +185,8 @@ final class ClaudeHookWireCodecTests: XCTestCase {
     // MARK: Version gating
 
     func testRejectsFutureVersion() {
-        XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(validJSON(version: 2)))) { error in
-            XCTAssertEqual(error as? ClaudeHookWireError, .unsupportedVersion(2))
+        XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(validJSON(version: 3)))) { error in
+            XCTAssertEqual(error as? ClaudeHookWireError, .unsupportedVersion(3))
         }
     }
 
@@ -128,6 +195,109 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertThrowsError(try ClaudeHookWireCodec.decodeLine(line(json))) { error in
             XCTAssertEqual(error as? ClaudeHookWireError, .unsupportedVersion(nil))
         }
+    }
+
+    // MARK: v1 compatibility and the agent field (wire v2)
+
+    func testV1LineStillDecodesAndIsAClaudeRecordByConstruction() throws {
+        // Every v1 record predates the agent field, and every v1 publisher was
+        // the Claude Code hook — so v1 must keep decoding, as Claude.
+        let record = try ClaudeHookWireCodec.decodeLine(line(validJSON(version: 1)))
+        XCTAssertEqual(record.version, 1)
+        XCTAssertEqual(record.agent, .claude)
+    }
+
+    func testV2LineWithoutAgentFieldDefaultsToClaude() throws {
+        let record = try ClaudeHookWireCodec.decodeLine(line(validJSON()))
+        XCTAssertEqual(record.agent, .claude)
+    }
+
+    func testOpencodeAgentRoundTripsWithGoldenWireShape() throws {
+        let record = ClaudeHookRecord(
+            event: .userPromptSubmit,
+            agent: .opencode,
+            sessionID: "ses_0123",
+            timestamp: 9.5,
+            prompt: "rename the flag"
+        )
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"agent":"opencode","event":"UserPromptSubmit","files":[],"prompt":"rename the flag","session_id":"ses_0123","ts":9.5,"v":2}"# + "\n"
+        )
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded), record)
+    }
+
+    func testClaudeAgentIsOmittedFromTheWireSoV1ReadersStayCompatible() throws {
+        let record = ClaudeHookRecord(event: .stop, sessionID: "s", timestamp: 1)
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
+        XCTAssertFalse(
+            String(decoding: encoded, as: UTF8.self).contains("agent"),
+            "absence is the default: a Claude record must not grow an agent key"
+        )
+    }
+
+    func testRejectsUnknownAgentPreciselyRatherThanDefaultingToClaude() {
+        // Defaulting would hand a future agent Claude's channel rules (title
+        // markers, bare session-id namespace). Ignored, precisely.
+        XCTAssertThrowsError(
+            try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: #","agent":"aider""#)))
+        ) { error in
+            XCTAssertEqual(error as? ClaudeHookWireError, .unknownAgent("aider"))
+        }
+        XCTAssertThrowsError(
+            try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: #","agent":7"#)))
+        ) { error in
+            XCTAssertEqual(error as? ClaudeHookWireError, .unknownAgent(nil))
+        }
+    }
+
+    func testV1LineCarryingAnExplicitAgentKeyIsMalformed() {
+        // No v1 writer ever emitted the key — "absent = claude" IS the v1
+        // contract. A v1 line carrying it is hand-crafted, not old.
+        XCTAssertThrowsError(
+            try ClaudeHookWireCodec.decodeLine(
+                line(validJSON(version: 1, extra: #","agent":"claude""#))
+            )
+        ) { error in
+            XCTAssertEqual(error as? ClaudeHookWireError, .malformed)
+        }
+    }
+
+    func testFocusClearedEventDecodes() throws {
+        let json = validJSON(
+            event: "FocusCleared",
+            extra: #","agent":"opencode","process":{"hook_pid":9,"claude_pid":9,"tty":"/dev/ttys004"}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(line(json))
+        XCTAssertEqual(record.event, .focusCleared)
+        XCTAssertEqual(record.agent, .opencode)
+    }
+
+    func testFocusChangedEventDecodes() throws {
+        let json = validJSON(
+            event: "FocusChanged",
+            extra: #","agent":"opencode","process":{"hook_pid":9,"claude_pid":9,"tty":"/dev/ttys004"}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(line(json))
+        XCTAssertEqual(record.event, .focusChanged)
+        XCTAssertEqual(record.agent, .opencode)
+        XCTAssertEqual(record.process?.tty, "/dev/ttys004")
+    }
+
+    // MARK: Session-id namespacing per agent
+
+    func testOpencodeSessionIDsAreScopedAndClaudeIDsStayBare() {
+        XCTAssertEqual(
+            ClaudeAgentSessionScope.scopedSessionID(agent: .opencode, sessionID: "ses_1"),
+            "opencode:ses_1"
+        )
+        XCTAssertEqual(
+            ClaudeAgentSessionScope.scopedSessionID(agent: .claude, sessionID: "b81c2a"),
+            "b81c2a"
+        )
+        // The two receiver-side namespaces must never alias each other.
+        XCTAssertNotEqual(ClaudeAgentSessionScope.opencodePrefix, "remote:")
     }
 
     func testRejectsUnknownEventRatherThanThrowingGenericError() {

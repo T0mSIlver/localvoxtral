@@ -214,16 +214,20 @@ private struct SettingsSidebarVersionFooter: View {
     }
 }
 
-/// `.sidebar` material, blended behind the window (the standard macOS sidebar
-/// look). If it ever renders flat on a host that cannot vibrate behind this
-/// window, the documented fallback is `.withinWindow` — a one-line change here,
-/// not a redesign.
+/// `.sidebar` material, blended WITHIN the window.
+///
+/// `.behindWindow` is the standard macOS sidebar look and was the first choice,
+/// but the hand-test on the field Mac (PR #199 review, finding 2) reported it
+/// rendering as a flat solid fill in BOTH appearances — this window cannot
+/// vibrate what sits behind it. `.withinWindow` is the documented fallback and
+/// is the one that actually produces a material here, so it is what ships; the
+/// swap is a one-line change either way, not a redesign.
 private struct SettingsSidebarBackground: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .sidebar
         view.state = .followsWindowActiveState
-        view.blendingMode = .behindWindow
+        view.blendingMode = .withinWindow
         return view
     }
 

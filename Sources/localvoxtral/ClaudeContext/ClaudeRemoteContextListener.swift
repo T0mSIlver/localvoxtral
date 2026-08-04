@@ -19,6 +19,9 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
     public var http: ClaudeRemoteHTTPLimits
     public var wire: ClaudeHookLimits
     public var snippets: ClaudeSnippetLimits
+    /// Caps on the allowlisted env headers the shim adds. Re-applied here on
+    /// arrival: the shim validating first is a courtesy, not a guarantee.
+    public var environment: ClaudeRemoteEnvironmentLimits
 
     public init(
         port: UInt16 = 8473,
@@ -27,7 +30,8 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
         connectionTimeout: TimeInterval = 3.0,
         http: ClaudeRemoteHTTPLimits = .default,
         wire: ClaudeHookLimits = .default,
-        snippets: ClaudeSnippetLimits = .default
+        snippets: ClaudeSnippetLimits = .default,
+        environment: ClaudeRemoteEnvironmentLimits = .default
     ) {
         self.port = port
         self.maxConcurrentConnections = maxConcurrentConnections
@@ -36,6 +40,7 @@ public struct ClaudeRemoteListenerLimits: Sendable, Equatable {
         self.http = http
         self.wire = wire
         self.snippets = snippets
+        self.environment = environment
     }
 
     public static let `default` = ClaudeRemoteListenerLimits()
@@ -93,6 +98,11 @@ public final class ClaudeRemoteContextListener: Sendable {
     private let limits: ClaudeRemoteListenerLimits
     private let now: @Sendable () -> Date
     private let uptimeNanos: @Sendable () -> UInt64
+    /// Rejections since launch, for the Settings hint. Injected (rather than
+    /// owned) so it OUTLIVES this listener: the coordinator builds a fresh
+    /// listener on every rebind, and evidence the user has not read yet must not
+    /// be erased by enrolling a second host.
+    private let rejections: ClaudeRemoteRejectionTally
 
     #if DEBUG
     private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
@@ -129,18 +139,22 @@ public final class ClaudeRemoteContextListener: Sendable {
         registry: ClaudeSessionRegistry,
         hosts: ClaudeRemoteHostRegistry,
         limits: ClaudeRemoteListenerLimits = .default,
+        rejections: ClaudeRemoteRejectionTally = ClaudeRemoteRejectionTally(),
         now: @escaping @Sendable () -> Date = { Date() },
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
         self.registry = registry
         self.hosts = hosts
         self.limits = limits
+        self.rejections = rejections
         self.now = now
         self.uptimeNanos = uptimeNanos
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
     public var port: UInt16 { limits.port }
+    /// Rejections since the tally was created, by category.
+    public var rejectionSnapshot: ClaudeRemoteRejectionTally.Snapshot { rejections.snapshot() }
 
     /// Bind loopback and start accepting.
     ///
@@ -401,8 +415,31 @@ public final class ClaudeRemoteContextListener: Sendable {
         // attacker could not guess from the public plugin manifest — but "the
         // answer is currently harmless" is not a reason to answer. Nothing is
         // discriminated on until the token is known good.
-        guard let token = request.bearerToken, let host = hosts.authenticate(token: token) else {
-            Log.claudeContext.error("Rejected unauthenticated connection to the remote listener")
+        //
+        // The rejection is CLASSIFIED on the way out. One undifferentiated line
+        // is what made a night of "Rejected unauthenticated connection" say
+        // nothing about whether the remedy was updating a host's plugin or
+        // re-running its enrollment (field report, 2026-07-26). The category is
+        // derived from the header's shape and the authentication result only —
+        // no token material reaches the log, the tally, or the UI.
+        let shape = ClaudeRemoteHTTPCodec.authorizationShape(
+            in: request.headers["authorization"], limits: limits.http
+        )
+        let candidate = request.bearerToken
+        let authenticatedHost = candidate.flatMap { hosts.authenticate(token: $0) }
+        guard let token = candidate, let host = authenticatedHost else {
+            // The REAL authentication result, not a constant `false`: the
+            // mapping's contract includes "an accepted credential is not a
+            // rejection", and its only production caller should exercise that
+            // rather than assert it. Reaching the fallback would mean
+            // `bearerToken` and `authorizationShape` disagreed about one header
+            // — impossible while the former is implemented on the latter, and
+            // `unknownToken` is the conservative reading if it ever were not.
+            let category = ClaudeRemoteRejectionCategory.category(
+                for: shape, authenticated: authenticatedHost != nil
+            ) ?? .unknownToken
+            rejections.record(category)
+            Log.claudeContext.error("\(category.logLine, privacy: .public)")
             respond(fd: fd, status: 401)
             return
         }
@@ -459,6 +496,7 @@ public final class ClaudeRemoteContextListener: Sendable {
     private struct PreparedIngest {
         let record: ClaudeHookRecord
         let snippets: [ClaudeContentSnippet]
+        let environment: ClaudeRemoteSessionEnvironment?
         let hostID: String
     }
 
@@ -475,7 +513,15 @@ public final class ClaudeRemoteContextListener: Sendable {
             limits: limits.wire,
             snippetLimits: limits.snippets
         ) else {
-            Log.claudeContext.error("Rejected remote record: unparseable payload")
+            // With the event, which is the one thing that makes this actionable:
+            // "every SessionStart is unparseable" and "one PostToolUse was" are
+            // different bugs. Taken from the URL the plugin manifest chose and
+            // narrowed to a KNOWN event name — the path is bounded but still
+            // peer-supplied, and a log line is not the place to find that out.
+            let event = Self.knownEventLabel(inPath: request.path)
+            Log.claudeContext.error(
+                "Rejected remote record: unparseable payload (event \(event, privacy: .public))"
+            )
             return nil
         }
 
@@ -488,7 +534,36 @@ public final class ClaudeRemoteContextListener: Sendable {
             hostID: host.id,
             sessionID: record.sessionID
         )
-        return PreparedIngest(record: record, snippets: payload.snippets, hostID: host.id)
+
+        // Enrichment rides as HEADERS, not in the body: the shim has no jq and
+        // must hand Claude Code's event JSON on byte-for-byte, so there is
+        // nowhere in the body to put this without parsing and re-serializing it
+        // on a host where we cannot count on a JSON tool existing.
+        //
+        // The header VALUES stay what they were on the wire — opaque labels
+        // about another machine — and they land in their own snapshot field,
+        // never in `process`. Re-validated here against the same charset and
+        // caps the shim applies; the shim's own validation is a courtesy from a
+        // machine we do not control.
+        let environment = ClaudeRemoteEnvironmentCodec.environment(
+            in: request.headers, limits: limits.environment
+        )
+        // Count only. The values name panes, sockets and TTYs on the user's
+        // other machine; the log is not the place for them, and a count is what
+        // makes "the shim is on an old version" diagnosable.
+        if let environment {
+            let count = ClaudeRemoteEnvironmentField.allCases.filter { environment[$0] != nil }.count
+            Log.claudeContext.debug(
+                "Remote record carried \(count, privacy: .public) allowlisted env labels"
+            )
+        }
+
+        return PreparedIngest(
+            record: record,
+            snippets: payload.snippets,
+            environment: environment,
+            hostID: host.id
+        )
     }
 
     /// The session-registry half of ingest. Runs under the host-registry lock
@@ -502,7 +577,10 @@ public final class ClaudeRemoteContextListener: Sendable {
             channel: ClaudeRemoteSessionScope.channel(hostID: prepared.hostID)
         )
         let snapshot = registry.ingest(
-            prepared.record, origin: origin, snippets: prepared.snippets
+            prepared.record,
+            origin: origin,
+            snippets: prepared.snippets,
+            environment: prepared.environment
         )
         // Shape only. A remote record carries the user's prompt and excerpts of
         // their code; a log is the wrong place for either.
@@ -572,6 +650,19 @@ public final class ClaudeRemoteContextListener: Sendable {
         // were dropped mid-body.
         guard buffer.count <= Self.maxBufferedBytes(for: limits.http) else { return false }
         return true
+    }
+
+    /// The event a hook path names, when it names one this app knows.
+    ///
+    /// An unrecognized (or absent) event reads as `unknown` rather than as
+    /// whatever the peer wrote: the path reached us bounded by the head limit,
+    /// not by an allowlist, and echoing it into the log would put peer-chosen
+    /// text there.
+    static func knownEventLabel(inPath path: String) -> String {
+        guard let name = ClaudeRemoteHTTPCodec.eventName(inPath: path),
+              ClaudeHookEvent(rawValue: name) != nil
+        else { return "unknown" }
+        return name
     }
 
     /// The largest buffer a well-formed request can legitimately occupy.
