@@ -580,10 +580,16 @@ Key subsystems:
     A `.browserTab` join authorizes NO screen capture of any kind (the
     authorizer's mechanism switch is exhaustive, so a new arm must decide), and
     carries no window identity because there is no capture to pair one with.
-    Liveness re-checks the binding, not just the marker: Claude Code REMOVES the
-    variable when the connection ends and the reducer replaces the reported
-    metadata whole, so a disconnected session ages the join out on its own next
-    hook rather than on a timer of ours. The browser is asked ONLY under
+    Liveness RE-RESOLVES the bridge id at commit (not just "does my session
+    still report it"): a second reporter arriving mid-dictation is the same
+    ambiguity the start-time arm abstains on, and an enrolled remote host can
+    publish any label it likes, so the joined session must still be the unique
+    fresh reporter or the join is dead. Claude Code REMOVES the variable when
+    the connection ends and the reducer replaces the reported metadata on the
+    next non-focus record, so a disconnected session ages out on its own next
+    hook rather than on a timer of ours — except for a record with no process
+    block / no env header at all, which is not a retraction (#216) and holds the
+    binding until TTL. The browser is asked ONLY under
     `claudeRepoContextEnabled` (the screen setting alone must not automate a
     browser), and each browser needs its own TCC Automation grant — pre-warmed
     by its own `TerminalAutomationConsentPrewarmSettingsObserver` under that

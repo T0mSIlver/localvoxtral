@@ -258,13 +258,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // firing only while that terminal is running. Only for users who
             // opted into a context feature — the pre-warm is itself the
             // consent prompt, and an opted-out user must never see it.
+            let settings = viewModel.settings
             let prewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
-                settings: viewModel.settings,
+                settings: settings,
                 prewarm: {
                     for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
                         TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
-                            bundleID: bundleID
+                            bundleID: bundleID,
+                            isStillEnabled: { [weak settings] in
+                                settings?.terminalScreenContextEnabled == true
+                                    || settings?.claudeRepoContextEnabled == true
+                            }
                         )
+                    }
+                },
+                // Turning both context features off disarms whatever is still
+                // waiting for a terminal to launch: consent is only ever asked
+                // for a feature that is ON.
+                disarm: {
+                    for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.cancelPendingPrewarm(bundleID: bundleID)
                     }
                 }
             )
@@ -278,12 +291,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // authorizes no screen read, so a user who enabled only screen
             // context is never asked to let us automate their browser.
             let browserPrewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
-                settings: viewModel.settings,
+                settings: settings,
                 prewarm: {
                     for bundleID in BrowserTabAllowlist.supportedBundleIDs.sorted() {
                         TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
-                            bundleID: bundleID
+                            bundleID: bundleID,
+                            // Re-read when the sheet would actually be raised.
+                            // A browser that launches days after the user
+                            // turned the feature back off must not be asked.
+                            isStillEnabled: { [weak settings] in
+                                settings?.claudeRepoContextEnabled == true
+                            }
                         )
+                    }
+                },
+                disarm: {
+                    for bundleID in BrowserTabAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.cancelPendingPrewarm(bundleID: bundleID)
                     }
                 },
                 enablement: { $0.claudeRepoContextEnabled }

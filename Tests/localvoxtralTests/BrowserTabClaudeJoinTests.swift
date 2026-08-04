@@ -367,6 +367,60 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
         )
     }
 
+    // Review finding (codex, PR #218): ambiguity that appears AFTER the join
+    // was resolved must kill it too. The start-time arm abstains when two
+    // sessions report one bridge id, but a second reporter can arrive between
+    // start and commit — a hostile enrolled remote host can publish any label
+    // it likes, and it wins nothing at start only because it was not yet
+    // reporting. Commit-time liveness therefore re-ASKS the registry (like the
+    // marker arm does) instead of re-checking only the session it already
+    // picked: the joined session must still be the UNIQUE fresh reporter.
+    func testABridgeIDCollisionAppearingAfterResolutionKillsTheJoin() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(registry.ingest(record(session: "s1"), origin: local))
+        let joinResolver = resolver(registry: registry, tabURL: sessionURL)
+        let resolved = await joinResolver.resolve(target: chrome)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertTrue(joinResolver.isStillLive(join))
+
+        // A second session starts claiming the same bridge id mid-dictation.
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "s2", claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
+            )
+        )
+        XCTAssertEqual(
+            registry.resolve(bridgeSessionID: "session_abc123"), .ambiguous,
+            "precondition: resolving now would abstain"
+        )
+        XCTAssertFalse(
+            joinResolver.isStillLive(join),
+            "a join whose key stopped being unique must not survive to commit"
+        )
+    }
+
+    // The mirror of the above, in the direction that matters for a hostile
+    // reporter: the JOINED session is the one that keeps reporting, and a rival
+    // arriving late still kills the join rather than silently swapping it.
+    func testALateCollisionNeverSwapsTheJoinedSession() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(
+                record(session: "s1", claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
+            )
+        )
+        let joinResolver = resolver(registry: registry, tabURL: sessionURL)
+        let resolved = await joinResolver.resolve(target: chrome)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.snapshot.sessionID, "s1")
+        XCTAssertNotNil(registry.ingest(record(session: "s2"), origin: local))
+        XCTAssertFalse(joinResolver.isStillLive(join))
+    }
+
     // A session that is superseded by a NEW Remote Control connection (new
     // browser session id) likewise stops being the session this dictation
     // joined.
@@ -377,6 +431,81 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
         let resolved = await joinResolver.resolve(target: chrome)
         let join = try XCTUnwrap(resolved)
         XCTAssertNotNil(registry.ingest(record(bridgeSessionID: "session_zzz"), origin: local))
+        XCTAssertFalse(joinResolver.isStillLive(join))
+    }
+
+    // The REMOTE mirror of the disconnect test above, and the half of review
+    // finding 3 (codex, PR #218) that is actionable here. A remote session's
+    // bridge id lives in `remoteEnvironment`, which the reducer replaces WHOLE
+    // on the next non-focus report — so the first post-disconnect hook that
+    // carries any env value at all (the bundled shim always sends `$PPID`,
+    // `X-Lvx-Env-Hook-Parent-Pid`) drops the bridge id and kills the join.
+    func testDisconnectedRemoteSessionAgesTheJoinOutOnItsNextReport() async throws {
+        let registry = makeRegistry()
+        XCTAssertNotNil(
+            registry.ingest(
+                record(claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
+            )
+        )
+        let joinResolver = resolver(registry: registry, tabURL: sessionURL)
+        let resolved = await joinResolver.resolve(target: chrome)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertTrue(joinResolver.isStillLive(join))
+
+        // Remote Control ended; the session keeps hooking, and the shim keeps
+        // reporting what it CAN see — which no longer includes a bridge id.
+        XCTAssertNotNil(
+            registry.ingest(
+                record(claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(hookParentPID: "4321")
+            )
+        )
+        XCTAssertFalse(
+            joinResolver.isStillLive(join),
+            "a remote session that stopped reporting the bridge must not stay joined"
+        )
+    }
+
+    // The residual of review finding 3, pinned rather than silently carried.
+    //
+    // A remote hook carrying NO allowlisted env header at all is not a
+    // retraction: `ClaudeSessionReducer` deliberately keeps the last non-empty
+    // report (#216, `testAnEnvironmentWithNothingUsableLeavesTheSnapshotUntouched`
+    // — "an empty report is not a retraction"), so such a session keeps its
+    // bridge binding until TTL. That rule is #216's to change, not this arm's;
+    // this test exists so that if it ever DOES change, the consequence for the
+    // browser join is visible here rather than discovered in the field.
+    //
+    // Why it is not a hole worth overturning that rule for: the bundled shim
+    // always sends `$PPID`, so an honest disconnect takes the path above; and a
+    // host dishonest enough to strip its headers can simply keep sending the
+    // bridge id instead, which retention does not make easier. A CONTESTED id
+    // still fails closed at commit — see the collision tests.
+    func testRemoteSessionWithNoEnvHeadersAtAllRetainsItsBindingUntilTTL() async throws {
+        let clock = BrowserJoinTestClock(epoch)
+        let registry = makeRegistry(clock: clock)
+        XCTAssertNotNil(
+            registry.ingest(
+                record(claudePID: nil),
+                origin: remote,
+                environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
+            )
+        )
+        let joinResolver = resolver(registry: registry, tabURL: sessionURL)
+        let resolved = await joinResolver.resolve(target: chrome)
+        let join = try XCTUnwrap(resolved)
+
+        // A hook with no env headers whatsoever: the listener passes nil.
+        XCTAssertNotNil(registry.ingest(record(claudePID: nil), origin: remote, environment: nil))
+        XCTAssertTrue(
+            joinResolver.isStillLive(join),
+            "documented residual: an empty report is not a retraction (#216)"
+        )
+        // TTL is what ends it, and it does end it.
+        clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
         XCTAssertFalse(joinResolver.isStillLive(join))
     }
 

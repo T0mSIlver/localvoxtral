@@ -518,13 +518,21 @@ struct ClaudeSessionJoinResolver {
     /// This is what makes a Remote Control disconnect age the join out without
     /// a timer of ours. `CLAUDE_CODE_BRIDGE_SESSION_ID` is REMOVED from the
     /// hook environment when the browser connection ends, and the reducer
-    /// replaces a session's reported metadata WHOLE on every non-focus record
-    /// (`process` locally, `remoteEnvironment` for a remote host) — so the very
-    /// next hook of a disconnected session carries no bridge id, and this
-    /// comparison fails on the session's own activity. A session that stops
-    /// reporting entirely is covered by the registry's existing freshness (TTL
-    /// plus, locally, process liveness) exactly like every other arm. Both
-    /// clocks are the registry's injected one; nothing here reads a wall clock.
+    /// replaces a session's reported metadata on the next non-focus record —
+    /// `process` for a local session, `remoteEnvironment` for a remote one — so
+    /// that record carries no bridge id and this check fails on the session's
+    /// own activity, with no clock of ours involved.
+    ///
+    /// Two exactness caveats, both deliberate and both pinned by tests:
+    /// * A record with NO process block (local) or NO allowlisted env header at
+    ///   all (remote) is not a retraction — the reducer keeps the last report
+    ///   (#216: "an empty report is not a retraction"). Such a session keeps its
+    ///   binding until TTL. The bundled shim always reports `$PPID`, so an
+    ///   honest disconnect never takes that path, and a host that strips its
+    ///   headers could just as well keep sending the id.
+    /// * A session that stops reporting entirely is covered by the registry's
+    ///   existing freshness (TTL plus, locally, process liveness), exactly like
+    ///   every other arm — on the registry's injected clock.
     func isStillLive(_ join: ClaudeSessionJoin) -> Bool {
         guard case .resolved(let snapshot) = registry.resolve(marker: join.marker),
               snapshot.sessionID == join.snapshot.sessionID
@@ -539,9 +547,23 @@ struct ClaudeSessionJoinResolver {
             )
             return false
         }
-        guard snapshot.bridgeSessionID == binding.bridgeSessionID else {
+        // Re-ASK the registry rather than re-check the session we already
+        // picked (review finding, codex on PR #218). Asking only "does my
+        // session still report this id" answers a question that was already
+        // settled at start; what can change afterwards is who ELSE reports it.
+        // A second reporter arriving mid-dictation is exactly the case the
+        // start-time arm abstains on — and a hostile enrolled remote host can
+        // publish any label it likes, so "I was the sole reporter when we
+        // resolved" must not be a permanent claim. Re-resolving makes the
+        // abstention rules identical at both ends: unique fresh reporter, or no
+        // join. It subsumes the identity check too — `.resolved` can only name
+        // a session that still reports the bound id.
+        guard case .resolved(let current) =
+            registry.resolve(bridgeSessionID: binding.bridgeSessionID),
+            current.sessionID == join.snapshot.sessionID
+        else {
             Log.claudeContext.info(
-                "Remote Control bridge session changed since dictation start; Claude context withheld"
+                "Remote Control bridge session no longer resolves to this session alone; Claude context withheld"
             )
             return false
         }
