@@ -328,9 +328,14 @@ and asking you to confirm**: *Insert into ~/.ssh/config* previews the exact
 block (an idempotent, marker-delimited splice; the rest of the file is never
 touched) before atomically writing it, and *Run on SSH host* previews the
 commands (token redacted) before running them through `ssh -o BatchMode=yes`
-with the token fed over stdin — it never appears in any process's argument
-list, on either machine. Nothing runs or is written without that explicit
-confirmation.
+with the token fed over the remote shell's stdin — so it never appears in any
+process's argument list **on your Mac**. On the host it does, briefly:
+`claude plugin install` takes its config as a flag and has no stdin path, so
+the token is in that one command's argv while it runs and in the plugin's
+userConfig under `~/.claude` afterwards, readable by anything running as you
+there. That is true whether the app runs the command or you paste it; see
+[docs/remote-claude-context.md](../../docs/remote-claude-context.md#3-a-token).
+Nothing runs or is written without that explicit confirmation.
 
 Everything the sheet gives you to copy is exactly what you run: no `#`
 commentary, no output to interpret. Step 3 is why — instead of handing you

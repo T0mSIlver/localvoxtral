@@ -1709,7 +1709,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                 return value
             }
             return call == 0
-                ? .init(exitCode: 0, message: "401")
+                ? .init(exitCode: 0, message: "LVX_HTTP:401")
                 : .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral")
         })
     }
@@ -1805,7 +1805,10 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let registry = try makeRegistry()
         let staleToken = Mutex("")
         let service = ClaudeRemoteEnrollmentService(runner: { _ in
-            .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral config: token=\(staleToken.withLock { $0 })")
+            .init(
+                exitCode: 0,
+                message: "LVX_HTTP:401\nlocalvoxtral-remote@localvoxtral config: token=\(staleToken.withLock { $0 })"
+            )
         })
         let model = await listeningModel(registry: registry, service: service)
         // The token the host still has configured is the pre-rotation one.
@@ -1959,6 +1962,94 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertTrue(model.verificationChecks.isEmpty)
         XCTAssertEqual(model.alert?.detail, "Checking the setup is not available in this build.")
+    }
+
+    /// MAJOR 1 (review round 2): the listener fact handed to the service is up
+    /// to a full timeout old by the time the verdicts come back. A listener that
+    /// died in between leaves the port to whoever takes it next, and that
+    /// squatter's 401 is indistinguishable from ours over the wire — so the ✓
+    /// requires bound at BOTH moments, and this pins the second one.
+    func testAListenerThatDiesDuringTheProbesCannotLeaveAStalePass() async throws {
+        let registry = try makeRegistry()
+        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
+        let listener = StubListener(hosts: registry)
+        let model = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: listener,
+            pluginService: { StubPluginService() },
+            enrollmentService: healthyVerificationService(),
+            performAsync: { _ in nil },
+            performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
+            performVerificationAsync: { body in
+                // The probes run while the test kills the listener — cooperative
+                // yields only, no wall-clock.
+                var latch = gate.makeAsyncIterator()
+                _ = await latch.next()
+                do {
+                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
+                } catch {
+                    return ClaudeVerificationAttempt(
+                        checks: [], failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            },
+            now: { Date(timeIntervalSince1970: 1_000_000) }
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        XCTAssertEqual(model.listenerStatus, .listening(port: 8473))
+        XCTAssertTrue(model.listenerIsBound, "bound when the probes are launched")
+
+        let inFlight = Task { await model.runVerification() }
+        while !model.isPerformingVerification { await Task.yield() }
+
+        // …and gone by the time they answer: our bind dropped and something
+        // else now holds the port.
+        listener.isListening = false
+        listener.bindError = ClaudeRemoteContextListener.StartFailure.bindFailed(errno: EADDRINUSE)
+        model.retryListener()
+        XCTAssertEqual(model.listenerStatus, .portConflict(port: 8473))
+
+        releaseGate.yield(())
+        releaseGate.finish()
+        await inFlight.value
+
+        let tunnel = try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel })
+        XCTAssertFalse(
+            tunnel.passed,
+            "the 401 that arrived was answered by whatever holds the port now, not by us"
+        )
+        XCTAssertTrue(tunnel.summary.contains("Something else answered"))
+    }
+
+    /// MINOR 1 (review round 2): a legacy host with no stored alias shows the
+    /// placeholder, and checking `your-ssh-host` would report on whatever
+    /// machine answers to that name — a wrong answer that looks like an answer.
+    func testAHostWithNoStoredAliasCannotBeChecked() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            XCTFail("a placeholder alias must never reach ssh")
+            return .init(exitCode: 0, message: "")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        // A host from before aliases were persisted.
+        let enrollment = try registry.enroll(label: "legacy")
+        model.refreshHosts()
+        await model.rotate(hostID: enrollment.host.id)
+
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        XCTAssertFalse(presentation.canRunRemoteSetup)
+        XCTAssertEqual(presentation.sshHostAlias, ClaudeIntegrationSettingsModel.unknownAliasPlaceholder)
+
+        await model.runVerification()
+
+        XCTAssertTrue(model.verificationChecks.isEmpty, "no alias, no checks — and no guessing")
+        XCTAssertNil(model.alert, "the sheet already explains why; a modal would be noise")
     }
 
     // MARK: Screenshot preview

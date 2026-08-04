@@ -1030,7 +1030,16 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertEqual(script, "set -eu\nuname -a\n")
     }
 
-    func testRemoteSetupKeepsTokenInStdinAndOutOfEveryArgv() throws {
+    /// LOCAL argv freedom, and nothing more.
+    ///
+    /// What this proves is that no process THIS Mac spawns carries the token in
+    /// its arguments — it rides the ssh child's stdin, so `ps` here never sees
+    /// it. It says nothing about the remote host, and the old name implied
+    /// otherwise (review finding, round 2): `claude plugin install` takes its
+    /// config as a flag and has no stdin path, so on the host the token IS in
+    /// that command's argv while it runs, and in `~/.claude` afterwards. That
+    /// is unavoidable and is documented rather than papered over.
+    func testRemoteSetupKeepsTokenOutOfEveryArgvOnTHISMac() throws {
         let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
         let service = ClaudeRemoteEnrollmentService(runner: { invocation in
             calls.withLock { $0.append(invocation) }
@@ -1044,6 +1053,30 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(
             recorded.contains { String(decoding: $0.standardInput, as: UTF8.self).contains(token) }
         )
+        // …and the remote-side exposure is stated where a user will meet it,
+        // rather than being implied away.
+        let documentation = try documentation()
+        XCTAssertTrue(documentation.contains("local and only local"))
+        XCTAssertTrue(documentation.contains("/proc/<pid>/cmdline"))
+        XCTAssertTrue(documentation.lowercased().contains("rotate"))
+    }
+
+    /// MINOR 5 (review round 2): the snippet's token-freedom assertion was lost
+    /// in the port and is restored here, extended to the update commands.
+    ///
+    /// Both are text that outlives the sheet: `~/.ssh/config` gets copied
+    /// between machines and pasted into issues, and the update commands are
+    /// shown long after the one-time token is gone. Neither may ever carry it.
+    func testNeitherTheSnippetNorTheUpdateCommandsEverCarryTheToken() throws {
+        let plan = try allocatedPlan()
+        XCTAssertFalse(plan.sshConfigSnippet.contains(token))
+        for command in plan.updateCommands {
+            XCTAssertFalse(command.contains(token), command)
+            XCTAssertFalse(command.contains("\(ClaudeRemoteEnrollmentService.tokenConfigKey)="))
+        }
+        // The install command is the ONE place it belongs, so a test that
+        // passed because the token was mistyped would be worthless.
+        XCTAssertTrue(plan.remoteCommands.joined().contains(token))
     }
 
     func testExecutionStopsAtTheFirstFailure() throws {
@@ -1367,7 +1400,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     /// probe just disabled.
     func testTheTunnelProbeDoesNotClearForwardingsAndSendsNoCredential() throws {
         let recorded = try verify(
-            results: [.init(exitCode: 0, message: "401"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")]
         ).invocations
         XCTAssertEqual(recorded.count, 2)
         XCTAssertEqual(
@@ -1397,7 +1430,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testTheTunnelProbeIsReadOnly() throws {
         let recorded = try verify(
             remoteForwardPort: 28511,
-            results: [.init(exitCode: 0, message: "401"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")]
         ).invocations
         let script = String(decoding: recorded[0].standardInput, as: UTF8.self)
         XCTAssertTrue(script.contains("http://127.0.0.1:28511/v1/hook/SessionStart"))
@@ -1447,7 +1480,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     func testA401MeansTheTunnelIsUpWhenOurOwnListenerIsBound() throws {
         let checks = try verify(
-            results: [.init(exitCode: 0, message: "401\n"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:401\n"), .init(exitCode: 0, message: "")]
         ).checks
         let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
         XCTAssertTrue(tunnel.passed, "401 is the SUCCESS signal, and the app must say so, not the user")
@@ -1462,7 +1495,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let checks = try verify(
             remoteForwardPort: 28511,
             listenerIsBound: false,
-            results: [.init(exitCode: 0, message: "401"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")]
         ).checks
         let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
         XCTAssertFalse(tunnel.passed)
@@ -1478,7 +1511,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // The script always exits 0 and prints one token, so 000 can only mean
         // "nothing answered on the forwarded port".
         let checks = try verify(
-            results: [.init(exitCode: 0, message: "000"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:000"), .init(exitCode: 0, message: "")]
         ).checks
         let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
         XCTAssertFalse(tunnel.passed)
@@ -1494,7 +1527,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // send them to fix the wrong machine.
         let checks = try verify(
             listenerIsBound: false,
-            results: [.init(exitCode: 0, message: "000"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:000"), .init(exitCode: 0, message: "")]
         ).checks
         let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
         XCTAssertFalse(tunnel.passed)
@@ -1545,7 +1578,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // either: the user has to learn something else holds the port.
         let checks = try verify(
             remoteForwardPort: 28511,
-            results: [.init(exitCode: 0, message: "200"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:200"), .init(exitCode: 0, message: "")]
         ).checks
         let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
         XCTAssertFalse(tunnel.passed)
@@ -1555,7 +1588,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     func testThePluginCheckPassesOnlyWhenTheRemotePluginIsListed() throws {
         let present = try verify(
             results: [
-                .init(exitCode: 0, message: "401"),
+                .init(exitCode: 0, message: "LVX_HTTP:401"),
                 .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral  enabled"),
             ]
         ).checks
@@ -1563,7 +1596,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
         let absent = try verify(
             results: [
-                .init(exitCode: 0, message: "401"),
+                .init(exitCode: 0, message: "LVX_HTTP:401"),
                 .init(exitCode: 0, message: "some-other-plugin@elsewhere  enabled"),
             ]
         ).checks
@@ -1579,7 +1612,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         // installed" are different problems with different fixes.
         let checks = try verify(
             results: [
-                .init(exitCode: 0, message: "401"),
+                .init(exitCode: 0, message: "LVX_HTTP:401"),
                 .init(exitCode: 127, message: "localvoxtral: 'claude' was not found on this host's non-interactive PATH"),
             ]
         ).checks
@@ -1591,7 +1624,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     func testThePluginProbeResolvesClaudeFromUserLocalInstallLocations() throws {
         let recorded = try verify(
-            results: [.init(exitCode: 0, message: "401"), .init(exitCode: 0, message: "")]
+            results: [.init(exitCode: 0, message: "LVX_HTTP:401"), .init(exitCode: 0, message: "")]
         ).invocations
         let script = String(decoding: recorded[1].standardInput, as: UTF8.self)
         XCTAssertTrue(script.contains("command -v claude"))
@@ -1607,7 +1640,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let leaked = "tokenZZZZYYYYXXXXWWWWVVVV99998888"
         let run = try verify(
             results: [
-                .init(exitCode: 0, message: "401\nbanner: \(leaked)"),
+                .init(exitCode: 0, message: "LVX_HTTP:401\nbanner: \(leaked)"),
                 .init(
                     exitCode: 0,
                     message: "localvoxtral-remote@localvoxtral  enabled  config: token=\(leaked)"
@@ -1633,7 +1666,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         let leaked = "tokenQQQQRRRRSSSSTTTTUUUU77776666"
         let run = try verify(
             results: [
-                .init(exitCode: 0, message: "401"),
+                .init(exitCode: 0, message: "LVX_HTTP:401"),
                 .init(exitCode: 3, message: "error: could not read config token=\(leaked)"),
             ]
         )
@@ -1643,6 +1676,105 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         XCTAssertTrue(plugin.detail.contains("3"), "the exit code is ours to report")
     }
 
+    /// MINOR 2 (review round 2). The probe's answer is a line the probe itself
+    /// printed; a login banner, an rc-file echo or a MOTD that happens to end
+    /// in `401` must not be able to decide a verdict.
+    func testOnlyTheProbesOwnFramedLineDecidesTheVerdict() throws {
+        let script = String(
+            decoding: ClaudeRemoteEnrollmentService.tunnelProbeScript(remoteForwardPort: 8473),
+            as: UTF8.self
+        )
+        XCTAssertTrue(script.contains(ClaudeRemoteEnrollmentService.httpFramePrefix))
+
+        // Chatty host, framed answer last: the frame wins.
+        let noisy = try verify(
+            results: [
+                .init(
+                    exitCode: 0,
+                    message: "Welcome to builder\nLast login: 401\nLVX_HTTP:401"
+                ),
+                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+            ]
+        ).checks
+        XCTAssertTrue(try XCTUnwrap(noisy.first { $0.kind == .tunnel }).passed)
+
+        // Chatty host, NO framed answer: an unframed `401` must not pass, and
+        // must read as "nothing answered" rather than as a status.
+        let unframed = try verify(
+            results: [
+                .init(exitCode: 0, message: "Welcome to builder\n401"),
+                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+            ]
+        ).checks
+        let tunnel = try XCTUnwrap(unframed.first { $0.kind == .tunnel })
+        XCTAssertFalse(tunnel.passed, "an unframed line is not our probe speaking")
+        XCTAssertEqual(tunnel.summary, "No tunnel is live right now.")
+    }
+
+    func testAFramedAnswerThatIsNotAStatusCodeIsTreatedAsSilence() throws {
+        // Truncation, a wrapper's rewrite, anything: three digits or it is not
+        // a code, and a non-code must never be reported as one.
+        let checks = try verify(
+            results: [
+                .init(exitCode: 0, message: "LVX_HTTP:not-a-code"),
+                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+            ]
+        ).checks
+        let tunnel = try XCTUnwrap(checks.first { $0.kind == .tunnel })
+        XCTAssertFalse(tunnel.passed)
+        XCTAssertEqual(tunnel.summary, "No tunnel is live right now.")
+        XCTAssertFalse(tunnel.detail.contains("not-a-code"), "unparsed host text must not travel")
+    }
+
+    /// MAJOR 1 (review round 2), service half: the local fact is re-applied to
+    /// an already-computed verdict, so a listener that died during the probes
+    /// cannot leave a stale ✓ standing.
+    func testReconcilingWithAnUnboundListenerDowngradesOnlyThePassingTunnelCheck() throws {
+        let checks = try verify(
+            remoteForwardPort: 28511,
+            results: [
+                .init(exitCode: 0, message: "LVX_HTTP:401"),
+                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+            ]
+        ).checks
+        XCTAssertEqual(checks.map(\.passed), [true, true])
+
+        let reconciled = ClaudeRemoteEnrollmentService.reconciled(
+            checks, remoteForwardPort: 28511, listenerIsBound: false
+        )
+        let tunnel = try XCTUnwrap(reconciled.first { $0.kind == .tunnel })
+        XCTAssertFalse(tunnel.passed)
+        XCTAssertTrue(tunnel.summary.contains("Something else answered"))
+        XCTAssertTrue(tunnel.summary.contains("28511"))
+        // The plugin verdict describes the HOST and is untouched: an unbound
+        // listener here does not make "installed over there" less true.
+        XCTAssertTrue(try XCTUnwrap(reconciled.first { $0.kind == .plugin }).passed)
+
+        // Still bound ⇒ nothing changes at all.
+        XCTAssertEqual(
+            ClaudeRemoteEnrollmentService.reconciled(
+                checks, remoteForwardPort: 28511, listenerIsBound: true
+            ),
+            checks
+        )
+    }
+
+    func testReconcilingNeverUpgradesAFailedVerdict() throws {
+        // A host that said "curl is missing" is not made healthy by this Mac's
+        // listener being fine.
+        let checks = try verify(
+            results: [
+                .init(exitCode: 0, message: ClaudeRemoteEnrollmentService.missingCurlSentinel),
+                .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral"),
+            ]
+        ).checks
+        let reconciled = ClaudeRemoteEnrollmentService.reconciled(
+            checks, remoteForwardPort: 8473, listenerIsBound: true
+        )
+        XCTAssertEqual(reconciled, checks)
+        XCTAssertFalse(try XCTUnwrap(reconciled.first { $0.kind == .tunnel }).passed)
+    }
+
     func testVerificationNeverWritesTheSSHConfig() throws {
         let fileSystem = MemorySSHConfigFileSystem(
             state: ClaudeRemoteSSHConfigState(
@@ -1650,7 +1782,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             )
         )
         let service = ClaudeRemoteEnrollmentService(
-            runner: { _ in .init(exitCode: 0, message: "401") },
+            runner: { _ in .init(exitCode: 0, message: "LVX_HTTP:401") },
             sshConfigFileSystem: fileSystem
         )
         _ = try service.executeVerification(sshHostAlias: "builder", listenerIsBound: true)

@@ -341,6 +341,17 @@ public final class ClaudeIntegrationSettingsModel {
     /// same seams and the same result rows.
     public var isEnrollmentBusy: Bool { isPerformingEnrollmentAction || isPerformingVerification }
 
+    /// Whether THIS Mac currently holds the listener port.
+    ///
+    /// `.listening` and nothing else: `.portConflict` and `.failed` both mean
+    /// the port is not ours, which is exactly the case a forwarded 401 must not
+    /// pass. Read at two different moments by `runVerification`, so it is one
+    /// property rather than two copies of the same expression.
+    var listenerIsBound: Bool {
+        guard let listener, listener.isListening else { return false }
+        return listenerStatus == .listening(port: listener.boundPort)
+    }
+
     /// What the cmux control socket last told us, as one short sentence in the
     /// pane. Written by the join resolver on every attempt, so a user who
     /// dictates and sees no cmux context can read WHY here instead of in the
@@ -1145,7 +1156,13 @@ public final class ClaudeIntegrationSettingsModel {
     public func runVerification() async {
         guard let presentation = presentedPlan,
               !isEnrollmentBusy,
-              !presentation.isPreview
+              !presentation.isPreview,
+              // Same gate as one-click setup, for the same reason: with no
+              // alias on file the sheet shows a placeholder, and checking
+              // `your-ssh-host` would report on whatever machine happens to
+              // answer to that name — a wrong answer that looks like an answer
+              // (review finding, round 2).
+              presentation.canRunRemoteSetup
         else { return }
         isPerformingVerification = true
         verificationChecks = []
@@ -1154,15 +1171,12 @@ public final class ClaudeIntegrationSettingsModel {
         let service = enrollmentService
         let alias = presentation.sshHostAlias
         let port = presentation.remoteForwardPort
-        // `listening` and nothing else: `.portConflict` and `.failed` both mean
-        // the port is not ours, which is exactly the case a 401 must not pass.
-        let listenerIsBound = listener?.isListening == true
-            && listenerStatus == .listening(port: listener?.boundPort ?? 0)
+        let listenerWasBoundAtLaunch = listenerIsBound
         let attempt = await performVerificationAsync {
             try service.executeVerification(
                 sshHostAlias: alias,
                 remoteForwardPort: port,
-                listenerIsBound: listenerIsBound
+                listenerIsBound: listenerWasBoundAtLaunch
             )
         }
 
@@ -1187,7 +1201,18 @@ public final class ClaudeIntegrationSettingsModel {
         // host still has configured is one this process no longer knows. The
         // service therefore never puts probe output in a check at all, which is
         // the only form of that guarantee that survives rotation.
-        verificationChecks = attempt.checks
+        //
+        // The listener fact is read again HERE, on the main actor, after the
+        // probes returned: the value handed to the service is up to a full
+        // timeout old, and a listener that died in the meantime leaves the port
+        // to whoever takes it next — whose 401 is indistinguishable from ours
+        // over the wire. The ✓ requires bound at both moments (review finding,
+        // round 2).
+        verificationChecks = ClaudeRemoteEnrollmentService.reconciled(
+            attempt.checks,
+            remoteForwardPort: port,
+            listenerIsBound: listenerIsBound
+        )
 
         let failed = verificationChecks.filter { !$0.passed }
         guard !failed.isEmpty else { return }

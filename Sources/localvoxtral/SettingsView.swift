@@ -1447,7 +1447,13 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         body: plan.remoteCommands.joined(separator: "\n"),
                         displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
                         note: presentation.canRunRemoteSetup
-                            ? "The token travels through SSH stdin, never process arguments. Copy-pasting it instead leaves it in the host's shell history unless your shell ignores space-prefixed commands."
+                            // Accurate about WHERE the guarantee holds: the
+                            // token never enters an argv on this Mac, but
+                            // `claude plugin install` takes it as a flag, so on
+                            // the host it is in that command's arguments while
+                            // it runs. Overclaiming here is worse than saying
+                            // nothing (review finding, round 2).
+                            ? "The token never enters a process argument on this Mac. On the host it is in the install command's arguments while it runs, and stored under ~/.claude after — rotate if that host is shared."
                             : "Replace \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder) with the alias from your ~/.ssh/config and run these yourself — this host was enrolled before localvoxtral recorded its alias.",
                         primaryActionTitle: presentation.canRunRemoteSetup ? "Run on SSH host" : nil,
                         enrollmentAction: .runRemoteSetup,
@@ -1494,12 +1500,19 @@ private struct ClaudeRemoteEnrollmentSheet: View {
     private var verificationSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("3. Check the setup").font(.headline)
-            Text("Runs two read-only checks over SSH. Changes nothing.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Text(
+                presentation.canRunRemoteSetup
+                    ? "Runs two read-only checks over SSH. Changes nothing."
+                    // Same reason step 2 withholds its button: with no alias on
+                    // file, checking the placeholder would report on whatever
+                    // machine answers to that name.
+                    : "Unavailable until this host's SSH alias is known — localvoxtral did not record one when it was enrolled. Re-enrol it, or run the checks from the linked page yourself."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
             Button("Check Setup") { Task { await model.runVerification() } }
                 .controlSize(.small)
-                .disabled(actionsDisabled)
+                .disabled(actionsDisabled || !presentation.canRunRemoteSetup)
             ForEach(model.verificationChecks) { check in
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(check.passed ? "✓" : "✗") \(check.title): \(check.summary)")

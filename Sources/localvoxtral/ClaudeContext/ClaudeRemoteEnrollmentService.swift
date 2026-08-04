@@ -743,13 +743,6 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// about the plugin (review finding, round 1).
     public static let defaultVerificationTimeout: TimeInterval = 20
 
-    /// Printed by the probe script when the host has no `curl`. A missing curl
-    /// and a refused connection both produce "nothing came back" otherwise, and
-    /// they have completely different fixes — the plugin's shim needs `curl`,
-    /// so a host without it can never deliver context no matter how healthy the
-    /// tunnel is.
-    static let missingCurlSentinel = "LVX_NO_CURL"
-
     /// Check an enrolled host's setup and return interpreted verdicts.
     ///
     /// Read-only by construction: it writes nothing locally (no filesystem seam
@@ -889,15 +882,85 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// only mean SSH itself failed. Without that, curl's connect failure (exit
     /// 7) and ssh's own failure (255) would be the same observation, and "no
     /// tunnel" would be reported as "cannot reach the host".
+    /// Prefix that FRAMES the probe's own output.
+    ///
+    /// The probe's answer is one line this script printed, and nothing else on
+    /// the connection may be mistaken for it: a login banner, an rc-file echo,
+    /// or a MOTD ending in `401` would otherwise decide a verdict. Parsing takes
+    /// the FIRST `LVX_`-framed line and ignores every other byte.
+    ///
+    /// The residual, stated plainly: a HOSTILE host can print the frame itself
+    /// and say whatever it likes about its own reachability. That is accepted —
+    /// it is a machine the user enrolled, lying about whether it can reach them,
+    /// with no mutation and no credential consequence on either side (the probe
+    /// sends none and writes nothing). Framing exists to stop ACCIDENTS, not to
+    /// authenticate the host.
+    static let probeFramePrefix = "LVX_"
+    /// Framed answer carrying the HTTP status code the host observed.
+    static let httpFramePrefix = "LVX_HTTP:"
+    /// Printed when the host has no `curl`. A missing curl and a refused
+    /// connection both produce "nothing came back" otherwise, and they have
+    /// completely different fixes — the plugin's shim IS curl, so a host
+    /// without it can never deliver context no matter how healthy the tunnel.
+    static let missingCurlSentinel = "LVX_NO_CURL"
+
     static func tunnelProbeScript(remoteForwardPort: UInt16) -> Data {
         Data("""
         set -u
         command -v curl >/dev/null 2>&1 || { printf '%s\\n' '\(missingCurlSentinel)'; exit 0; }
         code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:\(remoteForwardPort)/v1/hook/SessionStart 2>/dev/null) || code=000
         [ -n "$code" ] || code=000
-        printf '%s\\n' "$code"
+        printf '\(httpFramePrefix)%s\\n' "$code"
 
         """.utf8)
+    }
+
+    /// The first framed line, or nil when the probe never spoke.
+    static func framedProbeAnswer(in output: String) -> String? {
+        output
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix(probeFramePrefix) }
+    }
+
+    /// The local half of the tunnel verdict, as its own value.
+    ///
+    /// Shared by the capture-time check and the interpretation-time
+    /// reconciliation so the two can never drift into different copy for the
+    /// same situation.
+    static func squatterTunnelCheck(remoteForwardPort: UInt16) -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: false,
+            summary: "Something else answered on port \(remoteForwardPort).",
+            hint: "localvoxtral is not listening on this Mac, so the reply came from "
+                + "whatever holds the port. Fix that first, then check again.",
+            detail: "HTTP 401 arrived while this Mac's listener was not bound."
+        )
+    }
+
+    /// Re-apply the local half of the tunnel verdict after the probes returned.
+    ///
+    /// `listenerIsBound` is read TWICE on purpose — once before the probes are
+    /// launched and once here, after up to a full timeout of detached ssh work
+    /// (review finding, round 2). A listener that died in between leaves the
+    /// port to whoever grabs it next, and that squatter answers the forwarded
+    /// request with the same 401 we treat as proof. The ✓ therefore requires
+    /// bound at BOTH moments; either one false is the squatter verdict.
+    ///
+    /// Only a PASSING tunnel check can be downgraded here. Every other verdict
+    /// already described something the host said, and an unbound listener does
+    /// not make "curl is missing over there" less true.
+    public static func reconciled(
+        _ checks: [VerificationCheck],
+        remoteForwardPort: UInt16,
+        listenerIsBound: Bool
+    ) -> [VerificationCheck] {
+        guard !listenerIsBound else { return checks }
+        return checks.map { check in
+            guard check.kind == .tunnel, check.passed else { return check }
+            return squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
+        }
     }
 
     static func tunnelCheck(
@@ -915,10 +978,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 detail: "ssh exited with code \(result.exitCode)."
             )
         }
-        let answer = result.message
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .last(where: { !$0.isEmpty }) ?? ""
+
+        // Only our own framed line decides anything; everything else the
+        // connection printed is ignored by construction.
+        let answer = framedProbeAnswer(in: result.message)
 
         if answer == missingCurlSentinel {
             return VerificationCheck(
@@ -930,21 +993,23 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             )
         }
 
-        switch answer {
+        // A code is three digits or it is not a code. Anything else — including
+        // no framed line at all, which means the script never got to print one
+        // — is "nothing answered", not a status.
+        let code = answer
+            .flatMap { $0.hasPrefix(httpFramePrefix) ? String($0.dropFirst(httpFramePrefix.count)) : nil }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.count == 3 && $0.allSatisfy(\.isNumber) ? $0 : nil }
+
+        switch code {
         case "401":
             // 401 is the pass — an unauthenticated probe MUST be refused — but
             // only half of it. It proves the request crossed the tunnel and
             // something on this Mac answered; that the something was us is the
-            // caller's fact, not the host's.
+            // caller's fact, not the host's, and `reconciled` re-checks it after
+            // the probes return.
             guard listenerIsBound else {
-                return VerificationCheck(
-                    kind: .tunnel,
-                    passed: false,
-                    summary: "Something else answered on port \(remoteForwardPort).",
-                    hint: "localvoxtral is not listening on this Mac, so the reply came from "
-                        + "whatever holds the port. Fix that first, then check again.",
-                    detail: "HTTP 401 arrived while this Mac's listener was not bound."
-                )
+                return squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
             }
             return VerificationCheck(
                 kind: .tunnel,
@@ -952,7 +1017,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 summary: "Tunnel is up and localvoxtral answered.",
                 detail: "HTTP 401 (the expected refusal of an unauthenticated probe)."
             )
-        case "000", "":
+        case "000", nil:
             return listenerIsBound
                 ? VerificationCheck(
                     kind: .tunnel,
@@ -970,15 +1035,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                     detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort), "
                         + "and this Mac's listener was not bound."
                 )
-        default:
+        case .some(let code):
             return VerificationCheck(
                 kind: .tunnel,
                 passed: false,
                 summary: "Something else answered on port \(remoteForwardPort).",
                 hint: "Only localvoxtral should answer there. Find what holds the port and quit it.",
-                // The status code is a three-digit number this process parsed,
-                // not remote text passed through.
-                detail: "The reply was HTTP \(answer.prefix(3).allSatisfy(\.isNumber) ? String(answer.prefix(3)) : "?")."
+                // Three digits this process validated, not remote text passed
+                // through.
+                detail: "The reply was HTTP \(code)."
             )
         }
     }

@@ -29,10 +29,23 @@ What it can never do:
   string, not a path — the app has no way to turn one into a local file read;
 - impersonate another enrolled host. Sessions are namespaced by the host whose
   token authenticated them;
-- send anything at all while the feature is off, or after you revoke it.
+- reach your dictation while the toggle is off.
 
-The feature is gated on **Use Claude Code project files as polish context** in
-Settings › Context, and on a local polishing endpoint.
+Two different switches, worth keeping apart:
+
+- **The toggle** (**Use Claude Code project files as polish context**, Settings
+  › Context) gates what a dictation ATTACHES. With it off, nothing a host sent
+  reaches the polisher. It does not close the port: while any enrolled host is
+  unrevoked, the listener keeps accepting and caching valid hook records.
+- **Revocation** is what stops a host. Its requests are then rejected rather
+  than not received — if you have other enrolled hosts, one of them is still
+  holding the port open — and with no active hosts left the listener closes it
+  entirely.
+
+Polish context also stays on this Mac by default: everything above is sent only
+to a polisher running here, unless you turn on **Send polish context to
+non-local endpoints**, which extends it to the polishing endpoint you
+configured.
 
 ---
 
@@ -84,8 +97,29 @@ not a mode of it. It declares hooks only — no skill, no command, no agent, no
 status line, so it never spends your tokens. Its shim is POSIX `sh` plus `curl`
 and nothing else: no localvoxtral binary, no `jq`, no Node on the remote host.
 
-The app can run both commands for you over `ssh`, sending them through stdin so
-the token never appears in any process's arguments.
+The app can run both commands for you over `ssh`, sending them through the
+remote shell's stdin. That guarantee is **local and only local**: the token
+never appears in the arguments of any process on your Mac, so it cannot be read
+out of `ps` here, and it is never written to a file here.
+
+On the remote host it is a different story, and it cannot be otherwise.
+`claude plugin install` takes its config as a command-line flag — there is no
+stdin path into it — so for the lifetime of that one command the token sits in
+that process's arguments, where anyone able to read the host's process table
+(`/proc/<pid>/cmdline` on Linux) can see it. Afterwards it is stored in the
+plugin's userConfig under `~/.claude`, readable by anything running as you on
+that host.
+
+That is the honest boundary of what a token can protect: it bounds what a
+remote host may ask localvoxtral for, not what someone with access to that
+host's processes and files can read. Practical consequences:
+
+- On a shared or multi-user host, prefer pasting the command yourself, when and
+  where you choose, rather than letting setup run it — the exposure window is
+  brief either way, but it is yours to time.
+- If you think the token was seen, **rotate it**. Rotation takes effect
+  immediately, with no grace period, and re-running step 2 with the new token is
+  the whole recovery.
 
 ### 3. A token
 
@@ -198,16 +232,21 @@ your terminal and the pane stays unjoined. In `~/.tmux.conf`:
 set -g set-titles on
 ```
 
-Without it you still get the off-screen context (prompt, working directory,
-files) — you just do not get the screen join. herdr users need nothing here: a
-herdr pane is joined by its pane id, not by a title.
+Without it you get **no context from that pane at all** — not a reduced amount.
+Context is only ever attached to a session localvoxtral positively joined, and
+for a remote session the title marker is the only way that join can happen. A
+lookup that cannot identify the session abstains rather than guessing, so an
+unjoined pane contributes nothing. herdr users need nothing here: a herdr pane
+is joined by its pane id, not by a title.
 
 ## What happens when things are missing
 
 Everything fails open, silently. If `sh` or `curl` is absent on the host, if the
 tunnel is down, if localvoxtral is not running, or if the app simply does not
 answer — the hook exits successfully and you get no context. A Claude Code turn
-is never blocked or delayed by this feature.
+is never blocked by this feature, and the delay it can add is bounded: the
+shim's curl runs with `--max-time 1`, so the worst case is one second before it
+gives up and exits 0.
 
 Plain `ssh` to a host you have not enrolled keeps working exactly as before: no
 tunnel, no token, no hooks.
