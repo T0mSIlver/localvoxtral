@@ -96,12 +96,18 @@ fields and the threat model.
 
 > [!NOTE]
 > **Session joins work in Ghostty (≥ 1.4, today the
-> [tip channel](https://ghostty.org/docs/install/pre)), iTerm2, and
-> Terminal.app.** localvoxtral asks the terminal itself for the focused
+> [tip channel](https://ghostty.org/docs/install/pre)), iTerm2,
+> Terminal.app, and [cmux](https://github.com/manaflow-ai/cmux)
+> (opt-in).** localvoxtral asks the terminal itself for the focused
 > pane's TTY and matches it exactly against the session's — and inside a
 > [herdr](https://herdr.dev) multiplexer, the join binds to the precise pane
 > and reads its screen from herdr directly, so neighboring panes never leak
-> into your prompt. Joins are exact-or-nothing: any ambiguity attaches no
+> into your prompt. In cmux, the join keys on the surface id cmux itself
+> injects into the session — including shells opened with `cmux ssh` — read
+> over cmux's own automation socket, which you must first switch to
+> `password` mode; the
+> [plugin README](../integrations/claude-code/README.md) covers the
+> two-step setup. Joins are exact-or-nothing: any ambiguity attaches no
 > context at all. On stable (pre-1.4) Ghostty, an opt-in **window-title
 > marker fallback** is available — the
 > [plugin README](../integrations/claude-code/README.md) covers its setup. A
