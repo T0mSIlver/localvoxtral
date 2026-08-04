@@ -235,7 +235,7 @@ fi
 # UserPromptSubmit hook's non-JSON stdout is APPENDED TO THE USER'S PROMPT,
 # and valid JSON with the wrong keys (hookSpecificOutput.additionalContext)
 # would inject context. Whatever answered on $PORT — normally the tunnel to the
-# app, but a squatter can bind that port first (see AGENTS.md) — its response
+# app, but a squatter can bind that port first (see docs/agent/invariants.md) — its response
 # must never be able to put a byte into the prompt. So printing fails CLOSED,
 # the mirror image of delivery failing open: stdout is either one single small
 # line matching EXACTLY the one body the listener can emit

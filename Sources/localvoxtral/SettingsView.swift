@@ -1508,7 +1508,8 @@ private struct AboutSettingsPane: View {
 
                 // Constant row, variant-dependent content: "which binary am I
                 // running" is exactly the question that has cost field-debug
-                // time before (AGENTS.md), and version alone can't answer it —
+                // time before (docs/agent/field-debugging.md), and version
+                // alone can't answer it —
                 // dogfood builds keep the same version and bundle id.
                 SettingsFieldRow(title: "Build") {
                     VStack(alignment: .leading, spacing: 6) {

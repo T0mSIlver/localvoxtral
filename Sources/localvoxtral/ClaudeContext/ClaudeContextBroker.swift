@@ -648,8 +648,9 @@ public final class ClaudeContextBroker: Sendable {
             // transient child of the session, never the session process
             // itself, which is exactly why the claude pid rides in the record
             // (see ClaudeSocketGuard.peerPID). The residual same-user threat
-            // for THAT path is accepted and documented in AGENTS.md — trust
-            // is transport-derived, and every local peer shares this uid.
+            // for THAT path is accepted and documented in
+            // docs/agent/invariants.md — trust is transport-derived, and
+            // every local peer shares this uid.
             if record.agent == .opencode {
                 guard let peerPID, record.process?.claudePID == peerPID else {
                     Log.claudeContext.error(

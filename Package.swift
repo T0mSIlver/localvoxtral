@@ -69,6 +69,10 @@ let package = Package(
                 .product(name: "ShortcutRecorder", package: "ShortcutRecorder"),
                 "ClaudeContextWire",
             ],
+            // Colocated agent-guide markdown, not a bundle resource.
+            exclude: [
+                "ClaudeContext/AGENTS.md"
+            ],
             resources: [
                 .process("Resources"),
             ],
