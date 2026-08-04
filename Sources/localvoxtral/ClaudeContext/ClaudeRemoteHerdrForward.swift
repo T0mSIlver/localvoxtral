@@ -382,6 +382,9 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     /// observe exhaustion without waiting out the production default.
     var reapPollAttempts = LiveHerdrForwardProcess.defaultReapPollAttempts
     var reapPollInterval = LiveHerdrForwardProcess.defaultReapPollInterval
+    /// Test seams, passed straight through. See `LiveHerdrForwardProcess`.
+    var reapEffortDidFinish: @Sendable () -> Void = {}
+    var willAttemptTeardownLock: @Sendable () -> Void = {}
 
     func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
         guard !argv.isEmpty else { throw SpawnError.emptyArgv }
@@ -442,7 +445,9 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
             pid: pid,
             waitForChild: waitForChild,
             reapPollAttempts: reapPollAttempts,
-            reapPollInterval: reapPollInterval
+            reapPollInterval: reapPollInterval,
+            reapEffortDidFinish: reapEffortDidFinish,
+            willAttemptTeardownLock: willAttemptTeardownLock
         )
     }
 
@@ -493,6 +498,16 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// follows it, rather than asserting against a three-second default.
     private let reapPollAttempts: Int
     private let reapPollInterval: TimeInterval
+    /// Fires when the collection effort reaches a terminal state — collected,
+    /// definitively failed, or budget exhausted. Exists so a test can WAIT for
+    /// the end of the poll chain instead of sampling a counter and hoping
+    /// (review round 8b): sampling cannot tell "finished" from "descheduled".
+    private let reapEffortDidFinish: @Sendable () -> Void
+    /// Fires whenever a teardown is about to need the state mutex — on entry to
+    /// `terminate()`, and again before each group signal. That placement is the
+    /// point: it marks a teardown ARRIVING at the lock, which is what a race
+    /// test must establish before it starts timing anything (review round 8b).
+    private let willAttemptTeardownLock: @Sendable () -> Void
 
     init(
         pid: pid_t,
@@ -500,12 +515,16 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
             waitpid($0, $1, $2)
         },
         reapPollAttempts: Int = LiveHerdrForwardProcess.defaultReapPollAttempts,
-        reapPollInterval: TimeInterval = LiveHerdrForwardProcess.defaultReapPollInterval
+        reapPollInterval: TimeInterval = LiveHerdrForwardProcess.defaultReapPollInterval,
+        reapEffortDidFinish: @escaping @Sendable () -> Void = {},
+        willAttemptTeardownLock: @escaping @Sendable () -> Void = {}
     ) {
         self.pid = pid
         self.waitForChild = waitForChild
         self.reapPollAttempts = reapPollAttempts
         self.reapPollInterval = reapPollInterval
+        self.reapEffortDidFinish = reapEffortDidFinish
+        self.willAttemptTeardownLock = willAttemptTeardownLock
         reapQueue = DispatchQueue(
             label: "com.localvoxtral.claude.herdr-forward-reap.\(pid)", qos: .utility
         )
@@ -557,6 +576,10 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// then reaps, and every later call is a no-op. Cost: one zombie per open
     /// forward, for the life of one dictation.
     func terminate() {
+        // Announced BEFORE the first thing that needs the mutex — the guard
+        // below is itself a lock acquisition, so this is where a teardown
+        // arrives at the door.
+        willAttemptTeardownLock()
         // Not gated on `isRunning`: the leader may be gone while its group is
         // not. It IS gated on not-yet-reaped, which is the only thing that
         // makes `-pid` still mean our group.
@@ -596,6 +619,7 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// established (review round 7). `kill` is non-blocking, so holding the
     /// mutex across it costs nothing.
     private func signalGroup(_ signal: Int32) {
+        willAttemptTeardownLock()
         state.withLock { current in
             guard !current.reaped else { return }
             current.groupSignalsSent += 1
@@ -709,9 +733,13 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// better than a thread parked forever, and the next `close()` (or deinit)
     /// tries again.
     private func reapWithoutBlocking() {
-        guard !state.withLock({ $0.reaped }) else { return }
+        guard !state.withLock({ $0.reaped }) else {
+            reapEffortDidFinish()
+            return
+        }
         switch collectOnce() {
         case .reaped, .failed:
+            reapEffortDidFinish()
             return
         case .pending:
             break
@@ -722,15 +750,20 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     }
 
     private func pollForCollection(attemptsLeft: Int) {
-        guard !state.withLock({ $0.reaped }) else { return }
+        guard !state.withLock({ $0.reaped }) else {
+            reapEffortDidFinish()
+            return
+        }
         switch collectOnce() {
         case .reaped, .failed:
+            reapEffortDidFinish()
             return
         case .pending:
             guard attemptsLeft > 1 else {
                 Log.claudeContext.error(
                     "Remote herdr forward never became collectable; leaving it unreaped rather than waiting on it"
                 )
+                reapEffortDidFinish()
                 return
             }
             reapQueue.asyncAfter(deadline: .now() + reapPollInterval) { [self] in

@@ -799,17 +799,28 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let insideWaitpid = DispatchSemaphore(value: 0)
         let releaseWaitpid = DispatchSemaphore(value: 0)
         let calls = ReapCallCounter()
-        let process = try spawnExitingChild(waitForChild: { pid, status, options in
-            if calls.next() == 1 {
-                insideWaitpid.signal()
-                // Held long enough that "B is still blocked" cannot be confused
-                // with "B is merely slow": a teardown that DOES get through
-                // costs at most two 0.25 s grace waits, well under the window
-                // sampled below. Bounded so a failure cannot hang the suite.
-                _ = releaseWaitpid.wait(timeout: .now() + 3)
-            }
-            return waitpid(pid, status, options)
-        })
+        let signalAttempts = ReapCallCounter()
+        let spawner = ClaudeRemoteHerdrForwardSpawner(
+            executablePath: "/bin/sh",
+            environment: ["PATH": "/usr/bin:/bin"],
+            waitForChild: { pid, status, options in
+                if calls.next() == 1 {
+                    insideWaitpid.signal()
+                    // Held long enough that "B is still blocked" cannot be
+                    // confused with "B is merely slow": a teardown that DOES
+                    // get through costs at most two 0.25 s grace waits, well
+                    // under the window sampled below. Bounded so a failure
+                    // cannot hang the suite.
+                    _ = releaseWaitpid.wait(timeout: .now() + 3)
+                }
+                return waitpid(pid, status, options)
+            },
+            willAttemptTeardownLock: { _ = signalAttempts.next() }
+        )
+        let process = try XCTUnwrap(
+            try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
+        )
+        for _ in 0..<300 where process.isRunning { usleep(10_000) }
 
         // A: drives the collection and parks inside `waitpid`.
         let firstTeardownReturned = DispatchSemaphore(value: 0)
@@ -821,16 +832,34 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             insideWaitpid.wait(timeout: .now() + 5), .success,
             "the collection should have reached waitpid"
         )
+        let attemptsBeforeB = signalAttempts.value
 
         // B: a concurrent teardown, which must not be able to signal the group
         // while A holds the collection open. Deliberately does NOT touch the
-        // mutex from this thread — progress is observed through B's own
-        // completion, not through a counter that would itself take the lock.
+        // state mutex from this thread — progress is observed through the
+        // signal-ATTEMPT seam (which fires before the lock is taken) and
+        // through B's own completion.
         let secondTeardownReturned = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
             process.terminate()
             secondTeardownReturned.signal()
         }
+
+        // BARRIER (review round 8b): prove B has actually reached the lock
+        // before timing anything. Without this, a starved global queue could
+        // leave B merely unscheduled and the interval below would "pass" even
+        // with the reap moved back outside the mutex. The seam fires on
+        // `terminate()` entry — the guard immediately after it IS a lock
+        // acquisition — so an increment means B is at the door.
+        var reachedTheLock = false
+        for _ in 0..<500 {
+            if signalAttempts.value > attemptsBeforeB {
+                reachedTheLock = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(reachedTheLock, "the second teardown never reached the group signal")
 
         // 1.2 s: longer than a teardown that gets through needs (≤0.5 s of
         // grace waits), shorter than the 3 s the collection is parked for.
@@ -846,11 +875,17 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
     }
 
     func testTheCollectionBudgetIsExhaustedAndThenReleased() throws {
-        // A genuine observation of the bound (review round 8): with a small
-        // injected budget, the poll must stop by itself — a fixed number of
-        // attempts, and then no further work at all.
+        // A genuine observation of the bound (review round 8b). Sampling a
+        // counter could not distinguish "the chain finished" from "the queue is
+        // busy": one poll running, a delayed utility queue, and the old
+        // assertions passed with four polls still scheduled — and a regression
+        // that stopped after a single hand-off poll passed too.
+        //
+        // So the process announces the END of the collection effort, and this
+        // waits for that instead of guessing.
         let attempts = 5
         let calls = ReapCallCounter()
+        let effortFinished = DispatchSemaphore(value: 0)
         let spawner = ClaudeRemoteHerdrForwardSpawner(
             executablePath: "/bin/sh",
             environment: ["PATH": "/usr/bin:/bin"],
@@ -859,7 +894,8 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
                 return 0 // WNOHANG: "still running", forever
             },
             reapPollAttempts: attempts,
-            reapPollInterval: 0.002
+            reapPollInterval: 0.002,
+            reapEffortDidFinish: { effortFinished.signal() }
         )
         let process = try XCTUnwrap(
             try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
@@ -868,33 +904,21 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
 
         process.terminate()
 
-        // Wait, bounded, for the count to stop moving: that IS the release.
-        var settled = 0
-        var previous = -1
-        for _ in 0..<200 {
-            let current = calls.value
-            if current == previous {
-                settled += 1
-                if settled >= 3 { break }
-            } else {
-                settled = 0
-                previous = current
-            }
-            usleep(10_000)
-        }
-
-        let total = calls.value
-        // One attempt on the caller's thread, then at most `attempts` on the
-        // handle's queue. Never more, and never forever.
-        XCTAssertGreaterThan(total, 1, "the hand-off must have polled at all")
-        XCTAssertLessThanOrEqual(
-            total, attempts + 1, "the budget must bound the number of attempts"
+        XCTAssertEqual(
+            effortFinished.wait(timeout: .now() + 5), .success,
+            "the poll chain must reach a terminal state on its own"
         )
+
+        // EXACTLY one attempt on the caller's thread plus the full queued
+        // budget — no fewer (a chain that gave up early) and no more (a chain
+        // that outlived its budget).
+        XCTAssertEqual(calls.value, attempts + 1)
         XCTAssertFalse(process.hasBeenReaped, "an uncollectable child is never claimed as reaped")
 
-        // And nothing is left running: no further attempts after the budget.
+        // And nothing is left scheduled: no further attempts after the end.
+        let afterFinish = calls.value
         usleep(50_000)
-        XCTAssertEqual(calls.value, total, "the poll chain must release itself")
+        XCTAssertEqual(calls.value, afterFinish, "the poll chain must release itself")
 
         collectForTestCleanup(process.leaderPID)
     }
