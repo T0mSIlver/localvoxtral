@@ -387,6 +387,35 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let empty = DogfoodCaptureBuilder.join(from: nil, abstentions: [])
         XCTAssertEqual(empty.arm, "none")
         XCTAssertNil(empty.abstentionReason)
+
+        // Every arm needs its own name in the record: a mis-blamed retrieval
+        // stage is exactly the attribution this capture exists to prevent.
+        let snapshot = ClaudeSessionSnapshot(
+            sessionID: "s1",
+            origin: .localAuthenticated(peerUID: 501),
+            marker: ClaudeSessionMarker(value: "lvx-abcd"),
+            firstSeen: Date(timeIntervalSince1970: 1_000_000)
+        )
+        let cmuxJoin = DogfoodCaptureBuilder.join(
+            from: ClaudeSessionJoin(
+                target: TerminalScreenTarget(
+                    pid: 4242, bundleID: TerminalScreenAllowlist.cmuxBundleID
+                ),
+                marker: snapshot.marker,
+                snapshot: snapshot,
+                windowID: 101,
+                mechanism: .cmuxSurface,
+                cmuxSurface: ClaudeCmuxSurfaceBinding(surfaceID: "surface-a")
+            ),
+            abstentions: []
+        )
+        XCTAssertEqual(cmuxJoin.arm, "cmuxSurface")
+        XCTAssertEqual(cmuxJoin.terminal, TerminalScreenAllowlist.cmuxBundleID)
+        XCTAssertEqual(cmuxJoin.origin, "local")
+        XCTAssertEqual(
+            cmuxJoin.herdrBound, false,
+            "a cmux join is not a herdr binding, and the record must not imply one"
+        )
     }
 
     func testScreenBuilderRouteAndCause() {
@@ -418,6 +447,15 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             socketPaneSwapApplied: true
         )
         XCTAssertEqual(herdr.route, "herdrPaneRead")
+
+        // Same swap flag, different app: the record must name WHICH socket
+        // answered, or a cmux surface read reads back as a herdr pane read.
+        let cmux = DogfoodCaptureBuilder.screen(
+            from: .render(excerpt: "surface", startText: "surface", elidedChurnLines: 0),
+            targetBundleID: TerminalScreenAllowlist.cmuxBundleID,
+            socketPaneSwapApplied: true
+        )
+        XCTAssertEqual(cmux.route, "cmuxSurfaceRead")
 
         let dropped = DogfoodCaptureBuilder.screen(
             from: .drop(reason: .targetChanged),

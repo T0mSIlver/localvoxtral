@@ -171,6 +171,7 @@ enum DogfoodCaptureBuilder {
         case .titleMarker: arm = "titleMarker"
         case .herdrPane: arm = "herdrPane"
         case .browserTab: arm = "browserTab"
+        case .cmuxSurface: arm = "cmuxSurface"
         }
         return DogfoodCaptureRecord.Join(
             arm: arm,
