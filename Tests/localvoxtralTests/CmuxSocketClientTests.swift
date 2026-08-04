@@ -433,10 +433,21 @@ final class CmuxSocketClientTests: XCTestCase {
         XCTAssertEqual(result, .authenticationRequired)
     }
 
+    /// `ok: true` is REQUIRED in this fixture, and its absence is what made an
+    /// earlier version of this test worthless: `Envelope.init` decodes `ok`
+    /// non-optionally, so an envelope without it fails to decode and the strict
+    /// id comparison is never reached. The test still went green — for the
+    /// wrong reason, and it would have gone green with id matching deleted.
+    /// With `ok` present the envelope decodes cleanly and a confirmed-looking
+    /// `authenticated: true` is refused on the id alone, which is the claim.
     func testALoginResponseAnsweringAnotherRequestIsRefused() async throws {
         let server = try CmuxTestServer { _, _ in
             var line = try! JSONSerialization.data(
-                withJSONObject: ["id": "not-our-request", "result": ["authenticated": true]]
+                withJSONObject: [
+                    "id": "not-our-request",
+                    "ok": true,
+                    "result": ["authenticated": true],
+                ]
             )
             line.append(0x0A)
             return line
