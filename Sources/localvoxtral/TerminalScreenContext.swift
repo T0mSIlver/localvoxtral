@@ -26,8 +26,15 @@ import Foundation
 ///   session/tab's visible contents (`contents` — NOT `history`, the
 ///   scrollback), answered by the terminal process itself and per-pane clean
 ///   by construction. Same trust class as the focused-TTY read.
+/// - **Control-socket capture** (`socketCaptureBundleIDs`): cmux, which draws
+///   its terminal with libghostty into a custom view that exposes NO AX text
+///   area at all, and has no scripting dictionary — its own JSON control
+///   socket (`surface.read_text`) is the only route to the text, and it is
+///   surface-exact by construction. Never AX: there is nothing there to read,
+///   and if a future cmux build ever exposed a composite one it must not
+///   silently become attachable.
 ///
-/// Adding an entry to either set is a deliberate, reviewed change — a
+/// Adding an entry to any of these sets is a deliberate, reviewed change — a
 /// user-supplied list is explicitly not supported.
 enum TerminalScreenAllowlist {
     /// Ghostty's shipped bundle identifier.
@@ -36,6 +43,8 @@ enum TerminalScreenAllowlist {
     static let iterm2BundleID = "com.googlecode.iterm2"
     /// Apple Terminal's bundle identifier.
     static let appleTerminalBundleID = "com.apple.Terminal"
+    /// cmux's shipped bundle identifier (github.com/manaflow-ai/cmux).
+    static let cmuxBundleID = "com.cmuxterm.app"
 
     /// Bundle IDs whose screen may be read as one raw AX grid
     /// (`TerminalScreenAXReader`). Verified single-`AXTextArea` apps only.
@@ -49,10 +58,25 @@ enum TerminalScreenAllowlist {
         iterm2BundleID, appleTerminalBundleID,
     ]
 
+    /// Bundle IDs whose focused surface text is read over the app's own control
+    /// socket (`CmuxSocketClient.surfaceText`). These apps must never be
+    /// captured over AX or AppleScript: cmux has neither surface, and the
+    /// socket answer is scoped to exactly the joined surface.
+    static let socketCaptureBundleIDs: Set<String> = [cmuxBundleID]
+
+    /// Bundle IDs we ever send an Apple event to — the focused-TTY read, and
+    /// for two of them the screen contents. Exactly the AX and AppleScript
+    /// routes: cmux ships no scripting dictionary, so an event to it could only
+    /// raise an Automation consent prompt for a capability that does not exist.
+    static let appleEventBundleIDs: Set<String> =
+        axCaptureBundleIDs.union(appleScriptCaptureBundleIDs)
+
     /// Bundle IDs eligible for screen-context reads and Claude session joins:
     /// exactly the apps with a verified capture route, by construction.
     static let supportedBundleIDs: Set<String> =
-        axCaptureBundleIDs.union(appleScriptCaptureBundleIDs)
+        axCaptureBundleIDs
+            .union(appleScriptCaptureBundleIDs)
+            .union(socketCaptureBundleIDs)
 
     /// Bundle IDs that are terminal-like for INSERTION but must never have
     /// their screen read. Not consulted by `isSupported` (an exact-match
@@ -84,6 +108,13 @@ enum TerminalScreenAllowlist {
     static func isAppleScriptCaptureSupported(_ bundleID: String?) -> Bool {
         guard let bundleID, !bundleID.isEmpty else { return false }
         return appleScriptCaptureBundleIDs.contains(bundleID)
+    }
+
+    /// Whether `bundleID`'s focused surface text is read over its own control
+    /// socket. Exact-match only.
+    static func isSocketCaptureSupported(_ bundleID: String?) -> Bool {
+        guard let bundleID, !bundleID.isEmpty else { return false }
+        return socketCaptureBundleIDs.contains(bundleID)
     }
 }
 

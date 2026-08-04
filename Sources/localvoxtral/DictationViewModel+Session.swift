@@ -667,7 +667,7 @@ extension DictationViewModel {
                 let capturedClipboardContext: PolishClipboardContext?
                 let capturedScreenDecision: TerminalScreenContextDecision
                 let capturedClaudeJoin: ClaudeSessionJoin?
-                let capturedHerdrPaneStart: HerdrPaneScreenCapture?
+                let capturedSocketPaneStart: SocketPaneScreenCapture?
                 if let endpointURL = polishingConfig?.endpointURL {
                     capturedClipboardContext = polishClipboardContextIfEnabled(
                         endpointURL: endpointURL
@@ -685,18 +685,21 @@ extension DictationViewModel {
                     // would clear it out from under the question and silently
                     // withdraw every raw screen attachment.
                     capturedClaudeJoin = consumeClaudeSessionJoin()
-                    capturedHerdrPaneStart = consumeHerdrPaneStartCapture()
+                    capturedSocketPaneStart = consumeSocketPaneStartCapture()
                 } else {
                     capturedClipboardContext = nil
                     capturedScreenDecision = .drop(reason: .noStartCapture)
                     capturedClaudeJoin = nil
-                    capturedHerdrPaneStart = nil
+                    capturedSocketPaneStart = nil
                     // No endpoint: nothing to ground for, and neither the
                     // capture nor the join must survive into a later session's
-                    // reconciliation.
+                    // reconciliation. Nothing will read this join's remote
+                    // herdr tunnel either, so it goes now rather than at the
+                    // handle's deinit.
                     terminalScreenStartCapture = nil
                     claudeSessionJoin = nil
-                    herdrPaneStartCapture = nil
+                    socketPaneStartCapture = nil
+                    closeRemoteHerdrForwards()
                 }
 
                 // Repo vocabulary rides in the `{{replacement_dictionary}}`
@@ -721,23 +724,23 @@ extension DictationViewModel {
                 polishAndCommitTask = Task { @MainActor [weak self] in
                     guard let self else { return }
 
-                    // A herdr-joined dictation swaps the composite-AX screen
-                    // decision for the JOINED pane's clean `pane.read`
-                    // reconciliation. FIRST await in the Task, before the
+                    // A herdr- or cmux-joined dictation swaps the AX screen
+                    // decision for the JOINED pane's clean per-pane socket
+                    // read. FIRST await in the Task, before the
                     // repo-vocabulary hop, for the same reason the AX
                     // reconcile runs pre-Task: the stop re-read must sample
                     // the pane at commit, not after ~2 s of agent output has
                     // scrolled past. Everything downstream (render demand,
                     // vocab grounding, the rendered block, provenance) reads
                     // this decision, so the swap is complete or not at all —
-                    // on any pane.read failure it IS `capturedScreenDecision`,
-                    // which for a herdr join is vocabulary-only at best (the
-                    // authorizer still refuses composite raw attachment).
+                    // on any pane-read failure it IS `capturedScreenDecision`,
+                    // which for these joins is vocabulary-only at best (the
+                    // authorizer still refuses raw AX attachment).
                     var screenDecision = capturedScreenDecision
-                    if capturedHerdrPaneStart != nil,
+                    if capturedSocketPaneStart != nil,
                        let endpointURL = polishingConfig?.endpointURL {
-                        screenDecision = await HerdrPaneScreenContext.reconcileAtStop(
-                            start: capturedHerdrPaneStart,
+                        screenDecision = await SocketPaneScreenContext.reconcileAtStop(
+                            start: capturedSocketPaneStart,
                             join: capturedClaudeJoin,
                             resolver: self.claudeSessionJoinResolver,
                             fallback: capturedScreenDecision,
@@ -748,6 +751,13 @@ extension DictationViewModel {
                                 self.settings.polishContextTrustedEndpointEnabled
                         )
                     }
+                    // The stop-side pane read above was the LAST reader of a
+                    // remote herdr join's `ssh -L`; everything downstream works
+                    // from text already in hand. Closed through the view model,
+                    // which OWNS the handle — the join was consumed pre-Task,
+                    // so closing "the join's" tunnel here would leave the owner
+                    // holding a closed handle it still had to forget.
+                    self.closeRemoteHerdrForwards()
 
                     // The polish request is assembled HERE, inside the Task, so
                     // the opt-in repo-vocabulary indexing — whose git subprocess
@@ -1416,7 +1426,7 @@ extension DictationViewModel {
                         // successful pane.read that happens to EQUAL the
                         // fallback mislabels only the route — the decision and
                         // cause still tell the true story. Intentional.
-                        herdrSwapApplied: capturedHerdrPaneStart != nil
+                        socketPaneSwapApplied: capturedSocketPaneStart != nil
                             && screenDecision != capturedScreenDecision,
                         targetBundleID: capturedTargetBundleID,
                         demands: [
@@ -2031,6 +2041,12 @@ extension DictationViewModel {
     }
 
     func abortConnectingSession(disconnectSocket: Bool = true) {
+        // An aborted connect never reaches stopped-session cleanup, so a remote
+        // herdr tunnel opened at start would otherwise stay up with nothing
+        // left to read from it (review finding 4). Every abort route — the
+        // connect timeout, a mic-start failure, a thrown connect, the escape
+        // cancel — funnels through here.
+        closeRemoteHerdrForwards()
         cancelConnectTimeout()
         finalizationWatchdogTask?.cancel()
         finalizationWatchdogTask = nil

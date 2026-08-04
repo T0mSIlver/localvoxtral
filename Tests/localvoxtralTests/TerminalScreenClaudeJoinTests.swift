@@ -668,7 +668,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
         )
         XCTAssertNil(snapshot.process, "precondition")
         XCTAssertFalse(
-            ClaudeSessionJoinResolver.registeredClaudeIsForeground(
+            ClaudeSessionJoinResolver.registeredAgentIsForeground(
                 snapshot: snapshot, foregroundPIDs: [9001]
             )
         )

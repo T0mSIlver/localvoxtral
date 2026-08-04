@@ -317,6 +317,11 @@ final class DictationViewModel {
     /// temp directory. Production uses the Application Support default.
     @ObservationIgnored
     var dogfoodCaptureStore = DogfoodCaptureStore()
+    /// Watches the seconds after a commit for an immediate erase, and patches
+    /// that dictation's record with what it saw. `var` for the same reason as
+    /// the store: tests inject the clock and the event source.
+    @ObservationIgnored
+    var dogfoodEditSignalWatcher = DogfoodEditSignalWatcher()
     #endif
     /// Warms the managed polishing helper's prompt-prefix cache on every
     /// helper launch (see `PolishPromptWarmupCoordinator`). Created only when
@@ -382,15 +387,20 @@ final class DictationViewModel {
     /// prompt. Cleared on every session exit, like the screen capture.
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
+    /// Remote herdr `ssh -L` children this process has open. See
+    /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
+    /// the join that travels.
+    private var liveRemoteHerdrForwards: [ClaudeRemoteHerdrForwardHandle] = []
 
-    /// The JOINED herdr pane's visible text at dictation start (`pane.read`,
+    /// The JOINED pane's visible text at dictation start, read over its own
+    /// multiplexer socket (herdr `pane.read` / cmux `surface.read_text`,
     /// sanitized + capped like an AX read). Non-nil only when the session's
-    /// join is a `.herdrPane` join AND the screen-context consent gate cleared
-    /// at start. At commit it replaces the composite-AX screen decision (see
-    /// `HerdrPaneScreenContext.reconcileAtStop`); cleared on every session
+    /// join is a `.herdrPane`/`.cmuxSurface` join AND the screen-context consent
+    /// gate cleared at start. At commit it replaces the AX screen decision (see
+    /// `SocketPaneScreenContext.reconcileAtStop`); cleared on every session
     /// exit, exactly like the screen capture and the join above.
     @ObservationIgnored
-    var herdrPaneStartCapture: HerdrPaneScreenCapture?
+    var socketPaneStartCapture: SocketPaneScreenCapture?
 
     @ObservationIgnored
     private let hotKeyManager = HotKeyManager()
@@ -806,6 +816,13 @@ final class DictationViewModel {
                 if self.isDictating {
                     self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
                 }
+                #if LOCALVOXTRAL_DOGFOOD
+                // Last chance for a still-open post-commit watch to patch its
+                // record: after this the process is gone and the dictation
+                // would keep no behavior block at all. Written inline — a Task
+                // spawned at terminate is not guaranteed to run.
+                self.dogfoodEditSignalWatcher.flushForTermination()
+                #endif
                 await self.backendManager.stopAll()
             }
         }
@@ -1879,11 +1896,15 @@ final class DictationViewModel {
         // A fresh dictation gets fresh tap slots: an abandoned pipeline's late
         // note from the PREVIOUS session must not describe this one.
         DogfoodCaptureTap.shared.beginSession()
+        // Same rule for the post-commit edit watch: the previous dictation's
+        // window closes here rather than reading this session's keys. It still
+        // flushes its own record, as `superseded`.
+        dogfoodEditSignalWatcher.supersede()
         #endif
         guard let endpointURL = settings.llmPolishingConfiguration?.endpointURL else {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
-            herdrPaneStartCapture = nil
+            socketPaneStartCapture = nil
             return
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -1893,12 +1914,20 @@ final class DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
-        // Only a herdr pane join produces a sample here (the function refuses
-        // everything else before any socket request), and it reads exactly the
-        // joined pane. Fetched at start for the same reason the AX screen is:
+        // Ownership of the join's `ssh -L` is taken HERE, at the one place a
+        // join is ever assigned, and never given back to whoever happens to
+        // hold the join later. The commit path CONSUMES the join, so an owner
+        // that reached the child only through `claudeSessionJoin` was nil at
+        // exactly the moments it mattered — quit during polish, an aborted
+        // connect — and the ssh outlived the app (review finding 4).
+        retainRemoteHerdrForward(of: claudeSessionJoin)
+        // Only a socket-routed pane join — herdr, remote herdr, or cmux —
+        // produces a sample here (the function refuses everything else before
+        // any socket request), and it reads exactly the joined pane. Fetched at
+        // start for the same reason the AX screen is:
         // this text is evidence of what the user could see while choosing
         // their words, and only a start sample can be that.
-        herdrPaneStartCapture = await HerdrPaneScreenContext.captureAtStart(
+        socketPaneStartCapture = await SocketPaneScreenContext.captureAtStart(
             join: claudeSessionJoin,
             resolver: claudeSessionJoinResolver,
             settingEnabled: settings.terminalScreenContextEnabled,
@@ -1948,6 +1977,17 @@ final class DictationViewModel {
         guard let target = TerminalScreenContextSource.frontmostTarget() else {
             return dogfoodUnresolvedJoin(cause: "gate: no frontmost supported terminal")
         }
+        // The browser entry path. `frontmostTarget()` answers for ANY app and
+        // the resolver owns the allowlists, so a browser reaches the resolver
+        // through the same one call a terminal does — except for this gate: a
+        // browser join can only ever produce the session/repo blocks (the
+        // authorizer refuses `.browserTab` raw attachment outright), so the
+        // screen-context setting alone must not send an Apple event to the
+        // user's browser, nor raise its Automation consent sheet.
+        if BrowserTabAllowlist.isSupported(target.bundleID),
+           !settings.claudeRepoContextEnabled {
+            return dogfoodUnresolvedJoin(cause: "gate: browser target without session context")
+        }
         return await resolver.resolve(target: target)
     }
 
@@ -1974,10 +2014,43 @@ final class DictationViewModel {
         // the session being abandoned, and a stale join surviving into the next
         // dictation is precisely how the wrong repo's context would get
         // attached to an unrelated sentence.
+        //
         claudeSessionJoin = nil
         // And the pane text with the join: it is that session's screen.
-        herdrPaneStartCapture = nil
+        socketPaneStartCapture = nil
+        // Every open `ssh -L`, not just this join's — the view model owns them
+        // all, so abandoning a dictation cannot leave one behind for a holder
+        // that no longer exists.
+        closeRemoteHerdrForwards()
     }
+
+    /// Takes ownership of a join's remote herdr tunnel, if it has one.
+    ///
+    /// One owner, deliberately: the join object travels (it is consumed by the
+    /// commit path and captured into a Task), and a resource whose owner is
+    /// "whoever currently holds the value" has no owner at all.
+    func retainRemoteHerdrForward(of join: ClaudeSessionJoin?) {
+        guard let forward = join?.remoteHerdrForward else { return }
+        liveRemoteHerdrForwards.append(forward)
+    }
+
+    /// Closes every open remote herdr tunnel. Idempotent, and safe from any
+    /// path — including ones that never knew a tunnel existed.
+    ///
+    /// Called from every dictation exit (`discardTerminalScreenCapture`, the
+    /// commit path once the stop-side pane read is done, `abortConnectingSession`)
+    /// and from `applicationWillTerminate`. Closing ALL of them rather than one
+    /// is what makes a leaked handle from some path nobody thought of
+    /// self-healing at the next exit.
+    func closeRemoteHerdrForwards() {
+        guard !liveRemoteHerdrForwards.isEmpty else { return }
+        let forwards = liveRemoteHerdrForwards
+        liveRemoteHerdrForwards = []
+        for forward in forwards { forward.close() }
+    }
+
+    /// Test seam: how many tunnels this view model is holding open.
+    var openRemoteHerdrForwardCount: Int { liveRemoteHerdrForwards.count }
 
     /// Reconciles the start capture against a stop-time re-read of the SAME
     /// PID/bundle and clears it. See `TerminalScreenContext.reconcile` for the
@@ -2006,12 +2079,12 @@ final class DictationViewModel {
         return join
     }
 
-    /// Takes this dictation's herdr pane start sample and clears it. Consumed
+    /// Takes this dictation's socket pane start sample and clears it. Consumed
     /// alongside the join at commit; a sample must never survive into another
     /// session's reconciliation.
-    func consumeHerdrPaneStartCapture() -> HerdrPaneScreenCapture? {
-        let capture = herdrPaneStartCapture
-        herdrPaneStartCapture = nil
+    func consumeSocketPaneStartCapture() -> SocketPaneScreenCapture? {
+        let capture = socketPaneStartCapture
+        socketPaneStartCapture = nil
         return capture
     }
 

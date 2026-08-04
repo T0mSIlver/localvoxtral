@@ -1304,7 +1304,7 @@ sleep 3 # let the committed text sit on screen
 # no-context) is a lying demo, and "Never fake a running agent" extends to
 # never faking a working join. The two lines asserted are emitted by
 # TerminalScreenClaudeJoin.resolveViaHerdr and
-# HerdrPaneScreenContext.captureAtStart (subsystem com.localvoxtral,
+# SocketPaneScreenContext.captureAtStart (subsystem com.localvoxtral,
 # category ClaudeContext); every abstention logs its outcome publicly, so the
 # failure path prints whatever the join said instead.
 if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
@@ -1317,7 +1317,7 @@ if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
     HERDR_LOG_SLICE="$(log show --info --start "$HERDR_ASSERT_LOG_START" \
       --predicate 'subsystem == "com.localvoxtral" AND category == "ClaudeContext"' 2>/dev/null || true)"
     grep -qF 'joined to a live Claude session via herdr pane' <<<"$HERDR_LOG_SLICE" && HERDR_JOIN_OK=1
-    grep -qF 'Herdr pane screen context captured at start' <<<"$HERDR_LOG_SLICE" && HERDR_SCREEN_OK=1
+    grep -qF 'Socket pane screen context captured at start' <<<"$HERDR_LOG_SLICE" && HERDR_SCREEN_OK=1
     [[ "$HERDR_JOIN_OK" == 1 && "$HERDR_SCREEN_OK" == 1 ]] && break
     (( SECONDS >= HERDR_VERIFY_DEADLINE )) && break
     sleep 2
@@ -1327,7 +1327,7 @@ if [[ "$TERMINAL_AGENT" == "herdr" ]]; then
     [[ "$HERDR_JOIN_OK" != 1 ]] \
       && echo "HERDR VERIFICATION FAILED: no 'joined … via herdr pane' in the app log for beat 2 — the join abstained or fell back, so the recorded beat was NOT grounded by the pane join." >&2
     [[ "$HERDR_SCREEN_OK" != 1 ]] \
-      && echo "HERDR VERIFICATION FAILED: no 'Herdr pane screen context captured at start' — the pane-exact pane.read never attached." >&2
+      && echo "HERDR VERIFICATION FAILED: no 'Socket pane screen context captured at start' — the pane-exact pane.read never attached." >&2
     echo "Likely causes: the app's Automation->Ghostty grant is missing (tty read blocked), another live herdr-hosted Claude session is registered (the resolver refuses to guess between sockets), the plugin hooks did not fire, or the screen-context consent gate rejected." >&2
     echo "ClaudeContext log for the window (join outcomes are public):" >&2
     grep -iE 'herdr|joined|marker|abstain|screen' <<<"$HERDR_LOG_SLICE" >&2 \

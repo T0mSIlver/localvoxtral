@@ -33,7 +33,7 @@ enum AgentDictationE2EEvalSupport {
     static let defaultVoxmlxEndpoint = "ws://127.0.0.1:8000/v1/realtime"
     /// The realtime model the build host's speechd STT service serves (same pin
     /// as the tier-1 integration lane in `remote-build.sh integration`).
-    static let defaultASRModel = "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit"
+    static let defaultASRModel = "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead"
 
     struct MarkerConfig: Decodable, Equatable {
         let helperPath: String?

@@ -6,14 +6,14 @@ import XCTest
 final class SpeechdLaunchOptionsTests: XCTestCase {
     func testParsesPinnedModelRevisionAndSupervisorArguments() throws {
         let options = try SpeechdOptionParser.parse([
-            "--model", "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
+            "--model", "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead",
             "--model-revision", "0123456789abcdef0123456789abcdef01234567",
             "--port", "8471",
             "--parent-pid", "4321",
             "--step-ms", "240",
         ])
 
-        XCTAssertEqual(options.modelID, "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
+        XCTAssertEqual(options.modelID, "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead")
         XCTAssertEqual(options.modelRevision, "0123456789abcdef0123456789abcdef01234567")
         XCTAssertEqual(options.port, 8471)
         XCTAssertEqual(options.parentPID, 4321)
@@ -100,9 +100,9 @@ final class SpeechdLaunchOptionsTests: XCTestCase {
         let cacheRoot = FileManager.default.temporaryDirectory
             .appending(path: "speechd-hf-cache-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cacheRoot) }
-        let repoID = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+        let repoID = "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead"
         let snapshots = cacheRoot
-            .appending(path: "models--mlx-community--Voxtral-Mini-4B-Realtime-2602-4bit")
+            .appending(path: "models--T0mSIlver--Voxtral-Mini-4B-Realtime-2602-4bit-qhead")
             .appending(path: "snapshots")
         let pinned = snapshots.appending(path: "pinned")
         let main = snapshots.appending(path: "moved-main")

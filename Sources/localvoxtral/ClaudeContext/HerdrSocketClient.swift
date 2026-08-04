@@ -9,13 +9,61 @@ struct HerdrFocusedPane: Sendable, Equatable {
     /// herdr's own Claude-session claim for the pane, when its integration is
     /// installed: (kind "id" → sessionID). nil when absent or kind == "path".
     var claimedClaudeSessionID: String?
+    /// The OSC 2 title of the INNER pane, as herdr captured it.
+    ///
+    /// herdr intercepts a pane's title writes rather than passing them out to
+    /// the surrounding terminal — which is why a title marker is useless for a
+    /// local herdr join, and precisely why it works for a REMOTE one: the
+    /// marker the remote listener hands back to every remote session rides the
+    /// SSH PTY into the inner pane and lands HERE, where the pane it describes
+    /// is the pane being reported. Untrusted text like any other wire field;
+    /// only the marker grammar is ever read out of it.
+    var terminalTitle: String?
+
+    init(paneID: String, claimedClaudeSessionID: String?, terminalTitle: String? = nil) {
+        self.paneID = paneID
+        self.claimedClaudeSessionID = claimedClaudeSessionID
+        self.terminalTitle = terminalTitle
+    }
+}
+
+/// One process herdr reports as foreground in a pane.
+struct HerdrForegroundProcess: Sendable, Equatable {
+    var pid: Int32
+    /// nil ⇒ herdr did not report a name for this process. Never inferred.
+    var name: String?
+
+    init(pid: Int32, name: String? = nil) {
+        self.pid = pid
+        self.name = name
+    }
 }
 
 struct HerdrPaneForegroundInfo: Sendable, Equatable {
     var shellPID: Int32?
     /// nil ⇒ the `foreground_processes` key was ABSENT (detection unavailable);
     /// distinct from [] which cannot occur on the wire.
-    var foregroundPIDs: [Int32]?
+    var foregroundProcesses: [HerdrForegroundProcess]?
+
+    /// The local arm's question: is the pid we registered running here? Derived
+    /// rather than stored, so a pid list and a process list can never disagree.
+    var foregroundPIDs: [Int32]? { foregroundProcesses?.map(\.pid) }
+
+    init(shellPID: Int32?, foregroundProcesses: [HerdrForegroundProcess]?) {
+        self.shellPID = shellPID
+        self.foregroundProcesses = foregroundProcesses
+    }
+
+    /// Pid-only convenience for the local arm and its tests, which have no
+    /// business knowing process names: a REMOTE session's pid means nothing
+    /// here (it is another machine's namespace), so that arm identifies the
+    /// agent by name instead and this init makes the asymmetry explicit.
+    init(shellPID: Int32?, foregroundPIDs: [Int32]?) {
+        self.init(
+            shellPID: shellPID,
+            foregroundProcesses: foregroundPIDs?.map { HerdrForegroundProcess(pid: $0) }
+        )
+    }
 }
 
 protocol HerdrPaneQuerying: Sendable {
@@ -76,7 +124,13 @@ struct HerdrSocketClient: HerdrPaneQuerying {
             }
             return HerdrFocusedPane(
                 paneID: result.pane.paneID,
-                claimedClaudeSessionID: claim
+                claimedClaudeSessionID: claim,
+                // A title longer than any title is not a title. Dropped rather
+                // than truncated: a cut string can only make marker parsing
+                // answer a question about bytes nobody sent.
+                terminalTitle: result.pane.terminalTitle.flatMap {
+                    $0.utf8.count <= Self.maxTerminalTitleBytes ? $0 : nil
+                }
             )
         }.value
     }
@@ -105,7 +159,9 @@ struct HerdrSocketClient: HerdrPaneQuerying {
             }
             return HerdrPaneForegroundInfo(
                 shellPID: result.processInfo.shellPID,
-                foregroundPIDs: result.processInfo.foregroundProcesses?.map(\.pid)
+                foregroundProcesses: result.processInfo.foregroundProcesses?.map {
+                    HerdrForegroundProcess(pid: $0.pid, name: $0.name)
+                }
             )
         }.value
     }
@@ -395,11 +451,13 @@ struct HerdrSocketClient: HerdrPaneQuerying {
         var paneID: String
         var focused: Bool
         var agentSession: AgentSession?
+        var terminalTitle: String?
 
         enum CodingKeys: String, CodingKey {
             case paneID = "pane_id"
             case focused
             case agentSession = "agent_session"
+            case terminalTitle = "terminal_title"
         }
 
         init(from decoder: Decoder) throws {
@@ -409,6 +467,9 @@ struct HerdrSocketClient: HerdrPaneQuerying {
             agentSession = container.contains(.agentSession)
                 ? try container.decode(AgentSession.self, forKey: .agentSession)
                 : nil
+            // Absent and null are the same thing for a title, unlike for
+            // `foreground_processes` below where presence is the signal.
+            terminalTitle = try container.decodeIfPresent(String.self, forKey: .terminalTitle)
         }
     }
 
@@ -453,7 +514,16 @@ struct HerdrSocketClient: HerdrPaneQuerying {
 
     private struct ForegroundProcess: Decodable {
         var pid: Int32
+        /// herdr's `name` for the process (`pane.process_info`). The REMOTE
+        /// herdr arm identifies the agent by this, because a remote pid is a
+        /// number in another machine's namespace.
+        var name: String?
     }
+
+    /// Ceiling on a retained `terminal_title`. A window title is a handful of
+    /// bytes; this is three orders of magnitude of headroom and still bounds
+    /// what marker parsing ever walks.
+    private static let maxTerminalTitleBytes = 1024
 
     /// `pane.read` success — herdr c234f221, `src/api/schema/response.rs`
     /// (`ResponseResult::PaneRead`, tag `pane_read`) wrapping

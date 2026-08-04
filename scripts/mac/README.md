@@ -111,8 +111,8 @@ sudo install -d -m 0755 /Users/Shared/localvoxtral        # log dir, if absent
 #    clear message. Keep these pins in sync with SpeechModelCatalog.defaultOption
 #    and PolishModelCatalog.defaultOption in the app source.
 python3 -m pip install --user -U 'huggingface_hub[cli]'   # or: uv tool install huggingface_hub
-hf download mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit \
-  --revision fdebf7b2af834a1db4b8a3c99ab7480b333adf9e     # speechd (STT, 8000)
+hf download T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead \
+  --revision 247f2eeccf962fbcaf85e361731a5e75b2d8cac1     # speechd (STT, 8000)
 hf download mlx-community/Qwen3.5-4B-OptiQ-4bit \
   --revision 41eccc3316fd4bf4b27cedf4924fe23ce44e77d9     # polishd (polish, 8080)
 ```
@@ -181,8 +181,8 @@ cat > ~/Library/LaunchAgents/com.localvoxtral.testspeechd.plist <<'PLIST'
   <key>ProgramArguments</key>
   <array>
     <string>/Users/Shared/localvoxtral/testservers/localvoxtral.app/Contents/MacOS/localvoxtral-speechd</string>
-    <string>--model</string><string>mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit</string>
-    <string>--model-revision</string><string>fdebf7b2af834a1db4b8a3c99ab7480b333adf9e</string>
+    <string>--model</string><string>T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead</string>
+    <string>--model-revision</string><string>247f2eeccf962fbcaf85e361731a5e75b2d8cac1</string>
     <string>--port</string><string>8000</string>
     <string>--cache-limit-mb</string><string>4096</string>
   </array>

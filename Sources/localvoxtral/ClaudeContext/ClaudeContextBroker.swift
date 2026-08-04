@@ -474,6 +474,10 @@ public final class ClaudeContextBroker: Sendable {
             return
         }
         let origin = ClaudeTransportOrigin.localAuthenticated(peerUID: peerUID)
+        // Kernel-verified peer pid, read once per connection. Used only for
+        // the per-agent pid cross-check in `handle` — see peerPID's doc for
+        // why it applies to opencode records and cannot apply to Claude's.
+        let peerPID = ClaudeSocketGuard.peerPID(ofDescriptor: fd)
 
         var noSigPipe: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
@@ -507,8 +511,14 @@ public final class ClaudeContextBroker: Sendable {
                     Log.claudeContext.error("Dropping connection: too many records")
                     return
                 }
-                let handled = handle(line: line, origin: origin)
-                reply(to: fd, marker: handled.marker, isHerdrHosted: handled.isHerdrHosted)
+                let handled = handle(line: line, origin: origin, peerPID: peerPID)
+                reply(
+                    to: fd,
+                    marker: handled.marker,
+                    accepted: handled.accepted,
+                    isHerdrHosted: handled.isHerdrHosted,
+                    version: handled.replyVersion
+                )
             }
         }
     }
@@ -571,10 +581,22 @@ public final class ClaudeContextBroker: Sendable {
     ///
     /// Best-effort by design — a publisher that has already exited is normal,
     /// not an error.
-    private func reply(to fd: Int32, marker: ClaudeSessionMarker?, isHerdrHosted: Bool) {
+    private func reply(
+        to fd: Int32,
+        marker: ClaudeSessionMarker?,
+        accepted: Bool,
+        isHerdrHosted: Bool,
+        version: Int
+    ) {
         let responseMarker = shouldEmitLocalTitleMarker() && !isHerdrHosted ? marker?.value : nil
         guard let line = ClaudeBrokerResponse.encodeLine(
-            ClaudeBrokerResponse(marker: responseMarker)
+            // Echo the REQUEST's wire version (review C4): an already-installed
+            // v1 publisher rejects any reply that does not say v1, so replying
+            // with the broker's own version would silently kill the marker
+            // channel for every stale plugin install until it updated.
+            // `accepted` rides along in every reply shape — old decoders
+            // ignore the unknown key (synthesized Codable), so no bump.
+            ClaudeBrokerResponse(version: version, marker: responseMarker, accepted: accepted)
         ) else { return }
         _ = line.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }
@@ -590,36 +612,90 @@ public final class ClaudeContextBroker: Sendable {
         }
     }
 
-    /// - Returns: the marker for the session this record belongs to and whether
-    ///   herdr must intercept title changes, or nil marker metadata when the
-    ///   record was rejected.
+    /// - Returns: the marker for the session this record belongs to, whether
+    ///   the record was committed to the registry (`accepted` — carried back
+    ///   in the reply so a publisher can distinguish "read" from "took
+    ///   effect"), whether herdr must intercept title changes, and the wire
+    ///   version to shape the reply as (the request's own — see `reply`).
+    ///
+    /// `accepted` is truthful for every layer that still produces a reply. A
+    /// reply is per complete LINE, so exactly three rejection layers can
+    /// answer `false`:
+    ///   1. wire-shape rejection of a complete line (`decodeLine` throws —
+    ///      malformed JSON, unsupported version, over-limit fields);
+    ///   2. the opencode peer-pid cross-check below;
+    ///   3. the registry refusing the record (`ingest` returns nil: focus
+    ///      declarations/clears for sessions it has never seen, origin or
+    ///      agent mismatch, `SessionEnd` for an unknown session, and the
+    ///      namespace-prefix aliasing drop).
+    /// Connection-level rejections (foreign uid, unterminated over-cap line,
+    /// too many records, read deadline) drop the connection WITHOUT a reply,
+    /// unchanged — publishers observe those as an error/close, not a verdict.
     @discardableResult
     private func handle(
         line: Data,
-        origin: ClaudeTransportOrigin
-    ) -> (marker: ClaudeSessionMarker?, isHerdrHosted: Bool) {
+        origin: ClaudeTransportOrigin,
+        peerPID: pid_t?
+    ) -> (marker: ClaudeSessionMarker?, accepted: Bool, isHerdrHosted: Bool, replyVersion: Int) {
         do {
             let record = try ClaudeHookWireCodec.decodeLine(line, limits: limits.wire)
+            // Per-agent pid cross-check against the KERNEL's answer. The
+            // opencode plugin runs inside the agent process and dials this
+            // socket from it, so the pid its records claim must be the pid on
+            // the other end of the connection — a same-user process forging
+            // opencode records for a pid it does not own is cut off here.
+            // Claude records cannot be held to this: their publisher is a
+            // transient child of the session, never the session process
+            // itself, which is exactly why the claude pid rides in the record
+            // (see ClaudeSocketGuard.peerPID). The residual same-user threat
+            // for THAT path is accepted and documented in AGENTS.md — trust
+            // is transport-derived, and every local peer shares this uid.
+            if record.agent == .opencode {
+                guard let peerPID, record.process?.claudePID == peerPID else {
+                    Log.claudeContext.error(
+                        "Rejected opencode record: claimed pid does not match socket peer"
+                    )
+                    #if DEBUG
+                    debugNotify(.failure(.malformed))
+                    #endif
+                    return (nil, false, false, record.version)
+                }
+            }
             let snapshot = registry.ingest(record, origin: origin)
+            let accepted = snapshot != nil
             // Content is never logged — only its shape. A hook record carries
             // the user's prompt and their file paths.
-            Log.claudeContext.debug("Ingested \(record.event.rawValue, privacy: .public)")
+            if accepted {
+                Log.claudeContext.debug("Ingested \(record.event.rawValue, privacy: .public)")
+            } else {
+                Log.claudeContext.debug("Registry refused \(record.event.rawValue, privacy: .public)")
+            }
             #if DEBUG
             debugNotify(.success(record))
             #endif
-            return (snapshot?.marker, record.process?.herdrPaneID != nil)
+            // Only Claude Code has a writable title channel, so only Claude
+            // sessions ever receive their marker back — the herdr rule,
+            // generalized per agent: opencode rewrites its own OSC titles
+            // mid-turn (and clears them on exit), so a marker sent there could
+            // never survive to identify a pane, and its plugin deliberately
+            // never writes to the terminal at all. Allocation is unchanged —
+            // the registry marker remains every join's liveness handle.
+            let marker = snapshot?.agent == .claude ? snapshot?.marker : nil
+            return (marker, accepted, record.process?.herdrPaneID != nil, record.version)
         } catch let error as ClaudeHookWireError {
             Log.claudeContext.error("Rejected record: \(String(describing: error), privacy: .public)")
             #if DEBUG
             debugNotify(.failure(error))
             #endif
-            return (nil, false)
+            // A rejected record carries no marker; the current version is as
+            // good as any guess for the reply shape.
+            return (nil, false, false, ClaudeHookWire.version)
         } catch {
             Log.claudeContext.error("Rejected record: undecodable")
             #if DEBUG
             debugNotify(.failure(.malformed))
             #endif
-            return (nil, false)
+            return (nil, false, false, ClaudeHookWire.version)
         }
     }
 }

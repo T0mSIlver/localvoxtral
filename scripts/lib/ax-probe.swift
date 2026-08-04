@@ -8,10 +8,12 @@
 //
 // Usage:
 //   ax-probe.swift <pid> --find <needle> [--scope <ax-identifier>]
+//                        [--window <title-substring>]
 //                        [--timeout <seconds>] [--dump-on-fail]
 //   ax-probe.swift <pid> --press <ax-identifier> [--title <fallback-title>]
+//                        [--window <title-substring>]
 //                        [--timeout <seconds>] [--dump-on-fail]
-//   ax-probe.swift <pid> --dump
+//   ax-probe.swift <pid> --dump [--window <title-substring>]
 //
 // --find   polls the app's windows until <needle> appears in a text-bearing
 //          element, optionally restricted to the subtree of the element whose
@@ -25,6 +27,14 @@
 //          AXPress. With --title, an AXButton whose title/description matches is
 //          accepted as a fallback when SwiftUI did not surface the identifier;
 //          the route actually taken is printed, so the log answers the question.
+// --window restricts BOTH searches to windows whose AXTitle contains the given
+//          substring. Both fallbacks (AXTitle for --press, AXScrollArea for
+//          --scope) are matched by shape rather than identity, so a second window
+//          could satisfy them instead of the one under test — the enrollment
+//          sheet alone contains two scroll views. When the hint matches no
+//          window the probe searches all of them and says so, so a hint that
+//          stops matching degrades to the old behavior loudly instead of
+//          silently finding nothing.
 //
 // Exit codes: 0 success, 1 the probe failed, 2 usage error.
 
@@ -42,9 +52,9 @@ func usage() -> Never {
     fail(
         """
         usage:
-          ax-probe.swift <pid> --find <needle> [--scope <ax-identifier>] [--timeout <seconds>] [--dump-on-fail]
-          ax-probe.swift <pid> --press <ax-identifier> [--title <fallback-title>] [--timeout <seconds>] [--dump-on-fail]
-          ax-probe.swift <pid> --dump
+          ax-probe.swift <pid> --find <needle> [--scope <ax-identifier>] [--window <title-substring>] [--timeout <seconds>] [--dump-on-fail]
+          ax-probe.swift <pid> --press <ax-identifier> [--title <fallback-title>] [--window <title-substring>] [--timeout <seconds>] [--dump-on-fail]
+          ax-probe.swift <pid> --dump [--window <title-substring>]
         """,
         code: 2
     )
@@ -56,6 +66,7 @@ var needle: String?
 var pressIdentifier: String?
 var fallbackTitle: String?
 var scopeIdentifier: String?
+var windowTitleHint: String?
 var timeoutSeconds: Double = 10
 var dumpOnFail = false
 var dumpOnly = false
@@ -77,6 +88,7 @@ while index < arguments.count {
         case "--press": pressIdentifier = value
         case "--title": fallbackTitle = value
         case "--scope": scopeIdentifier = value
+        case "--window": windowTitleHint = value
         case "--timeout":
             guard let parsed = Double(value) else { usage() }
             timeoutSeconds = parsed
@@ -160,8 +172,36 @@ func firstElement(
     return nil
 }
 
+var warnedAboutUnmatchedWindowHint = false
+
+/// The windows a search may look at.
+///
+/// Both fallbacks in this probe match by SHAPE (an AXButton with this title, the
+/// first AXScrollArea) rather than by identity, so they must not be allowed to
+/// wander into a second window: the enrollment sheet alone contains two scroll
+/// views, and it is enumerated alongside the Settings window. A hint that matches
+/// nothing degrades to searching everything, loudly and once — a silently empty
+/// window set would turn every assertion into a 10s timeout with no explanation.
+func searchWindows() -> [AXUIElement] {
+    let allWindows = windows()
+    guard let windowTitleHint else { return allWindows }
+
+    let matching = allWindows.filter { texts($0).title.contains(windowTitleHint) }
+    if matching.isEmpty {
+        if !warnedAboutUnmatchedWindowHint {
+            warnedAboutUnmatchedWindowHint = true
+            print(
+                "AXPROBE: no window title contains \"\(windowTitleHint)\"; "
+                    + "searching all \(allWindows.count) window(s) instead."
+            )
+        }
+        return allWindows
+    }
+    return matching
+}
+
 func findInWindows(where predicate: (ElementText) -> Bool) -> AXUIElement? {
-    for window in windows() {
+    for window in searchWindows() {
         var budget = 20000
         if let found = firstElement(in: window, depth: 0, budget: &budget, where: predicate) {
             return found
@@ -185,11 +225,17 @@ func dump(_ element: AXUIElement, depth: Int, budget: inout Int) {
     }
 }
 
+/// Dumps the windows a search would have looked at (see `searchWindows`), so the
+/// log shows the tree the assertion actually ran against — not a neighbouring
+/// window that was never eligible.
 func dumpWindows(_ headline: String) {
-    let allWindows = windows()
-    print("AXPROBE: \(headline); windows=\(allWindows.count)")
-    for (index, window) in allWindows.enumerated() {
-        print("AXPROBE: === window \(index) ===")
+    let searched = searchWindows()
+    print(
+        "AXPROBE: \(headline); windows=\(windows().count) searched=\(searched.count)"
+            + (windowTitleHint.map { " (title contains \"\($0)\")" } ?? "")
+    )
+    for (index, window) in searched.enumerated() {
+        print("AXPROBE: === window \(index) title=\(texts(window).title.prefix(60)) ===")
         var budget = 8000
         dump(window, depth: 0, budget: &budget)
     }
@@ -263,7 +309,7 @@ repeat {
             }
         }
     } else {
-        for window in windows() where subtreeContains(window, needle) {
+        for window in searchWindows() where subtreeContains(window, needle) {
             exit(0)
         }
     }

@@ -288,6 +288,25 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         XCTAssertEqual(stream.flushRemainder(), " ")
     }
 
+    /// French typography: the NBSP before `?` is dictated content. It is
+    /// buffered like a plain space (so no release ends in whitespace) and
+    /// re-emitted VERBATIM — sanitization must not rewrite it to an ASCII
+    /// space, which would change the user's French spacing.
+    func testNonBreakingSpaceIsBufferedAndReemittedVerbatim() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("oui\u{00A0}"), "oui")
+        XCTAssertEqual(stream.ingest("? "), "\u{00A0}?")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    /// An NBSP adjacent to a newline joins the run: the whole run collapses
+    /// to exactly one ASCII space, same as adjacent plain spaces.
+    func testNonBreakingSpaceAdjacentToNewlineCollapsesWithTheRun() {
+        var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+        XCTAssertEqual(stream.ingest("a\u{00A0}\nb "), "a b")
+        XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
     func testFlushedRemainderIsSanitized() {
         var stream = makeStream(
             entries: [ReplacementEntry(replaceWith: "X", matches: ["run something"])],
@@ -325,6 +344,68 @@ final class LiveHoldBackReplacementStreamTests: XCTestCase {
         var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
         XCTAssertEqual(stream.ingest("voxtral\nrocks "), "localvoxtral rocks")
         XCTAssertEqual(stream.flushRemainder(), " ")
+    }
+
+    // MARK: - Mid-session releases never end in whitespace (sanitize ON)
+
+    // Load-bearing invariant, not an incidental property: because the
+    // sanitizer buffers every trailing whitespace run until the next
+    // non-whitespace character, NO `ingest` output can end in whitespace when
+    // sanitization is on. That makes `flushRemainder()` the single point where
+    // a terminal can ever receive a trailing space — which is exactly what
+    // `TextInsertionService`'s TUI-autocomplete trailing-space policy relies on
+    // to strip that space without ever needing to un-type text
+    // (`TUIAutocompleteTrailingSpace`). Reordering the whitespace flush would
+    // silently reintroduce the dismissed-popup bug, so pin it here.
+    func testSanitizingIngestNeverReturnsTextEndingInWhitespace() {
+        let chunkSequences: [[String]] = [
+            ["/compact "],
+            ["/comp", "act "],
+            ["hello world "],
+            ["hello\n"],
+            ["hello\t"],
+            ["hello \n\n "],
+            ["a\r\n"],
+            ["run the tests   "],
+            ["look at @Sources/Foo.swift "],
+            ["voxtral "],
+            ["voxtral\nrocks "],
+            ["one ", "two ", "three "],
+            ["trailing", " ", " ", " "],
+            ["\n\nleading "],
+            [" "],
+            ["\t\n "],
+            // Non-ASCII whitespace (codex review of #198, finding 3): French
+            // typography puts NBSP (U+00A0) / narrow NBSP (U+202F) before
+            // `?!:;`, and the ASR path never normalizes them away — they are
+            // whitespace and must be buffered exactly like a plain space,
+            // never emitted at the tail of a mid-session release.
+            ["mot\u{00A0}"],
+            ["/compact\u{00A0}"],
+            ["continuer\u{202F}"],
+            ["oui\u{00A0}", "? "],
+        ]
+
+        for chunks in chunkSequences {
+            var stream = makeStream(entries: [voxtralEntry], sanitizesNewlines: true)
+            for chunk in chunks {
+                let released = stream.ingest(chunk)
+                XCTAssertFalse(
+                    released.last?.isWhitespace ?? false,
+                    "mid-session release \(released.debugDescription) ends in whitespace "
+                        + "for chunks \(chunks) — flushRemainder() must stay the only "
+                        + "path that emits a trailing space to a terminal"
+                )
+            }
+        }
+    }
+
+    // The same invariant does NOT hold with sanitization off — that path
+    // releases whitespace as it arrives, which is why the trailing-space policy
+    // is scoped to terminal-like targets only.
+    func testNonSanitizingIngestCanReturnTextEndingInWhitespace() {
+        var stream = makeStream(entries: [], sanitizesNewlines: false)
+        XCTAssertEqual(stream.ingest("/compact "), "/compact ")
     }
 
     // MARK: - Rule chaining (a correction rewrites held text into rule-key words)

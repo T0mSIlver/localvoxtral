@@ -27,6 +27,14 @@ private final class CoordinatorMarkerQueue: Sendable {
     }
 }
 
+/// Every tally the coordinator handed a listener, in order. A local `var`
+/// cannot be captured by the escaping factory closure.
+@MainActor
+private final class TalliesHandedToListeners {
+    private(set) var all: [ClaudeRemoteRejectionTally] = []
+    func append(_ tally: ClaudeRemoteRejectionTally) { all.append(tally) }
+}
+
 @MainActor
 final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
     private let epoch = Date(timeIntervalSince1970: 3_000_000)
@@ -54,11 +62,12 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         hosts: ClaudeRemoteHostRegistry,
         sessions: ClaudeSessionRegistry
     ) -> ClaudeRemoteListenerCoordinator {
-        ClaudeRemoteListenerCoordinator(hosts: hosts, sessions: sessions) { registry in
+        ClaudeRemoteListenerCoordinator(hosts: hosts, sessions: sessions) { registry, rejections in
             ClaudeRemoteContextListener(
                 registry: sessions,
                 hosts: registry,
-                limits: ClaudeRemoteListenerLimits(port: 0)
+                limits: ClaudeRemoteListenerLimits(port: 0),
+                rejections: rejections
             )
         }
     }
@@ -94,6 +103,45 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         try hosts.revoke(hostID: enrollment.host.id)
         try coordinator.reconcile()
         XCTAssertFalse(coordinator.isListening)
+    }
+
+    /// The rejection counters belong to the coordinator, not to a listener.
+    /// `reconcile` builds a NEW listener on every 0→1 transition, so a tally
+    /// that lived in the listener would forget a night of rejected connections
+    /// the moment the user revoked and re-enrolled a host — losing exactly the
+    /// evidence the Settings hint exists to show.
+    func testRejectionCountersSurviveARebind() throws {
+        let hosts = try makeHosts()
+        let sessions = ClaudeSessionRegistry()
+        let handed = TalliesHandedToListeners()
+        let coordinator = ClaudeRemoteListenerCoordinator(
+            hosts: hosts, sessions: sessions
+        ) { registry, rejections in
+            handed.append(rejections)
+            return ClaudeRemoteContextListener(
+                registry: sessions,
+                hosts: registry,
+                limits: ClaudeRemoteListenerLimits(port: 0),
+                rejections: rejections
+            )
+        }
+        defer { coordinator.shutdown() }
+
+        let enrollment = try hosts.enroll(label: "builder")
+        try coordinator.reconcile()
+        handed.all.first?.record(.missingToken)
+
+        try hosts.revoke(hostID: enrollment.host.id)
+        try coordinator.reconcile()
+        _ = try hosts.rotateToken(hostID: enrollment.host.id)
+        try coordinator.reconcile()
+
+        XCTAssertEqual(handed.all.count, 2, "the rebind built a second listener")
+        XCTAssertTrue(handed.all[0] === handed.all[1], "and handed it the same counters")
+        XCTAssertEqual(
+            coordinator.rejectionSnapshot,
+            ClaudeRemoteRejectionTally.Snapshot(missingToken: 1)
+        )
     }
 
     func testRevokingAHostEvictsItsCachedSessionsAndMarkers() throws {

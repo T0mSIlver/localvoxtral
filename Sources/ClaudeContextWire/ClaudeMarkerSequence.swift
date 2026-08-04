@@ -11,15 +11,24 @@ public struct ClaudeBrokerResponse: Sendable, Equatable, Codable {
     /// Marker for the session this record belongs to. Nil when the broker
     /// accepted the record but has no marker to publish (e.g. it was rejected).
     public var marker: String?
+    /// Whether the record was actually committed to the registry. Nil means
+    /// the reply came from a pre-`accepted`-era broker, which consumers must
+    /// treat exactly as they always did — as success. Deliberately NOT a
+    /// version bump: synthesized Codable omits the key when nil and ignores
+    /// unknown keys on decode, so both directions of a version skew (old
+    /// publisher/new broker, new publisher/old broker) decode cleanly.
+    public var accepted: Bool?
 
-    public init(version: Int = ClaudeHookWire.version, marker: String?) {
+    public init(version: Int = ClaudeHookWire.version, marker: String?, accepted: Bool? = nil) {
         self.version = version
         self.marker = marker
+        self.accepted = accepted
     }
 
     enum CodingKeys: String, CodingKey {
         case version = "v"
         case marker
+        case accepted
     }
 
     public static func encodeLine(_ response: ClaudeBrokerResponse) -> Data? {
@@ -37,7 +46,10 @@ public struct ClaudeBrokerResponse: Sendable, Equatable, Codable {
         guard let response = try? JSONDecoder().decode(ClaudeBrokerResponse.self, from: line) else {
             return nil
         }
-        guard response.version == ClaudeHookWire.version else { return nil }
+        // Any readable wire version, not just the current one: a publisher one
+        // release ahead of or behind the app must degrade to "no marker", not
+        // lose the marker channel entirely until both halves are updated.
+        guard ClaudeHookWire.readableVersions.contains(response.version) else { return nil }
         return response
     }
 }

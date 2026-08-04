@@ -428,6 +428,12 @@ if [[ ! -f "$AX_PROBE" ]]; then
   exit 1
 fi
 
+# Every probe call is pinned to the Settings window. Both of the probe's
+# fallbacks match by shape (an AXButton with this title; the first AXScrollArea),
+# and the app has other windows — the enrollment sheet alone contains two scroll
+# views — so an unpinned fallback could answer from the wrong window.
+SETTINGS_WINDOW_TITLE="Settings"
+
 # Asserts <needle> inside the subtree identified by <scope-identifier>, so a
 # sidebar row label (AXStaticText, present on every pane) can never satisfy a
 # pane assertion.
@@ -435,6 +441,7 @@ pane_shows_text() {
   local scope="$1" expected="$2" timeout_seconds="${3:-10}"
   swift "$AX_PROBE" "$APP_PID" \
     --find "$expected" --scope "$scope" \
+    --window "$SETTINGS_WINDOW_TITLE" \
     --timeout "$timeout_seconds" --dump-on-fail
 }
 
@@ -447,7 +454,28 @@ select_tab() {
   local tab_id="$1" tab_name="$2"
   swift "$AX_PROBE" "$APP_PID" \
     --press "settings.tab.${tab_id}" --title "$tab_name" \
+    --window "$SETTINGS_WINDOW_TITLE" \
     --timeout 10 --dump-on-fail
+}
+
+# One dump, once, before the per-tab assertions: if neither the pane identifier
+# nor a scroll area is in the tree, every scoped assertion below would time out
+# for 10s each and blame its own needle. Name the real cause instead.
+assert_pane_scope_is_reachable() {
+  local tree
+  if ! tree="$(swift "$AX_PROBE" "$APP_PID" --dump --window "$SETTINGS_WINDOW_TITLE" 2>&1)"; then
+    record_fail "Could not dump the Settings window AX tree."
+    return
+  fi
+
+  if grep -q "id=settings\.pane\." <<<"$tree"; then
+    record_pass "Settings panes expose settings.pane.* AXIdentifiers; scoped assertions use them."
+  elif grep -q "AXScrollArea" <<<"$tree"; then
+    record_pass "Settings panes expose no AXIdentifier, but an AXScrollArea is present; scoped assertions use the scroll-area fallback."
+  else
+    record_fail "Settings window exposes neither a settings.pane.* AXIdentifier nor an AXScrollArea; scoped pane assertions cannot run."
+    printf '%s\n' "$tree"
+  fi
 }
 
 assert_tab() {
@@ -466,6 +494,8 @@ assert_tab() {
     record_fail "Settings tab selected but expected text was not visible in settings.pane.$tab_id: $tab_name -> $expected_text."
   fi
 }
+
+assert_pane_scope_is_reachable
 
 assert_tab "general" "General" "Permissions"
 assert_tab "endpoints" "Endpoints" "Dictation"

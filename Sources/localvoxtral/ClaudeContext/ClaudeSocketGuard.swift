@@ -131,5 +131,29 @@ public enum ClaudeSocketGuard {
         guard getpeereid(fd, &uid, &gid) == 0 else { return nil }
         return UInt32(uid)
     }
+
+    /// The pid of the process on the other end of a connected AF_UNIX socket,
+    /// as the kernel recorded it at connect time (`LOCAL_PEERPID`,
+    /// `<sys/un.h>`). Same trust class as `peerUID`: transport evidence a
+    /// sender cannot forge.
+    ///
+    /// This exists for the opencode records' pid cross-check: that plugin runs
+    /// INSIDE the agent process and connects from it directly, so its claimed
+    /// pid must equal the kernel's answer. The Claude hook path can make no
+    /// such promise — its publisher is a transient child of the session, so
+    /// its peer pid is never the Claude pid. That asymmetry is why this check
+    /// is applied per agent, not universally.
+    public static func peerPID(ofDescriptor fd: Int32) -> pid_t? {
+        // Spelled numerically: the Darwin overlay does not export these two
+        // <sys/un.h> constants. SOL_LOCAL is 0; LOCAL_PEERPID is 0x002.
+        let solLocal: Int32 = 0
+        let localPeerPID: Int32 = 0x002
+        var pid: pid_t = 0
+        var length = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, solLocal, localPeerPID, &pid, &length) == 0, pid > 0 else {
+            return nil
+        }
+        return pid
+    }
     #endif
 }

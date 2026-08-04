@@ -96,6 +96,24 @@ public enum ClaudePluginAssets {
             .deletingLastPathComponent() // repo root
     }
 
+    // MARK: opencode
+
+    /// Repo-relative home of the opencode integration: one dependency-free JS
+    /// file plus its README. Not packaged into the app bundle yet — install
+    /// is manual (copy + a tui.json line) until the Settings row lands.
+    public static let opencodeRepositoryRelativePath = "integrations/opencode"
+    public static let opencodePluginFileName = "localvoxtral.js"
+
+    /// Repo checkout location of the opencode plugin file, for the contract
+    /// tests that pin it to the Swift wire constants.
+    static func developmentOpencodePluginURL(
+        sourceFile: String = ClaudePluginAssets.assetsSourceFile
+    ) -> URL? {
+        repositoryRootURL(sourceFile: sourceFile)?
+            .appendingPathComponent(opencodeRepositoryRelativePath)
+            .appendingPathComponent(opencodePluginFileName)
+    }
+
     /// Name of the publisher binary, as packaged and as the shim looks for it.
     public static let publisherExecutableName = "localvoxtral-claude-hook"
 

@@ -67,10 +67,12 @@ PATTERNS=(
   '*ClaudeHookInputParser*'                          # which hook fields become session state
   '*ClaudeHookPublisher*'                            # the identity metadata (tty/pid/herdr pane) joins key on
   'integrations/claude-code/*'                       # the plugin that publishes those hooks
+  'integrations/opencode/*'                          # the opencode publisher: prompt extraction, cwd, file grounding
   '*TerminalScreenContext*'                          # screen context source/policy feeding the prompt
   '*TerminalScreenAXReader*'                         # screen text sanitization/compaction: the excerpt's exact bytes
   '*TerminalScreenAppleScriptReader*'                # iTerm2/Terminal.app focused-pane contents: the excerpt's exact bytes
   '*TerminalFocusedTTYReader*'                       # per-terminal tty readers: which session the context comes from
+  '*BrowserTabURLReader*'                            # per-browser focused-tab url reads: which session the context comes from
   '*DictationViewModel+Session.swift'                # polish-and-commit path
   'Sources/localvoxtral/DictationViewModel.swift'    # context capture/gate call sites feeding the commit path
   '*LLMPolishEvalSupport*'                           # shared eval corpus + scorer
