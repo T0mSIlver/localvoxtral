@@ -90,6 +90,73 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertEqual(clamped.process?.herdrSocketPath, "sssss")
     }
 
+    func testCmuxAndBridgeProcessFieldsUseGoldenWireNamesAndDecode() throws {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "sess-cmux",
+            timestamp: 1.5,
+            process: ClaudeHookProcessInfo(
+                hookPID: 42,
+                claudePID: 41,
+                cmuxSurfaceID: "surface-3",
+                cmuxSocketPath: "cmux.sock",
+                bridgeSessionID: "bridge-abc"
+            )
+        )
+
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"SessionStart","files":[],"process":{"bridge_session_id":"bridge-abc","claude_pid":41,"cmux_socket_path":"cmux.sock","cmux_surface_id":"surface-3","hook_pid":42},"session_id":"sess-cmux","ts":1.5,"v":2}"# + "\n"
+        )
+        let decoded = try ClaudeHookWireCodec.decodeLine(encoded)
+        XCTAssertEqual(decoded.process?.cmuxSurfaceID, "surface-3")
+        XCTAssertEqual(decoded.process?.cmuxSocketPath, "cmux.sock")
+        XCTAssertEqual(decoded.process?.bridgeSessionID, "bridge-abc")
+    }
+
+    func testClampTruncatesTheCmuxAndBridgeProcessFields() {
+        let record = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "s",
+            timestamp: 1,
+            process: ClaudeHookProcessInfo(
+                hookPID: 2,
+                claudePID: 1,
+                cmuxSurfaceID: String(repeating: "u", count: 20),
+                cmuxSocketPath: String(repeating: "k", count: 20),
+                bridgeSessionID: String(repeating: "b", count: 20)
+            )
+        )
+
+        let clamped = ClaudeHookWireCodec.clamp(record, limits: ClaudeHookLimits(maxPathBytes: 5))
+        XCTAssertEqual(clamped.process?.cmuxSurfaceID, "uuuuu")
+        XCTAssertEqual(clamped.process?.cmuxSocketPath, "kkkkk")
+        XCTAssertEqual(clamped.process?.bridgeSessionID, "bbbbb")
+    }
+
+    func testAWireLineWithoutTheCmuxAndBridgeFieldsIsUnchangedByThem() throws {
+        // The compatibility property: an install running an older publisher
+        // still sends lines with no such keys, and re-encoding one must not
+        // invent them — a broker/publisher version skew is the normal state
+        // during an update, not an edge case.
+        let oldLine = line(
+            #"{"event":"SessionStart","process":{"claude_pid":1,"herdr_pane_id":"pane-7","hook_pid":2},"session_id":"old","ts":1,"v":2}"#
+        )
+        let record = try ClaudeHookWireCodec.decodeLine(oldLine)
+        XCTAssertEqual(record.process?.herdrPaneID, "pane-7")
+        XCTAssertNil(record.process?.cmuxSurfaceID)
+        XCTAssertNil(record.process?.cmuxSocketPath)
+        XCTAssertNil(record.process?.bridgeSessionID)
+
+        let reencoded = String(
+            decoding: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(record)), as: UTF8.self
+        )
+        for key in ["cmux_surface_id", "cmux_socket_path", "bridge_session_id"] {
+            XCTAssertFalse(reencoded.contains(key), "an absent field must stay absent")
+        }
+    }
+
     func testAbsentHerdrProcessFieldsDecodeAsNil() throws {
         let json = validJSON(
             event: "SessionStart",

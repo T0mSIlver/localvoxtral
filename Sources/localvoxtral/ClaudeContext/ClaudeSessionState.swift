@@ -81,6 +81,19 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     public var recentSnippets: [ClaudeContentSnippet]
     public var activity: ClaudeSessionActivity
     public var process: ClaudeHookProcessInfo?
+    /// Allowlisted environment labels a REMOTE session's hooks reported.
+    ///
+    /// Deliberately NOT folded into `process`: that block is what the local
+    /// join arms read, and every one of them (`resolve(tty:)`,
+    /// `resolve(herdrPaneID:)`, `liveLocalHerdrSocketPaths()`) pairs an
+    /// `origin.isLocalAuthenticated` filter with a `process` field. Keeping the
+    /// remote labels in their own field means a remote host cannot reach those
+    /// arms even if a future edit forgot the origin filter — there is nothing
+    /// of its in the field they read.
+    ///
+    /// Only ever populated for a `.remote` origin (`ClaudeSessionReducer`), and
+    /// `remoteSessionEnvironment` re-states that at the read side.
+    public var remoteEnvironment: ClaudeRemoteSessionEnvironment?
     public var firstSeen: Date
     public var lastActivity: Date
 
@@ -105,6 +118,18 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         return recentFiles
     }
 
+    /// The remote env labels, and nil for any local session — the mirror image
+    /// of `localWorkspacePath`.
+    ///
+    /// A local session's pane identity arrives inside `process`, vouched for by
+    /// peer-UID authentication on the AF_UNIX socket. Anything reading this
+    /// accessor is by definition reasoning about another machine, and the gate
+    /// makes that impossible to forget.
+    public var remoteSessionEnvironment: ClaudeRemoteSessionEnvironment? {
+        guard case .remote = origin else { return nil }
+        return remoteEnvironment
+    }
+
     init(
         sessionID: String,
         origin: ClaudeTransportOrigin,
@@ -123,6 +148,7 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         self.recentSnippets = []
         self.activity = .idle
         self.process = nil
+        self.remoteEnvironment = nil
         self.firstSeen = firstSeen
         self.lastActivity = firstSeen
     }
@@ -148,11 +174,17 @@ public enum ClaudeSessionReducer {
     /// - Parameter snippets: sanitized excerpts, supplied by the transport that
     ///   parsed them. The local NDJSON wire has no field for these, so in
     ///   practice only the remote HTTP listener ever passes a non-empty array.
+    /// - Parameter environment: allowlisted env labels the REMOTE listener read
+    ///   off the request headers. Applied only for a `.remote` origin — a local
+    ///   caller passing one is ignored rather than trusted, so the remote-only
+    ///   property of `ClaudeSessionSnapshot.remoteEnvironment` holds at the one
+    ///   place that writes it.
     public static func reduce(
         _ snapshot: inout ClaudeSessionSnapshot,
         record: ClaudeHookRecord,
         origin: ClaudeTransportOrigin,
         snippets: [ClaudeContentSnippet] = [],
+        environment: ClaudeRemoteSessionEnvironment? = nil,
         now: Date
     ) {
         snapshot.lastActivity = now
@@ -170,6 +202,15 @@ public enum ClaudeSessionReducer {
         if let process = record.process,
            record.event != .focusChanged, record.event != .focusCleared {
             snapshot.process = process
+        }
+        // Remote only, and replace-whole rather than merge-per-field: the shim
+        // publishes everything it can see on every event, so the newest report
+        // is the honest one — a merge would keep resurrecting a pane the user
+        // has since left. Skipped for focus records for the same reason the
+        // process block is: they describe a pane, not the session.
+        if case .remote = origin, let environment, !environment.isEmpty,
+           record.event != .focusChanged, record.event != .focusCleared {
+            snapshot.remoteEnvironment = environment
         }
 
         switch record.event {

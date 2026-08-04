@@ -407,7 +407,16 @@ Key subsystems:
     hooks running the bundled POSIX-sh shim `hooks/post.sh`, which curls the
     event JSON to `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH
     `RemoteForward` — no localvoxtral binary and no `jq`/`nc`/Node on that
-    host, but it does need `sh` and `curl` (fail-open when absent). After a
+    host, but it does need `sh` and `curl` (fail-open when absent). The body
+    stays Claude's verbatim JSON (no `jq` to rewrite it with), so the
+    allowlisted env enrichment — herdr/cmux/tmux/bridge handles, `SSH_TTY`,
+    the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
+    0600 header file as the token and charset-whitelisted
+    (`[A-Za-z0-9._:/@+,=%-]`, ≤200 bytes) before a byte is written so CR/LF
+    injection is impossible by construction; the listener re-validates and
+    stores them as `ClaudeRemoteSessionEnvironment`, NEVER in
+    `ClaudeSessionSnapshot.process` — see the remote-opacity tradeoff below.
+    After a
     transport-level failure the shim backs off for 5 minutes (epoch stamp
     under `$XDG_RUNTIME_DIR`/`~/.cache`) for every event except
     `UserPromptSubmit`: each dial against a live forward with no app behind
@@ -575,7 +584,15 @@ Key subsystems:
   or git calls. Sessions are namespaced by the host id whose token authenticated
   them, so hosts cannot collide or forge each other's sessions. Bounded,
   sanitized remote prompt/file/tool excerpts may feed the same context budget,
-  but there is no remote repository collector.
+  but there is no remote repository collector. The same rule governs the
+  `X-Lvx-Env-*` enrichment: those values live in
+  `ClaudeSessionSnapshot.remoteEnvironment`, never in `.process`, so they
+  cannot reach `resolve(tty:)`, `resolve(herdrPaneID:)`, or
+  `liveLocalHerdrSocketPaths()` — the local-only arms all read `process`. A
+  remote `HERDR_SOCKET_PATH` is a label, not a socket `HerdrSocketClient` may
+  dial (its guard still requires a local socket owned by `getuid()`), and
+  `hookParentPID` is a String on purpose: a pid in another host's namespace is
+  not a number this process may probe.
 - **Remote enrollment execution is opt-in, preview-first, and keeps the token
   out of process arguments.** `ClaudeRemoteEnrollmentService` generates a
   copyable plan (idempotent ssh config block, `claude plugin` commands,

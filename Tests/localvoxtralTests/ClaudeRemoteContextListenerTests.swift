@@ -220,6 +220,102 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(snapshot.workspace, .remoteOpaque(label: "service"))
     }
 
+    func testAllowlistedEnvHeadersReachTheSnapshotWithoutTouchingProcessIdentity() throws {
+        // The enrichment rides as headers because the body must stay Claude
+        // Code's JSON byte-for-byte (no jq on the remote host). It must arrive —
+        // and it must arrive in `remoteEnvironment`, never in `process`, which
+        // is what the local join arms read.
+        try startListener()
+        let response = try XCTUnwrap(try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Env-Herdr-Pane-Id: pane-7",
+            "X-Lvx-Env-Herdr-Socket-Path: /run/user/1000/herdr/default.sock",
+            "X-Lvx-Env-Cmux-Surface-Id: surface-3",
+            "X-Lvx-Env-Bridge-Session-Id: bridge-abc",
+            "X-Lvx-Env-Tmux-Pane: %3",
+            "X-Lvx-Env-Ssh-Tty: /dev/pts/3",
+            "X-Lvx-Env-Hook-Parent-Pid: 4242",
+        ])))
+        XCTAssertEqual(response.status, 200)
+
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        let environment = try XCTUnwrap(snapshot.remoteSessionEnvironment)
+        XCTAssertEqual(environment.herdrPaneID, "pane-7")
+        XCTAssertEqual(environment.herdrSocketPath, "/run/user/1000/herdr/default.sock")
+        XCTAssertEqual(environment.cmuxSurfaceID, "surface-3")
+        XCTAssertEqual(environment.bridgeSessionID, "bridge-abc")
+        XCTAssertEqual(environment.tmuxPane, "%3")
+        XCTAssertEqual(environment.sshTTY, "/dev/pts/3")
+        XCTAssertEqual(environment.hookParentPID, "4242")
+        XCTAssertNil(snapshot.process, "headers must never become process identity")
+        // And the local arms stay blind to all of it.
+        XCTAssertEqual(sessions.resolve(herdrPaneID: "pane-7"), .unknown)
+        XCTAssertEqual(sessions.resolve(tty: "/dev/pts/3"), .unknown)
+        XCTAssertTrue(sessions.liveLocalHerdrSocketPaths().isEmpty)
+    }
+
+    func testAProcessBlockInARemoteBodyIsIgnoredEvenWhenTheHeadersAreHonest() throws {
+        // The other half of the same invariant, from the body side: a remote
+        // payload can WRITE a `process` object, and the parser's allowlist has
+        // no field for it. Nothing about `process` is reachable from remote.
+        try startListener()
+        _ = try send(hookRequest(token: token, payload: [
+            "session_id": "s-1",
+            "cwd": "/srv/app",
+            "process": [
+                "hook_pid": 1,
+                "claude_pid": 9001,
+                "tty": "/dev/ttys004",
+                "herdr_pane_id": "pane-7",
+                "herdr_socket_path": "/tmp/herdr.sock",
+            ],
+        ], extraHeaders: ["X-Lvx-Env-Herdr-Pane-Id: pane-7"]))
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        XCTAssertNil(snapshot.process)
+        XCTAssertEqual(sessions.resolve(herdrPaneID: "pane-7"), .unknown)
+        XCTAssertEqual(sessions.resolve(tty: "/dev/ttys004"), .unknown)
+    }
+
+    func testHostileEnvHeaderValuesAreDroppedWithoutFailingTheHook() throws {
+        // A value the shim would never have written (its charset check happens
+        // before it writes) — so this is the receiving side refusing to trust
+        // that the shim ran at all. The hook itself must still succeed: the
+        // body is the payload and the enrichment is a bonus.
+        try startListener()
+        let response = try XCTUnwrap(try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Env-Herdr-Pane-Id: pane 7 with spaces",
+            "X-Lvx-Env-Cmux-Surface-Id: " + String(repeating: "a", count: 400),
+            "X-Lvx-Env-Ssh-Tty: /dev/pts/3",
+        ])))
+        XCTAssertEqual(response.status, 200, "a bad enrichment value must not fail the hook")
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        let environment = try XCTUnwrap(snapshot.remoteSessionEnvironment)
+        XCTAssertNil(environment.herdrPaneID, "whitespace is outside the charset")
+        XCTAssertNil(environment.cmuxSurfaceID, "over the per-value byte cap")
+        XCTAssertEqual(environment.sshTTY, "/dev/pts/3", "the good neighbour still arrives")
+    }
+
+    func testAnEnvValuePaddedWithUnicodeWhitespaceIsRejectedOverTheRealSocket() throws {
+        // Review finding, end to end: `pane-7<NBSP>` used to be trimmed by the
+        // head parser (Foundation's Unicode whitespace set) into a value the
+        // byte-level charset check then accepted. The hook itself must still
+        // succeed — a bad enrichment value never costs delivery.
+        try startListener()
+        let response = try XCTUnwrap(try send(hookRequest(token: token, extraHeaders: [
+            "X-Lvx-Env-Herdr-Pane-Id: pane-7\u{A0}",
+        ])))
+        XCTAssertEqual(response.status, 200)
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        XCTAssertNil(snapshot.remoteSessionEnvironment)
+        XCTAssertEqual(sessions.resolve(herdrPaneID: "pane-7"), .unknown)
+    }
+
+    func testARequestWithNoEnvHeadersCarriesNoEnvironment() throws {
+        try startListener()
+        _ = try send(hookRequest(token: token))
+        let snapshot = try XCTUnwrap(sessions.liveSessions().first)
+        XCTAssertNil(snapshot.remoteSessionEnvironment)
+    }
+
     func testTheEventPathSuppliesTheEventWhenThePayloadOmitsIt() throws {
         try startListener()
         _ = try send(hookRequest(event: "UserPromptSubmit", token: token, payload: [

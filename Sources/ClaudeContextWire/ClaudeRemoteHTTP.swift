@@ -162,10 +162,8 @@ public enum ClaudeRemoteHTTPCodec {
                 // will not reassemble.
                 throw ClaudeRemoteHTTPError.malformed
             }
-            let name = line[line.startIndex..<colon]
-                .trimmingCharacters(in: .whitespaces)
-                .lowercased()
-            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            let name = trimmingOWS(line[line.startIndex..<colon]).lowercased()
+            let value = trimmingOWS(line[line.index(after: colon)...])
             guard !name.isEmpty else { throw ClaudeRemoteHTTPError.malformed }
             // Duplicates are rejected rather than last-wins. Two Content-Lengths
             // or two Authorizations mean the sender and we would have to agree on
@@ -203,6 +201,34 @@ public enum ClaudeRemoteHTTPCodec {
             bearerToken: bearerToken(in: headers["authorization"], limits: limits)
         )
         return (request, terminator.upperBound - buffer.startIndex)
+    }
+
+    /// Strip HTTP optional whitespace — ASCII SP and HTAB, and nothing else.
+    ///
+    /// NOT `trimmingCharacters(in: .whitespaces)`, which is a UNICODE set: it
+    /// eats U+00A0 NBSP, U+2007, U+3000 and friends. Two bugs follow from that,
+    /// and only the second is obvious:
+    ///
+    /// 1. It rewrites the field NAME. `Content-Length<NBSP>: 5` would trim to
+    ///    `content-length` here while a conforming proxy reads a different (or
+    ///    invalid) header — the parsers-disagree shape this file exists to
+    ///    avoid.
+    /// 2. It launders a field VALUE past a byte-level validator. The env
+    ///    enrichment rejects any non-ASCII byte, but `pane-7<NBSP>` was being
+    ///    trimmed to `pane-7` BEFORE that check ever ran, so a malformed wire
+    ///    value was accepted as a well-formed one.
+    ///
+    /// RFC 9110 defines OWS as `*( SP / HTAB )`. Trimming exactly that means a
+    /// value's bytes reach a validator as the peer actually wrote them.
+    static func trimmingOWS(_ value: Substring) -> String {
+        var slice = value
+        while let first = slice.first, first == " " || first == "\t" {
+            slice = slice.dropFirst()
+        }
+        while let last = slice.last, last == " " || last == "\t" {
+            slice = slice.dropLast()
+        }
+        return String(slice)
     }
 
     /// The `Bearer` credential, or nil for any other scheme/shape.

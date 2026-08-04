@@ -164,6 +164,38 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
         XCTAssertEqual(parsed.bearerToken, "abc123abc123abc123")
     }
 
+    func testOnlyASCIIOWSIsTrimmedFromNamesAndValues() throws {
+        // Review finding: `trimmingCharacters(in: .whitespaces)` is a UNICODE
+        // set. It ate U+00A0 and friends, which laundered a malformed wire
+        // value into a well-formed one before any byte-level validator could
+        // see it — and, worse, rewrote the field NAME, so `Content-Length<NBSP>`
+        // parsed as a Content-Length here while a conforming proxy would read
+        // something else. RFC 9110 OWS is `*( SP / HTAB )` and nothing more.
+        let padded = Data(
+            "POST /v1/hook/Stop HTTP/1.1\r\nX-Thing: pane-7\u{A0}\r\nContent-Length: 2\r\n\r\n{}".utf8
+        )
+        let (parsed, _) = try ClaudeRemoteHTTPCodec.parseRequestHead(padded)
+        XCTAssertEqual(
+            parsed.headers["x-thing"], "pane-7\u{A0}",
+            "a non-ASCII pad is part of the value, not whitespace to discard"
+        )
+
+        // Tab is OWS and still goes.
+        let tabbed = Data(
+            "POST /v1/hook/Stop HTTP/1.1\r\nX-Thing:\tvalue\t\r\nContent-Length: 2\r\n\r\n{}".utf8
+        )
+        XCTAssertEqual(try ClaudeRemoteHTTPCodec.parseRequestHead(tabbed).request.headers["x-thing"], "value")
+
+        // And the name is no longer rewritten: a NBSP-suffixed Content-Length
+        // is a different header, so the required one is simply absent.
+        let paddedName = Data(
+            "POST /v1/hook/Stop HTTP/1.1\r\nContent-Length\u{A0}: 2\r\n\r\n{}".utf8
+        )
+        XCTAssertThrowsError(try ClaudeRemoteHTTPCodec.parseRequestHead(paddedName)) { error in
+            XCTAssertEqual(error as? ClaudeRemoteHTTPError, .lengthRequired)
+        }
+    }
+
     func testHeaderFoldingIsRejected() {
         let raw = Data(
             "POST /v1/hook/Stop HTTP/1.1\r\nX-Thing: a\r\n  continued\r\nContent-Length: 2\r\n\r\n{}".utf8

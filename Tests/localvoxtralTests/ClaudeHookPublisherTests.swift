@@ -88,6 +88,73 @@ final class ClaudeHookPublisherTests: XCTestCase {
         XCTAssertNil(info.herdrSocketPath)
     }
 
+    func testCmuxAndBridgeEnvironmentValuesArePublished() {
+        // Same class as the herdr pair and the same reason: they name WHERE a
+        // LOCAL session runs, which is the only question a join arm asks. Their
+        // trust is the AF_UNIX peer-UID check, so they may sit in `process`
+        // beside the rest — the remote equivalents deliberately may not.
+        let info = publisher(variables: [
+            "HOME": "/h",
+            "CMUX_SURFACE_ID": "surface-3",
+            "CMUX_SOCKET_PATH": "/tmp/cmux.sock",
+            "CLAUDE_CODE_BRIDGE_SESSION_ID": "bridge-abc",
+        ]).processInfo()
+        XCTAssertEqual(info.cmuxSurfaceID, "surface-3")
+        XCTAssertEqual(info.cmuxSocketPath, "/tmp/cmux.sock")
+        XCTAssertEqual(info.bridgeSessionID, "bridge-abc")
+    }
+
+    func testCmuxAndBridgeEnvironmentValuesArePublishedIndependently() {
+        let surfaceOnly = publisher(variables: ["CMUX_SURFACE_ID": "surface-3"]).processInfo()
+        XCTAssertEqual(surfaceOnly.cmuxSurfaceID, "surface-3")
+        XCTAssertNil(surfaceOnly.cmuxSocketPath)
+        XCTAssertNil(surfaceOnly.bridgeSessionID)
+
+        let bridgeOnly = publisher(
+            variables: ["CLAUDE_CODE_BRIDGE_SESSION_ID": "bridge-abc"]
+        ).processInfo()
+        XCTAssertEqual(bridgeOnly.bridgeSessionID, "bridge-abc")
+        XCTAssertNil(bridgeOnly.cmuxSurfaceID)
+    }
+
+    func testEmptyOrAbsentCmuxAndBridgeValuesAreTreatedAsAbsent() {
+        // An exported-but-empty variable is how a shell says "not in one of
+        // these". Publishing `""` would let a later join arm match two empty
+        // strings and call it the same surface.
+        let empty = publisher(variables: [
+            "CMUX_SURFACE_ID": "",
+            "CMUX_SOCKET_PATH": "",
+            "CLAUDE_CODE_BRIDGE_SESSION_ID": "",
+        ]).processInfo()
+        XCTAssertNil(empty.cmuxSurfaceID)
+        XCTAssertNil(empty.cmuxSocketPath)
+        XCTAssertNil(empty.bridgeSessionID)
+
+        let absent = publisher(variables: ["HOME": "/h"]).processInfo()
+        XCTAssertNil(absent.cmuxSurfaceID)
+        XCTAssertNil(absent.cmuxSocketPath)
+        XCTAssertNil(absent.bridgeSessionID)
+    }
+
+    func testNoEnvironmentVariableOutsideTheAllowlistIsEverPublished() throws {
+        // The publisher reads the environment, so "it only takes the allowlist"
+        // is a property worth asserting against the ENCODED line rather than
+        // field by field: a secret picked up by a future edit would show up
+        // here as a value on the wire.
+        let info = publisher(variables: [
+            "HOME": "/h",
+            "AWS_SECRET_ACCESS_KEY": "super-secret",
+            "GITHUB_TOKEN": "ghp_secret",
+            "PATH": "/usr/bin",
+            "TERM_PROGRAM": "ghostty",
+        ]).processInfo()
+        let encoded = String(decoding: try JSONEncoder().encode(info), as: UTF8.self)
+        for secret in ["super-secret", "ghp_secret", "/usr/bin"] {
+            XCTAssertFalse(encoded.contains(secret), "\(secret) must never be published")
+        }
+        XCTAssertTrue(encoded.contains("ghostty"))
+    }
+
     // The published claudePID and the tty resolution consume the SAME pid,
     // from one `ppid()` call: the tty seam receives the pid the ppid seam
     // yielded, so the two fields can never describe different processes (the
