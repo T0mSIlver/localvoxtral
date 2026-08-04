@@ -229,7 +229,11 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         handle.close()
         handle.close()
 
-        XCTAssertEqual(spawner.process.terminations.withLock { $0 }, 1)
+        // `terminate()` is deliberately re-invoked by every close (it is the
+        // retry path for a failed collection) and is idempotent in EFFECT, so
+        // the contract is about what happened once: the workspace was removed
+        // exactly once, and the child was terminated at all.
+        XCTAssertGreaterThanOrEqual(spawner.process.terminations.withLock { $0 }, 1)
         XCTAssertEqual(workspaces.removed.withLock { $0.map(\.socketPath) }, [localSocketPath])
     }
 
@@ -244,7 +248,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         let handle = await service.open(alias: "builder", remoteSocketPath: remoteSocketPath)
 
         XCTAssertNil(handle)
-        XCTAssertEqual(spawner.process.terminations.withLock { $0 }, 1)
+        XCTAssertGreaterThanOrEqual(spawner.process.terminations.withLock { $0 }, 1)
         XCTAssertEqual(workspaces.removeCount, 1)
         // Bounded: the poll loop cannot outlive the readiness budget. The count
         // is 2.0/0.025 give or take one — 0.025 is not exactly representable,
@@ -690,7 +694,17 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
 
         process.terminate()
 
-        XCTAssertTrue(process.hasBeenReaped)
+        // The retry happens on the handle's own queue — nothing blocks — so the
+        // collection lands asynchronously.
+        var collected = false
+        for _ in 0..<300 {
+            if process.hasBeenReaped {
+                collected = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(collected)
         XCTAssertGreaterThanOrEqual(calls.value, 3, "EINTR must be retried, not swallowed")
         var isCollected = false
         for _ in 0..<300 {
@@ -757,6 +771,83 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         // signalling, so the test process leaves no zombie behind.
         var status: Int32 = 0
         _ = waitpid(process.leaderPID, &status, 0)
+    }
+
+    // MARK: - The non-blocking collect and its hand-off (review round 7)
+
+    func testANeverCollectableChildDoesNotBlockTeardown() throws {
+        // The whole point of the simplification: there is no `waitpid(…, 0)`
+        // anywhere, so a child that never becomes collectable costs a bounded
+        // background poll and nothing else. If this regressed, the test would
+        // hang rather than fail.
+        let calls = ReapCallCounter()
+        let process = try spawnExitingChild(waitForChild: { _, _, _ in
+            _ = calls.next()
+            return 0 // WNOHANG: "still running", forever
+        })
+
+        process.terminate()
+
+        XCTAssertFalse(process.hasBeenReaped, "an uncollectable child is never claimed as reaped")
+        XCTAssertGreaterThan(process.groupSignalsSent, 0, "the group is still ours to signal")
+        // Collect it for real so the test process leaves nothing behind.
+        var status: Int32 = 0
+        _ = waitpid(process.leaderPID, &status, 0)
+    }
+
+    func testAChildThatIsNotReadyImmediatelyIsCollectedByTheHandOff() throws {
+        // The first attempt runs on the caller's thread; anything else goes to
+        // this handle's OWN queue. Nothing here is allowed to block, so the
+        // collection lands asynchronously.
+        let calls = ReapCallCounter()
+        let process = try spawnExitingChild(waitForChild: { pid, status, options in
+            if calls.next() <= 3 { return 0 }
+            return waitpid(pid, status, options)
+        })
+
+        process.terminate()
+
+        var collected = false
+        for _ in 0..<300 {
+            if process.hasBeenReaped {
+                collected = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(collected, "the background poll must finish the collection")
+        XCTAssertGreaterThan(calls.value, 3)
+    }
+
+    func testClosingTheHandleAgainRetriesAFailedCollection() throws {
+        // Production's retry path. `close()` used to skip `terminate()` once the
+        // handle was already closed, so deinit could not retry and only a test
+        // calling `terminate()` twice ever recovered a failed reap.
+        let calls = ReapCallCounter()
+        let process = try spawnExitingChild(waitForChild: { pid, status, options in
+            if calls.next() == 1 {
+                errno = EINVAL
+                return -1
+            }
+            return waitpid(pid, status, options)
+        })
+        let workspace = ClaudeRemoteHerdrForwardWorkspace(
+            directoryPath: "/tmp/lvx-retry-test", socketPath: "/tmp/lvx-retry-test/h.sock"
+        )
+        let removals = ReapCallCounter()
+        let handle = ClaudeRemoteHerdrForwardHandle(
+            workspace: workspace,
+            process: process,
+            removeWorkspace: { _ in _ = removals.next() }
+        )
+
+        handle.close()
+        XCTAssertFalse(process.hasBeenReaped, "the first collection failed")
+
+        handle.close()
+
+        XCTAssertTrue(process.hasBeenReaped, "a later close must retry the collection")
+        XCTAssertEqual(removals.value, 1, "the workspace is still removed exactly once")
     }
 
     func testTerminatingTwiceIsHarmless() throws {

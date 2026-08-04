@@ -830,11 +830,15 @@ final class RemoteHerdrJoinTests: XCTestCase {
         XCTAssertTrue(panes.requests.withLock { $0.isEmpty })
     }
 
-    func testTheManualHerdrFlowGetsNoContextAtAll() async throws {
+    func testTheManualHerdrFlowGetsNoHerdrJoin() async throws {
         // The documented, accepted limitation: `ssh host`, then typing `herdr`,
-        // leaves no trace in argv. herdr also intercepts OSC 2, so the pane's
-        // marker never reaches the outer terminal — meaning there is no marker
-        // to fall back to either. No join, and no pretending otherwise.
+        // leaves no trace in argv, so the arm cannot bind and no HERDR join
+        // happens. What this does NOT claim is "no context at all" (review
+        // round 7 corrected that): the arm returns `.notApplicable`, so the
+        // title-marker arm still runs — see
+        // `testAPlainSSHSessionNeverReachesTheArmEvenAsTheSoleConnection`,
+        // where a marker in the outer title still wins. Here there is no such
+        // marker, so nothing joins.
         let registry = makeRegistry(markers: [markerValue])
         ingestRemoteHerdrSession(into: registry)
         let forwards = RecordingForwards()

@@ -659,8 +659,10 @@ Key subsystems:
     (`ClaudeRemoteHerdrForward`) opened at dictation start and closed when the
     dictation is done with it. The bindings, ALL required, in cost order so an
     ordinary ssh session never pays for a tunnel:
-    (1) the focused surface's own TTY hosts a FOREGROUND `ssh` session whose
-    destination is exactly one enrolled host's alias. `SSHDestinationTTYProbe`
+    (1) the focused surface's own TTY hosts EXACTLY ONE FOREGROUND `ssh`
+    session, whose destination is exactly one enrolled host's alias. One,
+    because several in a group cannot be told apart from here, and unioning
+    them let a plain connection borrow a sibling's herdr signal. `SSHDestinationTTYProbe`
     is deliberately paranoid here, because every way an argv can name one host
     while the connection goes elsewhere is a mis-join: it verifies the
     EXECUTABLE against three EXACT absolute paths (`/usr/bin/ssh` and
@@ -694,12 +696,17 @@ Key subsystems:
     socket schema and the 0.8.0 docs, the only `client.*` methods are
     `window_title.set`/`clear`, both MUTATIONS (so `no_foreground_client` is not
     an acceptable probe), and `session.snapshot` carries no attachment field.
-    The accepted cost, stated rather than hidden: the manual flow — `ssh host`,
-    then typing `herdr` — gets NO context at all, not even a marker fallback,
-    because herdr intercepts OSC 2 so the marker never reaches the outer
-    terminal. A wrong join is worse than no join. It also makes the arm free
-    for everyone else: a plain ssh to an enrolled host no longer spawns a
-    forward before falling through;
+    The accepted cost, stated accurately: the manual flow — `ssh host`, then
+    typing `herdr` — gets no HERDR join. It does NOT get "no context": the arm
+    returns `.notApplicable`, so the title-marker arm still runs, and a marker
+    an earlier session on that host left in the OUTER title can still win. That
+    residual is pre-existing (it is what remote sessions have always done) and
+    cannot be closed from here, because nothing on the surface reveals a remote
+    herdr running inside it — e.g. run Claude in a plain ssh so its marker sits
+    in the title, suspend it, then start herdr by hand: dictation joins the
+    suspended session. What this arm refuses is a wrong HERDR join. It also
+    makes the arm free for everyone else: a plain ssh to an enrolled host no
+    longer spawns a forward before falling through;
     (3) that host has live remote sessions reporting a herdr pane, all from ONE
     herdr socket (`liveRemoteHerdrSessions(hostID:)`, the mirror of the local
     single-socket rule). The count that matters is SOCKETS, not sessions:

@@ -347,6 +347,46 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertTrue(value.isOnlyConnectionToDestination)
     }
 
+    func testTwoForegroundSSHClientsOnOneSurfaceAbstainEvenToTheSameHost() {
+        // Review round 7: the first version UNIONED the foreground processes —
+        // one destination set, `indicatesHerdr` OR-ed across them — so a group
+        // holding both `ssh builder` and `ssh builder herdr` reported "unique"
+        // AND "is herdr", and the plain, visible connection borrowed the
+        // other's herdr signal. There is no way to tell which one the user is
+        // looking at, so neither answers.
+        XCTAssertEqual(
+            probe(
+                processes: [
+                    ssh(["ssh", "builder"], pid: 501),
+                    ssh(["ssh", "builder", "herdr", "attach"], pid: 502),
+                ]
+            ),
+            .undeterminable
+        )
+    }
+
+    func testAWrapperLaunchingSeveralSSHChildrenInOneGroupAbstains() {
+        // The sibling-process shape: a pipeline or wrapper whose children share
+        // the foreground process group.
+        let first = SSHClientProcess(
+            pid: 601,
+            ttyDevice: surface,
+            processGroupID: 600,
+            terminalForegroundGroupID: 600,
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder", "herdr"]
+        )
+        let second = SSHClientProcess(
+            pid: 602,
+            ttyDevice: surface,
+            processGroupID: 600,
+            terminalForegroundGroupID: 600,
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder"]
+        )
+        XCTAssertEqual(probe(processes: [first, second]), .undeterminable)
+    }
+
     func testTwoForegroundSSHClientsToDifferentHostsOnOneSurfaceAbstain() {
         XCTAssertEqual(
             probe(

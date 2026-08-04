@@ -205,26 +205,32 @@ enum SSHDestinationTTYProbe {
         }
         guard !onSurface.isEmpty else { return .noSSHClient }
 
-        var destinations = Set<String>()
-        var indicatesHerdr = false
-        for process in onSurface {
-            guard let parsed = verifiedInvocation(of: process) else { return .undeterminable }
-            destinations.insert(parsed.destination)
-            indicatesHerdr = indicatesHerdr || parsed.indicatesHerdr
+        // EXACTLY ONE foreground ssh, or nothing. The first version combined
+        // several — one destination set, `indicatesHerdr` OR-ed across them —
+        // and that union was itself a mis-join (review round 7): a foreground
+        // group holding both `ssh builder` and `ssh builder herdr` reported
+        // "unique" AND "is herdr", so the plain, visible connection joined the
+        // other process's herdr session. A pipeline or wrapper that launches
+        // several ssh children in one group is the same shape.
+        //
+        // There is no way to tell from here WHICH of them the user is looking
+        // at, and this arm's rule is to abstain rather than guess.
+        guard onSurface.count == 1, let surfaceProcess = onSurface.first else {
+            return .undeterminable
         }
-        guard destinations.count == 1, let destination = destinations.first else {
+        guard let parsed = verifiedInvocation(of: surfaceProcess) else {
             return .undeterminable
         }
 
         return .connection(
             SSHSurfaceConnection(
-                destination: destination,
+                destination: parsed.destination,
                 isOnlyConnectionToDestination: isOnlyConnection(
-                    to: destination,
-                    surfacePIDs: Set(onSurface.map(\.pid)),
+                    to: parsed.destination,
+                    surfacePID: surfaceProcess.pid,
                     processes: processes
                 ),
-                indicatesHerdr: indicatesHerdr
+                indicatesHerdr: parsed.indicatesHerdr
             )
         )
     }
@@ -242,16 +248,16 @@ enum SSHDestinationTTYProbe {
     /// connection this terminal DISPLAYS — it belongs to destination
     /// determination above, and says nothing about how many connections exist.
     ///
-    /// Excluded: the surface's own foreground processes (they ARE this
-    /// connection), and anything with no controlling terminal — nobody can be
-    /// dictating into one, and our own `ssh -L` forward is exactly that.
+    /// Excluded: the surface's own connection (the single foreground ssh this
+    /// answer is about), and anything with no controlling terminal — nobody can
+    /// be dictating into one, and our own `ssh -L` forward is exactly that.
     private static func isOnlyConnection(
         to destination: String,
-        surfacePIDs: Set<Int32>,
+        surfacePID: Int32,
         processes: [SSHClientProcess]
     ) -> Bool {
         for process in processes
-        where process.ttyDevice != nil && !surfacePIDs.contains(process.pid) {
+        where process.ttyDevice != nil && process.pid != surfacePID {
             guard let parsed = verifiedInvocation(of: process) else {
                 // An ssh elsewhere we cannot read could be to this destination.
                 // Uniqueness is a claim, and an unreadable process cannot be
@@ -355,9 +361,11 @@ enum SSHDestinationTTYProbe {
     /// reason it was the exploit: its first token is `sh`, and what it goes on
     /// to run is not something an argv can promise.
     ///
-    /// This is CORROBORATION ONLY. It never substitutes for the uniqueness
-    /// requirement, because argv is written by whoever launched the process and
-    /// a mis-join costs another session's pane text.
+    /// REQUIRED by the arm (review round 5b), not corroboration: herdr exposes
+    /// no read-only attachment signal, so the invocation is the only evidence
+    /// that this terminal is a herdr client at all. It never stands ALONE
+    /// either — uniqueness is required alongside it, because argv is written by
+    /// whoever launched the process.
     static func commandNamesHerdr(_ remoteCommand: [String]) -> Bool {
         guard let command = remoteCommand.first, !command.isEmpty else { return false }
         return (command as NSString).lastPathComponent == "herdr"

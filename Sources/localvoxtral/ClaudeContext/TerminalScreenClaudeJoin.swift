@@ -554,16 +554,18 @@ struct ClaudeSessionJoinResolver {
     /// Bindings, all required, in cost order — the free local reads first, so an
     /// ordinary ssh session never pays for a forward:
     ///
-    /// 1. the focused surface's own TTY hosts a FOREGROUND ssh session whose
-    ///    destination is exactly one enrolled host's alias. This is the only
-    ///    step that says anything about what the user is looking at;
-    /// 2. that CONNECTION — not merely that host — is bound to herdr: either the
-    ///    ssh argv names herdr as its remote command, or this terminal holds the
-    ///    only ssh connection to that destination on the whole machine. Without
-    ///    this, a plain shell to `builder` in one window would join the session
-    ///    displayed in a herdr attached to `builder` in another (review blocker
-    ///    1): every remaining check is about the REMOTE side and cannot tell the
-    ///    two windows apart;
+    /// 1. the focused surface's TTY hosts EXACTLY ONE foreground ssh session,
+    ///    whose destination is exactly one enrolled host's alias. One, because
+    ///    several in a group cannot be told apart from here and unioning them
+    ///    let a plain connection borrow a sibling's herdr signal (round 7).
+    ///    This is the only step that says anything about what the user is
+    ///    looking at;
+    /// 2. that CONNECTION is bound to herdr, and it takes BOTH facts: the ssh
+    ///    argv names herdr as its remote command (first token), AND this
+    ///    terminal holds the only ssh connection to that destination on the
+    ///    machine. Neither alone is enough — uniqueness does not say what the
+    ///    terminal DISPLAYS (a detached herdr still answers `pane.current`),
+    ///    and argv is written by whoever launched the process;
     /// 3. that host has live sessions reporting a herdr pane, all from ONE herdr
     ///    socket. This counts SOCKETS, not sessions: several live sessions on
     ///    one herdr are expected and fine — panes are what a multiplexer is for
@@ -643,10 +645,14 @@ struct ClaudeSessionJoinResolver {
         // field. So the evidence has to come from the invocation itself, and
         // `indicatesHerdr` is promoted from corroboration to a REQUIREMENT.
         //
-        // The cost is stated rather than hidden: the manual flow — `ssh host`,
-        // then type `herdr` — gets NO context at all, not even a marker
-        // fallback, because herdr intercepts OSC 2 so the marker never reaches
-        // the outer terminal. A wrong join is worse than no join.
+        // The cost, stated accurately: the manual flow — `ssh host`, then type
+        // `herdr` — gets no HERDR join. It does not get "no context": this
+        // returns `.notApplicable`, so the title-marker arm still runs, and a
+        // marker left in the OUTER title by an earlier session on that host can
+        // still win. That residual is pre-existing (it is what a remote session
+        // has always done) and cannot be closed from here — nothing on the
+        // surface tells us a remote herdr is running inside it. A wrong HERDR
+        // join is what this refuses.
         //
         // Uniqueness stays REQUIRED alongside it: argv is written by whoever
         // launched the process, so it must never be the only thing standing

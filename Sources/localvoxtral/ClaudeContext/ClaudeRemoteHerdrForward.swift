@@ -81,13 +81,19 @@ final class ClaudeRemoteHerdrForwardHandle: Sendable, Equatable {
     var isRunning: Bool { process.isRunning }
 
     func close() {
+        // ALWAYS, before the idempotence guard: `terminate()` is itself
+        // idempotent, and it is the production RETRY path for a collection that
+        // failed earlier. Gating it behind "already closed" meant a failed reap
+        // could only ever be retried by a test calling `terminate()` twice —
+        // deinit's `close()` was a no-op, so production had no second attempt
+        // at all (review round 7).
+        process.terminate()
         let alreadyClosed = closed.withLock { state -> Bool in
             if state { return true }
             state = true
             return false
         }
         guard !alreadyClosed else { return }
-        process.terminate()
         // The socket is ssh's to unlink on a clean exit, but a killed ssh
         // leaves it behind — and the directory is ours either way.
         removeWorkspace(workspace)
@@ -384,8 +390,11 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
         // redirections are checked in the same breath, since a child that
         // inherited our stdio is not the child this code describes.
         var fileActions: posix_spawn_file_actions_t?
-        guard posix_spawn_file_actions_init(&fileActions) == 0 else {
-            throw SpawnError.setupFailed(code: errno)
+        // The status IS the error number for these APIs; `errno` may hold
+        // something stale from an unrelated call (review round 7).
+        let fileActionsStatus = posix_spawn_file_actions_init(&fileActions)
+        guard fileActionsStatus == 0 else {
+            throw SpawnError.setupFailed(code: fileActionsStatus)
         }
         defer { posix_spawn_file_actions_destroy(&fileActions) }
         for (descriptor, flags) in [(0, O_RDONLY), (1, O_WRONLY), (2, O_WRONLY)] {
@@ -396,8 +405,9 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
         }
 
         var attributes: posix_spawnattr_t?
-        guard posix_spawnattr_init(&attributes) == 0 else {
-            throw SpawnError.setupFailed(code: errno)
+        let attributesStatus = posix_spawnattr_init(&attributes)
+        guard attributesStatus == 0 else {
+            throw SpawnError.setupFailed(code: attributesStatus)
         }
         defer { posix_spawnattr_destroy(&attributes) }
         // pgroup 0 with SETPGROUP: the child's process group id becomes its own
@@ -465,6 +475,11 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// without arranging real signal delivery. Same signature and same errno
     /// semantics as the real thing.
     private let waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t
+    /// PER HANDLE, never shared. One static serial queue meant a child that
+    /// never becomes collectable would block the single worker forever and
+    /// every later hand-off would queue behind it, retaining process objects
+    /// and leaving their children unreaped (review round 7).
+    private let reapQueue: DispatchQueue
 
     init(
         pid: pid_t,
@@ -474,6 +489,9 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     ) {
         self.pid = pid
         self.waitForChild = waitForChild
+        reapQueue = DispatchQueue(
+            label: "com.localvoxtral.claude.herdr-forward-reap.\(pid)", qos: .utility
+        )
         let source = DispatchSource.makeProcessSource(
             identifier: pid, eventMask: .exit, queue: .global(qos: .utility)
         )
@@ -526,7 +544,7 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         // not. It IS gated on not-yet-reaped, which is the only thing that
         // makes `-pid` still mean our group.
         guard signalGroupIsSafe else {
-            reapIfNeeded()
+            reapWithoutBlocking()
             return
         }
         _ = ClaudePluginInstallService.terminateBounded(
@@ -545,7 +563,7 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         // Unconditional within the un-reaped window: the leader going quietly
         // says nothing about the rest of its group.
         signalGroup(SIGKILL)
-        reapIfNeeded()
+        reapWithoutBlocking()
     }
 
     /// Whether `-pid` still names OUR process group.
@@ -553,14 +571,19 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
 
     /// Signal the whole group, refusing once the pid could have been reused.
     /// Counted so a test can prove no signal is sent after the reap.
+    ///
+    /// The check and the signal happen under ONE lock acquisition. Releasing
+    /// between them left a window where a background collection could commit
+    /// `reaped` and a concurrent `terminate()` would then signal a pid the
+    /// kernel had already handed to someone else — the exact invariant round 4
+    /// established (review round 7). `kill` is non-blocking, so holding the
+    /// mutex across it costs nothing.
     private func signalGroup(_ signal: Int32) {
-        let sent = state.withLock { current -> Bool in
-            guard !current.reaped else { return false }
+        state.withLock { current in
+            guard !current.reaped else { return }
             current.groupSignalsSent += 1
-            return true
+            _ = Darwin.kill(-pid, signal)
         }
-        guard sent else { return }
-        _ = Darwin.kill(-pid, signal)
     }
 
     /// Collect the child, once. After this the pid is the kernel's to reuse,
@@ -573,27 +596,28 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// cancelled, every later teardown refused to signal or retry, and the
     /// documented "one zombie per open forward, for one dictation" became one
     /// per dictation forever.
-    /// How long the caller's own thread will poll before handing the wait off.
-    /// The child has been SIGKILLed by the time this runs, so the first attempt
-    /// almost always collects it; this bound exists for the case where it does
-    /// not.
-    private static let reapPollAttempts = 250
-    private static let reapQueue = DispatchQueue(
-        label: "com.localvoxtral.claude.herdr-forward-reap", qos: .utility
-    )
+    /// Total budget for collecting the child, in poll attempts of
+    /// `reapPollInterval` each. Generous, because the only cost of waiting is a
+    /// background timer; when it runs out we give up rather than block.
+    private static let reapPollAttempts = 600
+    private static let reapPollInterval: TimeInterval = 0.005
 
     private enum CollectOutcome {
         /// Definitively collected (or the kernel disowned the pid).
         case reaped
-        /// Not yet collectable, or interrupted. Ask again.
+        /// Not collectable yet, or interrupted. Ask again later.
         case pending
-        /// A real error. Leave it UNREAPED so a later teardown retries.
+        /// A real error. Leave it UNREAPED so a later attempt retries.
         case failed
     }
 
-    private func collectOnce(options: Int32) -> CollectOutcome {
+    /// One NON-BLOCKING collection attempt. `WNOHANG` everywhere, by design:
+    /// there is no `waitpid(…, 0)` left anywhere in this type, so no thread —
+    /// foreground or background — can ever be parked on a child that refuses to
+    /// die (review round 7).
+    private func collectOnce() -> CollectOutcome {
         var status: Int32 = 0
-        let collected = waitForChild(pid, &status, options)
+        let collected = waitForChild(pid, &status, WNOHANG)
         if collected > 0 {
             markReaped()
             return .reaped
@@ -610,48 +634,55 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
             return .reaped
         }
         // Anything else stays UNREAPED on purpose: the zombie is still ours,
-        // `-pid` still names our group, and the next teardown (or the handle's
-        // deinit) will try again rather than leak it silently.
+        // `-pid` still names our group, and a later attempt will retry rather
+        // than leak it silently.
         Log.claudeContext.error(
             "Remote herdr forward could not be collected (errno \(failure, privacy: .public)); leaving it unreaped for a later attempt"
         )
         return .failed
     }
 
-    /// Collect the child, once. After this the pid is the kernel's to reuse,
-    /// which is precisely why nothing may signal the group afterwards.
+    /// Collect the child without ever blocking the caller.
     ///
-    /// `reaped` is committed only on a DEFINITIVE outcome — the child was
-    /// collected, or the kernel says there is no such child. Claiming it up
-    /// front (as the first version did) meant an interrupted `waitpid` left a
-    /// zombie behind while the state insisted it was gone: the source was
-    /// cancelled, every later teardown refused to signal or retry, and the
-    /// documented "one zombie per open forward, for one dictation" became one
-    /// per dictation forever.
+    /// `reaped` is committed only on a DEFINITIVE outcome — collected, or
+    /// `ECHILD`. Claiming it up front (as an earlier version did) meant an
+    /// interrupted `waitpid` left a zombie while the state insisted it was
+    /// gone, which turned the documented "one zombie per open forward, for one
+    /// dictation" into one per dictation forever.
     ///
-    /// NON-BLOCKING first, because every caller is a user-visible path — stop,
-    /// commit, cancel, app quit, all on the main actor. A child wedged in an
-    /// uninterruptible wait must cost a background thread, never the UI, so the
-    /// bounded poll hands off rather than waiting it out (review round 5b).
-    private func reapIfNeeded() {
+    /// One attempt runs on the caller's thread — after SIGKILL the child is
+    /// normally collectable immediately — and anything else goes to this
+    /// handle's own queue on a bounded budget. If the budget runs out the child
+    /// stays UNREAPED and says so loudly: a zombie we can still see is strictly
+    /// better than a thread parked forever, and the next `close()` (or deinit)
+    /// tries again.
+    private func reapWithoutBlocking() {
         guard !state.withLock({ $0.reaped }) else { return }
-        for _ in 0..<Self.reapPollAttempts {
-            switch collectOnce(options: WNOHANG) {
-            case .reaped, .failed:
-                return
-            case .pending:
-                usleep(1000)
-            }
+        switch collectOnce() {
+        case .reaped, .failed:
+            return
+        case .pending:
+            break
         }
-        Log.claudeContext.info(
-            "Remote herdr forward is not collectable yet; finishing the wait off the calling thread"
-        )
-        Self.reapQueue.async { [self] in
-            while true {
-                switch collectOnce(options: 0) {
-                case .reaped, .failed: return
-                case .pending: continue
-                }
+        reapQueue.asyncAfter(deadline: .now() + Self.reapPollInterval) { [self] in
+            pollForCollection(attemptsLeft: Self.reapPollAttempts)
+        }
+    }
+
+    private func pollForCollection(attemptsLeft: Int) {
+        guard !state.withLock({ $0.reaped }) else { return }
+        switch collectOnce() {
+        case .reaped, .failed:
+            return
+        case .pending:
+            guard attemptsLeft > 1 else {
+                Log.claudeContext.error(
+                    "Remote herdr forward never became collectable; leaving it unreaped rather than waiting on it"
+                )
+                return
+            }
+            reapQueue.asyncAfter(deadline: .now() + Self.reapPollInterval) { [self] in
+                pollForCollection(attemptsLeft: attemptsLeft - 1)
             }
         }
     }
