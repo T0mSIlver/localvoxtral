@@ -75,7 +75,7 @@ default:
    and choose a socket password. (The default `cmuxOnly` mode admits only
    processes cmux itself started, which localvoxtral is not. `allowAll` is
    developer-only and is not required.)
-2. In localvoxtral, enable **Settings → Text Processing → Polishing → "Join
+2. In localvoxtral, enable **Settings → Context → Claude Code → "Join
    Claude Code sessions in cmux"** and enter the same password in **cmux
    socket password**. It is stored in your Keychain and sent only to cmux's
    local socket.
@@ -122,7 +122,7 @@ out on the session's next hook.
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
-**Settings → Text Processing → Polishing → Claude Code project context** is on
+**Settings → Context → "Use Claude Code project files as polish context"** is on
 — that is the only feature a browser join can serve. Firefox is not supported:
 it exposes no AppleScript surface for the focused tab's URL. A browser join
 never reads anything on your screen (a web page is not a terminal grid, and
