@@ -189,11 +189,14 @@ enum DogfoodCaptureBuilder {
     static func screen(
         from decision: TerminalScreenContextDecision,
         targetBundleID: String?,
-        herdrSwapApplied: Bool
+        socketPaneSwapApplied: Bool
     ) -> DogfoodCaptureRecord.Screen {
         let route: String?
-        if herdrSwapApplied {
-            route = "herdrPaneRead"
+        if socketPaneSwapApplied {
+            // The swap only ever comes from the joined pane's own socket, so
+            // the target app names which one answered.
+            route = targetBundleID == TerminalScreenAllowlist.cmuxBundleID
+                ? "cmuxSurfaceRead" : "herdrPaneRead"
         } else if let targetBundleID,
                   TerminalScreenAllowlist.axCaptureBundleIDs.contains(targetBundleID)
         {
@@ -324,7 +327,7 @@ struct DogfoodCaptureInputs: Sendable {
     var join: ClaudeSessionJoin?
     var joinAbstentions: [String]
     var screenDecision: TerminalScreenContextDecision
-    var herdrSwapApplied: Bool
+    var socketPaneSwapApplied: Bool
     var targetBundleID: String?
 
     var demands: [PolishContextSource: Int]
@@ -419,7 +422,7 @@ extension DogfoodCaptureBuilder {
             screen: screen(
                 from: inputs.screenDecision,
                 targetBundleID: inputs.targetBundleID,
-                herdrSwapApplied: inputs.herdrSwapApplied
+                socketPaneSwapApplied: inputs.socketPaneSwapApplied
             ),
             allocation: allocations(
                 demands: inputs.demands,

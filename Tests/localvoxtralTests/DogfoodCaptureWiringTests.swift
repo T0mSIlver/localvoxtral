@@ -396,7 +396,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
                 cause: .screenChanged(stopLength: 10, differingLines: 3, firstDifferingLine: 0)
             ),
             targetBundleID: TerminalScreenAllowlist.ghosttyBundleID,
-            herdrSwapApplied: false
+            socketPaneSwapApplied: false
         )
         XCTAssertEqual(vocabOnly.route, "axGrid")
         XCTAssertEqual(vocabOnly.decision, "vocabularyOnly")
@@ -407,7 +407,7 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let appleScript = DogfoodCaptureBuilder.screen(
             from: .render(excerpt: "e", startText: "s", elidedChurnLines: 0),
             targetBundleID: TerminalScreenAllowlist.iterm2BundleID,
-            herdrSwapApplied: false
+            socketPaneSwapApplied: false
         )
         XCTAssertEqual(appleScript.route, "appleScriptContents")
         XCTAssertEqual(appleScript.decision, "render")
@@ -415,14 +415,14 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let herdr = DogfoodCaptureBuilder.screen(
             from: .render(excerpt: "pane", startText: "pane", elidedChurnLines: 0),
             targetBundleID: TerminalScreenAllowlist.ghosttyBundleID,
-            herdrSwapApplied: true
+            socketPaneSwapApplied: true
         )
         XCTAssertEqual(herdr.route, "herdrPaneRead")
 
         let dropped = DogfoodCaptureBuilder.screen(
             from: .drop(reason: .targetChanged),
             targetBundleID: nil,
-            herdrSwapApplied: false
+            socketPaneSwapApplied: false
         )
         XCTAssertEqual(dropped.decision, "drop")
         XCTAssertEqual(dropped.cause, "target-changed")

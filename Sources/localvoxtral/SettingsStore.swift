@@ -280,6 +280,7 @@ final class SettingsStore {
         static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
         static let claudeLocalTitleMarkerFallbackEnabled =
             "settings.claude_local_title_marker_fallback_enabled"
+        static let cmuxSurfaceJoinEnabled = "settings.cmux_surface_join_enabled"
         static let polishContextTrustedEndpointEnabled =
             "settings.polish_context_trusted_endpoint_enabled"
         /// Hidden debug toggle (no UI). When true, every received realtime
@@ -553,6 +554,19 @@ final class SettingsStore {
     /// This preference does not govern remote hook responses. SSH sessions can
     /// only join through their title marker, so the remote listener always
     /// emits one independently.
+    /// Whether the cmux surface join arm may dial cmux's control socket.
+    ///
+    /// Off by default and separate from every other context toggle, because it
+    /// is the only one that talks to ANOTHER application's automation socket —
+    /// which the user must also have switched to password mode and given a
+    /// password. Nothing about that is implied by "use my terminal screen as
+    /// context", so it gets its own consent.
+    var cmuxSurfaceJoinEnabled: Bool {
+        didSet {
+            defaults.set(cmuxSurfaceJoinEnabled, forKey: Keys.cmuxSurfaceJoinEnabled)
+        }
+    }
+
     var claudeLocalTitleMarkerFallbackEnabled: Bool {
         didSet {
             claudeLocalTitleMarkerFallbackState.set(claudeLocalTitleMarkerFallbackEnabled)
@@ -871,6 +885,8 @@ final class SettingsStore {
             key: Keys.claudeLocalTitleMarkerFallbackEnabled,
             fallback: false
         )
+        cmuxSurfaceJoinEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.cmuxSurfaceJoinEnabled, fallback: false)
         polishContextTrustedEndpointEnabled = Self.loadBool(
             defaults: defaults, key: Keys.polishContextTrustedEndpointEnabled, fallback: false)
         debugLogRealtimeDeltas = Self.loadBool(

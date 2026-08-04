@@ -59,7 +59,7 @@ private final class ScreenTestLiveness: Sendable {
 /// composite-AX decision (vocabulary-only at best for a herdr join) rather
 /// than attaching anything it cannot prove.
 @MainActor
-final class HerdrPaneScreenContextTests: XCTestCase {
+final class SocketPaneScreenContextTests: XCTestCase {
     private let loopback = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
     private let ghostty = TerminalScreenTarget(
         pid: 4242,
@@ -122,8 +122,8 @@ final class HerdrPaneScreenContextTests: XCTestCase {
         join: ClaudeSessionJoin?,
         resolver: ClaudeSessionJoinResolver?,
         settingEnabled: Bool = true
-    ) async -> HerdrPaneScreenCapture? {
-        await HerdrPaneScreenContext.captureAtStart(
+    ) async -> SocketPaneScreenCapture? {
+        await SocketPaneScreenContext.captureAtStart(
             join: join,
             resolver: resolver,
             settingEnabled: settingEnabled,
@@ -134,13 +134,13 @@ final class HerdrPaneScreenContextTests: XCTestCase {
     }
 
     private func reconcileAtStop(
-        start: HerdrPaneScreenCapture?,
+        start: SocketPaneScreenCapture?,
         join: ClaudeSessionJoin?,
         resolver: ClaudeSessionJoinResolver?,
         fallback: TerminalScreenContextDecision,
         settingEnabled: Bool = true
     ) async -> TerminalScreenContextDecision {
-        await HerdrPaneScreenContext.reconcileAtStop(
+        await SocketPaneScreenContext.reconcileAtStop(
             start: start,
             join: join,
             resolver: resolver,
@@ -170,7 +170,7 @@ final class HerdrPaneScreenContextTests: XCTestCase {
 
         let start = await captureAtStart(join: join, resolver: resolver)
         XCTAssertEqual(start?.text, paneText)
-        XCTAssertEqual(start?.paneID, "pane-a")
+        XCTAssertEqual(start?.paneKey, "pane-a")
 
         let decision = await reconcileAtStop(
             start: start, join: join, resolver: resolver, fallback: axFallback
@@ -394,5 +394,221 @@ final class HerdrPaneScreenContextTests: XCTestCase {
         )
         XCTAssertNil(start)
         XCTAssertEqual(panes.paneReadRequests, [])
+    }
+}
+
+/// The same start/stop pipeline, driven by a cmux surface join instead of a
+/// herdr pane. The point of these is that the route changed and NOTHING else
+/// did: same consent gate, same sanitize/cap, same reconcile truth table.
+private final class ScreenTestCmuxSurfaces: CmuxSurfaceQuerying, @unchecked Sendable {
+    private let texts: Mutex<[CmuxQueryResult<String>]>
+    private let requests = Mutex<[String]>([])
+    private let focusedSurfaceID: String
+
+    init(focusedSurfaceID: String = "surface-a", texts: [CmuxQueryResult<String>]) {
+        self.focusedSurfaceID = focusedSurfaceID
+        self.texts = Mutex(texts)
+    }
+
+    var readRequests: [String] { requests.withLock { $0 } }
+
+    func focusedSurface() async -> CmuxQueryResult<CmuxFocusedSurface> {
+        .value(CmuxFocusedSurface(surfaceID: focusedSurfaceID, tty: nil))
+    }
+
+    func surfaceText(surfaceID: String) async -> CmuxQueryResult<String> {
+        requests.withLock { $0.append(surfaceID) }
+        return texts.withLock { $0.isEmpty ? .unavailable : $0.removeFirst() }
+    }
+}
+
+@MainActor
+final class CmuxSurfaceScreenContextTests: XCTestCase {
+    private let loopback = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
+    private let cmux = TerminalScreenTarget(
+        pid: 4242,
+        bundleID: TerminalScreenAllowlist.cmuxBundleID
+    )
+    private let surfaceID = "surface-a"
+    private let paneText = "swift build\nerror: FooBar.swift:12"
+
+    private func makeResolver(
+        surfaces: ScreenTestCmuxSurfaces,
+        liveness: ScreenTestLiveness = ScreenTestLiveness()
+    ) -> ClaudeSessionJoinResolver {
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 2_000_000) },
+            isProcessAlive: liveness.probe,
+            allocateMarkerValue: { "lvx-abcd" }
+        )
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart,
+                sessionID: "s1",
+                timestamp: 0,
+                rawCwd: "/repo",
+                prompt: nil,
+                files: [],
+                process: ClaudeHookProcessInfo(
+                    hookPID: 777,
+                    claudePID: 9001,
+                    cmuxSurfaceID: surfaceID
+                )
+            ),
+            origin: .localAuthenticated(peerUID: 501)
+        )
+        return ClaudeSessionJoinResolver(
+            registry: registry,
+            markerInWindowTitle: { _ in nil },
+            focusedTerminalTTY: { _ in nil },
+            focusedWindowID: { _ in 101 },
+            cmuxSurfaces: surfaces,
+            cmuxJoinEnabled: { true }
+        )
+    }
+
+    private func cmuxJoin(
+        resolver: ClaudeSessionJoinResolver
+    ) async throws -> ClaudeSessionJoin {
+        let resolved = await resolver.resolve(target: cmux)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .cmuxSurface)
+        return join
+    }
+
+    private func captureAtStart(
+        join: ClaudeSessionJoin?,
+        resolver: ClaudeSessionJoinResolver?,
+        settingEnabled: Bool = true
+    ) async -> SocketPaneScreenCapture? {
+        await SocketPaneScreenContext.captureAtStart(
+            join: join,
+            resolver: resolver,
+            settingEnabled: settingEnabled,
+            endpointURL: loopback,
+            isAccessibilityTrusted: true,
+            trustedEndpointEnabled: false
+        )
+    }
+
+    private func reconcileAtStop(
+        start: SocketPaneScreenCapture?,
+        join: ClaudeSessionJoin?,
+        resolver: ClaudeSessionJoinResolver?,
+        settingEnabled: Bool = true
+    ) async -> TerminalScreenContextDecision {
+        await SocketPaneScreenContext.reconcileAtStop(
+            start: start,
+            join: join,
+            resolver: resolver,
+            // For a cmux join the AX fallback carries nothing: there is no
+            // accessible text to have captured in the first place.
+            fallback: .drop(reason: .noStartCapture),
+            settingEnabled: settingEnabled,
+            endpointURL: loopback,
+            isAccessibilityTrusted: true,
+            trustedEndpointEnabled: false
+        )
+    }
+
+    func testCmuxJoinRendersTheSurfaceExcerptAtCommit() async throws {
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.value(paneText), .value(paneText)])
+        let resolver = makeResolver(surfaces: surfaces)
+        let join = try await cmuxJoin(resolver: resolver)
+
+        let start = await captureAtStart(join: join, resolver: resolver)
+        XCTAssertEqual(start?.text, paneText)
+        XCTAssertEqual(start?.paneKey, surfaceID)
+
+        let decision = await reconcileAtStop(start: start, join: join, resolver: resolver)
+        XCTAssertEqual(
+            decision,
+            .render(excerpt: paneText, startText: paneText, elidedChurnLines: 0)
+        )
+        XCTAssertEqual(surfaces.readRequests, [surfaceID, surfaceID])
+    }
+
+    func testSurfaceTextIsControlStrippedAndCapped() async throws {
+        let noisy = "\u{1B}[31mred\u{1B}[0m\u{07}\n"
+            + String(repeating: "x", count: TerminalScreenAXReader.screenCharacterCap + 500)
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.value(noisy)])
+        let resolver = makeResolver(surfaces: surfaces)
+        let join = try await cmuxJoin(resolver: resolver)
+
+        let captured = await captureAtStart(join: join, resolver: resolver)
+        let start = try XCTUnwrap(captured)
+        XCTAssertLessThanOrEqual(start.text.count, TerminalScreenAXReader.screenCharacterCap)
+        XCTAssertFalse(start.text.contains("\u{1B}"))
+        XCTAssertFalse(start.text.contains("\u{07}"))
+    }
+
+    func testConsentGateRejectionMakesNoSocketRequest() async throws {
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.value(paneText)])
+        let resolver = makeResolver(surfaces: surfaces)
+        let join = try await cmuxJoin(resolver: resolver)
+
+        let captured = await captureAtStart(
+            join: join, resolver: resolver, settingEnabled: false
+        )
+        XCTAssertNil(captured)
+        XCTAssertEqual(surfaces.readRequests, [])
+    }
+
+    func testAuthFailureAtStartAttachesNothing() async throws {
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.authenticationRequired])
+        let resolver = makeResolver(surfaces: surfaces)
+        let join = try await cmuxJoin(resolver: resolver)
+
+        let captured = await captureAtStart(join: join, resolver: resolver)
+        XCTAssertNil(captured)
+    }
+
+    func testConsentWithdrawnAtStopDestroysTheSurfaceText() async throws {
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.value(paneText), .value(paneText)])
+        let resolver = makeResolver(surfaces: surfaces)
+        let join = try await cmuxJoin(resolver: resolver)
+        let start = await captureAtStart(join: join, resolver: resolver)
+
+        // A NON-drop fallback on purpose: withdrawal must destroy the pane
+        // text rather than fall back to whatever the AX path had, so the
+        // interesting case is the one where the fallback still carries text.
+        let decision = await SocketPaneScreenContext.reconcileAtStop(
+            start: start,
+            join: join,
+            resolver: resolver,
+            fallback: .vocabularyOnly(startText: "stale AX text", cause: .rawUnauthorized),
+            settingEnabled: false,
+            endpointURL: loopback,
+            isAccessibilityTrusted: true,
+            trustedEndpointEnabled: false
+        )
+
+        XCTAssertEqual(decision, .drop(reason: .policyRejected))
+        XCTAssertNil(decision.vocabularyGroundingText)
+    }
+
+    func testDeadSessionAtStopWithholdsTheRenderButKeepsGrounding() async throws {
+        let liveness = ScreenTestLiveness()
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.value(paneText), .value(paneText)])
+        let resolver = makeResolver(surfaces: surfaces, liveness: liveness)
+        let join = try await cmuxJoin(resolver: resolver)
+        let start = await captureAtStart(join: join, resolver: resolver)
+        liveness.kill(9001)
+
+        let decision = await reconcileAtStop(start: start, join: join, resolver: resolver)
+
+        XCTAssertEqual(decision.vocabularyGroundingText, paneText)
+        XCTAssertNil(decision.contextBlock(excerpt: paneText, renderBudget: 4_000))
+    }
+
+    func testAStopReadForADifferentSurfaceIsNotReconciled() async throws {
+        let surfaces = ScreenTestCmuxSurfaces(texts: [.value(paneText), .value(paneText)])
+        let resolver = makeResolver(surfaces: surfaces)
+        let join = try await cmuxJoin(resolver: resolver)
+        let start = SocketPaneScreenCapture(text: paneText, paneKey: "some-other-surface")
+
+        let decision = await reconcileAtStop(start: start, join: join, resolver: resolver)
+
+        XCTAssertEqual(decision, .drop(reason: .noStartCapture))
     }
 }
