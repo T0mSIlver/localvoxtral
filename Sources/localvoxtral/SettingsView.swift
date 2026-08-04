@@ -186,6 +186,11 @@ private enum SettingsLayout {
     /// Sliders report no intrinsic width, so a trailing control column has to
     /// give them one.
     static let sliderWidth: CGFloat = 190
+    /// Text fields are worse than sliders: no intrinsic width AND greedy, so in
+    /// an inline row's trailing column (`layoutPriority(1)`) an unbounded field
+    /// takes the whole card and starves the label to zero width (field report,
+    /// PR #201 review — the External URL rows rendered as tall empty bands).
+    static let textFieldWidth: CGFloat = 280
     static let cornerRadius: CGFloat = 8
 }
 
@@ -285,16 +290,19 @@ private struct ConnectionSettingsPane: View {
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
                             .textFieldStyle(.roundedBorder)
+                            .frame(width: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "Model") {
                         TextField(settings.modelPlaceholder, text: modelBinding)
                             .textFieldStyle(.roundedBorder)
+                            .frame(width: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "API key") {
                         SecureField("Required for remote providers", text: $settings.apiKey)
                             .textFieldStyle(.roundedBorder)
+                            .frame(width: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Memory limit") {
@@ -354,6 +362,7 @@ private struct ConnectionSettingsPane: View {
                             text: polishingEndpointBinding
                         )
                         .textFieldStyle(.roundedBorder)
+                        .frame(width: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "API key") {
@@ -362,6 +371,7 @@ private struct ConnectionSettingsPane: View {
                             text: $settings.llmPolishingAPIKey
                         )
                         .textFieldStyle(.roundedBorder)
+                        .frame(width: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "Model") {
@@ -370,6 +380,7 @@ private struct ConnectionSettingsPane: View {
                             text: $settings.llmPolishingModel
                         )
                         .textFieldStyle(.roundedBorder)
+                        .frame(width: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Model", help: managedPolishingModelHelp) {
