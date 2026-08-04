@@ -391,6 +391,59 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/j
   -d '{}' http://127.0.0.1:28511/v1/hook/SessionStart
 ```
 
+## Sessions nobody is sitting in front of
+
+The tunnel exists only while *something* holds it, and normally that something
+is your own `ssh builder` session. Anything the host starts on its own has no
+such session:
+
+* `claude remote-control` servers (systemd user services, lingering enabled)
+* t3 code and other harnesses that spawn Claude Code into a worktree
+* cron jobs, CI runners, anything headless
+
+Those sessions publish hooks exactly like an interactive one — into a tunnel
+that is not there. The result is silent, as always: dictation just is not
+grounded.
+
+So each enrolled host's row in Settings has **Keep the tunnel open**. With it
+on, localvoxtral holds that host's forward itself:
+
+```
+ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ClearAllForwardings=yes \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -R 28511:127.0.0.1:8473 -- builder
+```
+
+It is off by default, per host — an app that opened SSH connections you did not
+ask for would be a worse bug than the one it fixes. No token is involved
+anywhere on this path; the credential lives in the remote plugin's config and
+this process only carries bytes for it. Notes on the flags, since they differ
+from the ones in your `~/.ssh/config` block deliberately:
+
+* **`ExitOnForwardFailure=yes`** — the opposite of your config block, on
+  purpose. Your block says `no` because a dictation nicety must never cost you
+  a shell; this process *is* the nicety and nothing else, so a forward it
+  cannot bind is a process with no reason to live. The exit is the signal: the
+  row then reads **Port already held on the host.** with a **Retry** button,
+  instead of pretending to work.
+* **`ClearAllForwardings=yes`** — your config block already declares this
+  forward for this alias. Without this flag the process would request the port
+  twice, and the second request failing would kill it under the line above.
+* **`ServerAliveInterval=30` / `ServerAliveCountMax=3`** — a NAT or a sleeping
+  laptop otherwise leaves a half-dead connection holding the remote bind, which
+  is precisely the state that makes the next connection fail.
+* Restarts back off exponentially (0.5s, 1s, 2s… capped at 30s) and give up
+  after five consecutive failures rather than hammering your SSH server
+  forever. A **refused bind never retries at all** — something else holds that
+  port and will keep holding it.
+
+The listener binds first and the forwards start second, always: a forward
+opened into an unbound port would give every hook connection-refused (silent,
+fail-open) while making ssh print `connect_to … failed.` into your remote
+terminal on every dial. Turning the toggle on or off takes effect immediately —
+there is no relaunch step — and revoking a host, or quitting the app, stops its
+forward.
+
 ## Updating an enrolled host
 
 When localvoxtral ships a newer version of this plugin, an already-enrolled host

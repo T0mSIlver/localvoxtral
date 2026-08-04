@@ -151,6 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// through it on every enroll/revoke, so the port follows enrollment without
     /// a relaunch.
     private var claudeRemoteListenerCoordinator: ClaudeRemoteListenerCoordinator?
+    /// Owns the opt-in app-held `ssh -N -R` forwards. Started only after the
+    /// listener binds, and torn down before the app exits so no orphan ssh
+    /// outlives the process that spawned it.
+    private var claudeRemoteForwards: ClaudeRemoteForwardCoordinator?
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -196,6 +200,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Closes the port, so a hook from a surviving remote session gets a
         // connection refused through the tunnel and fails open. Quitting says
         // nothing about enrollment — the hosts stay enrolled for next launch.
+        // Forwards first, listener second — the mirror of startup order.
+        claudeRemoteForwards?.stopAll()
+        claudeRemoteForwards = nil
         claudeRemoteListenerCoordinator?.shutdown()
         claudeRemoteListenerCoordinator = nil
         viewModel.claudeIntegrationSettings = nil
@@ -390,13 +397,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Claude remote forward port allocated: \(remoteForwardPort, privacy: .public)"
         )
 
+        // App-held ssh forwards, for hosts that opted in. Constructed with the
+        // listener coordinator's bind state as its gate: a forward into an
+        // unbound port is worse than no forward (silent fail-open on the remote,
+        // plus ssh noise in the user's terminal), so it refuses to run without
+        // one. The listener is reconciled FIRST, below.
+        let forwards = registry.map { hosts in
+            ClaudeRemoteForwardCoordinator(
+                hosts: hosts,
+                remoteForwardPort: remoteForwardPort,
+                isListenerBound: { coordinator?.isListening ?? false }
+            )
+        }
+        claudeRemoteForwards = forwards
+
         viewModel.claudeIntegrationSettings = ClaudeIntegrationSettingsModel(
             registry: registry,
             listener: coordinator,
             pluginService: { ClaudePluginInstallService.live() },
             enrollmentService: ClaudeRemoteEnrollmentService.live(),
             remoteForwardPort: remoteForwardPort,
-            cmuxPasswords: CmuxSocketPasswordStore()
+            cmuxPasswords: CmuxSocketPasswordStore(),
+            forwards: forwards
         )
 
         // Route launch through the same model that owns the Settings status.

@@ -327,6 +327,16 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         )
     }
 
+    func testNotesSayHowToGroundSessionsNobodyIsSittingInFrontOf() throws {
+        // The failure this answers is silent by construction: a harness-spawned
+        // session on the host publishes hooks into a tunnel no interactive ssh
+        // is holding, and nothing anywhere says so.
+        let notes = try allocatedPlan().notes.joined(separator: "\n")
+        XCTAssertTrue(notes.contains("Keep the tunnel open"), "name the control, not the concept")
+        XCTAssertTrue(notes.lowercased().contains("remote-control"))
+        XCTAssertTrue(notes.lowercased().contains("t3 code"))
+    }
+
     func testNotesExplainTheTwoHalvesAndTheRemainingSingleTenancy() throws {
         let notes = try allocatedPlan().notes.joined(separator: "\n")
         XCTAssertTrue(notes.contains("28511"))

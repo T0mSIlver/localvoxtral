@@ -266,9 +266,15 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         // and the alternative — guessing it from the label — acted on the wrong
         // machine.
         let properties = Mirror(reflecting: enrollment.host).children.compactMap(\.label)
+        // `persistentForwardEnabled` joined it for the same reason: it is a
+        // per-host preference (does the app hold this host's ssh forward), not
+        // credential material, and the pane has to be able to render it.
         XCTAssertEqual(
             Set(properties),
-            ["id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt"]
+            [
+                "id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt",
+                "persistentForwardEnabled",
+            ]
         )
         let described = String(describing: enrollment.host)
         XCTAssertFalse(described.contains(enrollment.token))
@@ -424,6 +430,73 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         advance(10)
         registry.noteActivity(hostID: enrollment.host.id)
         XCTAssertEqual(io.written(at: fileURL), before)
+    }
+
+    // MARK: Persistent forward opt-in
+
+    func testThePersistentForwardFlagIsOffUntilItIsTurnedOnAndSurvivesARelaunch() throws {
+        // Spawning ssh on someone's behalf is an opt-in, and "the file was
+        // silent about it" must read as off — never as on.
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        XCTAssertFalse(try XCTUnwrap(registry.host(id: host.id)).persistentForwardEnabled)
+
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        XCTAssertTrue(try XCTUnwrap(registry.host(id: host.id)).persistentForwardEnabled)
+
+        // A second registry over the same store is the next launch.
+        let relaunched = try makeRegistry()
+        XCTAssertTrue(try XCTUnwrap(relaunched.host(id: host.id)).persistentForwardEnabled)
+
+        try registry.setPersistentForwardEnabled(false, hostID: host.id)
+        XCTAssertFalse(
+            try XCTUnwrap(makeRegistry().host(id: host.id)).persistentForwardEnabled,
+            "turning it off must persist too, or the app resumes ssh on the next launch"
+        )
+    }
+
+    func testAFileWrittenBeforeTheFlagExistedReadsAsOff() throws {
+        // Forward compatibility, same rule as the alias: an older file has no
+        // key, and the safe reading of silence is "do not start ssh".
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        let stored = try XCTUnwrap(io.read(from: fileURL))
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: stored) as? [String: Any]
+        )
+        var hosts = try XCTUnwrap(json["hosts"] as? [[String: Any]])
+        hosts = hosts.map { entry in
+            var copy = entry
+            copy.removeValue(forKey: "persistentForwardEnabled")
+            return copy
+        }
+        json["hosts"] = hosts
+        try io.write(try JSONSerialization.data(withJSONObject: json), to: fileURL)
+
+        XCTAssertFalse(try XCTUnwrap(makeRegistry().host(id: host.id)).persistentForwardEnabled)
+    }
+
+    func testRemovingAHostTakesItsForwardFlagWithIt() throws {
+        // The reason the flag lives in the registry rather than in a parallel
+        // preference: a separate store would keep a dead host's switch, and
+        // could hand it to a future host that reused the id.
+        let registry = try makeRegistry(hostIDs: ["hsame123", "hsame123"])
+        let first = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: first.id)
+        try registry.remove(hostID: first.id)
+
+        let second = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        XCTAssertEqual(second.id, first.id, "the id allocator was pinned to reuse it")
+        XCTAssertFalse(second.persistentForwardEnabled)
+    }
+
+    func testSettingTheFlagOnAnUnknownHostIsReportedNotIgnored() throws {
+        let registry = try makeRegistry()
+        XCTAssertThrowsError(try registry.setPersistentForwardEnabled(true, hostID: "hnope")) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteHostRegistry.StoreError, .unknownHost("hnope")
+            )
+        }
     }
 
     // MARK: Store integrity

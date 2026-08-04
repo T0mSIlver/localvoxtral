@@ -96,6 +96,16 @@ public final class ClaudeIntegrationSettingsModel {
         /// working one, and an answer with a test beats an answer with a
         /// formatter.
         public var statusText: String
+        /// Whether this host opted into the app-held SSH forward, and what that
+        /// forward is doing right now. Both live on the row so the view stays a
+        /// renderer: the toggle reads one Bool, the status line reads one
+        /// already-rendered sentence.
+        public var persistentForwardEnabled: Bool = false
+        public var forwardStatusText: String?
+        public var forwardIsFailure: Bool = false
+        /// A forward can only be offered where we know where to ssh. The label
+        /// is not a substitute for an alias (PR #197).
+        public var canHoldForward: Bool = false
     }
 
     /// "Last context: 2 min ago", from a clock the caller supplies.
@@ -363,6 +373,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// do not exercise the cmux row — the row then reports that it cannot save,
     /// rather than silently pretending it did.
     private let cmuxPasswords: (any CmuxPasswordStoring)?
+    /// Owns the app-held ssh forwards. Optional for the same reason `listener`
+    /// is: previews and plugin-only tests have none, and the pane then simply
+    /// does not offer the toggle.
+    private let forwards: ClaudeRemoteForwardCoordinator?
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -404,7 +418,8 @@ public final class ClaudeIntegrationSettingsModel {
         // about per-Mac allocation describes exactly the pre-#215 setup, which
         // still works. Production passes the allocation.
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
-        cmuxPasswords: (any CmuxPasswordStoring)? = nil
+        cmuxPasswords: (any CmuxPasswordStoring)? = nil,
+        forwards: ClaudeRemoteForwardCoordinator? = nil
     ) {
         self.registry = registry
         self.listener = listener
@@ -415,6 +430,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.now = now
         self.remoteForwardPort = remoteForwardPort
         self.cmuxPasswords = cmuxPasswords
+        self.forwards = forwards
         refreshHosts()
         refreshListenerStatus()
         // A presence check, not a read into any field: this is the one place
@@ -533,16 +549,27 @@ public final class ClaudeIntegrationSettingsModel {
         // One clock reading for the whole list, so two rows of the same age
         // cannot disagree about what "now" was.
         let timestamp = now()
-        hosts = (registry?.hosts() ?? []).map {
-            HostRow(
-                id: $0.id,
-                label: $0.label,
-                sshHostAlias: $0.sshHostAlias,
-                isRevoked: $0.isRevoked,
-                lastSeenAt: $0.lastSeenAt,
+        hosts = (registry?.hosts() ?? []).map { host in
+            let forwardState = forwards?.states[host.id]
+            return HostRow(
+                id: host.id,
+                label: host.label,
+                sshHostAlias: host.sshHostAlias,
+                isRevoked: host.isRevoked,
+                lastSeenAt: host.lastSeenAt,
                 statusText: Self.hostStatusText(
-                    isRevoked: $0.isRevoked, lastSeenAt: $0.lastSeenAt, now: timestamp
-                )
+                    isRevoked: host.isRevoked, lastSeenAt: host.lastSeenAt, now: timestamp
+                ),
+                persistentForwardEnabled: host.persistentForwardEnabled,
+                // Nil when this host has no forward running, which is not the
+                // same as a forward that is off: a row with the toggle off has
+                // nothing to report, and a status line saying so would be noise
+                // in a list of hosts.
+                forwardStatusText: forwardState?.text,
+                forwardIsFailure: forwardState?.isFailure ?? false,
+                canHoldForward: forwards != nil
+                    && !host.isRevoked
+                    && host.sshHostAlias.map(ClaudeRemoteEnrollmentService.isValidHostAlias) == true
             )
         }
         refreshRejectionHint()
@@ -689,6 +716,30 @@ public final class ClaudeIntegrationSettingsModel {
         } catch {
             presentRegistryFailure(error, verb: "rotate the token for")
         }
+    }
+
+    /// Turn the app-held forward on or off for one host.
+    ///
+    /// Order matters and is the same as everywhere else in this feature: the
+    /// registry is the source of truth, so it is written FIRST and the
+    /// coordinator reconciles against what was actually persisted. A coordinator
+    /// started before the write could be left running a forward for a flag that
+    /// never made it to disk.
+    public func setPersistentForward(_ enabled: Bool, hostID: String) {
+        guard let registry else { return }
+        do {
+            try registry.setPersistentForwardEnabled(enabled, hostID: hostID)
+            forwards?.reconcile()
+            refreshHosts()
+        } catch {
+            presentRegistryFailure(error, verb: enabled ? "enable the tunnel for" : "disable the tunnel for")
+        }
+    }
+
+    /// Retry one host's failed forward — the move after freeing the port.
+    public func retryPersistentForward(hostID: String) {
+        forwards?.retry(hostID: hostID)
+        refreshHosts()
     }
 
     public func revoke(hostID: String) async {
@@ -1085,7 +1136,19 @@ public final class ClaudeIntegrationSettingsModel {
         do {
             try listener.reconcile()
             listenerStatus = listener.isListening ? .listening(port: listener.boundPort) : .idle
+            // Listener FIRST, forwards second — always, including here. A
+            // forward opened before the bind terminates at a closed port: the
+            // hooks get connection-refused and fail open (silently), while
+            // ssh on this Mac prints `connect_to … failed.` into the user's
+            // remote terminal on every dial. The coordinator enforces the same
+            // rule itself by refusing to run while the listener is unbound;
+            // this ordering is what makes the enabled case take effect without
+            // a relaunch.
+            forwards?.reconcile()
         } catch {
+            // A listener that failed to bind must not leave forwards running
+            // into a dead port.
+            forwards?.stopAll()
             listenerStatus = Self.status(for: error, port: listener.boundPort)
             if presentAlert {
                 alert = DetailAlert(

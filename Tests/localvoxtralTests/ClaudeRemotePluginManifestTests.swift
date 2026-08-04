@@ -1221,6 +1221,24 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         try assertReadmeHasLine(containing: "Install it on the REMOTE host, not on your Mac")
     }
 
+    func testReadmeExplainsWhenTheAppShouldHoldTheTunnelItself() throws {
+        // Without this section, the app-held forward is a toggle with no
+        // documented reason to exist — and the state it fixes (a harness
+        // session publishing into a tunnel nobody holds) is invisible.
+        try assertReadmeHasLine(
+            containing: "Keep the tunnel open",
+            "name the control the user is looking for"
+        )
+        try assertReadmeHasLine(
+            containing: "ExitOnForwardFailure=yes",
+            "the flag is the opposite of the config block above it, and that needs saying"
+        )
+        try assertReadmeHasLine(
+            containing: "off by default",
+            "an app opening SSH connections unasked would be the worse bug"
+        )
+    }
+
     func testReadmeIsHonestAboutTheHostDependency() throws {
         // The old shape truthfully needed nothing on the host; the command shim
         // needs sh and curl. Understating that would send a user on a minimal
