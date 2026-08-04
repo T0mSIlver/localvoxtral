@@ -473,6 +473,11 @@ assert_tab "dictation" "Dictation" "Start dictation with"
 assert_tab "textProcessing" "Text Processing" "Replacements"
 # The polish feature toggles live on Text Processing (moved from Endpoints).
 assert_tab "textProcessing" "Text Processing" "Polishing"
+# The consent-grade context sources and the Claude Code / SSH plumbing live on
+# their own pane (moved off Text Processing). Asserted on the remote-hosts row
+# title, which exists nowhere else.
+assert_tab "context" "Context" "Polish context"
+assert_tab "context" "Context" "Remote Claude Code over SSH"
 assert_tab "about" "About" "Diagnostics"
 
 # The launch phase forces external URL modes (managed mode now eagerly spawns

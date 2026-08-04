@@ -190,6 +190,14 @@ open ./dist/localvoxtral.app
     <td width="50%"><img src="assets/settings-dictation.png" alt="localvoxtral dictation settings" width="100%" /></td>
     <td width="50%"><img src="assets/settings-text-processing.png" alt="localvoxtral text processing settings" width="100%" /></td>
   </tr>
+  <tr>
+    <td width="50%" align="center"><b>Context</b></td>
+    <td width="50%"></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/settings-context.png" alt="localvoxtral context settings" width="100%" /></td>
+    <td width="50%"></td>
+  </tr>
 </table>
 
 ## Roadmap

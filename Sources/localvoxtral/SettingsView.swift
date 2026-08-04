@@ -8,6 +8,7 @@ enum SettingsTab: String, Hashable, CaseIterable, Sendable {
     case endpoints
     case dictation
     case textProcessing
+    case context
     case about
 }
 
@@ -126,6 +127,11 @@ struct SettingsView: View {
                 )
             case .textProcessing:
                 TextProcessingSettingsPane(
+                    settings: settings,
+                    viewModel: viewModel
+                )
+            case .context:
+                ContextSettingsPane(
                     settings: settings,
                     viewModel: viewModel
                 )
@@ -762,80 +768,6 @@ private struct TextProcessingSettingsPane: View {
                     }
 
                     SettingsFieldRow(
-                        title: "Repo vocabulary from terminal",
-                        help:
-                            "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
-                    ) {
-                        Toggle("", isOn: $settings.repoVocabularyEnabled)
-                            .labelsHidden()
-                    }
-
-                    // Names the send, not just the benefit: when the pane is
-                    // joined to a live Claude Code session, part of what is on
-                    // screen is attached to the prompt verbatim. "Fixes
-                    // spellings" describes only the matcher and would be consent
-                    // obtained for the smaller half.
-                    SettingsFieldRow(
-                        title: "Use Claude Code terminal screen as polish context",
-                        help:
-                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Ghostty only, local polishing endpoints only."
-                    ) {
-                        Toggle("", isOn: $settings.terminalScreenContextEnabled)
-                            .labelsHidden()
-                    }
-
-                    // A row in the EXISTING group, never a new group: pane group
-                    // structure is constant (owner rule, 2026-07-04).
-                    //
-                    // Says what is SENT, not just what is gained: this toggle
-                    // attaches file contents and diffs, which the vocabulary
-                    // toggle above does not. Someone who agreed to "spell my
-                    // filenames right" has not thereby agreed to this.
-                    //
-                    // All four things the toggle actually sends are named. The
-                    // prior request is the one a user would least expect from a
-                    // label about "project files", and it is their own typed
-                    // words. The remote clause is worded to describe what the
-                    // SESSION carries, not a second behavior: a remote session
-                    // sends the excerpts its hooks already reported, and never
-                    // causes anything on this machine to be read.
-                    SettingsFieldRow(
-                        title: "Use Claude Code project files as polish context",
-                        help:
-                            "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in Ghostty; local polishing endpoints only."
-                    ) {
-                        Toggle("", isOn: $settings.claudeRepoContextEnabled)
-                            .labelsHidden()
-                    }
-
-                    SettingsFieldRow(
-                        title: "Use clipboard as polish context",
-                        help:
-                            "Grounds technical terms against your clipboard. Local polishing endpoints only."
-                    ) {
-                        Toggle("", isOn: $settings.polishClipboardContextEnabled)
-                            .labelsHidden()
-                    }
-
-                    // A row in the EXISTING group, never a new group: pane group
-                    // structure is constant (owner rule, 2026-07-04).
-                    //
-                    // Names the trade in full: every "local polishing endpoints
-                    // only" promise above is exactly what this toggle relaxes,
-                    // so the help text says which content classes ride and where
-                    // they go. "You trust" puts the judgment where it now lives
-                    // — with the user — instead of implying the app can vouch
-                    // for their endpoint.
-                    SettingsFieldRow(
-                        title: "Send polish context to non-local endpoints",
-                        help:
-                            "Off: clipboard, screen, and project context are only ever sent to a polisher on this Mac. On: the context enabled above is also sent to the polishing endpoint you configured — enable only for an endpoint you trust, such as a server on your own network."
-                    ) {
-                        Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
-                            .labelsHidden()
-                    }
-
-                    SettingsFieldRow(
                         title: "Spoken clipboard paste",
                         help:
                             "Say “paste clipboard” to insert your clipboard as a code block on commit."
@@ -846,26 +778,6 @@ private struct TextProcessingSettingsPane: View {
                 }
                 .disabled(!isLLMPolishingReachable)
                 .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
-
-                // These remain usable even without an Overlay Buffer shortcut:
-                // revocation is the security off switch for an already-bound
-                // listener, and plugin/session setup is independent of the
-                // current hotkey configuration. They are still rows in the same
-                // constant Polishing group.
-                SettingsFieldRow(
-                    title: "Local Claude title fallback",
-                    help: settings.claudeLocalTitleMarkerFallbackEnabled
-                        ? "Writes a window-title marker for local sessions; also export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code does not overwrite it."
-                        : "Uses the focused TTY to join local sessions and requires Ghostty 1.4 or a tip build."
-                ) {
-                    Toggle("", isOn: $settings.claudeLocalTitleMarkerFallbackEnabled)
-                        .labelsHidden()
-                }
-
-                if let claude = viewModel.claudeIntegrationSettings {
-                    ClaudePluginSettingsRow(model: claude)
-                    ClaudeRemoteHostsSettingsRow(model: claude)
-                }
             }
 
             SettingsGroup(title: "Configuration") {
@@ -906,6 +818,143 @@ private struct TextProcessingSettingsPane: View {
                             description: "Extra apps to treat as terminals."
                         ),
                     ])
+                }
+            }
+        }
+    }
+}
+
+/// Everything that lets something OTHER than your spoken words reach the
+/// polisher, plus the Claude Code plumbing those sources depend on.
+///
+/// Split out of Text Processing (2026-08-04): these are consent-grade toggles
+/// whose help text is the consent, and they were being read past as formatting
+/// options next to "Exact match". The three groups here are STATIC — a toggle
+/// switches a group's content, never the number or identity of the groups
+/// (owner rule, 2026-07-04).
+private struct ContextSettingsPane: View {
+    @Bindable var settings: SettingsStore
+    let viewModel: DictationViewModel
+
+    /// Same gate as the Text Processing polishing rows: context is only ever
+    /// harvested for an Overlay Buffer dictation, so with no shortcut recorded
+    /// for one, none of these sources can run.
+    private var isLLMPolishingReachable: Bool {
+        settings.isOverlayBufferSessionReachable
+    }
+
+    var body: some View {
+        SettingsPage(tab: .context) {
+            SettingsGroup(title: "Polish context") {
+                if !isLLMPolishingReachable {
+                    SettingsAvailabilityCard(
+                        title: "No Overlay Buffer shortcut",
+                        message:
+                            "Polishing runs on Overlay Buffer dictations. Record a shortcut in Dictation to enable it.",
+                        systemImage: "exclamationmark.triangle.fill",
+                        tint: .orange
+                    )
+                }
+
+                Group {
+                    SettingsFieldRow(
+                        title: "Repo vocabulary from terminal",
+                        help:
+                            "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.repoVocabularyEnabled)
+                            .labelsHidden()
+                    }
+
+                    // Names the send, not just the benefit: when the pane is
+                    // joined to a live Claude Code session, part of what is on
+                    // screen is attached to the prompt verbatim. "Fixes
+                    // spellings" describes only the matcher and would be consent
+                    // obtained for the smaller half.
+                    SettingsFieldRow(
+                        title: "Use Claude Code terminal screen as polish context",
+                        help:
+                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Ghostty only, local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.terminalScreenContextEnabled)
+                            .labelsHidden()
+                    }
+
+                    // Says what is SENT, not just what is gained: this toggle
+                    // attaches file contents and diffs, which the vocabulary
+                    // toggle above does not. Someone who agreed to "spell my
+                    // filenames right" has not thereby agreed to this.
+                    //
+                    // All four things the toggle actually sends are named. The
+                    // prior request is the one a user would least expect from a
+                    // label about "project files", and it is their own typed
+                    // words. The remote clause is worded to describe what the
+                    // SESSION carries, not a second behavior: a remote session
+                    // sends the excerpts its hooks already reported, and never
+                    // causes anything on this machine to be read.
+                    SettingsFieldRow(
+                        title: "Use Claude Code project files as polish context",
+                        help:
+                            "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in Ghostty; local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.claudeRepoContextEnabled)
+                            .labelsHidden()
+                    }
+
+                    SettingsFieldRow(
+                        title: "Use clipboard as polish context",
+                        help:
+                            "Grounds technical terms against your clipboard. Local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.polishClipboardContextEnabled)
+                            .labelsHidden()
+                    }
+
+                    // Names the trade in full: every "local polishing endpoints
+                    // only" promise above is exactly what this toggle relaxes,
+                    // so the help text says which content classes ride and where
+                    // they go. "You trust" puts the judgment where it now lives
+                    // — with the user — instead of implying the app can vouch
+                    // for their endpoint.
+                    SettingsFieldRow(
+                        title: "Send polish context to non-local endpoints",
+                        help:
+                            "Off: clipboard, screen, and project context are only ever sent to a polisher on this Mac. On: the context enabled above is also sent to the polishing endpoint you configured — enable only for an endpoint you trust, such as a server on your own network."
+                    ) {
+                        Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
+                            .labelsHidden()
+                    }
+                }
+                .disabled(!isLLMPolishingReachable)
+                .opacity(isLLMPolishingReachable ? 1.0 : 0.5)
+            }
+
+            // Deliberately NOT under the availability gate above: revocation is
+            // the security off switch for an already-bound listener, and
+            // plugin/session setup is independent of the current hotkey
+            // configuration.
+            SettingsGroup(title: "Claude Code") {
+                SettingsFieldRow(
+                    title: "Local Claude title fallback",
+                    help: settings.claudeLocalTitleMarkerFallbackEnabled
+                        ? "Writes a window-title marker for local sessions; also export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code does not overwrite it."
+                        : "Uses the focused TTY to join local sessions and requires Ghostty 1.4 or a tip build."
+                ) {
+                    Toggle("", isOn: $settings.claudeLocalTitleMarkerFallbackEnabled)
+                        .labelsHidden()
+                }
+
+                if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudePluginSettingsRow(model: claude)
+                }
+            }
+
+            // The integration model is built once at launch and cleared only on
+            // terminate, so the `if let` is not a mode: in a running app both
+            // groups above and this one always have their rows.
+            SettingsGroup(title: "Remote hosts") {
+                if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudeRemoteHostsSettingsRow(model: claude)
                 }
             }
         }

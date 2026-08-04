@@ -75,12 +75,19 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
+    /// The Context pane's drill ids, spelled out: `scripts/ui-smoke.sh` and
+    /// `scripts/capture-readme-assets.sh` press and scope by these literals.
+    func testContextTabUsesTheDrillIdentifiersTheScriptsHardcode() {
+        XCTAssertEqual(SettingsTab.context.accessibilityIdentifier, "settings.tab.context")
+        XCTAssertEqual(SettingsTab.context.paneAccessibilityIdentifier, "settings.pane.context")
+    }
+
     /// The scripts hardcode these strings; renaming a case silently breaks the
     /// AX drills, which is exactly the failure this pins.
     func testRawValuesAreStable() {
         XCTAssertEqual(
             Set(SettingsTab.allCases.map(\.rawValue)),
-            ["general", "endpoints", "dictation", "textProcessing", "about"]
+            ["general", "endpoints", "dictation", "textProcessing", "context", "about"]
         )
     }
 }
