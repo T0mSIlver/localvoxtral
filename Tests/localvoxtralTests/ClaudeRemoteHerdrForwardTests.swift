@@ -769,11 +769,135 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
 
         // The fake never collected it; do so now that the handle has stopped
         // signalling, so the test process leaves no zombie behind.
-        var status: Int32 = 0
-        _ = waitpid(process.leaderPID, &status, 0)
+        collectForTestCleanup(process.leaderPID)
     }
 
     // MARK: - The non-blocking collect and its hand-off (review round 7)
+
+    /// Collect a child the test's fake never collected, WITHOUT a blocking
+    /// wait: the child is already dead, so WNOHANG succeeds at once and the
+    /// bound is only there so a surprise cannot hang the suite.
+    private func collectForTestCleanup(_ pid: pid_t) {
+        var status: Int32 = 0
+        for _ in 0..<200 {
+            if waitpid(pid, &status, WNOHANG) != 0 { return }
+            usleep(10_000)
+        }
+        XCTFail("test child \(pid) was never collectable")
+    }
+
+    func testAGroupSignalCannotRunWhileTheCollectionIsInFlight() throws {
+        // The PID-reuse invariant, stated as a race rather than as a comment
+        // (review round 8). The collection's `waitpid` releases the pid; if a
+        // concurrent `terminate()` can take the lock and read `reaped == false`
+        // in that gap, it signals a pid the kernel may already have reissued.
+        //
+        // So: park a collection INSIDE `waitpid` and prove a concurrent
+        // teardown cannot get through. With the reap under the same lock as the
+        // `reaped` check, the second teardown blocks on the mutex; with the
+        // reap outside it (the earlier shape), it sails past and signals.
+        let insideWaitpid = DispatchSemaphore(value: 0)
+        let releaseWaitpid = DispatchSemaphore(value: 0)
+        let calls = ReapCallCounter()
+        let process = try spawnExitingChild(waitForChild: { pid, status, options in
+            if calls.next() == 1 {
+                insideWaitpid.signal()
+                // Held long enough that "B is still blocked" cannot be confused
+                // with "B is merely slow": a teardown that DOES get through
+                // costs at most two 0.25 s grace waits, well under the window
+                // sampled below. Bounded so a failure cannot hang the suite.
+                _ = releaseWaitpid.wait(timeout: .now() + 3)
+            }
+            return waitpid(pid, status, options)
+        })
+
+        // A: drives the collection and parks inside `waitpid`.
+        let firstTeardownReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            process.terminate()
+            firstTeardownReturned.signal()
+        }
+        XCTAssertEqual(
+            insideWaitpid.wait(timeout: .now() + 5), .success,
+            "the collection should have reached waitpid"
+        )
+
+        // B: a concurrent teardown, which must not be able to signal the group
+        // while A holds the collection open. Deliberately does NOT touch the
+        // mutex from this thread — progress is observed through B's own
+        // completion, not through a counter that would itself take the lock.
+        let secondTeardownReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            process.terminate()
+            secondTeardownReturned.signal()
+        }
+
+        // 1.2 s: longer than a teardown that gets through needs (≤0.5 s of
+        // grace waits), shorter than the 3 s the collection is parked for.
+        XCTAssertEqual(
+            secondTeardownReturned.wait(timeout: .now() + 1.2), .timedOut,
+            "a teardown must not proceed while a collection holds the lock"
+        )
+
+        releaseWaitpid.signal()
+        XCTAssertEqual(firstTeardownReturned.wait(timeout: .now() + 5), .success)
+        XCTAssertEqual(secondTeardownReturned.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(process.hasBeenReaped)
+    }
+
+    func testTheCollectionBudgetIsExhaustedAndThenReleased() throws {
+        // A genuine observation of the bound (review round 8): with a small
+        // injected budget, the poll must stop by itself — a fixed number of
+        // attempts, and then no further work at all.
+        let attempts = 5
+        let calls = ReapCallCounter()
+        let spawner = ClaudeRemoteHerdrForwardSpawner(
+            executablePath: "/bin/sh",
+            environment: ["PATH": "/usr/bin:/bin"],
+            waitForChild: { _, _, _ in
+                _ = calls.next()
+                return 0 // WNOHANG: "still running", forever
+            },
+            reapPollAttempts: attempts,
+            reapPollInterval: 0.002
+        )
+        let process = try XCTUnwrap(
+            try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess
+        )
+        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+
+        process.terminate()
+
+        // Wait, bounded, for the count to stop moving: that IS the release.
+        var settled = 0
+        var previous = -1
+        for _ in 0..<200 {
+            let current = calls.value
+            if current == previous {
+                settled += 1
+                if settled >= 3 { break }
+            } else {
+                settled = 0
+                previous = current
+            }
+            usleep(10_000)
+        }
+
+        let total = calls.value
+        // One attempt on the caller's thread, then at most `attempts` on the
+        // handle's queue. Never more, and never forever.
+        XCTAssertGreaterThan(total, 1, "the hand-off must have polled at all")
+        XCTAssertLessThanOrEqual(
+            total, attempts + 1, "the budget must bound the number of attempts"
+        )
+        XCTAssertFalse(process.hasBeenReaped, "an uncollectable child is never claimed as reaped")
+
+        // And nothing is left running: no further attempts after the budget.
+        usleep(50_000)
+        XCTAssertEqual(calls.value, total, "the poll chain must release itself")
+
+        collectForTestCleanup(process.leaderPID)
+    }
 
     func testANeverCollectableChildDoesNotBlockTeardown() throws {
         // The whole point of the simplification: there is no `waitpid(…, 0)`
@@ -791,8 +915,7 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
         XCTAssertFalse(process.hasBeenReaped, "an uncollectable child is never claimed as reaped")
         XCTAssertGreaterThan(process.groupSignalsSent, 0, "the group is still ours to signal")
         // Collect it for real so the test process leaves nothing behind.
-        var status: Int32 = 0
-        _ = waitpid(process.leaderPID, &status, 0)
+        collectForTestCleanup(process.leaderPID)
     }
 
     func testAChildThatIsNotReadyImmediatelyIsCollectedByTheHandOff() throws {

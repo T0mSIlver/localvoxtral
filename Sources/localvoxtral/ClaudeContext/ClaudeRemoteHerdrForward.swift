@@ -378,6 +378,10 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     var waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
         waitpid($0, $1, $2)
     }
+    /// Collection budget, passed through to the spawned process so a test can
+    /// observe exhaustion without waiting out the production default.
+    var reapPollAttempts = LiveHerdrForwardProcess.defaultReapPollAttempts
+    var reapPollInterval = LiveHerdrForwardProcess.defaultReapPollInterval
 
     func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
         guard !argv.isEmpty else { throw SpawnError.emptyArgv }
@@ -434,7 +438,12 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
             &pid, executablePath, &fileActions, &attributes, arguments, environmentStrings
         )
         guard status == 0, pid > 1 else { throw SpawnError.launchFailed(code: status) }
-        return LiveHerdrForwardProcess(pid: pid, waitForChild: waitForChild)
+        return LiveHerdrForwardProcess(
+            pid: pid,
+            waitForChild: waitForChild,
+            reapPollAttempts: reapPollAttempts,
+            reapPollInterval: reapPollInterval
+        )
     }
 
     enum SpawnError: Error, Equatable {
@@ -480,15 +489,23 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// every later hand-off would queue behind it, retaining process objects
     /// and leaving their children unreaped (review round 7).
     private let reapQueue: DispatchQueue
+    /// Injected so a test can observe budget EXHAUSTION and the release that
+    /// follows it, rather than asserting against a three-second default.
+    private let reapPollAttempts: Int
+    private let reapPollInterval: TimeInterval
 
     init(
         pid: pid_t,
         waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
             waitpid($0, $1, $2)
-        }
+        },
+        reapPollAttempts: Int = LiveHerdrForwardProcess.defaultReapPollAttempts,
+        reapPollInterval: TimeInterval = LiveHerdrForwardProcess.defaultReapPollInterval
     ) {
         self.pid = pid
         self.waitForChild = waitForChild
+        self.reapPollAttempts = reapPollAttempts
+        self.reapPollInterval = reapPollInterval
         reapQueue = DispatchQueue(
             label: "com.localvoxtral.claude.herdr-forward-reap.\(pid)", qos: .utility
         )
@@ -599,8 +616,8 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// Total budget for collecting the child, in poll attempts of
     /// `reapPollInterval` each. Generous, because the only cost of waiting is a
     /// background timer; when it runs out we give up rather than block.
-    private static let reapPollAttempts = 600
-    private static let reapPollInterval: TimeInterval = 0.005
+    static let defaultReapPollAttempts = 600
+    static let defaultReapPollInterval: TimeInterval = 0.005
 
     private enum CollectOutcome {
         /// Definitively collected (or the kernel disowned the pid).
@@ -611,35 +628,70 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         case failed
     }
 
-    /// One NON-BLOCKING collection attempt. `WNOHANG` everywhere, by design:
-    /// there is no `waitpid(…, 0)` left anywhere in this type, so no thread —
-    /// foreground or background — can ever be parked on a child that refuses to
-    /// die (review round 7).
+    /// One NON-BLOCKING collection attempt, performed UNDER THE SAME LOCK that
+    /// `signalGroup` consults.
+    ///
+    /// This is the whole PID-reuse invariant, and the earlier version only
+    /// looked like it held: the `waitpid` ran outside the mutex and the state
+    /// flip came after, so a background collection could release the pid while
+    /// a concurrent `terminate()` — holding the lock, still reading
+    /// `reaped == false` — went on to `kill(-pid)` a group the kernel had
+    /// already handed to someone else (review round 8). Two collectors could
+    /// also enter `waitpid` for the same pid in that gap.
+    ///
+    /// Serializing all three operations is trivially correct here BECAUSE of
+    /// the round-7 simplification: `waitpid(WNOHANG)` and `kill` are both
+    /// non-blocking syscalls, so the critical section has no wait in it and
+    /// needs no second lock or "collecting" state. (The injected
+    /// `waitForChild` is a syscall shim by contract — it must not re-enter this
+    /// object.)
+    ///
+    /// Logging and `source.cancel()` deliberately happen after the lock is
+    /// released: neither participates in the invariant.
     private func collectOnce() -> CollectOutcome {
-        var status: Int32 = 0
-        let collected = waitForChild(pid, &status, WNOHANG)
-        if collected > 0 {
-            markReaped()
-            return .reaped
+        enum LockedOutcome {
+            case reaped
+            case pending
+            case failed(Int32)
         }
-        // WNOHANG's "still running" answer, which sets no errno.
-        if collected == 0 { return .pending }
-        let failure = errno
-        // A caught signal is not an answer.
-        if failure == EINTR { return .pending }
-        if failure == ECHILD {
-            // Definitive: there is nothing left to collect, so the pid is no
-            // longer ours to signal either.
-            markReaped()
-            return .reaped
+        let outcome: LockedOutcome = state.withLock { current in
+            // Someone already collected it; the pid is not ours to touch.
+            guard !current.reaped else { return .reaped }
+            var status: Int32 = 0
+            let collected = waitForChild(pid, &status, WNOHANG)
+            if collected > 0 {
+                current.reaped = true
+                return .reaped
+            }
+            // WNOHANG's "still running" answer, which sets no errno.
+            if collected == 0 { return .pending }
+            let failure = errno
+            // A caught signal is not an answer.
+            if failure == EINTR { return .pending }
+            if failure == ECHILD {
+                // Definitive: there is nothing left to collect, so the pid is
+                // no longer ours to signal either.
+                current.reaped = true
+                return .reaped
+            }
+            return .failed(failure)
         }
-        // Anything else stays UNREAPED on purpose: the zombie is still ours,
-        // `-pid` still names our group, and a later attempt will retry rather
-        // than leak it silently.
-        Log.claudeContext.error(
-            "Remote herdr forward could not be collected (errno \(failure, privacy: .public)); leaving it unreaped for a later attempt"
-        )
-        return .failed
+
+        switch outcome {
+        case .reaped:
+            source.cancel()
+            return .reaped
+        case .pending:
+            return .pending
+        case .failed(let failure):
+            // Stays UNREAPED on purpose: the zombie is still ours, `-pid` still
+            // names our group, and a later attempt will retry rather than leak
+            // it silently.
+            Log.claudeContext.error(
+                "Remote herdr forward could not be collected (errno \(failure, privacy: .public)); leaving it unreaped for a later attempt"
+            )
+            return .failed
+        }
     }
 
     /// Collect the child without ever blocking the caller.
@@ -664,8 +716,8 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         case .pending:
             break
         }
-        reapQueue.asyncAfter(deadline: .now() + Self.reapPollInterval) { [self] in
-            pollForCollection(attemptsLeft: Self.reapPollAttempts)
+        reapQueue.asyncAfter(deadline: .now() + reapPollInterval) { [self] in
+            pollForCollection(attemptsLeft: reapPollAttempts)
         }
     }
 
@@ -681,15 +733,10 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
                 )
                 return
             }
-            reapQueue.asyncAfter(deadline: .now() + Self.reapPollInterval) { [self] in
+            reapQueue.asyncAfter(deadline: .now() + reapPollInterval) { [self] in
                 pollForCollection(attemptsLeft: attemptsLeft - 1)
             }
         }
-    }
-
-    private func markReaped() {
-        state.withLock { $0.reaped = true }
-        source.cancel()
     }
 
     /// Record the leader's exit and wake the waiter. Deliberately does NOT

@@ -862,8 +862,9 @@ final class RemoteHerdrJoinTests: XCTestCase {
     }
 
     func testAUniqueConnectionThatNamesHerdrJoins() async throws {
-        // Corroboration on top of uniqueness is still a join — the signal is
-        // not required, it just must not replace anything.
+        // The positive case for the pair of requirements: BOTH the herdr
+        // invocation and uniqueness, which is what a join takes since round 5b.
+        // (This comment used to say the signal was "not required" — it is.)
         let registry = makeRegistry(markers: [markerValue])
         ingestRemoteHerdrSession(into: registry)
         let forwards = RecordingForwards()

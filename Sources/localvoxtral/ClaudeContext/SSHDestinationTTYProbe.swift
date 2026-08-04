@@ -39,7 +39,10 @@ enum SSHDestinationTTYProbeResult: Sendable, Equatable {
     case connection(SSHSurfaceConnection)
     /// An ssh session is there and cannot be pinned down: argv unavailable, an
     /// unverifiable executable, an option that can move the destination, a
-    /// grammar we do not recognize, or two of them going to different places.
+    /// grammar we do not recognize — or MORE THAN ONE foreground ssh on the
+    /// surface, whatever their destinations. Two to the same host abstain just
+    /// as two to different hosts do: nothing here says which one the user is
+    /// looking at, and unioning them let one borrow the other's herdr signal.
     case undeterminable
 }
 
