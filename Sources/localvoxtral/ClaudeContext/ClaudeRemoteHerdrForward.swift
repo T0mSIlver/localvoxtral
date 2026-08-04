@@ -367,6 +367,11 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     var executablePath = "/usr/bin/ssh"
     /// Injected so a test can spawn something observable instead of ssh.
     var environment: [String: String] = ProcessInfo.processInfo.environment
+    /// Passed through to the spawned process, so a test can drive the reap
+    /// path's failure handling against a REAL child in a real process group.
+    var waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
+        waitpid($0, $1, $2)
+    }
 
     func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
         guard !argv.isEmpty else { throw SpawnError.emptyArgv }
@@ -402,7 +407,7 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
             &pid, executablePath, &fileActions, &attributes, arguments, environmentStrings
         )
         guard status == 0, pid > 1 else { throw SpawnError.launchFailed(code: status) }
-        return LiveHerdrForwardProcess(pid: pid)
+        return LiveHerdrForwardProcess(pid: pid, waitForChild: waitForChild)
     }
 
     enum SpawnError: Error, Equatable {
@@ -434,9 +439,19 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     private let exited = DispatchSemaphore(value: 0)
     private let state = Mutex(State())
     private let source: any DispatchSourceProcess
+    /// `waitpid`, injected so the reap path's error handling is testable
+    /// without arranging real signal delivery. Same signature and same errno
+    /// semantics as the real thing.
+    private let waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t
 
-    init(pid: pid_t) {
+    init(
+        pid: pid_t,
+        waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t = {
+            waitpid($0, $1, $2)
+        }
+    ) {
         self.pid = pid
+        self.waitForChild = waitForChild
         let source = DispatchSource.makeProcessSource(
             identifier: pid, eventMask: .exit, queue: .global(qos: .utility)
         )
@@ -528,15 +543,46 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
 
     /// Collect the child, once. After this the pid is the kernel's to reuse,
     /// which is precisely why nothing may signal the group afterwards.
+    ///
+    /// `reaped` is committed only on a DEFINITIVE outcome — the child was
+    /// collected, or the kernel says there is no such child. Claiming it up
+    /// front (as the first version did) meant an interrupted `waitpid` left a
+    /// zombie behind while the state insisted it was gone: the source was
+    /// cancelled, every later teardown refused to signal or retry, and the
+    /// documented "one zombie per open forward, for one dictation" became one
+    /// per dictation forever.
     private func reapIfNeeded() {
-        let shouldReap = state.withLock { current -> Bool in
-            guard !current.reaped else { return false }
-            current.reaped = true
-            return true
-        }
-        guard shouldReap else { return }
+        guard !state.withLock({ $0.reaped }) else { return }
         var status: Int32 = 0
-        _ = waitpid(pid, &status, 0)
+        while true {
+            let collected = waitForChild(pid, &status, 0)
+            if collected > 0 {
+                markReaped()
+                return
+            }
+            let failure = errno
+            if collected == -1, failure == EINTR {
+                // A caught signal is not an answer. Ask again.
+                continue
+            }
+            if collected == -1, failure == ECHILD {
+                // Definitive: there is nothing left to collect, so the pid is
+                // no longer ours to signal either.
+                markReaped()
+                return
+            }
+            // Anything else stays UNREAPED on purpose: the zombie is still
+            // ours, `-pid` still names our group, and the next teardown (or
+            // the handle's deinit) will try again rather than leak it silently.
+            Log.claudeContext.error(
+                "Remote herdr forward could not be collected (errno \(failure, privacy: .public)); leaving it unreaped for a later attempt"
+            )
+            return
+        }
+    }
+
+    private func markReaped() {
+        state.withLock { $0.reaped = true }
         source.cancel()
     }
 

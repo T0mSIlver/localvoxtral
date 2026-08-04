@@ -36,6 +36,21 @@ private final class ForwardTestClock: @unchecked Sendable {
     var sleepCount: Int { sleeps.withLock { $0.count } }
 }
 
+/// Counts injected `waitpid` calls across threads (the reap runs on whichever
+/// thread called teardown).
+private final class ReapCallCounter: @unchecked Sendable {
+    private let count = Mutex(0)
+
+    func next() -> Int {
+        count.withLock { current in
+            current += 1
+            return current
+        }
+    }
+
+    var value: Int { count.withLock { $0 } }
+}
+
 private final class ForwardTestProcess: ClaudeRemoteHerdrForwardProcess, @unchecked Sendable {
     private let running = Mutex(true)
     let terminations = Mutex(0)
@@ -633,6 +648,115 @@ final class ClaudeRemoteHerdrForwardTests: XCTestCase {
             process.groupSignalsSent, afterFirstTeardown,
             "a reaped pid must never be signalled again"
         )
+    }
+
+    // MARK: - The reap itself can fail (review round 4, medium)
+
+    /// Spawns a real `sh -c 'exit 0'` in its own process group, with an
+    /// injected `waitpid`. Real child, real group, scripted collection.
+    private func spawnExitingChild(
+        waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>?, Int32) -> pid_t,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> LiveHerdrForwardProcess {
+        let spawner = ClaudeRemoteHerdrForwardSpawner(
+            executablePath: "/bin/sh",
+            environment: ["PATH": "/usr/bin:/bin"],
+            waitForChild: waitForChild
+        )
+        let process = try XCTUnwrap(
+            try spawner.spawn(argv: ["sh", "-c", "exit 0"]) as? LiveHerdrForwardProcess,
+            "the live spawner returns a LiveHerdrForwardProcess", file: file, line: line
+        )
+        // Bounded wait for the exit event.
+        for _ in 0..<300 where process.isRunning { usleep(10_000) }
+        XCTAssertFalse(process.isRunning, "the child should have exited", file: file, line: line)
+        return process
+    }
+
+    func testAnInterruptedReapIsRetriedRatherThanClaimedAsDone() throws {
+        // `waitpid` returning EINTR is not an answer. The first version
+        // committed `reaped` BEFORE calling it and ignored the result, so a
+        // caught signal left a zombie while the state insisted it was gone —
+        // one leaked per dictation, forever.
+        let calls = ReapCallCounter()
+        let process = try spawnExitingChild(waitForChild: { pid, status, options in
+            if calls.next() <= 2 {
+                errno = EINTR
+                return -1
+            }
+            return waitpid(pid, status, options)
+        })
+
+        process.terminate()
+
+        XCTAssertTrue(process.hasBeenReaped)
+        XCTAssertGreaterThanOrEqual(calls.value, 3, "EINTR must be retried, not swallowed")
+        var isCollected = false
+        for _ in 0..<300 {
+            if kill(process.leaderPID, 0) != 0 {
+                isCollected = true
+                break
+            }
+            usleep(10_000)
+        }
+        XCTAssertTrue(isCollected, "the child must actually be collected")
+    }
+
+    func testAFailedReapLeavesTheChildForALaterAttempt() throws {
+        // A non-recoverable, non-ECHILD failure must NOT claim success: the
+        // zombie is still ours, `-pid` still names our group, and the next
+        // teardown has to be able to try again.
+        let calls = ReapCallCounter()
+        // Only the FIRST collection attempt fails, so the retry that every
+        // later exit path makes is the one that succeeds.
+        let process = try spawnExitingChild(waitForChild: { pid, status, options in
+            if calls.next() == 1 {
+                errno = EINVAL
+                return -1
+            }
+            return waitpid(pid, status, options)
+        })
+
+        process.terminate()
+
+        XCTAssertFalse(process.hasBeenReaped, "a failed collection is not a collection")
+        XCTAssertGreaterThan(
+            process.groupSignalsSent, 0, "an unreaped group is still ours to signal"
+        )
+        XCTAssertEqual(
+            kill(process.leaderPID, 0), 0, "the unreaped child still exists, holding its pid"
+        )
+
+        // The later attempt every exit path makes — and this one succeeds.
+        process.terminate()
+
+        XCTAssertTrue(process.hasBeenReaped)
+    }
+
+    func testAnAlreadyCollectedChildIsDefinitivelyReaped() throws {
+        // ECHILD is the kernel saying there is nothing left to collect. That IS
+        // definitive, so the state commits — and nothing may signal the group
+        // afterwards.
+        let process = try spawnExitingChild(waitForChild: { _, _, _ in
+            errno = ECHILD
+            return -1
+        })
+
+        process.terminate()
+        let signalsAtReap = process.groupSignalsSent
+
+        XCTAssertTrue(process.hasBeenReaped)
+        process.terminate()
+        XCTAssertEqual(
+            process.groupSignalsSent, signalsAtReap,
+            "a pid the kernel disowned must never be signalled again"
+        )
+
+        // The fake never collected it; do so now that the handle has stopped
+        // signalling, so the test process leaves no zombie behind.
+        var status: Int32 = 0
+        _ = waitpid(process.leaderPID, &status, 0)
     }
 
     func testTerminatingTwiceIsHarmless() throws {

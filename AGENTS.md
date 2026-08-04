@@ -770,7 +770,12 @@ Key subsystems:
     reaps last, and once reaped NOTHING may signal that group again (a tunnel
     that exits by itself mid-dictation is closed at stop time seconds later,
     which is exactly when a reused pid would be someone else's). Cost: one
-    zombie per open forward, for the life of one dictation.
+    zombie per open forward, for the life of one dictation — and that bound
+    only holds because the reap COMMITS only on a definitive answer (the child
+    collected, or `ECHILD`), retrying `EINTR` and leaving anything else
+    unreaped for the next teardown. Claiming the reap before calling `waitpid`
+    turned an interrupted collection into a permanent lie about a zombie that
+    was still there, i.e. one leaked per dictation without bound.
     A remote herdr join authorizes no more than a local one: never the raw AX
     capture (that grid is the composite herdr TUI, on someone else's machine),
     and never local repo collection — the origin is remote, so
