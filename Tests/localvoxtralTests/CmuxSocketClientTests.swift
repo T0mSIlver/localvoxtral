@@ -401,6 +401,54 @@ final class CmuxSocketClientTests: XCTestCase {
         XCTAssertEqual(result, .authenticationRequired)
     }
 
+    /// Only an explicit `authenticated: true` may be read as a login. A
+    /// success-shaped envelope that omits the field is not a confirmation, and
+    /// must not become one by decoding loosely.
+    func testALoginEnvelopeWithoutTheAuthenticatedFieldIsRefused() async throws {
+        let server = try CmuxTestServer { request, _ in
+            cmuxOK(for: request, result: [:])
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server, password: "hunter2")
+            .focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .authenticationRequired)
+        XCTAssertEqual(
+            server.requestLines.count, 1,
+            "an unconfirmed login must not be followed by the query"
+        )
+    }
+
+    /// The same rule for a login answer that is not JSON at all, and for one
+    /// that answers a different request id. Both used to abstain as
+    /// `.unavailable`, which loses the actionable reason.
+    func testAMalformedLoginResponseIsRefusedRatherThanAbstained() async throws {
+        let server = try CmuxTestServer { _, _ in Data("{not json\n".utf8) }
+        defer { server.stop() }
+
+        let result = await client(server: server, password: "hunter2")
+            .focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .authenticationRequired)
+    }
+
+    func testALoginResponseAnsweringAnotherRequestIsRefused() async throws {
+        let server = try CmuxTestServer { _, _ in
+            var line = try! JSONSerialization.data(
+                withJSONObject: ["id": "not-our-request", "result": ["authenticated": true]]
+            )
+            line.append(0x0A)
+            return line
+        }
+        defer { server.stop() }
+
+        let result = await client(server: server, password: "hunter2")
+            .focusedSurface(expectedPeerPID: testCmuxPID)
+
+        XCTAssertEqual(result, .authenticationRequired)
+    }
+
     func testPasswordModeWithNoPasswordSurfacesAuthRequired() async throws {
         let server = try CmuxTestServer { request, _ in
             cmuxError(

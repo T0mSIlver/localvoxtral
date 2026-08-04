@@ -180,13 +180,15 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
     /// for which process is on the other end of THIS connection. Unlike a path
     /// check it cannot be raced — it describes the established connection, not
     /// a name that something else may since have rebound.
+    ///
+    /// Delegates to `ClaudeSocketGuard` rather than calling `getsockopt` again
+    /// here. That one deliberately spells the two options numerically because
+    /// the Darwin overlay does not export them; a second call site using the
+    /// symbolic names would compile today and become a maintenance trap the
+    /// moment the overlay differs, and two spellings of one syscall is one too
+    /// many for a check the password depends on.
     static func localPeerPID(_ fd: Int32) -> pid_t? {
-        var pid: pid_t = 0
-        var length = socklen_t(MemoryLayout<pid_t>.size)
-        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0, pid > 0 else {
-            return nil
-        }
-        return pid
+        ClaudeSocketGuard.peerPID(ofDescriptor: fd)
     }
 
     /// cmux's stable socket locations, in the order cmux itself prefers them.
@@ -202,7 +204,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         // (`homeDirectoryForCurrentUser`), independent of `$HOME`, so this
         // resolves the same way inside a shell that overrode it.
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let uid = getuid()
+        let uid = geteuid()
         return [
             "\(home)/.local/state/cmux/cmux.sock",
             "\(home)/.local/state/cmux/cmux-\(uid).sock",
@@ -400,7 +402,18 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
         case .authenticationRequired:
             return .authenticationRequired
         case .unavailable:
-            return .unavailable
+            // A line ARRIVED and was not a well-formed confirmation: no
+            // `result`, no `authenticated` field, an id that does not answer
+            // this request, an unrecognized error. Only an explicit
+            // `authenticated: true` may be read as a login, so everything else
+            // is an authentication failure rather than a generic abstention —
+            // the distinction matters because it is the difference between
+            // telling the user to fix their cmux auth mode and silently
+            // dropping the join with no reason. (A transport failure, where no
+            // line arrives at all, is still `.unavailable`: that is a dead
+            // socket, not a refusal.)
+            Log.claudeContext.info("cmux login refused: response was not a valid confirmation")
+            return .authenticationRequired
         }
     }
 
@@ -518,7 +531,7 @@ struct CmuxSocketClient: CmuxSurfaceQuerying {
             guard path.hasPrefix("/"),
                   let metadata = socketMetadata(path),
                   metadata.isSocket,
-                  metadata.ownerUID == UInt32(getuid())
+                  metadata.ownerUID == UInt32(geteuid())
             else { continue }
             guard let fd = openConnection(to: path, deadline: deadline) else { continue }
             connectedCount += 1

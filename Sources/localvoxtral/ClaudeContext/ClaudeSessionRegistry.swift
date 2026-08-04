@@ -545,7 +545,6 @@ public final class ClaudeSessionRegistry: Sendable {
             }
         }
     }
-    }
 
     /// Distinct herdr socket paths across live LOCAL sessions. The resolver
     /// refuses to guess between multiple herdr sessions, so it needs the count,
