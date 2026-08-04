@@ -220,15 +220,34 @@ struct AppleScriptTerminalTTYReader: TerminalFocusedTTYReading {
 final class TerminalAutomationConsentPrewarmSettingsObserver {
     private let settings: SettingsStore
     private let prewarm: @MainActor @Sendable () -> Void
+    private let disarm: @MainActor @Sendable () -> Void
+    private let enablement: @MainActor @Sendable (SettingsStore) -> Bool
     private var started = false
     private var wasEnabled = false
 
+    /// - Parameter enablement: which settings make this pre-warm relevant.
+    ///   Defaults to the terminal pair (either context feature can want a
+    ///   focused-pane join). The BROWSER pre-warm passes a narrower one: a
+    ///   browser join can only ever produce session/repo context, so a user who
+    ///   enabled screen context alone must never be asked to let us automate
+    ///   their browser. One observer per predicate, so enabling the second
+    ///   feature later still fires its own pre-warm.
+    /// - Parameter disarm: cancels pre-warms this observer armed but that have
+    ///   not fired, called when the enabling setting goes OFF. Without it an
+    ///   armed launch observer outlives the feature and raises a consent sheet
+    ///   for something the user has since switched off.
     init(
         settings: SettingsStore,
-        prewarm: @escaping @MainActor @Sendable () -> Void
+        prewarm: @escaping @MainActor @Sendable () -> Void,
+        disarm: @escaping @MainActor @Sendable () -> Void = {},
+        enablement: @escaping @MainActor @Sendable (SettingsStore) -> Bool = {
+            $0.terminalScreenContextEnabled || $0.claudeRepoContextEnabled
+        }
     ) {
         self.settings = settings
         self.prewarm = prewarm
+        self.disarm = disarm
+        self.enablement = enablement
     }
 
     func start() {
@@ -241,9 +260,7 @@ final class TerminalAutomationConsentPrewarmSettingsObserver {
         observeSettings()
     }
 
-    private var isEnabled: Bool {
-        settings.terminalScreenContextEnabled || settings.claudeRepoContextEnabled
-    }
+    private var isEnabled: Bool { enablement(settings) }
 
     /// Observation's onChange fires once, immediately before a tracked value
     /// mutates. Re-read and re-arm on the next main-actor turn, matching the
@@ -258,6 +275,9 @@ final class TerminalAutomationConsentPrewarmSettingsObserver {
                 let enabled = self.isEnabled
                 if !self.wasEnabled, enabled {
                     self.prewarm()
+                } else if self.wasEnabled, !enabled {
+                    // Consent is only ever asked for a feature that is ON.
+                    self.disarm()
                 }
                 self.wasEnabled = enabled
                 self.observeSettings()
@@ -300,8 +320,14 @@ enum TerminalAutomationConsentPrewarm {
     /// executor and logs how consent settled. Result text is discarded — this
     /// exists only to park in the sheet so the user can answer it.
     static func performConsentProbe(bundleID: String) async {
+        // The probe is the app's REAL question under a human-answerable
+        // timeout, so it is looked up from the same tables the dictation path
+        // uses: the focused-pane tty for a terminal, the focused tab's URL for
+        // a browser. The two allowlists are disjoint, so at most one answers.
         guard
             let source = AppleScriptTerminalTTYReader.consentPrewarmScriptSource(
+                forBundleID: bundleID
+            ) ?? AppleScriptFocusedBrowserTabURLReader.consentPrewarmScriptSource(
                 forBundleID: bundleID
             )
         else { return }
@@ -337,9 +363,19 @@ enum TerminalAutomationConsentPrewarm {
     /// `isTerminalRunning`/`execute` default to the live checks for
     /// `bundleID`; tests always inject both (a defaulted execute sends a real
     /// Apple event).
+    ///
+    /// - Parameter isStillEnabled: re-read at FIRE time, not just at arm time.
+    ///   A pending launch observer outlives the setting that armed it — enable
+    ///   a context feature while the browser is closed, turn it back off, open
+    ///   the browser — and the sheet it would raise is for a feature the user
+    ///   has switched off (review finding, codex on PR #218). The app also
+    ///   cancels pending observers on disable (`cancelPendingPrewarm`); this is
+    ///   the second, independent defence, because a notification already in
+    ///   flight cannot be cancelled.
     static func fireOnceWhenTerminalIsAvailable(
         bundleID: String,
         isTerminalRunning: (@MainActor @Sendable () -> Bool)? = nil,
+        isStillEnabled: (@MainActor @Sendable () -> Bool)? = nil,
         execute: (@MainActor @Sendable () async -> Void)? = nil,
         notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
     ) {
@@ -348,12 +384,13 @@ enum TerminalAutomationConsentPrewarm {
                 withBundleIdentifier: bundleID
             ).isEmpty
         }
+        let isEnabled = isStillEnabled ?? { true }
         let execute = execute ?? {
             await performConsentProbe(bundleID: bundleID)
         }
         guard !firedBundleIDs.contains(bundleID), launchObservers[bundleID] == nil else { return }
         if isRunning() {
-            fire(bundleID: bundleID, execute)
+            fire(bundleID: bundleID, isRunning: isRunning, isEnabled: isEnabled, execute)
             return
         }
         observedCenters[bundleID] = notificationCenter
@@ -363,21 +400,58 @@ enum TerminalAutomationConsentPrewarm {
             queue: .main
         ) { _ in
             MainActor.assumeIsolated {
-                guard !firedBundleIDs.contains(bundleID), isRunning() else { return }
+                guard !firedBundleIDs.contains(bundleID), isEnabled(), isRunning() else { return }
                 removeObserver(bundleID: bundleID)
-                fire(bundleID: bundleID, execute)
+                fire(bundleID: bundleID, isRunning: isRunning, isEnabled: isEnabled, execute)
             }
         }
     }
 
+    /// Disarms a pre-warm that is waiting for `bundleID` to launch.
+    ///
+    /// Called when the setting that armed it goes off. Deliberately does NOT
+    /// mark the bundle as fired: cancelling is not "already consented", so
+    /// re-enabling the feature in the same app run can arm it again.
+    static func cancelPendingPrewarm(bundleID: String) {
+        guard launchObservers[bundleID] != nil else { return }
+        removeObserver(bundleID: bundleID)
+        Log.claudeContext.info(
+            "Automation consent pre-warm for \(bundleID, privacy: .public) disarmed (feature turned off)"
+        )
+    }
+
     private static func fire(
         bundleID: String,
+        isRunning: @escaping @MainActor @Sendable () -> Bool,
+        isEnabled: @escaping @MainActor @Sendable () -> Bool,
         _ execute: @escaping @MainActor @Sendable () async -> Void
     ) {
         firedBundleIDs.insert(bundleID)
         // A Task, not an inline call: the pre-warm can park in the consent
         // sheet, and the caller (broker startup) must not wait on that.
         Task { @MainActor in
+            // Both conditions are re-read here, as late as this code can read
+            // them, because the arming checks are separated from the Apple
+            // event by an actor hop:
+            // * the setting can have been switched off in between;
+            // * the app can have QUIT in between, and `tell application id`
+            //   LAUNCHES a non-running app — the one thing a background
+            //   pre-warm must never do.
+            // Residual window: the hop from here into the executor's queue is
+            // still not atomic with the app's lifetime, so a quit inside those
+            // microseconds can still relaunch it. NSAppleScript has no
+            // "address this pid only" mode, so that last gap cannot be closed
+            // from this side; it is narrowed from "arbitrarily long wait for a
+            // launch notification" to one queue hop.
+            guard isEnabled(), isRunning() else {
+                // Not fired after all: un-mark it so a later launch (or a
+                // re-enable) can still pre-warm this app in this run.
+                firedBundleIDs.remove(bundleID)
+                Log.claudeContext.info(
+                    "Automation consent pre-warm for \(bundleID, privacy: .public) skipped (app or feature no longer available)"
+                )
+                return
+            }
             Log.claudeContext.info(
                 "Pre-warming Automation consent for \(bundleID, privacy: .public) (result discarded)"
             )

@@ -807,7 +807,7 @@ private struct TextProcessingSettingsPane: View {
                             // excerpts its hooks already reported, and never
                             // causes anything on this machine to be read.
                             SettingsHelpText(
-                                "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in Ghostty; local polishing endpoints only."
+                                "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in a supported terminal, or a Remote Control session in the focused browser tab; local polishing endpoints only."
                             )
                         }
                     }

@@ -1964,6 +1964,17 @@ final class DictationViewModel {
         guard let target = TerminalScreenContextSource.frontmostTarget() else {
             return dogfoodUnresolvedJoin(cause: "gate: no frontmost supported terminal")
         }
+        // The browser entry path. `frontmostTarget()` answers for ANY app and
+        // the resolver owns the allowlists, so a browser reaches the resolver
+        // through the same one call a terminal does — except for this gate: a
+        // browser join can only ever produce the session/repo blocks (the
+        // authorizer refuses `.browserTab` raw attachment outright), so the
+        // screen-context setting alone must not send an Apple event to the
+        // user's browser, nor raise its Automation consent sheet.
+        if BrowserTabAllowlist.isSupported(target.bundleID),
+           !settings.claudeRepoContextEnabled {
+            return dogfoodUnresolvedJoin(cause: "gate: browser target without session context")
+        }
         return await resolver.resolve(target: target)
     }
 

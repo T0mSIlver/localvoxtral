@@ -138,6 +138,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var claudeContextBroker: ClaudeContextBroker?
     private var terminalConsentPrewarmObserver:
         TerminalAutomationConsentPrewarmSettingsObserver?
+    /// The browser half of the same pre-warm, kept separate because it is armed
+    /// by a NARROWER setting: only the Claude session/repo context feature can
+    /// use a browser tab join.
+    private var browserConsentPrewarmObserver:
+        TerminalAutomationConsentPrewarmSettingsObserver?
     /// Remote (SSH) Claude Code sessions. Both the host registry and the
     /// listener are lazy and optional: a user who has never enrolled a host has
     /// no file to read and no port bound.
@@ -187,6 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudeContextBroker?.stop()
         claudeContextBroker = nil
         terminalConsentPrewarmObserver = nil
+        browserConsentPrewarmObserver = nil
         // Closes the port, so a hook from a surviving remote session gets a
         // connection refused through the tunnel and fails open. Quitting says
         // nothing about enrollment — the hosts stay enrolled for next launch.
@@ -234,9 +240,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // local socket are live capabilities, so only the app — never a
             // test that forgot to inject — constructs them.
             let ttyReader = AppleScriptTerminalTTYReader()
+            let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
+                focusedBrowserTabURL: { await browserTabReader.focusedTabURL(bundleID: $0) },
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
@@ -250,18 +258,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // firing only while that terminal is running. Only for users who
             // opted into a context feature — the pre-warm is itself the
             // consent prompt, and an opted-out user must never see it.
+            let settings = viewModel.settings
             let prewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
-                settings: viewModel.settings,
+                settings: settings,
                 prewarm: {
                     for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
                         TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
-                            bundleID: bundleID
+                            bundleID: bundleID,
+                            isStillEnabled: { [weak settings] in
+                                settings?.terminalScreenContextEnabled == true
+                                    || settings?.claudeRepoContextEnabled == true
+                            }
                         )
+                    }
+                },
+                // Turning both context features off disarms whatever is still
+                // waiting for a terminal to launch: consent is only ever asked
+                // for a feature that is ON.
+                disarm: {
+                    for bundleID in TerminalScreenAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.cancelPendingPrewarm(bundleID: bundleID)
                     }
                 }
             )
             terminalConsentPrewarmObserver = prewarmObserver
             prewarmObserver.start()
+            // The same pre-warm for the browsers a Claude Code "Remote
+            // Control" tab can live in — each is its own TCC Automation pair,
+            // and the consent sheet dies with the 1 s read that raised it, so
+            // without this the browser join could never become grantable.
+            // Armed by the session-context setting ALONE: a browser join
+            // authorizes no screen read, so a user who enabled only screen
+            // context is never asked to let us automate their browser.
+            let browserPrewarmObserver = TerminalAutomationConsentPrewarmSettingsObserver(
+                settings: settings,
+                prewarm: {
+                    for bundleID in BrowserTabAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.fireOnceWhenTerminalIsAvailable(
+                            bundleID: bundleID,
+                            // Re-read when the sheet would actually be raised.
+                            // A browser that launches days after the user
+                            // turned the feature back off must not be asked.
+                            isStillEnabled: { [weak settings] in
+                                settings?.claudeRepoContextEnabled == true
+                            }
+                        )
+                    }
+                },
+                disarm: {
+                    for bundleID in BrowserTabAllowlist.supportedBundleIDs.sorted() {
+                        TerminalAutomationConsentPrewarm.cancelPendingPrewarm(bundleID: bundleID)
+                    }
+                },
+                enablement: { $0.claudeRepoContextEnabled }
+            )
+            browserConsentPrewarmObserver = browserPrewarmObserver
+            browserPrewarmObserver.start()
             // The join gate for raw terminal screen attachment. Installed only
             // now: without a running broker there are no markers to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to

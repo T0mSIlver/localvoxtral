@@ -40,8 +40,9 @@ model touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
-Two mechanisms. The resolver always tries both in order; the opt-in setting
-only controls whether local sessions write the marker the second one looks for:
+Two mechanisms for a terminal, plus one for a browser. The resolver always
+tries the terminal pair in order; the opt-in setting only controls whether
+local sessions write the marker the second one looks for:
 
 **TTY join (the default — Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
 and Terminal.app).** The hooks report
@@ -69,6 +70,30 @@ herdr-hosted sessions never receive a marker at all (herdr intercepts titles
 per pane, so a marker could only mis-join). Remote hooks always receive the
 marker regardless of this setting because it is the ONLY join for SSH
 sessions: their tty names a device on another machine.
+
+**Browser tab join (Claude Code "Remote Control").** A Remote Control session
+runs the `claude` process on one of your machines while
+[claude.ai/code](https://claude.ai/code) in a browser is its UI — there is no
+pane, no tty, and no title to join on. Since Claude Code 2.1.199 the hooks of
+such a session carry `CLAUDE_CODE_BRIDGE_SESSION_ID`, whose value is exactly
+the `session_…` component of that browser URL, so when the frontmost app is a
+browser the app reads its focused tab's URL over AppleScript and matches the
+id by exact equality against what the session's own hooks reported. Local and
+remote (SSH) sessions can both join this way — the id is allocated by
+Anthropic's bridge and is globally unique, unlike a tty or pane id. Claude Code
+REMOVES the variable when the Remote Control connection ends, so the join ages
+out on the session's next hook.
+
+Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
+its OWN Automation grant the first time it is used (System Settings → Privacy &
+Security → Automation → localvoxtral). The grant is requested only while
+**Settings → Text Processing → Polishing → Claude Code project context** is on
+— that is the only feature a browser join can serve. Firefox is not supported:
+it exposes no AppleScript surface for the focused tab's URL. A browser join
+never reads anything on your screen (a web page is not a terminal grid, and
+there is no verified per-tab capture route) — it attaches the session's own
+off-screen context only, and for a local session its repository, exactly like a
+terminal join does.
 
 The marker grammar is `lvx-<hex>` and nothing else is ever emitted — an escape
 sequence is code as much as data, so the marker is allowlist-validated and
