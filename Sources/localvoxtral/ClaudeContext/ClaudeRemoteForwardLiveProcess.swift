@@ -143,7 +143,39 @@ final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, @uncheck
     }
 
     func terminate() {
+        signal(SIGTERM)
+    }
+
+    func forceTerminate() {
+        signal(SIGKILL)
+    }
+
+    /// Signal the child — its whole process GROUP when it has one of its own,
+    /// otherwise just the child.
+    ///
+    /// The conditional is not caution for its own sake, it is the difference
+    /// between killing ssh and killing localvoxtral. `Process` gives a child
+    /// OUR process group unless something changes it, and `kill(-pgid, …)` on
+    /// that shared group signals this app (and every other child it has
+    /// spawned: both MLX helpers). Foundation exposes no way to make the child
+    /// a group leader, so instead of assuming either way this asks the kernel
+    /// at signal time: a group of its own gets the group signal — which is what
+    /// reaches any `ProxyCommand`/`askpass` helper ssh started — and a shared
+    /// group gets a signal aimed at the one pid we know is ours to end.
+    ///
+    /// `ForkAfterAuthentication=no` and `ControlPath=none` in the argv are the
+    /// other half: they stop ssh from leaving descendants that outlive the pid
+    /// we track in the first place.
+    private func signal(_ signalNumber: Int32) {
         guard process.isRunning else { return }
-        process.terminate()
+        let pid = process.processIdentifier
+        guard pid > 0 else { return }
+        let childGroup = getpgid(pid)
+        let ownGroup = getpgid(0)
+        if childGroup > 0, childGroup != ownGroup {
+            _ = Darwin.kill(-childGroup, signalNumber)
+        } else {
+            _ = Darwin.kill(pid, signalNumber)
+        }
     }
 }

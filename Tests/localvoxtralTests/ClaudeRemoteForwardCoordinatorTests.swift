@@ -19,6 +19,9 @@ private final class FakeForwarding: ClaudeRemoteForwarding {
     private let spy: ForwardSpy
     var state: ClaudeRemoteForwardSupervisor.State = .stopped
     var onStateChange: (@MainActor (ClaudeRemoteForwardSupervisor.State) -> Void)?
+    /// Settable so a test can hand the coordinator a teardown that is
+    /// still draining and prove the replacement waits for it.
+    var teardown: Task<Void, Never>?
 
     init(hostID: String, spy: ForwardSpy) {
         self.hostID = hostID
@@ -218,5 +221,63 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         coordinator.retry(hostID: second.id)
 
         XCTAssertEqual(spy.retried, [second.id])
+    }
+
+    func testAReplacementForwardWaitsForTheOldOneToFinishDying() async throws {
+        // Toggle off, toggle straight back on — the ordinary way a user retries
+        // something. The remote port is not free until the first ssh has
+        // actually exited, so starting the replacement immediately dials a port
+        // this Mac is still holding and the pane reports `portUnavailable` at
+        // itself, terminally, for a host that is perfectly fine.
+        let registry = try makeRegistry()
+        let spy = ForwardSpy()
+        let coordinator = makeCoordinator(registry: registry, spy: spy)
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        coordinator.reconcile()
+        XCTAssertEqual(spy.started, [host.id])
+
+        // Stop it, leaving a teardown that has NOT finished.
+        let release = TeardownGate()
+        try XCTUnwrap(spy.forwards[host.id]).teardown = Task { await release.wait() }
+        try registry.setPersistentForwardEnabled(false, hostID: host.id)
+        coordinator.reconcile()
+        XCTAssertEqual(spy.stopped, [host.id])
+
+        // Back on while the old process is still dying.
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        coordinator.reconcile()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(
+            spy.started, [host.id],
+            "the replacement must not dial a port the old ssh still holds"
+        )
+
+        // Once it is gone, the replacement runs.
+        release.open()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(spy.started, [host.id, host.id])
+    }
+}
+
+/// A teardown a test can hold open and then release.
+private final class TeardownGate: @unchecked Sendable {
+    private let state = Mutex<[CheckedContinuation<Void, Never>]>([])
+    private let opened = Mutex(false)
+
+    func wait() async {
+        if opened.withLock({ $0 }) { return }
+        await withCheckedContinuation { continuation in
+            state.withLock { $0.append(continuation) }
+        }
+    }
+
+    func open() {
+        opened.withLock { $0 = true }
+        let waiters = state.withLock { waiters -> [CheckedContinuation<Void, Never>] in
+            defer { waiters = [] }
+            return waiters
+        }
+        for waiter in waiters { waiter.resume() }
     }
 }

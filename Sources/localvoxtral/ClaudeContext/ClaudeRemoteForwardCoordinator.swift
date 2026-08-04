@@ -24,6 +24,24 @@ public final class ClaudeRemoteForwardCoordinator {
     /// Per-host state for the pane, keyed by host id.
     public private(set) var states: [String: ClaudeRemoteForwardSupervisor.State] = [:]
 
+    /// Fired after `states` changes, naming the host that changed.
+    ///
+    /// Settings renders COPIES of these rows, so a dictionary the pane never
+    /// hears about is a pane frozen on whatever it sampled when it appeared —
+    /// which for a tunnel means it shows "Connecting…" forever and never the
+    /// `.forwarding`, `.retrying` or failure that followed. A push, not a
+    /// timer: transitions are rare and a Settings pane redrawing on a schedule
+    /// is a cost with no reader.
+    @ObservationIgnored public var onStateChange: (@MainActor (String) -> Void)?
+
+    /// Teardowns still draining, keyed by host. A replacement forward for the
+    /// same host waits on its entry: the remote port is not free until the old
+    /// ssh has actually exited, and dialing it early reports `portUnavailable`
+    /// at ourselves.
+    /// Identified rather than compared: `Task` is a struct, so "is this still
+    /// the teardown I was waiting on" needs a token of its own.
+    @ObservationIgnored private var pendingTeardowns: [String: (id: UUID, task: Task<Void, Never>)] = [:]
+
     @ObservationIgnored private let hosts: ClaudeRemoteHostRegistry
     @ObservationIgnored private let isListenerBound: @MainActor () -> Bool
     @ObservationIgnored private let remoteForwardPort: UInt16
@@ -97,12 +115,30 @@ public final class ClaudeRemoteForwardCoordinator {
                 )
             )
             supervisors[host.id] = supervisor
-            states[host.id] = supervisor.state
+            setState(supervisor.state, hostID: host.id)
             observe(supervisor, hostID: host.id)
             Log.claudeContext.info(
                 "Claude remote forward starting for host \(host.id, privacy: .public)"
             )
-            supervisor.start()
+            // Registered synchronously above (so nothing starts this host
+            // twice), started only once the previous ssh for the SAME host has
+            // finished dying. Toggling off and straight back on is the ordinary
+            // way a user hits this, and the old process still holds the remote
+            // bind for as long as it takes to honour SIGTERM.
+            if let draining = pendingTeardowns[host.id] {
+                let hostID = host.id
+                Task { @MainActor [weak self, weak supervisor] in
+                    await draining.task.value
+                    guard let self, self.pendingTeardowns[hostID]?.id == draining.id else { return }
+                    self.pendingTeardowns[hostID] = nil
+                    // Still the current supervisor for this host? A reconcile
+                    // during the wait may have retired it already.
+                    guard let supervisor, self.supervisors[hostID] === supervisor else { return }
+                    supervisor.start()
+                }
+            } else {
+                supervisor.start()
+            }
         }
     }
 
@@ -110,21 +146,35 @@ public final class ClaudeRemoteForwardCoordinator {
     /// retried — there is nothing to retry about a healthy one.
     public func retry(hostID: String) {
         supervisors[hostID]?.retry()
-        states[hostID] = supervisors[hostID]?.state
+        setState(supervisors[hostID]?.state, hostID: hostID)
     }
 
     public func stopAll() {
         for hostID in Array(supervisors.keys) { stop(hostID: hostID) }
     }
 
+    /// Every teardown still draining, for a caller that must not return until
+    /// the ssh processes are gone (app termination).
+    public var drainingTeardowns: [Task<Void, Never>] { pendingTeardowns.values.map(\.task) }
+
     private func stop(hostID: String) {
         supervisors[hostID]?.onStateChange = nil
         supervisors[hostID]?.stop()
+        // Keep the escalation, not the supervisor: the port stays bound until
+        // this finishes, and the next start for this host must wait for it.
+        if let teardown = supervisors[hostID]?.teardown {
+            pendingTeardowns[hostID] = (id: UUID(), task: teardown)
+        }
         supervisors[hostID] = nil
-        states[hostID] = nil
+        setState(nil, hostID: hostID)
         Log.claudeContext.info(
             "Claude remote forward stopped for host \(hostID, privacy: .public)"
         )
+    }
+
+    private func setState(_ state: ClaudeRemoteForwardSupervisor.State?, hostID: String) {
+        states[hostID] = state
+        onStateChange?(hostID)
     }
 
     /// Mirror one supervisor's state into `states` so the pane can render it.
@@ -136,7 +186,7 @@ public final class ClaudeRemoteForwardCoordinator {
     /// it a race. The supervisor calls this synchronously from `transition`.
     private func observe(_ supervisor: any ClaudeRemoteForwarding, hostID: String) {
         supervisor.onStateChange = { [weak self] state in
-            self?.states[hostID] = state
+            self?.setState(state, hostID: hostID)
         }
     }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import ClaudeContextWire
 import SwiftUI
+import Synchronization
 
 @main
 struct localvoxtralApp: App {
@@ -202,6 +203,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing about enrollment — the hosts stay enrolled for next launch.
         // Forwards first, listener second — the mirror of startup order.
         claudeRemoteForwards?.stopAll()
+        // `stopAll` only STARTS each SIGTERM→SIGKILL escalation. Returning
+        // here without it finishing is how an ssh that is slow to die outlives
+        // the app: reparented to launchd, still holding the remote bind, and
+        // no longer reachable by anything that could kill it — so the next
+        // launch finds its own port taken. The wait is bounded and short; a
+        // quit must never hang on a wedged network.
+        drainRemoteForwardTeardowns(within: 3.0)
         claudeRemoteForwards = nil
         claudeRemoteListenerCoordinator?.shutdown()
         claudeRemoteListenerCoordinator = nil
@@ -211,6 +219,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // resolving joins against sessions nothing is feeding any more.
         viewModel.claudeSessionJoinResolver = nil
         viewModel.claudeSessionJoin = nil
+    }
+
+    /// Spin the run loop until every forward teardown has finished, or the
+    /// deadline passes.
+    ///
+    /// `applicationWillTerminate` is synchronous and cannot await, but the
+    /// escalation it just started is asynchronous — so this pumps the main run
+    /// loop, which is what lets those tasks make progress while we wait. The
+    /// deadline is the point: a wedged ssh must cost the user a bounded pause
+    /// at quit, never a hang, and the escalation's own SIGKILL means the
+    /// ordinary case finishes far inside it.
+    private func drainRemoteForwardTeardowns(within seconds: TimeInterval) {
+        guard let teardowns = claudeRemoteForwards?.drainingTeardowns, !teardowns.isEmpty else {
+            return
+        }
+        let deadline = Date().addingTimeInterval(seconds)
+        let finished = Mutex(false)
+        Task { @MainActor in
+            for teardown in teardowns { await teardown.value }
+            finished.withLock { $0 = true }
+        }
+        while !finished.withLock({ $0 }), Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        if !finished.withLock({ $0 }) {
+            Log.claudeContext.error(
+                "Claude remote forward teardown did not finish before quit; an ssh may survive this process"
+            )
+        }
     }
 
     /// Binds the hook socket and installs the pane authorizer that depends on it.

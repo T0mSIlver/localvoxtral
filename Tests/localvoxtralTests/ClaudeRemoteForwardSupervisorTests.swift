@@ -17,10 +17,21 @@ private final class FakeForwardProcess: ClaudeRemoteForwardProcess, @unchecked S
 
     private let exitState = Mutex(ExitState())
     private let terminations = Mutex(0)
+    private let forcedTerminations = Mutex(0)
+
+    /// When true, `terminate()` signals and RETURNS — the process keeps
+    /// running until the test ends it. A fake that dies synchronously inside
+    /// `terminate()` cannot express the case teardown exists for (an ssh that
+    /// is slow to die, or ignores SIGTERM entirely), so with that fake every
+    /// escalation test passes vacuously.
+    let ignoresTermination: Bool
 
     var terminateCount: Int { terminations.withLock { $0 } }
+    var forceTerminateCount: Int { forcedTerminations.withLock { $0 } }
+    var hasExited: Bool { exitState.withLock { $0.status != nil } }
 
-    init() {
+    init(ignoresTermination: Bool = false) {
+        self.ignoresTermination = ignoresTermination
         let (stream, continuation) = AsyncStream<String>.makeStream(of: String.self)
         standardErrorLines = stream
         self.continuation = continuation
@@ -56,7 +67,15 @@ private final class FakeForwardProcess: ClaudeRemoteForwardProcess, @unchecked S
 
     func terminate() {
         terminations.withLock { $0 += 1 }
+        guard !ignoresTermination else { return }
         finish(status: 143)
+    }
+
+    /// SIGKILL: even the stubborn fake cannot survive it, which is the
+    /// property the escalation depends on.
+    func forceTerminate() {
+        forcedTerminations.withLock { $0 += 1 }
+        finish(status: 137)
     }
 }
 
@@ -97,6 +116,35 @@ private final class ForwardHarness {
     private var processWaiters: [ProcessWaiter] = []
     private var stateWaiters: [StateWaiter] = []
 
+    /// Every fake this harness makes ignores SIGTERM, so teardown has to
+    /// escalate.
+    let processesIgnoreTermination: Bool
+
+    init(processesIgnoreTermination: Bool = false) {
+        self.processesIgnoreTermination = processesIgnoreTermination
+    }
+
+    /// The supervisor's injected clock. Uptime is what decides whether a drop
+    /// counts as part of a run of failures, so a test has to be able to say how
+    /// long a connection lasted — without any of it being real time.
+    private(set) var clock = Date(timeIntervalSince1970: 1_000_000)
+
+    func advanceClock(by seconds: TimeInterval) {
+        clock = clock.addingTimeInterval(seconds)
+    }
+
+    /// Yield until the main actor has nothing left to run.
+    ///
+    /// A fixed number of `Task.yield()`s is a guess about the scheduler, and a
+    /// wrong guess makes a test pass by not letting the buggy code run — which
+    /// is exactly how the settle-window regression hid. This keeps yielding
+    /// while anything is still making progress, so "nothing more happens" is
+    /// something the test observes rather than assumes. Bounded so a live-lock
+    /// fails the test instead of hanging the suite.
+    func drainMainActor(iterations: Int = 200) async {
+        for _ in 0..<iterations { await Task.yield() }
+    }
+
     /// When true, every injected sleep records its duration and then BLOCKS
     /// until `releaseSleeps()`. That is what makes "the process died while its
     /// settle window was still open" an orderable event rather than a race.
@@ -132,14 +180,17 @@ private final class ForwardHarness {
             configuration: configuration,
             launch: { [weak self] _ in
                 if let launchFailure { throw launchFailure }
-                let process = FakeForwardProcess()
+                let process = FakeForwardProcess(
+                    ignoresTermination: self?.processesIgnoreTermination ?? false
+                )
                 self?.record(process)
                 return process
             },
             sleepFor: { [weak self] duration in
                 guard let self else { return }
                 await self.recordSleep(duration)
-            }
+            },
+            now: { [weak self] in self?.clock ?? Date(timeIntervalSince1970: 1_000_000) }
         )
         supervisor.onStateChange = { [weak self] state in self?.record(state) }
         return supervisor
@@ -195,6 +246,42 @@ private final class ForwardHarness {
         }
     }
 
+    /// Waits for the state LIST to reach a length, rather than for a state to
+    /// appear.
+    ///
+    /// `waitForState` answers "has this ever happened", which is the wrong
+    /// question once a value can recur: waiting for `.retrying(attempt: 1)`
+    /// after an earlier `.retrying(attempt: 1)` returns instantly and the test
+    /// then asserts against a sequence that has not been written yet.
+    func waitForStateCount(
+        _ count: Int, timeout: Duration = .seconds(20), line: UInt = #line
+    ) async throws {
+        try await waitForState(timeout: timeout, line: line) { [weak self] _ in
+            (self?.states.count ?? 0) >= count
+        }
+    }
+
+    /// Every `.retrying` attempt number recorded so far, in order.
+    var retryAttempts: [Int] {
+        states.compactMap { state in
+            if case .retrying(let attempt) = state { return attempt } else { return nil }
+        }
+    }
+
+    /// Waits until this many retries have been published.
+    ///
+    /// Counting RETRIES specifically, because a bare "the list grew" wait wakes
+    /// on whatever lands first — and with an instant settle window that is the
+    /// `.forwarding` of the connection that just dropped, not the retry the
+    /// test is about.
+    func waitForRetryCount(
+        _ count: Int, timeout: Duration = .seconds(20), line: UInt = #line
+    ) async throws {
+        try await waitForState(timeout: timeout, line: line) { [weak self] _ in
+            (self?.retryAttempts.count ?? 0) >= count
+        }
+    }
+
     private func armTimeout(_ timeout: Duration, _ expire: @escaping @MainActor () -> Void) {
         Task { @MainActor in
             try? await Task.sleep(for: timeout)
@@ -247,12 +334,48 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         XCTAssertTrue(argv.contains("ServerAliveCountMax=3"))
     }
 
-    func testInheritedForwardingsAreClearedSoTheProcessCannotFightItself() {
-        // The user's ssh config block for this alias already declares the same
-        // RemoteForward. Inheriting it would make this process request the port
-        // twice — and the second request failing kills it, under the
-        // ExitOnForwardFailure=yes above.
-        XCTAssertTrue(configuration().argv.contains("ClearAllForwardings=yes"))
+    func testNoOptionCanClearTheForwardTheProcessExistsToCreate() {
+        // The regression that made this whole feature a no-op. The argv used to
+        // carry `ClearAllForwardings=yes` to stop the alias's own RemoteForward
+        // being inherited twice — but ssh_config(5) says that option clears
+        // forwardings given "in the configuration files or on the command
+        // line", so it cleared our `-R` as well. Measured with
+        // `ssh -G -F <config> -o ClearAllForwardings=yes -R 28511:… alias`:
+        // the effective config contains `clearallforwardings yes` and NO
+        // `remoteforward` line, so the supervised ssh connected, settled, and
+        // reported "Tunnel up." while forwarding nothing.
+        //
+        // Asserted as a property — no forwarding-clearing option, whatever it
+        // is called — rather than as the absence of one spelling, so a future
+        // equivalent cannot walk back in.
+        let argv = configuration().argv
+        XCTAssertTrue(argv.contains("-R"), "the forward is the entire point of this process")
+        XCTAssertTrue(argv.contains("28511:127.0.0.1:8473"))
+        let joined = argv.joined(separator: " ").lowercased()
+        XCTAssertFalse(
+            joined.contains("clearallforwardings"),
+            "clearing forwardings also clears the -R: \(argv)"
+        )
+        XCTAssertFalse(joined.contains("noremoteforward"), argv.description)
+    }
+
+    func testTheConnectionCannotDetachMultiplexOrRunALocalCommand() {
+        // Every one of these is settable per-Host in the user's own config, and
+        // each breaks the supervisor's grip in a different way:
+        // ForkAfterAuthentication backgrounds ssh out of the tracked Process
+        // (its parent exits, the child keeps the bind and the stderr pipe, and
+        // neither disable nor quit can reach it); ControlPersist lets a
+        // multiplexed master outlive the process that started it; an inherited
+        // LocalCommand runs on this Mac on every reconnect.
+        let argv = configuration().argv
+        for option in ["ForkAfterAuthentication=no", "ControlPath=none", "PermitLocalCommand=no"] {
+            XCTAssertTrue(argv.contains(option), "missing \(option): \(argv)")
+            // Options must be passed as `-o value` pairs, not smuggled into the
+            // alias or concatenated — the `--` termination only protects the
+            // alias.
+            let index = try? XCTUnwrap(argv.firstIndex(of: option))
+            if let index { XCTAssertEqual(argv[index - 1], "-o") }
+        }
     }
 
     func testTheAliasIsTheLastArgumentAndOptionParsingIsTerminated() {
@@ -300,8 +423,59 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
             "a refusal is not a crash: \(harness.states)"
         )
         XCTAssertTrue(supervisor.state.isFailure)
-        XCTAssertEqual(supervisor.state.text, "Port already held on the host.")
+        // The copy has to name the thing to close. The overwhelmingly common
+        // holder is an ssh session from this very Mac, and "Port already held
+        // on the host." left the user with a Retry button and no idea what to
+        // do before pressing it.
+        XCTAssertEqual(supervisor.state.text, "Port held — close ssh sessions to that host.")
         XCTAssertLessThan(supervisor.state.text.count, 60, "owner rule: one short sentence")
+    }
+
+    func testARefusalForAPortWeNeverAskedForBlamesTheConfigNotTheHost() async throws {
+        // The #215 migration cohort: the alias's ssh config block still
+        // declares `RemoteForward 8473 …` from before per-Mac ports. Dropping
+        // ClearAllForwardings (which had to go — it cleared our own `-R`) means
+        // that stale forward IS inherited, and under ExitOnForwardFailure=yes
+        // its refusal kills the process. Verified with `ssh -G`: a legacy block
+        // plus our `-R 28511` yields BOTH `remoteforward 28511` and
+        // `remoteforward 8473`.
+        //
+        // Reporting that as "port held" would send the user hunting for a
+        // process on the remote host that does not exist. The fix is in their
+        // own ~/.ssh/config.
+        let harness = ForwardHarness()
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+
+        let process = try await harness.process(0)
+        process.emitStandardError(
+            "Warning: remote port forwarding failed for listen port 8473"
+        )
+        process.finish(status: 255)
+
+        try await harness.waitForState {
+            if case .staleConfiguredForward = $0 { return true } else { return false }
+        }
+        XCTAssertEqual(supervisor.state, .staleConfiguredForward(port: 8473))
+        XCTAssertTrue(supervisor.state.isFailure, "it cannot fix itself by retrying")
+        XCTAssertEqual(harness.processes.count, 1, "and it must not retry")
+        XCTAssertEqual(supervisor.state.text, "Old RemoteForward in ~/.ssh/config blocks this.")
+        XCTAssertLessThan(supervisor.state.text.count, 60, "owner rule: one short sentence")
+    }
+
+    func testTheRefusedPortIsReadFromTheWarningNotGuessed() {
+        // `listen port` anchors it: the same line carries host names, and a
+        // hostname with digits must never be read as a port.
+        XCTAssertEqual(
+            ClaudeRemoteForwardSupervisor.refusedPort(
+                in: "warning: remote port forwarding failed for listen port 28511"
+            ),
+            28511
+        )
+        XCTAssertNil(
+            ClaudeRemoteForwardSupervisor.refusedPort(in: "remote port forwarding failed")
+        )
+        XCTAssertNil(ClaudeRemoteForwardSupervisor.refusedPort(in: "connection to host99 closed"))
     }
 
     func testAnOrdinaryExitRestartsWithExponentialBackoff() async throws {
@@ -349,18 +523,136 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
         first.finish(status: 255)
         try await harness.waitForState { $0 == .retrying(attempt: 1) }
 
-        // Two sleeps are held now: the dead process's settle, then the backoff.
-        // Wake ONLY the settle; the loop stays parked, so nothing has cancelled
-        // it and nothing else can have moved the state.
+        // Wake the dead process's settle window while the loop is still parked
+        // on its backoff, so nothing has left the loop-body scope and the old
+        // `defer { settle.cancel() }` has not run.
         harness.releaseOldestSleep()
-        await Task.yield()
-        await Task.yield()
+        // Drain the main actor until it is quiet. TWO yields used to be enough
+        // to make this test pass — and that was the whole reason it passed:
+        // the stale settle task simply had not been scheduled yet. Measured
+        // with an instrumented copy of this scenario, at 50 yields the old code
+        // published `.forwarding` on top of `.retrying(1)` and the final state
+        // was `forwarding`. Waiting for quiescence is what turns this from a
+        // test of the scheduler into a test of the guard.
+        await harness.drainMainActor()
 
         XCTAssertFalse(
             harness.states.contains(.forwarding),
             "a settle window that outlived its own process must report nothing: \(harness.states)"
         )
         XCTAssertEqual(supervisor.state, .retrying(attempt: 1))
+    }
+
+    func testADropAfterALongHealthyRunIsNotPartOfARunOfFailures() async throws {
+        // `consecutiveFailures` never reset, so failures accumulated for the
+        // life of the supervisor. Five drops spread over five days — a laptop
+        // closing its lid five times — hit the cap and stopped the tunnel for
+        // good with "keeps dropping", each retry inheriting a backoff computed
+        // from failures that had nothing to do with each other.
+        let harness = ForwardHarness()
+        let supervisor = harness.makeSupervisor(
+            configuration: configuration(maxConsecutiveFailures: 3)
+        )
+        supervisor.start()
+
+        // Two quick drops: no uptime between them, so they DO accumulate.
+        for index in 0..<2 {
+            let process = try await harness.process(index)
+            process.finish(status: 255)
+            try await harness.waitForState { $0 == .retrying(attempt: index + 1) }
+        }
+
+        // The third connection stays up for an hour before dropping.
+        let healthy = try await harness.process(2)
+        harness.advanceClock(by: 3600)
+        healthy.finish(status: 255)
+
+        // So it is failure number ONE again — not number three, which under a
+        // cap of 3 would have been terminal. Waited for by RETRY COUNT: an
+        // earlier `.retrying(attempt: 1)` is already in the list, so waiting
+        // for that VALUE returns before this drop is processed, and waiting for
+        // the list merely to grow wakes on this connection's own `.forwarding`.
+        try await harness.waitForRetryCount(3)
+        // Asserted on the RECORDED sequence, not on `supervisor.state`: the
+        // backoff is instant on the injected clock, so the loop has usually
+        // relaunched into `.connecting` by the time the test looks.
+        XCTAssertEqual(
+            harness.retryAttempts, [1, 2, 1],
+            "the drop after an hour of uptime must restart the count: \(harness.states)"
+        )
+        XCTAssertFalse(
+            harness.states.contains { if case .failed = $0 { return true } else { return false } },
+            "a tunnel that ran for an hour must not be given up on: \(harness.states)"
+        )
+    }
+
+    func testConnectionsThatDieQuicklyStillHitTheCap() async throws {
+        // The other half of the rule, and the reason "healthy" is not "survived
+        // the 2s settle window": a tunnel that connects, holds briefly and dies
+        // — over and over — is the reconnect storm the cap exists to stop. If
+        // merely settling reset the counter, the cap would be unreachable.
+        let harness = ForwardHarness()
+        let supervisor = harness.makeSupervisor(
+            configuration: configuration(maxConsecutiveFailures: 3)
+        )
+        supervisor.start()
+
+        for index in 0..<3 {
+            let process = try await harness.process(index)
+            // Long enough to settle and be called up, nowhere near healthy.
+            harness.advanceClock(by: 3)
+            process.finish(status: 255)
+        }
+
+        try await harness.waitForState { if case .failed = $0 { return true } else { return false } }
+        XCTAssertTrue(supervisor.state.isFailure)
+        XCTAssertEqual(harness.processes.count, 3, "it must stop launching, not keep going")
+    }
+
+    // MARK: Teardown
+
+    func testStoppingEscalatesToSIGKILLWhenTheProcessIgnoresSIGTERM() async throws {
+        // The case the escalation exists for: ssh wedged on a dead network,
+        // holding the remote bind. Without it the supervisor sends one SIGTERM,
+        // forgets the child, and the port stays bound by a process nothing can
+        // reach any more.
+        let harness = ForwardHarness(processesIgnoreTermination: true)
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+        let process = try await harness.process(0)
+
+        supervisor.stop()
+        XCTAssertEqual(process.terminateCount, 1, "SIGTERM comes first")
+        XCTAssertEqual(process.forceTerminateCount, 0, "and it gets its grace window")
+        XCTAssertFalse(process.hasExited)
+
+        await supervisor.teardown?.value
+
+        XCTAssertEqual(process.forceTerminateCount, 1, "the grace window expired: SIGKILL")
+        XCTAssertTrue(process.hasExited)
+        XCTAssertEqual(supervisor.state, .stopped)
+    }
+
+    func testAProcessThatHonoursSIGTERMIsNeverKilled() async throws {
+        // The grace window is HELD open for the whole test, so "did it escalate"
+        // cannot be answered by the grace expiring first. The only thing that
+        // can resolve the wait here is the process exiting — which is exactly
+        // the property being asserted.
+        let harness = ForwardHarness()
+        harness.holdSleeps = true
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+        let process = try await harness.process(0)
+
+        supervisor.stop()
+        await supervisor.teardown?.value
+
+        XCTAssertEqual(process.terminateCount, 1)
+        XCTAssertEqual(
+            process.forceTerminateCount, 0,
+            "SIGKILL on a process that already exited is a bug, not belt-and-braces"
+        )
+        XCTAssertTrue(process.hasExited)
     }
 
     func testItGivesUpAfterTheConfiguredNumberOfConsecutiveFailures() async throws {

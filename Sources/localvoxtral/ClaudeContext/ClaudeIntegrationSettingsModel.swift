@@ -437,6 +437,27 @@ public final class ClaudeIntegrationSettingsModel {
         // the stored secret is touched at construction, and only to answer
         // "is one set".
         hasCmuxPassword = cmuxPasswords?.password() != nil
+        // The pane renders COPIES of the rows, so without this the tunnel
+        // status is whatever it happened to be when Settings appeared: the
+        // first "Connecting…" snapshot, frozen, while the real supervisor goes
+        // on to forward, retry, or fail where nobody can see it. Every
+        // transition now patches its row in place.
+        forwards?.onStateChange = { [weak self] hostID in
+            self?.applyForwardState(hostID: hostID)
+        }
+    }
+
+    /// Patch one row's forward fields from the coordinator.
+    ///
+    /// Deliberately NOT `refreshHosts()`: that re-reads the registry file and
+    /// re-derives every row's age text, which is a lot of work to do on a
+    /// transition that changed one string — and it would move the "last seen"
+    /// times under the user mid-read for a reason they never asked for.
+    private func applyForwardState(hostID: String) {
+        guard let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
+        let state = forwards?.states[hostID]
+        hosts[index].forwardStatusText = state?.text
+        hosts[index].forwardIsFailure = state?.isFailure ?? false
     }
 
     // MARK: - cmux socket
@@ -1133,6 +1154,16 @@ public final class ClaudeIntegrationSettingsModel {
 
     private func reconcileListener(presentAlert: Bool = true) {
         guard let listener else { return }
+        // Shutdown is the MIRROR of startup, and this is the shutdown case:
+        // revoking the last host is about to close the port, so the forwards
+        // into it come down first. Reversed — the documented order everywhere
+        // else in this feature — a hook arriving during `listener.stop()` rides
+        // a live tunnel into a socket that is already gone, and the Mac's ssh
+        // client answers it by printing `connect_to … failed.` into the user's
+        // remote terminal.
+        if listener.isListening, registry?.hasActiveHosts != true {
+            forwards?.stopAll()
+        }
         do {
             try listener.reconcile()
             listenerStatus = listener.isListening ? .listening(port: listener.boundPort) : .idle
