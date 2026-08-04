@@ -1117,9 +1117,50 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                             // but offering it mid-run is still offering a race.
                             .disabled(model.isPerformingEnrollmentAction)
                     }
+                    persistentForwardRow(for: host)
                     pluginUpdatePanel(for: host)
                 }
             }
+        }
+    }
+
+    /// The app-held tunnel switch for one host, INSIDE that host's row.
+    ///
+    /// Not a new group: a pane's group structure is constant (owner rule
+    /// 2026-07-04), and this belongs to a host, not to the feature. It is the
+    /// same idiom as `pluginUpdatePanel` — per-host sub-UI under the host line.
+    ///
+    /// A host with no alias on file gets no toggle at all rather than a
+    /// disabled one with an explanation: there is nothing to enable, because we
+    /// were never told where to ssh.
+    @ViewBuilder
+    private func persistentForwardRow(
+        for host: ClaudeIntegrationSettingsModel.HostRow
+    ) -> some View {
+        if host.canHoldForward {
+            HStack(spacing: 8) {
+                Toggle(
+                    "Keep the tunnel open",
+                    isOn: Binding(
+                        get: { host.persistentForwardEnabled },
+                        set: { model.setPersistentForward($0, hostID: host.id) }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                if let status = host.forwardStatusText {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(host.forwardIsFailure ? Color.red : .secondary)
+                        .lineLimit(1)
+                }
+                if host.forwardIsFailure {
+                    Button("Retry") { model.retryPersistentForward(hostID: host.id) }
+                        .controlSize(.small)
+                }
+                Spacer()
+            }
+            .padding(.leading, 12)
         }
     }
 

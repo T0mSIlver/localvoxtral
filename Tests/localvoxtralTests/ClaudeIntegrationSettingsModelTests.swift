@@ -49,12 +49,17 @@ private final class StubListener: ClaudeRemoteListenerControlling {
     /// a night of rejected connections.
     var rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot()
 
+    /// Shared with the forward stubs so a test can assert the ORDER of the two
+    /// shutdowns, not just that both happened.
+    var journal: ShutdownJournal?
+
     init(hosts: ClaudeRemoteHostRegistry) {
         self.hosts = hosts
     }
 
     func reconcile() throws {
         reconcileCount += 1
+        if isListening, !hosts.hasActiveHosts { journal?.note("listener.stop") }
         if hosts.hasActiveHosts {
             guard !isListening else { return }
             if let bindError { throw bindError }
@@ -109,6 +114,41 @@ private final class RecordingSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSyste
     }
 }
 
+/// A forward that records instead of spawning ssh. The model's contract is
+/// "persist the flag, then reconcile, then re-render the rows"; whether ssh
+/// reconnects is the supervisor's suite.
+@MainActor
+/// Ordered record of the two shutdowns, so "forwards first, listener second"
+/// is asserted as a SEQUENCE. Both happening is not the property — the whole
+/// failure is a hook arriving in the window between them.
+final class ShutdownJournal: @unchecked Sendable {
+    private let entries = Mutex<[String]>([])
+    func note(_ entry: String) { entries.withLock { $0.append(entry) } }
+    var recorded: [String] { entries.withLock { $0 } }
+}
+
+private final class StubForwarding: ClaudeRemoteForwarding {
+    var journal: ShutdownJournal?
+    var state: ClaudeRemoteForwardSupervisor.State = .stopped
+    var onStateChange: (@MainActor (ClaudeRemoteForwardSupervisor.State) -> Void)?
+    /// Settable so a test can hand the coordinator a teardown that is
+    /// still draining and prove the replacement waits for it.
+    var teardown: Task<Void, Never>?
+    private(set) var retried = 0
+
+    func start() { transition(to: .connecting) }
+    func stop() {
+        journal?.note("forward.stop")
+        transition(to: .stopped)
+    }
+    func retry() { retried += 1 }
+
+    func transition(to newState: ClaudeRemoteForwardSupervisor.State) {
+        state = newState
+        onStateChange?(newState)
+    }
+}
+
 @MainActor
 final class ClaudeIntegrationSettingsModelTests: XCTestCase {
     private func makeRegistry() throws -> ClaudeRemoteHostRegistry {
@@ -131,7 +171,8 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         // Pinned, never derived here: the model must use what it is handed, and
         // a test that computed the allocation would only prove the derivation
         // twice.
-        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
+        forwards: ClaudeRemoteForwardCoordinator? = nil
     ) -> ClaudeIntegrationSettingsModel {
         ClaudeIntegrationSettingsModel(
             registry: registry,
@@ -160,8 +201,170 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                 }
             },
             now: now,
-            remoteForwardPort: remoteForwardPort
+            remoteForwardPort: remoteForwardPort,
+            forwards: forwards
         )
+    }
+
+    // MARK: Persistent forward toggle
+
+    /// Holds the stub forwards so a test can drive their state.
+    private final class ForwardStubs: @unchecked Sendable {
+        var byHost: [String: StubForwarding] = [:]
+        var journal: ShutdownJournal?
+    }
+
+    private func makeForwardCoordinator(
+        registry: ClaudeRemoteHostRegistry,
+        stubs: ForwardStubs,
+        isListenerBound: @escaping @MainActor () -> Bool = { true }
+    ) -> ClaudeRemoteForwardCoordinator {
+        ClaudeRemoteForwardCoordinator(
+            hosts: registry,
+            remoteForwardPort: 28542,
+            listenerPort: 8473,
+            isListenerBound: isListenerBound,
+            makeSupervisor: { configuration in
+                let stub = StubForwarding()
+                stub.journal = stubs.journal
+                stubs.byHost[configuration.hostID] = stub
+                return stub
+            }
+        )
+    }
+
+    func testEnablingTheTunnelPersistsTheFlagAndStartsTheForward() async throws {
+        let registry = try makeRegistry()
+        let stubs = ForwardStubs()
+        let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            remoteForwardPort: 28542,
+            forwards: forwards
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.dismissPlan()
+        let hostID = try XCTUnwrap(model.hosts.first).id
+
+        // Off by default: the app must never ssh anywhere unasked.
+        XCTAssertFalse(try XCTUnwrap(model.hosts.first).persistentForwardEnabled)
+        XCTAssertTrue(stubs.byHost.isEmpty)
+
+        model.setPersistentForward(true, hostID: hostID)
+
+        XCTAssertTrue(try XCTUnwrap(registry.host(id: hostID)).persistentForwardEnabled)
+        XCTAssertTrue(try XCTUnwrap(model.hosts.first).persistentForwardEnabled)
+        XCTAssertNotNil(stubs.byHost[hostID], "the flag alone is not a tunnel")
+        XCTAssertTrue(try XCTUnwrap(model.hosts.first).canHoldForward)
+
+        model.setPersistentForward(false, hostID: hostID)
+        XCTAssertFalse(try XCTUnwrap(registry.host(id: hostID)).persistentForwardEnabled)
+        XCTAssertNil(model.hosts.first?.forwardStatusText, "a stopped forward has nothing to report")
+    }
+
+    func testAFailedForwardShowsOneShortSentenceAndOffersRetry() async throws {
+        let registry = try makeRegistry()
+        let stubs = ForwardStubs()
+        let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            remoteForwardPort: 28542,
+            forwards: forwards
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.dismissPlan()
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.setPersistentForward(true, hostID: hostID)
+
+        // NO refreshHosts() here, deliberately. The manual call is what used to
+        // make this pass: the pane renders copies of these rows and only
+        // rebuilt them on an explicit action or on appear, so in the running
+        // app every transition after the first "Connecting…" snapshot —
+        // forwarding, retrying, portUnavailable — reached the coordinator's
+        // dictionary and stopped there. The user watched a tunnel that had
+        // already failed claim it was still connecting.
+        try XCTUnwrap(stubs.byHost[hostID]).transition(to: .portUnavailable)
+
+        let row = try XCTUnwrap(model.hosts.first)
+        XCTAssertEqual(row.forwardStatusText, "Port held — close ssh sessions to that host.")
+        XCTAssertTrue(row.forwardIsFailure)
+        // Owner rule: a Settings status line is one short sentence; the ssh
+        // stderr tail belongs in the log.
+        XCTAssertLessThan(try XCTUnwrap(row.forwardStatusText).count, 60)
+
+        model.retryPersistentForward(hostID: hostID)
+        XCTAssertEqual(try XCTUnwrap(stubs.byHost[hostID]).retried, 1)
+    }
+
+    func testRevokingTheLastHostStopsTheForwardBeforeClosingTheListener() async throws {
+        // Startup order is listener-then-forwards, and shutdown is documented
+        // as its mirror — but revoke ran `listener.reconcile()` (which closes
+        // the port) and only then reconciled the forwards. In that window the
+        // tunnel is still up and its destination is already gone, so a hook
+        // arriving from the remote host gets connection-refused THROUGH a live
+        // forward, and the Mac's ssh client prints `connect_to … failed.` into
+        // the user's remote terminal.
+        let registry = try makeRegistry()
+        let journal = ShutdownJournal()
+        let stubs = ForwardStubs()
+        stubs.journal = journal
+        let listener = StubListener(hosts: registry)
+        listener.journal = journal
+        let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
+        let model = makeModel(
+            registry: registry,
+            listener: listener,
+            remoteForwardPort: 28542,
+            forwards: forwards
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        model.dismissPlan()
+        let hostID = try XCTUnwrap(model.hosts.first).id
+        model.setPersistentForward(true, hostID: hostID)
+        XCTAssertTrue(listener.isListening)
+
+        await model.revoke(hostID: hostID)
+
+        XCTAssertEqual(
+            journal.recorded, ["forward.stop", "listener.stop"],
+            "shutdown is the mirror of startup: forwards first, listener second"
+        )
+        XCTAssertFalse(listener.isListening)
+    }
+
+    func testAHostWithNoAliasIsNotOfferedATunnel() async throws {
+        let registry = try makeRegistry()
+        let stubs = ForwardStubs()
+        let forwards = makeForwardCoordinator(registry: registry, stubs: stubs)
+        let enrollment = try registry.enroll(label: "buildhost")
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            remoteForwardPort: 28542,
+            forwards: forwards
+        )
+
+        XCTAssertEqual(model.hosts.first?.id, enrollment.host.id)
+        XCTAssertFalse(
+            try XCTUnwrap(model.hosts.first).canHoldForward,
+            "we were never told where to ssh, and the label is not a substitute"
+        )
+    }
+
+    func testNoTunnelIsOfferedWhenTheAppHasNoForwardCoordinator() async throws {
+        let registry = try makeRegistry()
+        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        _ = try registry.enroll(label: "buildhost", sshHostAlias: "builder")
+        model.refreshHosts()
+        XCTAssertFalse(try XCTUnwrap(model.hosts.first).canHoldForward)
     }
 
     // MARK: Local plugin

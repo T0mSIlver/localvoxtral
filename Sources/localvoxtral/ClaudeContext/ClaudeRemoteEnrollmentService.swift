@@ -465,6 +465,11 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 + "\(remoteForwardPort) on the remote and — because ExitOnForwardFailure is `no` — will "
                 + "connect anyway with no tunnel. The first session keeps the forward, and the verify "
                 + "step above is how you tell that apart from a broken setup.",
+            "Hook events only reach this Mac while something holds the tunnel — normally one of "
+                + "your own SSH sessions. Sessions a harness starts on the host (t3 code, "
+                + "`claude remote-control` services, any headless runner) have no such terminal, so "
+                + "their context goes nowhere. Turn on \"Keep the tunnel open\" in this host's row "
+                + "and the app holds the forward itself, reconnecting as needed.",
             "One-click setup connects with forwarding disabled (the tunnel belongs to your real "
                 + "sessions, not setup) and first resolves `claude` from common install locations — "
                 + "non-interactive SSH shells often lack the user-local PATH entries an interactive "

@@ -429,7 +429,22 @@ Key subsystems:
     injection is impossible by construction; the listener re-validates and
     stores them as `ClaudeRemoteSessionEnvironment`, NEVER in
     `ClaudeSessionSnapshot.process` — see the remote-opacity tradeoff below.
-    After a
+    A per-host opt-in (`ClaudeRemoteForwardSupervisor` +
+    `ClaudeRemoteForwardCoordinator`, default off) lets the app hold that
+    forward itself with a supervised `ssh -N -R`, for sessions a harness
+    spawns on the host (t3 code, `claude remote-control`) that have no
+    interactive terminal to hold it. That process uses
+    `ExitOnForwardFailure=yes` — the opposite of the user's config block, on
+    purpose: it IS the nicety, so a bind it cannot get is the detection
+    signal. It never sets `ClearAllForwardings` (that clears the command-line
+    `-R` too, so the tunnel is never created — measured with `ssh -G`), and it
+    forces `ForkAfterAuthentication=no`, `ControlPath=none` and
+    `PermitLocalCommand=no` so the user's own ssh config cannot detach,
+    multiplex, or run a local command underneath it. A refused bind is
+    TERMINAL (no retry storm against a port somebody else holds); an ordinary
+    drop backs off exponentially, and a run that stays up long enough to
+    settle clears the failure count. Listener binds first, forwards start
+    second — always; stopping is the mirror. After a
     transport-level failure the shim backs off for 5 minutes (epoch stamp
     under `$XDG_RUNTIME_DIR`/`~/.cache`) for every event except
     `UserPromptSubmit`: each dial against a live forward with no app behind
