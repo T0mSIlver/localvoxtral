@@ -137,6 +137,34 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertEqual(token["sensitive"] as? Bool, true, "the token must be marked sensitive")
     }
 
+    func testPortUserConfigIsDeclaredAndIsNotSensitive() throws {
+        // Per-Mac allocation (#215) needs a second option, and it is the exact
+        // opposite of the token: a port number is not a secret, and marking it
+        // sensitive would hide the one value a user must be able to read back
+        // when the two halves of the tunnel disagree.
+        let userConfig = try XCTUnwrap(try manifest()["userConfig"] as? [String: Any])
+        let port = try XCTUnwrap(
+            userConfig[ClaudeRemoteEnrollmentService.portConfigKey] as? [String: Any]
+        )
+        XCTAssertEqual(port["type"] as? String, "string")
+        XCTAssertNotEqual(port["sensitive"] as? Bool, true)
+        XCTAssertNotNil(port["description"] as? String)
+        XCTAssertEqual(
+            port["default"] as? String, "",
+            "an empty default is what makes the shim fall back to the legacy port"
+        )
+    }
+
+    func testShimReadsThePortEnvVarMatchingTheDeclaredUserConfigKey() throws {
+        // Same contract as the token: Claude Code exposes userConfig to command
+        // hooks as CLAUDE_PLUGIN_OPTION_<KEY>, and a mismatch here is silent.
+        // Verified end to end on 2.1.220: a hook run under
+        // `--config port=28777` dialed http://127.0.0.1:28777/v1/hook/…
+        let expected = "CLAUDE_PLUGIN_OPTION_"
+            + ClaudeRemoteEnrollmentService.portConfigKey.uppercased()
+        XCTAssertTrue(try shimSource().contains(expected), "shim must read \(expected)")
+    }
+
     func testNoTokenValueIsBakedIntoTheManifest() throws {
         // The manifest and shim are public, in a public repo. The only token in
         // them is the env var reference; an actual credential would ship to
@@ -198,8 +226,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // their network in the clear. The URL lives in the shim now, so pin it
         // there — template plus the event argument each hook passes.
         let source = try shimSource()
-        let template = "http://127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)"
-            + "\(ClaudeRemoteHTTPCodec.hookPathPrefix)$EVENT"
+        // The port is a validated variable since per-Mac allocation (#215); the
+        // ADDRESS is not, and never becomes one. `$PORT` is what the validation
+        // block above it produces, and the fallback it clamps to is asserted in
+        // `testShimFallsBackToTheLegacyPortWhenTheOptionIsAbsentOrJunk`.
+        let template = "http://127.0.0.1:$PORT\(ClaudeRemoteHTTPCodec.hookPathPrefix)$EVENT"
         XCTAssertTrue(
             source.contains("\"\(template)\""),
             "the shim must POST to the tunnelled loopback port on the per-event path"
@@ -496,9 +527,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let stub = stubDirectory.appendingPathComponent("curl")
         let script = """
         #!/bin/sh
-        [ -n "${FAKE_CURL_LOG:-}" ] && printf 'dial\\n' >>"$FAKE_CURL_LOG"
         out=""
         previous=""
+        url=""
         for argument in "$@"; do
           [ "$previous" = "--output" ] && out="$argument"
           if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
@@ -506,8 +537,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
             esac
           fi
+          url="$argument"
           previous="$argument"
         done
+        # One line per invocation, carrying the URL: proves both THAT curl was
+        # dialed (or was not, during backoff) and WHERE — the per-Mac port is
+        # only real if it reaches the wire.
+        [ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\\n' "$url" >>"$FAKE_CURL_LOG"
         cat >/dev/null
         [ -n "$out" ] && cp "$FAKE_CURL_BODY" "$out" 2>/dev/null
         printf '%s' "$FAKE_CURL_STATUS"
@@ -772,6 +808,80 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             source.contains(">>\"$WORK/header\""),
             "env headers must be appended to the same private header file as the token"
         )
+    }
+
+    // MARK: Shim port selection (issue #215)
+    //
+    // The port arrives from plugin config on a machine we cannot see, and it is
+    // spliced into a URL. These tests RUN the shim and read the URL the stub
+    // curl was actually handed, because "the variable is referenced" is not the
+    // same statement as "the request went there".
+
+    /// Runs the shim with the given `port` config and returns every URL dialed.
+    private func dialedURLs(
+        port: String?,
+        event: String = "Stop"
+    ) throws -> [String] {
+        let logDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-port-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: logDirectory) }
+        let log = logDirectory.appendingPathComponent("curl.log")
+        var environment = [
+            "FAKE_CURL_LOG": log.path,
+            // A private, empty stamp home: the backoff must not skip a dial and
+            // make an assertion about the URL vacuously true.
+            "XDG_RUNTIME_DIR": logDirectory.path,
+        ]
+        if let port { environment["CLAUDE_PLUGIN_OPTION_PORT"] = port }
+        let result = try runShimWithStubCurl(
+            event: event,
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "", "port handling must stay silent on stderr")
+        guard let text = try? String(contentsOf: log, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    func testShimDialsThePortItWasConfiguredWith() throws {
+        XCTAssertEqual(
+            try dialedURLs(port: "28511"),
+            ["http://127.0.0.1:28511\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"]
+        )
+    }
+
+    func testShimFallsBackToTheLegacyPortWhenTheOptionIsAbsentOrJunk() throws {
+        let legacy = "http://127.0.0.1:\(ClaudeRemoteForwardPort.legacyPort)"
+            + "\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"
+        // Absent is the pre-#215 install, and it must keep working exactly as
+        // it did. The rest is validation: a value that is not a plain,
+        // in-range, non-octal-looking port number must never reach the URL —
+        // `8473;evil` in a URL is a mangled request, `999999` in `[ … -lt … ]`
+        // is an oversized constant some shells refuse WITH OUTPUT ON STDERR,
+        // and a leading zero is read as octal by some `test` implementations.
+        for value in [nil, "", "abc", "28500x", "12 34", "-1", "0", "08473", "999999", "65536", "1023", "8473;evil"] {
+            XCTAssertEqual(
+                try dialedURLs(port: value), [legacy],
+                "port \(value.map { "\"\($0)\"" } ?? "<unset>") must clamp to the legacy port"
+            )
+        }
+    }
+
+    func testShimAcceptsTheEdgesOfTheDocumentedAcceptableRange() throws {
+        // The Swift side (`ClaudeRemoteForwardPort.acceptableRange`) and this
+        // shell validation are one rule written twice; these pin them together.
+        for port in [ClaudeRemoteForwardPort.acceptableRange.lowerBound,
+                     ClaudeRemoteForwardPort.rangeLowerBound,
+                     ClaudeRemoteForwardPort.rangeUpperBound,
+                     ClaudeRemoteForwardPort.acceptableRange.upperBound] {
+            XCTAssertEqual(
+                try dialedURLs(port: String(port)),
+                ["http://127.0.0.1:\(port)\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"]
+            )
+        }
     }
 
     // MARK: Shim transport backoff
@@ -1094,7 +1204,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     func testReadmeDocumentsTheTunnelAndTheInstallSide() throws {
         // Config/command directives are anchored to their own line; the install-
         // side caveat is prose, so it is pinned to a single line as wording.
-        try assertReadmeHasLine(equalTo: "RemoteForward 8473 127.0.0.1:8473")
+        // Per-Mac remote port (#215): the listen port is an example number the
+        // app generates, the target is always this Mac's listener.
+        try assertReadmeHasLine(
+            containing: "RemoteForward 28511 127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)",
+            "the block must forward a per-Mac remote port to the app's listener port"
+        )
         try assertReadmeHasLine(
             equalTo: "claude plugin marketplace add "
                 + ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,

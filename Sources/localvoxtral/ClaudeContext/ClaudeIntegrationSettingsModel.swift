@@ -209,8 +209,38 @@ public final class ClaudeIntegrationSettingsModel {
         /// name a placeholder instead of pretending.
         public var sshHostAlias: String?
         public var commands: [String]
-
+        /// This host's regenerated ssh-config block, when the local one does
+        /// not already forward the port these commands are about to store on
+        /// the remote — nil when it already matches and there is nothing to
+        /// write.
+        ///
+        /// The two are ONE migration and the review that caught this was right
+        /// to call it a blocker: storing `port=285xx` in the plugin while
+        /// `~/.ssh/config` still says `RemoteForward 8473` points every hook on
+        /// that host at a port this Mac does not forward, and the result fails
+        /// open — silently, which is the whole #215 failure class reintroduced
+        /// by the fix for it.
+        public var sshConfigSnippet: String?
         public var canRun: Bool { sshHostAlias != nil }
+
+        /// Everything this update consists of, in the order it must be applied.
+        ///
+        /// ONE rendering, used by all three surfaces — the panel's text, its
+        /// Copy button, and the confirmation preview. They diverged once
+        /// already: the executable path wrote the ssh block while the panel
+        /// showed and copied only the commands, so the copy-only paths (a host
+        /// with no recorded alias, and the symlink refusal that explicitly
+        /// tells the user to copy) updated the remote port and left this Mac on
+        /// 8473 — the original split brain, reachable by exactly the users most
+        /// likely to hit it. A single source is the fix; three call sites that
+        /// "should stay in sync" is what produced the bug.
+        public var applicationText: String {
+            guard let sshConfigSnippet else { return commands.joined(separator: "\n") }
+            return "# 1. Replace this host's block in ~/.ssh/config on this Mac:\n"
+                + sshConfigSnippet
+                + "\n\n# 2. Then, on the SSH host:\n"
+                + commands.joined(separator: "\n")
+        }
     }
 
     public enum EnrollmentAction: Sendable, Equatable {
@@ -299,6 +329,13 @@ public final class ClaudeIntegrationSettingsModel {
     /// `Date()` in the view, and no timer: the rows are rebuilt when the pane
     /// appears and after every action that touches a host.
     private let now: @Sendable () -> Date
+    /// This Mac's allocated port on the remote side of the tunnel
+    /// (`ClaudeRemoteForwardPort`), passed in rather than read here so the pane
+    /// has no opinion about where it comes from — and so a test can pin it.
+    /// Every generated artifact that names a remote port takes it from this one
+    /// value: the ssh block, the install command, the verify probe, the
+    /// update/migration commands.
+    private let remoteForwardPort: UInt16
 
     /// - Parameters:
     ///   - registry: nil when the host file could not be read at launch. The
@@ -335,7 +372,11 @@ public final class ClaudeIntegrationSettingsModel {
                 }
             }.value
         },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        // Defaults to the legacy shared port: a caller that has not been taught
+        // about per-Mac allocation describes exactly the pre-#215 setup, which
+        // still works. Production passes the allocation.
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
     ) {
         self.registry = registry
         self.listener = listener
@@ -344,6 +385,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.performAsync = performAsync
         self.performEnrollmentAsync = performEnrollmentAsync
         self.now = now
+        self.remoteForwardPort = remoteForwardPort
         refreshHosts()
         refreshListenerStatus()
     }
@@ -520,7 +562,8 @@ public final class ClaudeIntegrationSettingsModel {
                 host: enrollment.host,
                 sshHostAlias: alias,
                 token: enrollment.token,
-                port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
             )
             // A fresh sheet must not inherit a previous host's step results —
             // a still-running earlier action can repopulate the statuses after
@@ -560,7 +603,8 @@ public final class ClaudeIntegrationSettingsModel {
                 host: enrollment.host,
                 sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 token: enrollment.token,
-                port: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
             )
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
@@ -649,13 +693,37 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentConfirmation = nil
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+        // Regenerate the block unless it is already current. `nil` from the
+        // service means "cannot tell", and cannot-tell must regenerate: the
+        // cost of a redundant idempotent rewrite is nothing, and the cost of
+        // assuming a stale block is current is a silently dead host.
+        let alreadyForwards =
+            registry?.host(id: hostID).flatMap { host in
+                enrollmentService.sshConfigForwardsPort(remoteForwardPort, hostID: host.id)
+            } ?? false
+        let snippet: String? = alreadyForwards ? nil : registry?.host(id: hostID).map { host in
+            ClaudeRemoteEnrollmentService.sshConfigSnippet(
+                host: host,
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
+                listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+                remoteForwardPort: remoteForwardPort
+            )
+        }
         presentedPluginUpdate = PluginUpdatePresentation(
             hostID: hostID,
             sshHostAlias: alias,
             commands: ClaudeRemoteEnrollmentService.updateCommands(
-                sshHostAlias: alias ?? Self.unknownAliasPlaceholder
-            )
+                sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
+                remoteForwardPort: remoteForwardPort
+            ),
+            sshConfigSnippet: snippet
         )
+    }
+
+    /// Exactly what `performPluginUpdate` will do, in order — and exactly what
+    /// the panel shows and copies. Same text, one source.
+    static func updatePreview(for presentation: PluginUpdatePresentation) -> String {
+        presentation.applicationText
     }
 
     /// Stands in for an alias we were never told. Not a valid target and not
@@ -684,8 +752,13 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .updateRemotePlugin(hostID: presentation.hostID),
-            title: "Update the plugin on this SSH host?",
-            preview: presentation.commands.joined(separator: "\n"),
+            title: presentation.sshConfigSnippet == nil
+                ? "Update the plugin on this SSH host?"
+                : "Update ~/.ssh/config on this Mac and the plugin on this SSH host?",
+            // Both halves, verbatim, in the order they will run. The rule that
+            // one-click actions repeat their exact text does not get weaker
+            // because an action now has two parts — it gets more important.
+            preview: Self.updatePreview(for: presentation),
             confirmButtonTitle: "Confirm Update"
         )
         Log.claudeContext.info("Claude remote plugin update confirmation requested")
@@ -789,8 +862,24 @@ public final class ClaudeIntegrationSettingsModel {
         defer { isPerformingEnrollmentAction = false }
 
         let service = enrollmentService
+        // Copied out of self before the detached hop, like `service`: the
+        // closure is @Sendable and must not capture the main-actor model.
+        let port = remoteForwardPort
+        let snippet = presentation.sshConfigSnippet
+        let hostID = presentation.hostID
+        // ORDER IS THE SAFETY PROPERTY. The local block is rewritten first, and
+        // the remote is touched only if that succeeded. Reverse them and a
+        // refused local write (symlinked config, untrusted ~/.ssh) leaves the
+        // remote posting to a port this Mac does not forward — silently. This
+        // way the worst case is "nothing changed anywhere, with an error on
+        // screen", which is a state a user can act on.
         let attempt = await performEnrollmentAsync {
-            try service.executeRemotePluginUpdate(sshHostAlias: alias)
+            if let snippet {
+                try service.insertSSHConfig(snippet: snippet, hostID: hostID)
+            }
+            return try service.executeRemotePluginUpdate(
+                sshHostAlias: alias, remoteForwardPort: port
+            )
         }
 
         // Same rule as the sheet: the row may have been closed, or another

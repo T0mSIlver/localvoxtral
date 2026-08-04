@@ -405,9 +405,22 @@ Key subsystems:
     instance owns its socket legitimately.
   - **Remote** (`localvoxtral-remote`, installed on the REMOTE host): command
     hooks running the bundled POSIX-sh shim `hooks/post.sh`, which curls the
-    event JSON to `127.0.0.1:8473/v1/hook/<Event>` through an OpenSSH
+    event JSON to `127.0.0.1:<port>/v1/hook/<Event>` through an OpenSSH
     `RemoteForward` — no localvoxtral binary and no `jq`/`nc`/Node on that
-    host, but it does need `sh` and `curl` (fail-open when absent). The body
+    host, but it does need `sh` and `curl` (fail-open when absent). That
+    remote port is PER-MAC (`ClaudeRemoteForwardPort`: 28473–30472, derived
+    from a per-install identity persisted in a 0600 file beside the host
+    registry — not in UserDefaults, so a preferences reset cannot move an
+    enrolled host's port; the shim reads it from
+    `CLAUDE_PLUGIN_OPTION_PORT`, validates it, and falls back to the legacy
+    8473 so pre-existing enrollments keep working). Two Macs asking one host
+    for the same bind is not a tie: the FIRST connection keeps the forward and
+    the second silently delivers that host's events — and its bearer token —
+    to the first Mac, which 401s them, which the shim reads as a completed
+    exchange (issue #215). Distinct ports make that state unreachable; what
+    remains, stated in the enrollment notes, is that one host stores ONE
+    `port`, so it talks to exactly one Mac. The Mac-side listener stays on
+    8473. The body
     stays Claude's verbatim JSON (no `jq` to rewrite it with), so the
     allowlisted env enrichment — herdr/cmux/tmux/bridge handles, `SSH_TTY`,
     the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same

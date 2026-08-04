@@ -46,11 +46,33 @@ TOKEN="${CLAUDE_PLUGIN_OPTION_TOKEN:-}"
 [ -n "$TOKEN" ] || fail_open
 command -v curl >/dev/null 2>&1 || fail_open
 
+# --- Listen port -------------------------------------------------------------
+# Which loopback port on THIS host the Mac's `RemoteForward` binds. It is a
+# per-Mac allocation (see ClaudeRemoteForwardPort): two Macs enrolled against
+# this host would otherwise both request 8473, where the FIRST connection wins
+# the bind forever and the second silently delivers this host's events — and
+# this host's Authorization header — to the wrong Mac (issue #215).
+#
+# Validated, never trusted: the value arrives from plugin config, and an
+# unvalidated one would be spliced into a URL. Digits only, no leading zero
+# (which `[` may read as octal, or refuse), at most 5 of them (so the range
+# test below can never see an oversized constant — the same hazard the backoff
+# stamp guards against), and inside the unprivileged range. Anything else falls
+# back to 8473, which is exactly what an install predating this option gets:
+# an old plugin config and an old ssh-config block keep working unchanged.
+PORT="${CLAUDE_PLUGIN_OPTION_PORT:-}"
+case "$PORT" in
+"" | *[!0-9]* | 0* | ??????*) PORT=8473 ;;
+*)
+  if [ "$PORT" -lt 1024 ] || [ "$PORT" -gt 65535 ]; then PORT=8473; fi
+  ;;
+esac
+
 # --- Transport backoff -------------------------------------------------------
 # The one noise no redirect in this file can reach: while an SSH session holds
 # the RemoteForward but localvoxtral is not running on the Mac, every dial
 # makes the ssh CLIENT — on the other machine — print
-# `connect_to 127.0.0.1 port 8473: failed.` straight onto
+# `connect_to 127.0.0.1 port <the Mac's listener port>: failed.` straight onto
 # the terminal, over whatever TUI is drawn there (a herdr pane, the Claude
 # Code screen), once per hook, dozens of times a turn via PostToolUse. The
 # only lever on this side is to stop dialing a tunnel that just proved dead:
@@ -187,7 +209,7 @@ STATUS="$(curl --silent --output "$WORK/body" --write-out '%{http_code}' \
   --header 'Content-Type: application/json' \
   --header @"$WORK/header" \
   --data-binary @- \
-  "http://127.0.0.1:8473/v1/hook/$EVENT" 2>/dev/null)" || STATUS=""
+  "http://127.0.0.1:$PORT/v1/hook/$EVENT" 2>/dev/null)" || STATUS=""
 
 # Arm the backoff on a transport-level failure (curl died: refused, reset,
 # timed out); clear it the moment ANY HTTP exchange completes — even a 401
@@ -212,7 +234,7 @@ fi
 # stdout is control JSON to Claude Code, and it cuts BOTH ways: a
 # UserPromptSubmit hook's non-JSON stdout is APPENDED TO THE USER'S PROMPT,
 # and valid JSON with the wrong keys (hookSpecificOutput.additionalContext)
-# would inject context. Whatever answered on 8473 — normally the tunnel to the
+# would inject context. Whatever answered on $PORT — normally the tunnel to the
 # app, but a squatter can bind that port first (see AGENTS.md) — its response
 # must never be able to put a byte into the prompt. So printing fails CLOSED,
 # the mirror image of delivery failing open: stdout is either one single small
