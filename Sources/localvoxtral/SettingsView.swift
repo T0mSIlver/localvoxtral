@@ -906,7 +906,7 @@ private struct ContextSettingsPane: View {
                     SettingsFieldRow(
                         title: "Use Claude Code terminal screen as polish context",
                         help:
-                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Supported terminals (Ghostty, iTerm2, Terminal.app, cmux) only; local polishing endpoints only."
+                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Supported terminals (Ghostty, iTerm2, Terminal.app, cmux) only — in cmux this also needs the join set up below. Local polishing endpoints only."
                     ) {
                         Toggle("", isOn: $settings.terminalScreenContextEnabled)
                             .labelsHidden()
