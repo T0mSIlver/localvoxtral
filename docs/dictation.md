@@ -35,6 +35,13 @@ Live Auto-Paste; behavior follows the `Toggle` / `Push to Talk` setting.
   talking. Dictionary replacements are applied before text is typed;
   localvoxtral never backspaces over what an app has already drawn.
 
+## The menu bar popover
+
+localvoxtral lives in the menu bar: the popover shows dictation status at a
+glance, a **microphone picker**, an auto-copy toggle for the final text, and
+— after a polished commit — the raw transcript one click away. LLM polishing
+prompts are editable (see the config folder below).
+
 ## Settings
 
 Open **Settings** from the menu bar popover:

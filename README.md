@@ -42,8 +42,9 @@ Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/local
 - **Claude Code aware** — dictation joins the *exact* session under your cursor, locally or over SSH, and grounds polishing in its screen, your last prompt, the files Claude just touched, and that repo's vocabulary ([details](docs/coding-agents.md#dictating-into-claude-code))
 - **One key, two modes** — tap for a reviewable overlay with optional LLM polishing, hold to stream words live into the focused app ([shortcuts](docs/dictation.md))
 - **Private by default** — audio, transcription, and polishing are local processes; no telemetry, no account, no cloud fallback ([how it works](docs/under-the-hood.md))
+- **Menu bar native** — instant popover with dictation status at a glance, microphone picker, auto-copy of the final text, and the raw transcript one click away after a polished commit
 - **Bring your own server** — dictation and polishing can each point at any OpenAI-compatible endpoint instead of the built-in local engines
-- **Multilingual** — dictate in English, French, or any language [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) understands; polishing answers in the language you spoke
+- **Multilingual** — dictate in English, French, or any language [Voxtral](https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602) understands; polishing answers in the language you spoke (English and French are covered by the test suite)
 
 > [!TIP]
 > If localvoxtral is useful to you, a ⭐ on this repo helps others find it.

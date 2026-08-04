@@ -26,6 +26,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval (run package first)
 ./scripts/remote-build.sh dogfood          # build the instrumented tree + run the context-capture suite
 ./scripts/remote-build.sh dogfood-package  # package an instrumented .app for hand-dogfooding
+./scripts/remote-build.sh build --package-path PolishHelper   # compile a helper package alone (no Metal kernels)
 ./scripts/remote-build.sh test  --package-path PolishHelper   # helper unit tests (Metal-free); same for SpeechHelper
 ```
 
@@ -84,8 +85,11 @@ The binding rule: changes to prompts, model pins/catalog, sampling, the
 polish request shape or anything that alters what reaches the model, the
 helper engines, or the eval corpus/scorer REQUIRE the matching lane, and the
 PR's Proof section carries either the scoreboard or a one-line justification
-for skipping. Full tier table, lane details, eval-recording and ablation
-workflows: `docs/agent/test-tiers.md`.
+for skipping. Model/prompt changes — and changes to the TTS→ASR→polish
+harness itself — additionally paste the eval-e2e scoreboard
+(`remote-build.sh eval-e2e`) or justify skipping it; "tier 2 is scheduled"
+does not waive that duty. Full tier table, lane details, eval-recording and
+ablation workflows: `docs/agent/test-tiers.md`.
 
 ## CI / shipping
 
@@ -93,9 +97,11 @@ workflows: `docs/agent/test-tiers.md`.
   GitHub-hosted macOS. Never move fork-PR jobs to the self-hosted runner —
   it is a personal machine.
 - Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,
-  conservative allowlist; unknown paths fail open to the full run).
-- Watch a PR's checks with `./scripts/watch-checks.sh <n>` — unlike bare
-  `gh`, it probes the build host and fail-fasts when the Mac stops answering.
+  conservative allowlist; unknown paths fail open to the full run). Only
+  `build-test` fast-paths; release and every other workflow stay fully gated.
+- Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
+  <run-id>` for a push/rerun) — unlike bare `gh`, it probes the build host
+  and fail-fasts when the Mac stops answering.
 - Releases: `./scripts/release.sh [patch|minor|major|X.Y.Z]` — the pipeline
   gates and owns the tags. Never push release tags by hand.
 - NEVER patch SwiftPM-generated DerivedSources (regenerated clean every
@@ -103,6 +109,9 @@ workflows: `docs/agent/test-tiers.md`.
   `Bundle.localvoxtralResources` (`AppResourceBundle.swift`); dependency
   checkouts are still source-patched by `package_app.sh` because checkouts
   persist.
+- CI's launch smoke runs the packaged app COPIED outside the workspace with
+  `.build` hidden — same-tree launches mask exactly the #87 class of
+  breakage; don't "simplify" that step.
 
 ## Deep guides — read the one that matches your work, BEFORE the work
 
@@ -124,7 +133,7 @@ workflows: `docs/agent/test-tiers.md`.
 - **Claude Code / opencode plugin work**: `integrations/claude-code/AGENTS.md`,
   `integrations/claude-code/README.md`, `integrations/opencode/README.md`.
 - **Build-host / launchd / runner operations**: owner runbook
-  `scripts/mac/README.md`.
+  `scripts/mac/README.md`. Per-workflow notes: `.github/workflows/README.md`.
 
 ## Conventions
 
@@ -138,7 +147,8 @@ workflows: `docs/agent/test-tiers.md`.
   vs config fields), never the number or identity of the groups themselves.
 - Menu bar popover (owner rule, 2026-07-04): NEVER render long text there —
   no raw errors, stderr, or URLs. Anything shown in the popover is one short
-  sentence; full details belong in the alert popup and the log.
+  sentence; full details belong in the alert popup and the log, and Settings
+  shows the one-line failure summary only.
   `StatusPopoverView.statusDetailView` line-limits as a backstop — keep it.
 - Pipes from child processes: never read with `FileHandle.availableData` —
   it raises an uncatchable ObjC exception on descriptor errors and aborts the

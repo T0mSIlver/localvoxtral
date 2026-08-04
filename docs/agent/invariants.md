@@ -7,6 +7,11 @@ remote listener/enrollment/forward code). The trust boundaries here are
 load-bearing and non-obvious; several of them are the residue of measured
 failures, with the evidence cited inline.
 
+This file is loaded on demand (a router pointer in the root `AGENTS.md`), not
+always-loaded agent context, so it carries no size cap — only the root
+`AGENTS.md` does (`AgentsGuideSizeTests`). Growth here is by design; growth
+there is not.
+
 - **The TUI trailing-space policy judges this dictation's text only.** The
   terminal stop-flush verdict (`TUIAutocompleteTrailingSpace`, applied in
   `TextInsertionService`) cannot see text the field already held before

@@ -16,3 +16,6 @@ SwiftPM package so the root build never compiles the MLX C++ core.
   lanes (`./scripts/remote-build.sh integration-polishd`, eval scoreboard in
   the PR's Proof section) — the rule and triggers are in
   `../docs/agent/test-tiers.md` ("When must the LLM lanes run?").
+- Adding a model option to `PolishModelCatalog`: run
+  `./scripts/remote-build.sh integration-polishd <hf-repo>` as the per-model
+  gate (it self-provisions the weights).

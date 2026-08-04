@@ -427,8 +427,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     // stdout is control JSON to Claude Code, and on UserPromptSubmit non-JSON
     // stdout is APPENDED TO THE USER'S PROMPT — while valid JSON with the wrong
     // keys (hookSpecificOutput.additionalContext) can inject context. Whatever
-    // answers on 8473 is normally the tunnel to the app, but AGENTS.md already
-    // accepts that a squatter can bind the port first. These tests RUN the shim
+    // answers on 8473 is normally the tunnel to the app, but
+    // docs/agent/invariants.md already accepts that a squatter can bind the
+    // port first. These tests RUN the shim
     // against a stub curl and prove the contract: stdout is either EXACTLY the
     // one body the listener can emit, or nothing at all. Owner rule 2026-07-27:
     // absolutely nothing may be inserted into any user prompt.

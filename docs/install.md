@@ -37,7 +37,14 @@ codesign --force --deep --sign - /Applications/localvoxtral.app
 
 ## Updating
 
-Run the installer script again, or download the newest `.dmg` — settings and
-downloaded models are kept. When an update ships improved config defaults,
-files you haven't edited are refreshed automatically; files you have edited
-are never touched without asking (see [Settings](dictation.md#settings)).
+Run the installer script again, or download the newest `.dmg` and replace
+`/Applications/localvoxtral.app` — settings and downloaded models are kept.
+When an update ships improved config defaults, files you haven't edited are
+refreshed automatically; files you have edited are never touched without
+asking (see [Settings](dictation.md#settings)).
+
+> [!NOTE]
+> Because releases are ad-hoc signed, macOS may silently drop the
+> Accessibility grant after an update. If the dictation hotkey stops
+> working, toggle localvoxtral off and on in **System Settings → Privacy &
+> Security → Accessibility**.

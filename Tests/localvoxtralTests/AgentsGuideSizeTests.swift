@@ -55,4 +55,25 @@ final class AgentsGuideSizeTests: XCTestCase {
             )
         }
     }
+
+    func testDeepGuidesKeepTheAnchorsCommentsPointAt() throws {
+        // Comments in ci.yml, the lane filters, post.sh, try-pr.sh, and
+        // package_app.sh name these sections/rules by their exact text; a
+        // rename inside a guide would silently strand those pointers.
+        let expectedAnchors: [(file: String, anchor: String)] = [
+            ("docs/agent/test-tiers.md", "## When must the LLM lanes run?"),
+            ("docs/agent/test-tiers.md", "## Human agent-eval recordings and ablations"),
+            ("docs/agent/field-debugging.md", "mac-crashlog.yml"),
+            ("docs/agent/field-debugging.md", "WHICH binary the user is actually running"),
+            ("docs/agent/invariants.md", "A bind conflict is reported, never routed around onto another port"),
+        ]
+        for (file, anchor) in expectedAnchors {
+            let url = repoRoot.appendingPathComponent(file)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            XCTAssertTrue(
+                contents.contains(anchor),
+                "\(file) no longer contains \"\(anchor)\" — a comment elsewhere points at it; retarget both in the same PR"
+            )
+        }
+    }
 }
