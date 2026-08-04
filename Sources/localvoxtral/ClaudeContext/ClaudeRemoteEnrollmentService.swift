@@ -86,8 +86,22 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             case plugin
         }
 
+        /// Which fact produced this verdict.
+        ///
+        /// Only a verdict decided by the LOCAL listener may be re-evaluated
+        /// after the probes return: a listener that rebinds mid-probe makes our
+        /// own squatter call wrong, but it cannot turn "the host said nothing"
+        /// into "the host answered" (review finding, round 3).
+        public enum Decider: String, Sendable, Equatable {
+            /// The host's answer decided it — the code, the sentinel, or ssh.
+            case remote
+            /// This Mac's listener state decided it, and only that.
+            case localListener
+        }
+
         public var kind: Kind
         public var passed: Bool
+        public var decidedBy: Decider = .remote
         /// One short sentence for the sheet. Never command output.
         public var summary: String
         /// The actionable half, when there is one. Also short — a second line
@@ -103,13 +117,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             passed: Bool,
             summary: String,
             hint: String? = nil,
-            detail: String = ""
+            detail: String = "",
+            decidedBy: Decider = .remote
         ) {
             self.kind = kind
             self.passed = passed
             self.summary = summary
             self.hint = hint
             self.detail = detail
+            self.decidedBy = decidedBy
         }
 
         public var id: String { kind.rawValue }
@@ -545,8 +561,67 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// never as "fine": assuming a block is current is exactly how a plugin
     /// gets a port this Mac does not forward.
     public func sshConfigForwardsPort(_ port: UInt16, hostID: String) -> Bool? {
-        guard let sshConfigFileSystem else { return nil }
-        guard let state = try? sshConfigFileSystem.readState(),
+        guard let lines = markedBlockLines(hostID: hostID) else {
+            // Two different nils, deliberately: no seam (or unreadable config)
+            // is "cannot tell"; a readable config with no block for this host
+            // is a definite "does not forward it".
+            return sshConfigFileSystem == nil ? nil : configIsReadable() ? false : nil
+        }
+        return lines.contains { line in
+            forwardedPort(inLine: line) == port
+        }
+    }
+
+    /// What this host's block currently forwards, as three distinguishable
+    /// answers — because "cannot tell", "no block yet" and "forwards 8473" lead
+    /// to three different things a user should do (review finding, round 3).
+    public enum SSHConfigForwardState: Sendable, Equatable {
+        /// No filesystem seam, or the config could not be read.
+        case unknown
+        /// The config is readable and has no block for this host.
+        case absent
+        /// The block's first `RemoteForward` binds this port on the remote.
+        case forwards(UInt16)
+    }
+
+    /// Read-only: what `~/.ssh/config` says THIS host's tunnel is, right now.
+    ///
+    /// The check needs this because the plan in front of the user names this
+    /// Mac's CURRENT allocation, while the config on disk may still forward the
+    /// port an earlier install (or the pre-#215 shared 8473) wrote. Probing the
+    /// plan's port in that state reports "no tunnel is live" about a tunnel that
+    /// is perfectly alive on the other port — a misdiagnosis of a setup that
+    /// merely needs step 1 re-run.
+    public func sshConfigForwardState(hostID: String) -> SSHConfigForwardState {
+        guard let lines = markedBlockLines(hostID: hostID) else {
+            return sshConfigFileSystem != nil && configIsReadable() ? .absent : .unknown
+        }
+        // The FIRST one wins, exactly like OpenSSH's own first-match-wins.
+        for line in lines {
+            if let port = forwardedPort(inLine: line) { return .forwards(port) }
+        }
+        return .absent
+    }
+
+    /// Whether we actually READ a config, as opposed to failing to find one.
+    ///
+    /// Strict on purpose, and unchanged from the behavior this refactor
+    /// replaced: a config that does not exist yet, or does not decode, is
+    /// "cannot tell" rather than "does not forward it". Callers regenerate on
+    /// cannot-tell, and a redundant idempotent rewrite costs nothing while a
+    /// wrong "already current" costs a silently dead host.
+    private func configIsReadable() -> Bool {
+        guard let sshConfigFileSystem,
+              let state = try? sshConfigFileSystem.readState(),
+              let data = state.configData
+        else { return false }
+        return String(data: data, encoding: .utf8) != nil
+    }
+
+    /// This host's delimited block, or nil when there is none to read.
+    private func markedBlockLines(hostID: String) -> ArraySlice<String>? {
+        guard let sshConfigFileSystem,
+              let state = try? sshConfigFileSystem.readState(),
               let data = state.configData,
               let text = String(data: data, encoding: .utf8)
         else { return nil }
@@ -557,13 +632,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             $0.trimmingCharacters(in: .whitespaces) == begin
         }), let endIndex = lines[beginIndex...].firstIndex(where: {
             $0.trimmingCharacters(in: .whitespaces) == end
-        }) else { return false }
-        return lines[beginIndex...endIndex].contains { line in
-            let fields = line.trimmingCharacters(in: .whitespaces)
-                .split(separator: " ", omittingEmptySubsequences: true)
-            guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
-            return fields[1] == "\(port)"
-        }
+        }) else { return nil }
+        return lines[beginIndex...endIndex]
+    }
+
+    private func forwardedPort(inLine line: String) -> UInt16? {
+        let fields = line.trimmingCharacters(in: .whitespaces)
+            .split(separator: " ", omittingEmptySubsequences: true)
+        guard fields.count >= 2, fields[0] == "RemoteForward" else { return nil }
+        return UInt16(fields[1])
     }
 
     // MARK: - Execution (opt-in only)
@@ -774,10 +851,16 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// Throws only `.executionNotConfigured` (no runner injected — the default)
     /// and `.invalidHostAlias`. Everything else becomes a failed check, so one
     /// broken probe cannot hide the other's answer.
+    /// - Parameter staleAllocatedPort: pass this Mac's allocation when
+    ///   `remoteForwardPort` came from `~/.ssh/config` and the two disagree.
+    ///   The probe follows the CONFIG — that is the tunnel that exists — and
+    ///   every tunnel verdict names the mismatch instead of reporting a healthy
+    ///   old tunnel as a dead new one.
     public func executeVerification(
         sshHostAlias: String,
         remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
         listenerIsBound: Bool,
+        staleAllocatedPort: UInt16? = nil,
         timeout: TimeInterval = defaultVerificationTimeout
     ) throws -> [VerificationCheck] {
         Log.claudeContext.info("Claude remote verification requested")
@@ -806,7 +889,8 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 result: $0,
                 sshHostAlias: sshHostAlias,
                 remoteForwardPort: remoteForwardPort,
-                listenerIsBound: listenerIsBound
+                listenerIsBound: listenerIsBound,
+                staleAllocatedPort: staleAllocatedPort
             )
         }
 
@@ -935,7 +1019,22 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             summary: "Something else answered on port \(remoteForwardPort).",
             hint: "localvoxtral is not listening on this Mac, so the reply came from "
                 + "whatever holds the port. Fix that first, then check again.",
-            detail: "HTTP 401 arrived while this Mac's listener was not bound."
+            detail: "HTTP 401 arrived while this Mac's listener was not bound.",
+            // The ONLY verdict this Mac decides by itself, and therefore the
+            // only one a later listener read may revisit.
+            decidedBy: .localListener
+        )
+    }
+
+    /// The 401 pass, as its own value — the counterpart `reconciled` restores
+    /// when the listener turns out to have been ours after all.
+    static func passingTunnelCheck() -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: true,
+            summary: "Tunnel is up and localvoxtral answered.",
+            detail: "HTTP 401 (the expected refusal of an unauthenticated probe).",
+            decidedBy: .localListener
         )
     }
 
@@ -943,31 +1042,66 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     ///
     /// `listenerIsBound` is read TWICE on purpose — once before the probes are
     /// launched and once here, after up to a full timeout of detached ssh work
-    /// (review finding, round 2). A listener that died in between leaves the
-    /// port to whoever grabs it next, and that squatter answers the forwarded
-    /// request with the same 401 we treat as proof. The ✓ therefore requires
-    /// bound at BOTH moments; either one false is the squatter verdict.
+    /// (review finding, round 2). The window cuts BOTH ways, which is why this
+    /// is not a one-way downgrade (review finding, round 3):
     ///
-    /// Only a PASSING tunnel check can be downgraded here. Every other verdict
-    /// already described something the host said, and an unbound listener does
-    /// not make "curl is missing over there" less true.
+    /// - bound at launch, gone by the time it answers → the 401 came from
+    ///   whoever took the port, so a pass becomes the squatter verdict;
+    /// - unbound at launch, bound by the time it answers (a Retry that
+    ///   succeeded, the squatter quitting) → the 401 was genuinely ours, and
+    ///   pinning the squatter call would tell a user to fix something they
+    ///   already fixed.
+    ///
+    /// Only `decidedBy == .localListener` verdicts move. Everything else
+    /// described what the HOST said, and this Mac's listener cannot make "curl
+    /// is missing over there" or "the host said nothing" any less true.
     public static func reconciled(
         _ checks: [VerificationCheck],
         remoteForwardPort: UInt16,
         listenerIsBound: Bool
     ) -> [VerificationCheck] {
-        guard !listenerIsBound else { return checks }
-        return checks.map { check in
-            guard check.kind == .tunnel, check.passed else { return check }
-            return squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
+        checks.map { check in
+            guard check.kind == .tunnel, check.decidedBy == .localListener else { return check }
+            return listenerIsBound
+                ? passingTunnelCheck()
+                : squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
         }
     }
 
+    /// The tunnel exists on a port this Mac no longer allocates.
+    ///
+    /// Not a pass: the enrollment in front of the user names `allocatedPort`,
+    /// and half of the setup is on the other one. Not a failure of the tunnel
+    /// either — it says what is actually true over there, then names the one
+    /// step that fixes it (review finding, round 3).
+    static func staleConfigTunnelCheck(
+        probedPort: UInt16,
+        allocatedPort: UInt16,
+        tunnelIsUp: Bool
+    ) -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: false,
+            summary: tunnelIsUp
+                ? "Tunnel is up on port \(probedPort), which is no longer this Mac's port."
+                : "No tunnel is live on port \(probedPort), and that is not this Mac's port either.",
+            hint: "Your ~/.ssh/config still forwards \(probedPort). Re-run step 1 to move it to "
+                + "\(allocatedPort), then step 2 so the host posts there too.",
+            detail: "The check followed ~/.ssh/config (port \(probedPort)) rather than this "
+                + "install's allocation (port \(allocatedPort))."
+        )
+    }
+
+    /// - Parameter staleAllocatedPort: non-nil when the probe followed
+    ///   `~/.ssh/config` to a port that is NOT this Mac's allocation. Every
+    ///   verdict then says so, because "the tunnel on 8473 is fine" is the
+    ///   right answer to the wrong question until step 1 is re-run.
     static func tunnelCheck(
         result: RunResult,
         sshHostAlias: String,
         remoteForwardPort: UInt16,
-        listenerIsBound: Bool
+        listenerIsBound: Bool,
+        staleAllocatedPort: UInt16? = nil
     ) -> VerificationCheck {
         guard result.succeeded else {
             return VerificationCheck(
@@ -1001,6 +1135,29 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .flatMap { $0.count == 3 && $0.allSatisfy(\.isNumber) ? $0 : nil }
 
+        // A tunnel on a port this Mac no longer allocates is its own answer,
+        // whichever way the probe came back: reporting only "up" or "nothing"
+        // would describe a port the enrollment in front of the user does not
+        // name.
+        if let staleAllocatedPort {
+            switch code {
+            case "401":
+                return staleConfigTunnelCheck(
+                    probedPort: remoteForwardPort,
+                    allocatedPort: staleAllocatedPort,
+                    tunnelIsUp: listenerIsBound
+                )
+            case "000", nil:
+                return staleConfigTunnelCheck(
+                    probedPort: remoteForwardPort,
+                    allocatedPort: staleAllocatedPort,
+                    tunnelIsUp: false
+                )
+            default:
+                break
+            }
+        }
+
         switch code {
         case "401":
             // 401 is the pass — an unauthenticated probe MUST be refused — but
@@ -1011,12 +1168,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             guard listenerIsBound else {
                 return squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
             }
-            return VerificationCheck(
-                kind: .tunnel,
-                passed: true,
-                summary: "Tunnel is up and localvoxtral answered.",
-                detail: "HTTP 401 (the expected refusal of an unauthenticated probe)."
-            )
+            return passingTunnelCheck()
         case "000", nil:
             return listenerIsBound
                 ? VerificationCheck(
@@ -1051,7 +1203,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     static func pluginCheck(result: RunResult, sshHostAlias: String) -> VerificationCheck {
         // `contains` reads the output; nothing below emits it. See
         // `executeVerification` for why that line is absolute here.
-        if result.exitCode == 127 || result.message.contains("'claude' was not found") {
+        // BOTH halves, not either: 127 is the shell's generic "command not
+        // found" and any command in a future probe could produce it, while the
+        // message is OUR preamble speaking. Claiming "Claude Code is not
+        // installed" off a bare 127 sends the user to install something that is
+        // already there (review finding, round 3).
+        if result.exitCode == 127, result.message.contains("'claude' was not found") {
             return VerificationCheck(
                 kind: .plugin,
                 passed: false,

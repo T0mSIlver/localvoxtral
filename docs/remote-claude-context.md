@@ -268,14 +268,18 @@ interprets them for you. If you would rather run them by hand:
 ### Is the tunnel live, and is localvoxtral behind it?
 
 ```
-ssh <alias> 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:<this-Mac-s-port>/v1/hook/SessionStart'
+ssh builder 'curl -s -o /dev/null -w "%{http_code}\n" -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:28511/v1/hook/SessionStart'
 ```
+
+`28511` is an example — replace it with your allocated port, the one the
+`RemoteForward` line in your `~/.ssh/config` block names.
 
 **`401` is the success answer** — provided localvoxtral is listening on this
 Mac. The probe deliberately sends no credential, so being refused is the proof
 that the request crossed the tunnel and something on the Mac side answered. It
 does not by itself prove that the something was localvoxtral: if our own bind
-failed, whatever holds port 8473 here receives the forwarded request instead,
+failed, whatever holds the listener port (8473) here receives the forwarded
+request instead,
 and its rejection looks identical from the host. Check the listener line in
 Settings › Context › Remote hosts as well — the in-app check does exactly this,
 which is why it can tell you which of the two you are looking at.
@@ -299,6 +303,12 @@ The PATH prefix is not decoration. A non-interactive SSH command skips your
 login shell's rc files, so `claude` is frequently off PATH here even on a host
 where it works perfectly when you log in. Look for `localvoxtral-remote` in the
 output.
+
+The in-app check looks in one more place than this one-liner can:
+`~/.nvm/versions/node/*/bin`, which npm-installed Claude Code lands in. A glob
+cannot be expanded inside the quoted `PATH=` above, so if `claude` lives under
+nvm on that host, run `command -v claude` in a normal shell there and prepend
+that directory instead.
 
 ### Is the forward being requested at all?
 

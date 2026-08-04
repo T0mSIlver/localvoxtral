@@ -76,6 +76,32 @@ private final class MemoryStore: ClaudeRemoteHostStoreIO {
     func write(_ data: Data, to url: URL) throws { contents.withLock { $0[url.path] = data } }
 }
 
+/// A config the test can write into, so the read-only forward-state scan has
+/// something to read. Writes are accepted and ignored — no test here asserts
+/// them, and `RecordingSSHConfigFileSystem` is the one that counts.
+private final class StubSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem, @unchecked Sendable {
+    private let storage = Mutex<String?>(nil)
+
+    var configText: String? {
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
+    }
+
+    func readState() throws -> ClaudeRemoteSSHConfigState {
+        ClaudeRemoteSSHConfigState(
+            directoryExists: true,
+            configData: configText.map { Data($0.utf8) },
+            configPermissions: 0o600,
+            directoryPermissions: 0o700
+        )
+    }
+
+    func createSSHDirectory(permissions _: UInt16) throws {}
+    func atomicWriteConfig(_ data: Data, permissions _: UInt16) throws {
+        configText = String(decoding: data, as: UTF8.self)
+    }
+}
+
 private final class RecordingSSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
     private let reads = Mutex(0)
     private let writes = Mutex(0)
@@ -2050,6 +2076,130 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertTrue(model.verificationChecks.isEmpty, "no alias, no checks — and no guessing")
         XCTAssertNil(model.alert, "the sheet already explains why; a modal would be noise")
+    }
+
+    /// MINOR 1 (review round 3), model half: the check follows `~/.ssh/config`,
+    /// so a host whose block still forwards the legacy port is DIAGNOSED
+    /// ("re-run step 1") instead of misreported as a dead tunnel.
+    func testAStaleSSHConfigPortIsProbedAndNamedRatherThanMisdiagnosed() async throws {
+        let registry = try makeRegistry()
+        let log = InvocationLog()
+        // The user's config still forwards 8473 for this host…
+        let filesystem = StubSSHConfigFileSystem()
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                runner: { invocation in
+                    log.record(invocation)
+                    return .init(exitCode: 0, message: "LVX_HTTP:401")
+                },
+                sshConfigFileSystem: filesystem
+            ),
+            // …while THIS install allocates a different one.
+            remoteForwardPort: 28542
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.presentedPlan).host.id
+        filesystem.configText = """
+        # BEGIN localvoxtral claude context (\(hostID))
+        Host builder
+            RemoteForward 8473 127.0.0.1:8473
+            ExitOnForwardFailure no
+        # END localvoxtral claude context (\(hostID))
+        """
+
+        await model.runVerification()
+
+        let script = String(decoding: log.all[0].standardInput, as: UTF8.self)
+        XCTAssertTrue(
+            script.contains("127.0.0.1:8473"),
+            "the probe must ask about the tunnel that EXISTS, not the one the plan describes"
+        )
+        XCTAssertFalse(script.contains("28542"))
+        let tunnel = try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel })
+        XCTAssertFalse(tunnel.passed)
+        XCTAssertTrue(tunnel.summary.contains("8473"))
+        XCTAssertTrue(try XCTUnwrap(tunnel.hint).contains("28542"))
+        XCTAssertTrue(try XCTUnwrap(tunnel.hint).contains("step 1"))
+    }
+
+    func testAConfigThatAlreadyForwardsThisMacsPortIsProbedAsUsual() async throws {
+        let registry = try makeRegistry()
+        let log = InvocationLog()
+        let filesystem = StubSSHConfigFileSystem()
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                runner: { invocation in
+                    log.record(invocation)
+                    return .init(exitCode: 0, message: "LVX_HTTP:401")
+                },
+                sshConfigFileSystem: filesystem
+            ),
+            remoteForwardPort: 28542
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        filesystem.configText = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: presentation.plan.sshConfigSnippet, hostID: presentation.host.id
+        )
+
+        await model.runVerification()
+
+        let script = String(decoding: log.all[0].standardInput, as: UTF8.self)
+        XCTAssertTrue(script.contains("127.0.0.1:28542"))
+        XCTAssertTrue(try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel }).passed)
+    }
+
+    func testWithNoBlockOnDiskTheCheckFallsBackToThePlansPort() async throws {
+        // Nothing written yet — the ordinary state right after enrolling, and
+        // the plan's port is the only thing there is to ask about.
+        let registry = try makeRegistry()
+        let log = InvocationLog()
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: ClaudeRemoteEnrollmentService(
+                runner: { invocation in
+                    log.record(invocation)
+                    return .init(exitCode: 0, message: "LVX_HTTP:401")
+                },
+                sshConfigFileSystem: StubSSHConfigFileSystem()
+            ),
+            remoteForwardPort: 28542
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        await model.runVerification()
+
+        let script = String(decoding: log.all[0].standardInput, as: UTF8.self)
+        XCTAssertTrue(script.contains("127.0.0.1:28542"))
+        XCTAssertTrue(try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel }).passed)
+    }
+
+    /// MINOR 3 (review round 3): a verdict about the setup BEFORE a mutation
+    /// must not sit beside that mutation's result, where it reads as describing
+    /// the state after it.
+    func testStartingAMutationClearsTheVerdictsItWouldOtherwiseOutlive() async throws {
+        let registry = try makeRegistry()
+        let model = await listeningModel(registry: registry, service: healthyVerificationService())
+        await model.runVerification()
+        XCTAssertFalse(model.verificationChecks.isEmpty)
+
+        model.requestSSHConfigInsertion()
+
+        XCTAssertTrue(
+            model.verificationChecks.isEmpty,
+            "the checks described the config before this insertion"
+        )
     }
 
     // MARK: Screenshot preview

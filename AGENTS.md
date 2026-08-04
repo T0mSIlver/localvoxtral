@@ -900,7 +900,16 @@ Key subsystems:
   would replace the link and desync a dotfiles setup — or when `~/.ssh` is not
   owned by the user or is group/world-writable. Remote execution spawns only `ssh -o
   BatchMode=yes <alias> /bin/sh -s` and sends the generated token-bearing script
-  through stdin — the token must never enter an argv. The whole action has a
+  through stdin — the token must never enter an argv ON THIS MAC (on the remote
+  host `claude plugin install` takes its config as a flag and has no stdin path,
+  so the token is in that one command's argv there, and in `~/.claude` after —
+  documented in `docs/remote-claude-context.md`, not defended). The read-only
+  verification probes (`executeVerification`) are the OTHER ssh-bearing path and
+  obey the same rules: `BatchMode=yes` plus `--` before the alias on both,
+  `ClearAllForwardings=yes` on the plugin probe, and deliberately NOT on the
+  tunnel probe — whose entire purpose is to observe the `RemoteForward` the
+  alias's own block requests. They carry no token at all, and no byte of their
+  output reaches a verdict, an alert, or the log. The whole action has a
   finite timeout, and every captured result, thrown error, alert, and log string
   is token-redacted before it leaves the service. Keep the filesystem and
   process runners injected; the no-runner service must continue to throw

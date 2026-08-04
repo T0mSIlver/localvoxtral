@@ -955,6 +955,7 @@ public final class ClaudeIntegrationSettingsModel {
         else { return }
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+        verificationChecks = []
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .updateRemotePlugin(hostID: presentation.hostID),
             title: presentation.sshConfigSnippet == nil
@@ -972,6 +973,10 @@ public final class ClaudeIntegrationSettingsModel {
     public func requestSSHConfigInsertion() {
         guard let presentation = presentedPlan, !isEnrollmentBusy, !presentation.isPreview else { return }
         enrollmentStepStatuses = []
+        // The verdicts described the setup BEFORE this change. Leaving them up
+        // beside a fresh result reads as if they described the state after it
+        // (review finding, round 3).
+        verificationChecks = []
         enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .insertSSHConfig,
@@ -992,6 +997,7 @@ public final class ClaudeIntegrationSettingsModel {
         else { return }
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+        verificationChecks = []
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .runRemoteSetup,
             title: "Run these commands on the SSH host?",
@@ -1170,13 +1176,35 @@ public final class ClaudeIntegrationSettingsModel {
 
         let service = enrollmentService
         let alias = presentation.sshHostAlias
-        let port = presentation.remoteForwardPort
+        // Probe the tunnel that EXISTS, not the one the plan describes.
+        //
+        // The plan names this install's current allocation, but `~/.ssh/config`
+        // may still forward what an earlier install — or the pre-#215 shared
+        // 8473 — wrote there, and that is the port the user's live sessions are
+        // actually binding. Probing the plan's port in that state answers "no
+        // tunnel is live" about a tunnel that is perfectly alive, turning a
+        // one-step fix into a mystery (review finding, round 3). A read-only
+        // scan of this host's own block settles it; when the config is absent
+        // or unreadable there is nothing better than the plan's port.
+        let allocated = presentation.remoteForwardPort
+        let configured = service.sshConfigForwardState(hostID: presentation.host.id)
+        let port: UInt16
+        let staleAllocatedPort: UInt16?
+        switch configured {
+        case .forwards(let configuredPort) where configuredPort != allocated:
+            port = configuredPort
+            staleAllocatedPort = allocated
+        case .forwards, .absent, .unknown:
+            port = allocated
+            staleAllocatedPort = nil
+        }
         let listenerWasBoundAtLaunch = listenerIsBound
         let attempt = await performVerificationAsync {
             try service.executeVerification(
                 sshHostAlias: alias,
                 remoteForwardPort: port,
-                listenerIsBound: listenerWasBoundAtLaunch
+                listenerIsBound: listenerWasBoundAtLaunch,
+                staleAllocatedPort: staleAllocatedPort
             )
         }
 
