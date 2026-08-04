@@ -102,10 +102,25 @@ final class SettingsTabTests: XCTestCase {
 
         // About is deliberately not captured for the README; every other pane
         // must be, and nothing the enum does not define may appear.
+        let captureIDs = try Self.shellArrayEntries(named: "TAB_IDS", in: capture)
         XCTAssertEqual(
-            try Self.shellArrayEntries(named: "TAB_IDS", in: capture),
+            Set(captureIDs),
             rawValues.subtracting(["about"]),
             "capture-readme-assets.sh TAB_IDS must list every captured pane by raw value"
+        )
+
+        // The script iterates the three arrays in lockstep under `set -u`, so
+        // a TAB_IDS entry without its TAB_NAMES/TAB_FILES sibling only fails
+        // at README-regen time on the Mac. Pin the alignment here instead.
+        let captureNames = try Self.shellArrayEntries(named: "TAB_NAMES", in: capture)
+        let captureFiles = try Self.shellArrayEntries(named: "TAB_FILES", in: capture)
+        XCTAssertEqual(
+            captureNames.count, captureIDs.count,
+            "TAB_NAMES and TAB_IDS must stay index-aligned"
+        )
+        XCTAssertEqual(
+            captureFiles.count, captureIDs.count,
+            "TAB_FILES and TAB_IDS must stay index-aligned"
         )
     }
 
@@ -123,7 +138,7 @@ final class SettingsTabTests: XCTestCase {
     }
 
     /// Entries of a one-line bash array literal: `NAME=("a" "b" ...)`.
-    private static func shellArrayEntries(named name: String, in script: String) throws -> Set<String> {
+    private static func shellArrayEntries(named name: String, in script: String) throws -> [String] {
         let assignment = try XCTUnwrap(
             script.components(separatedBy: "\n")
                 .first(where: { $0.hasPrefix("\(name)=(") }),
@@ -133,8 +148,12 @@ final class SettingsTabTests: XCTestCase {
             .enumerated()
             .filter { $0.offset.isMultiple(of: 2) == false }
             .map(\.element)
-        XCTAssertFalse(entries.isEmpty, "\(name) parsed as empty")
-        return Set(entries)
+        XCTAssertFalse(
+            entries.isEmpty,
+            "\(name) parsed as empty — this parser expects the whole array on one line; "
+                + "if the script was reformatted, teach the parser the new shape"
+        )
+        return entries
     }
 
     /// The scripts hardcode these strings; renaming a case silently breaks the

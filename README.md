@@ -110,7 +110,7 @@ Here it is inside a [herdr](https://herdr.dev) multiplexer — the join binds to
 
 https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
-Install is one click: **Settings → Text Processing → Claude Code plugin → Install**. The app registers its bundled plugin marketplace through Claude Code's own CLI and never edits `~/.claude/settings.json` behind your back.
+Install is one click: **Settings → Context → Claude Code plugin → Install**. The app registers its bundled plugin marketplace through Claude Code's own CLI and never edits `~/.claude/settings.json` behind your back.
 
 **Working over SSH?** A second plugin, `localvoxtral-remote`, covers Claude Code sessions on other machines: its hooks POST through an SSH `RemoteForward` back to your Mac — nothing to install on the host beyond the plugin itself (two JSON files and a small POSIX-sh script; it needs only `sh` and `curl`, which every host already has), authenticated by a per-host token you can rotate or revoke in Settings at any time. Remote context is bounded and opaque by construction: labels and short sanitized excerpts only, and the app never reaches into the remote filesystem.
 
@@ -126,7 +126,8 @@ Open **Settings** from the menu bar popover:
 - **General** — permission status for Microphone and Accessibility (with grant buttons), copy-final-segment toggle, and Re-run Setup
 - **Endpoints** — Dictation and Polishing each switch independently between `Managed local` (a model picker for polishing, plus a status light) and `External URL` (endpoint URL, model name, API key)
 - **Dictation** — the trigger (single modifier key with tap/hold gestures, or per-mode keyboard shortcuts) and the menu-bar output mode
-- **Text Processing** — exact-match replacements, plus the LLM Polishing switch and its agent-dictation features (agent prompt profile, repo vocabulary, clipboard context, spoken clipboard paste, and Claude Code session context)
+- **Text Processing** — exact-match replacements, plus the LLM Polishing switch, the agent prompt profile, and spoken clipboard paste
+- **Context** — what the polisher may see (repo vocabulary, terminal screen, Claude Code project files, clipboard), plus the Claude Code plugin and remote SSH hosts
 - **About** — version, link to this repository, and Export Diagnostics (writes a redacted local report to the Desktop)
 
 The config folder at `~/Library/Application Support/localvoxtral/config` holds `replacement_dictionary.toml`, the LLM prompt TOMLs (including the agent variants), and `terminal_apps.toml`. When an update ships improved defaults, files you haven't edited are refreshed automatically; files you have edited are never touched without asking — the app offers to update them and keeps your versions as `.backup` files alongside.

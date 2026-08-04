@@ -57,8 +57,8 @@ sessions, attaches nothing. Other terminals abstain entirely rather than
 half-join.
 
 **Title marker (opt-in local fallback, always on for SSH).** For an older
-(stable-channel) Ghostty build, enable **Settings → Text Processing →
-Polishing → Local Claude title fallback** and export
+(stable-channel) Ghostty build, enable **Settings → Context →
+Claude Code → Local Claude title fallback** and export
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs.
 The app then replies to local hooks with
 the session marker, which Claude Code writes into the window title as an OSC 2
@@ -77,7 +77,7 @@ the hook prints nothing at all.
 
 ## Install / update / uninstall
 
-The app way: **Settings → Text Processing → Polishing → "Claude Code plugin
+The app way: **Settings → Context → Claude Code → "Claude Code plugin
 (this Mac)" → Install or Update**. That button registers the bundled marketplace
 and installs the plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
@@ -229,7 +229,7 @@ reachable from your LAN.
 
 ## Set it up
 
-In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH"**,
+In **Settings → Context → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, shows it once alongside every command below with a Copy button on each,
 and binds the listener immediately — there is no relaunch step. The list in that
