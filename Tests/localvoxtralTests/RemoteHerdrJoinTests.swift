@@ -277,7 +277,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
         forwards: (any ClaudeRemoteHerdrForwarding)?,
         sshResult: SSHDestinationTTYProbeResult = .connection(
             SSHSurfaceConnection(
-                destination: "builder", isOnlyConnectionToDestination: true, indicatesHerdr: false
+                destination: "builder", isOnlyConnectionToDestination: true, indicatesHerdr: true
             )
         ),
         hosts: [ClaudeRemoteHost]? = nil,
@@ -408,7 +408,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
                     SSHSurfaceConnection(
                         destination: "someone-elses-box",
                         isOnlyConnectionToDestination: true,
-                        indicatesHerdr: false
+                        indicatesHerdr: true
                     )
                 ),
                 title: markerValue
@@ -747,7 +747,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
                     SSHSurfaceConnection(
                         destination: "builder",
                         isOnlyConnectionToDestination: false,
-                        indicatesHerdr: false
+                        indicatesHerdr: true
                     )
                 ),
                 title: markerValue
@@ -788,6 +788,73 @@ final class RemoteHerdrJoinTests: XCTestCase {
         XCTAssertEqual(join.mechanism, .titleMarker)
         XCTAssertEqual(forwards.openCount, 0)
         XCTAssertTrue(panes.requests.withLock { $0.isEmpty })
+    }
+
+    func testAPlainSSHSessionNeverReachesTheArmEvenAsTheSoleConnection() async throws {
+        // Review round 5b, major 1. Being the only connection says nothing
+        // about what this terminal DISPLAYS: a herdr whose client detached —
+        // or whose pane still carries a marker and a running agent inside the
+        // registry TTL — keeps answering `pane.current` with that pane, so a
+        // later plain `ssh builder` would join a session the user cannot see.
+        //
+        // herdr exposes no read-only attachment signal (verified against the
+        // 0.7.5 socket schema and the 0.8.0 docs: the only `client.*` methods
+        // are `window_title.set`/`clear`, both mutations), so the evidence has
+        // to be the invocation itself.
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+
+        let join = try unwrapAsync(
+            await resolver(
+                registry: registry,
+                panes: panes,
+                forwards: forwards,
+                sshResult: .connection(
+                    SSHSurfaceConnection(
+                        destination: "builder",
+                        isOnlyConnectionToDestination: true,
+                        indicatesHerdr: false
+                    )
+                ),
+                title: markerValue
+            ).resolve(target: ghostty)
+        )
+
+        XCTAssertEqual(join.mechanism, .titleMarker)
+        // And it costs NOTHING: no tunnel spawned, no herdr dialled. This is
+        // also the answer to the round-5b UX finding — a plain sole ssh to an
+        // enrolled host no longer pays a forward before falling through.
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertTrue(panes.requests.withLock { $0.isEmpty })
+    }
+
+    func testTheManualHerdrFlowGetsNoContextAtAll() async throws {
+        // The documented, accepted limitation: `ssh host`, then typing `herdr`,
+        // leaves no trace in argv. herdr also intercepts OSC 2, so the pane's
+        // marker never reaches the outer terminal — meaning there is no marker
+        // to fall back to either. No join, and no pretending otherwise.
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let forwards = RecordingForwards()
+
+        let join = await resolver(
+            registry: registry,
+            panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+            forwards: forwards,
+            sshResult: .connection(
+                SSHSurfaceConnection(
+                    destination: "builder",
+                    isOnlyConnectionToDestination: true,
+                    indicatesHerdr: false
+                )
+            )
+            // No outer title marker: herdr swallowed it.
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 0)
     }
 
     func testAUniqueConnectionThatNamesHerdrJoins() async throws {

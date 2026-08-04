@@ -376,20 +376,37 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     func spawn(argv: [String]) throws -> any ClaudeRemoteHerdrForwardProcess {
         guard !argv.isEmpty else { throw SpawnError.emptyArgv }
 
+        // Every one of these is checked. A silently failed SETPGROUP is the
+        // dangerous one (review round 5b): the child would then share OUR
+        // process group, so the teardown's `kill(-pid)` would find nothing to
+        // signal and an orphan ssh would hold the tunnel open — a failure that
+        // looks exactly like success until someone counts processes. The
+        // redirections are checked in the same breath, since a child that
+        // inherited our stdio is not the child this code describes.
         var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
+        guard posix_spawn_file_actions_init(&fileActions) == 0 else {
+            throw SpawnError.setupFailed(code: errno)
+        }
         defer { posix_spawn_file_actions_destroy(&fileActions) }
-        posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addopen(&fileActions, 1, "/dev/null", O_WRONLY, 0)
-        posix_spawn_file_actions_addopen(&fileActions, 2, "/dev/null", O_WRONLY, 0)
+        for (descriptor, flags) in [(0, O_RDONLY), (1, O_WRONLY), (2, O_WRONLY)] {
+            let status = posix_spawn_file_actions_addopen(
+                &fileActions, Int32(descriptor), "/dev/null", flags, 0
+            )
+            guard status == 0 else { throw SpawnError.setupFailed(code: status) }
+        }
 
         var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
+        guard posix_spawnattr_init(&attributes) == 0 else {
+            throw SpawnError.setupFailed(code: errno)
+        }
         defer { posix_spawnattr_destroy(&attributes) }
         // pgroup 0 with SETPGROUP: the child's process group id becomes its own
         // pid, so it leads a group containing only itself and its descendants.
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
-        posix_spawnattr_setpgroup(&attributes, 0)
+        guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0,
+              posix_spawnattr_setpgroup(&attributes, 0) == 0
+        else {
+            throw SpawnError.processGroupUnavailable
+        }
 
         // The environment is passed explicitly rather than inherited through a
         // global: ssh needs HOME to find the alias's config at all, and an
@@ -413,6 +430,11 @@ struct ClaudeRemoteHerdrForwardSpawner: ClaudeRemoteHerdrForwardSpawning {
     enum SpawnError: Error, Equatable {
         case emptyArgv
         case launchFailed(code: Int32)
+        case setupFailed(code: Int32)
+        /// The child could not be made its own process-group leader, so
+        /// teardown could not guarantee taking its descendants with it. We do
+        /// not spawn a tunnel we cannot promise to close.
+        case processGroupUnavailable
     }
 }
 
@@ -551,33 +573,86 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// cancelled, every later teardown refused to signal or retry, and the
     /// documented "one zombie per open forward, for one dictation" became one
     /// per dictation forever.
+    /// How long the caller's own thread will poll before handing the wait off.
+    /// The child has been SIGKILLed by the time this runs, so the first attempt
+    /// almost always collects it; this bound exists for the case where it does
+    /// not.
+    private static let reapPollAttempts = 250
+    private static let reapQueue = DispatchQueue(
+        label: "com.localvoxtral.claude.herdr-forward-reap", qos: .utility
+    )
+
+    private enum CollectOutcome {
+        /// Definitively collected (or the kernel disowned the pid).
+        case reaped
+        /// Not yet collectable, or interrupted. Ask again.
+        case pending
+        /// A real error. Leave it UNREAPED so a later teardown retries.
+        case failed
+    }
+
+    private func collectOnce(options: Int32) -> CollectOutcome {
+        var status: Int32 = 0
+        let collected = waitForChild(pid, &status, options)
+        if collected > 0 {
+            markReaped()
+            return .reaped
+        }
+        // WNOHANG's "still running" answer, which sets no errno.
+        if collected == 0 { return .pending }
+        let failure = errno
+        // A caught signal is not an answer.
+        if failure == EINTR { return .pending }
+        if failure == ECHILD {
+            // Definitive: there is nothing left to collect, so the pid is no
+            // longer ours to signal either.
+            markReaped()
+            return .reaped
+        }
+        // Anything else stays UNREAPED on purpose: the zombie is still ours,
+        // `-pid` still names our group, and the next teardown (or the handle's
+        // deinit) will try again rather than leak it silently.
+        Log.claudeContext.error(
+            "Remote herdr forward could not be collected (errno \(failure, privacy: .public)); leaving it unreaped for a later attempt"
+        )
+        return .failed
+    }
+
+    /// Collect the child, once. After this the pid is the kernel's to reuse,
+    /// which is precisely why nothing may signal the group afterwards.
+    ///
+    /// `reaped` is committed only on a DEFINITIVE outcome — the child was
+    /// collected, or the kernel says there is no such child. Claiming it up
+    /// front (as the first version did) meant an interrupted `waitpid` left a
+    /// zombie behind while the state insisted it was gone: the source was
+    /// cancelled, every later teardown refused to signal or retry, and the
+    /// documented "one zombie per open forward, for one dictation" became one
+    /// per dictation forever.
+    ///
+    /// NON-BLOCKING first, because every caller is a user-visible path — stop,
+    /// commit, cancel, app quit, all on the main actor. A child wedged in an
+    /// uninterruptible wait must cost a background thread, never the UI, so the
+    /// bounded poll hands off rather than waiting it out (review round 5b).
     private func reapIfNeeded() {
         guard !state.withLock({ $0.reaped }) else { return }
-        var status: Int32 = 0
-        while true {
-            let collected = waitForChild(pid, &status, 0)
-            if collected > 0 {
-                markReaped()
+        for _ in 0..<Self.reapPollAttempts {
+            switch collectOnce(options: WNOHANG) {
+            case .reaped, .failed:
                 return
+            case .pending:
+                usleep(1000)
             }
-            let failure = errno
-            if collected == -1, failure == EINTR {
-                // A caught signal is not an answer. Ask again.
-                continue
+        }
+        Log.claudeContext.info(
+            "Remote herdr forward is not collectable yet; finishing the wait off the calling thread"
+        )
+        Self.reapQueue.async { [self] in
+            while true {
+                switch collectOnce(options: 0) {
+                case .reaped, .failed: return
+                case .pending: continue
+                }
             }
-            if collected == -1, failure == ECHILD {
-                // Definitive: there is nothing left to collect, so the pid is
-                // no longer ours to signal either.
-                markReaped()
-                return
-            }
-            // Anything else stays UNREAPED on purpose: the zombie is still
-            // ours, `-pid` still names our group, and the next teardown (or
-            // the handle's deinit) will try again rather than leak it silently.
-            Log.claudeContext.error(
-                "Remote herdr forward could not be collected (errno \(failure, privacy: .public)); leaving it unreaped for a later attempt"
-            )
-            return
         }
     }
 

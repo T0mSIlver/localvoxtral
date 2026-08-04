@@ -220,7 +220,9 @@ enum SSHDestinationTTYProbe {
             SSHSurfaceConnection(
                 destination: destination,
                 isOnlyConnectionToDestination: isOnlyConnection(
-                    to: destination, device: device, processes: processes
+                    to: destination,
+                    surfacePIDs: Set(onSurface.map(\.pid)),
+                    processes: processes
                 ),
                 indicatesHerdr: indicatesHerdr
             )
@@ -229,18 +231,27 @@ enum SSHDestinationTTYProbe {
 
     /// Is this terminal's the only connection to that destination?
     ///
-    /// Every OTHER terminal's ssh counts, foreground or not: a session the user
-    /// backgrounded a second ago is still a second connection to that host, and
-    /// the question here is "could another surface be the herdr one?", not
-    /// "which one is active". Processes with NO controlling terminal are
-    /// excluded — nobody can be dictating into one, and our own `ssh -L`
-    /// forward is exactly that.
+    /// Every OTHER ssh counts, foreground or not, and — this is the part the
+    /// first version got wrong (review round 5b) — including ones on THIS
+    /// device. Excluding same-device background processes let `ssh builder
+    /// herdr` be suspended with Ctrl+Z, its server side still attached and its
+    /// pane still focused, while a plain `ssh builder` in the foreground of the
+    /// same terminal claimed to be the only connection.
+    ///
+    /// "The surface shows the shell, not that ssh" is a fact about which
+    /// connection this terminal DISPLAYS — it belongs to destination
+    /// determination above, and says nothing about how many connections exist.
+    ///
+    /// Excluded: the surface's own foreground processes (they ARE this
+    /// connection), and anything with no controlling terminal — nobody can be
+    /// dictating into one, and our own `ssh -L` forward is exactly that.
     private static func isOnlyConnection(
         to destination: String,
-        device: dev_t,
+        surfacePIDs: Set<Int32>,
         processes: [SSHClientProcess]
     ) -> Bool {
-        for process in processes where process.ttyDevice != nil && process.ttyDevice != device {
+        for process in processes
+        where process.ttyDevice != nil && !surfacePIDs.contains(process.pid) {
             guard let parsed = verifiedInvocation(of: process) else {
                 // An ssh elsewhere we cannot read could be to this destination.
                 // Uniqueness is a claim, and an unreadable process cannot be

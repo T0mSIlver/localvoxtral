@@ -256,6 +256,46 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertFalse(value.isOnlyConnectionToDestination)
     }
 
+    func testASuspendedSSHOnTHISDeviceRemovesUniqueness() throws {
+        // Review round 5b, major 2. Repro: `ssh builder herdr`, Ctrl+Z — the
+        // client is stopped but its server side is still attached and its pane
+        // still focused — then a plain `ssh builder` in the foreground of the
+        // SAME terminal. Skipping same-device background processes made that
+        // foreground session claim to be the only connection.
+        let suspendedHerdrClient = SSHClientProcess(
+            pid: 777,
+            ttyDevice: surface,
+            processGroupID: 777,
+            terminalForegroundGroupID: 501, // the plain ssh has the terminal
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder", "herdr", "attach"]
+        )
+        let value = try XCTUnwrap(
+            connection(probe(processes: [ssh(["ssh", "builder"], pid: 501), suspendedHerdrClient]))
+        )
+        XCTAssertEqual(value.destination, "builder")
+        XCTAssertFalse(
+            value.isOnlyConnectionToDestination,
+            "a suspended ssh to the same host is still a second connection"
+        )
+    }
+
+    func testASecondForegroundSSHInAnotherPaneOfTheSameDeviceRemovesUniqueness() throws {
+        // Same rule, without the suspension: two process groups on one device.
+        let sibling = SSHClientProcess(
+            pid: 888,
+            ttyDevice: surface,
+            processGroupID: 888,
+            terminalForegroundGroupID: 501,
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder"]
+        )
+        let value = try XCTUnwrap(
+            connection(probe(processes: [ssh(["ssh", "builder"], pid: 501), sibling]))
+        )
+        XCTAssertFalse(value.isOnlyConnectionToDestination)
+    }
+
     func testAnotherTerminalToADIFFERENTHostLeavesUniquenessIntact() throws {
         let value = try XCTUnwrap(
             connection(

@@ -625,23 +625,43 @@ struct ClaudeSessionJoinResolver {
             return .notApplicable
         }
 
-        // The connection-level bind: this terminal must hold the ONLY ssh
-        // connection to that destination on the machine.
+        // The connection-level bind, and it takes BOTH facts.
         //
-        // `indicatesHerdr` deliberately does NOT substitute for this (review
-        // round 3, blocker 1a). argv is written by whoever launched the
-        // process, so treating it as sufficient let a forged remote command
-        // stand in for the one fact that is not forgeable — how many
-        // connections exist. It stays as corroboration, logged and nothing
-        // more.
+        // Uniqueness alone was a mis-join (review round 5b): it says nothing
+        // about what this terminal DISPLAYS. A herdr whose client detached —
+        // or whose pane still carries a marker and a running agent inside the
+        // registry TTL — keeps answering `pane.current` with that pane, so a
+        // later sole `ssh builder` passed the gate and every remaining check
+        // (pane id, marker, session claim, foreground) agreed about a session
+        // the user cannot see.
+        //
+        // The honest fix is to require positive evidence that THIS connection
+        // is a herdr client, and herdr does not expose one: verified against
+        // the 0.7.5 socket schema and the 0.8.0 docs, the only `client.*`
+        // methods are `window_title.set`/`clear` — both MUTATIONS, so neither
+        // is usable as a probe — and `session.snapshot` carries no attachment
+        // field. So the evidence has to come from the invocation itself, and
+        // `indicatesHerdr` is promoted from corroboration to a REQUIREMENT.
+        //
+        // The cost is stated rather than hidden: the manual flow — `ssh host`,
+        // then type `herdr` — gets NO context at all, not even a marker
+        // fallback, because herdr intercepts OSC 2 so the marker never reaches
+        // the outer terminal. A wrong join is worse than no join.
+        //
+        // Uniqueness stays REQUIRED alongside it: argv is written by whoever
+        // launched the process, so it must never be the only thing standing
+        // between two terminals and each other's sessions.
         guard connection.isOnlyConnectionToDestination else {
             Self.abstainedRemoteHerdrJoin(
                 outcome: "another terminal holds an ssh session to this destination"
             )
             return .notApplicable
         }
-        if connection.indicatesHerdr {
-            Log.claudeContext.info("Remote herdr arm: the ssh command is herdr itself")
+        guard connection.indicatesHerdr else {
+            Self.abstainedRemoteHerdrJoin(
+                outcome: "the ssh command on this terminal is not herdr itself"
+            )
+            return .notApplicable
         }
 
         // NOT yet herdr-or-nothing. Registry candidates existing on the host is

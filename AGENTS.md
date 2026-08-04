@@ -677,16 +677,29 @@ Key subsystems:
     and ABSTAINS on `-o`/`-F`/`-O`/`-S`/`-N`/`-f`/`-M`/`-D`/`-W`/`-w` rather
     than skipping them — `ssh -o HostName=other builder` must never answer
     `builder`;
-    (2) THIS TERMINAL holds the ONLY ssh connection to that destination on the
-    machine (a `KERN_PROC_ALL` scan). Host-level binding alone was a mis-join:
-    with a plain shell to `builder` in one window and a herdr on `builder` in
-    another, both surfaces answer "ssh to builder" and every remaining check is
-    about the REMOTE side, so the plain shell would join the other window's
-    session. A remote command that IS herdr (first argv token, by basename) is
-    recorded as corroboration but NEVER substitutes for uniqueness — argv is
-    written by whoever launched the process, and treating it as sufficient let
-    `ssh host sh -lc 'printf herdr; exec claude'` claim to be a herdr
-    connection;
+    (2) that ssh session IS herdr — its remote command's first argv token has
+    basename `herdr` — AND this terminal holds the ONLY ssh connection to that
+    destination on the machine (a `KERN_PROC_ALL` scan counting every other ssh
+    with a controlling terminal, including suspended ones on this same device).
+    BOTH, because each covers what the other cannot. Uniqueness alone does not
+    prove what the terminal DISPLAYS: a herdr whose client detached, or whose
+    pane still carries a marker and a running agent inside the registry TTL,
+    keeps answering `pane.current` with that pane, so a later sole `ssh builder`
+    would join a session the user cannot see. The argv signal alone is not
+    enough either — argv is written by whoever launched the process, which is
+    why it is matched on the FIRST command token only (`ssh host sh -lc 'printf
+    herdr; exec claude'` mentions herdr and is not it).
+    Requiring the argv signal is what the absence of a better one forces:
+    herdr exposes NO read-only attachment signal — verified against the 0.7.5
+    socket schema and the 0.8.0 docs, the only `client.*` methods are
+    `window_title.set`/`clear`, both MUTATIONS (so `no_foreground_client` is not
+    an acceptable probe), and `session.snapshot` carries no attachment field.
+    The accepted cost, stated rather than hidden: the manual flow — `ssh host`,
+    then typing `herdr` — gets NO context at all, not even a marker fallback,
+    because herdr intercepts OSC 2 so the marker never reaches the outer
+    terminal. A wrong join is worse than no join. It also makes the arm free
+    for everyone else: a plain ssh to an enrolled host no longer spawns a
+    forward before falling through;
     (3) that host has live remote sessions reporting a herdr pane, all from ONE
     herdr socket (`liveRemoteHerdrSessions(hostID:)`, the mirror of the local
     single-socket rule). The count that matters is SOCKETS, not sessions:
@@ -758,7 +771,9 @@ Key subsystems:
     can neither observe nor kill), and `PermitLocalCommand=no` (a dictation
     must not be able to trigger `LocalCommand` on this machine). Teardown
     signals the process GROUP — the child is spawned as its own group leader
-    via `posix_spawn`'s `POSIX_SPAWN_SETPGROUP`, so `kill(-pgid)` can only ever
+    via `posix_spawn`'s `POSIX_SPAWN_SETPGROUP` — whose return value is
+    CHECKED, since a silently failed one would leave the child in our own group
+    and turn every teardown into an orphan — so `kill(-pgid)` can only ever
     reach our own ssh and its descendants — and it ends with an UNCONDITIONAL
     group SIGKILL. We observe only the leader, so its exit satisfies the
     bounded wait while a descendant that ignored SIGTERM is still holding the
@@ -775,7 +790,11 @@ Key subsystems:
     collected, or `ECHILD`), retrying `EINTR` and leaving anything else
     unreaped for the next teardown. Claiming the reap before calling `waitpid`
     turned an interrupted collection into a permanent lie about a zombie that
-    was still there, i.e. one leaked per dictation without bound.
+    was still there, i.e. one leaked per dictation without bound. The collect
+    is also NON-BLOCKING first (`WNOHANG`, bounded poll, then handed to a
+    background queue): every caller is a user-visible path — stop, commit,
+    cancel, app quit, all on the main actor — and a child wedged in an
+    uninterruptible wait must cost a background thread, never the UI.
     A remote herdr join authorizes no more than a local one: never the raw AX
     capture (that grid is the composite herdr TUI, on someone else's machine),
     and never local repo collection — the origin is remote, so
