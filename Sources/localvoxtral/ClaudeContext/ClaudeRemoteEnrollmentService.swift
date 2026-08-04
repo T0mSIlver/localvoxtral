@@ -42,7 +42,16 @@ public protocol ClaudeRemoteSSHConfigFileSystem: Sendable {
 /// remote Claude Code host. Both mutation paths are injected so tests cannot
 /// reach the real home directory or a real SSH host.
 public struct ClaudeRemoteEnrollmentService: Sendable {
-    /// Everything the user needs, in the order they need it.
+    /// The two pieces of text the user actually has to apply, and nothing else.
+    ///
+    /// Everything copyable here is comment-free (owner rule, 2026-08-04:
+    /// "commands you have to copy-paste have comments, that's just dumb —
+    /// display it in the app or not at all"). The explanations that used to ride
+    /// along as `#` lines are now either decided by the app (verification, see
+    /// `executeVerification`) or written as prose in
+    /// `docs/remote-claude-context.md`. The only `#` lines left in the snippet
+    /// are the BEGIN/END delimiters, which are functional: the idempotent
+    /// replace keys on them.
     public struct SetupPlan: Sendable, Equatable {
         /// Idempotent `~/.ssh/config` block. Contains NO token — the credential
         /// belongs to the Claude plugin's userConfig on the remote host, not to
@@ -50,12 +59,57 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         public var sshConfigSnippet: String
         /// Run on the REMOTE host, once.
         public var remoteCommands: [String]
-        /// Run to check the setup without changing it.
-        public var verifyCommands: [String]
-        /// Undo, in order: remote first, then local revocation.
-        public var uninstallCommands: [String]
-        /// Caveats worth reading before the first surprise.
-        public var notes: [String]
+    }
+
+    /// One interpreted verdict from `executeVerification`.
+    ///
+    /// The interpretation IS the deliverable. The old flow shipped three
+    /// copy-paste commands wrapped in nine `#` lines explaining how to read
+    /// their output — including that HTTP 401 is the success signal — and the
+    /// field failure (2026-07-26) was a person reading healthy output as broken
+    /// anyway. Anything the app can decide, the app decides; the user gets a ✓
+    /// or a ✗ and one short line.
+    public struct VerificationCheck: Sendable, Equatable, Identifiable {
+        public enum Kind: String, Sendable, Equatable {
+            /// The `RemoteForward` is live and our listener answered through it.
+            case tunnel
+            /// The remote plugin is installed under the host's `claude`.
+            case plugin
+        }
+
+        public var kind: Kind
+        public var passed: Bool
+        /// One short sentence for the sheet. Never command output.
+        public var summary: String
+        /// The actionable half, when there is one. Also short — a second line
+        /// in the sheet, not a paragraph.
+        public var hint: String?
+        /// Raw command output. Alert detail and the log only, never inline
+        /// (owner rule: no long text in a pane).
+        public var detail: String
+
+        public init(
+            kind: Kind,
+            passed: Bool,
+            summary: String,
+            hint: String? = nil,
+            detail: String = ""
+        ) {
+            self.kind = kind
+            self.passed = passed
+            self.summary = summary
+            self.hint = hint
+            self.detail = detail
+        }
+
+        public var id: String { kind.rawValue }
+
+        public var title: String {
+            switch kind {
+            case .tunnel: return "Connection & tunnel"
+            case .plugin: return "Claude plugin on the host"
+            }
+        }
     }
 
     public struct RunResult: Sendable, Equatable {
@@ -188,10 +242,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
 
         return SetupPlan(
             sshConfigSnippet: sshConfigSnippet(host: host, sshHostAlias: sshHostAlias, port: port),
-            remoteCommands: remoteCommands(token: token),
-            verifyCommands: verifyCommands(sshHostAlias: sshHostAlias, port: port),
-            uninstallCommands: uninstallCommands(host: host, sshHostAlias: sshHostAlias),
-            notes: notes(port: port)
+            remoteCommands: remoteCommands(token: token)
         )
     }
 
@@ -216,17 +267,25 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         "# END localvoxtral claude context (\(hostID))"
     }
 
+    /// The block the user pastes (or lets the app insert) into `~/.ssh/config`.
+    ///
+    /// Comment-free apart from the two delimiters, which are load-bearing:
+    /// `applySSHConfigSnippet` finds and replaces the block by them, which is
+    /// what makes a second apply a no-op instead of a duplicate `Host` stanza.
+    ///
+    /// `ExitOnForwardFailure no` (the default, stated explicitly so a global
+    /// `yes` in the user's config cannot claim this host) is deliberate, and the
+    /// reasoning that used to sit here as six `#` lines the user had to read
+    /// while pasting now lives in `docs/remote-claude-context.md`: `yes` would
+    /// refuse the whole SSH session when the remote's port is already bound —
+    /// usually by the user's own second window — and a dictation nicety must
+    /// never cost someone their shell. The cost of `no` is a silently absent
+    /// tunnel, which is exactly what the in-app check reports.
     static func sshConfigSnippet(host: ClaudeRemoteHost, sshHostAlias: String, port: UInt16) -> String {
         """
         \(blockBegin(hostID: host.id))
         Host \(sshHostAlias)
             RemoteForward \(port) 127.0.0.1:\(port)
-            # ExitOnForwardFailure no (the default) is deliberate: if the remote
-            # already has \(port) bound — usually another localvoxtral tunnel from a
-            # second window — `yes` would refuse to open the SSH session at all.
-            # A dictation nicety must never cost you the shell. The cost of `no`
-            # is that a failed forward is silent: the hooks get connection
-            # refused, fail open, and you simply get no context.
             ExitOnForwardFailure no
         \(blockEnd(hostID: host.id))
         """
@@ -237,77 +296,12 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             "claude plugin marketplace add \(repositoryMarketplaceReference)",
             // Leading space: with HISTCONTROL=ignorespace (bash) or
             // HIST_IGNORE_SPACE (zsh) the token stays out of the remote shell
-            // history. See `notes` — it is a habit, not a guarantee.
+            // history. A habit, not a guarantee — the docs page says so, and
+            // rotation is the recovery.
             " claude plugin install \(remotePluginReference) --config '\(tokenConfigKey)=\(token)'",
         ]
     }
 
-    /// The comments are part of the deliverable: these commands are run by a
-    /// person, and the field failure was a person reading healthy output as
-    /// broken — a forward "failure" that just means another session already
-    /// holds the tunnel, and a 401 that is the success signal. Say so in the
-    /// output they are pasting, not in a note they have scrolled past.
-    static func verifyCommands(sshHostAlias: String, port: UInt16) -> [String] {
-        [
-            // -v because a failed RemoteForward is otherwise invisible when
-            // ExitOnForwardFailure is `no`.
-            "# Forward check — 'remote forward success' means this probe owns the",
-            "# tunnel. A failure here is EXPECTED while another live session to",
-            "# this host holds it; the port check below is the truth either way.",
-            "ssh -v \(sshHostAlias) true 2>&1 | grep -i 'remote forward'",
-            "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
-            "# here even though it runs fine when you are logged in.",
-            "ssh \(sshHostAlias) 'PATH=\"$HOME/.claude/local:$HOME/.local/bin:$HOME/bin"
-                + ":/opt/homebrew/bin:/usr/local/bin:$PATH\" claude plugin list'",
-            "# 401 = SUCCESS: the tunnel is up and localvoxtral answered (an",
-            "# unauthenticated probe must be refused). A connection error means",
-            "# no live session holds the forward right now.",
-            "ssh \(sshHostAlias) 'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST "
-                + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(port)/v1/hook/SessionStart'",
-        ]
-    }
-
-    static func uninstallCommands(host: ClaudeRemoteHost, sshHostAlias: String) -> [String] {
-        [
-            "ssh \(sshHostAlias) 'claude plugin uninstall \(remotePluginReference)'",
-            "ssh \(sshHostAlias) 'claude plugin marketplace remove \(ClaudePluginAssets.marketplaceName)'",
-            "# then remove the \(blockBegin(hostID: host.id)) block from ~/.ssh/config",
-            "# and revoke \(host.id) in localvoxtral — revocation is what actually",
-            "# stops the host: the token dies here, not on the remote.",
-        ]
-    }
-
-    static func notes(port: UInt16) -> [String] {
-        [
-            "The token authorizes remote context only. A host that presents it can never "
-                + "make localvoxtral read a local file: the listener tags every session it accepts "
-                + "as remote regardless of what the payload says, and a remote cwd cannot be turned "
-                + "into a local path.",
-            "Revoking the host in localvoxtral is the real off switch and takes effect immediately. "
-                + "Uninstalling the remote plugin only stops it asking.",
-            "The copied install command puts the token in the remote shell's history unless your shell is "
-                + "set to ignore space-prefixed commands (HISTCONTROL=ignorespace / setopt "
-                + "HIST_IGNORE_SPACE). If it landed there, rotate the token — that is what rotation "
-                + "is for.",
-            "tmux/screen: a multiplexer owns the window title, so the OSC 2 marker the hook writes "
-                + "does not reach Ghostty by default and the pane stays unjoined. `set -g "
-                + "set-titles on` in ~/.tmux.conf lets tmux pass the title through. Without it you "
-                + "still get the off-screen context (prompt, cwd, files) — you just do not get the "
-                + "screen join.",
-            "Plain `ssh` with no enrollment keeps working exactly as before: no tunnel, no token, no "
-                + "hooks, and the pane stays screen-only and unjoined.",
-            "The plugin needs only POSIX `sh` and `curl` on the remote host — no localvoxtral binary. "
-                + "Its hooks fail open silently when either is missing, the tunnel is down, or the app "
-                + "is not answering: you simply get no context, never a blocked Claude turn.",
-            "A second concurrent SSH session to the same host will fail to bind \(port) on the "
-                + "remote and — because ExitOnForwardFailure is `no` — will connect anyway with no "
-                + "tunnel. The first session keeps the forward.",
-            "One-click setup connects with forwarding disabled (the tunnel belongs to your real "
-                + "sessions, not setup) and first resolves `claude` from common install locations — "
-                + "non-interactive SSH shells often lack the user-local PATH entries an interactive "
-                + "login has.",
-        ]
-    }
 
     // MARK: - SSH config editing
 
@@ -543,6 +537,226 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
         Log.claudeContext.info("Claude remote setup execution completed")
         return completed
+    }
+
+    // MARK: - Verification (read-only, opt-in only)
+
+    public static let defaultVerificationTimeout: TimeInterval = 30
+
+    /// Check an enrolled host's setup and return interpreted verdicts.
+    ///
+    /// Read-only by construction: it writes nothing locally (no filesystem seam
+    /// is touched) and runs nothing on the host that changes state — one curl
+    /// against the forwarded listener and one `claude plugin list`.
+    ///
+    /// No token is involved. The tunnel probe is deliberately UNAUTHENTICATED:
+    /// the listener must refuse it, and that refusal (HTTP 401) is the proof
+    /// that the forward reached localvoxtral rather than something else. There
+    /// is therefore no credential to redact here — the caller redacts captured
+    /// output before it reaches an alert or the log, because the HOST's
+    /// `claude plugin list` may echo the plugin's configured token.
+    ///
+    /// Throws only `.executionNotConfigured` (no runner injected — the default)
+    /// and `.invalidHostAlias`. Everything else becomes a failed check, so one
+    /// broken probe cannot hide the other's answer.
+    public func executeVerification(
+        sshHostAlias: String,
+        port: UInt16 = ClaudeRemoteListenerLimits.default.port,
+        timeout: TimeInterval = defaultVerificationTimeout
+    ) throws -> [VerificationCheck] {
+        Log.claudeContext.info("Claude remote verification requested")
+        guard let runner else {
+            Log.claudeContext.error("Claude remote verification failed: runner not configured")
+            throw ServiceError.executionNotConfigured
+        }
+        guard Self.isValidHostAlias(sshHostAlias) else {
+            Log.claudeContext.error("Claude remote verification failed: invalid host alias")
+            throw ServiceError.invalidHostAlias
+        }
+
+        let deadline = Date().addingTimeInterval(max(timeout, 0))
+        let tunnel = runCheck(
+            kind: .tunnel,
+            runner: runner,
+            deadline: deadline,
+            // NO ClearAllForwardings, unlike `executeRemoteSetup`: this probe's
+            // whole point is that the alias's own `Host` block asks for the
+            // RemoteForward. Clearing it would make the check test a tunnel it
+            // just disabled — and pass or fail for the wrong reason.
+            argv: ["ssh", "-o", "BatchMode=yes", sshHostAlias, "/bin/sh", "-s"],
+            standardInput: Self.tunnelProbeScript(port: port)
+        ) { Self.tunnelCheck(result: $0, sshHostAlias: sshHostAlias, port: port) }
+
+        let plugin = runCheck(
+            kind: .plugin,
+            runner: runner,
+            deadline: deadline,
+            // ClearAllForwardings here for the same reason setup uses it: this
+            // connection has no use for the tunnel, and competing for a port the
+            // user's real session already holds only prints a scary warning into
+            // the captured output (field report 2026-07-26).
+            argv: [
+                "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes",
+                sshHostAlias, "/bin/sh", "-s",
+            ],
+            standardInput: Self.remoteScript(command: "claude plugin list")
+        ) { Self.pluginCheck(result: $0, sshHostAlias: sshHostAlias) }
+
+        Log.claudeContext.info(
+            "Claude remote verification completed: tunnel=\(tunnel.passed, privacy: .public) plugin=\(plugin.passed, privacy: .public)"
+        )
+        return [tunnel, plugin]
+    }
+
+    private func runCheck(
+        kind: VerificationCheck.Kind,
+        runner: Runner,
+        deadline: Date,
+        argv: [String],
+        standardInput: Data,
+        interpret: (RunResult) -> VerificationCheck
+    ) -> VerificationCheck {
+        let remaining = max(deadline.timeIntervalSinceNow, 0)
+        guard remaining > 0 else {
+            return VerificationCheck(
+                kind: kind,
+                passed: false,
+                summary: "The check ran out of time.",
+                hint: "Try again — a host that is slow to answer can need a second run."
+            )
+        }
+        do {
+            return interpret(
+                try runner(
+                    Invocation(argv: argv, standardInput: standardInput, timeout: remaining)
+                )
+            )
+        } catch let failure as RunnerFailure {
+            switch failure {
+            case .timedOut(let seconds, let message):
+                return VerificationCheck(
+                    kind: kind,
+                    passed: false,
+                    summary: "The check did not finish within \(Int(seconds))s.",
+                    hint: "The host did not answer in time.",
+                    detail: message
+                )
+            case .outputTooLarge(_, let message):
+                return VerificationCheck(
+                    kind: kind,
+                    passed: false,
+                    summary: "The host produced too much output to read.",
+                    detail: message
+                )
+            }
+        } catch {
+            return VerificationCheck(
+                kind: kind,
+                passed: false,
+                summary: "The check could not run.",
+                detail: String(describing: error)
+            )
+        }
+    }
+
+    /// Unauthenticated probe of the forwarded listener.
+    ///
+    /// The script always exits 0 and prints the status code, so a non-zero exit
+    /// can only mean SSH itself failed. Without that, curl's connect failure
+    /// (exit 7) and ssh's own failure (255) would be the same observation, and
+    /// "no tunnel" would be reported as "cannot reach the host".
+    static func tunnelProbeScript(port: UInt16) -> Data {
+        Data("""
+        set -u
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:\(port)/v1/hook/SessionStart 2>/dev/null) || code=000
+        [ -n "$code" ] || code=000
+        printf '%s\\n' "$code"
+
+        """.utf8)
+    }
+
+    static func tunnelCheck(
+        result: RunResult,
+        sshHostAlias: String,
+        port: UInt16
+    ) -> VerificationCheck {
+        guard result.succeeded else {
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: false,
+                summary: "Could not reach \(sshHostAlias) over SSH.",
+                hint: "Check the host alias in ~/.ssh/config and that the host is up.",
+                detail: result.message
+            )
+        }
+        let code = result.message
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last(where: { !$0.isEmpty }) ?? ""
+        switch code {
+        case "401":
+            // 401 IS the pass. An unauthenticated probe must be refused, so
+            // being refused proves both that the tunnel carried the request and
+            // that localvoxtral — which alone holds the token hashes — answered.
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: true,
+                summary: "Tunnel is up and localvoxtral answered.",
+                detail: result.message
+            )
+        case "000", "":
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: false,
+                summary: "No tunnel is live right now.",
+                hint: "The forward exists only while an SSH session to \(sshHostAlias) is open.",
+                detail: result.message
+            )
+        default:
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: false,
+                summary: "Something else answered on port \(port).",
+                hint: "Only localvoxtral should answer there. Find what holds the port and quit it.",
+                detail: result.message
+            )
+        }
+    }
+
+    static func pluginCheck(result: RunResult, sshHostAlias: String) -> VerificationCheck {
+        if result.exitCode == 127 || result.message.contains("'claude' was not found") {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "Claude Code was not found on \(sshHostAlias).",
+                hint: "Install Claude Code there, or put it on the non-interactive SSH PATH.",
+                detail: result.message
+            )
+        }
+        guard result.succeeded else {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "Could not list plugins on \(sshHostAlias).",
+                hint: "Check the host alias in ~/.ssh/config and that the host is up.",
+                detail: result.message
+            )
+        }
+        guard result.message.contains(ClaudePluginAssets.remotePluginName) else {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "The plugin is not installed on \(sshHostAlias).",
+                hint: "Run step 2 on the host.",
+                detail: result.message
+            )
+        }
+        return VerificationCheck(
+            kind: .plugin,
+            passed: true,
+            summary: "The plugin is installed.",
+            detail: result.message
+        )
     }
 
     /// PATH resolution for `claude` under `ssh <host> /bin/sh -s`.

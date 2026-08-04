@@ -8,6 +8,13 @@ set -euo pipefail
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
 #   assets/settings-context.png            (Settings > Context)
+#   assets/settings-enrollment.png         (the remote-SSH enrollment sheet)
+#
+# settings-enrollment.png is deliberately NOT in the README table — it exists
+# for docs and PR bodies. It is captured from a SAMPLE sheet armed by the
+# hidden `debug.enrollment_sheet_preview` default, in which every mutating
+# button is refused by the model, so the capture cannot write ~/.ssh/config,
+# spawn ssh, or enroll a host.
 #
 # Run ON A MAC from the repo root:
 #   ./scripts/capture-readme-assets.sh [path/to/localvoxtral.app]
@@ -168,6 +175,10 @@ guard CommandLine.arguments.count >= 3,
       let minLayer = Int(CommandLine.arguments[2])
 else { exit(2) }
 
+// Optional third argument: a window id to ignore. A sheet is its own CGWindow,
+// so excluding the settings window is how we get the sheet and not its parent.
+let excludedID = CommandLine.arguments.count >= 4 ? Int(CommandLine.arguments[3]) : nil
+
 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
 var best: (id: Int, area: Double)?
 for window in windows {
@@ -175,6 +186,7 @@ for window in windows {
           let layer = window[kCGWindowLayer as String] as? Int, layer >= minLayer,
           minLayer > 0 || layer == 0,
           let id = window[kCGWindowNumber as String] as? Int,
+          id != excludedID,
           let bounds = window[kCGWindowBounds as String] as? [String: Double],
           let width = bounds["Width"], let height = bounds["Height"]
     else { continue }
@@ -185,14 +197,14 @@ guard let best else { exit(1) }
 print(best.id)
 SWIFT
 
-window_id() { # <pid> <min-layer>
-  swift "$HELPER" "$1" "$2" 2>/dev/null
+window_id() { # <pid> <min-layer> [exclude-window-id]
+  swift "$HELPER" "$1" "$2" "${3:-}" 2>/dev/null
 }
 
-wait_for_window() { # <pid> <min-layer> [timeout-seconds]
+wait_for_window() { # <pid> <min-layer> [timeout-seconds] [exclude-window-id]
   local deadline=$((SECONDS + ${3:-10}))
   while ((SECONDS < deadline)); do
-    if id="$(window_id "$1" "$2")"; then echo "$id"; return 0; fi
+    if id="$(window_id "$1" "$2" "${4:-}")"; then echo "$id"; return 0; fi
     sleep 0.3
   done
   return 1
@@ -298,6 +310,53 @@ for i in "${!TAB_NAMES[@]}"; do
   SETTINGS_ID="$(window_id "$APP_PID" 0)" || { echo "Lost the settings window." >&2; exit 1; }
   screencapture -o -x -l "$SETTINGS_ID" "$out"
 done
+
+# --- 3. enrollment sheet ------------------------------------------------------
+# A second launch, on purpose: the preview default is read ONCE when the Context
+# pane is constructed, so arming it before the tab loop would have parked the
+# sheet on top of settings-context.png.
+echo "Capturing $ASSETS_DIR/settings-enrollment.png"
+osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
+for _ in $(seq 1 10); do pgrep -xq "$APP_PROCESS" || break; sleep 0.5; done
+pkill -x "$APP_PROCESS" >/dev/null 2>&1 || true
+sleep 1
+
+# The sample sheet: a host that is not in the registry, a visibly fake token,
+# and a presentation the model refuses to act on. It cannot write
+# ~/.ssh/config, spawn ssh, or enroll anything. The key lives in the
+# snapshotted domain (restored on exit); deleted here as well so a run that
+# ends between here and cleanup cannot leave it armed.
+defaults write "$BUNDLE_ID" "debug.enrollment_sheet_preview" -bool true
+open "$APP_PATH"
+for _ in $(seq 1 20); do pgrep -xq "$APP_PROCESS" && break; sleep 0.5; done
+APP_PID="$(pgrep -xn "$APP_PROCESS")"
+sleep 2
+
+open_status_menu
+osascript >/dev/null <<OSA
+tell application "System Events" to tell process "$APP_PROCESS"
+  click menu item "Settings…" of menu 1 of menu bar item 1 of menu bar 2
+end tell
+OSA
+if SETTINGS_ID="$(wait_for_window "$APP_PID" 0 10)"; then
+  sleep 1
+  if swift "$AX_PROBE" "$APP_PID" --press "settings.tab.context" --title "Context" \
+       --timeout 10 --dump-on-fail; then
+    # The sheet is its own CGWindow and animates in, so wait for a layer-0
+    # window that is NOT the settings window.
+    if SHEET_ID="$(wait_for_window "$APP_PID" 0 10 "$SETTINGS_ID")"; then
+      sleep 0.5
+      screencapture -o -x -l "$SHEET_ID" "$ASSETS_DIR/settings-enrollment.png"
+    else
+      echo "WARNING: the enrollment sheet never appeared; skipped settings-enrollment.png" >&2
+    fi
+  else
+    echo "WARNING: could not select the Context tab; skipped settings-enrollment.png" >&2
+  fi
+else
+  echo "WARNING: Settings never reopened; skipped settings-enrollment.png" >&2
+fi
+defaults delete "$BUNDLE_ID" "debug.enrollment_sheet_preview" >/dev/null 2>&1 || true
 
 osascript -e "tell application \"$APP_PROCESS\" to quit" >/dev/null 2>&1 || true
 CAPTURE_COMPLETED=1

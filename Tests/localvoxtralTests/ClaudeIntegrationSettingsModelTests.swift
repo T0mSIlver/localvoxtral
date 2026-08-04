@@ -134,6 +134,16 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
                         failure: ClaudeEnrollmentActionFailure(error)
                     )
                 }
+            },
+            performVerificationAsync: { body in
+                do {
+                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
+                } catch {
+                    return ClaudeVerificationAttempt(
+                        checks: [],
+                        failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
             }
         )
     }
@@ -649,6 +659,345 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
 
         XCTAssertTrue(listener.isListening)
         XCTAssertEqual(model.listenerStatus, .listening(port: 8473))
+    }
+
+    // MARK: Step 3 — in-app verification
+
+    func testCheckSetupPublishesInterpretedVerdictsAndNeedsNoConfirmation() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let index = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            let call = index.withLock { value -> Int in
+                defer { value += 1 }
+                return value
+            }
+            return call == 0
+                ? .init(exitCode: 0, message: "401")
+                : .init(exitCode: 0, message: "localvoxtral-remote@localvoxtral")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        XCTAssertTrue(model.verificationChecks.isEmpty, "a sheet must not spawn ssh on opening")
+
+        await model.runVerification()
+
+        // Read-only, so there is deliberately no confirmation gate here — the
+        // gate exists for actions that WRITE.
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertEqual(model.verificationChecks.map(\.passed), [true, true])
+        XCTAssertNil(model.alert, "all-pass must not raise an alert")
+        XCTAssertEqual(calls.withLock { $0 }.count, 2)
+        XCTAssertFalse(model.isPerformingVerification)
+    }
+
+    func testAFailedCheckIsAShortLineInTheSheetAndTheOutputGoesToTheAlert() async throws {
+        let registry = try makeRegistry()
+        let noise = String(repeating: "ssh debug line\n", count: 100)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 255, message: noise)
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        await model.runVerification()
+
+        let tunnel = try XCTUnwrap(model.verificationChecks.first { $0.kind == .tunnel })
+        XCTAssertFalse(tunnel.passed)
+        // Owner rule: the pane/sheet gets one sentence, the log and the alert
+        // get the pages of output.
+        XCTAssertLessThan(tunnel.summary.count, 80)
+        XCTAssertFalse(tunnel.summary.contains("ssh debug line"))
+        XCTAssertTrue(model.alert?.detail.contains("ssh debug line") ?? false)
+    }
+
+    /// `claude plugin list` on the host may print the plugin's configured
+    /// token, and this detail goes to an alert and to the log. Verification
+    /// sends no credential; that does not mean none can come back.
+    func testHostOutputThatEchoesTheTokenIsRedactedBeforeItReachesTheAlert() async throws {
+        let registry = try makeRegistry()
+        let tokenBox = Mutex("")
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "config: token=\(tokenBox.withLock { $0 })")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let token = try XCTUnwrap(model.presentedPlan).token
+        tokenBox.withLock { $0 = token }
+
+        await model.runVerification()
+
+        for check in model.verificationChecks {
+            XCTAssertFalse(check.detail.contains(token))
+            XCTAssertTrue(check.detail.contains(ClaudeRemoteTokenRedaction.placeholder))
+        }
+        XCTAssertFalse(model.alert?.detail.contains(token) ?? false)
+    }
+
+    func testVerificationProbesThePortTheSnippetActuallyForwards() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "401")
+        })
+        let listener = StubListener(hosts: registry)
+        listener.boundPort = 8473
+        let model = makeModel(registry: registry, listener: listener, enrollmentService: service)
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        XCTAssertEqual(presentation.port, 8473)
+        // A listener that moved after the plan was generated must not make the
+        // check answer about a different port than the config the user pasted.
+        listener.boundPort = 9999
+
+        await model.runVerification()
+
+        let script = String(decoding: calls.withLock { $0 }[0].standardInput, as: UTF8.self)
+        XCTAssertTrue(script.contains("127.0.0.1:8473"))
+        XCTAssertFalse(script.contains("9999"))
+    }
+
+    func testAnEnrollmentActionAndACheckCannotInterleave() async throws {
+        let registry = try makeRegistry()
+        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "401")
+        })
+        let model = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            pluginService: { StubPluginService() },
+            enrollmentService: service,
+            performAsync: { body in
+                do {
+                    try body()
+                    return nil
+                } catch {
+                    return ClaudePluginActionFailure(error)
+                }
+            },
+            performEnrollmentAsync: { body in
+                do {
+                    return ClaudeEnrollmentActionAttempt(steps: try body(), failure: nil)
+                } catch {
+                    return ClaudeEnrollmentActionAttempt(
+                        steps: [], failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            },
+            performVerificationAsync: { body in
+                // Park until released — cooperative yields only, no wall-clock.
+                var latch = gate.makeAsyncIterator()
+                _ = await latch.next()
+                do {
+                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
+                } catch {
+                    return ClaudeVerificationAttempt(
+                        checks: [], failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            }
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        let inFlight = Task { await model.runVerification() }
+        while !model.isPerformingVerification { await Task.yield() }
+        XCTAssertTrue(model.isEnrollmentBusy)
+
+        // Both write paths must refuse while a check is running: they share the
+        // sheet, the seams, and the result rows.
+        model.requestSSHConfigInsertion()
+        model.requestRemoteSetup()
+        XCTAssertNil(model.enrollmentConfirmation)
+        await model.runVerification()
+
+        releaseGate.yield(())
+        releaseGate.finish()
+        await inFlight.value
+        XCTAssertEqual(model.verificationChecks.count, 2)
+    }
+
+    func testALateCheckResultFromBeforeARotationNeverSurfacesUnderTheNewToken() async throws {
+        let registry = try makeRegistry()
+        let (gate, releaseGate) = AsyncStream.makeStream(of: Void.self)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 0, message: "401")
+        })
+        let model = ClaudeIntegrationSettingsModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            pluginService: { StubPluginService() },
+            enrollmentService: service,
+            performAsync: { _ in nil },
+            performEnrollmentAsync: { _ in ClaudeEnrollmentActionAttempt(steps: [], failure: nil) },
+            performVerificationAsync: { body in
+                var latch = gate.makeAsyncIterator()
+                _ = await latch.next()
+                do {
+                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
+                } catch {
+                    return ClaudeVerificationAttempt(
+                        checks: [], failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            }
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.presentedPlan).host.id
+
+        let inFlight = Task { await model.runVerification() }
+        while !model.isPerformingVerification { await Task.yield() }
+
+        model.dismissPlan()
+        await model.rotate(hostID: hostID)
+        XCTAssertEqual(
+            model.presentedPlan?.host.id, hostID,
+            "rotation reuses the host id — that reuse is the trap"
+        )
+
+        releaseGate.yield(())
+        releaseGate.finish()
+        await inFlight.value
+
+        XCTAssertTrue(
+            model.verificationChecks.isEmpty,
+            "a check from the previous generation must not render under the rotation sheet"
+        )
+    }
+
+    func testDismissingTheSheetClearsTheVerdicts() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in .init(exitCode: 0, message: "401") })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        await model.runVerification()
+        XCTAssertFalse(model.verificationChecks.isEmpty)
+
+        model.dismissPlan()
+
+        XCTAssertTrue(model.verificationChecks.isEmpty)
+    }
+
+    func testCheckSetupIsUnavailableWithoutARunnerAndSaysSo() async throws {
+        let registry = try makeRegistry()
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: ClaudeRemoteEnrollmentService()
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+
+        await model.runVerification()
+
+        XCTAssertTrue(model.verificationChecks.isEmpty)
+        XCTAssertEqual(model.alert?.detail, "Checking the setup is not available in this build.")
+    }
+
+    // MARK: Screenshot preview
+
+    /// The preview sheet exists to be photographed. It must be incapable of
+    /// touching the registry, `~/.ssh/config`, or an ssh process — so both
+    /// mutating seams fail the test if they are reached at all.
+    func testThePreviewSheetCannotReachTheRunnerOrTheFilesystem() async throws {
+        let registry = try makeRegistry()
+        let fileSystem = RecordingSSHConfigFileSystem()
+        let service = ClaudeRemoteEnrollmentService(
+            runner: { _ in
+                XCTFail("a preview must never spawn ssh")
+                return .init(exitCode: 0, message: "")
+            },
+            sshConfigFileSystem: fileSystem
+        )
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+
+        model.presentPreviewPlan()
+
+        let presentation = try XCTUnwrap(model.presentedPlan)
+        XCTAssertTrue(presentation.isPreview)
+        XCTAssertEqual(presentation.host.label, "build-host")
+        XCTAssertTrue(presentation.token.hasPrefix("lvx-preview-"), "a preview token must read as fake")
+        XCTAssertTrue(model.hosts.isEmpty, "a preview must not enroll anything")
+        XCTAssertNil(
+            registry.authenticate(token: presentation.token),
+            "the sample credential must authenticate nothing"
+        )
+
+        model.requestSSHConfigInsertion()
+        model.requestRemoteSetup()
+        await model.confirmEnrollmentAction()
+        await model.runVerification()
+
+        XCTAssertNil(model.enrollmentConfirmation)
+        XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
+        XCTAssertTrue(model.verificationChecks.isEmpty)
+        XCTAssertEqual(fileSystem.readCount, 0)
+        XCTAssertEqual(fileSystem.writeCount, 0)
+    }
+
+    func testThePreviewNeverReplacesARealSheet() async throws {
+        let registry = try makeRegistry()
+        let model = makeModel(registry: registry, listener: StubListener(hosts: registry))
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let real = try XCTUnwrap(model.presentedPlan)
+
+        model.presentPreviewPlan()
+
+        XCTAssertEqual(model.presentedPlan, real)
+        XCTAssertFalse(try XCTUnwrap(model.presentedPlan).isPreview)
+    }
+
+    func testThePreviewIsOffUnlessTheDebugDefaultIsArmed() throws {
+        let suiteName = "lvx-preview-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertFalse(ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed(defaults: defaults))
+        defaults.set(true, forKey: ClaudeIntegrationSettingsModel.enrollmentSheetPreviewDefaultsKey)
+        XCTAssertTrue(ClaudeIntegrationSettingsModel.isEnrollmentSheetPreviewArmed(defaults: defaults))
+        // `debug.` prefixed: not a product preference, never in the Settings UI.
+        XCTAssertTrue(
+            ClaudeIntegrationSettingsModel.enrollmentSheetPreviewDefaultsKey.hasPrefix("debug.")
+        )
     }
 
     func testAnUnreadableRegistryDisablesTheRemoteSurfaceRatherThanFailingSilently() {
