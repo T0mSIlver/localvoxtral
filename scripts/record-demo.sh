@@ -1372,7 +1372,8 @@ if command -v ffmpeg >/dev/null; then
   echo
   echo "Next: review it (open $OUT_MP4), then drag-drop it into a GitHub PR/issue"
   echo "comment to get a user-attachments URL, and put that URL on its own line"
-  echo "in README.md where the demo goes."
+  echo "where the demo goes (README.md for the hero demo; docs/coding-agents.md"
+  echo "for the herdr scene)."
 else
   echo "ffmpeg missing — upload $RAW_MOV as-is or install ffmpeg and re-run the encode."
 fi

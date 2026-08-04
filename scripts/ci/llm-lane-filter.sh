@@ -2,7 +2,7 @@
 # Decides whether CI's LLM-inference lanes (the polishd live-model integration
 # step) must run for a given change. Kept as a standalone script so the
 # decision logic is testable locally — workflows only register on main, which
-# makes pre-merge workflow testing awkward (see AGENTS.md).
+# makes pre-merge workflow testing awkward.
 #
 # Usage:
 #   scripts/ci/llm-lane-filter.sh <changed-files-file> [marker-text-file]
@@ -24,7 +24,7 @@ MARKER='[run-llm-eval]'
 
 # LLM-relevant paths. A path belongs here when changing it can alter what
 # reaches the model, how the model is run, or how its output is scored —
-# the rule (and the matching human judgment call) lives in AGENTS.md under
+# the rule (and the matching human judgment call) lives in docs/agent/test-tiers.md under
 # "When must the LLM lanes run?". Some patterns are forward-looking for
 # in-flight branches (EvalCorpus, RepoVocabulary, clipboard context); an
 # unmatched pattern costs nothing.

@@ -124,7 +124,7 @@ patch_shortcutrecorder_bundle_lookup
 # inherits this environment, so exporting it here is all the threading needed —
 # but the artifact must also be identifiable at runtime, because "which binary
 # is the owner actually running" has already cost an hour of field debugging
-# once (AGENTS.md). The bundle identifier deliberately does NOT change: a
+# once (docs/agent/field-debugging.md). The bundle identifier deliberately does NOT change: a
 # different one would be a different app to TCC and would throw away the
 # Accessibility grant this build exists to exercise.
 #
