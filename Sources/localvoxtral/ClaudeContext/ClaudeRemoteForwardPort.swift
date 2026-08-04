@@ -34,17 +34,21 @@ public enum ClaudeRemoteForwardPort {
     /// therefore never forced — an untouched enrollment keeps working.
     public static let legacyPort: UInt16 = 8473
 
-    /// Inclusive allocation range: 100 ports starting one "8473" above 28000.
+    /// Inclusive allocation range: 2000 ports, 28473–30472.
     ///
     /// Chosen to sit below every default ephemeral range the remote host might
     /// pick from (Linux 32768–60999, macOS/BSD 49152–65535), so a forward bind
     /// cannot lose a race with an outbound socket on the host, and high enough
-    /// to be unprivileged and unregistered. 100 is deliberately small: it keeps
-    /// the number human-readable in a pasted command, and the birthday
-    /// collision it admits between two of one person's Macs is loud (the
-    /// generated verify step greps for it) rather than silent.
+    /// to be unprivileged and unregistered.
+    ///
+    /// The width is a review decision (2026-08-04). An earlier 100-slot range
+    /// read as "plenty for one person's Macs" and is not: birthday collision at
+    /// 100 slots is ~1% for two Macs and ~37% for ten, and the failure it
+    /// produces — two Macs contending for one remote bind — is precisely the
+    /// one this type exists to make unreachable. 2000 slots takes those to
+    /// ~0.05% and ~2.2%, at the cost of one more digit in a pasted command.
     public static let rangeLowerBound: UInt16 = 28473
-    public static let rangeUpperBound: UInt16 = 28572
+    public static let rangeUpperBound: UInt16 = 30472
 
     static var portCount: UInt16 { rangeUpperBound - rangeLowerBound + 1 }
 
@@ -56,7 +60,12 @@ public enum ClaudeRemoteForwardPort {
     /// with, any other derivation; versioned so a future range change is a
     /// deliberate new function rather than a silent reshuffle of everyone's
     /// ports.
-    private static let derivationDomain = "localvoxtral.claude.remote-forward.v1:"
+    /// v2 since the range widened. Bumping it deliberately re-derives every
+    /// identity onto a new port rather than leaving old installs clustered in
+    /// the first 100 slots — which is safe exactly once, and this is that once:
+    /// nothing has shipped, so no `~/.ssh/config` block and no remote plugin
+    /// config exists in the world carrying a v1 port.
+    private static let derivationDomain = "localvoxtral.claude.remote-forward.v2:"
 
     /// Stable port for one install identity. Pure: same identity, same port,
     /// forever, on every machine — which is what makes the plan reproducible
@@ -66,8 +75,13 @@ public enum ClaudeRemoteForwardPort {
         hasher.update(data: Data(derivationDomain.utf8))
         hasher.update(data: Data(identity.utf8))
         let digest = Array(hasher.finalize())
-        let value = UInt16(digest[0]) << 8 | UInt16(digest[1])
-        return rangeLowerBound + (value % portCount)
+        // 32 bits folded into the range: 16 would be only ~32 whole
+        // multiples of a 2000-slot range, which skews the low slots by ~3%.
+        // Not a security property, but a needless bias in the one number that
+        // exists to spread Macs apart.
+        let value = UInt32(digest[0]) << 24 | UInt32(digest[1]) << 16
+            | UInt32(digest[2]) << 8 | UInt32(digest[3])
+        return rangeLowerBound + UInt16(value % UInt32(portCount))
     }
 
     public static func isAcceptable(_ port: UInt16) -> Bool {
@@ -90,56 +104,154 @@ public enum ClaudeRemoteForwardPort {
     }
 }
 
-/// Reads — and, exactly once, writes — the per-install identity the port is
-/// derived from.
+/// Where the per-install identity lives.
 ///
-/// `UserDefaults`-backed rather than a file: the identity must outlive the
-/// Claude host registry (deleting that file loses every token and forces
-/// re-enrollment anyway, but deleting it must not silently move an enrolled
-/// host's port), and it must be readable before any Claude subsystem exists.
-/// The defaults instance and the generator are injected so tests never touch
-/// the real domain and never depend on a random value.
-/// Deliberately NOT `Sendable`: it holds a `UserDefaults`, which is not, and
-/// pretending otherwise would only move the compiler's objection into a
-/// `@unchecked` annotation nobody can check. Nothing needs to send one — the
-/// port is read once per launch on the main actor and passed around as a
-/// `UInt16`, which is as Sendable as values get. `ClaudeRemoteForwardPort`
-/// itself is pure and reachable from anywhere.
+/// A seam, because the two properties that matter cannot be tested through
+/// `UserDefaults`: that two racing first launches converge on ONE identity, and
+/// that the value survives things `UserDefaults` does not.
+public protocol ClaudeRemoteForwardIdentityStore: Sendable {
+    /// The persisted identity, or nil if there is none yet.
+    func read() throws -> String?
+    /// Persist `candidate` ONLY if nothing is stored yet, and return whatever
+    /// is stored afterwards — the candidate if this caller won, the existing
+    /// value if another one did. Must be atomic against a concurrent claim.
+    func claim(_ candidate: String) throws -> String
+}
+
+/// The identity as a 0600 file next to the enrollment state.
+///
+/// Not `UserDefaults`, for two reasons the review named and both of which end
+/// in the same silent failure — a Mac whose derived port stops matching the
+/// `~/.ssh/config` block and remote plugin config it already handed out:
+///
+/// 1. **Racing first launches.** Read-then-write in the defaults domain is not
+///    atomic, so two processes starting together can each generate an identity
+///    and last-writer-wins; the enrollment that already happened under the
+///    loser's port is then wrong forever. `link(2)` is the fix: it fails with
+///    EEXIST rather than overwriting, so every racer converges on whichever
+///    file appeared first.
+/// 2. **A preferences reset.** `defaults delete com.localvoxtral.app`, a
+///    migration assistant, a restored backup — the host registry in
+///    Application Support survives all of those, and an identity that does not
+///    would silently move every enrolled host's port while the enrollments
+///    themselves look perfectly healthy. Same directory, same fate.
+public struct ClaudeRemoteForwardIdentityFileStore: ClaudeRemoteForwardIdentityStore {
+    private let fileURL: URL
+
+    public init(fileURL: URL = ClaudeRemoteForwardIdentityFileStore.defaultFileURL()) {
+        self.fileURL = fileURL
+    }
+
+    /// Beside `claude-remote-hosts.json`, deliberately.
+    public static func defaultFileURL() -> URL {
+        ClaudeRemoteHostRegistry.defaultFileURL()
+            .deletingLastPathComponent()
+            .appendingPathComponent("claude-remote-forward-identity")
+    }
+
+    public func read() throws -> String? {
+        guard let data = FileManager.default.contents(atPath: fileURL.path),
+              let text = String(data: data, encoding: .utf8)
+        else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    public func claim(_ candidate: String) throws -> String {
+        if let existing = try read() { return existing }
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        // Write a private temp file, then LINK it into place. `link` refuses to
+        // replace an existing name, which is what makes the winner of a race
+        // the one everybody reads — a plain write or a rename would let the
+        // second racer clobber the first and hand the two Macs the same port
+        // this whole type exists to keep apart.
+        let temporary = directory.appendingPathComponent(
+            ".claude-remote-forward-identity.\(UUID().uuidString)"
+        )
+        try Data("\(candidate)\n".utf8).write(to: temporary, options: [.atomic])
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: temporary.path
+        )
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            try FileManager.default.linkItem(at: temporary, to: fileURL)
+        } catch {
+            // Someone else got there first (or we cannot link at all): whatever
+            // is on disk wins. Never overwrite.
+            if let existing = try read() { return existing }
+            throw error
+        }
+        return try read() ?? candidate
+    }
+}
+
+/// Resolves the per-install identity the port is derived from, and — exactly
+/// once per install — creates it.
+///
+/// The `UserDefaults` instance is still injected, but only as the MIGRATION
+/// source: an install that already stored an identity there (this feature's own
+/// first iteration) must keep its port, not silently move to a new one.
 public struct ClaudeRemoteForwardPortAllocator {
-    /// Lives in the `settings.` domain because it is persisted user state, not
-    /// a debug toggle — but it is deliberately not shown in any pane: there is
-    /// nothing to decide here, and a user-editable identity is a user-editable
-    /// port with no matching remote config.
+    /// Where the identity used to live. Read on first use, never written.
     public static let identityDefaultsKey = "settings.claude_remote_forward_identity"
 
-    private let defaults: UserDefaults
+    private let store: any ClaudeRemoteForwardIdentityStore
+    private let legacyDefaults: UserDefaults?
     private let makeIdentity: @Sendable () -> String
 
     public init(
-        defaults: UserDefaults = .standard,
+        store: any ClaudeRemoteForwardIdentityStore = ClaudeRemoteForwardIdentityFileStore(),
+        legacyDefaults: UserDefaults? = .standard,
         makeIdentity: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
-        self.defaults = defaults
+        self.store = store
+        self.legacyDefaults = legacyDefaults
         self.makeIdentity = makeIdentity
     }
 
-    /// The persisted identity, generating and storing one on first use.
+    /// The persisted identity, creating one on first use.
     ///
     /// An empty or whitespace-only stored value is treated as absent: a
-    /// half-written default must not pin every install that suffered it to the
-    /// same port.
+    /// half-written file must not pin every install that suffered it to one
+    /// shared port — the exact failure this feature removes.
     public func installIdentity() -> String {
-        if let stored = defaults.string(forKey: Self.identityDefaultsKey),
+        if let stored = (try? store.read()) ?? nil,
            !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         {
-            return stored
+            return stored.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let generated = makeIdentity()
-        defaults.set(generated, forKey: Self.identityDefaultsKey)
+        let candidate = migratedIdentity() ?? makeIdentity()
+        guard let claimed = try? store.claim(candidate) else {
+            // The file could not be written at all (read-only home, sandbox
+            // denial). Returning the candidate keeps THIS launch coherent; the
+            // next one derives again and logs the same failure. Loud, not
+            // silent: a port that moves between launches is exactly what the
+            // verify step reports as contention.
+            Log.claudeContext.error(
+                "Claude remote forward identity could not be persisted; the allocated port may not survive a relaunch"
+            )
+            return candidate
+        }
         Log.claudeContext.info(
-            "Claude remote forward identity generated; allocated port \(ClaudeRemoteForwardPort.port(forInstallIdentity: generated), privacy: .public)"
+            "Claude remote forward identity resolved; allocated port \(ClaudeRemoteForwardPort.port(forInstallIdentity: claimed), privacy: .public)"
         )
-        return generated
+        return claimed
+    }
+
+    /// The value this feature's first iteration wrote to `UserDefaults`.
+    private func migratedIdentity() -> String? {
+        guard let stored = legacyDefaults?.string(forKey: Self.identityDefaultsKey) else {
+            return nil
+        }
+        let trimmed = stored.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        Log.claudeContext.info("Claude remote forward identity migrated out of UserDefaults")
+        return trimmed
     }
 
     /// This Mac's remote listen port. Stable across launches.

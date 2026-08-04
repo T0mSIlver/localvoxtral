@@ -408,8 +408,10 @@ Key subsystems:
     event JSON to `127.0.0.1:<port>/v1/hook/<Event>` through an OpenSSH
     `RemoteForward` — no localvoxtral binary and no `jq`/`nc`/Node on that
     host, but it does need `sh` and `curl` (fail-open when absent). That
-    remote port is PER-MAC (`ClaudeRemoteForwardPort`: 28473–28572, derived
-    from a persisted per-install identity; the shim reads it from
+    remote port is PER-MAC (`ClaudeRemoteForwardPort`: 28473–30472, derived
+    from a per-install identity persisted in a 0600 file beside the host
+    registry — not in UserDefaults, so a preferences reset cannot move an
+    enrolled host's port; the shim reads it from
     `CLAUDE_PLUGIN_OPTION_PORT`, validates it, and falls back to the legacy
     8473 so pre-existing enrollments keep working). Two Macs asking one host
     for the same bind is not a tie: the FIRST connection keeps the forward and

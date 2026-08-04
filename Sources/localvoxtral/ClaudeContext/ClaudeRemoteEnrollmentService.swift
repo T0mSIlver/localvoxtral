@@ -262,7 +262,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         "# END localvoxtral claude context (\(hostID))"
     }
 
-    static func sshConfigSnippet(
+    /// The marked ssh-config block for one host. Token-free by construction,
+    /// which is what lets the plugin-update path regenerate it for a host whose
+    /// one-time token is long gone.
+    public static func sshConfigSnippet(
         host: ClaudeRemoteHost,
         sshHostAlias: String,
         listenerPort: UInt16,
@@ -326,12 +329,27 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             // an OpenSSH debug line to interpret. The message is deliberately
             // apostrophe-free so it survives single-quoted shell.
             "# Forward check — does this Mac actually own port \(remoteForwardPort) over there?",
-            "# A failure here is EXPECTED while another live session from THIS Mac",
-            "# holds it; anything else means this Mac is receiving nothing.",
-            "ssh -v \(sshHostAlias) true 2>&1 | grep -q '\(ClaudeRemoteForwardPort.forwardFailureSignature)'"
-                + " && echo 'localvoxtral: \(ClaudeRemoteForwardPort.contentionMessage(port: remoteForwardPort, host: sshHostAlias))"
-                + " Close that session, or wait for sshd to reap it, then retry — until then this Mac gets no context from \(sshHostAlias).'"
-                + " || echo 'localvoxtral: port \(remoteForwardPort) forwards cleanly to this Mac.'",
+            "# THREE outcomes, not two. A one-line grep for the forwarding warning",
+            "# gets both edges wrong, which was measured rather than assumed",
+            "# (2026-08-04, OpenSSH 10.0p2 against a live sshd):",
+            "#   * your own live session to this host already holds the port, so a",
+            "#     fresh probe requesting it fails to bind — a healthy setup that a",
+            "#     grep reports as contention (ssh still exits 0),",
+            "#   * an unreachable host, bad key or host-key change never gets far",
+            "#     enough to request a forward, so the grep finds nothing and a",
+            "#     naive check calls it clean (ssh exits 255).",
+            "# So: exit status first, warning second.",
+            "out=$(ssh -v \(sshHostAlias) true 2>&1); rc=$?; "
+                + "if [ $rc -ne 0 ]; then "
+                + "echo \"localvoxtral: could not reach \(sshHostAlias) at all (ssh exit $rc) — fix the connection first; "
+                + "this says nothing about the port.\"; "
+                + "elif echo \"$out\" | grep -q '\(ClaudeRemoteForwardPort.forwardFailureSignature)'; then "
+                + "echo \"localvoxtral: port \(remoteForwardPort) is already bound on \(sshHostAlias). "
+                + "If you have another session open to \(sshHostAlias) from THIS Mac, that is expected and healthy — "
+                + "the first one keeps the forward. If you do not, "
+                + "\(ClaudeRemoteForwardPort.contentionMessage(port: remoteForwardPort, host: sshHostAlias)) "
+                + "and this Mac is getting no context from it.\"; "
+                + "else echo \"localvoxtral: port \(remoteForwardPort) forwards cleanly to this Mac.\"; fi",
             "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
             "# here even though it runs fine when you are logged in.",
             "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)claude plugin list'",
@@ -521,6 +539,14 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// The caller is responsible for obtaining the user's explicit confirmation
     /// immediately before calling this method.
     public func insertSSHConfig(_ plan: SetupPlan, hostID: String) throws {
+        try insertSSHConfig(snippet: plan.sshConfigSnippet, hostID: hostID)
+    }
+
+    /// Same write, for a caller that has a block but no plan — the plugin
+    /// update path, which regenerates this host's block so the port it is
+    /// about to store on the remote and the port this Mac forwards can never
+    /// disagree.
+    public func insertSSHConfig(snippet: String, hostID: String) throws {
         Log.claudeContext.info("Claude remote ssh config insertion requested")
         guard let sshConfigFileSystem else {
             Log.claudeContext.error("Claude remote ssh config insertion failed: editing not configured")
@@ -550,7 +576,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             }
             let updated = Self.applySSHConfigSnippet(
                 to: existing,
-                snippet: plan.sshConfigSnippet,
+                snippet: snippet,
                 hostID: hostID
             )
             if !state.directoryExists {
@@ -566,6 +592,34 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 "Claude remote ssh config insertion failed: \(String(describing: error), privacy: .public)"
             )
             throw error
+        }
+    }
+
+    /// Does this host's marked block already forward `port`?
+    ///
+    /// `nil` means "cannot tell" — no filesystem seam, or a config we refuse to
+    /// read. Callers must treat nil as "not known to match" and regenerate,
+    /// never as "fine": assuming a block is current is exactly how a plugin
+    /// gets a port this Mac does not forward.
+    public func sshConfigForwardsPort(_ port: UInt16, hostID: String) -> Bool? {
+        guard let sshConfigFileSystem else { return nil }
+        guard let state = try? sshConfigFileSystem.readState(),
+              let data = state.configData,
+              let text = String(data: data, encoding: .utf8)
+        else { return nil }
+        let begin = Self.blockBegin(hostID: hostID)
+        let end = Self.blockEnd(hostID: hostID)
+        let lines = text.components(separatedBy: "\n")
+        guard let beginIndex = lines.firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == begin
+        }), let endIndex = lines[beginIndex...].firstIndex(where: {
+            $0.trimmingCharacters(in: .whitespaces) == end
+        }) else { return false }
+        return lines[beginIndex...endIndex].contains { line in
+            let fields = line.trimmingCharacters(in: .whitespaces)
+                .split(separator: " ", omittingEmptySubsequences: true)
+            guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
+            return fields[1] == "\(port)"
         }
     }
 

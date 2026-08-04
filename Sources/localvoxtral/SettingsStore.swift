@@ -572,7 +572,12 @@ final class SettingsStore {
     /// Reading it is what creates the identity, so it is cheap to read and
     /// never returns a different answer on a later launch.
     var claudeRemoteForwardPort: UInt16 {
-        ClaudeRemoteForwardPortAllocator(defaults: defaults).allocatedPort()
+        // The identity itself lives in a 0600 file beside the Claude host
+        // registry, NOT in this domain: a preferences reset must not move an
+        // enrolled host's port while the enrollment that used it survives.
+        // `defaults` is passed only so an identity written by this feature's
+        // first iteration migrates into that file instead of being replaced.
+        ClaudeRemoteForwardPortAllocator(legacyDefaults: defaults).allocatedPort()
     }
 
     /// A sendable, live view of the preference for the broker's background

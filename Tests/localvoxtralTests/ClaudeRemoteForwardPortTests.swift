@@ -85,13 +85,153 @@ final class ClaudeRemoteForwardPortTests: XCTestCase {
         XCTAssertFalse(message.contains("'"))
     }
 
+    // MARK: Identity persistence (review finding 4)
+
+    /// An in-memory store with the one property that matters: `claim` is
+    /// first-writer-wins, like `link(2)`, not last-writer-wins like a
+    /// defaults write.
+    private final class MemoryIdentityStore: ClaudeRemoteForwardIdentityStore, @unchecked Sendable {
+        private let stored = Mutex<String?>(nil)
+        private let claims = Mutex(0)
+
+        var claimCount: Int { claims.withLock { $0 } }
+        var value: String? { stored.withLock { $0 } }
+
+        init(seed: String? = nil) { stored.withLock { $0 = seed } }
+
+        /// Blank is not an identity — same contract as the file store, which
+        /// returns nil for an empty or whitespace-only file. A fake that were
+        /// laxer here would let the allocator's own guard go untested.
+        func read() throws -> String? {
+            stored.withLock { value in
+                guard let value,
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return nil }
+                return value
+            }
+        }
+
+        func claim(_ candidate: String) throws -> String {
+            claims.withLock { $0 += 1 }
+            return stored.withLock { current in
+                if let existing = current,
+                   !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                {
+                    return existing
+                }
+                current = candidate
+                return candidate
+            }
+        }
+    }
+
+    private final class FailingIdentityStore: ClaudeRemoteForwardIdentityStore, @unchecked Sendable {
+        struct Denied: Error {}
+        func read() throws -> String? { nil }
+        func claim(_ candidate: String) throws -> String { throw Denied() }
+    }
+
+    func testTwoRacingFirstLaunchesConvergeOnOneIdentity() throws {
+        // The defaults-based version was a read-then-write with no atomicity:
+        // two processes starting together each generated an identity and the
+        // last writer won, so a host enrolled under the loser's port was wrong
+        // forever. First-writer-wins is the property; this is it, exercised
+        // through the seam.
+        let store = MemoryIdentityStore()
+        let first = ClaudeRemoteForwardPortAllocator(
+            store: store, legacyDefaults: nil, makeIdentity: { "racer-a" }
+        )
+        let second = ClaudeRemoteForwardPortAllocator(
+            store: store, legacyDefaults: nil, makeIdentity: { "racer-b" }
+        )
+
+        XCTAssertEqual(first.installIdentity(), "racer-a")
+        XCTAssertEqual(second.installIdentity(), "racer-a", "the loser must adopt the winner")
+        XCTAssertEqual(first.allocatedPort(), second.allocatedPort())
+    }
+
+    func testAnIdentityOutlivesAPreferencesReset() throws {
+        // `defaults delete`, a migration assistant, a restored backup: the host
+        // registry in Application Support survives all of them, and an identity
+        // that did not would silently move every enrolled host's port while the
+        // enrollments themselves looked healthy.
+        let store = MemoryIdentityStore()
+        let defaults = try defaults()
+        let allocator = ClaudeRemoteForwardPortAllocator(
+            store: store, legacyDefaults: defaults, makeIdentity: { "durable" }
+        )
+        let port = allocator.allocatedPort()
+
+        defaults.removePersistentDomain(forName: defaults.description)
+        let afterReset = ClaudeRemoteForwardPortAllocator(
+            store: store,
+            legacyDefaults: try self.defaults("fresh"),
+            makeIdentity: { XCTFail("a persisted identity must not be regenerated"); return "x" }
+        )
+        XCTAssertEqual(afterReset.allocatedPort(), port)
+    }
+
+    func testAnIdentityWrittenByTheFirstIterationMigratesInsteadOfMoving() throws {
+        // This feature's first iteration stored the identity in UserDefaults.
+        // An install that already has one must keep its port — it may already
+        // have handed that port to a remote host.
+        let defaults = try defaults()
+        defaults.set("legacy-identity", forKey: ClaudeRemoteForwardPortAllocator.identityDefaultsKey)
+        let store = MemoryIdentityStore()
+        let allocator = ClaudeRemoteForwardPortAllocator(
+            store: store, legacyDefaults: defaults, makeIdentity: { "freshly-generated" }
+        )
+
+        XCTAssertEqual(allocator.installIdentity(), "legacy-identity")
+        XCTAssertEqual(store.value, "legacy-identity", "and it must be durable from now on")
+        XCTAssertEqual(
+            allocator.allocatedPort(),
+            ClaudeRemoteForwardPort.port(forInstallIdentity: "legacy-identity")
+        )
+    }
+
+    func testTheFileStoreIsFirstWriterWinsAndPrivate() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-identity-\(UUID().uuidString)")
+        let url = directory.appendingPathComponent("claude-remote-forward-identity")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let store = ClaudeRemoteForwardIdentityFileStore(fileURL: url)
+
+        XCTAssertNil(try store.read())
+        XCTAssertEqual(try store.claim("first"), "first")
+        // The second claim must NOT overwrite — that is the whole point of the
+        // link-based create, and the difference from a plain atomic write.
+        XCTAssertEqual(try store.claim("second"), "first")
+        XCTAssertEqual(try store.read(), "first")
+
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions]
+        XCTAssertEqual(mode as? NSNumber, 0o600)
+        // No temp files left behind next to it.
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { $0.hasPrefix(".claude-remote-forward-identity.") }
+        XCTAssertTrue(leftovers.isEmpty, "\(leftovers)")
+    }
+
+    func testAnUnwritableIdentityStoreStillYieldsAPortForThisLaunch() throws {
+        // Read-only home or a sandbox denial: the launch must still work (and
+        // log), rather than crash or hand back a port of zero.
+        let allocator = ClaudeRemoteForwardPortAllocator(
+            store: FailingIdentityStore(), legacyDefaults: nil, makeIdentity: { "ephemeral" }
+        )
+        XCTAssertEqual(
+            allocator.allocatedPort(),
+            ClaudeRemoteForwardPort.port(forInstallIdentity: "ephemeral")
+        )
+    }
+
     // MARK: Allocator
 
     func testTheIdentityIsGeneratedOnceAndThenReused() throws {
-        let defaults = try defaults()
+        let store = MemoryIdentityStore()
         let generated = Mutex(0)
         let allocator = ClaudeRemoteForwardPortAllocator(
-            defaults: defaults,
+            store: store,
+            legacyDefaults: nil,
             makeIdentity: {
                 generated.withLock { $0 += 1 }
                 return "fixed-identity"
@@ -100,29 +240,26 @@ final class ClaudeRemoteForwardPortTests: XCTestCase {
 
         let first = allocator.allocatedPort()
         let second = allocator.allocatedPort()
-        // A second allocator over the same defaults is what the next launch is.
+        // A second allocator over the same store is what the next launch is.
         let relaunched = ClaudeRemoteForwardPortAllocator(
-            defaults: defaults,
+            store: store,
+            legacyDefaults: nil,
             makeIdentity: { XCTFail("a persisted identity must never be regenerated"); return "x" }
         )
 
         XCTAssertEqual(first, second)
         XCTAssertEqual(relaunched.allocatedPort(), first)
         XCTAssertEqual(generated.withLock { $0 }, 1)
-        XCTAssertEqual(
-            defaults.string(forKey: ClaudeRemoteForwardPortAllocator.identityDefaultsKey),
-            "fixed-identity"
-        )
+        XCTAssertEqual(store.value, "fixed-identity")
     }
 
     func testABlankStoredIdentityIsTreatedAsAbsent() throws {
-        // A half-written default must not pin every install that suffered it to
-        // one shared port — which is the exact failure this whole change exists
-        // to remove.
-        let defaults = try defaults()
-        defaults.set("   ", forKey: ClaudeRemoteForwardPortAllocator.identityDefaultsKey)
+        // A half-written file must not pin every install that suffered it to
+        // one shared port — which is the exact failure this whole change
+        // exists to remove.
+        let store = MemoryIdentityStore(seed: "   ")
         let allocator = ClaudeRemoteForwardPortAllocator(
-            defaults: defaults, makeIdentity: { "regenerated" }
+            store: store, legacyDefaults: nil, makeIdentity: { "regenerated" }
         )
         XCTAssertEqual(allocator.installIdentity(), "regenerated")
         XCTAssertEqual(
@@ -136,22 +273,18 @@ final class ClaudeRemoteForwardPortTests: XCTestCase {
         // remote for one bind. Distinct identities, distinct ports — this is
         // the property, expressed on the two identities that would collide.
         let a = ClaudeRemoteForwardPortAllocator(
-            defaults: try defaults("a"), makeIdentity: { "mac-a" }
+            store: MemoryIdentityStore(), legacyDefaults: nil, makeIdentity: { "mac-a" }
         )
         let b = ClaudeRemoteForwardPortAllocator(
-            defaults: try defaults("b"), makeIdentity: { "mac-b" }
+            store: MemoryIdentityStore(), legacyDefaults: nil, makeIdentity: { "mac-b" }
         )
         XCTAssertNotEqual(a.allocatedPort(), b.allocatedPort())
     }
 
-    @MainActor
-    func testSettingsStoreExposesAStablePortForTheInstall() throws {
-        let defaults = try defaults()
-        let store = SettingsStore(defaults: defaults, environment: [:])
-        let port = store.claudeRemoteForwardPort
-        XCTAssertTrue(ClaudeRemoteForwardPort.isAcceptable(port))
-        XCTAssertEqual(store.claudeRemoteForwardPort, port)
-        // Same defaults domain, new store: the next launch of this install.
-        XCTAssertEqual(SettingsStore(defaults: defaults, environment: [:]).claudeRemoteForwardPort, port)
-    }
+    // `SettingsStore.claudeRemoteForwardPort` is deliberately NOT exercised
+    // here any more: since the identity moved out of UserDefaults and into a
+    // file beside the host registry (review finding 4), reading that property
+    // would create state in the real Application Support directory of whatever
+    // machine runs the suite. The allocator, the file store and the derivation
+    // are covered directly above; the accessor is a one-line call into them.
 }

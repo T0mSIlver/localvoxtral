@@ -38,6 +38,17 @@ private final class MemorySSHConfigFileSystem: ClaudeRemoteSSHConfigFileSystem {
     }
 }
 
+enum ClaudeRemoteRemoteConfigStateFixture {
+    static func state(configText: String) -> ClaudeRemoteSSHConfigState {
+        ClaudeRemoteSSHConfigState(
+            directoryExists: true,
+            configData: Data(configText.utf8),
+            configPermissions: 0o600,
+            directoryPermissions: 0o700
+        )
+    }
+}
+
 final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
     private let host = ClaudeRemoteHost(
         id: "habc1234",
@@ -83,6 +94,44 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             snippet.lowercased().contains("silent"),
             "the cost of `no` — a silently absent tunnel — must be stated where it is chosen"
         )
+    }
+
+    /// Asserts every `--config` in `text` is a COMPLETE `port=<digits>`
+    /// argument.
+    ///
+    /// Whole-token, not `hasPrefix`: a prefix check accepts
+    /// `--config 'port=28511'garbage` and, worse, `--config 'port=1'token=…`,
+    /// which is exactly the shape this assertion exists to forbid (review
+    /// finding, 2026-08-04). The token is matched to its closing quote and
+    /// then required to be followed by whitespace or end-of-string.
+    private func assertEveryConfigArgumentIsThePort(
+        in text: String, line: UInt = #line
+    ) {
+        let key = ClaudeRemoteEnrollmentService.portConfigKey
+        for range in text.ranges(of: "--config ") {
+            let rest = text[range.upperBound...]
+            guard let closing = rest.dropFirst().firstIndex(of: "'") else {
+                XCTFail("unterminated --config argument in: \(text)", line: line)
+                continue
+            }
+            let argument = String(rest[rest.startIndex...closing])
+            let after = rest[rest.index(after: closing)...]
+            // The command may itself be wrapped in the ssh single-quoting, so a
+            // closing quote can be followed by the wrapper's own quote. What
+            // must NOT follow is anything else — `'port=1'token=…` is exactly
+            // the smuggling this assertion exists to reject.
+            XCTAssertTrue(
+                after.isEmpty || after.first == " " || after.first == "\n" || after.first == "'",
+                "a --config argument must END at its closing quote: \(text)"
+            )
+            let digits = argument.dropFirst("'\(key)=".count).dropLast()
+            XCTAssertTrue(
+                argument.hasPrefix("'\(key)=") && !digits.isEmpty
+                    && digits.allSatisfy(\.isNumber),
+                "the only config this path may write is a numeric port, got \(argument)",
+                line: line
+            )
+        }
     }
 
     // MARK: Per-Mac remote port (issue #215)
@@ -132,14 +181,83 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             "with ExitOnForwardFailure no, this string is the ONLY evidence of a lost bind"
         )
         // A user reading this output must be told what to do, not handed an
-        // OpenSSH debug line.
+        // OpenSSH debug line — and must not be told another machine took the
+        // port when the likeliest cause is their own second window.
         XCTAssertTrue(
             joined.contains(
                 ClaudeRemoteForwardPort.contentionMessage(port: 28511, host: "builder")
             ),
             joined
         )
-        XCTAssertTrue(joined.lowercased().contains("no context from builder"))
+        XCTAssertTrue(joined.contains("from THIS Mac, that is expected and healthy"))
+        XCTAssertTrue(joined.lowercased().contains("getting no context from it"))
+    }
+
+    func testTheForwardProbeDistinguishesConnectionFailureFromBindFailure() throws {
+        // Measured, not assumed (2026-08-04, OpenSSH 10.0p2 against a live
+        // sshd): a one-line grep for the forwarding warning is wrong at BOTH
+        // edges. This Mac's own live session holding the port makes a fresh
+        // probe fail to bind — ssh still exits 0 — so a grep calls a healthy
+        // setup contended. An unreachable host never requests a forward at
+        // all, so the grep finds nothing and a naive check calls it clean,
+        // while ssh exits 255. Exit status has to be read first.
+        let probe = try allocatedPlan().verifyCommands.first { $0.contains("ssh -v builder") }
+        let command = try XCTUnwrap(probe)
+        XCTAssertTrue(command.contains("rc=$?"), "the exit status is the first discriminator")
+        XCTAssertTrue(
+            command.contains("if [ $rc -ne 0 ]"),
+            "a connection that never happened must not be reported as a clean port"
+        )
+        XCTAssertTrue(command.contains("could not reach builder at all"))
+        XCTAssertTrue(command.contains(ClaudeRemoteForwardPort.forwardFailureSignature))
+        // The bind-failure branch must not accuse another machine when the
+        // likeliest cause is the user's own second window.
+        XCTAssertTrue(command.contains("from THIS Mac, that is expected and healthy"))
+        XCTAssertTrue(command.contains("forwards cleanly to this Mac"))
+        // Order: status check, then the warning, then success.
+        let statusIndex = try XCTUnwrap(command.range(of: "if [ $rc -ne 0 ]")).lowerBound
+        let warningIndex = try XCTUnwrap(
+            command.range(of: ClaudeRemoteForwardPort.forwardFailureSignature)
+        ).lowerBound
+        XCTAssertLessThan(statusIndex, warningIndex)
+    }
+
+    // MARK: SSH config forward state (review finding 1)
+
+    func testForwardStateReportsWhetherThisHostsBlockAlreadyCarriesThePort() throws {
+        let legacy = ClaudeRemoteEnrollmentService.applySSHConfigSnippet(
+            to: "", snippet: try plan().sshConfigSnippet, hostID: host.id
+        )
+        let filesystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: legacy)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+        XCTAssertEqual(service.sshConfigForwardsPort(8473, hostID: host.id), true)
+        XCTAssertEqual(
+            service.sshConfigForwardsPort(28511, hostID: host.id), false,
+            "a legacy block does not forward the allocated port, and saying it does is the split brain"
+        )
+        XCTAssertEqual(
+            service.sshConfigForwardsPort(28511, hostID: "hunknown"), false,
+            "no block at all is not a match either"
+        )
+    }
+
+    func testForwardStateIsUnknownWithoutAFilesystemSeamAndNeverGuessesTrue() throws {
+        // nil means cannot tell. Callers must regenerate on nil; a `true` here
+        // would let the plugin be pointed at a port nothing forwards.
+        XCTAssertNil(ClaudeRemoteEnrollmentService().sshConfigForwardsPort(28511, hostID: host.id))
+    }
+
+    func testForwardStateIgnoresARemoteForwardOutsideThisHostsBlock() throws {
+        // Someone else's `RemoteForward 28511` elsewhere in the config is not
+        // this host's block being current.
+        let foreign = "Host other\n    RemoteForward 28511 127.0.0.1:8473\n"
+        let filesystem = MemorySSHConfigFileSystem(
+            state: ClaudeRemoteRemoteConfigStateFixture.state(configText: foreign)
+        )
+        let service = ClaudeRemoteEnrollmentService(sshConfigFileSystem: filesystem)
+        XCTAssertEqual(service.sshConfigForwardsPort(28511, hostID: host.id), false)
     }
 
     func testTheUpdatePathMigratesAnAlreadyEnrolledHostToTheAllocatedPort() throws {
@@ -481,10 +599,12 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         }
         // Field report 2026-07-26: the owner read healthy verify output as
         // broken. The commands themselves must say what their output means and
-        // survive a login shell that skips rc files.
+        // survive a login shell that skips rc files. Since 2026-08-04 the
+        // interpretation is emitted by the probe itself, per branch, rather
+        // than sitting in a comment above it.
         XCTAssertTrue(
-            joined.contains("EXPECTED while another live session"),
-            "the forward-failure line needs its interpretation next to it"
+            joined.contains("that is expected and healthy"),
+            "the forward-failure branch needs its interpretation in its own output"
         )
         XCTAssertTrue(
             joined.contains("401 = SUCCESS"),
@@ -549,14 +669,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             // config write, and it is the whole point of this path since #215.
             // Every `--config` on it must be the port one — that is a stricter
             // statement than "no --config", not a looser one.
-            for range in command.ranges(of: "--config") {
-                XCTAssertTrue(
-                    command[range.lowerBound...].hasPrefix(
-                        "--config '\(ClaudeRemoteEnrollmentService.portConfigKey)="
-                    ),
-                    "an update may write the port and nothing else: \(command)"
-                )
-            }
+            assertEveryConfigArgumentIsThePort(in: command)
         }
     }
 
@@ -1077,14 +1190,7 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
             XCTAssertFalse(invocation.argv.joined(separator: " ").contains("token"))
             let script = String(decoding: invocation.standardInput, as: UTF8.self)
             XCTAssertFalse(script.contains("\(ClaudeRemoteEnrollmentService.tokenConfigKey)="))
-            for range in script.ranges(of: "--config") {
-                XCTAssertTrue(
-                    script[range.lowerBound...].hasPrefix(
-                        "--config '\(ClaudeRemoteEnrollmentService.portConfigKey)="
-                    ),
-                    "the only config an update may write is the port"
-                )
-            }
+            assertEveryConfigArgumentIsThePort(in: script)
         }
     }
 

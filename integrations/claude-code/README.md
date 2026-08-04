@@ -242,7 +242,7 @@ Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
 curls the hook's event JSON to `http://127.0.0.1:<your Mac's port>/v1/hook/<Event>`
 on the *remote* loopback; OpenSSH's `RemoteForward` carries that to your Mac's
 loopback port 8473, where the app is listening. That remote port is **allocated
-per Mac** (a stable number in 28473–28572, derived from a per-install identity)
+per Mac** (a stable number in 28473–30472, derived from a per-install identity)
 so two Macs enrolled against one host can never ask for the same bind — see
 "Two Macs, one host" below. The shim reads the token and the port from the
 `CLAUDE_PLUGIN_OPTION_TOKEN` / `CLAUDE_PLUGIN_OPTION_PORT` environment variables
