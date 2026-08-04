@@ -137,6 +137,34 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertEqual(token["sensitive"] as? Bool, true, "the token must be marked sensitive")
     }
 
+    func testPortUserConfigIsDeclaredAndIsNotSensitive() throws {
+        // Per-Mac allocation (#215) needs a second option, and it is the exact
+        // opposite of the token: a port number is not a secret, and marking it
+        // sensitive would hide the one value a user must be able to read back
+        // when the two halves of the tunnel disagree.
+        let userConfig = try XCTUnwrap(try manifest()["userConfig"] as? [String: Any])
+        let port = try XCTUnwrap(
+            userConfig[ClaudeRemoteEnrollmentService.portConfigKey] as? [String: Any]
+        )
+        XCTAssertEqual(port["type"] as? String, "string")
+        XCTAssertNotEqual(port["sensitive"] as? Bool, true)
+        XCTAssertNotNil(port["description"] as? String)
+        XCTAssertEqual(
+            port["default"] as? String, "",
+            "an empty default is what makes the shim fall back to the legacy port"
+        )
+    }
+
+    func testShimReadsThePortEnvVarMatchingTheDeclaredUserConfigKey() throws {
+        // Same contract as the token: Claude Code exposes userConfig to command
+        // hooks as CLAUDE_PLUGIN_OPTION_<KEY>, and a mismatch here is silent.
+        // Verified end to end on 2.1.220: a hook run under
+        // `--config port=28777` dialed http://127.0.0.1:28777/v1/hook/…
+        let expected = "CLAUDE_PLUGIN_OPTION_"
+            + ClaudeRemoteEnrollmentService.portConfigKey.uppercased()
+        XCTAssertTrue(try shimSource().contains(expected), "shim must read \(expected)")
+    }
+
     func testNoTokenValueIsBakedIntoTheManifest() throws {
         // The manifest and shim are public, in a public repo. The only token in
         // them is the env var reference; an actual credential would ship to
@@ -198,8 +226,11 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // their network in the clear. The URL lives in the shim now, so pin it
         // there — template plus the event argument each hook passes.
         let source = try shimSource()
-        let template = "http://127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)"
-            + "\(ClaudeRemoteHTTPCodec.hookPathPrefix)$EVENT"
+        // The port is a validated variable since per-Mac allocation (#215); the
+        // ADDRESS is not, and never becomes one. `$PORT` is what the validation
+        // block above it produces, and the fallback it clamps to is asserted in
+        // `testShimFallsBackToTheLegacyPortWhenTheOptionIsAbsentOrJunk`.
+        let template = "http://127.0.0.1:$PORT\(ClaudeRemoteHTTPCodec.hookPathPrefix)$EVENT"
         XCTAssertTrue(
             source.contains("\"\(template)\""),
             "the shim must POST to the tunnelled loopback port on the per-event path"
@@ -347,15 +378,29 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     /// Runs the shim under `/bin/sh` with exactly the given extra environment
     /// (a nil-token run REMOVES the variable), a `{}` event body on stdin, and
-    /// captures everything.
+    /// captures everything. Unless the caller supplies its own state dir, the
+    /// backoff stamp is pointed at a throwaway `XDG_RUNTIME_DIR` so no test
+    /// run ever reads or writes real per-user state under `~/.cache`.
     private func runShim(
+        event: String = "Stop",
         environment: [String: String]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let isolatedState = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: isolatedState, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: isolatedState) }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [shimURL.path, "Stop"]
+        process.arguments = [shimURL.path, event]
         var processEnvironment = ProcessInfo.processInfo.environment
         processEnvironment.removeValue(forKey: "CLAUDE_PLUGIN_OPTION_TOKEN")
+        // The enrichment allowlist is cleared unless a test sets it: a runner
+        // that happens to be inside tmux (or herdr) would otherwise leak its own
+        // pane into every "nothing is set" assertion.
+        for field in ClaudeRemoteEnvironmentField.allCases {
+            processEnvironment.removeValue(forKey: String(field.shellSource.dropFirst()))
+        }
+        processEnvironment["XDG_RUNTIME_DIR"] = isolatedState.path
         processEnvironment.merge(environment) { _, new in new }
         process.environment = processEnvironment
         let stdin = Pipe()
@@ -458,12 +503,20 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     /// Runs the shim with a stub `curl` first on PATH that "answers" with the
     /// given status and body: it honors `--output <path>` the way the real curl
-    /// does, drains stdin, and prints the status as `--write-out` would. The
-    /// real system PATH stays behind it, so `grep`/`cat`/`wc` resolve normally.
-    /// A nil body means curl "succeeded" without ever writing the output file —
-    /// the shape a reset tunnel produces.
+    /// does, drains stdin, prints the status as `--write-out` would, and exits
+    /// with `curlExitCode` (nonzero = the transport-level failure a dead tunnel
+    /// produces; the shim then clears `STATUS`). The real system PATH stays
+    /// behind it, so `grep`/`cat`/`wc` resolve normally. A nil body means curl
+    /// "succeeded" without ever writing the output file — the shape a reset
+    /// tunnel produces. When `extraEnvironment` sets `FAKE_CURL_LOG`, the stub
+    /// appends one line per invocation, so a test can prove curl was — or was
+    /// NOT — dialed at all.
     private func runShimWithStubCurl(
-        status: String, body: Data?
+        event: String = "Stop",
+        status: String,
+        body: Data?,
+        curlExitCode: Int32 = 0,
+        extraEnvironment: [String: String] = [:]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let stubDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-stub-\(UUID().uuidString)")
@@ -476,23 +529,583 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         #!/bin/sh
         out=""
         previous=""
+        url=""
         for argument in "$@"; do
           [ "$previous" = "--output" ] && out="$argument"
+          if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
+            case "$argument" in
+            @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
+            esac
+          fi
+          url="$argument"
           previous="$argument"
         done
+        # One line per invocation, carrying the URL: proves both THAT curl was
+        # dialed (or was not, during backoff) and WHERE — the per-Mac port is
+        # only real if it reaches the wire.
+        [ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\\n' "$url" >>"$FAKE_CURL_LOG"
         cat >/dev/null
         [ -n "$out" ] && cp "$FAKE_CURL_BODY" "$out" 2>/dev/null
         printf '%s' "$FAKE_CURL_STATUS"
+        exit "${FAKE_CURL_EXIT:-0}"
         """
         try script.write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
-        return try runShim(environment: [
+        var environment = [
             "CLAUDE_PLUGIN_OPTION_TOKEN": "unit-test-token",
             "PATH": "\(stubDirectory.path):\(systemPath)",
             "FAKE_CURL_BODY": bodyFixture.path,
             "FAKE_CURL_STATUS": status,
+            "FAKE_CURL_EXIT": String(curlExitCode),
+        ]
+        environment.merge(extraEnvironment) { _, new in new }
+        return try runShim(event: event, environment: environment)
+    }
+
+    // MARK: Shim environment enrichment
+    //
+    // The shim adds an allowlisted set of env values as `X-Lvx-Env-*` headers
+    // (the body must stay Claude Code's event JSON byte-for-byte — there is no
+    // jq on the remote host to merge anything into it). Two properties are
+    // tested by RUNNING the shim against the stub curl and reading the header
+    // file it actually wrote: the values arrive in the exact spelling the
+    // listener's parser reads, and a hostile value cannot forge a header line.
+
+    /// Runs the shim with the given extra environment and returns the header
+    /// file curl was handed, verbatim. This is the real artifact — not the
+    /// shim's source, and not a reconstruction.
+    private func capturedRequestHeaders(
+        environment: [String: String], event: String = "Stop"
+    ) throws -> String {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-headers-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let dump = directory.appendingPathComponent("headers")
+        var extra = environment
+        extra["FAKE_CURL_HEADER_DUMP"] = dump.path
+        let result = try runShimWithStubCurl(
+            event: event,
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: extra
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "", "enrichment must not make the shim noisy")
+        return (try? String(contentsOf: dump, encoding: .utf8)) ?? ""
+    }
+
+    /// The captured header block, re-parsed by the REAL request-head parser and
+    /// read by the REAL env codec — the two sides of the contract meeting on
+    /// bytes the shim produced.
+    private func parseCapturedHeaders(_ captured: String) throws -> ClaudeRemoteHTTPRequest {
+        let lines = captured.split(separator: "\n").map(String.init)
+        var head = "POST /v1/hook/Stop HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        for line in lines { head += line + "\r\n" }
+        head += "Content-Length: 2\r\n\r\n{}"
+        return try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8)).request
+    }
+
+    func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
+        // One distinct value per variable, so a copy-pasted header name shows
+        // up as a swap rather than as a test that still passes.
+        var environment: [String: String] = [:]
+        var expected = ClaudeRemoteSessionEnvironment()
+        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+            let variable = String(field.shellSource.dropFirst())
+            environment[variable] = "value-\(field.rawValue)"
+            expected[field] = "value-\(field.rawValue)"
+        }
+        let captured = try capturedRequestHeaders(environment: environment)
+        let request = try parseCapturedHeaders(captured)
+        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
+
+        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+            XCTAssertEqual(
+                parsed[field], expected[field],
+                "\(field.shellSource) did not arrive as \(field.headerName)"
+            )
+        }
+        // `$PPID` is the shell's own, so it cannot be injected — assert its
+        // SHAPE instead. Without it, a later arm would have no handle at all on
+        // the Claude Code process on the remote host.
+        let parentPID = try XCTUnwrap(parsed.hookParentPID, "the shim must report its parent pid")
+        XCTAssertFalse(parentPID.isEmpty)
+        XCTAssertTrue(parentPID.allSatisfy(\.isNumber), "a pid is digits: \(parentPID)")
+        // The token header is still the first thing in the file and untouched.
+        XCTAssertEqual(request.bearerToken, "unit-test-token")
+    }
+
+    func testShimSendsNoEnvHeadersWhenNoneOfTheVariablesAreSet() throws {
+        // Everything unset (the stub environment inherits the runner's, which
+        // has none of these) leaves only Authorization and the always-present
+        // parent pid: a plain host must not pay for a feature it is not using.
+        let captured = try capturedRequestHeaders(environment: [:])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
+        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+            XCTAssertNil(parsed?[field], "\(field.headerName) must not be sent when unset")
+        }
+    }
+
+    func testShimTreatsAnExportedButEmptyVariableAsAbsent() throws {
+        let captured = try capturedRequestHeaders(environment: [
+            "HERDR_PANE_ID": "", "CMUX_SURFACE_ID": "",
         ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Herdr-Pane-Id"))
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Cmux-Surface-Id"))
+    }
+
+    func testShimRefusesToWriteAnEnvValueThatCouldForgeAHeaderLine() throws {
+        // The header-injection cases. Each of these, written unvalidated, would
+        // let the remote host add headers of its own — including a second
+        // Authorization, which the listener's duplicate rejection would then
+        // turn into a hard 400 on every hook. The charset whitelist makes it
+        // impossible before a byte is written.
+        let hostile: [(String, String)] = [
+            ("CRLF", "pane\r\nAuthorization: Bearer stolen"),
+            ("bare LF", "pane\nX-Evil: 1"),
+            ("bare CR", "pane\rX-Evil: 1"),
+            ("space", "pane 7"),
+            ("tab", "pane\tX-Evil: 1"),
+            ("quote", "pane\"7"),
+            ("backslash", "pane\\7"),
+            ("command substitution", "pane$(id)"),
+            ("backtick", "pane`id`"),
+            ("non-ASCII", "pane-\u{e9}"),
+            ("over the length cap", String(repeating: "a", count: 201)),
+        ]
+        for (name, value) in hostile {
+            let captured = try capturedRequestHeaders(environment: ["HERDR_PANE_ID": value])
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
+                "\(name): the value must be dropped, not escaped"
+            )
+            XCTAssertFalse(captured.contains("X-Evil"), "\(name): forged a header")
+            XCTAssertFalse(
+                captured.contains("Bearer stolen"), "\(name): forged an Authorization"
+            )
+            // The request still parses, and still carries exactly one token —
+            // fail-open means a bad env value costs a hint, never the hook.
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(name)")
+        }
+    }
+
+    func testShimDropsMultibyteValuesUnderAUTF8Locale() throws {
+        // Review finding: a bracket RANGE (`[A-Za-z]`) follows the active
+        // COLLATION, so under a UTF-8 locale `[a-z]` can match `é` — and
+        // `${#var}` counts CHARACTERS, so 200 accented characters would have
+        // become a ~400-byte header line while passing a "200 byte" cap. The
+        // shim now enumerates the charset (no ranges to collate) and runs the
+        // checks under `LC_ALL=C`.
+        //
+        // The locale is set for the shim process. On a host without
+        // `en_US.UTF-8` the shell falls back to C and the value is rejected for
+        // the plain reason instead — the assertion holds either way, and on the
+        // macOS runner (where the locale exists) it exercises the real path.
+        let cases: [(String, String)] = [
+            ("one accented character", "pan\u{c9}7"),
+            ("200 accented characters, ~400 bytes", String(repeating: "\u{c9}", count: 200)),
+        ]
+        for (name, value) in cases {
+            let captured = try capturedRequestHeaders(environment: [
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
+                "HERDR_PANE_ID": value,
+                "SSH_TTY": "/dev/pts/3",
+            ])
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Herdr-Pane-Id"),
+                "\(name): a multibyte value must be dropped in every locale"
+            )
+            XCTAssertTrue(
+                captured.utf8.allSatisfy { $0 < 0x80 },
+                "\(name): no non-ASCII byte may reach the header file"
+            )
+            // Fail-open is unchanged: the neighbour and the token still go.
+            XCTAssertTrue(captured.contains("X-Lvx-Env-Ssh-Tty: /dev/pts/3"), name)
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", name)
+        }
+    }
+
+    func testShimValidationIsWrittenToBeLocaleIndependent() throws {
+        // Source-level, because the behavioural test above cannot fail on a
+        // runner whose locale data is missing. These two properties are what
+        // make the check locale-independent, and both are easy to undo by
+        // "simplifying" the pattern back to ranges.
+        let source = try shimSource()
+        XCTAssertTrue(
+            source.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
+            "the charset must be ENUMERATED; a bracket range follows collation"
+        )
+        // Scoped to the env-validation function's own body: the comment above
+        // it necessarily quotes the range syntax it warns against, and the
+        // unrelated backoff code legitimately digit-checks an epoch stamp.
+        let body = try XCTUnwrap(
+            source.range(of: "lvx_env_header() {").map { start in
+                let rest = source[start.upperBound...]
+                let end = rest.range(of: "\n}")?.lowerBound ?? rest.endIndex
+                return String(rest[..<end])
+            },
+            "the env-validation function must still be called lvx_env_header"
+        )
+        for range in ["A-Za-z", "a-z]", "0-9]"] {
+            XCTAssertFalse(
+                body.contains(range),
+                "no collation-sensitive range may validate an env value: \(range)"
+            )
+        }
+        XCTAssertTrue(
+            source.contains("LC_ALL=C"),
+            "the validation must run under LC_ALL=C so ${#var} is a byte count"
+        )
+    }
+
+    func testShimSendsAValueExactlyAtTheLengthCap() throws {
+        // The other side of the cap: a real herdr socket path is long, and an
+        // off-by-one here would silently drop every one of them.
+        let atCap = String(repeating: "a", count: 200)
+        let captured = try capturedRequestHeaders(environment: ["HERDR_PANE_ID": atCap])
+        let request = try parseCapturedHeaders(captured)
+        XCTAssertEqual(
+            ClaudeRemoteEnvironmentCodec.environment(in: request.headers)?.herdrPaneID, atCap
+        )
+    }
+
+    func testShimSourceCoversTheWholeAllowlistWithNoDrift() throws {
+        // Source-level, because a variable the shim never reads is invisible to
+        // every behavioural test above: it simply never appears. This is the
+        // assertion that fails when the Swift allowlist grows and the shim does
+        // not, which would otherwise ship as a join arm that never joins.
+        let source = try shimSource()
+        for field in ClaudeRemoteEnvironmentField.allCases {
+            let expected = field == .hookParentPID
+                ? "'\(field.headerName)' \"${PPID:-}\""
+                : "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
+            XCTAssertTrue(
+                source.contains(expected),
+                "the shim must publish \(field.shellSource) as \(field.headerName): \(expected)"
+            )
+        }
+    }
+
+    func testShimKeepsTheEnvHeadersOutOfArgvAndInThePrivateHeaderFile() throws {
+        // Same rule as the token, for the same reason: /proc/<pid>/cmdline is
+        // world-readable. It also keeps the curl invocation itself untouched.
+        let source = try shimSource()
+        for field in ClaudeRemoteEnvironmentField.allCases {
+            for line in source.split(separator: "\n") where line.contains("curl") {
+                XCTAssertFalse(
+                    line.contains(field.headerName),
+                    "no curl argument may carry \(field.headerName): \(line)"
+                )
+            }
+        }
+        XCTAssertTrue(
+            source.contains(">>\"$WORK/header\""),
+            "env headers must be appended to the same private header file as the token"
+        )
+    }
+
+    // MARK: Shim port selection (issue #215)
+    //
+    // The port arrives from plugin config on a machine we cannot see, and it is
+    // spliced into a URL. These tests RUN the shim and read the URL the stub
+    // curl was actually handed, because "the variable is referenced" is not the
+    // same statement as "the request went there".
+
+    /// Runs the shim with the given `port` config and returns every URL dialed.
+    private func dialedURLs(
+        port: String?,
+        event: String = "Stop"
+    ) throws -> [String] {
+        let logDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-port-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: logDirectory) }
+        let log = logDirectory.appendingPathComponent("curl.log")
+        var environment = [
+            "FAKE_CURL_LOG": log.path,
+            // A private, empty stamp home: the backoff must not skip a dial and
+            // make an assertion about the URL vacuously true.
+            "XDG_RUNTIME_DIR": logDirectory.path,
+        ]
+        if let port { environment["CLAUDE_PLUGIN_OPTION_PORT"] = port }
+        let result = try runShimWithStubCurl(
+            event: event,
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "", "port handling must stay silent on stderr")
+        guard let text = try? String(contentsOf: log, encoding: .utf8) else { return [] }
+        return text.split(separator: "\n").map(String.init)
+    }
+
+    func testShimDialsThePortItWasConfiguredWith() throws {
+        XCTAssertEqual(
+            try dialedURLs(port: "28511"),
+            ["http://127.0.0.1:28511\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"]
+        )
+    }
+
+    func testShimFallsBackToTheLegacyPortWhenTheOptionIsAbsentOrJunk() throws {
+        let legacy = "http://127.0.0.1:\(ClaudeRemoteForwardPort.legacyPort)"
+            + "\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"
+        // Absent is the pre-#215 install, and it must keep working exactly as
+        // it did. The rest is validation: a value that is not a plain,
+        // in-range, non-octal-looking port number must never reach the URL —
+        // `8473;evil` in a URL is a mangled request, `999999` in `[ … -lt … ]`
+        // is an oversized constant some shells refuse WITH OUTPUT ON STDERR,
+        // and a leading zero is read as octal by some `test` implementations.
+        for value in [nil, "", "abc", "28500x", "12 34", "-1", "0", "08473", "999999", "65536", "1023", "8473;evil"] {
+            XCTAssertEqual(
+                try dialedURLs(port: value), [legacy],
+                "port \(value.map { "\"\($0)\"" } ?? "<unset>") must clamp to the legacy port"
+            )
+        }
+    }
+
+    func testShimAcceptsTheEdgesOfTheDocumentedAcceptableRange() throws {
+        // The Swift side (`ClaudeRemoteForwardPort.acceptableRange`) and this
+        // shell validation are one rule written twice; these pin them together.
+        for port in [ClaudeRemoteForwardPort.acceptableRange.lowerBound,
+                     ClaudeRemoteForwardPort.rangeLowerBound,
+                     ClaudeRemoteForwardPort.rangeUpperBound,
+                     ClaudeRemoteForwardPort.acceptableRange.upperBound] {
+            XCTAssertEqual(
+                try dialedURLs(port: String(port)),
+                ["http://127.0.0.1:\(port)\(ClaudeRemoteHTTPCodec.hookPathPrefix)Stop"]
+            )
+        }
+    }
+
+    // MARK: Shim transport backoff
+    //
+    // While an SSH session holds the RemoteForward but the app is not running,
+    // every dial makes the ssh client ON THE MAC print
+    // `connect_to 127.0.0.1 port 8473 failed` onto the user's terminal — over
+    // the herdr pane or the Claude Code TUI, once per hook. That stderr is
+    // another process on another machine; the shim's only lever is to stop
+    // dialing a tunnel that just proved dead. These tests RUN the shim against
+    // the stub curl and prove the contract: a transport failure arms a stamp,
+    // later events skip curl entirely, UserPromptSubmit always dials through,
+    // and any completed HTTP exchange clears the stamp. Every odd stamp state
+    // fails toward dialing — the pre-backoff behavior.
+
+    /// A throwaway backoff-state home shared across several shim runs, plus
+    /// the stamp path the shim derives from it.
+    private func makeBackoffState() throws -> (dir: URL, stamp: URL, environment: [String: String]) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-backoff-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return (
+            dir,
+            dir.appendingPathComponent("localvoxtral/hook-backoff"),
+            ["XDG_RUNTIME_DIR": dir.path]
+        )
+    }
+
+    private func writeStamp(_ contents: String, at stamp: URL) throws {
+        try FileManager.default.createDirectory(
+            at: stamp.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try contents.write(to: stamp, atomically: true, encoding: .utf8)
+    }
+
+    private func freshEpochStamp(secondsAgo: Int = 0) -> String {
+        "\(Int(Date().timeIntervalSince1970) - secondsAgo)\n"
+    }
+
+    func testTransportFailureArmsTheBackoffAndLaterEventsSkipTheDialEntirely() throws {
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+
+        // A dead tunnel: curl exits 7, no status, no body. Silent as ever —
+        // and the stamp is now armed with epoch seconds.
+        let failure = try runShimWithStubCurl(
+            event: "Stop", status: "", body: nil, curlExitCode: 7,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(failure.exitCode, 0)
+        XCTAssertEqual(failure.stdout, "")
+        XCTAssertEqual(failure.stderr, "")
+        let stampText = try String(contentsOf: state.stamp, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(stampText.isEmpty, "a transport failure must arm the backoff stamp")
+        XCTAssertTrue(stampText.allSatisfy(\.isNumber), "the stamp must be epoch seconds: \(stampText)")
+
+        // Inside the window, an ordinary event must not invoke curl AT ALL —
+        // the dial itself is what makes ssh print. The stub would both log the
+        // invocation and answer a perfectly valid marker body; neither may
+        // happen.
+        let log = state.dir.appendingPathComponent("curl.log")
+        let backedOff = try runShimWithStubCurl(
+            event: "PostToolUse", status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+        )
+        XCTAssertEqual(backedOff.exitCode, 0)
+        XCTAssertEqual(backedOff.stdout, "", "a backed-off event must print nothing")
+        XCTAssertEqual(backedOff.stderr, "")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: log.path),
+            "curl must not be dialed during the backoff window"
+        )
+    }
+
+    func testUserPromptSubmitDialsThroughAnArmedBackoffAndSuccessClearsIt() throws {
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        try writeStamp(freshEpochStamp(), at: state.stamp)
+
+        // The prompt event is exempt: it must dial straight through the armed
+        // stamp, deliver the marker, and — having completed an exchange —
+        // clear the backoff.
+        let body = ClaudeRemoteHTTPCodec.markerResponseBody(marker: "lvx-441e1124")
+        let prompt = try runShimWithStubCurl(
+            event: "UserPromptSubmit", status: "200", body: body,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(prompt.exitCode, 0)
+        XCTAssertEqual(
+            Data(prompt.stdout.utf8), body,
+            "UserPromptSubmit must dial straight through an armed backoff"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: state.stamp.path),
+            "a completed exchange must clear the stamp"
+        )
+
+        // With the stamp gone, ordinary events dial again.
+        let log = state.dir.appendingPathComponent("curl.log")
+        let stop = try runShimWithStubCurl(
+            event: "Stop", status: "200", body: body,
+            extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+        )
+        XCTAssertEqual(stop.exitCode, 0)
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: log.path),
+            "Stop must dial again once the backoff is cleared"
+        )
+    }
+
+    func testEvenA401ClearsTheBackoffBecauseTheExchangeCompleted() throws {
+        // A 401 proves the tunnel terminates at a listener — nothing will make
+        // ssh complain — so it must clear the stamp exactly like a 200.
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        try writeStamp(freshEpochStamp(), at: state.stamp)
+
+        let result = try runShimWithStubCurl(
+            event: "UserPromptSubmit", status: "401", body: nil,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "")
+        XCTAssertEqual(result.stderr, "")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: state.stamp.path),
+            "any completed HTTP exchange must clear the stamp"
+        )
+    }
+
+    func testExpiredCorruptAndFutureStampsAllFailTowardDialing() throws {
+        // Backoff must only ever SUBTRACT noise. An expired stamp, garbage
+        // content, or a clock that jumped backwards (stamp in the future) all
+        // mean the same thing: dial, exactly as before the backoff existed.
+        let stamps = [
+            ("expired", freshEpochStamp(secondsAgo: 3600)),
+            ("corrupt", "not-a-number\n"),
+            ("future", freshEpochStamp(secondsAgo: -100_000)),
+            ("oversized", "99999999999999999999999999\n"),
+        ]
+        for (name, contents) in stamps {
+            let state = try makeBackoffState()
+            defer { try? FileManager.default.removeItem(at: state.dir) }
+            try writeStamp(contents, at: state.stamp)
+            let log = state.dir.appendingPathComponent("curl.log")
+            let result = try runShimWithStubCurl(
+                event: "Stop", status: "200",
+                body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+                extraEnvironment: state.environment.merging(["FAKE_CURL_LOG": log.path]) { _, new in new }
+            )
+            XCTAssertEqual(result.exitCode, 0, "\(name): must still exit 0")
+            XCTAssertEqual(result.stderr, "", "\(name): must never print on stderr")
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: log.path),
+                "\(name): a \(name) stamp must fail toward dialing"
+            )
+        }
+    }
+
+    func testArmingReplacesAPrePlantedSymlinkInsteadOfWritingThroughIt() throws {
+        // The stamp write must be tempfile + mv: rename(2) replaces a symlink
+        // planted at the stamp path, where a direct `>` redirect would follow
+        // it and clobber whatever the link points at. Same-user scope, but the
+        // shim's own hygiene bar (mktemp, umask 077, 0600 header) demands it.
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        let victim = state.dir.appendingPathComponent("victim")
+        let victimContents = "precious user data\n"
+        try victimContents.write(to: victim, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(
+            at: state.stamp.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: state.stamp, withDestinationURL: victim)
+
+        let result = try runShimWithStubCurl(
+            event: "Stop", status: "", body: nil, curlExitCode: 7,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "")
+        XCTAssertEqual(
+            try String(contentsOf: victim, encoding: .utf8), victimContents,
+            "arming the backoff must never write through a symlink at the stamp path"
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: state.stamp.path)
+        XCTAssertEqual(
+            attributes[.type] as? FileAttributeType, .typeRegular,
+            "the symlink must have been replaced by a regular stamp file"
+        )
+        let stampText = try String(contentsOf: state.stamp, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertTrue(stampText.allSatisfy(\.isNumber), "the stamp must be epoch seconds: \(stampText)")
+    }
+
+    func testArmingTightensAPreExistingLooseStampDirectory() throws {
+        // `mkdir -p` leaves an existing directory's mode alone, so a stamp dir
+        // that pre-existed at 0777 (misconfig, prior tool) would let another
+        // local user replace the stamp or plant a symlink. Arming must chmod
+        // it to 0700.
+        let state = try makeBackoffState()
+        defer { try? FileManager.default.removeItem(at: state.dir) }
+        let stampDirectory = state.stamp.deletingLastPathComponent()
+        try FileManager.default.createDirectory(
+            at: stampDirectory, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o777]
+        )
+
+        let result = try runShimWithStubCurl(
+            event: "Stop", status: "", body: nil, curlExitCode: 7,
+            extraEnvironment: state.environment
+        )
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stderr, "")
+        let attributes = try FileManager.default.attributesOfItem(atPath: stampDirectory.path)
+        XCTAssertEqual(
+            (attributes[.posixPermissions] as? NSNumber)?.int16Value, 0o700,
+            "arming must tighten a pre-existing loose stamp directory to 0700"
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: state.stamp.path),
+            "the stamp must still be armed after the chmod"
+        )
     }
 
     func testPostToolUseMatchesOnlyFileBearingTools() throws {
@@ -591,7 +1204,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     func testReadmeDocumentsTheTunnelAndTheInstallSide() throws {
         // Config/command directives are anchored to their own line; the install-
         // side caveat is prose, so it is pinned to a single line as wording.
-        try assertReadmeHasLine(equalTo: "RemoteForward 8473 127.0.0.1:8473")
+        // Per-Mac remote port (#215): the listen port is an example number the
+        // app generates, the target is always this Mac's listener.
+        try assertReadmeHasLine(
+            containing: "RemoteForward 28511 127.0.0.1:\(ClaudeRemoteListenerLimits.default.port)",
+            "the block must forward a per-Mac remote port to the app's listener port"
+        )
         try assertReadmeHasLine(
             equalTo: "claude plugin marketplace add "
                 + ClaudeRemoteEnrollmentService.repositoryMarketplaceReference,
@@ -601,6 +1219,24 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // Installing the wrong plugin on the wrong side fails open forever and
         // looks exactly like a tunnel problem.
         try assertReadmeHasLine(containing: "Install it on the REMOTE host, not on your Mac")
+    }
+
+    func testReadmeExplainsWhenTheAppShouldHoldTheTunnelItself() throws {
+        // Without this section, the app-held forward is a toggle with no
+        // documented reason to exist — and the state it fixes (a harness
+        // session publishing into a tunnel nobody holds) is invisible.
+        try assertReadmeHasLine(
+            containing: "Keep the tunnel open",
+            "name the control the user is looking for"
+        )
+        try assertReadmeHasLine(
+            containing: "ExitOnForwardFailure=yes",
+            "the flag is the opposite of the config block above it, and that needs saying"
+        )
+        try assertReadmeHasLine(
+            containing: "off by default",
+            "an app opening SSH connections unasked would be the worse bug"
+        )
     }
 
     func testReadmeIsHonestAboutTheHostDependency() throws {
@@ -622,6 +1258,28 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         try assertReadmeHasLine(
             containing: "silent",
             "the cost of `no` is a silently absent tunnel; a user who is not told will not look"
+        )
+    }
+
+    func testReadmeDocumentsTheAppDownSSHNoiseAndTheBackoff() throws {
+        // The failure mode reads as "the plugin is printing errors" when the
+        // printer is actually ssh on the Mac. Name the exact message a user
+        // will see, say the shim backs off rather than dialing, and keep the
+        // UserPromptSubmit exemption stated — it is the one residual line a
+        // user WILL still see per prompt while the app is down.
+        // OpenSSH's exact format string is `connect_to %.100s port %d: failed.`
+        // (channels.c) — quote it verbatim so a user can search for it.
+        try assertReadmeHasLine(
+            containing: "connect_to 127.0.0.1 port 8473: failed.",
+            "name the exact ssh message so a user can search for it"
+        )
+        try assertReadmeHasLine(
+            containing: "stops dialing",
+            "the fix is not dialing, and the doc must say so"
+        )
+        try assertReadmeHasLine(
+            containing: "`UserPromptSubmit` still dials every time",
+            "the residual one-line-per-prompt signal is deliberate and must be stated"
         )
     }
 

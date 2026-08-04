@@ -261,7 +261,7 @@ case "$CMD" in
   integration)
     ENSURE_SERVER="speechd"
     REMOTE_CMD=(env VLLM_REALTIME_TEST_ENABLE=1
-      VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit
+      VLLM_REALTIME_TEST_MODEL=T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
       swift test --filter RealtimeAPIVLLMIntegrationTests "$@")
     ;;
   integration-polishd)
@@ -392,13 +392,13 @@ case "$CMD" in
     if [[ -n "$E2E_RECORDING_DIR" ]]; then
       printf '{"helperPath": "%s", "asrModel": "%s", "recordingDirectory": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" \
         "$E2E_RECORDING_DIR" \
         >"$E2E_MARKER"
     else
       printf '{"helperPath": "%s", "asrModel": "%s"}\n' \
         "PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd" \
-        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-MLX-4bit" \
+        "T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead" \
         >"$E2E_MARKER"
     fi
     REMOTE_CMD=(swift test --filter AgentDictationE2EEvalTests)

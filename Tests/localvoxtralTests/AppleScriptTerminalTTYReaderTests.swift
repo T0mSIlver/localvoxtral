@@ -58,7 +58,7 @@ final class AppleScriptTerminalTTYReaderTests: XCTestCase {
     /// consent probe must therefore ask the same question under a timeout long
     /// enough for a human to answer the sheet.
     func testConsentPrewarmScriptGivesTheUserTimeToAnswerTheSheet() throws {
-        for bundleID in TerminalScreenAllowlist.supportedBundleIDs {
+        for bundleID in TerminalScreenAllowlist.appleEventBundleIDs {
             let readSource = try XCTUnwrap(
                 AppleScriptTerminalTTYReader.scriptSource(forBundleID: bundleID)
             )
@@ -102,13 +102,34 @@ final class AppleScriptTerminalTTYReaderTests: XCTestCase {
         )
     }
 
-    /// Every join-supported terminal has a TTY script: a bundle admitted to
-    /// the allowlist without a reader would silently lose its TTY-first join.
-    func testEverySupportedBundleHasAScriptSource() {
-        for bundleID in TerminalScreenAllowlist.supportedBundleIDs {
+    /// Every Apple-event terminal has a TTY script: a bundle admitted to that
+    /// route without a reader would silently lose its TTY-first join.
+    ///
+    /// The set is `appleEventBundleIDs`, not every supported bundle, because
+    /// cmux joins over its own control socket and has no scripting dictionary
+    /// at all — it does not lose a TTY join it never had, and an Apple event
+    /// sent to it could only raise a consent prompt for nothing.
+    func testEveryAppleEventBundleHasAScriptSource() {
+        for bundleID in TerminalScreenAllowlist.appleEventBundleIDs {
             XCTAssertNotNil(
                 AppleScriptTerminalTTYReader.scriptSource(forBundleID: bundleID),
-                "\(bundleID) is join-supported but has no TTY script"
+                "\(bundleID) is join-supported over Apple events but has no TTY script"
+            )
+        }
+    }
+
+    func testSocketRouteTerminalsAreNeverSentAppleEvents() {
+        for bundleID in TerminalScreenAllowlist.socketCaptureBundleIDs {
+            XCTAssertFalse(
+                TerminalScreenAllowlist.appleEventBundleIDs.contains(bundleID),
+                "\(bundleID) answers on its own socket; an Apple event to it asks nothing"
+            )
+            XCTAssertNil(
+                AppleScriptTerminalTTYReader.scriptSource(forBundleID: bundleID),
+                "\(bundleID) has no scripting dictionary to read a TTY from"
+            )
+            XCTAssertNil(
+                AppleScriptTerminalTTYReader.consentPrewarmScriptSource(forBundleID: bundleID)
             )
         }
     }

@@ -144,6 +144,61 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         XCTAssertEqual(persisted.hosts.first?.hashVersion, ClaudeRemoteHostRegistry.currentHashVersion)
     }
 
+    /// Review finding (PR #197): the update/rotate paths had to guess the ssh
+    /// alias from the display name, so a host NAMED `prod` and REACHED over
+    /// alias `builder` would have been acted on as `prod` — a different
+    /// machine. The alias the user enrolled with is persisted for exactly this,
+    /// and survives the relaunch that separates enrollment from an update.
+    func testTheEnrolledSSHAliasIsPersistedSeparatelyFromTheLabel() throws {
+        let first = try makeRegistry()
+        let enrollment = try first.enroll(label: "prod", sshHostAlias: "builder")
+        XCTAssertEqual(enrollment.host.label, "prod")
+        XCTAssertEqual(enrollment.host.sshHostAlias, "builder")
+
+        let second = try makeRegistry()
+        XCTAssertEqual(second.hosts().first?.sshHostAlias, "builder")
+    }
+
+    func testAnUnusableSSHAliasIsNotStoredAtAll() throws {
+        // A stored alias is later allowed to reach ssh's argv, so the registry
+        // stores only what the validator accepts — nil, never a repaired value
+        // that some caller would then trust.
+        let registry = try makeRegistry()
+        for alias in ["-V", "two words", "host#comment", ""] {
+            let enrollment = try registry.enroll(label: "host", sshHostAlias: alias)
+            XCTAssertNil(enrollment.host.sshHostAlias, "'\(alias)' must not be stored")
+        }
+    }
+
+    func testAHostStoredBeforeAliasesWereRecordedLoadsWithoutOne() throws {
+        // The key is absent in files written by earlier builds. That must read
+        // back as "no alias" — not as a decode failure, which would report the
+        // whole store unreadable and strand every enrolled host.
+        let storedHost = ClaudeRemoteHostRegistry.StoredHost(
+            id: "hlegacy02",
+            label: "legacy",
+            createdAt: clock.now(),
+            lastSeenAt: nil,
+            revokedAt: nil,
+            tokenSalt: "legacySalt_1234567890",
+            tokenHash: "abc",
+            hashVersion: nil
+        )
+        let storedFile = ClaudeRemoteHostRegistry.StoredFile(
+            version: ClaudeRemoteHostRegistry.fileVersion,
+            hosts: [storedHost]
+        )
+        let json = try XCTUnwrap(
+            String(data: try JSONEncoder.claudeRemote.encode(storedFile), encoding: .utf8)
+        )
+        XCTAssertFalse(json.contains("sshHostAlias"), "an absent alias must not be written as null")
+        io.seed(Data(json.utf8), at: fileURL)
+
+        let registry = try makeRegistry()
+        XCTAssertEqual(registry.hosts().map(\.id), ["hlegacy02"])
+        XCTAssertNil(registry.hosts().first?.sshHostAlias)
+    }
+
     func testLabelIsSanitized() throws {
         let registry = try makeRegistry()
         // Anything that could act is dropped, not escaped. There is no host
@@ -206,8 +261,21 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         // The public type is what a UI, a log line, and a diagnostics export all
         // see. Reflection over it is the check that no secret property was added
         // later by someone who only meant to make debugging easier.
+        // `sshHostAlias` joined this allowlist deliberately (PR #197): it is
+        // the name of a host in the user's own ssh config, not a credential,
+        // and the alternative — guessing it from the label — acted on the wrong
+        // machine.
         let properties = Mirror(reflecting: enrollment.host).children.compactMap(\.label)
-        XCTAssertEqual(Set(properties), ["id", "label", "createdAt", "lastSeenAt", "revokedAt"])
+        // `persistentForwardEnabled` joined it for the same reason: it is a
+        // per-host preference (does the app hold this host's ssh forward), not
+        // credential material, and the pane has to be able to render it.
+        XCTAssertEqual(
+            Set(properties),
+            [
+                "id", "label", "sshHostAlias", "createdAt", "lastSeenAt", "revokedAt",
+                "persistentForwardEnabled",
+            ]
+        )
         let described = String(describing: enrollment.host)
         XCTAssertFalse(described.contains(enrollment.token))
     }
@@ -362,6 +430,73 @@ final class ClaudeRemoteHostRegistryTests: XCTestCase {
         advance(10)
         registry.noteActivity(hostID: enrollment.host.id)
         XCTAssertEqual(io.written(at: fileURL), before)
+    }
+
+    // MARK: Persistent forward opt-in
+
+    func testThePersistentForwardFlagIsOffUntilItIsTurnedOnAndSurvivesARelaunch() throws {
+        // Spawning ssh on someone's behalf is an opt-in, and "the file was
+        // silent about it" must read as off — never as on.
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        XCTAssertFalse(try XCTUnwrap(registry.host(id: host.id)).persistentForwardEnabled)
+
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        XCTAssertTrue(try XCTUnwrap(registry.host(id: host.id)).persistentForwardEnabled)
+
+        // A second registry over the same store is the next launch.
+        let relaunched = try makeRegistry()
+        XCTAssertTrue(try XCTUnwrap(relaunched.host(id: host.id)).persistentForwardEnabled)
+
+        try registry.setPersistentForwardEnabled(false, hostID: host.id)
+        XCTAssertFalse(
+            try XCTUnwrap(makeRegistry().host(id: host.id)).persistentForwardEnabled,
+            "turning it off must persist too, or the app resumes ssh on the next launch"
+        )
+    }
+
+    func testAFileWrittenBeforeTheFlagExistedReadsAsOff() throws {
+        // Forward compatibility, same rule as the alias: an older file has no
+        // key, and the safe reading of silence is "do not start ssh".
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        let stored = try XCTUnwrap(io.read(from: fileURL))
+        var json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: stored) as? [String: Any]
+        )
+        var hosts = try XCTUnwrap(json["hosts"] as? [[String: Any]])
+        hosts = hosts.map { entry in
+            var copy = entry
+            copy.removeValue(forKey: "persistentForwardEnabled")
+            return copy
+        }
+        json["hosts"] = hosts
+        try io.write(try JSONSerialization.data(withJSONObject: json), to: fileURL)
+
+        XCTAssertFalse(try XCTUnwrap(makeRegistry().host(id: host.id)).persistentForwardEnabled)
+    }
+
+    func testRemovingAHostTakesItsForwardFlagWithIt() throws {
+        // The reason the flag lives in the registry rather than in a parallel
+        // preference: a separate store would keep a dead host's switch, and
+        // could hand it to a future host that reused the id.
+        let registry = try makeRegistry(hostIDs: ["hsame123", "hsame123"])
+        let first = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: first.id)
+        try registry.remove(hostID: first.id)
+
+        let second = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        XCTAssertEqual(second.id, first.id, "the id allocator was pinned to reuse it")
+        XCTAssertFalse(second.persistentForwardEnabled)
+    }
+
+    func testSettingTheFlagOnAnUnknownHostIsReportedNotIgnored() throws {
+        let registry = try makeRegistry()
+        XCTAssertThrowsError(try registry.setPersistentForwardEnabled(true, hostID: "hnope")) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteHostRegistry.StoreError, .unknownHost("hnope")
+            )
+        }
     }
 
     // MARK: Store integrity

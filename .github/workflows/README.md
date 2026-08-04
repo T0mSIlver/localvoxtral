@@ -11,6 +11,17 @@ with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
 retention) for symbolicating field crashes. Same-repo branches run on the
 self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
 
+Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
+PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
+the job packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle after
+the launch smoke and uploads it as `localvoxtral-app-dogfood` (7-day
+retention) plus `localvoxtral-dsym-dogfood` (30-day — the instrumented
+binary's UUID differs from the clean dSYM's). Fetch and launch it with
+`scripts/try-pr.sh <pr|main> --dogfood`,
+which also arms the runtime capture default. On manual dispatch the
+conditional live-model lanes (polishd/speechd) skip — the dispatched ref's
+own push/PR run already decided them.
+
 The same `build-test` check takes a docs/scripts-only fast path when every
 changed file passes `scripts/ci/docs-only-filter.sh`; it then skips all Swift,
 helper, packaging, artifact, smoke, warm, and integration steps. The filter

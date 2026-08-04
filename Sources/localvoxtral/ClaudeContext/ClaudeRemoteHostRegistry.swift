@@ -18,9 +18,28 @@ public struct ClaudeRemoteHost: Sendable, Equatable, Identifiable {
     public let id: String
     /// User-facing name (typically the SSH host alias). Sanitized on enroll.
     public var label: String
+    /// The alias the user enrolled with, when it is still a valid one.
+    ///
+    /// Nil for hosts enrolled before this was persisted. The label is NOT a
+    /// usable substitute: the two are separate fields on the enrollment form,
+    /// so a host named `prod` can have alias `builder`, and running setup
+    /// against the name would act on a machine the user never chose (review
+    /// finding, PR #197). Anything that would ssh somewhere therefore needs
+    /// this, and treats nil as "ask, or copy only".
+    public var sshHostAlias: String?
     public var createdAt: Date
     public var lastSeenAt: Date?
     public var revokedAt: Date?
+    /// Whether the app should hold this host's SSH `RemoteForward` open itself
+    /// (`ClaudeRemoteForwardSupervisor`), instead of relying on one of the
+    /// user's interactive sessions to hold it. Off by default: spawning ssh on
+    /// someone's behalf is an opt-in, per host.
+    ///
+    /// It lives HERE rather than in a parallel preference so that removing a
+    /// host removes the flag with it. A separate store would keep a dead host's
+    /// switch alive and, worse, could hand it to a future host that reused the
+    /// id.
+    public var persistentForwardEnabled: Bool = false
 
     public var isRevoked: Bool { revokedAt != nil }
 }
@@ -315,14 +334,26 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         /// Absent means the legacy unframed SHA-256 construction. New and
         /// rotated credentials are HMAC v2; legacy hosts migrate on rotation.
         var hashVersion: Int? = nil
+        /// Absent for hosts enrolled before the alias was persisted. Optional
+        /// rather than a new file version: an older build reading this file
+        /// ignores the key, and a newer build reading an older file gets nil
+        /// and degrades to copy-only — neither loses a host.
+        var sshHostAlias: String? = nil
+        /// Absent means off, which is both the default and the safe reading:
+        /// the app never starts spawning ssh for a host because a file it read
+        /// was silent on the subject. Optional for the same
+        /// forward/backward-compatibility reason as the alias above.
+        var persistentForwardEnabled: Bool? = nil
 
         var publicView: ClaudeRemoteHost {
             ClaudeRemoteHost(
                 id: id,
                 label: label,
+                sshHostAlias: sshHostAlias,
                 createdAt: createdAt,
                 lastSeenAt: lastSeenAt,
-                revokedAt: revokedAt
+                revokedAt: revokedAt,
+                persistentForwardEnabled: persistentForwardEnabled ?? false
             )
         }
     }
@@ -426,6 +457,31 @@ public final class ClaudeRemoteHostRegistry: Sendable {
         state.withLock { $0.first { $0.id == id }?.publicView }
     }
 
+    /// Active hosts whose enrolled ssh alias IS this destination.
+    ///
+    /// The join side of the alias: the process table says the focused terminal
+    /// is an ssh client going to `builder`, and this answers "and is `builder`
+    /// a host the user enrolled?". Revoked hosts are not candidates — a
+    /// credential the user withdrew must not keep authorizing a context join.
+    ///
+    /// Compared case-insensitively, because a hostname is, and an ssh config
+    /// alias is used as one in practice. That makes the comparison WIDER, which
+    /// is safe only because a match is a precondition of the remote herdr arm
+    /// and never the join: the pane id, the marker, and the foreground process
+    /// all still have to agree afterwards.
+    ///
+    /// Returns the STORED alias, not the destination the user typed: that is
+    /// the string `ClaudeRemoteEnrollmentService.isValidHostAlias` vetted at
+    /// enrollment, and it is the one allowed to reach an argv.
+    public func hosts(matchingSSHDestination destination: String) -> [ClaudeRemoteHost] {
+        let needle = destination.lowercased()
+        guard !needle.isEmpty else { return [] }
+        return hosts().filter { host in
+            guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
+            return alias.lowercased() == needle
+        }
+    }
+
     /// Whether binding the listener is worth doing at all.
     ///
     /// No enrolled host means no port is opened. A feature nobody has set up
@@ -509,9 +565,15 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     ///
     /// - Returns: the host and its plaintext token. This is the only time the
     ///   token is knowable; show it, then let it go.
-    public func enroll(label: String) throws -> ClaudeRemoteEnrollment {
+    /// - Parameter sshHostAlias: the alias the user typed. Stored only when it
+    ///   is a valid alias — a stored value is later allowed to reach `ssh`'s
+    ///   argv, so it is checked here rather than trusted from a caller.
+    public func enroll(label: String, sshHostAlias: String? = nil) throws -> ClaudeRemoteEnrollment {
         let cleanLabel = Self.sanitizeLabel(label)
         guard !cleanLabel.isEmpty else { throw StoreError.invalidLabel }
+        let cleanAlias = sshHostAlias.flatMap {
+            ClaudeRemoteEnrollmentService.isValidHostAlias($0) ? $0 : nil
+        }
         let token = makeToken()
         let salt = makeToken()
         let timestamp = now()
@@ -533,7 +595,8 @@ public final class ClaudeRemoteHostRegistry: Sendable {
                 revokedAt: nil,
                 tokenSalt: salt,
                 tokenHash: ClaudeRemoteTokenDigest.hash(token: token, salt: salt),
-                hashVersion: Self.currentHashVersion
+                hashVersion: Self.currentHashVersion,
+                sshHostAlias: cleanAlias
             )
             hosts.append(host)
             return host
@@ -580,6 +643,23 @@ public final class ClaudeRemoteHostRegistry: Sendable {
             hosts[index].tokenSalt = ""
         }
         Log.claudeContext.info("Revoked Claude remote host \(hostID, privacy: .public)")
+    }
+
+    /// Turn the app-held forward on or off for one host.
+    ///
+    /// Transactional like every other mutation: a flag memory accepted and disk
+    /// refused would mean an ssh process this app starts on every launch and a
+    /// Settings toggle that reads off.
+    public func setPersistentForwardEnabled(_ enabled: Bool, hostID: String) throws {
+        try transact { hosts in
+            guard let index = hosts.firstIndex(where: { $0.id == hostID }) else {
+                throw StoreError.unknownHost(hostID)
+            }
+            hosts[index].persistentForwardEnabled = enabled
+        }
+        Log.claudeContext.info(
+            "Claude remote persistent forward \(enabled ? "enabled" : "disabled", privacy: .public) for host \(hostID, privacy: .public)"
+        )
     }
 
     public func remove(hostID: String) throws {

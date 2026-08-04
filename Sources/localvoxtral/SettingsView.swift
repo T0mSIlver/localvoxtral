@@ -130,7 +130,7 @@ struct SettingsView: View {
                     viewModel: viewModel
                 )
             case .about:
-                AboutSettingsPane(viewModel: viewModel)
+                AboutSettingsPane(settings: settings, viewModel: viewModel)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -814,7 +814,7 @@ private struct TextProcessingSettingsPane: View {
                             // excerpts its hooks already reported, and never
                             // causes anything on this machine to be read.
                             SettingsHelpText(
-                                "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in Ghostty; local polishing endpoints only."
+                                "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in a supported terminal, or a Remote Control session in the focused browser tab; local polishing endpoints only."
                             )
                         }
                     }
@@ -886,7 +886,28 @@ private struct TextProcessingSettingsPane: View {
                     }
                 }
 
+                // A row in the EXISTING group, never a new group: pane group
+                // structure is constant (owner rule, 2026-07-04).
+                SettingsFieldRow(title: "Join Claude Code sessions in cmux") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+
+                        // Names the prerequisite AND the send. cmux exposes no
+                        // accessible text, so the socket is the only way to
+                        // read the pane the user is dictating into — and that
+                        // socket refuses everyone by default, which is a setup
+                        // step in ANOTHER app that the user has to know about
+                        // or this toggle will look broken.
+                        SettingsHelpText(
+                            "Uses cmux's automation socket to tell which session you are dictating into, and to read that one surface as context. In cmux, set Settings → Automation socket mode to Password and choose a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
+                        )
+                    }
+                }
+
                 if let claude = viewModel.claudeIntegrationSettings {
+                    ClaudeCmuxPasswordSettingsRow(model: claude)
                     ClaudePluginSettingsRow(model: claude)
                     ClaudeRemoteHostsSettingsRow(model: claude)
                 }
@@ -977,6 +998,41 @@ private struct ClaudePluginSettingsRow: View {
     }
 }
 
+/// The cmux automation-socket password, stored in the Keychain.
+///
+/// A write-only field on purpose: the stored secret is never read back into the
+/// UI, so what the user typed leaves the process the moment they save it, and
+/// the row reports only whether one is stored.
+private struct ClaudeCmuxPasswordSettingsRow: View {
+    @Bindable var model: ClaudeIntegrationSettingsModel
+
+    var body: some View {
+        SettingsFieldRow(title: "cmux socket password") {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    SecureField("cmux socket password", text: $model.cmuxPasswordField)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+
+                    Button("Save") {
+                        model.saveCmuxPassword()
+                    }
+
+                    Text(model.cmuxStatusText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                SettingsHelpText(
+                    "Stored in your Keychain and sent only to cmux's local socket. Save an empty field to remove it."
+                )
+            }
+        }
+    }
+}
+
 /// Enrolled SSH hosts, and the preview-first setup for each.
 private struct ClaudeRemoteHostsSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
@@ -991,6 +1047,12 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     )
                 } else {
                     hostList
+                    // The only place a rejected connection is visible without
+                    // the unified log. It is what an hours-long stream of
+                    // rejections looked like from the app: nothing at all.
+                    if let hint = model.rejectionHint {
+                        SettingsInlineMessage(hint, color: .orange)
+                    }
                     enrollmentForm
                     listenerStatus
                 }
@@ -1037,17 +1099,18 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(host.label).font(.callout)
-                            HStack(spacing: 3) {
-                                Text(host.statusText)
-                                // Self-updating, and no formatter to cache.
-                                if let lastSeenAt = host.lastSeenAt, !host.isRevoked {
-                                    Text(lastSeenAt, style: .relative)
-                                }
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            // Rendered by the model against its injected clock —
+                            // "Last context: 2 min ago" — and refreshed with the
+                            // rest of the section. A tunnel that quietly stopped
+                            // delivering context is otherwise invisible here.
+                            Text(host.statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Button("Update Plugin…") { model.requestPluginUpdate(hostID: host.id) }
+                            .controlSize(.small)
+                            .disabled(model.isPerformingEnrollmentAction)
                         Button("Rotate Token") { Task { await model.rotate(hostID: host.id) } }
                             .controlSize(.small)
                         if !host.isRevoked {
@@ -1056,9 +1119,128 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                         }
                         Button("Remove") { Task { await model.remove(hostID: host.id) } }
                             .controlSize(.small)
+                            // Removing the row an action is reporting into is
+                            // handled (the late-result guard drops the outcome),
+                            // but offering it mid-run is still offering a race.
+                            .disabled(model.isPerformingEnrollmentAction)
                     }
+                    persistentForwardRow(for: host)
+                    pluginUpdatePanel(for: host)
                 }
             }
+        }
+    }
+
+    /// The app-held tunnel switch for one host, INSIDE that host's row.
+    ///
+    /// Not a new group: a pane's group structure is constant (owner rule
+    /// 2026-07-04), and this belongs to a host, not to the feature. It is the
+    /// same idiom as `pluginUpdatePanel` — per-host sub-UI under the host line.
+    ///
+    /// A host with no alias on file gets no toggle at all rather than a
+    /// disabled one with an explanation: there is nothing to enable, because we
+    /// were never told where to ssh.
+    @ViewBuilder
+    private func persistentForwardRow(
+        for host: ClaudeIntegrationSettingsModel.HostRow
+    ) -> some View {
+        if host.canHoldForward {
+            HStack(spacing: 8) {
+                Toggle(
+                    "Keep the tunnel open",
+                    isOn: Binding(
+                        get: { host.persistentForwardEnabled },
+                        set: { model.setPersistentForward($0, hostID: host.id) }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                if let status = host.forwardStatusText {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(host.forwardIsFailure ? Color.red : .secondary)
+                        .lineLimit(1)
+                }
+                if host.forwardIsFailure {
+                    Button("Retry") { model.retryPersistentForward(hostID: host.id) }
+                        .controlSize(.small)
+                }
+                Spacer()
+            }
+            .padding(.leading, 12)
+        }
+    }
+
+    /// One host's plugin-update commands, disclosed in that host's row.
+    ///
+    /// In the row rather than a new group, and confirmed and reported where the
+    /// button is (PR #194): a result the user has to go looking for is a result
+    /// they conclude never happened.
+    @ViewBuilder
+    private func pluginUpdatePanel(for host: ClaudeIntegrationSettingsModel.HostRow) -> some View {
+        if let update = model.presentedPluginUpdate, update.hostID == host.id {
+            // BOTH mutations, in order — not just the remote commands. The
+            // copy-only paths (no recorded alias; the symlink refusal that
+            // sends the user here) are exactly where showing only the commands
+            // recreated the split brain this feature exists to remove.
+            let commands = update.applicationText
+            let action = ClaudeIntegrationSettingsModel.EnrollmentAction.updateRemotePlugin(hostID: host.id)
+            let pendingConfirmation = model.enrollmentConfirmation.flatMap {
+                $0.action == action ? $0 : nil
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Update the plugin on \(host.label)").font(.caption).bold()
+                    Spacer()
+                    Button("Copy") {
+                        // No token here — the update keeps the stored one — but
+                        // concealed anyway, so a Settings copy cannot ride into
+                        // the next polish prompt's clipboard context.
+                        ConcealedPasteboardWriter.write(commands)
+                    }
+                    .controlSize(.small)
+                    Button("Close") { model.dismissPluginUpdate() }
+                        .controlSize(.small)
+                        .disabled(model.isPerformingEnrollmentAction)
+                }
+                // The displayed block IS the confirmation preview, highlighted
+                // while the question is pending, so confirming still repeats the
+                // exact commands it authorizes.
+                Text(commands)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(6)
+                    .background(
+                        pendingConfirmation != nil
+                            ? Color.orange.opacity(0.10) : Color.secondary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 4)
+                    )
+                if let confirmation = pendingConfirmation {
+                    Text(confirmation.title).font(.caption).bold()
+                    HStack {
+                        Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                        Button(confirmation.confirmButtonTitle) {
+                            Task { await model.confirmEnrollmentAction() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .controlSize(.small)
+                } else if update.canRun {
+                    Button("Run on SSH host") { model.requestPluginUpdateRun() }
+                        .controlSize(.small)
+                        .disabled(model.isPerformingEnrollmentAction)
+                } else {
+                    Text("Replace your-ssh-host with the alias from your ~/.ssh/config, then apply both steps above yourself — the ssh-config block first.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if model.enrollmentResultsAction == action {
+                    ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
+                }
+            }
+            .padding(.leading, 8)
+            .padding(.bottom, 4)
         }
     }
 
@@ -1092,6 +1274,43 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
+        }
+    }
+}
+
+/// One action's outcome, rendered inside the section whose button ran it.
+///
+/// A pooled results area below step 2 is how a step-1 success went unseen in the
+/// field and got re-confirmed — so the caller places this, and the model's
+/// `enrollmentResultsAction` decides which caller gets to.
+private struct ClaudeEnrollmentStepResults: View {
+    let statuses: [ClaudeIntegrationSettingsModel.EnrollmentStepStatus]
+
+    var body: some View {
+        if !statuses.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(statuses) { step in
+                    Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
+                        .font(.caption)
+                        .foregroundStyle(step.succeeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                        .lineLimit(1)
+                }
+                let details = statuses
+                    .map(\.detail)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n\n")
+                if !details.isEmpty {
+                    ScrollView {
+                        Text(details)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 90)
+                    .padding(6)
+                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
         }
     }
 }
@@ -1135,16 +1354,26 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         enrollmentAction: .insertSSHConfig,
                         action: { model.requestSSHConfigInsertion() }
                     )
+                    // No Run button when the alias is the placeholder: this host
+                    // was enrolled before the alias was persisted, so we do not
+                    // know where to send a token. Copy still works.
                     section(
                         "2. Run on the remote host",
                         body: plan.remoteCommands.joined(separator: "\n"),
                         displayedBody: ClaudeIntegrationSettingsModel.redactedRemoteCommands(for: presentation),
-                        note: "One-click execution sends the token through SSH stdin, never process arguments.",
-                        actionTitle: "Run on SSH host",
+                        note: presentation.canRunRemoteSetup
+                            ? "One-click execution sends the token through SSH stdin, never process arguments."
+                            : "Replace \(ClaudeIntegrationSettingsModel.unknownAliasPlaceholder) with the alias from your ~/.ssh/config and run these yourself — this host was enrolled before localvoxtral recorded its alias.",
+                        actionTitle: presentation.canRunRemoteSetup ? "Run on SSH host" : nil,
                         enrollmentAction: .runRemoteSetup,
-                        action: { model.requestRemoteSetup() }
+                        action: presentation.canRunRemoteSetup ? { model.requestRemoteSetup() } : nil
                     )
                     section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
+                    section(
+                        "Update later",
+                        body: plan.updateCommands.joined(separator: "\n"),
+                        note: "Also available per host in Settings, once localvoxtral ships a newer plugin."
+                    )
                     section("Uninstall", body: plan.uninstallCommands.joined(separator: "\n"), note: nil)
 
                     VStack(alignment: .leading, spacing: 4) {
@@ -1170,35 +1399,10 @@ private struct ClaudeRemoteEnrollmentSheet: View {
         .frame(width: 560, height: 520)
     }
 
-    /// One step's outcome, rendered inside the section whose button ran it.
-    /// A pooled results area below step 2 is how a step-1 success went unseen
-    /// in the field and got re-confirmed.
     @ViewBuilder
     private func sectionResults(for enrollmentAction: ClaudeIntegrationSettingsModel.EnrollmentAction) -> some View {
-        if model.enrollmentResultsAction == enrollmentAction, !model.enrollmentStepStatuses.isEmpty {
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(model.enrollmentStepStatuses) { step in
-                    Text("\(step.succeeded ? "✓" : "✗") \(step.text)")
-                        .font(.caption)
-                        .foregroundStyle(step.succeeded ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
-                        .lineLimit(1)
-                }
-                let details = model.enrollmentStepStatuses
-                    .map(\.detail)
-                    .filter { !$0.isEmpty }
-                    .joined(separator: "\n\n")
-                if !details.isEmpty {
-                    ScrollView {
-                        Text(details)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: 90)
-                    .padding(6)
-                    .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
-                }
-            }
+        if model.enrollmentResultsAction == enrollmentAction {
+            ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
         }
     }
 
@@ -1268,11 +1472,24 @@ private struct ClaudeRemoteEnrollmentSheet: View {
 }
 
 private struct AboutSettingsPane: View {
+    let settings: SettingsStore
     let viewModel: DictationViewModel
 
     private var appName: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String
             ?? "localvoxtral"
+    }
+
+    /// Shows the in-memory value the capture pipeline actually consults
+    /// (DictationViewModel+DogfoodCapture), not a live defaults read — a
+    /// `defaults write` while the app runs takes effect on relaunch, and the
+    /// row must describe what THIS process is doing.
+    private var dogfoodCaptureArmed: Bool {
+        #if LOCALVOXTRAL_DOGFOOD
+        settings.dogfoodCaptureEnabled
+        #else
+        false
+        #endif
     }
 
     private var appVersion: String {
@@ -1294,6 +1511,29 @@ private struct AboutSettingsPane: View {
 
                 SettingsFieldRow(title: "Version") {
                     Text("\(appVersion) (build \(appBuild))")
+                }
+
+                // Constant row, variant-dependent content: "which binary am I
+                // running" is exactly the question that has cost field-debug
+                // time before (AGENTS.md), and version alone can't answer it —
+                // dogfood builds keep the same version and bundle id.
+                SettingsFieldRow(title: "Build") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(
+                            DogfoodBuildStatus.label(
+                                isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
+                                captureArmed: dogfoodCaptureArmed
+                            )
+                        )
+                        .foregroundStyle(DogfoodBuildStatus.isDogfoodBuild ? Color.orange : Color.primary)
+
+                        if let detail = DogfoodBuildStatus.detail(
+                            isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
+                            captureArmed: dogfoodCaptureArmed
+                        ) {
+                            SettingsHelpText(detail)
+                        }
+                    }
                 }
 
                 SettingsFieldRow(title: "Project") {
