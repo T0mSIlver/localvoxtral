@@ -91,6 +91,21 @@ final class ClaudeRemoteForwardOrphanReaperTests: XCTestCase {
         XCTAssertTrue(ledger.records().isEmpty)
     }
 
+    func testADifferentExecutableAtTheSamePidIsNeverSignalled() async {
+        // The path is not decoration on the start-time check: a record whose
+        // pid AND start time somehow both match must still be retired without
+        // a signal when the executable is not the one we spawned. Pins that
+        // `executablePath` participates in identity.
+        let recorded = record(pid: 4242)
+        var impostor = recorded
+        impostor.executablePath = "/bin/cat"
+        let ledger = makeLedger(with: ["host": recorded])
+        let table = ProcessTableFake(live: impostor, dyingOn: [SIGTERM, SIGKILL])
+        await makeReaper(ledger: ledger, table: table).reap()
+        XCTAssertTrue(table.signals.isEmpty, "not the binary we spawned")
+        XCTAssertTrue(ledger.records().isEmpty)
+    }
+
     func testALiveOrphanDiesOnSIGTERMAndIsForgotten() async {
         let orphan = record(pid: 4242)
         let ledger = makeLedger(with: ["host": orphan])

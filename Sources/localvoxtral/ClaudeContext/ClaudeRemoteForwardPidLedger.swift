@@ -72,7 +72,10 @@ public enum ClaudeRemoteForwardProcessIdentity {
 /// One record per host id — a host has at most one live forward at a time, and
 /// a respawn simply overwrites. Records are removed by the reaper (dead or
 /// killed), never on process exit: a stale record for a dead pid costs one
-/// identity check at the next launch and nothing else.
+/// identity check at the next launch and nothing else. Records deliberately
+/// carry no remote port: an orphan holds whatever port it was spawned with,
+/// so a per-install port change between launches must not exempt the old
+/// orphan from reaping.
 ///
 /// Storage piggybacks on `ClaudeRemoteHostStoreIO` (atomic 0600 writes, same
 /// hardening) in a file beside the host registry. Unlike the registry, a

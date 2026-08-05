@@ -19,9 +19,13 @@ import Darwin
 ///
 /// * **Never kill by pid alone.** A record is actioned only when the pid's
 ///   CURRENT kernel identity — start time and resolved executable path —
-///   equals what the ledger captured at spawn. A reused pid cannot match, so
-///   an innocent process cannot be signalled, and a mismatch just retires the
-///   record.
+///   equals what the ledger captured at spawn, re-verified immediately before
+///   each signal. A mismatch retires the record without signalling. What
+///   remains is the microsecond window between a verify and its signal, in
+///   which the kernel would have to reap the orphan AND re-issue its pid —
+///   stated because a single inspect-then-act cannot close it, not because it
+///   is reachable in practice (macOS allocates pids incrementally and skips
+///   recently used ones).
 /// * **Only run while this instance holds the listener.** The caller
 ///   (`ClaudeRemoteForwardCoordinator`) gates the reap behind its listener
 ///   bind, which is what makes a SECOND app instance harmless: it cannot bind
@@ -31,6 +35,12 @@ import Darwin
 ///   a bounded wait — on the injected clock, since the supervisor's own suite
 ///   set the no-wall-clock rule for this subsystem. A survivor of SIGKILL
 ///   keeps its record, so the next launch tries again.
+///
+/// Records reap sequentially, so the worst case — every enrolled host left a
+/// live orphan that ignores SIGTERM — holds the forwards for
+/// `hosts × (terminationGrace + killGrace)`. Accepted: real orphan counts are
+/// one or two, the common path returns at the first inspect, and only the
+/// forwards wait on it (the listener is already up).
 public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     public typealias Inspect = @Sendable (pid_t) -> ClaudeRemoteForwardPidRecord?
     public typealias SendSignal = @Sendable (pid_t, Int32) -> Void
@@ -47,11 +57,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     public init(
         ledger: ClaudeRemoteForwardPidLedger,
         inspect: @escaping Inspect = { ClaudeRemoteForwardProcessIdentity.snapshot(pid: $0) },
-        sendSignal: @escaping SendSignal = { pid, signalNumber in
-            #if canImport(Darwin)
-            _ = Darwin.kill(pid, signalNumber)
-            #endif
-        },
+        sendSignal: SendSignal? = nil,
         sleepFor: @escaping SleepFor = { try await Task.sleep(for: $0) },
         terminationGrace: Duration = .seconds(2),
         killGrace: Duration = .seconds(1),
@@ -59,11 +65,28 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     ) {
         self.ledger = ledger
         self.inspect = inspect
-        self.sendSignal = sendSignal
+        // In the body, not as a default argument value: the default needs
+        // `Log`, which is internal, and a public init's default arguments may
+        // only name public symbols.
+        self.sendSignal = sendSignal ?? Self.defaultSendSignal
         self.sleepFor = sleepFor
         self.terminationGrace = terminationGrace
         self.killGrace = killGrace
         self.pollInterval = pollInterval
+    }
+
+    /// Loud on failure (repo rule for lifecycle paths): a discarded EPERM
+    /// would otherwise surface later as the WRONG failure — "survived SIGKILL"
+    /// about a signal that was never delivered. ESRCH is not a failure here;
+    /// the poll reads it as "gone".
+    private static let defaultSendSignal: SendSignal = { pid, signalNumber in
+        #if canImport(Darwin)
+        if Darwin.kill(pid, signalNumber) != 0, errno != ESRCH {
+            Log.claudeContext.error(
+                "Claude remote forward orphan reaper could not signal pid \(pid, privacy: .public): errno \(errno, privacy: .public)"
+            )
+        }
+        #endif
     }
 
     public func reap() async {
@@ -81,11 +104,27 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
             ledger.forget(hostID: hostID, pid: record.pid)
             return
         }
-        Log.claudeContext.notice(
-            "Claude remote forward orphan from a previous run found for host \(hostID, privacy: .public) (pid \(record.pid, privacy: .public)); terminating it to free the remote port"
-        )
+        // Signal first, log second: the log call would otherwise sit inside
+        // the verify-to-signal window the type comment promises is only
+        // microseconds wide.
         sendSignal(pid_t(record.pid), SIGTERM)
+        Log.claudeContext.notice(
+            "Claude remote forward orphan from a previous run found for host \(hostID, privacy: .public) (pid \(record.pid, privacy: .public)); sent SIGTERM to free the remote port"
+        )
         if await waitUntilGone(record) {
+            Log.claudeContext.info(
+                "Claude remote forward orphan for host \(hostID, privacy: .public) honoured SIGTERM; record retired"
+            )
+            ledger.forget(hostID: hostID, pid: record.pid)
+            return
+        }
+        // Re-verify before escalating. `waitUntilGone`'s last poll saw a
+        // matching identity at most one interval ago, but SIGKILL is the one
+        // signal nothing can decline, so it gets its own fresh check.
+        guard let beforeKill = inspect(pid_t(record.pid)), beforeKill == record else {
+            Log.claudeContext.info(
+                "Claude remote forward orphan for host \(hostID, privacy: .public) exited before SIGKILL; record retired"
+            )
             ledger.forget(hostID: hostID, pid: record.pid)
             return
         }
@@ -94,6 +133,9 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         )
         sendSignal(pid_t(record.pid), SIGKILL)
         if await waitUntilGone(record, within: killGrace) {
+            Log.claudeContext.info(
+                "Claude remote forward orphan for host \(hostID, privacy: .public) killed; record retired"
+            )
             ledger.forget(hostID: hostID, pid: record.pid)
             return
         }
