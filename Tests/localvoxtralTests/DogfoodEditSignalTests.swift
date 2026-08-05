@@ -197,12 +197,15 @@ final class DogfoodEditSignalTests: XCTestCase {
 
         // Plain "a" is typing, not selecting.
         XCTAssertNil(DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: []))
-        // ⌥⌘A / ⌃⌘A are app shortcuts, not select-all.
+        // ⌥⌘A / ⌃⌘A / ⇧⌘A are app shortcuts, not select-all.
         XCTAssertNil(
             DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .option])
         )
         XCTAssertNil(
             DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .control])
+        )
+        XCTAssertNil(
+            DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .shift])
         )
         // Every other key, modified or not.
         XCTAssertNil(DogfoodEditSignal.from(keyCode: UInt16(kVK_ANSI_B), modifiers: [.command]))
@@ -474,41 +477,107 @@ final class DogfoodEditSignalTests: XCTestCase {
         )
     }
 
-    /// FINDING 1's regression, in the LOSING order: a stale watch's attach must
-    /// be rejected by the token, not by timing.
+    /// The supersede-before-attach race: a second dictation arms while the
+    /// first's record write is still in flight. The first watch's verdict must
+    /// SURVIVE the supersede (parked, keyed by its token) and land in its own
+    /// record when the late attach arrives — and the second watch's gesture
+    /// must still not land there.
     ///
-    /// The record write is awaited, so a second dictation can arm while the
-    /// first is still being written. Without the token, the late
-    /// `attachRecord` would hand session A's record to session B's OPEN window
-    /// — and B's gesture would then be written into A's record.
-    func testStaleAttachIsRejectedByTheToken() async throws {
+    /// An earlier version of this test pinned the opposite expectation: it
+    /// asserted A's behavior was LOST ("nothing is written for it"). That
+    /// pinned a bug, not a contract — a supersede that beats the attach left
+    /// A's record indistinguishable from "never observed", which is exactly
+    /// the distinction the behavior block exists to make. Rewriting it is a
+    /// correction, not a weakening: the contamination assertion it existed
+    /// for (B's gesture must not reach A's record) is still here, strictly
+    /// stronger — A's record now holds a verdict that B's close must not
+    /// overwrite.
+    func testSupersededVerdictSurvivesAnAttachThatArrivesAfterTheNextArm() async throws {
         let harness = makeWatcher()
 
         // Session A arms and commits; its record write is still in flight.
-        let staleToken = try XCTUnwrap(
+        let tokenA = try XCTUnwrap(
             harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
         )
         // Session B arms before A's write returns. A's window closes as
-        // superseded, with no record attached — nothing is written for it.
+        // superseded and is parked awaiting its record.
         harness.watcher.arm(committedText: "second dictation text", outputMode: "overlay_buffer")
         await harness.watcher.flushTask?.value
 
-        // A's write finally returns and tries to attach its record — with A's
-        // (now stale) token.
+        // A's write finally returns and attaches its record — with A's token.
         let sessionARecord = try harness.writeExtraRecord()
         harness.watcher.attachRecord(
-            url: sessionARecord, store: harness.store, token: staleToken
+            url: sessionARecord, store: harness.store, token: tokenA
+        )
+        await harness.watcher.flushTask?.value
+
+        XCTAssertEqual(
+            harness.readBack(at: sessionARecord)?.behavior?.outcome, .superseded,
+            "a supersede that beats the attach must not erase A's verdict"
         )
 
-        // B's window is open and now sees the gesture. If the stale attach had
-        // been accepted, B's `edited` would be sitting in that record.
+        // B's window is open and now sees a gesture. It has no record of its
+        // own; it must not land in A's.
         harness.clock.advance(0.5)
         harness.monitor.send(.backspace)
         await harness.watcher.flushTask?.value
 
+        XCTAssertEqual(
+            harness.readBack(at: sessionARecord)?.behavior?.outcome, .superseded,
+            "a stale token must not connect one session's record to another's window"
+        )
+    }
+
+    /// The same race with a REAL verdict in it: a gesture closed A's window
+    /// before the supersede, so the parked watch carries `edited` and its
+    /// buckets — and the late attach must deliver them, not a blank.
+    func testEditedVerdictSurvivesAnAttachThatArrivesAfterTheNextArm() async throws {
+        let harness = makeWatcher()
+
+        let tokenA = try XCTUnwrap(
+            harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
+        )
+        harness.clock.advance(1.2)
+        harness.monitor.send(.backspace)
+        // The next dictation arms while A's record write is still in flight.
+        harness.watcher.arm(committedText: "second dictation text", outputMode: "overlay_buffer")
+
+        let sessionARecord = try harness.writeExtraRecord()
+        harness.watcher.attachRecord(
+            url: sessionARecord, store: harness.store, token: tokenA
+        )
+        await harness.watcher.flushTask?.value
+
+        let behavior = try XCTUnwrap(harness.readBack(at: sessionARecord)?.behavior)
+        XCTAssertEqual(behavior.outcome, .edited)
+        XCTAssertEqual(behavior.signal, .backspace)
+        XCTAssertEqual(behavior.secondsSinceCommitBucket, "1-2")
+    }
+
+    /// Parked watches must not leak when their attach never arrives (a failed
+    /// record write leaves the token holder with no URL to hand over). The
+    /// dictionary is capped; the oldest generation is evicted first and its
+    /// late attach then lands nowhere.
+    func testParkedWatchesAreBoundedAndEvictOldestFirst() async throws {
+        let harness = makeWatcher()
+
+        let tokenA = try XCTUnwrap(
+            harness.watcher.arm(committedText: "first dictation text", outputMode: "overlay_buffer")
+        )
+        // Enough later dictations, none attaching, to push A past the cap.
+        for _ in 0..<12 {
+            harness.watcher.arm(committedText: "later dictation text", outputMode: "overlay_buffer")
+        }
+
+        let sessionARecord = try harness.writeExtraRecord()
+        harness.watcher.attachRecord(
+            url: sessionARecord, store: harness.store, token: tokenA
+        )
+        await harness.watcher.flushTask?.value
+
         XCTAssertNil(
             harness.readBack(at: sessionARecord)?.behavior,
-            "a stale token must not connect one session's record to another's window"
+            "an evicted watch attaches to nothing"
         )
     }
 
@@ -555,6 +624,42 @@ final class DogfoodEditSignalTests: XCTestCase {
         )
         XCTAssertFalse(harness.watcher.isWatching)
         XCTAssertFalse(harness.monitor.isInstalled)
+    }
+
+    /// FINDING 5: the window timer must not retain the watcher across its
+    /// sleep — a strong `self` held for up to 15 s is what the `isolated
+    /// deinit` cleanup claim says cannot happen. Releasing the last owner
+    /// mid-window must deallocate the watcher and tear the monitor down.
+    func testReleasingTheWatcherMidWindowTearsDownTheMonitor() async throws {
+        let monitor = DogfoodEditSignalTestMonitor()
+        let sleeper = DogfoodManualSleeper()
+        let clock = DogfoodTestClock()
+        var watcher: DogfoodEditSignalWatcher? = DogfoodEditSignalWatcher(
+            monitor: monitor,
+            now: { clock.now() },
+            sleepFor: { await sleeper.sleep($0) }
+        )
+        weak var released = watcher
+        addTeardownBlock { sleeper.fireAll() }
+
+        _ = watcher?.arm(committedText: "run the tests", outputMode: "overlay_buffer")
+        // The window is parked on its (un-fired) sleep: mid-window, by
+        // construction, with no wall-clock.
+        await sleeper.waitForSleepRequest()
+        XCTAssertTrue(monitor.isInstalled)
+
+        watcher = nil
+
+        // `isolated deinit` runs on the main actor; give it a beat without
+        // resuming the sleep (the sleeper stays un-fired, so a strong capture
+        // in the timer would still be holding the watcher here).
+        await Task.yield()
+        XCTAssertNil(
+            released, "the window timer must not retain the watcher across its sleep"
+        )
+        XCTAssertFalse(
+            monitor.isInstalled, "deinit must tear down the monitor mid-window"
+        )
     }
 
     // MARK: Harness

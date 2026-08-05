@@ -1404,7 +1404,8 @@ extension DictationViewModel {
                     // can only ever land on the tail of this task, never on the
                     // user's paste. `writeDogfoodCaptureIfArmed` checks the
                     // runtime opt-in before doing any work.
-                    await self.writeDogfoodCaptureIfArmed(DogfoodCaptureInputs(
+                    await self.writeDogfoodCaptureIfArmed(
+                        DogfoodCaptureInputs(
                         session: DogfoodCaptureRecord.Session(
                             targetBundleID: capturedTargetBundleID,
                             targetKind: self.sessionTargetIsTerminalLike
@@ -1473,7 +1474,16 @@ extension DictationViewModel {
                             committedText: dogfoodCommittedText
                         ),
                         polishSeconds: polishingDuration
-                    ))
+                        ),
+                        commitOutcome: overlayCommitOutcome,
+                        // Substituted for MEASUREMENT only (the watch window
+                        // scales with what was inserted); the record keeps the
+                        // placeholder-bearing text above.
+                        committedTextForWatch: self.clipboardPayloadSubstituted(
+                            dogfoodCommittedText ?? groundedWorkingText,
+                            payload: clipboardPayload
+                        )
+                    )
                     #endif
 
                     if let llmConnectionFailure {

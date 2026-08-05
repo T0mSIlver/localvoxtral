@@ -792,7 +792,20 @@ final class DictationViewModel {
     // MARK: - Lifecycle Observers
 
     private func registerLifecycleObservers() {
-        let nc = NotificationCenter.default
+        registerLifecycleObservers(on: .default)
+    }
+
+    #if DEBUG
+    /// Test seam: registers the REAL lifecycle observers on a private center,
+    /// so a suite can post `willTerminateNotification` through the actual
+    /// wiring without broadcasting to every retained view model in the
+    /// process.
+    func debugRegisterLifecycleObservers(on center: NotificationCenter) {
+        registerLifecycleObservers(on: center)
+    }
+    #endif
+
+    private func registerLifecycleObservers(on nc: NotificationCenter) {
 
         let sleepObserver = nc.addObserver(
             forName: NSWorkspace.willSleepNotification,
@@ -810,20 +823,29 @@ final class DictationViewModel {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            // `willTerminate` is posted on the main thread and a `.main`-queue
+            // observer runs synchronously in it — this closure is the last
+            // execution the process guarantees. Anything that must survive
+            // quit happens inline HERE, before the Task below, which is
+            // best-effort only (a Task spawned at terminate is not guaranteed
+            // to run).
+            MainActor.assumeIsolated {
                 guard let self else { return }
-                self.cancelManagedStartupTask()
-                if self.isDictating {
-                    self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
-                }
                 #if LOCALVOXTRAL_DOGFOOD
                 // Last chance for a still-open post-commit watch to patch its
                 // record: after this the process is gone and the dictation
-                // would keep no behavior block at all. Written inline — a Task
-                // spawned at terminate is not guaranteed to run.
+                // would keep no behavior block at all.
                 self.dogfoodEditSignalWatcher.flushForTermination()
                 #endif
-                await self.backendManager.stopAll()
+                Task {
+                    self.cancelManagedStartupTask()
+                    if self.isDictating {
+                        self.stopDictation(
+                            reason: "app terminating", finalizeRemainingAudio: false
+                        )
+                    }
+                    await self.backendManager.stopAll()
+                }
             }
         }
 
