@@ -35,6 +35,10 @@ final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, @uncheck
     private let partialLine = Mutex<String>("")
     private let descriptor: Int32
 
+    /// The spawned child's pid, for the pid ledger that lets the NEXT launch
+    /// find this process should this one die without tearing it down.
+    var processIdentifier: pid_t { process.processIdentifier }
+
     /// - Parameter argv: complete, including `ssh` at index 0 (the shape
     ///   `Configuration.argv` produces and the enrollment service already uses).
     init(argv: [String], sshExecutableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")) throws {
