@@ -460,7 +460,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                     processes: [
                         ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
                         proxyChild(pid: 502, parent: 501),
-                        proxyChild(pid: 503, parent: 502),
+                        // One device has ONE foreground pgid; what this test
+                        // pins is parent-chain demotion, not foreground
+                        // semantics, so the grandchild reports the same one.
+                        proxyChild(pid: 503, parent: 502, foregroundGroup: 501),
                     ]
                 )
             )
@@ -507,12 +510,21 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // A tty-holding ssh whose parent is NOT an ssh (launchd after a
         // reparent, a shell-mediated ProxyCommand) is still a root, and an
         // unreadable root still spoils the claim — the paranoia is unchanged.
+        let orphan = SSHClientProcess(
+            pid: 777,
+            parentPID: 1, // reparented to launchd — a REAL orphan's e_ppid
+            ttyDevice: otherTerminal,
+            processGroupID: 777,
+            terminalForegroundGroupID: 777,
+            executablePath: "/usr/bin/ssh",
+            arguments: nil
+        )
         let value = try XCTUnwrap(
             connection(
                 probe(
                     processes: [
                         ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
-                        ssh(nil, pid: 777, device: otherTerminal),
+                        orphan,
                     ]
                 )
             )
@@ -542,9 +554,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             executablePath: "/usr/bin/ssh",
             arguments: ["ssh", "builder"]
         )
-        guard case .undeterminable = probe(processes: [first, second]) else {
-            return XCTFail("two sibling foreground connections must abstain")
-        }
+        XCTAssertEqual(
+            probe(processes: [first, second]),
+            .undeterminable(.multipleForegroundClients)
+        )
     }
 
     // MARK: - herdr connection signal (review blocker 1b)

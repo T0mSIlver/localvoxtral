@@ -306,6 +306,8 @@ enum SSHDestinationTTYProbe {
     private static func hasSSHParent(
         _ process: SSHClientProcess, in processes: [SSHClientProcess]
     ) -> Bool {
+        // The self-parent clause is defensive against hand-built test data
+        // only — no Darwin process is its own parent.
         guard process.parentPID > 0, process.parentPID != process.pid else { return false }
         return processes.contains { $0.pid == process.parentPID }
     }
