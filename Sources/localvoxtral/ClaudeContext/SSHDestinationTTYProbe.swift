@@ -415,7 +415,10 @@ enum SSHDestinationTTYProbe {
     /// we cannot name their destination, but an argv with no `herdr` substring
     /// anywhere cannot have run herdr as its remote command. Substring, not
     /// basename, on purpose — `sh -lc 'exec herdr'` arrives as one token, and
-    /// this test must only ever err toward blocking.
+    /// this test must only ever err toward blocking. Known over-block: a
+    /// HOSTNAME containing "herdr" trips it too (`ssh -o X herdrhost`) —
+    /// accepted, since the cost is an abstention on a refused-argv neighbor,
+    /// never a join.
     static func mentionsHerdr(_ argv: [String]) -> Bool {
         argv.contains { $0.contains("herdr") }
     }
@@ -509,18 +512,24 @@ enum SSHDestinationTTYProbe {
         var index = 1
         while index < remoteCommand.count {
             let token = remoteCommand[index]
+            let value: String
             if token == "--session" {
                 guard index + 1 < remoteCommand.count else { return .otherHerdrSubcommand }
-                selector = remoteCommand[index + 1]
+                value = remoteCommand[index + 1]
                 index += 2
             } else if token.hasPrefix("--session=") {
-                selector = String(token.dropFirst("--session=".count))
+                value = String(token.dropFirst("--session=".count))
                 index += 1
             } else {
                 return .otherHerdrSubcommand
             }
-            // An empty selector is not a name we can compare byte-identically.
-            if selector?.isEmpty == true { return .otherHerdrSubcommand }
+            // An empty selector is not a name we can compare byte-identically,
+            // and a REPEATED --session is refused rather than resolved: which
+            // occurrence herdr honors is its business, and a classifier that
+            // silently picks one can agree with itself while disagreeing with
+            // herdr (review finding, 2026-08-06).
+            guard !value.isEmpty, selector == nil else { return .otherHerdrSubcommand }
+            selector = value
         }
         return .plainClient(sessionSelector: selector)
     }

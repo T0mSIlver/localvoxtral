@@ -662,12 +662,10 @@ struct ClaudeSessionJoinResolver {
         // `herdr` — still gets no HERDR join (its argv has no remote command).
         // It does not get "no context": the marker arm still runs. That
         // residual is pre-existing and cannot be closed from here.
-        guard !connection.hasCompetingHerdrClient else {
-            Self.abstainedRemoteHerdrJoin(
-                outcome: "another terminal may hold a different herdr view of this destination"
-            )
-            return .notApplicable
-        }
+        // The surface's own classification first: when the surface argv is the
+        // problem, the log must say so — a competing neighbor may exist too,
+        // and reporting it instead buried the actionable cause (review nit,
+        // 2026-08-06).
         switch connection.herdr {
         case .notHerdr:
             Self.abstainedRemoteHerdrJoin(
@@ -686,6 +684,12 @@ struct ClaudeSessionJoinResolver {
             return .notApplicable
         case .plainClient:
             break
+        }
+        guard !connection.hasCompetingHerdrClient else {
+            Self.abstainedRemoteHerdrJoin(
+                outcome: "another terminal may hold a different herdr view of this destination"
+            )
+            return .notApplicable
         }
 
         // NOT yet herdr-or-nothing. Registry candidates existing on the host is

@@ -446,6 +446,49 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
+    func testASuspendedBareHerdrClientOfTheSameServerDoesNotCompete() throws {
+        // The narrowed rule's headline change on the round-5b SHAPE: a
+        // suspended bare `ssh host herdr` next to a foreground bare
+        // `ssh host herdr` is a second whole-view client of the SAME server —
+        // a mirror — so it no longer blocks. (The VERB shape still does:
+        // testASuspendedHerdrVerbOnTHISDeviceStillCompetes.)
+        let suspendedMirror = SSHClientProcess(
+            pid: 777,
+            ttyDevice: surface,
+            processGroupID: 777,
+            terminalForegroundGroupID: 501, // the foreground client has the terminal
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder", "herdr"]
+        )
+        let value = try XCTUnwrap(
+            connection(
+                probe(processes: [ssh(["ssh", "-t", "builder", "herdr"], pid: 501), suspendedMirror])
+            )
+        )
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
+    func testAPlainShellSurfaceReportsCompetitionAgainstAHerdrNeighbor() throws {
+        // Boundary pin, not a behavior anyone relies on: a `.notHerdr` surface
+        // has no selector to compare, so a herdr neighbor reads as competing.
+        // Harmless — the resolver refuses a `.notHerdr` surface before the
+        // competition flag matters — but pinned so a refactor that flips it
+        // ("a plain shell never competes with anything") is a deliberate
+        // decision, not an accident.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "builder"], pid: 501),
+                        ssh(["ssh", "builder", "herdr"], pid: 777, device: otherTerminal),
+                    ]
+                )
+            )
+        )
+        XCTAssertEqual(value.herdr, .notHerdr)
+        XCTAssertTrue(value.hasCompetingHerdrClient)
+    }
+
     func testAHerdrClientToADIFFERENTHostDoesNotCompete() throws {
         // Its herdr, if any, is another host's server — the candidates are
         // namespaced by the enrolled host and cannot name it.
@@ -772,6 +815,13 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // A selector we cannot compare byte-identically, and every verb —
         // known or unknown — refuses.
         XCTAssertEqual(Probe.classifyHerdrCommand(["herdr", "--session"]), .otherHerdrSubcommand)
+        // Repeated --session is refused, not resolved: which occurrence herdr
+        // honors is herdr's business, and silently picking one lets the
+        // classifier agree with itself while disagreeing with herdr.
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["herdr", "--session", "a", "--session", "b"]),
+            .otherHerdrSubcommand
+        )
         XCTAssertEqual(Probe.classifyHerdrCommand(["herdr", "--session="]), .otherHerdrSubcommand)
         XCTAssertEqual(Probe.classifyHerdrCommand(["herdr", "server"]), .otherHerdrSubcommand)
         XCTAssertEqual(

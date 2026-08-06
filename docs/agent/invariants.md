@@ -241,7 +241,18 @@ there is not.
     join is correct for either. EXTERNAL ASSUMPTION: that focus model. If
     herdr ever grows per-client views, same-selector coexistence becomes a
     mis-join — re-verify `handle_pane_current` + the multi-client tests on
-    herdr upgrades before trusting this paragraph.
+    herdr upgrades before trusting this paragraph. A SECOND external
+    assumption rides with it: "byte-identical selector ⇒ same server" holds
+    only while the remote side derives the socket from the selector alone —
+    a shell with `HERDR_SOCKET_PATH` or a different `XDG_RUNTIME_DIR`
+    exported can attach two bare `herdr` invocations to DIFFERENT servers,
+    which this rule cannot see from the Mac (the argv is all it has). The
+    residual is bounded downstream — candidates spanning two sockets abstain
+    at the single-socket rule, and the pane-id + broker-marker confirmation
+    still has to agree — but a candidate set living entirely on the OTHER
+    server confirms against that server, so the honest statement is: env
+    divergence on the remote defeats the selector comparison, and we accept
+    that because the divergence is the user's own deliberate configuration.
     The argv signal is trustworthy here in a way the old comments undersold:
     it is the EXEC-TIME vector of a VERIFIED OpenSSH binary (kernel
     `KERN_PROCARGS2`), i.e. the command ssh actually ran, not a self-report —
