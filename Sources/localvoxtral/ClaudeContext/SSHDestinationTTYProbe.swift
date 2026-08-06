@@ -49,6 +49,11 @@ enum SSHDestinationTTYProbeResult: Sendable, Equatable {
 /// One ssh process as the probe sees it.
 struct SSHClientProcess: Sendable, Equatable {
     var pid: Int32
+    /// Kernel-reported parent pid (`e_ppid`). This is what lets ProxyJump
+    /// machinery be told apart from a connection: OpenSSH spawns its `-W`
+    /// stdio-forward hop as a direct CHILD, and ppid is kernel truth — unlike
+    /// argv, no launcher gets to choose it.
+    var parentPID: Int32
     /// Controlling terminal device, or nil when it has none. A process with no
     /// terminal is not a surface anyone can be dictating into — our OWN
     /// `ssh -L` forward is exactly that, which is why it must not count.
@@ -62,6 +67,7 @@ struct SSHClientProcess: Sendable, Equatable {
 
     init(
         pid: Int32,
+        parentPID: Int32 = 0,
         ttyDevice: dev_t?,
         processGroupID: Int32,
         terminalForegroundGroupID: Int32,
@@ -69,6 +75,7 @@ struct SSHClientProcess: Sendable, Equatable {
         arguments: [String]?
     ) {
         self.pid = pid
+        self.parentPID = parentPID
         self.ttyDevice = ttyDevice
         self.processGroupID = processGroupID
         self.terminalForegroundGroupID = terminalForegroundGroupID
@@ -451,6 +458,7 @@ enum SSHDestinationTTYProbe {
             .map { entry in
                 SSHClientProcess(
                     pid: entry.pid,
+                    parentPID: entry.parentProcessID,
                     ttyDevice: entry.ttyDevice,
                     processGroupID: entry.processGroupID,
                     terminalForegroundGroupID: entry.terminalForegroundGroupID,
@@ -536,6 +544,7 @@ enum SSHDestinationTTYProbe {
 enum TTYProcessTable {
     struct Entry: Sendable, Equatable {
         var pid: Int32
+        var parentProcessID: Int32
         var name: String
         var ttyDevice: dev_t?
         var processGroupID: Int32
@@ -543,12 +552,14 @@ enum TTYProcessTable {
 
         init(
             pid: Int32,
+            parentProcessID: Int32 = 0,
             name: String,
             ttyDevice: dev_t? = nil,
             processGroupID: Int32 = 0,
             terminalForegroundGroupID: Int32 = 0
         ) {
             self.pid = pid
+            self.parentProcessID = parentProcessID
             self.name = name
             self.ttyDevice = ttyDevice
             self.processGroupID = processGroupID
@@ -602,6 +613,7 @@ enum TTYProcessTable {
             let device = process.kp_eproc.e_tdev
             return Entry(
                 pid: process.kp_proc.p_pid,
+                parentProcessID: process.kp_eproc.e_ppid,
                 name: name,
                 // NODEV means no controlling terminal — not a surface.
                 ttyDevice: device == ~dev_t(0) ? nil : device,
