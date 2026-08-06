@@ -3,27 +3,63 @@ import Foundation
 #if canImport(Darwin)
 import Darwin
 
+/// What an ssh remote command says about herdr — a CLASSIFICATION, not a
+/// boolean, because "mentions herdr first" spans shapes that display entirely
+/// different things (verified against herdr v0.8.0 / protocol 19, 2026-08-06):
+///
+/// * a bare client attach displays the server's GLOBAL focused pane — herdr
+///   focus is server-global and multi-client attach is a mirror
+///   (`src/app/api/panes.rs::handle_pane_current`, `tests/multi_client.rs`),
+///   which is the semantic the whole remote arm reads through `pane.current`;
+/// * `herdr terminal attach <id>` renders exactly ONE pane, and
+///   `herdr --session <name>` attaches a DIFFERENT server (named sessions have
+///   separate sockets) — joining the global focus of the candidates' socket
+///   while the user looks at either of those is a mis-join reachable with a
+///   single connection, which is why the boolean had to go.
+enum HerdrInvocation: Sendable, Equatable {
+    /// The remote command is not herdr (or there is no remote command).
+    case notHerdr
+    /// A bare `herdr` whole-view client attach — the only shape whose display
+    /// is the server's global focus. `sessionSelector` is the normalized
+    /// `--session` value (nil = the default session); two connections display
+    /// the same server only when their selectors are byte-identical.
+    case plainClient(sessionSelector: String?)
+    /// herdr with any other subcommand or flag shape: single-pane attaches,
+    /// observers, named-session verbs, `server`, or tokens this classifier
+    /// does not know. Refused by the arm — never a join, never a guess.
+    case otherHerdrSubcommand
+}
+
 /// The ssh connection a terminal surface is displaying, as far as the local
 /// process table can prove it.
 struct SSHSurfaceConnection: Sendable, Equatable {
     /// Normalized destination host/alias.
     var destination: String
-    /// No OTHER terminal on this machine hosts an ssh to the same destination.
+    /// Another terminal on this machine hosts an ssh to the same destination
+    /// that COULD be displaying a different herdr view: a herdr client with a
+    /// different session selector, a single-pane herdr attach, or an ssh whose
+    /// argv cannot rule herdr out.
     ///
-    /// Without this the probe binds to a HOST rather than to a CONNECTION: with
-    /// one terminal on a plain shell to `builder` and another attached to herdr
-    /// on `builder`, both surfaces answer "ssh to builder", and the plain shell
-    /// would join the herdr terminal's session (review blocker 1).
-    var isOnlyConnectionToDestination: Bool
-    /// The argv positively names herdr as the remote command — the shape
-    /// `herdr --remote` spawns, or a hand-typed `ssh host herdr …`. This binds
-    /// the CONNECTION to herdr, which no amount of host-level reasoning can.
-    var indicatesHerdr: Bool
+    /// This is deliberately narrower than the original "only connection to
+    /// the destination" rule. What that rule actually protected against is a
+    /// surface joining a herdr view it is not displaying — and a plain shell
+    /// on another tty can never be that: the probe only ever reads the FOCUSED
+    /// surface's tty, and herdr focus is server-global with mirror attach
+    /// (verified in herdr source, 2026-08-06), so even a second client of the
+    /// SAME server displays the same focused pane. What still competes is a
+    /// client of a DIFFERENT server (session selector mismatch), a single-pane
+    /// attach, or anything unreadable enough that it might be one.
+    var hasCompetingHerdrClient: Bool
+    /// The classified herdr invocation of THIS connection's remote command.
+    /// Binds the CONNECTION to herdr, which no amount of host-level reasoning
+    /// can — argv here is the exec-time vector of a VERIFIED OpenSSH binary,
+    /// i.e. the command ssh actually ran, not a self-report.
+    var herdr: HerdrInvocation
 
-    init(destination: String, isOnlyConnectionToDestination: Bool, indicatesHerdr: Bool) {
+    init(destination: String, hasCompetingHerdrClient: Bool, herdr: HerdrInvocation) {
         self.destination = destination
-        self.isOnlyConnectionToDestination = isOnlyConnectionToDestination
-        self.indicatesHerdr = indicatesHerdr
+        self.hasCompetingHerdrClient = hasCompetingHerdrClient
+        self.herdr = herdr
     }
 }
 
@@ -285,12 +321,13 @@ enum SSHDestinationTTYProbe {
         return .connection(
             SSHSurfaceConnection(
                 destination: parsed.destination,
-                isOnlyConnectionToDestination: isOnlyConnection(
-                    to: parsed.destination,
+                hasCompetingHerdrClient: hasCompetingHerdrClient(
+                    destination: parsed.destination,
+                    surfaceHerdr: parsed.herdr,
                     surfacePID: surfaceProcess.pid,
                     connections: connections
                 ),
-                indicatesHerdr: parsed.indicatesHerdr
+                herdr: parsed.herdr
             )
         )
     }
@@ -312,56 +349,82 @@ enum SSHDestinationTTYProbe {
         return processes.contains { $0.pid == process.parentPID }
     }
 
-    /// Is this terminal's the only connection to that destination?
+    /// Could another terminal be displaying a DIFFERENT herdr view of this
+    /// destination?
     ///
-    /// Every OTHER ssh counts, foreground or not, and — this is the part the
-    /// first version got wrong (review round 5b) — including ones on THIS
-    /// device. Excluding same-device background processes let `ssh builder
-    /// herdr` be suspended with Ctrl+Z, its server side still attached and its
-    /// pane still focused, while a plain `ssh builder` in the foreground of the
-    /// same terminal claimed to be the only connection.
+    /// The successor to the machine-wide "only connection" rule, narrowed to
+    /// what that rule actually defended: the join reads the candidates'
+    /// server-global focused pane, so the only dangerous neighbor is one that
+    /// could be a herdr client of a DIFFERENT server (or of a single pane).
+    /// A plain shell, a build session, an `ssh host ls` — none of those can
+    /// be the surface being dictated into (the probe reads only the focused
+    /// tty), and a second whole-view client of the SAME server mirrors the
+    /// same focused pane (herdr focus is server-global; verified in source,
+    /// 2026-08-06), so joining is correct for both.
     ///
-    /// "The surface shows the shell, not that ssh" is a fact about which
-    /// connection this terminal DISPLAYS — it belongs to destination
-    /// determination above, and says nothing about how many connections exist.
+    /// Every OTHER tty-holding connection still counts, foreground or not,
+    /// including suspended ones on THIS device (review round 5b: a suspended
+    /// `ssh builder herdr <verb>` keeps its server side attached). Excluded:
+    /// the surface's own connection, anything with no controlling terminal
+    /// (our own `ssh -L` forward), and ssh MACHINERY (the caller passes
+    /// connections only — a ProxyJump's `-W` child is its root's transport).
     ///
-    /// Excluded: the surface's own connection (the single foreground ssh this
-    /// answer is about), anything with no controlling terminal — nobody can
-    /// be dictating into one, and our own `ssh -L` forward is exactly that —
-    /// and ssh MACHINERY (the caller passes connections only): a ProxyJump's
-    /// `-W` child carries its root's connection, which is already counted, and
-    /// its refused argv must not read as "an ssh we cannot account for".
-    private static func isOnlyConnection(
-        to destination: String,
+    /// The refusal ladder for a neighbor, most to least readable:
+    /// parsed to another destination — irrelevant (its herdr, if any, is
+    /// another host's server, which our candidates cannot name); parsed to
+    /// this destination — competes exactly when its herdr classification is
+    /// not "the same view" (`.plainClient` with a byte-identical selector, or
+    /// not herdr at all); argv readable but refused — competes only when some
+    /// token contains `herdr` (one-sided: can over-block, never under-block);
+    /// argv or executable unreadable — always competes, an unreadable process
+    /// cannot be ruled out.
+    private static func hasCompetingHerdrClient(
+        destination: String,
+        surfaceHerdr: HerdrInvocation,
         surfacePID: Int32,
         connections: [SSHClientProcess]
     ) -> Bool {
         for process in connections
         where process.ttyDevice != nil && process.pid != surfacePID {
-            guard let parsed = verifiedInvocation(of: process) else {
-                // An ssh elsewhere we cannot read could be to this destination.
-                // Uniqueness is a claim, and an unreadable process cannot be
-                // part of one.
-                return false
+            guard let executablePath = process.executablePath,
+                  isTrustedSSHExecutable(executablePath),
+                  let arguments = process.arguments
+            else { return true }
+            guard let parsed = parse(arguments: arguments) else {
+                if mentionsHerdr(arguments) { return true }
+                continue
             }
-            if parsed.destination == destination { return false }
+            guard parsed.destination == destination else { continue }
+            switch parsed.herdr {
+            case .notHerdr:
+                continue
+            case .plainClient(let selector):
+                guard case .plainClient(let surfaceSelector) = surfaceHerdr,
+                      selector == surfaceSelector
+                else { return true }
+            case .otherHerdrSubcommand:
+                return true
+            }
         }
-        return true
+        return false
     }
 
-    private static func verifiedInvocation(of process: SSHClientProcess) -> ParsedInvocation? {
-        guard let executablePath = process.executablePath,
-              isTrustedSSHExecutable(executablePath),
-              let arguments = process.arguments
-        else { return nil }
-        return parse(arguments: arguments)
+    /// Does any argv token mention herdr at all?
+    ///
+    /// Used ONLY for neighbors whose argv was read but refused by the parser:
+    /// we cannot name their destination, but an argv with no `herdr` substring
+    /// anywhere cannot have run herdr as its remote command. Substring, not
+    /// basename, on purpose — `sh -lc 'exec herdr'` arrives as one token, and
+    /// this test must only ever err toward blocking.
+    static func mentionsHerdr(_ argv: [String]) -> Bool {
+        argv.contains { $0.contains("herdr") }
     }
 
     // MARK: - argv parsing
 
     struct ParsedInvocation: Sendable, Equatable {
         var destination: String
-        var indicatesHerdr: Bool
+        var herdr: HerdrInvocation
     }
 
     /// Options that take no argument, per ssh(1)'s synopsis
@@ -425,8 +488,41 @@ enum SSHDestinationTTYProbe {
         guard let destination = normalizedDestination(destinationOperand) else { return nil }
         return ParsedInvocation(
             destination: destination,
-            indicatesHerdr: commandNamesHerdr(remoteCommand)
+            herdr: classifyHerdrCommand(remoteCommand)
         )
+    }
+
+    /// Classify a remote command's relationship to herdr.
+    ///
+    /// The first token must BE herdr (`commandNamesHerdr` — first token only,
+    /// by basename; a shell wrapper's first token is `sh` and what it goes on
+    /// to run is not something an argv can promise). What follows decides the
+    /// shape: nothing, or `--session <name>` / `--session=<name>`, is the
+    /// whole-view client attach; ANY other token — `terminal attach <id>`,
+    /// `session attach <name>`, `server`, a flag this classifier does not
+    /// know — is `.otherHerdrSubcommand`, refused. Unknown herdr verbs must
+    /// land there and not in `.plainClient`: a verb added by a future herdr
+    /// that displays one pane would otherwise become a mis-join.
+    static func classifyHerdrCommand(_ remoteCommand: [String]) -> HerdrInvocation {
+        guard commandNamesHerdr(remoteCommand) else { return .notHerdr }
+        var selector: String?
+        var index = 1
+        while index < remoteCommand.count {
+            let token = remoteCommand[index]
+            if token == "--session" {
+                guard index + 1 < remoteCommand.count else { return .otherHerdrSubcommand }
+                selector = remoteCommand[index + 1]
+                index += 2
+            } else if token.hasPrefix("--session=") {
+                selector = String(token.dropFirst("--session=".count))
+                index += 1
+            } else {
+                return .otherHerdrSubcommand
+            }
+            // An empty selector is not a name we can compare byte-identically.
+            if selector?.isEmpty == true { return .otherHerdrSubcommand }
+        }
+        return .plainClient(sessionSelector: selector)
     }
 
     /// Is the remote command herdr ITSELF?

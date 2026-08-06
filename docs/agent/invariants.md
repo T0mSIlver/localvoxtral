@@ -217,23 +217,48 @@ there is not.
     (`SSHProbeIndeterminacy` — never a host, path, or option letter) into the
     log and the dogfood record, because three field dictations were diagnosed
     blind without one;
-    (2) that ssh session IS herdr — its remote command's first argv token has
-    basename `herdr` — AND this terminal holds the ONLY ssh connection to that
-    destination on the machine (a `KERN_PROC_ALL` scan counting every other ssh
-    with a controlling terminal, including suspended ones on this same device).
-    BOTH, because each covers what the other cannot. Uniqueness alone does not
-    prove what the terminal DISPLAYS: a herdr whose client detached, or whose
-    pane still carries a marker and a running agent inside the registry TTL,
-    keeps answering `pane.current` with that pane, so a later sole `ssh builder`
-    would join a session the user cannot see. The argv signal alone is not
-    enough either — argv is written by whoever launched the process, which is
-    why it is matched on the FIRST command token only (`ssh host sh -lc 'printf
-    herdr; exec claude'` mentions herdr and is not it).
+    (2) that ssh session IS a plain whole-view herdr client — classified, not
+    boolean (`HerdrInvocation`): the remote command's first argv token has
+    basename `herdr` and the rest is empty or `--session <name>`. Every other
+    herdr shape is REFUSED because it displays something other than the
+    server-global focus the join reads: `herdr terminal attach <id>` renders
+    ONE pane, and a `--session` we cannot normalize may be a DIFFERENT server
+    (named sessions have separate sockets) — both were mis-joins reachable
+    with a single connection while the signal was a boolean. AND no OTHER
+    tty-holding ssh root on the machine may be a COMPETING herdr view of that
+    destination (a `KERN_PROC_ALL` scan, including suspended ones on this same
+    device): a client with a different session selector, a herdr subcommand
+    shape, an argv that was refused and mentions `herdr` (substring,
+    one-sided), or anything unreadable. What deliberately does NOT compete
+    (2026-08-06, replacing blanket machine-wide uniqueness): a plain shell or
+    non-herdr ssh to the same host — it is on another tty and the probe only
+    reads the FOCUSED surface's tty — and a second whole-view client with a
+    byte-identical selector, because herdr focus is SERVER-GLOBAL and
+    multi-client attach is a mirror (verified in herdr source at v0.8.0 /
+    protocol 19: `src/app/api/panes.rs::handle_pane_current` resolves the
+    app's single active pane; `tests/multi_client.rs` proves frames broadcast
+    to all clients), so both clients display the same focused pane and the
+    join is correct for either. EXTERNAL ASSUMPTION: that focus model. If
+    herdr ever grows per-client views, same-selector coexistence becomes a
+    mis-join — re-verify `handle_pane_current` + the multi-client tests on
+    herdr upgrades before trusting this paragraph.
+    The argv signal is trustworthy here in a way the old comments undersold:
+    it is the EXEC-TIME vector of a VERIFIED OpenSSH binary (kernel
+    `KERN_PROCARGS2`), i.e. the command ssh actually ran, not a self-report —
+    but it is still matched on the FIRST command token only (`ssh host sh -lc
+    'printf herdr; exec claude'` mentions herdr and is not it), because what a
+    shell wrapper goes on to run is not something any argv can promise. The
+    invocation requirement exists because being the sole connection proves
+    nothing about what the terminal DISPLAYS: a herdr whose client detached,
+    or whose pane still carries a marker and a running agent inside the
+    registry TTL, keeps answering `pane.current`, so a plain `ssh builder`
+    must never reach the join no matter how alone it is.
     Requiring the argv signal is what the absence of a better one forces:
-    herdr exposes NO read-only attachment signal — verified against the 0.7.5
-    socket schema and the 0.8.0 docs, the only `client.*` methods are
+    herdr exposes NO read-only attachment signal — re-verified at v0.8.0 /
+    protocol 19 (2026-08-06), the only `client.*` methods are
     `window_title.set`/`clear`, both MUTATIONS (so `no_foreground_client` is not
-    an acceptable probe), and `session.snapshot` carries no attachment field.
+    an acceptable probe), `session.snapshot` carries no client records, and
+    the event stream has no client lifecycle events.
     The accepted cost, stated accurately: the manual flow — `ssh host`, then
     typing `herdr` — gets no HERDR join. It does NOT get "no context": the arm
     returns `.notApplicable`, so the title-marker arm still runs, and a marker
