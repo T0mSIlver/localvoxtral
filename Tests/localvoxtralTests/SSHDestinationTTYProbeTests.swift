@@ -55,11 +55,13 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
     }
 
     func testUnreadableDeviceAbstains() {
-        XCTAssertEqual(probe(deviceID: nil, processes: [ssh(["ssh", "builder"])]), .undeterminable)
+        XCTAssertEqual(probe(deviceID: nil, processes: [ssh(["ssh", "builder"])]),
+            .undeterminable(.deviceUnreadable)
+        )
     }
 
     func testUnreadableProcessTableAbstains() {
-        XCTAssertEqual(probe(processes: nil), .undeterminable)
+        XCTAssertEqual(probe(processes: nil), .undeterminable(.tableUnreadable))
     }
 
     func testOneForegroundSSHClientReportsItsConnection() throws {
@@ -72,7 +74,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
     func testUnreadableArgvOfAnSSHProcessAbstains() {
         // Absence of argv is not absence of ssh: this surface IS a remote
         // session, we just cannot say to where.
-        XCTAssertEqual(probe(processes: [ssh(nil)]), .undeterminable)
+        XCTAssertEqual(probe(processes: [ssh(nil)]), .undeterminable(.unreadableArguments))
     }
 
     // MARK: - Executable verification (review finding 2)
@@ -82,17 +84,18 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // whoever exec'd it. Neither is evidence of running OpenSSH.
         XCTAssertEqual(
             probe(processes: [ssh(["ssh", "builder"], executable: "/tmp/evil/ssh")]),
-            .undeterminable
+            .undeterminable(.untrustedExecutable)
         )
         XCTAssertEqual(
             probe(processes: [ssh(["ssh", "builder"], executable: "/Users/dev/bin/ssh")]),
-            .undeterminable
+            .undeterminable(.untrustedExecutable)
         )
     }
 
     func testUnknownExecutablePathAbstains() {
         XCTAssertEqual(
-            probe(processes: [ssh(["ssh", "builder"], executable: nil)]), .undeterminable
+            probe(processes: [ssh(["ssh", "builder"], executable: nil)]),
+            .undeterminable(.untrustedExecutable)
         )
     }
 
@@ -136,7 +139,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // an executable in a writable tree, must not produce a destination.
         XCTAssertEqual(
             probe(processes: [ssh(["ssh", "builder"], executable: "/opt/homebrew/tmp/ssh")]),
-            .undeterminable
+            .undeterminable(.untrustedExecutable)
         )
     }
 
@@ -361,7 +364,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                     ssh(["ssh", "builder", "herdr", "attach"], pid: 502),
                 ]
             ),
-            .undeterminable
+            .undeterminable(.multipleForegroundClients)
         )
     }
 
@@ -384,7 +387,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             executablePath: "/usr/bin/ssh",
             arguments: ["ssh", "builder"]
         )
-        XCTAssertEqual(probe(processes: [first, second]), .undeterminable)
+        XCTAssertEqual(probe(processes: [first, second]), .undeterminable(.multipleForegroundClients))
     }
 
     func testTwoForegroundSSHClientsToDifferentHostsOnOneSurfaceAbstain() {
@@ -395,7 +398,16 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                     ssh(["ssh", "other"], pid: 502),
                 ]
             ),
-            .undeterminable
+            .undeterminable(.multipleForegroundClients)
+        )
+    }
+
+    func testARefusedOptionOnTheSurfaceClientReportsItsOwnCause() {
+        // The categories exist because three field dictations were diagnosed
+        // blind (2026-08-06): every branch collapsed into one word.
+        XCTAssertEqual(
+            probe(processes: [ssh(["ssh", "-o", "HostName=other", "builder"])]),
+            .undeterminable(.refusedArguments)
         )
     }
 
