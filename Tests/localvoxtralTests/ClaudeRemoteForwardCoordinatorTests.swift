@@ -82,14 +82,16 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         registry: ClaudeRemoteHostRegistry,
         spy: ForwardSpy,
-        isListenerBound: @escaping @MainActor () -> Bool = { true }
+        isListenerBound: @escaping @MainActor () -> Bool = { true },
+        reapOrphans: (@Sendable () async -> Void)? = nil
     ) -> ClaudeRemoteForwardCoordinator {
         ClaudeRemoteForwardCoordinator(
             hosts: registry,
             remoteForwardPort: 28511,
             listenerPort: 8473,
             isListenerBound: isListenerBound,
-            makeSupervisor: { spy.makeSupervisor($0) }
+            makeSupervisor: { spy.makeSupervisor($0) },
+            reapOrphans: reapOrphans
         )
     }
 
@@ -257,6 +259,80 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         release.open()
         for _ in 0..<50 { await Task.yield() }
         XCTAssertEqual(spy.started, [host.id, host.id])
+    }
+
+    func testForwardsWaitForTheOrphanReapBeforeStarting() async throws {
+        // The regression behind this gate (field report, 2026-08-05): an app
+        // run that ended without a clean quit left its `ssh -N -R` alive and
+        // holding the remote port, so the NEXT launch's forward was refused
+        // its own port and the pane showed "Port held" terminally. The reap
+        // kills that orphan first; a forward started before it finishes would
+        // dial a port the orphan still holds and reproduce exactly that state.
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+
+        let spy = ForwardSpy()
+        let reapGate = TeardownGate()
+        let coordinator = makeCoordinator(
+            registry: registry, spy: spy, reapOrphans: { await reapGate.wait() }
+        )
+        coordinator.reconcile()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertTrue(
+            spy.started.isEmpty, "an orphan may still hold the port until the reap finishes"
+        )
+
+        reapGate.open()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(spy.started, [host.id])
+    }
+
+    func testTheOrphanReapRunsExactlyOnce() async throws {
+        // The gate protects the FIRST start only. Records written after launch
+        // belong to this instance's own live supervisors, and reaping again
+        // would kill them.
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+
+        let spy = ForwardSpy()
+        let reapCount = Mutex(0)
+        let coordinator = makeCoordinator(
+            registry: registry, spy: spy, reapOrphans: { reapCount.withLock { $0 += 1 } }
+        )
+        coordinator.reconcile()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(spy.started, [host.id])
+
+        try registry.setPersistentForwardEnabled(false, hostID: host.id)
+        coordinator.reconcile()
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+        coordinator.reconcile()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(reapCount.withLock { $0 }, 1)
+    }
+
+    func testNoReapWhileTheListenerIsUnbound() async throws {
+        // Multi-instance safety. A second app instance cannot bind the
+        // listener while the first lives — and it must not reap either, or it
+        // would kill the first instance's perfectly healthy tunnels.
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        try registry.setPersistentForwardEnabled(true, hostID: host.id)
+
+        let spy = ForwardSpy()
+        let reapCount = Mutex(0)
+        let coordinator = makeCoordinator(
+            registry: registry,
+            spy: spy,
+            isListenerBound: { false },
+            reapOrphans: { reapCount.withLock { $0 += 1 } }
+        )
+        coordinator.reconcile()
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(reapCount.withLock { $0 }, 0, "no listener, no reap")
+        XCTAssertTrue(spy.started.isEmpty)
     }
 }
 
