@@ -257,6 +257,18 @@ final class DictationViewModel {
     /// clear lives in DictationViewModel+Session.swift.
     var sessionSecureInputActive = false
 
+    /// What this session's Claude Code join resolved to, held for the overlay's
+    /// header badge.
+    ///
+    /// Latched here for the same reason `sessionSecureInputActive` is: the join
+    /// is resolved at session start, while the app the user dictated into is
+    /// still frontmost, but the overlay panel does not open until the realtime
+    /// socket connects — and `startSession` clears the state machine, so a
+    /// badge pushed at resolution time would be wiped by the session that is
+    /// supposed to show it. Internal, because the session-end clear lives in
+    /// DictationViewModel+Session.swift.
+    var sessionClaudeJoinBadge: OverlayClaudeJoinBadge = .hidden
+
     /// Ends the refused-start warning when no session is running: the icon
     /// (and the "Blocked" status line) return to normal, while `lastError`
     /// keeps the one-line explanation in the popover. A stopped session that
@@ -1927,6 +1939,11 @@ final class DictationViewModel {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
             socketPaneStartCapture = nil
+            // No endpoint means the join is never consumed by anything, so
+            // there is no grounding to report on either way. Saying "no Claude
+            // session" here would be true and useless — nothing would have used
+            // one.
+            sessionClaudeJoinBadge = .hidden
             return
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -1943,6 +1960,17 @@ final class DictationViewModel {
         // exactly the moments it mattered — quit during polish, an aborted
         // connect — and the ssh outlived the app (review finding 4).
         retainRemoteHerdrForward(of: claudeSessionJoin)
+        // Read from the ONE resolved join, never by asking again. The badge is
+        // a description of `claudeSessionJoin`, so it cannot disagree with the
+        // context that actually ships.
+        sessionClaudeJoinBadge = OverlayClaudeJoinBadge.resolve(
+            join: claudeSessionJoin,
+            contextFeatureEnabled: settings.terminalScreenContextEnabled
+                || settings.claudeRepoContextEnabled,
+            liveSessionsExist: { [claudeSessionJoinResolver] in
+                claudeSessionJoinResolver?.hasLiveSessions() ?? false
+            }
+        )
         // Only a socket-routed pane join — herdr, remote herdr, or cmux —
         // produces a sample here (the function refuses everything else before
         // any socket request), and it reads exactly the joined pane. Fetched at

@@ -85,6 +85,9 @@ struct DictationOverlayView: View {
     /// see `OverlayLayoutMetrics` for why the two must stay in lockstep.
     let metrics: OverlayLayoutMetrics
     var polished: Bool = false
+    /// What this dictation's Claude Code session join resolved to. `.hidden`
+    /// renders nothing — see `OverlayClaudeJoinBadge`.
+    var claudeJoin: OverlayClaudeJoinBadge = .hidden
     private let cornerRadius: CGFloat = 12
 
     /// Warning text needs explicit light/dark variants: system `.red` over
@@ -142,10 +145,10 @@ struct DictationOverlayView: View {
     private var polishedBadge: some View {
         Label("Polished", systemImage: "wand.and.stars")
             .labelStyle(.titleAndIcon)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: metrics.badgeFontSize, weight: .semibold))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
+            .padding(.horizontal, metrics.badgeHorizontalPadding)
+            .padding(.vertical, metrics.badgeVerticalPadding)
             .background(
                 Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
             )
@@ -154,6 +157,62 @@ struct DictationOverlayView: View {
                     .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
             )
             .accessibilityLabel("Polished by the language model")
+    }
+
+    /// Trailing pill naming the Claude Code session this dictation is grounded
+    /// in, or saying that none attached. Same quiet weight as `polishedBadge`
+    /// deliberately: an unjoined dictation still commits its text correctly, so
+    /// this annotates the panel — it is not an error, and the warning color
+    /// under the transcript is reserved for text that failed to insert.
+    ///
+    /// The distinction rides the icon (`link` vs `link.slash`) and the label,
+    /// not color, so it reads the same on both desktops without a second
+    /// appearance-matched palette.
+    @ViewBuilder
+    private var claudeJoinBadge: some View {
+        switch claudeJoin {
+        case .hidden:
+            EmptyView()
+        case .joined(let label):
+            joinPill(
+                systemImage: "link",
+                title: label,
+                accessibilityLabel: "Grounded in Claude Code session \(label)"
+            )
+        case .unjoined:
+            joinPill(
+                systemImage: "link.slash",
+                title: "No Claude session",
+                accessibilityLabel: "No Claude Code session joined for this dictation"
+            )
+        }
+    }
+
+    private func joinPill(
+        systemImage: String,
+        title: String,
+        accessibilityLabel: String
+    ) -> some View {
+        Label(title, systemImage: systemImage)
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: metrics.badgeFontSize, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, metrics.badgeHorizontalPadding)
+            .padding(.vertical, metrics.badgeVerticalPadding)
+            .background(
+                Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5)
+            )
+            // Yields header width to the phase title, which is the actionable
+            // half (the secure-input title tells the user what to DO); a long
+            // workspace name truncates instead of pushing it out.
+            .layoutPriority(-1)
+            .accessibilityLabel(accessibilityLabel)
     }
 
     var body: some View {
@@ -167,6 +226,7 @@ struct DictationOverlayView: View {
                         .controlSize(.small)
                 }
                 Spacer(minLength: 0)
+                claudeJoinBadge
                 if polished {
                     polishedBadge
                 }

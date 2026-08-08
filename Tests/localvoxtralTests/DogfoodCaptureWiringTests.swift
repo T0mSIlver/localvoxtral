@@ -786,7 +786,7 @@ private final class WiringMockOverlayCoordinator: OverlayBufferSessionCoordinati
         )
     }
 
-    func startSession(preResolvedAnchor _: OverlayAnchor?) {}
+    func startSession(preResolvedAnchor _: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
     func beginFinalizing(displayBufferText _: String, commitBufferText _: String) {}
     func refresh(displayBufferText _: String, commitBufferText _: String) {}
 
