@@ -720,6 +720,26 @@ final class ClaudeSessionRegistryTests: XCTestCase {
         XCTAssertEqual(registry.liveSessions().map(\.sessionID), ["second", "first"])
     }
 
+    // `hasLiveSessions` exists so the overlay's join badge can ask about
+    // emptiness without materializing every session's files and snippets. It
+    // must answer exactly what `liveSessions().isEmpty` would — including
+    // across the TTL, or the badge would report "no Claude session" for a live
+    // one, or complain about sessions that have already aged out.
+    func testHasLiveSessionsTracksLiveSessionsExactly() {
+        let clock = TestClock(epoch)
+        let registry = makeRegistry(clock: clock, markers: TestMarkers(["lvx-1"]))
+        XCTAssertFalse(registry.hasLiveSessions())
+        XCTAssertEqual(registry.hasLiveSessions(), !registry.liveSessions().isEmpty)
+
+        registry.ingest(record(.sessionStart), origin: local)
+        XCTAssertTrue(registry.hasLiveSessions())
+        XCTAssertEqual(registry.hasLiveSessions(), !registry.liveSessions().isEmpty)
+
+        clock.advance(ClaudeRegistryLimits.default.sessionTTL + 1)
+        XCTAssertFalse(registry.hasLiveSessions(), "a session past its TTL is not live")
+        XCTAssertEqual(registry.hasLiveSessions(), !registry.liveSessions().isEmpty)
+    }
+
     func testExplicitEvictAndRemoveAll() {
         let registry = makeRegistry(markers: TestMarkers(["lvx-1", "lvx-2"]))
         registry.ingest(record(.sessionStart, session: "s1"), origin: local)

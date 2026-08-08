@@ -843,7 +843,7 @@ private final class TargetDetectorNoopOverlayCoordinator: OverlayBufferSessionCo
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(targetRect: .zero, source: .windowCenter)
     }
-    func startSession(preResolvedAnchor: OverlayAnchor?) {}
+    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
     func refresh(displayBufferText: String, commitBufferText: String) {}
     var commitOutcome: OverlayBufferCommitOutcome = .succeeded

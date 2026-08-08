@@ -1560,7 +1560,7 @@ private final class NoopOverlayCoordinator: OverlayBufferSessionCoordinating {
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(targetRect: .zero, source: .windowCenter)
     }
-    func startSession(preResolvedAnchor: OverlayAnchor?) {}
+    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
     func refresh(displayBufferText: String, commitBufferText: String) {}
     @discardableResult
