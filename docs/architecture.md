@@ -36,7 +36,12 @@ Key subsystems:
   `integrations/claude-code/`): off-screen context for dictation into Claude
   Code. Two plugins in one marketplace, structurally separate — never modes of
   each other. Both declare hooks only (no skill/command/agent/statusLine —
-  nothing that spends the user's tokens).
+  nothing that spends the user's tokens). The OPT-IN connection indicator for
+  Claude Code's status line is user-wired, never plugin-declared: locally the
+  user points their own `statusLine` setting at the publisher binary's
+  `--statusline` mode; remotely at a copy of the remote plugin's
+  `statusline.sh`, which renders the outcome post.sh stamped for the last hook
+  dial and never dials anything itself.
   - **Local** (`localvoxtral`): each hook runs `localvoxtral-claude-hook` as a
     CHILD (never `exec` — the shim must outlive a publisher that cannot start,
     or the exec failure becomes the hook's exit code and fail-open stops being

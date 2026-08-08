@@ -151,6 +151,13 @@ public final class ClaudeSessionRegistry: Sendable {
         environment: ClaudeRemoteSessionEnvironment? = nil
     ) -> ClaudeSessionSnapshot? {
         let timestamp = now()
+        // A status probe is read-only by contract and is answered by the
+        // broker BEFORE ingest (`ClaudeContextBroker.handle`). Refusing it
+        // here too is the backstop: an ingested probe would CREATE a session
+        // for an id nobody ever hooked, or refresh the activity of one whose
+        // process is gone — the probe would keep alive the very state it
+        // exists to report on.
+        if record.event == .statusQuery { return nil }
         // A LOCAL Claude record whose raw id spells another namespace's prefix
         // is spelling a key that can never be its own: Claude Code ids are
         // bare UUIDs, opencode ids get the prefix added HERE, and remote ids

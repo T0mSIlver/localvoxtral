@@ -91,33 +91,44 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         }
     }
 
-    func testPluginShipsExactlyOneExecutableTheCurlShim() throws {
+    func testPluginShipsExactlyTwoExecutablesBothPOSIXSh() throws {
         // The premise, updated for the command-hook shape: nothing to install
-        // on the remote but the manifests and ONE POSIX-sh shim. No Python, no
-        // jq, no nc, no Node, no publisher binary. If any other runnable file
-        // ever appears here, the premise is gone.
+        // on the remote but the manifests and TWO POSIX-sh scripts — the curl
+        // shim every hook runs, and the status-line renderer the user may
+        // point their own `statusLine` setting at. No Python, no jq, no nc,
+        // no Node, no publisher binary. If any other runnable file ever
+        // appears here, the premise is gone.
+        let shellScripts: Set<String> = ["hooks/post.sh", "hooks/statusline.sh"]
         let contents = try FileManager.default.subpathsOfDirectory(atPath: pluginRoot.path)
         for path in contents {
             let full = pluginRoot.appendingPathComponent(path)
             var isDirectory: ObjCBool = false
             FileManager.default.fileExists(atPath: full.path, isDirectory: &isDirectory)
             guard !isDirectory.boolValue else { continue }
-            if path == "hooks/post.sh" {
-                // Claude Code's shell resolves the hook command through this
-                // file; without +x every hook errors on the user's turn.
+            if shellScripts.contains(path) {
+                // Claude Code's shell resolves the hook command through
+                // post.sh; without +x every hook errors on the user's turn.
+                // statusline.sh is documented as copy-then-run, so it ships
+                // runnable for the same reason.
                 XCTAssertTrue(
                     FileManager.default.isExecutableFile(atPath: full.path),
-                    "the shim must be executable"
+                    "\(path) must be executable"
                 )
                 continue
             }
             XCTAssertFalse(
                 FileManager.default.isExecutableFile(atPath: full.path),
-                "the remote plugin must ship no executable but the shim, found \(path)"
+                "the remote plugin must ship no executable but its two sh scripts, found \(path)"
             )
             XCTAssertTrue(
                 path.hasSuffix(".json"),
-                "the remote plugin must ship JSON manifests and the shim only, found \(path)"
+                "the remote plugin must ship JSON manifests and its two sh scripts only, found \(path)"
+            )
+        }
+        for script in shellScripts {
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: pluginRoot.appendingPathComponent(script).path),
+                "\(script) must exist — the allowlist above is not aspirational"
             )
         }
     }
@@ -351,6 +362,160 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             .first.map(String.init)
         XCTAssertEqual(firstLine, "#!/bin/sh", "must be POSIX sh, not bash — remote hosts vary")
+    }
+
+    // MARK: Connection-status stamp + status-line renderer
+    //
+    // post.sh records each dial's outcome in a one-line `hook-status` stamp;
+    // statusline.sh (which the user may wire into their own `statusLine`
+    // setting) renders a FIXED string selected by the stamp's first token.
+    // Both halves are proven by running them: the stamp obeys its grammar, and
+    // the renderer can never be made to echo a byte of the stamp file.
+
+    private var statusLineRendererURL: URL {
+        pluginRoot.appendingPathComponent("hooks/statusline.sh")
+    }
+
+    func testStatusLineRendererIsPOSIXShAndExecutable() throws {
+        XCTAssertTrue(
+            FileManager.default.isExecutableFile(atPath: statusLineRendererURL.path),
+            "documented as copy-then-run; without +x the copied file breaks"
+        )
+        let firstLine = try String(contentsOf: statusLineRendererURL, encoding: .utf8)
+            .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            .first.map(String.init)
+        XCTAssertEqual(firstLine, "#!/bin/sh", "must be POSIX sh, not bash — remote hosts vary")
+    }
+
+    func testShimStampsTheOutcomeOfEveryCompletedDial() throws {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stamp-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+        let stampURL = state.appendingPathComponent("localvoxtral/hook-status")
+        let ownState = ["XDG_RUNTIME_DIR": state.path]
+        func stamp() throws -> String {
+            try String(contentsOf: stampURL, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        func assertGrammar(_ value: String, file: StaticString = #filePath, line: UInt = #line) {
+            XCTAssertNotNil(
+                value.range(of: #"^(ok|down|unconfigured|http-[0-9]{3}) [0-9]{1,12}$"#,
+                            options: .regularExpression),
+                "stamp \(value) must obey the fixed grammar statusline.sh reads",
+                file: file, line: line
+            )
+        }
+
+        // 200 → ok.
+        _ = try runShimWithStubCurl(
+            status: "200",
+            body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: nil),
+            extraEnvironment: ownState
+        )
+        XCTAssertTrue(try stamp().hasPrefix("ok "), "a 200 exchange must stamp ok")
+        assertGrammar(try stamp())
+
+        // Completed non-200 → http-<code> (the 401 is the one users will see).
+        _ = try runShimWithStubCurl(status: "401", body: nil, extraEnvironment: ownState)
+        XCTAssertTrue(try stamp().hasPrefix("http-401 "), "a completed 401 must stamp http-401")
+        assertGrammar(try stamp())
+
+        // Transport failure → down.
+        _ = try runShimWithStubCurl(
+            status: "000", body: nil, curlExitCode: 7, extraEnvironment: ownState
+        )
+        XCTAssertTrue(try stamp().hasPrefix("down "), "a dead tunnel must stamp down")
+        assertGrammar(try stamp())
+
+        // No token → unconfigured, before any dial.
+        _ = try runShim(environment: ownState)
+        XCTAssertTrue(try stamp().hasPrefix("unconfigured "), "a missing token must stamp unconfigured")
+        assertGrammar(try stamp())
+    }
+
+    /// Runs statusline.sh with an isolated state dir holding the given stamp
+    /// (nil = no stamp at all), a status-line payload on stdin, and captures
+    /// everything.
+    private func runStatusLineRenderer(
+        stamp: String?
+    ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let state = FileManager.default.temporaryDirectory
+            .appendingPathComponent("statusline-state-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: state) }
+        if let stamp {
+            let directory = state.appendingPathComponent("localvoxtral")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try stamp.write(
+                to: directory.appendingPathComponent("hook-status"), atomically: true, encoding: .utf8
+            )
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [statusLineRendererURL.path]
+        var environment = ProcessInfo.processInfo.environment
+        environment["XDG_RUNTIME_DIR"] = state.path
+        process.environment = environment
+        let stdin = Pipe()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardInput = stdin
+        process.standardOutput = stdout
+        process.standardError = stderr
+        try process.run()
+        stdin.fileHandleForWriting.write(Data(#"{"session_id":"s1"}"#.utf8))
+        stdin.fileHandleForWriting.closeFile()
+        let out = stdout.fileHandleForReading.readDataToEndOfFile()
+        let err = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (
+            process.terminationStatus,
+            String(decoding: out, as: UTF8.self),
+            String(decoding: err, as: UTF8.self)
+        )
+    }
+
+    func testStatusLineRendererMapsEachStampStateToItsFixedString() throws {
+        let esc = "\u{1B}"
+        let cases: [(stamp: String?, expected: String)] = [
+            ("ok 1786204746", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
+            ("http-401 1786204746", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token rejected\n"),
+            ("http-503 1786204746", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral not connected\n"),
+            ("down 1786204746", "\(esc)[2m\u{25CB} localvoxtral unreachable\(esc)[0m\n"),
+            ("unconfigured 1786204746", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token not configured\n"),
+            (nil, "\(esc)[2m\u{25CB} localvoxtral no hooks yet\(esc)[0m\n"),
+        ]
+        for (stamp, expected) in cases {
+            let result = try runStatusLineRenderer(stamp: stamp)
+            XCTAssertEqual(result.exitCode, 0, "\(stamp ?? "<none>") must exit 0")
+            XCTAssertEqual(result.stdout, expected, "wrong rendering for \(stamp ?? "<none>")")
+            XCTAssertEqual(result.stderr, "", "the renderer must never be noisy")
+        }
+    }
+
+    func testStatusLineRendererNeverEchoesStampBytes() throws {
+        // The stamp file is merely 0600 — anything running as the user could
+        // rewrite it, and stdout renders (with ANSI honored) in the user's
+        // status line. So the stamp's first token only ever SELECTS a fixed
+        // string; unrecognized states render the never-heard-anything default
+        // and not one byte of the file.
+        let defaultLine = "\u{1B}[2m\u{25CB} localvoxtral no hooks yet\u{1B}[0m\n"
+        for hostile in [
+            "$(uname) 1786204746",
+            "ok`uname` 1786204746",
+            "ok\u{1B}]0;evil\u{07} 1786204746",
+            "totally-unknown-state 1786204746",
+            String(repeating: "A", count: 100_000),
+        ] {
+            let result = try runStatusLineRenderer(stamp: hostile)
+            XCTAssertEqual(result.exitCode, 0)
+            XCTAssertEqual(
+                result.stdout, defaultLine,
+                "an unrecognized stamp must render the default, never its own bytes"
+            )
+            XCTAssertEqual(result.stderr, "")
+        }
     }
 
     func testShimFailsOpenSilentlyWithoutATokenAndWithoutCurl() throws {

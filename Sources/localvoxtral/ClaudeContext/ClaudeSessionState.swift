@@ -270,6 +270,13 @@ public enum ClaudeSessionReducer {
             break
         case .sessionEnd:
             snapshot.activity = .ended
+        case .statusQuery:
+            // Unreachable: a status probe is refused at the top of
+            // `ClaudeSessionRegistry.ingest` (and answered by the broker
+            // before that), so it can never be reduced into a snapshot. The
+            // case exists so adding a wire event stays a compile-time
+            // decision here rather than an implicit `break`.
+            break
         }
     }
 
