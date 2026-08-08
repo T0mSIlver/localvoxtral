@@ -103,6 +103,14 @@ public enum ClaudeHookEvent: String, Sendable, Equatable, CaseIterable, Codable 
     /// TTY's declaration regardless, because a clear can only ever widen
     /// abstention.
     case focusCleared = "FocusCleared"
+    /// A read-only liveness probe, synthesized by the publisher's status-line
+    /// mode (`localvoxtral-claude-hook --statusline`) — NOT a Claude Code hook
+    /// name; Claude Code never sends it and the shim never forwards it. The
+    /// broker answers `accepted == the named session is live in the registry`
+    /// and MUST NOT ingest it: a probe that created or refreshed a session
+    /// would keep dead sessions alive by the very act of asking after them.
+    /// `ClaudeSessionRegistry.ingest` refuses it outright as the backstop.
+    case statusQuery = "StatusQuery"
 }
 
 /// Hard bounds applied at BOTH ends of the wire.
@@ -487,8 +495,10 @@ public enum ClaudeHookWireCodec {
 
     /// Truncate on a Character boundary so the result is always valid UTF-8
     /// (a byte-slice truncation could split a multi-byte scalar and produce a
-    /// string that fails to encode).
-    static func truncate(_ value: String, toUTF8Bytes limit: Int) -> String {
+    /// string that fails to encode). Public because the publisher's
+    /// status-line mode bounds `session_id` with the same rule the wire clamp
+    /// applies — one truncation semantic, not two.
+    public static func truncate(_ value: String, toUTF8Bytes limit: Int) -> String {
         guard value.utf8.count > limit else { return value }
         var result = ""
         var used = 0
