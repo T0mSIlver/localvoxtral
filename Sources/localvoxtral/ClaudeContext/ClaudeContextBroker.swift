@@ -656,9 +656,10 @@ public final class ClaudeContextBroker: Sendable {
                 )
                 let live = registry.snapshot(sessionID: scopedID) != nil
                 Log.claudeContext.debug("Status query: \(live ? "live" : "unknown", privacy: .public)")
-                #if DEBUG
-                debugNotify(.success(record))
-                #endif
+                // Deliberately NOT debugNotify: that seam means "a record was
+                // ingested or rejected", and a probe is neither — status-line
+                // traffic firing it would inflate any test counting real
+                // ingestions.
                 return (nil, live, false, record.version)
             }
             // Per-agent pid cross-check against the KERNEL's answer. The

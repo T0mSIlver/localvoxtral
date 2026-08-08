@@ -387,6 +387,28 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
 
     // MARK: Status query — the read-only probe behind `--statusline`
 
+    func testUnknownEventLineIsRefusedWithAReplyNotADrop() throws {
+        // The version-skew story `--statusline` leans on: a NEW publisher
+        // sending StatusQuery to an OLD broker relies on the broker's
+        // unknown-event branch REPLYING `accepted: false` (which the
+        // publisher renders as "not connected") rather than dropping the
+        // connection (which would render "not running" against a healthy
+        // app). Pin the shape with an event name no build knows.
+        try broker.start()
+        let line = Data(
+            #"{"v":2,"event":"StatusQueryFromTheFuture","session_id":"skew","ts":1,"files":[]}"#
+                .utf8 + [0x0A]
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(line: line, to: socketPath)
+        guard case .success(let reply) = result else {
+            return XCTFail("an unknown event must still complete the exchange: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertEqual(response.accepted, false)
+        XCTAssertNil(response.marker)
+        XCTAssertTrue(registry.liveSessions().isEmpty, "an unknown event must not create a session")
+    }
+
     func testStatusQueryForALiveSessionRepliesAcceptedWithoutAMarker() throws {
         try broker.start()
         // Seed a live session through the front door.

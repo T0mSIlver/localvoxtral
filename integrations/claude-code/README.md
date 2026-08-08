@@ -455,7 +455,8 @@ traffic, which is also what re-runs the status line:
 
 | Line | The last hook dial saw |
 |---|---|
-| `● localvoxtral connected` (green) | a 200 from the app, through the tunnel |
+| `● localvoxtral connected` (green) | a 200 from the app, through the tunnel, within the last 15 minutes |
+| `○ localvoxtral no recent hooks` (dim) | a 200 too — but a while ago. The green light expires rather than vouch for an app that may have gone away since; your next prompt dials and restores the truth either way |
 | `○ localvoxtral unreachable` (dim) | no listener — tunnel down, Mac asleep, or the app not running |
 | `○ localvoxtral token rejected` (yellow) | a 401 — rotate the token, or finish an interrupted rotation |
 | `○ localvoxtral token not configured` (yellow) | the plugin has no `token` in its config at all |
@@ -486,7 +487,7 @@ The copy does not go stale in any way that matters: the renderer is
 deliberately dumb (read stamp, print fixed string) and the smart half lives
 in `post.sh`, which updates with the plugin. Like everything else on this
 path, the renderer's stdout fails closed: the stamp's first token only ever
-selects one of the six strings above — no byte of the stamp file is ever
+selects one of the strings above — no byte of the stamp file is ever
 echoed into your status line. If you already run a status line on that host,
 call the script from it and append its one line.
 

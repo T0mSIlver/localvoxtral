@@ -478,12 +478,27 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testStatusLineRendererMapsEachStampStateToItsFixedString() throws {
         let esc = "\u{1B}"
+        // The current time is DATA here, not timing: the renderer compares the
+        // stamp's epoch against its own `date +%s`, so a "fresh" fixture must
+        // be minted at run time (a literal would silently cross the 15-minute
+        // staleness gate one day and start failing). No sleeps, no tolerances.
+        let fresh = String(Int(Date().timeIntervalSince1970))
+        let stale = String(Int(Date().timeIntervalSince1970) - 3600)
         let cases: [(stamp: String?, expected: String)] = [
-            ("ok 1786204746", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
-            ("http-401 1786204746", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token rejected\n"),
-            ("http-503 1786204746", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral not connected\n"),
-            ("down 1786204746", "\(esc)[2m\u{25CB} localvoxtral unreachable\(esc)[0m\n"),
-            ("unconfigured 1786204746", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token not configured\n"),
+            ("ok \(fresh)", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
+            // A green light must expire: ok past the staleness gate demotes to
+            // the dim no-recent-hooks line rather than claiming a live app.
+            ("ok \(stale)", "\(esc)[2m\u{25CB} localvoxtral no recent hooks\(esc)[0m\n"),
+            // Freshness is a refinement, never a new failure mode: an epoch we
+            // cannot read renders exactly as pre-gate ok did.
+            ("ok not-an-epoch", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
+            ("ok", "\(esc)[32m\u{25CF}\(esc)[0m localvoxtral connected\n"),
+            // Failure states are never demoted — stale bad news is still the
+            // last known truth, and staying conservative cannot mislead.
+            ("http-401 \(stale)", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token rejected\n"),
+            ("http-503 \(fresh)", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral not connected\n"),
+            ("down \(stale)", "\(esc)[2m\u{25CB} localvoxtral unreachable\(esc)[0m\n"),
+            ("unconfigured \(fresh)", "\(esc)[33m\u{25CB}\(esc)[0m localvoxtral token not configured\n"),
             (nil, "\(esc)[2m\u{25CB} localvoxtral no hooks yet\(esc)[0m\n"),
         ]
         for (stamp, expected) in cases {

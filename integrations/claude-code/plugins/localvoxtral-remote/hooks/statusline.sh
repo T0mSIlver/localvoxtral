@@ -37,9 +37,32 @@ else
 fi
 
 STATE=""
+EPOCH=""
 if [ -n "$STAMP_DIR" ] && [ -r "$STAMP_DIR/hook-status" ]; then
   LINE="$(cat "$STAMP_DIR/hook-status" 2>/dev/null)" || LINE=""
   STATE="${LINE%% *}"
+  EPOCH="${LINE#* }"
+  [ "$EPOCH" = "$LINE" ] && EPOCH=""
+fi
+
+# A green light must expire. `ok` is a claim about the LAST dial, and the one
+# lie this script could otherwise tell is a green dot hours after the Mac
+# went to sleep — precisely the condition the indicator exists to surface. So
+# an `ok` older than 15 minutes demotes to a dim "no recent hooks"; the next
+# submitted prompt dials (UserPromptSubmit is backoff-exempt) and restores
+# the truth either way. Only `ok` is demoted: a stale failure state is still
+# the last known truth, and staying conservative can't mislead. Both numbers
+# are validated exactly like post.sh's NOW (digits, <=12, no `[`/$(( ))
+# aborts); anything odd disables the demotion and `ok` renders as before —
+# freshness is a refinement, never a new failure mode.
+STALE_SECONDS=900
+STALE=""
+NOW="$(date +%s 2>/dev/null)" || NOW=""
+case "$NOW" in "" | *[!0-9]* | ?????????????*) NOW="" ;; esac
+case "$EPOCH" in "" | *[!0-9]* | ?????????????*) EPOCH="" ;; esac
+if [ -n "$NOW" ] && [ -n "$EPOCH" ] && [ "$EPOCH" -le "$NOW" ] \
+  && [ $((NOW - EPOCH)) -gt "$STALE_SECONDS" ]; then
+  STALE=1
 fi
 
 # Fixed strings only. `printf '%b'` renders the SGR escapes; `\0033` is the
@@ -50,7 +73,13 @@ fi
 # Green dot: the Mac answered 200 to this host's last hook. Everything else
 # names the failure the last dial actually saw.
 case "$STATE" in
-ok) printf '%b\n' '\0033[32m●\0033[0m localvoxtral connected' ;;
+ok)
+  if [ -n "$STALE" ]; then
+    printf '%b\n' '\0033[2m○ localvoxtral no recent hooks\0033[0m'
+  else
+    printf '%b\n' '\0033[32m●\0033[0m localvoxtral connected'
+  fi
+  ;;
 http-401) printf '%b\n' '\0033[33m○\0033[0m localvoxtral token rejected' ;;
 http-*) printf '%b\n' '\0033[33m○\0033[0m localvoxtral not connected' ;;
 down) printf '%b\n' '\0033[2m○ localvoxtral unreachable\0033[0m' ;;
