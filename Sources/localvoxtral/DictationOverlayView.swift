@@ -145,10 +145,10 @@ struct DictationOverlayView: View {
     private var polishedBadge: some View {
         Label("Polished", systemImage: "wand.and.stars")
             .labelStyle(.titleAndIcon)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: metrics.badgeFontSize, weight: .semibold))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
+            .padding(.horizontal, metrics.badgeHorizontalPadding)
+            .padding(.vertical, metrics.badgeVerticalPadding)
             .background(
                 Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
             )
@@ -195,12 +195,12 @@ struct DictationOverlayView: View {
     ) -> some View {
         Label(title, systemImage: systemImage)
             .labelStyle(.titleAndIcon)
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: metrics.badgeFontSize, weight: .semibold))
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .truncationMode(.tail)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1)
+            .padding(.horizontal, metrics.badgeHorizontalPadding)
+            .padding(.vertical, metrics.badgeVerticalPadding)
             .background(
                 Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
             )

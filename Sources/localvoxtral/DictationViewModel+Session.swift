@@ -2455,11 +2455,14 @@ extension DictationViewModel {
     private func startOverlayBufferSession() {
         let anchor = preResolvedOverlayAnchor
         preResolvedOverlayAnchor = nil
-        overlayBufferCoordinator.startSession(preResolvedAnchor: anchor)
-        // After startSession, never before: it clears the state machine, so a
-        // badge set at join-resolution time (which happens before the socket
-        // connects) would be wiped by the very session meant to display it.
-        overlayBufferCoordinator.markClaudeJoin(sessionClaudeJoinBadge)
+        // The badge travels WITH the start: the join is resolved before the
+        // socket connects and this runs after it, so it is always already
+        // known — and passing it in is what stops a later setter from being
+        // ordered wrong against the reset that starting a session performs.
+        overlayBufferCoordinator.startSession(
+            preResolvedAnchor: anchor,
+            claudeJoin: sessionClaudeJoinBadge
+        )
         if sessionSecureInputActive {
             // The overlay is the surface the user is actually watching while
             // buffering — warn there, not just in the (closed) popover. The

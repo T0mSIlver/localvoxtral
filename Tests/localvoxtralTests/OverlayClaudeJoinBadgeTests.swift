@@ -202,6 +202,22 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
         )
     }
 
+    // U+2028/U+2029 are LINE and PARAGRAPH SEPARATOR: category Zl/Zp, so
+    // neither the `.control` nor the `.format` branch touches them, and they
+    // survive to the whitespace collapse. They break lines like a newline does,
+    // so this is the assertion that stops a future "collapse ASCII whitespace"
+    // refactor from silently letting one through into a single-line header.
+    func testUnicodeLineAndParagraphSeparatorsCollapseToASpace() {
+        XCTAssertEqual(
+            OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "repo\u{2028}x"),
+            "repo x"
+        )
+        XCTAssertEqual(
+            OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "repo\u{2029}x"),
+            "repo x"
+        )
+    }
+
     func testWhitespaceRunsCollapseSoALabelCannotPadThePill() {
         XCTAssertEqual(
             OverlayClaudeJoinBadge.displayLabel(forWorkspaceName: "  my    repo  "),

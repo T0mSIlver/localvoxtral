@@ -137,7 +137,16 @@ struct OverlayBufferStateMachine {
         )
     }
 
-    mutating func startSession(anchor: OverlayAnchor) {
+    /// Starts a session, taking the Claude join badge WITH the anchor rather
+    /// than through a follow-up setter.
+    ///
+    /// The join is resolved before the realtime socket connects and this call
+    /// happens after it, so the badge is always already known here — unlike
+    /// `polished`, which genuinely arrives later, at commit. Passing it in is
+    /// what makes the ordering unbreakable: a separate setter had to run AFTER
+    /// this method (which resets the session) to survive, and nothing in the
+    /// type system said so.
+    mutating func startSession(anchor: OverlayAnchor, claudeJoin: OverlayClaudeJoinBadge) {
         guard phase == .idle else {
             let currentPhase = phase
             Log.overlay.warning("startSession called but phase is \(String(describing: currentPhase)), not idle — ignoring")
@@ -148,10 +157,10 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
-        // The previous dictation's join describes the previous dictation's
-        // session. A badge that survived into this one would vouch for a
-        // grounding this session has not been given.
-        claudeJoin = .hidden
+        // Assigned, never merely cleared: the previous dictation's join
+        // describes the previous dictation's session, and a badge that survived
+        // into this one would vouch for a grounding this session was not given.
+        self.claudeJoin = claudeJoin
         self.anchor = anchor
     }
 
@@ -162,16 +171,6 @@ struct OverlayBufferStateMachine {
     mutating func setPolished(_ value: Bool) {
         guard phase != .idle else { return }
         polished = value
-    }
-
-    /// Records what this dictation's Claude Code join turned out to be, for the
-    /// header badge. Set from session start, where the join is resolved; the
-    /// badge then rides every later snapshot unchanged, because the join it
-    /// describes is likewise resolved exactly once. Ignored when idle (no
-    /// session to annotate); a new session clears it.
-    mutating func setClaudeJoin(_ badge: OverlayClaudeJoinBadge) {
-        guard phase != .idle else { return }
-        claudeJoin = badge
     }
 
     /// Marks the buffering session as running under Secure Keyboard Entry.

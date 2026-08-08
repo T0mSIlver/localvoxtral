@@ -14,7 +14,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         machine.setSecureInputWarning()
         XCTAssertNil(machine.snapshot, "no session, no marker")
 
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         machine.setSecureInputWarning()
         XCTAssertEqual(machine.snapshot?.secureInputActive, true)
         XCTAssertNil(
@@ -29,7 +29,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         )
 
         machine.reset()
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         XCTAssertEqual(machine.snapshot?.secureInputActive, false, "a new session starts clean")
 
         machine.beginFinalizing(anchor: nil)
@@ -44,7 +44,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 10, y: 20, width: 100, height: 40), source: .windowCenter)
 
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         XCTAssertEqual(machine.phase, .buffering)
 
         machine.updateBuffer(text: "hello world", anchor: nil)
@@ -63,7 +63,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 40, height: 20), source: .mouseLocation)
 
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         machine.updateBuffer(text: "buffered text", anchor: nil)
         machine.beginFinalizing(anchor: nil)
         machine.commitFailed(error: "insert failed", anchor: anchor)
@@ -78,7 +78,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(targetRect: CGRect(x: 5, y: 5, width: 80, height: 20), source: .windowCenter)
 
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         machine.updateBuffer(text: "hello", anchor: nil)
         machine.beginFinalizing(anchor: nil)
         machine.reset()
@@ -99,7 +99,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         machine.setPolished(true)
         XCTAssertNil(machine.snapshot, "no session, no flag")
 
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         XCTAssertEqual(machine.snapshot?.polished, false, "a fresh session is unpolished")
 
         machine.beginFinalizing(anchor: nil)
@@ -114,7 +114,7 @@ final class OverlayBufferStateMachineTests: XCTestCase {
 
         machine.setPolished(true)
         machine.reset()
-        machine.startSession(anchor: anchor)
+        machine.startSession(anchor: anchor, claudeJoin: .hidden)
         XCTAssertEqual(
             machine.snapshot?.polished, false,
             "reset + a new session must not carry a stale badge"
@@ -158,26 +158,17 @@ final class OverlayBufferStateMachineTests: XCTestCase {
 
     // MARK: - Claude join badge
 
-    // The badge is set from session start and must ride every later snapshot:
+    // The badge arrives WITH the session and must ride every later snapshot:
     // the join it describes is resolved exactly once, so nothing downstream can
     // change what it should say.
-    func testClaudeJoinBadgeRidesTheSessionAndClearsOnTheNextOne() {
+    func testClaudeJoinBadgeRidesTheWholeSession() {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
             source: .windowCenter
         )
 
-        machine.setClaudeJoin(.joined(label: "localvoxtral"))
-        XCTAssertNil(machine.snapshot, "no session, no badge")
-
-        machine.startSession(anchor: anchor)
-        XCTAssertEqual(
-            machine.snapshot?.claudeJoin, .hidden,
-            "a session starts with nothing to say about a join"
-        )
-
-        machine.setClaudeJoin(.joined(label: "localvoxtral"))
+        machine.startSession(anchor: anchor, claudeJoin: .joined(label: "localvoxtral"))
         XCTAssertEqual(machine.snapshot?.claudeJoin, .joined(label: "localvoxtral"))
 
         machine.updateBuffer(text: "hello", anchor: nil)
@@ -192,25 +183,33 @@ final class OverlayBufferStateMachineTests: XCTestCase {
             machine.snapshot?.claudeJoin, .joined(label: "localvoxtral"),
             "a failed insert says nothing about what the dictation was grounded in"
         )
-
-        // The next dictation's badge is its own. A stale `.joined` surviving
-        // would tell the user THIS session is grounded in one it never resolved.
-        machine.reset()
-        machine.startSession(anchor: anchor)
-        XCTAssertEqual(machine.snapshot?.claudeJoin, .hidden)
     }
 
-    func testClaudeJoinBadgeIsIgnoredWhenIdle() {
+    // The badge cannot outlive the dictation it describes, because starting a
+    // session ASSIGNS it rather than merely clearing it: there is no ordering
+    // in which a stale `.joined` can reach the next session's panel, and no
+    // setter that could put one there later.
+    func testEachSessionsBadgeIsItsOwn() {
         var machine = OverlayBufferStateMachine()
         let anchor = OverlayAnchor(
             targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
             source: .windowCenter
         )
-        machine.startSession(anchor: anchor)
-        machine.setClaudeJoin(.unjoined)
+
+        machine.startSession(anchor: anchor, claudeJoin: .joined(label: "localvoxtral"))
         machine.reset()
-        machine.setClaudeJoin(.joined(label: "sneaky"))
-        XCTAssertNil(machine.snapshot, "idle renders nothing at all")
-        XCTAssertEqual(machine.claudeJoin, .hidden, "and holds nothing to render later")
+        XCTAssertEqual(machine.claudeJoin, .hidden, "reset holds nothing to render later")
+
+        machine.startSession(anchor: anchor, claudeJoin: .unjoined)
+        XCTAssertEqual(machine.snapshot?.claudeJoin, .unjoined)
+
+        // Even without an intervening reset: a second startSession is refused
+        // outright (guarded on `.idle`), so it cannot half-apply a new badge to
+        // a running session either.
+        machine.startSession(anchor: anchor, claudeJoin: .joined(label: "sneaky"))
+        XCTAssertEqual(
+            machine.snapshot?.claudeJoin, .unjoined,
+            "the running session keeps the badge it was started with"
+        )
     }
 }

@@ -1246,7 +1246,7 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
         )
     }
 
-    func startSession(preResolvedAnchor: OverlayAnchor?) {
+    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {
         startSessionAnchors.append(preResolvedAnchor)
     }
 

@@ -391,10 +391,16 @@ there is not.
     directory, where a newline is legal and the panel is measured from the body
     text alone. Cc (newline, tab) becomes a space — deleting it would glue two
     runs into a directory name the user does not have — while Cf (bidi
-    overrides, zero-width joiners) is dropped, being zero-width already. It names the joined workspace
-    rather than showing a checkmark because a mis-join — a stale marker winning,
-    the residual documented on the marker and remote-herdr arms — is invisible to
-    a boolean and obvious next to the wrong repo's name.
+    overrides, zero-width joiners) is dropped, being zero-width already.
+    It names the joined workspace rather than showing a checkmark because a
+    mis-join — a stale marker winning, the residual documented on the marker and
+    remote-herdr arms — is invisible to a boolean and obvious next to the wrong
+    repo's name.
+    The badge travels as a PARAMETER of `startSession`, never a later setter:
+    starting a session resets the panel, so a badge pushed before it was wiped
+    and one pushed after depended on an order nothing enforced. It is always
+    already known there — the join resolves before the realtime socket connects,
+    and the panel opens after it.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

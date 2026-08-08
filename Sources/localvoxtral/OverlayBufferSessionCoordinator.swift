@@ -41,7 +41,11 @@ enum OverlayBufferCommitOutcome: Equatable {
 @MainActor
 protocol OverlayBufferSessionCoordinating: AnyObject {
     func resolveAnchorNow() -> OverlayAnchor
-    func startSession(preResolvedAnchor: OverlayAnchor?)
+    /// Opens the overlay for a session. `claudeJoin` is taken here, not through
+    /// a later setter, because starting a session RESETS the panel state — a
+    /// badge pushed beforehand would be wiped, and one pushed afterwards
+    /// depended on a call order nothing enforced.
+    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin: OverlayClaudeJoinBadge)
     func beginFinalizing(displayBufferText: String, commitBufferText: String)
     func refresh(displayBufferText: String, commitBufferText: String)
     @discardableResult
@@ -61,15 +65,11 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// transcript, so the overlay shows the "Polished" badge while the polished
     /// text is held before dismissal. Defaulted so test doubles stay unchanged.
     func markPolished(_ polished: Bool)
-    /// Records what this dictation's Claude Code join resolved to, for the
-    /// overlay's join badge. Defaulted so test doubles stay unchanged.
-    func markClaudeJoin(_ badge: OverlayClaudeJoinBadge)
 }
 
 extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
     func markPolished(_ polished: Bool) {}
-    func markClaudeJoin(_ badge: OverlayClaudeJoinBadge) {}
 }
 
 @MainActor
@@ -123,7 +123,10 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         anchorResolver.resolveAnchor()
     }
 
-    func startSession(preResolvedAnchor: OverlayAnchor? = nil) {
+    func startSession(
+        preResolvedAnchor: OverlayAnchor? = nil,
+        claudeJoin: OverlayClaudeJoinBadge = .hidden
+    ) {
         dismissTask?.cancel()
         dismissTask = nil
         commitBufferText = ""
@@ -132,7 +135,7 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
         refreshLiveCommitTargetAppPID()
 
         let anchor = preResolvedAnchor ?? anchorResolver.resolveAnchor()
-        stateMachine.startSession(anchor: anchor)
+        stateMachine.startSession(anchor: anchor, claudeJoin: claudeJoin)
         renderCurrentSnapshot()
         Log.overlay.info("overlay session started (preResolved=\(preResolvedAnchor != nil, privacy: .public))")
     }
@@ -269,11 +272,6 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func markPolished(_ polished: Bool) {
         stateMachine.setPolished(polished)
-        renderCurrentSnapshot()
-    }
-
-    func markClaudeJoin(_ badge: OverlayClaudeJoinBadge) {
-        stateMachine.setClaudeJoin(badge)
         renderCurrentSnapshot()
     }
 
