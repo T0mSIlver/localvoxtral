@@ -42,8 +42,58 @@ fail_open() {
   exit 0
 }
 
+# 0700 directories / 0600 files for EVERYTHING this shim creates — the header
+# tempfile below and both state stamps. Set before the first write, not just
+# before the tempfile.
+umask 077
+
+# --- Private per-user state dir --------------------------------------------
+# Holds two single-line stamps, both best-effort and both harmless to lose:
+#   hook-backoff  — epoch of the last transport failure (see backoff below)
+#   hook-status   — outcome of the last completed dial, for the OPT-IN status
+#                   line (statusline.sh in this directory). One line,
+#                   `<state> <epoch>`, state from a fixed grammar:
+#                   ok | down | unconfigured | http-<3 digits>.
+# The status stamp is HOST-level, not per-session, by design: reading a
+# session id would mean parsing (and buffering) the event body this shim
+# deliberately passes through byte-for-byte — and tunnel, token, and port are
+# per-host facts anyway, so one session's outcome answers for all of them.
+if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+  STAMP_DIR="$XDG_RUNTIME_DIR/localvoxtral"
+elif [ -n "${HOME:-}" ]; then
+  STAMP_DIR="$HOME/.cache/localvoxtral"
+else
+  STAMP_DIR=""
+fi
+STAMP="$STAMP_DIR/hook-backoff"
+STATUS_STAMP="$STAMP_DIR/hook-status"
+NOW="$(date +%s 2>/dev/null)" || NOW=""
+# Digits only, at most 12 of them (epoch seconds are 10 until year 2286): a
+# damaged value must never reach `[` or $(( )), where an oversized constant
+# aborts some shells — with output on stderr.
+case "$NOW" in *[!0-9]* | ?????????????*) NOW="" ;; esac
+
+# Record the last dial's outcome for statusline.sh. Same tempfile + mv -f
+# discipline as the backoff stamp (rename replaces a pre-planted symlink
+# instead of writing through it; a concurrent reader never sees a torn line),
+# and every failure is silent — losing the indicator is nothing next to
+# delivering the hook.
+write_status() {
+  [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] || return 0
+  {
+    mkdir -p "$STAMP_DIR" && chmod 700 "$STAMP_DIR" \
+      && echo "$1 $NOW" >"$STATUS_STAMP.$$" && mv -f "$STATUS_STAMP.$$" "$STATUS_STAMP"
+  } 2>/dev/null || { rm -f "$STATUS_STAMP.$$"; } 2>/dev/null || :
+}
+
 TOKEN="${CLAUDE_PLUGIN_OPTION_TOKEN:-}"
-[ -n "$TOKEN" ] || fail_open
+# No token is the one misconfiguration worth naming before failing open: the
+# plugin was installed without `--config token=…`, every future dial would be
+# a guaranteed 401, and nothing else on this host will ever say so.
+[ -n "$TOKEN" ] || {
+  write_status unconfigured
+  fail_open
+}
 command -v curl >/dev/null 2>&1 || fail_open
 
 # --- Listen port -------------------------------------------------------------
@@ -85,24 +135,11 @@ esac
 # the first prompt after the app comes back is grounded immediately — and its
 # completed exchange clears the backoff for every other event.
 #
-# State is one epoch-seconds stamp in a private per-user dir. Anything odd —
-# no usable dir, no epoch from date, garbage content, a clock that jumped
-# backwards — disables the backoff and the shim simply dials: exactly the
-# pre-backoff behavior, fail-open as ever.
+# State is one epoch-seconds stamp in the private per-user dir derived above.
+# Anything odd — no usable dir, no epoch from date, garbage content, a clock
+# that jumped backwards — disables the backoff and the shim simply dials:
+# exactly the pre-backoff behavior, fail-open as ever.
 BACKOFF_SECONDS=300
-if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-  STAMP_DIR="$XDG_RUNTIME_DIR/localvoxtral"
-elif [ -n "${HOME:-}" ]; then
-  STAMP_DIR="$HOME/.cache/localvoxtral"
-else
-  STAMP_DIR=""
-fi
-STAMP="$STAMP_DIR/hook-backoff"
-NOW="$(date +%s 2>/dev/null)" || NOW=""
-# Digits only, at most 12 of them (epoch seconds are 10 until year 2286): a
-# damaged value must never reach `[` or $(( )), where an oversized constant
-# aborts some shells — with output on stderr.
-case "$NOW" in *[!0-9]* | ?????????????*) NOW="" ;; esac
 if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$EVENT" != "UserPromptSubmit" ] \
   && [ -r "$STAMP" ]; then
   LAST="$(cat "$STAMP" 2>/dev/null)" || LAST=""
@@ -116,11 +153,10 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ] && [ "$EVENT" != "UserPromptSubmit" ] \
   esac
 fi
 
-# 0700 directory / 0600 files for the header tempfile; removed on every exit.
-# Known, accepted leak: a SIGKILL (Claude Code escalating past the hook
+# Header tempfile dir (0700/0600 under the umask set above); removed on every
+# exit. Known, accepted leak: a SIGKILL (Claude Code escalating past the hook
 # timeout) skips the traps and strands one 0700 dir — private to the user,
 # bounded by how often hooks get killed.
-umask 077
 WORK="$(mktemp -d 2>/dev/null)" || fail_open
 trap 'rm -rf "$WORK"' EXIT
 trap 'rm -rf "$WORK"; exit 0' HUP INT TERM
@@ -226,8 +262,16 @@ if [ -n "$STAMP_DIR" ] && [ -n "$NOW" ]; then
       mkdir -p "$STAMP_DIR" && chmod 700 "$STAMP_DIR" \
         && echo "$NOW" >"$STAMP.$$" && mv -f "$STAMP.$$" "$STAMP"
     } 2>/dev/null || { rm -f "$STAMP.$$"; } 2>/dev/null || :
+    write_status down
   else
     rm -f "$STAMP" 2>/dev/null || :
+    # The completed exchange's verdict, for statusline.sh. The code is
+    # embedded only after the exact-3-digits match — curl wrote it, but
+    # nothing that fails the grammar may reach a file another script reads.
+    case "$STATUS" in
+    200) write_status ok ;;
+    [0-9][0-9][0-9]) write_status "http-$STATUS" ;;
+    esac
   fi
 fi
 

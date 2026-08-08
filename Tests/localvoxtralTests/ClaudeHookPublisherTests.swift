@@ -270,6 +270,74 @@ final class ClaudeHookPublisherTests: XCTestCase {
         ).run(stdin: Data(json.utf8), fallbackEvent: nil)
         XCTAssertEqual(outcome, .droppedTransport(.socketPathTooLong))
     }
+
+    // MARK: Status line mode — `--statusline`
+
+    func testStatusLinePayloadSessionIDIsExtractedAndBounded() {
+        let payload = #"{"session_id":"abc-123","cwd":"/repo","model":{"id":"m"}}"#
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineSessionID(payload: Data(payload.utf8), limits: .default),
+            "abc-123"
+        )
+        // Bounded exactly like every wire identifier.
+        let long = String(repeating: "a", count: 9000)
+        let bounded = ClaudeHookPublisher.statusLineSessionID(
+            payload: Data(#"{"session_id":"\#(long)"}"#.utf8), limits: .default
+        )
+        XCTAssertEqual(bounded?.utf8.count, ClaudeHookLimits.default.maxPathBytes)
+    }
+
+    func testStatusLinePayloadWithoutAUsableSessionIDIsUnparseable() {
+        for payload in [
+            "", "not json", "[]", "{}",
+            #"{"session_id":""}"#,
+            #"{"session_id":42}"#,
+        ] {
+            XCTAssertEqual(
+                publisher().runStatusQuery(stdin: Data(payload.utf8)),
+                .unparseablePayload,
+                "\(payload) must not produce a claim about any session"
+            )
+        }
+    }
+
+    func testStatusQueryAgainstAnAbsentBrokerIsAppUnreachable() {
+        let payload = #"{"session_id":"s1"}"#
+        let outcome = ClaudeHookPublisher(
+            environment: makeEnvironment(
+                variables: [ClaudeHookSocketPath.environmentKey: "/tmp/absent-\(UUID().uuidString).sock"]
+            )
+        ).runStatusQuery(stdin: Data(payload.utf8))
+        XCTAssertEqual(outcome, .appUnreachable)
+    }
+
+    func testStatusQueryWithNoResolvableSocketPathIsAppUnreachable() {
+        XCTAssertEqual(
+            publisher(variables: [:]).runStatusQuery(stdin: Data(#"{"session_id":"s1"}"#.utf8)),
+            .appUnreachable
+        )
+    }
+
+    func testStatusLineTextIsFixedStringsOnly() throws {
+        // The whole output contract: four outcomes, three compile-time
+        // strings and one silence. Nothing here interpolates anything.
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineText(for: .connected),
+            "\u{1B}[32m\u{25CF}\u{1B}[0m localvoxtral connected"
+        )
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineText(for: .sessionUnknown),
+            "\u{1B}[33m\u{25CB}\u{1B}[0m localvoxtral not connected"
+        )
+        XCTAssertEqual(
+            ClaudeHookPublisher.statusLineText(for: .appUnreachable),
+            "\u{1B}[2m\u{25CB} localvoxtral not running\u{1B}[0m"
+        )
+        XCTAssertNil(
+            ClaudeHookPublisher.statusLineText(for: .unparseablePayload),
+            "a payload we cannot attribute must render as nothing, not a guess"
+        )
+    }
 }
 
 // MARK: - Socket path resolution
