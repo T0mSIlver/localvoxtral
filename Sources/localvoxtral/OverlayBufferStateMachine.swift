@@ -109,6 +109,10 @@ struct OverlayBufferStateMachine {
         /// while the polished text is held before dismissal. Set only by the
         /// stop-commit polish path; cleared on every new session.
         let polished: Bool
+        /// What to say about this dictation's Claude Code session join. Set
+        /// once, from the join resolved at session start; cleared on every new
+        /// session. `.hidden` renders nothing at all.
+        let claudeJoin: OverlayClaudeJoinBadge
         let anchor: OverlayAnchor
     }
 
@@ -117,6 +121,7 @@ struct OverlayBufferStateMachine {
     private(set) var errorMessage: String?
     private(set) var secureInputActive = false
     private(set) var polished = false
+    private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
     private(set) var anchor: OverlayAnchor?
 
     var snapshot: Snapshot? {
@@ -127,6 +132,7 @@ struct OverlayBufferStateMachine {
             errorMessage: errorMessage,
             secureInputActive: secureInputActive,
             polished: polished,
+            claudeJoin: claudeJoin,
             anchor: anchor
         )
     }
@@ -142,6 +148,10 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
+        // The previous dictation's join describes the previous dictation's
+        // session. A badge that survived into this one would vouch for a
+        // grounding this session has not been given.
+        claudeJoin = .hidden
         self.anchor = anchor
     }
 
@@ -152,6 +162,16 @@ struct OverlayBufferStateMachine {
     mutating func setPolished(_ value: Bool) {
         guard phase != .idle else { return }
         polished = value
+    }
+
+    /// Records what this dictation's Claude Code join turned out to be, for the
+    /// header badge. Set from session start, where the join is resolved; the
+    /// badge then rides every later snapshot unchanged, because the join it
+    /// describes is likewise resolved exactly once. Ignored when idle (no
+    /// session to annotate); a new session clears it.
+    mutating func setClaudeJoin(_ badge: OverlayClaudeJoinBadge) {
+        guard phase != .idle else { return }
+        claudeJoin = badge
     }
 
     /// Marks the buffering session as running under Secure Keyboard Entry.
@@ -196,6 +216,7 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
+        claudeJoin = .hidden
         anchor = nil
     }
 }

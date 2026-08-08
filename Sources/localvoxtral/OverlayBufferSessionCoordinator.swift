@@ -61,11 +61,15 @@ protocol OverlayBufferSessionCoordinating: AnyObject {
     /// transcript, so the overlay shows the "Polished" badge while the polished
     /// text is held before dismissal. Defaulted so test doubles stay unchanged.
     func markPolished(_ polished: Bool)
+    /// Records what this dictation's Claude Code join resolved to, for the
+    /// overlay's join badge. Defaulted so test doubles stay unchanged.
+    func markClaudeJoin(_ badge: OverlayClaudeJoinBadge)
 }
 
 extension OverlayBufferSessionCoordinating {
     func showSecureInputWarning() {}
     func markPolished(_ polished: Bool) {}
+    func markClaudeJoin(_ badge: OverlayClaudeJoinBadge) {}
 }
 
 @MainActor
@@ -265,6 +269,11 @@ final class OverlayBufferSessionCoordinator: OverlayBufferSessionCoordinating {
 
     func markPolished(_ polished: Bool) {
         stateMachine.setPolished(polished)
+        renderCurrentSnapshot()
+    }
+
+    func markClaudeJoin(_ badge: OverlayClaudeJoinBadge) {
+        stateMachine.setClaudeJoin(badge)
         renderCurrentSnapshot()
     }
 

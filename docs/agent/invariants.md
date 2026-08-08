@@ -379,6 +379,22 @@ there is not.
     browser), and each browser needs its own TCC Automation grant — pre-warmed
     by its own `TerminalAutomationConsentPrewarmSettingsObserver` under that
     same setting, since the consent sheet dies with the 1 s read that raised it.
+  - The overlay's join badge (`OverlayClaudeJoinBadge`) DESCRIBES the resolved
+    join; it never resolves one. It reads `claudeSessionJoin` after the single
+    start-time resolution and nothing else — a badge that asked again could name
+    a different session than the context actually attached, which is the exact
+    failure the once-per-dictation rule exists to prevent. Its one extra read is
+    `registry.hasLiveSessions()`, which touches no title, TTY, socket, or process
+    table and only chooses between "nothing attached" and showing nothing at all.
+    What it renders is a length-capped workspace `displayName` with control
+    characters neutralized: a LOCAL name is the last component of a real
+    directory, where a newline is legal and the panel is measured from the body
+    text alone. Cc (newline, tab) becomes a space — deleting it would glue two
+    runs into a directory name the user does not have — while Cf (bidi
+    overrides, zero-width joiners) is dropped, being zero-width already. It names the joined workspace
+    rather than showing a checkmark because a mis-join — a stale marker winning,
+    the residual documented on the marker and remote-herdr arms — is invisible to
+    a boolean and obvious next to the wrong repo's name.
   - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.

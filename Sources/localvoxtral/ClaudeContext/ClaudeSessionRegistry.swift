@@ -624,6 +624,19 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Whether ANY session is live, without materializing them.
+    ///
+    /// The overlay's join badge asks this once per unjoined dictation purely to
+    /// decide between "nothing attached" and silence, and it needs no snapshot
+    /// — `liveSessions()` would copy every session's recent files and snippets
+    /// to answer a question about emptiness.
+    public func hasLiveSessions() -> Bool {
+        let timestamp = now()
+        return state.withLock { state in
+            state.sessions.values.contains { isFresh($0, now: timestamp) }
+        }
+    }
+
     public func evict(sessionID: String) {
         state.withLock { removeLocked(&$0, sessionID: sessionID) }
     }

@@ -155,4 +155,62 @@ final class OverlayBufferStateMachineTests: XCTestCase {
         let commitText = OverlayBufferTextAssembler.insertionText(from: "  hello world  ")
         XCTAssertEqual(commitText, "hello world")
     }
+
+    // MARK: - Claude join badge
+
+    // The badge is set from session start and must ride every later snapshot:
+    // the join it describes is resolved exactly once, so nothing downstream can
+    // change what it should say.
+    func testClaudeJoinBadgeRidesTheSessionAndClearsOnTheNextOne() {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+
+        machine.setClaudeJoin(.joined(label: "localvoxtral"))
+        XCTAssertNil(machine.snapshot, "no session, no badge")
+
+        machine.startSession(anchor: anchor)
+        XCTAssertEqual(
+            machine.snapshot?.claudeJoin, .hidden,
+            "a session starts with nothing to say about a join"
+        )
+
+        machine.setClaudeJoin(.joined(label: "localvoxtral"))
+        XCTAssertEqual(machine.snapshot?.claudeJoin, .joined(label: "localvoxtral"))
+
+        machine.updateBuffer(text: "hello", anchor: nil)
+        machine.beginFinalizing(anchor: nil)
+        XCTAssertEqual(
+            machine.snapshot?.claudeJoin, .joined(label: "localvoxtral"),
+            "the badge annotates the whole session, including the polished hold"
+        )
+
+        machine.commitFailed(error: "nope", anchor: nil)
+        XCTAssertEqual(
+            machine.snapshot?.claudeJoin, .joined(label: "localvoxtral"),
+            "a failed insert says nothing about what the dictation was grounded in"
+        )
+
+        // The next dictation's badge is its own. A stale `.joined` surviving
+        // would tell the user THIS session is grounded in one it never resolved.
+        machine.reset()
+        machine.startSession(anchor: anchor)
+        XCTAssertEqual(machine.snapshot?.claudeJoin, .hidden)
+    }
+
+    func testClaudeJoinBadgeIsIgnoredWhenIdle() {
+        var machine = OverlayBufferStateMachine()
+        let anchor = OverlayAnchor(
+            targetRect: CGRect(x: 0, y: 0, width: 80, height: 24),
+            source: .windowCenter
+        )
+        machine.startSession(anchor: anchor)
+        machine.setClaudeJoin(.unjoined)
+        machine.reset()
+        machine.setClaudeJoin(.joined(label: "sneaky"))
+        XCTAssertNil(machine.snapshot, "idle renders nothing at all")
+        XCTAssertEqual(machine.claudeJoin, .hidden, "and holds nothing to render later")
+    }
 }

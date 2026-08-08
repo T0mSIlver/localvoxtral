@@ -300,6 +300,18 @@ struct ClaudeSessionJoinResolver {
     /// can ONLY join via marker, because their TTY names another machine's
     /// device and `resolve(tty:)` refuses remote candidates outright.
     ///
+    /// Whether the registry currently holds ANY live session.
+    ///
+    /// Not a join and not a step toward one: the overlay's join badge asks it
+    /// to tell "nothing attached" apart from "there was nothing to attach", so
+    /// a Mac that simply is not running Claude Code shows no badge instead of a
+    /// permanent complaint. It reads no title, no TTY, no socket and no
+    /// process table — it cannot influence, or be influenced by, what `resolve`
+    /// decides.
+    func hasLiveSessions() -> Bool {
+        registry.hasLiveSessions()
+    }
+
     /// This remains the only place a join is resolved, once per dictation, at
     /// start — whichever mechanism answers.
     func resolve(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {

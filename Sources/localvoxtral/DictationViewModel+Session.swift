@@ -249,6 +249,11 @@ extension DictationViewModel {
         // review finding on #90). The refuse path / verdict apply below
         // re-set it from the fresh sample.
         sessionSecureInputActive = false
+        // Same rule for the join badge, and it matters more: a stale `.joined`
+        // from the previous dictation would tell the user THIS one is grounded
+        // in a session it never resolved. An attempt that exits before the
+        // capture runs (invalid endpoint, missing mic) must show nothing.
+        sessionClaudeJoinBadge = .hidden
         let requestedOutputMode = outputMode ?? settings.dictationOutputMode
         clearLatchedSessionMetadata()
         sessionOutputMode = requestedOutputMode
@@ -1661,6 +1666,7 @@ extension DictationViewModel {
             lastError = nil
         }
         sessionSecureInputActive = false
+        sessionClaudeJoinBadge = .hidden
         firstChunkPreprocessor.reset()
     }
 
@@ -2450,6 +2456,10 @@ extension DictationViewModel {
         let anchor = preResolvedOverlayAnchor
         preResolvedOverlayAnchor = nil
         overlayBufferCoordinator.startSession(preResolvedAnchor: anchor)
+        // After startSession, never before: it clears the state machine, so a
+        // badge set at join-resolution time (which happens before the socket
+        // connects) would be wiped by the very session meant to display it.
+        overlayBufferCoordinator.markClaudeJoin(sessionClaudeJoinBadge)
         if sessionSecureInputActive {
             // The overlay is the surface the user is actually watching while
             // buffering — warn there, not just in the (closed) popover. The
