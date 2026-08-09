@@ -68,21 +68,57 @@ private final class RemoteJoinHerdrPanes: HerdrPaneQuerying, @unchecked Sendable
 }
 
 private final class FakeForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked Sendable {
-    private let state = Mutex(true)
+    private struct State {
+        var isRunning: Bool
+        var waiters: [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] = []
+    }
+
+    private let state: Mutex<State>
+    private let stderrContinuation: AsyncStream<String>.Continuation
+    let standardErrorLines: AsyncStream<String>
     let terminations = Mutex(0)
 
     init(running: Bool = true) {
-        state.withLock { $0 = running }
+        let (stream, continuation) = AsyncStream<String>.makeStream(of: String.self)
+        standardErrorLines = stream
+        stderrContinuation = continuation
+        state = Mutex(State(isRunning: running))
+        if !running { stderrContinuation.finish() }
     }
 
-    var isRunning: Bool { state.withLock { $0 } }
+    var isRunning: Bool { state.withLock { $0.isRunning } }
+    var processIdentifier: pid_t { 4_242 }
 
-    func exit() { state.withLock { $0 = false } }
+    func exit() {
+        let pending = state.withLock {
+            current -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>]? in
+            guard current.isRunning else { return nil }
+            current.isRunning = false
+            defer { current.waiters = [] }
+            return current.waiters
+        }
+        guard let pending else { return }
+        stderrContinuation.finish()
+        for waiter in pending { waiter.resume(returning: .code(0)) }
+    }
+
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
+        await withCheckedContinuation { continuation in
+            let alreadyExited = state.withLock { current -> Bool in
+                guard current.isRunning else { return true }
+                current.waiters.append(continuation)
+                return false
+            }
+            if alreadyExited { continuation.resume(returning: .code(0)) }
+        }
+    }
 
     func terminate() {
         terminations.withLock { $0 += 1 }
-        state.withLock { $0 = false }
+        exit()
     }
+
+    func forceTerminate() { terminate() }
 }
 
 private final class RecordingSpawner: ClaudeRemoteHerdrForwardSpawning, @unchecked Sendable {
@@ -134,7 +170,8 @@ private final class RecordingWorkspaces: ClaudeRemoteHerdrWorkspaceProviding, @u
 
 /// Stands in for the whole forward service in resolver tests, so the join arm
 /// can be exercised without any notion of processes.
-private final class RecordingForwards: ClaudeRemoteHerdrForwarding, @unchecked Sendable {
+@MainActor
+private final class RecordingForwards: ClaudeRemoteHerdrForwarding {
     struct Opened: Equatable {
         var alias: String
         var remoteSocketPath: String

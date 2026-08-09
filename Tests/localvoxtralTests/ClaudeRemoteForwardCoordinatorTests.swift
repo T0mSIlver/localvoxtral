@@ -83,7 +83,8 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         registry: ClaudeRemoteHostRegistry,
         spy: ForwardSpy,
         isListenerBound: @escaping @MainActor () -> Bool = { true },
-        reapOrphans: (@Sendable () async -> Void)? = nil
+        reapOrphans: (@Sendable () async -> Void)? = nil,
+        reconcileHerdrEnrollment: @escaping @MainActor (Set<String>) -> Void = { _ in }
     ) -> ClaudeRemoteForwardCoordinator {
         ClaudeRemoteForwardCoordinator(
             hosts: registry,
@@ -91,7 +92,8 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
             listenerPort: 8473,
             isListenerBound: isListenerBound,
             makeSupervisor: { spy.makeSupervisor($0) },
-            reapOrphans: reapOrphans
+            reapOrphans: reapOrphans,
+            reconcileHerdrEnrollment: reconcileHerdrEnrollment
         )
     }
 
@@ -138,6 +140,23 @@ final class ClaudeRemoteForwardCoordinatorTests: XCTestCase {
         XCTAssertEqual(spy.started, [host.id])
         XCTAssertEqual(spy.stopped, [host.id])
         XCTAssertNil(coordinator.states[host.id])
+    }
+
+    func testRevocationIsAlsoReconciledIntoPersistentHerdrForwards() throws {
+        let registry = try makeRegistry()
+        let host = try registry.enroll(label: "buildhost", sshHostAlias: "builder").host
+        let seen = Mutex<[Set<String>]>([])
+        let coordinator = makeCoordinator(
+            registry: registry,
+            spy: ForwardSpy(),
+            reconcileHerdrEnrollment: { active in seen.withLock { $0.append(active) } }
+        )
+
+        coordinator.reconcile()
+        try registry.revoke(hostID: host.id)
+        coordinator.reconcile()
+
+        XCTAssertEqual(seen.withLock { $0 }, [[host.id], []])
     }
 
     func testTurningTheToggleOffStopsTheForward() throws {

@@ -15,6 +15,7 @@ private final class MemoryLedgerStore: ClaudeRemoteHostStoreIO {
 private final class ProcessTableFake: @unchecked Sendable {
     private let live = Mutex<ClaudeRemoteForwardPidRecord?>(nil)
     private let sent = Mutex<[Int32]>([])
+    private let signalTargets = Mutex<[pid_t]>([])
     private let lethalSignals: Set<Int32>
 
     init(live record: ClaudeRemoteForwardPidRecord?, dyingOn lethalSignals: Set<Int32>) {
@@ -23,12 +24,14 @@ private final class ProcessTableFake: @unchecked Sendable {
     }
 
     var signals: [Int32] { sent.withLock { $0 } }
+    var targets: [pid_t] { signalTargets.withLock { $0 } }
 
     func inspect(_ pid: pid_t) -> ClaudeRemoteForwardPidRecord? {
         live.withLock { $0?.pid == Int32(pid) ? $0 : nil }
     }
 
     func sendSignal(_ pid: pid_t, _ signalNumber: Int32) {
+        signalTargets.withLock { $0.append(pid) }
         sent.withLock { $0.append(signalNumber) }
         if lethalSignals.contains(signalNumber) {
             live.withLock { $0 = nil }
@@ -112,6 +115,19 @@ final class ClaudeRemoteForwardOrphanReaperTests: XCTestCase {
         let table = ProcessTableFake(live: orphan, dyingOn: [SIGTERM])
         await makeReaper(ledger: ledger, table: table).reap()
         XCTAssertEqual(table.signals, [SIGTERM], "an orphan that honours SIGTERM is never SIGKILLed")
+        XCTAssertTrue(ledger.records().isEmpty)
+    }
+
+    func testAPosixSpawnForwardReapsItsOwnedProcessGroup() async {
+        var orphan = record(pid: 4242)
+        orphan.processGroupID = 4242
+        let ledger = makeLedger(with: ["herdr-local:host": orphan])
+        let table = ProcessTableFake(live: orphan, dyingOn: [SIGTERM])
+
+        await makeReaper(ledger: ledger, table: table).reap()
+
+        XCTAssertEqual(table.targets, [-4242])
+        XCTAssertEqual(table.signals, [SIGTERM])
         XCTAssertTrue(ledger.records().isEmpty)
     }
 

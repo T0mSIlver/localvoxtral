@@ -18,12 +18,33 @@ public struct ClaudeRemoteForwardPidRecord: Codable, Equatable, Sendable {
     public var startSeconds: UInt64
     public var startMicroseconds: UInt64
     public var executablePath: String
+    /// The pgid to signal for a child deliberately spawned as its own process
+    /// group leader. Nil for Foundation-spawned forwards and legacy records.
+    /// This is teardown metadata, not part of process identity.
+    public var processGroupID: Int32?
 
-    public init(pid: Int32, startSeconds: UInt64, startMicroseconds: UInt64, executablePath: String) {
+    public init(
+        pid: Int32,
+        startSeconds: UInt64,
+        startMicroseconds: UInt64,
+        executablePath: String,
+        processGroupID: Int32? = nil
+    ) {
         self.pid = pid
         self.startSeconds = startSeconds
         self.startMicroseconds = startMicroseconds
         self.executablePath = executablePath
+        self.processGroupID = processGroupID
+    }
+
+    /// Group ownership does not come from `proc_pidinfo`, so compare only the
+    /// kernel identity fields when re-validating a ledger record.
+    func matchesProcessIdentity(_ current: ClaudeRemoteForwardPidRecord?) -> Bool {
+        guard let current else { return false }
+        return pid == current.pid
+            && startSeconds == current.startSeconds
+            && startMicroseconds == current.startMicroseconds
+            && executablePath == current.executablePath
     }
 }
 
@@ -59,18 +80,17 @@ public enum ClaudeRemoteForwardProcessIdentity {
 /// Which forward `ssh` children this app has spawned, persisted across a death
 /// the app does not get to see coming.
 ///
-/// Why this exists: `applicationWillTerminate` kills the app-held `ssh -N -R`
-/// forwards on a CLEAN quit, but a crash, a force-quit, or a teardown that
-/// outruns the quit drain leaves the ssh reparented to launchd — alive
-/// indefinitely (BatchMode plus ServerAlive keepalives), still holding the
-/// remote port bind. The next launch's fresh forward is then refused and the
-/// pane reports "Port held" at a port this Mac's own orphan is holding, with a
-/// Retry that can only fail. The ledger is what makes that orphan findable:
-/// each spawn is recorded here, and `ClaudeRemoteForwardOrphanReaper` verifies
-/// and kills survivors before the next launch's forwards start.
+/// Why this exists: `applicationWillTerminate` kills the app-held hook `-R`
+/// and herdr `-L` forwards on a CLEAN quit, but a crash, force-quit, or teardown
+/// that outruns the quit drain leaves ssh reparented to launchd. The `-R` can
+/// keep the remote port bound; the `-L` can keep its local socket and any
+/// ProxyJump descendants alive. The ledger makes either orphan findable so
+/// `ClaudeRemoteForwardOrphanReaper` can verify and kill it before new
+/// forwards start.
 ///
-/// One record per host id — a host has at most one live forward at a time, and
-/// a respawn simply overwrites. Records are removed by the reaper (dead or
+/// One record per lifecycle key: the hook `-R` uses the host id and the herdr
+/// `-L` uses a purpose-scoped key for that host. Each purpose has at most one
+/// live forward, and a respawn simply overwrites. Records are removed by the reaper (dead or
 /// killed), never on process exit: a stale record for a dead pid costs one
 /// identity check at the next launch and nothing else. Records deliberately
 /// carry no remote port: an orphan holds whatever port it was spawned with,
