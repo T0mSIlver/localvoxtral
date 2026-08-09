@@ -41,12 +41,30 @@ private final class PanelMetadataRecorder: HerdrPanelMetadataReporting, @uncheck
 private final class PanelIndicatorProcess: ClaudeRemoteHerdrForwardProcess, @unchecked Sendable {
     private let running = Mutex(true)
     let terminationCount = Mutex(0)
+    let standardErrorLines: AsyncStream<String>
+    private let stderrContinuation: AsyncStream<String>.Continuation
+
+    init() {
+        let (stream, continuation) = AsyncStream.makeStream(of: String.self)
+        standardErrorLines = stream
+        stderrContinuation = continuation
+    }
 
     var isRunning: Bool { running.withLock { $0 } }
+    var processIdentifier: pid_t { 4_243 }
+
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
+        .unavailable
+    }
 
     func terminate() {
         terminationCount.withLock { $0 += 1 }
         running.withLock { $0 = false }
+        stderrContinuation.finish()
+    }
+
+    func forceTerminate() {
+        terminate()
     }
 }
 
