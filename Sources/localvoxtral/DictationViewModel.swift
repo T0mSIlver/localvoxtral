@@ -399,6 +399,11 @@ final class DictationViewModel {
     /// prompt. Cleared on every session exit, like the screen capture.
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
+    /// Panel indicators own their associated remote forward until an explicit
+    /// token clear has completed, so teardown cannot close the tunnel before
+    /// the clear request reaches herdr.
+    @ObservationIgnored
+    var liveRemoteHerdrIndicators: [HerdrPanelMicIndicator] = []
     /// Remote herdr `ssh -L` leases this dictation has open. See
     /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
     /// the join that travels.
@@ -2079,6 +2084,11 @@ final class DictationViewModel {
     /// commit path and captured into a Task), and a resource whose owner is
     /// "whoever currently holds the value" has no owner at all.
     func retainRemoteHerdrForward(of join: ClaudeSessionJoin?) {
+        if let indicator = join?.remoteHerdrIndicator {
+            liveRemoteHerdrIndicators.append(indicator)
+            indicator.start()
+            return
+        }
         guard let forward = join?.remoteHerdrForward else { return }
         liveRemoteHerdrForwards.append(forward)
     }
@@ -2092,6 +2102,10 @@ final class DictationViewModel {
     /// is what makes a leaked handle from some path nobody thought of
     /// self-healing at the next exit.
     func closeRemoteHerdrForwards() {
+        let indicators = liveRemoteHerdrIndicators
+        liveRemoteHerdrIndicators = []
+        for indicator in indicators { indicator.stop() }
+
         guard !liveRemoteHerdrForwards.isEmpty else { return }
         let forwards = liveRemoteHerdrForwards
         liveRemoteHerdrForwards = []
@@ -2099,7 +2113,9 @@ final class DictationViewModel {
     }
 
     /// Test seam: how many tunnels this view model is holding open.
-    var openRemoteHerdrForwardCount: Int { liveRemoteHerdrForwards.count }
+    var openRemoteHerdrForwardCount: Int {
+        liveRemoteHerdrForwards.count + liveRemoteHerdrIndicators.count
+    }
 
     /// Reconciles the start capture against a stop-time re-read of the SAME
     /// PID/bundle and clears it. See `TerminalScreenContext.reconcile` for the

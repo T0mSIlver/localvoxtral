@@ -90,8 +90,10 @@ there is not.
     is herdr-or-nothing: no
     marker fallback, because a lingering title marker could only mis-join.
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
-    `HerdrSocketClient` (hand-written and READ-ONLY — only `pane.current`,
-    `pane.process_info`, `pane.read` are ever sent. herdr was AGPL when this
+    `HerdrSocketClient` (hand-written and capability-bounded — reads are only
+    `pane.current`, `pane.process_info`, and `pane.read`; its sole mutation is
+    the remote panel probe's short-lived `lvmark` through
+    `pane.report_metadata`. herdr was AGPL when this
     was written and is Apache-2.0 since v0.8.0, repo `herdrdev/herdr`, so its
     docs and source are freely readable; the client stays hand-written anyway,
     because a vendored dependency would be a second implementation of the trust
@@ -186,9 +188,38 @@ there is not.
     socket label starts it off the dictation path; a successful cold join also
     retains it. Dictations lease the local socket, and the app keeps the process
     through a bounded injected-clock idle window so later dictations reuse the
-    completed SSH/ProxyJump handshake. The bindings, ALL required, in cost order
-    so an ordinary ssh session never pays for a tunnel:
-    (1) the focused surface's own TTY hosts EXACTLY ONE FOREGROUND `ssh`
+    completed SSH/ProxyJump handshake. Its PRIMARY surface authorization is the
+    herdr agents-panel binding, not ssh argv. For each plausible enrolled host
+    (the readable ssh destination when available; when an ssh is PRESENT but
+    unreadable, at most three enrolled hosts with live herdr-bearing
+    sessions; a surface with NO ssh at all never probes — a local shell must
+    not pay cold-forward latency or flash nonces in panels the user is not
+    looking at), the resolver preserves the
+    single-socket rule, opens the forward, reads `pane.current`, and identifies
+    the unique live session claiming that pane. It then stamps that pane through
+    `pane.report_metadata` with a fresh `lv-mic-…` nonce (more than 40 random
+    bits, 8 s TTL) and requires that exact token in the focused terminal's
+    existing visible-grid route within a bounded injected-clock settle window.
+    A whole-view
+    App client renders the agents sidebar; `terminal_attach` and
+    `terminal_observe` render only the raw pane and cannot render this token.
+    The nonce travels only over the owner/mode-checked forwarded socket and is
+    unguessable inside its short lease, so remote-influenceable terminal text
+    cannot manufacture the match without already observing that herdr server.
+    Two hosts whose distinct nonces both appear abstain. A matched token stays
+    alive as the dictation's visible mic indicator (refresh about every 4 s,
+    TTL 8 s) and is explicitly cleared before its forward closes.
+    EXTERNAL ASSUMPTION: herdr upgrades must re-verify BOTH that attach/observe
+    clients still omit the sidebar (`src/server/headless.rs` render loop) and
+    that all App clients still render one server-global panel/focus
+    (`tests/multi_client.rs`). Per-client focus or a sidebar in attach mode
+    invalidates this authorization argument.
+
+    Any stamp refusal, unavailable grid, hidden/unconfigured/scrolled panel row,
+    or bounded settle timeout can only produce NO MATCH. It closes that attempt
+    and falls through to the pre-existing argv authorization below; it never
+    weakens the pane-level confirmations. The fallback first requires that the
+    focused surface's own TTY host EXACTLY ONE FOREGROUND `ssh`
     session, whose destination identifies exactly one enrolled host. Exact
     alias matching wins without spawning anything; only when it finds no host,
     the app resolves the operand and each active enrolled alias through the
@@ -223,10 +254,10 @@ there is not.
     the session's interactivity, and accepting them keeps terminal wrappers
     such as Ghostty's from making every probe abstain. ssh MACHINERY is
     invisible to this count and to the uniqueness
-    scan in (2): an ssh that is a direct CHILD of another scanned ssh — a
-    ProxyJump's `ssh -W` hop, which OpenSSH spawns on the same tty in the same
-    foreground process group (field abstention 2026-08-06) — is its root
-    connection's transport, not a second connection. The partition rides
+    competing-view scan below: an ssh that is a direct CHILD of another scanned
+    ssh — a ProxyJump's `ssh -W` hop, which OpenSSH spawns on the same tty in
+    the same foreground process group (field abstention 2026-08-06) — is its
+    root connection's transport, not a second connection. The partition rides
     kernel ppid, which no launcher gets to write, so it cannot hide a
     connection (the demoting parent is itself counted); sibling ssh processes
     in one group have no ssh parent and stay refused, and a shell-mediated
@@ -235,7 +266,7 @@ there is not.
     (`SSHProbeIndeterminacy` — never a host, path, or option letter) into the
     log and the dogfood record, because three field dictations were diagnosed
     blind without one;
-    (2) that ssh session IS a plain whole-view herdr client — classified, not
+    It then requires that ssh session to BE a plain whole-view herdr client — classified, not
     boolean (`HerdrInvocation`): the remote command's first argv token has
     basename `herdr` and the rest is empty or `--session <name>`. Every other
     herdr shape is REFUSED because it displays something other than the
@@ -287,38 +318,46 @@ there is not.
     or whose pane still carries a marker and a running agent inside the
     registry TTL, keeps answering `pane.current`, so a plain `ssh builder`
     must never reach the join no matter how alone it is.
-    Requiring the argv signal is what the absence of a better one forces:
+    The argv fallback remains necessary when the direct panel proof cannot
+    render. Its historical limitation is:
     herdr exposes NO read-only attachment signal — re-verified at v0.8.0 /
     protocol 19 (2026-08-06), the only `client.*` methods are
     `window_title.set`/`clear`, both MUTATIONS (so `no_foreground_client` is not
     an acceptable probe), `session.snapshot` carries no client records, and
     the event stream has no client lifecycle events.
-    The accepted cost, stated accurately: the manual flow — `ssh host`, then
-    typing `herdr` — gets no HERDR join. It does NOT get "no context": the arm
-    returns `.notApplicable`, so the title-marker arm still runs, and a marker
-    an earlier session on that host left in the OUTER title can still win. That
-    residual is pre-existing (it is what remote sessions have always done) and
-    cannot be closed from here, because nothing on the surface reveals a remote
-    herdr running inside it — e.g. run Claude in a plain ssh so its marker sits
-    in the title, suspend it, then start herdr by hand: dictation joins the
-    suspended session. What this arm refuses is a wrong HERDR join. It also
-    makes the arm free for everyone else: a plain ssh to an enrolled host no
-    longer spawns a forward before falling through;
-    (3) that host has live remote sessions reporting a herdr pane, all from ONE
+    The manual flow — `ssh host`, then typing `herdr` — now joins through the
+    panel binding whenever the agents sidebar and configured token row are
+    visible. Its residual is narrow/collapsed/covered sidebar or an unconfigured
+    row: panel authorization fails closed, then argv still cannot identify the
+    manually launched herdr. In that residual the title arm is NOT universally
+    allowed. When `SSHDestinationTTYProbe` reports an ssh present but unreadable
+    as exactly `multipleForegroundClients`, `untrustedExecutable`,
+    `unreadableArguments`, or `refusedArguments`, the title arm is suppressed;
+    its outer marker may be stale from before herdr started. `deviceUnreadable`,
+    `tableUnreadable`, and `probeUnavailable` do not suppress it because those
+    mean the probe could not inspect the surface at all and may describe an
+    ordinary local marker join.
+
+    Both surface-authorization paths retain the remaining bounds: the host has
+    live remote sessions reporting a herdr pane, all from ONE
     herdr socket (`liveRemoteHerdrSessions(hostID:)`, the mirror of the local
     single-socket rule). The count that matters is SOCKETS, not sessions:
     several live sessions on one herdr are expected and fine — panes are what a
     multiplexer is for, and serving that workflow is the point of this arm — so
     only two herdr SERVERS leave the surface ambiguous;
-    (4) over the forward, exactly ONE of those candidates claims that herdr's
+    over the forward, exactly ONE of those candidates claims that herdr's
     FOCUSED pane id (two candidates claiming the same pane id abstain), and that
     pane's captured `terminal_title` carries exactly that session's
     broker-allocated marker;
-    (5) herdr's own `agent_session` claim for the pane does not disagree, and
+    and herdr's own `agent_session` claim for the pane does not disagree, and
     the pane is running that session's agent.
-    Herdr-or-nothing begins at CONFIRMATION, not before: everything up to and
-    including step 4 falls THROUGH to the title marker on failure, and only
-    steps after it abstain. Registry candidates existing on the host is not a
+    Herdr-or-nothing begins as soon as the panel nonce matches: that match binds
+    this focused surface to the stamped server, so any later broker-marker,
+    `agent_session`, or foreground refusal suppresses the unrelated outer title.
+    On the argv fallback, the older boundary remains at pane-id plus broker-marker
+    confirmation: earlier failures can fall through to the title (subject to the
+    exact unreadable-ssh suppression above), and later failures abstain. Registry
+    candidates existing on the host is not a
     binding for this connection — a detached herdr, or one whose sessions are
     merely still inside their TTL, would otherwise cost a sole plain ssh session
     the outer marker join it has always had. Once the pane id AND our own
@@ -351,7 +390,8 @@ there is not.
     we SEND, not by what the socket allows.** herdr's JSON socket is
     full-control: over that same forwarded stream one could create panes, write
     keystrokes into them, kill them. We dial OUT to it and send only
-    `pane.current` / `pane.process_info` / `pane.read`, and that restraint —
+    `pane.current` / `pane.process_info` / `pane.read`, plus only the bounded
+    `pane.report_metadata` `lvmark` lease described above, and that restraint —
     plus the one client in the codebase being hand-written — is the whole
     boundary. In exchange, `ClaudeRemoteSessionEnvironment.herdrSocketPath`
     stays what PR #216 made it: a label that is NEVER handed to `FileManager`,

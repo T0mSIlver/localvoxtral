@@ -134,6 +134,10 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         case commandTimedOut(step: Int, command: String, seconds: TimeInterval, message: String)
         case runnerFailed(step: Int, command: String, message: String)
         case invalidHostAlias
+        /// The remote config already contains an agents table or a rows key.
+        /// Automatic merging would overwrite user intent, so Settings must show
+        /// the snippet for manual placement instead.
+        case herdrPanelConfigAlreadyCustomized
     }
 
     /// Invocation in, result out. The stdin field is load-bearing: the bearer
@@ -167,6 +171,13 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// always emits both halves together for that reason; changing one alone
     /// fails open, which looks exactly like nothing happening.
     public static let portConfigKey = "port"
+
+    public static let herdrPanelConfigSnippet = """
+        [ui.sidebar.agents]
+        rows = [["state_icon", "workspace", "tab"], ["agent"], [{ token = "$lvmark", dim = true }]]
+        """
+    static let herdrPanelExistingConfigMarker =
+        "localvoxtral: existing herdr agents/sidebar rows configuration; no changes made"
 
     private let runner: Runner?
     private let sshConfigFileSystem: (any ClaudeRemoteSSHConfigFileSystem)?
@@ -675,6 +686,98 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             timeout: timeout,
             label: "plugin update"
         )
+    }
+
+    /// Append localvoxtral's agents-panel row only when the remote config has
+    /// no agents table and no rows key. The caller must obtain explicit consent
+    /// immediately before invoking this method.
+    @discardableResult
+    public func configureRemoteHerdrPanel(
+        sshHostAlias: String,
+        timeout: TimeInterval = defaultRemoteSetupTimeout
+    ) throws -> [ExecutionStep] {
+        guard let runner else { throw ServiceError.executionNotConfigured }
+        guard Self.isValidHostAlias(sshHostAlias) else { throw ServiceError.invalidHostAlias }
+
+        let script = """
+            set -eu
+            lv_config=${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}
+            if [ -f "$lv_config" ] && grep -Eq '^[[:space:]]*\\[ui\\.sidebar\\.agents\\][[:space:]]*(#.*)?$|^[[:space:]]*rows[[:space:]]*=' "$lv_config"; then
+              echo '\(Self.herdrPanelExistingConfigMarker)' >&2
+              exit 42
+            fi
+            mkdir -p "$(dirname "$lv_config")"
+            touch "$lv_config"
+            cat >> "$lv_config" <<'LOCALVOXTRAL_HERDR_PANEL'
+            \(Self.herdrPanelConfigSnippet)
+            LOCALVOXTRAL_HERDR_PANEL
+            herdr server reload-config
+            """
+        let invocation = Invocation(
+            argv: [
+                "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                sshHostAlias, "/bin/sh", "-s",
+            ],
+            standardInput: Data(script.utf8),
+            timeout: timeout
+        )
+        Log.claudeContext.info("Claude remote herdr panel configuration requested")
+        let result: RunResult
+        do {
+            result = try runner(invocation)
+        } catch let failure as RunnerFailure {
+            let error: ServiceError
+            switch failure {
+            case .timedOut(let seconds, let message):
+                error = .commandTimedOut(
+                    step: 0,
+                    command: "configure herdr agents panel",
+                    seconds: seconds,
+                    message: message
+                )
+            case .outputTooLarge(_, let message):
+                error = .runnerFailed(
+                    step: 0,
+                    command: "configure herdr agents panel",
+                    message: message
+                )
+            }
+            Log.claudeContext.error(
+                "Claude remote herdr panel configuration failed: \(String(describing: error), privacy: .public)"
+            )
+            throw error
+        } catch {
+            let failure = ServiceError.runnerFailed(
+                step: 0,
+                command: "configure herdr agents panel",
+                message: String(describing: error)
+            )
+            Log.claudeContext.error(
+                "Claude remote herdr panel configuration failed: \(String(describing: failure), privacy: .public)"
+            )
+            throw failure
+        }
+        if result.exitCode == 42,
+           result.message.contains(Self.herdrPanelExistingConfigMarker) {
+            Log.claudeContext.info(
+                "Claude remote herdr panel configuration refused: existing table or rows key; add manually:\n\(Self.herdrPanelConfigSnippet, privacy: .public)"
+            )
+            throw ServiceError.herdrPanelConfigAlreadyCustomized
+        }
+        guard result.succeeded else {
+            let failure = ServiceError.commandFailed(
+                step: 0,
+                command: "configure herdr agents panel",
+                exitCode: result.exitCode,
+                message: result.message
+            )
+            Log.claudeContext.error(
+                "Claude remote herdr panel configuration failed: \(String(describing: failure), privacy: .public)"
+            )
+            throw failure
+        }
+        Log.claudeContext.info("Claude remote herdr panel configuration completed")
+        return [ExecutionStep(index: 0, command: "configure herdr agents panel", message: result.message)]
     }
 
     private func execute(

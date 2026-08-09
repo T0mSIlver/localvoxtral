@@ -307,6 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // test that forgot to inject — constructs them.
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
+            let herdrClient = HerdrSocketClient()
             // The cmux password is read from the Keychain lazily, per query, so
             // a user who never enables the arm is never prompted for keychain
             // access and the secret is not held in memory between dictations.
@@ -319,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
-                herdrPanes: HerdrSocketClient(),
+                herdrPanes: herdrClient,
                 cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
                 cmuxJoinEnabled: { [weak viewModel] in
                     viewModel?.settings.cmuxSurfaceJoinEnabled ?? false
@@ -345,7 +346,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         enrolledHosts: hosts
                     )
                 },
-                remoteHerdrForwards: claudeRemoteHerdrForwards
+                speculativeHosts: { [weak self] in
+                    self?.claudeRemoteHosts?.hosts() ?? []
+                },
+                remoteHerdrForwards: claudeRemoteHerdrForwards,
+                herdrPanelMetadata: herdrClient,
+                readFocusedGrid: { target in
+                    TerminalScreenContextSource.readVisibleScreen(target: target)?.text
+                },
+                reportPanelStatus: { [weak viewModel] status in
+                    viewModel?.claudeIntegrationSettings?.herdrPanelStatus = status
+                }
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start

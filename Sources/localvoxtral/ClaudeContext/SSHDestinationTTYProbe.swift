@@ -87,6 +87,21 @@ enum SSHProbeIndeterminacy: String, Sendable, Equatable {
     case probeUnavailable = "probe unavailable"
 }
 
+extension SSHProbeIndeterminacy {
+    /// An ssh process is present on the focused surface, but trusting its
+    /// destination would require guessing. A title there may be stale from the
+    /// pre-herdr outer session, so these categories suppress that arm too.
+    var suppressesTitleMarker: Bool {
+        switch self {
+        case .multipleForegroundClients, .untrustedExecutable,
+             .unreadableArguments, .refusedArguments:
+            return true
+        case .deviceUnreadable, .tableUnreadable, .probeUnavailable:
+            return false
+        }
+    }
+}
+
 /// What the process table says about ssh clients on ONE terminal device.
 ///
 /// Three answers, and the difference between the last two is the whole point:

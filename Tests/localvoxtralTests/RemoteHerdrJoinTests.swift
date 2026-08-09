@@ -19,7 +19,9 @@ private func unwrapAsync<T>(
 
 /// Scripted herdr socket, recording every request so a test can prove which
 /// socket path and which pane the client was pointed at.
-private final class RemoteJoinHerdrPanes: HerdrPaneQuerying, @unchecked Sendable {
+private final class RemoteJoinHerdrPanes:
+    HerdrPaneQuerying, HerdrPanelMetadataReporting, @unchecked Sendable
+{
     struct Request: Equatable {
         var method: String
         var socketPath: String
@@ -30,16 +32,20 @@ private final class RemoteJoinHerdrPanes: HerdrPaneQuerying, @unchecked Sendable
     private let focused: HerdrFocusedPane?
     private let foreground: HerdrPaneForegroundInfo?
     private let visibleTexts = Mutex<[String?]>([])
+    let panelReports = Mutex<[(socketPath: String, paneID: String, value: String?, ttl: Int?)]>([])
+    private let panelReportSucceeds: Bool
 
     init(
         focused: HerdrFocusedPane?,
         foreground: HerdrPaneForegroundInfo? = HerdrPaneForegroundInfo(
             shellPID: 8000, foregroundProcesses: [HerdrForegroundProcess(pid: 9001, name: "claude")]
         ),
-        texts: [String?] = []
+        texts: [String?] = [],
+        panelReportSucceeds: Bool = true
     ) {
         self.focused = focused
         self.foreground = foreground
+        self.panelReportSucceeds = panelReportSucceeds
         visibleTexts.withLock { $0 = texts }
     }
 
@@ -64,6 +70,18 @@ private final class RemoteJoinHerdrPanes: HerdrPaneQuerying, @unchecked Sendable
             $0.append(Request(method: "pane.read", socketPath: socketPath, paneID: paneID))
         }
         return visibleTexts.withLock { $0.isEmpty ? nil : $0.removeFirst() }
+    }
+
+    func reportPanelToken(
+        socketPath: String,
+        paneID: String,
+        value: String?,
+        ttlMilliseconds: Int?
+    ) async -> Bool {
+        panelReports.withLock {
+            $0.append((socketPath, paneID, value, ttlMilliseconds))
+        }
+        return panelReportSucceeds
     }
 }
 
@@ -211,6 +229,12 @@ private final class RemoteJoinTestLiveness: Sendable {
     func kill(_ pid: Int32) { dead.withLock { _ = $0.insert(pid) } }
 }
 
+private final class PanelStatusRecorder: @unchecked Sendable {
+    private let values = Mutex<[HerdrPanelConfigurationStatus]>([])
+    func append(_ value: HerdrPanelConfigurationStatus) { values.withLock { $0.append(value) } }
+    var recorded: [HerdrPanelConfigurationStatus] { values.withLock { $0 } }
+}
+
 private final class RemoteJoinSSHConfigRunner: @unchecked Sendable {
     struct Invocation: Equatable {
         let executableURL: URL
@@ -350,9 +374,16 @@ final class RemoteHerdrJoinTests: XCTestCase {
         ),
         hosts: [ClaudeRemoteHost]? = nil,
         canonicalizer: SSHDestinationCanonicalizer? = nil,
-        title: String? = nil
+        title: String? = nil,
+        panelMetadata: (any HerdrPanelMetadataReporting)? = nil,
+        panelGrid: String? = nil,
+        panelRandomBits: UInt64 = 1,
+        panelRandomBitsProvider: HerdrPanelBindingProbe.RandomBits? = nil,
+        panelStatuses: PanelStatusRecorder? = nil,
+        indicatorSleepFor: @escaping HerdrPanelMicIndicator.SleepFor = { _ in }
     ) -> ClaudeSessionJoinResolver {
         let hostList = hosts ?? [enrolledHost()]
+        let fixedNow = epoch
         return ClaudeSessionJoinResolver(
             registry: registry,
             markerInWindowTitle: { _ in
@@ -381,11 +412,231 @@ final class RemoteHerdrJoinTests: XCTestCase {
                     enrolledHosts: hostList
                 )
             },
-            remoteHerdrForwards: forwards
+            speculativeHosts: { hostList },
+            remoteHerdrForwards: forwards,
+            herdrPanelMetadata: panelMetadata,
+            readFocusedGrid: { _ in panelGrid },
+            panelNow: { fixedNow },
+            panelSleepFor: { _ in },
+            panelRandomBits: panelRandomBitsProvider ?? { panelRandomBits },
+            indicatorSleepFor: indicatorSleepFor,
+            reportPanelStatus: { status in
+                panelStatuses?.append(status)
+            }
         )
     }
 
     // MARK: Happy path
+
+    func testPanelBindingIsPrimaryWhenSSHArgvSaysPlainShell() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let token = HerdrPanelBindingProbe.token(randomBits: 7)
+
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            sshResult: .connection(SSHSurfaceConnection(
+                destination: "builder",
+                hasCompetingHerdrClient: false,
+                herdr: .notHerdr
+            )),
+            panelMetadata: panes,
+            panelGrid: "agents  \(token)",
+            panelRandomBits: 7
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertNotNil(join.remoteHerdrIndicator)
+        XCTAssertEqual(forwards.openCount, 1, "argv fallback must not open a second forward")
+        XCTAssertEqual(panes.panelReports.withLock { $0.first?.value }, token)
+    }
+
+    func testUnreadableSSHUsesSpeculativePanelCandidateBeforeSuppressingMarker() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let token = HerdrPanelBindingProbe.token(randomBits: 8)
+
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: RecordingForwards(),
+            sshResult: .undeterminable(.unreadableArguments),
+            title: markerValue,
+            panelMetadata: panes,
+            panelGrid: token,
+            panelRandomBits: 8
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+    }
+
+    func testMissingPanelRowFallsBackToTheExistingArgvJoinAndOffersConfiguration() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let statuses = PanelStatusRecorder()
+
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: "agents panel without the configured row",
+            panelStatuses: statuses
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertNil(join.remoteHerdrIndicator, "the argv fallback has no panel lease")
+        XCTAssertEqual(forwards.openCount, 2, "the failed primary probe closes before argv fallback")
+        XCTAssertEqual(statuses.recorded, [.likelyNotConfigured])
+        XCTAssertTrue(
+            panes.panelReports.withLock { $0 }.contains { $0.value == nil },
+            "a failed stamp/read attempt must clear its short-lived token"
+        )
+    }
+
+    func testUnavailableGridFallsBackWithoutClaimingThePanelRowIsMissing() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let statuses = PanelStatusRecorder()
+
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: RecordingForwards(),
+            panelMetadata: panes,
+            panelGrid: nil,
+            panelStatuses: statuses
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertTrue(statuses.recorded.isEmpty)
+    }
+
+    func testASpeculativeSettleTimeoutDoesNotClaimTheRowIsMissing() async {
+        // A speculative candidate's token not rendering usually means the user
+        // is not looking at THAT server. Diagnosing "row likely not
+        // configured" from it would nag a correctly configured host.
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let statuses = PanelStatusRecorder()
+
+        let join = await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: RecordingForwards(),
+            sshResult: .undeterminable(.refusedArguments),
+            panelMetadata: panes,
+            panelGrid: "agents panel showing some other server",
+            panelStatuses: statuses
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join, "unreadable ssh with no panel match suppresses every fallback")
+        XCTAssertTrue(statuses.recorded.isEmpty)
+    }
+
+    func testUnreadableSSHSpeculationIsHardBoundedToThreeHosts() async {
+        let markers = ["lvx-one111", "lvx-two222", "lvx-three33", "lvx-four444"]
+        let registry = makeRegistry(markers: markers)
+        let hosts = (1...4).map { index in
+            let id = "hpanel\(index)"
+            ingestRemoteHerdrSession(
+                into: registry,
+                sessionID: "s-\(index)",
+                paneID: remotePaneID,
+                host: id
+            )
+            return enrolledHost(id: id, alias: "builder\(index)")
+        }
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane(title: markers[0]))
+        let forwards = RecordingForwards()
+
+        let join = await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            sshResult: .undeterminable(.unreadableArguments),
+            hosts: hosts,
+            panelMetadata: panes,
+            panelGrid: "no rendered token"
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 3)
+        XCTAssertEqual(Set(forwards.opens.withLock { $0.map(\.alias) }).count, 3)
+    }
+
+    func testTwoSpeculativeHostsWhoseDistinctTokensBothRenderAbstain() async {
+        let registry = makeRegistry(markers: ["lvx-host111", "lvx-host222"])
+        let hosts = [
+            enrolledHost(id: "hpanel1", alias: "builder1"),
+            enrolledHost(id: "hpanel2", alias: "builder2"),
+        ]
+        ingestRemoteHerdrSession(into: registry, sessionID: "s-1", host: hosts[0].id)
+        ingestRemoteHerdrSession(into: registry, sessionID: "s-2", host: hosts[1].id)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane(title: "lvx-host111"))
+        let forwards = RecordingForwards()
+        let bits = Mutex<[UInt64]>([21, 22])
+        let grid = [21, 22]
+            .map { HerdrPanelBindingProbe.token(randomBits: UInt64($0)) }
+            .joined(separator: " ")
+
+        let join = await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            sshResult: .undeterminable(.unreadableArguments),
+            hosts: hosts,
+            panelMetadata: panes,
+            panelGrid: grid,
+            panelRandomBitsProvider: { bits.withLock { $0.removeFirst() } }
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
+        XCTAssertEqual(forwards.openCount, 2)
+        XCTAssertEqual(forwards.closeCount, 2)
+        XCTAssertFalse(
+            panes.requests.withLock { $0 }.contains { $0.method == "pane.process_info" },
+            "no downstream session confirmation may run after surface ambiguity"
+        )
+    }
+
+    func testPanelAuthorizationStillRequiresTheBrokerMarkerAndSuppressesOuterFallback() async {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(
+            focused: focusedPane(title: "lvx-another-session")
+        )
+        let forwards = RecordingForwards()
+        let token = HerdrPanelBindingProbe.token(randomBits: 23)
+
+        let join = await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            sshResult: .connection(.init(
+                destination: "builder",
+                hasCompetingHerdrClient: false,
+                herdr: .notHerdr
+            )),
+            title: markerValue,
+            panelMetadata: panes,
+            panelGrid: token,
+            panelRandomBits: 23
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join, "a panel match authorizes only the surface, never the session")
+        XCTAssertEqual(forwards.openCount, 1)
+        XCTAssertEqual(forwards.closeCount, 1)
+    }
 
     func testEveryBindingAgreeingResolvesARemoteHerdrJoin() async throws {
         let registry = makeRegistry(markers: [markerValue])
@@ -579,41 +830,93 @@ final class RemoteHerdrJoinTests: XCTestCase {
     // MARK: Fallthrough — the arm does not apply
 
     func testNoSSHClientOnTheSurfaceFallsThroughToTheTitleMarker() async throws {
+        // The strong version of this pin: the panel machinery is fully wired
+        // and a grid that WOULD match is on screen — a local shell must still
+        // never stamp, never open a forward, and never pay remote latency.
+        // (A weaker version passed with panel metadata absent, which proved
+        // only that a disabled panel does not probe.)
         let registry = makeRegistry(markers: [markerValue])
         ingestRemoteHerdrSession(into: registry)
         let forwards = RecordingForwards()
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let token = HerdrPanelBindingProbe.token(randomBits: 7)
 
         let join = try unwrapAsync(
             await resolver(
                 registry: registry,
-                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                panes: panes,
                 forwards: forwards,
                 sshResult: .noSSHClient,
-                title: markerValue
+                title: markerValue,
+                panelMetadata: panes,
+                panelGrid: "agents  \(token)",
+                panelRandomBits: 7
             ).resolve(target: ghostty)
         )
 
         XCTAssertEqual(join.mechanism, .titleMarker)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertNil(panes.panelReports.withLock { $0.first })
+    }
+
+    func testUnreadableSSHOnSurfaceSuppressesAStaleTitleMarkerJoin() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let forwards = RecordingForwards()
+
+        let join = await resolver(
+            registry: registry,
+            panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+            forwards: forwards,
+            sshResult: .undeterminable(.multipleForegroundClients),
+            // Stale outer title from the ssh session that occupied this surface
+            // before the user launched herdr manually.
+            title: markerValue
+        ).resolve(target: ghostty)
+
+        XCTAssertNil(join)
         XCTAssertEqual(forwards.openCount, 0)
     }
 
-    func testUndeterminableSSHDestinationFallsThroughToTheTitleMarker() async throws {
-        let registry = makeRegistry(markers: [markerValue])
-        ingestRemoteHerdrSession(into: registry)
-        let forwards = RecordingForwards()
-
-        let join = try unwrapAsync(
-            await resolver(
+    func testEveryPresentButUnreadableSSHCategorySuppressesTitleMarker() async {
+        let causes: [SSHProbeIndeterminacy] = [
+            .multipleForegroundClients,
+            .untrustedExecutable,
+            .unreadableArguments,
+            .refusedArguments,
+        ]
+        for cause in causes {
+            let registry = makeRegistry(markers: [markerValue])
+            ingestRemoteHerdrSession(into: registry)
+            let join = await resolver(
                 registry: registry,
                 panes: RemoteJoinHerdrPanes(focused: focusedPane()),
-                forwards: forwards,
-                sshResult: .undeterminable(.multipleForegroundClients),
+                forwards: RecordingForwards(),
+                sshResult: .undeterminable(cause),
                 title: markerValue
             ).resolve(target: ghostty)
-        )
+            XCTAssertNil(join, "\(cause.rawValue) must suppress a possibly stale marker")
+        }
+    }
 
-        XCTAssertEqual(join.mechanism, .titleMarker)
-        XCTAssertEqual(forwards.openCount, 0)
+    func testProbeWideIndeterminacyStillAllowsLocalTitleMarker() async throws {
+        let causes: [SSHProbeIndeterminacy] = [
+            .deviceUnreadable,
+            .tableUnreadable,
+            .probeUnavailable,
+        ]
+        for cause in causes {
+            let registry = makeRegistry(markers: [markerValue])
+            ingestRemoteHerdrSession(into: registry)
+            let join = try unwrapAsync(await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: RecordingForwards(),
+                sshResult: .undeterminable(cause),
+                title: markerValue
+            ).resolve(target: ghostty))
+            XCTAssertEqual(join.mechanism, .titleMarker)
+        }
     }
 
     func testSSHToAnUnenrolledHostFallsThroughToTheTitleMarker() async throws {
@@ -1544,6 +1847,53 @@ final class RemoteHerdrJoinTests: XCTestCase {
         viewModel.closeRemoteHerdrForwards()
         viewModel.discardTerminalScreenCapture()
 
+        XCTAssertEqual(forwards.closeCount, 1)
+        XCTAssertEqual(forwards.process.terminations.withLock { $0 }, 1)
+    }
+
+    func testClosingAPanelAuthorizedJoinClearsItsTokenAndClosesItsForward() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let token = HerdrPanelBindingProbe.token(randomBits: 31)
+        let (ticks, tickContinuation) = AsyncStream.makeStream(of: Void.self)
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: token,
+            panelRandomBits: 31,
+            indicatorSleepFor: { _ in
+                var iterator = ticks.makeAsyncIterator()
+                _ = await iterator.next()
+            }
+        ).resolve(target: ghostty))
+        let indicator = try XCTUnwrap(join.remoteHerdrIndicator)
+        let viewModel = makeViewModel()
+
+        viewModel.retainRemoteHerdrForward(of: join)
+        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 1)
+        XCTAssertEqual(
+            viewModel.liveRemoteHerdrIndicators,
+            [indicator],
+            "the view model must retain the indicator owner, not only its raw forward"
+        )
+        viewModel.closeRemoteHerdrForwards()
+        await indicator.stopAndWait()
+        tickContinuation.finish()
+
+        XCTAssertEqual(viewModel.openRemoteHerdrForwardCount, 0)
+        XCTAssertTrue(
+            panes.panelReports.withLock { $0 }.contains {
+                $0.socketPath == forwards.localSocketPath
+                    && $0.paneID == remotePaneID
+                    && $0.value == nil
+                    && $0.ttl == nil
+            },
+            "view-model teardown must explicitly clear the retained panel token"
+        )
         XCTAssertEqual(forwards.closeCount, 1)
         XCTAssertEqual(forwards.process.terminations.withLock { $0 }, 1)
     }

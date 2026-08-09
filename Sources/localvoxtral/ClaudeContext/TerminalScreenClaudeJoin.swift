@@ -97,6 +97,9 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// Closing it is the holder's job (`close()` is idempotent, and the handle
     /// closes itself on deinit as a backstop).
     let remoteHerdrForward: ClaudeRemoteHerdrForwardHandle?
+    /// The agents-panel token lease for a panel-authorized remote join. The
+    /// view model starts it after taking ownership and stops it on every exit.
+    let remoteHerdrIndicator: HerdrPanelMicIndicator?
 
     init(
         target: TerminalScreenTarget,
@@ -107,7 +110,8 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         herdrPane: ClaudeHerdrPaneBinding? = nil,
         browserTab: ClaudeBrowserTabBinding? = nil,
         cmuxSurface: ClaudeCmuxSurfaceBinding? = nil,
-        remoteHerdrForward: ClaudeRemoteHerdrForwardHandle? = nil
+        remoteHerdrForward: ClaudeRemoteHerdrForwardHandle? = nil,
+        remoteHerdrIndicator: HerdrPanelMicIndicator? = nil
     ) {
         self.target = target
         self.marker = marker
@@ -118,6 +122,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         self.browserTab = browserTab
         self.cmuxSurface = cmuxSurface
         self.remoteHerdrForward = remoteHerdrForward
+        self.remoteHerdrIndicator = remoteHerdrIndicator
     }
 
     /// The per-pane socket route this join owns, if any: the herdr pane id or
@@ -192,7 +197,15 @@ struct ClaudeSessionJoinResolver {
     private let sshDestinationProbe: @Sendable (String) -> SSHDestinationTTYProbeResult
     private let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
     private let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
+    private let speculativeHosts: @MainActor () -> [ClaudeRemoteHost]
     private let remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)?
+    private let herdrPanelMetadata: (any HerdrPanelMetadataReporting)?
+    private let readFocusedGrid: HerdrPanelBindingProbe.GridRead
+    private let panelNow: HerdrPanelBindingProbe.Now
+    private let panelSleepFor: HerdrPanelBindingProbe.SleepFor
+    private let panelRandomBits: HerdrPanelBindingProbe.RandomBits
+    private let indicatorSleepFor: HerdrPanelMicIndicator.SleepFor
+    private let reportPanelStatus: @MainActor (HerdrPanelConfigurationStatus) -> Void
 
     /// - Parameters:
     ///   - markerInWindowTitle: reads the PID-pinned focused window title,
@@ -276,7 +289,22 @@ struct ClaudeSessionJoinResolver {
         canonicalizedEnrolledHosts: @escaping @MainActor (String) async -> [ClaudeRemoteHost] = {
             _ in []
         },
-        remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)? = nil
+        speculativeHosts: @escaping @MainActor () -> [ClaudeRemoteHost] = { [] },
+        remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)? = nil,
+        herdrPanelMetadata: (any HerdrPanelMetadataReporting)? = nil,
+        readFocusedGrid: @escaping HerdrPanelBindingProbe.GridRead = { _ in nil },
+        panelNow: @escaping HerdrPanelBindingProbe.Now = Date.init,
+        panelSleepFor: @escaping HerdrPanelBindingProbe.SleepFor = { seconds in
+            try? await Task.sleep(for: .seconds(seconds))
+        },
+        panelRandomBits: @escaping HerdrPanelBindingProbe.RandomBits = {
+            var generator = SystemRandomNumberGenerator()
+            return generator.next()
+        },
+        indicatorSleepFor: @escaping HerdrPanelMicIndicator.SleepFor = { seconds in
+            try? await Task.sleep(for: .seconds(seconds))
+        },
+        reportPanelStatus: @escaping @MainActor (HerdrPanelConfigurationStatus) -> Void = { _ in }
     ) {
         self.registry = registry
         self.markerInWindowTitle = markerInWindowTitle
@@ -291,7 +319,15 @@ struct ClaudeSessionJoinResolver {
         self.sshDestinationProbe = sshDestinationProbe
         self.enrolledHosts = enrolledHosts
         self.canonicalizedEnrolledHosts = canonicalizedEnrolledHosts
+        self.speculativeHosts = speculativeHosts
         self.remoteHerdrForwards = remoteHerdrForwards
+        self.herdrPanelMetadata = herdrPanelMetadata
+        self.readFocusedGrid = readFocusedGrid
+        self.panelNow = panelNow
+        self.panelSleepFor = panelSleepFor
+        self.panelRandomBits = panelRandomBits
+        self.indicatorSleepFor = indicatorSleepFor
+        self.reportPanelStatus = reportPanelStatus
     }
 
     /// The join for `target`, or nil on any abstention.
@@ -383,6 +419,8 @@ struct ClaudeSessionJoinResolver {
                 return nil
             case .notApplicable:
                 break
+            case .suppressMarker:
+                return nil
             }
         }
 
@@ -564,6 +602,9 @@ struct ClaudeSessionJoinResolver {
     enum RemoteHerdrArmOutcome {
         /// Nothing here is about a remote herdr; other arms may still answer.
         case notApplicable
+        /// An unreadable ssh is present on the surface. Its outer marker may be
+        /// stale from before herdr started, so no later arm may consume it.
+        case suppressMarker
         /// This surface IS an enrolled host's herdr and the join still failed.
         case abstained
         case joined(ClaudeSessionJoin)
@@ -571,9 +612,12 @@ struct ClaudeSessionJoinResolver {
 
     /// A Claude Code session inside a herdr on an ENROLLED REMOTE host.
     ///
-    /// Bindings, all required, in cost order — the free local reads first, so an
-    /// ordinary ssh session never pays for a forward:
+    /// The agents-panel nonce is the primary surface authorization. A readable
+    /// ssh destination narrows it to one enrolled host; otherwise up to three
+    /// live herdr-bearing hosts are tried. Only when that proof cannot render
+    /// does the pre-existing argv path below become the fallback.
     ///
+    /// The fallback bindings, all required, remain:
     /// 1. the focused surface's TTY hosts EXACTLY ONE foreground ssh session,
     ///    whose destination is exactly one enrolled host's alias. One, because
     ///    several in a group cannot be told apart from here and unioning them
@@ -608,8 +652,20 @@ struct ClaudeSessionJoinResolver {
         target: TerminalScreenTarget,
         tty: String
     ) async -> RemoteHerdrArmOutcome {
+        let sshResult = sshDestinationProbe(tty)
+
+        // PRIMARY authorization: stamp each plausible server with a fresh
+        // nonce and require that exact value in the focused terminal grid.
+        // argv is consulted only after this direct surface proof fails.
+        if let panelOutcome = await resolveViaRemoteHerdrPanel(
+            target: target,
+            sshResult: sshResult
+        ) {
+            return panelOutcome
+        }
+
         let connection: SSHSurfaceConnection
-        switch sshDestinationProbe(tty) {
+        switch sshResult {
         case .noSSHClient:
             // The overwhelmingly common case: a local shell. Not logged — this
             // is not an abstention, it is the arm not applying.
@@ -620,7 +676,7 @@ struct ClaudeSessionJoinResolver {
             // the dogfood record. Three field dictations were diagnosed blind
             // without it (2026-08-06).
             Self.abstainedRemoteHerdrJoin(outcome: "ssh session undeterminable (\(cause.rawValue))")
-            return .notApplicable
+            return cause.suppressesTitleMarker ? .suppressMarker : .notApplicable
         case .connection(let value):
             connection = value
         }
@@ -681,10 +737,11 @@ struct ClaudeSessionJoinResolver {
         // `.notApplicable`, which falls through to the title marker, where a
         // stale marker left by an earlier session could win.
         //
-        // The cost, stated accurately: the manual flow — `ssh host`, then type
-        // `herdr` — still gets no HERDR join (its argv has no remote command).
-        // It does not get "no context": the marker arm still runs. That
-        // residual is pre-existing and cannot be closed from here.
+        // The residual cost after panel fallback: a manual `ssh host`, then
+        // `herdr` flow still gets no HERDR join when the sidebar row cannot
+        // render (collapsed/narrow/covered/unconfigured), because its argv has
+        // no remote command. Marker fallback is separately suppressed for the
+        // four present-but-unreadable ssh categories above.
         // The surface's own classification first: when the surface argv is the
         // problem, the log must say so — a competing neighbor may exist too,
         // and reporting it instead buried the actionable cause (review nit,
@@ -762,6 +819,230 @@ struct ClaudeSessionJoinResolver {
             forward.close()
             return .abstained
         }
+    }
+
+    private struct PanelCandidateMatch {
+        let host: ClaudeRemoteHost
+        let pane: HerdrFocusedPane
+        let snapshot: ClaudeSessionSnapshot
+        let forward: ClaudeRemoteHerdrForwardHandle
+        let token: String
+    }
+
+    /// Returns nil only when the panel did not authorize any server, which is
+    /// the one condition that permits the argv fallback below it.
+    private func resolveViaRemoteHerdrPanel(
+        target: TerminalScreenTarget,
+        sshResult: SSHDestinationTTYProbeResult
+    ) async -> RemoteHerdrArmOutcome? {
+        guard let herdrPanes,
+              let remoteHerdrForwards,
+              let herdrPanelMetadata
+        else { return nil }
+
+        let selectedHosts: [ClaudeRemoteHost]
+        let speculative: Bool
+        switch sshResult {
+        case .connection(let connection):
+            let matching = enrolledHosts(connection.destination).filter {
+                !$0.isRevoked && $0.sshHostAlias != nil
+            }
+            guard matching.count == 1 else { return nil }
+            selectedHosts = matching
+            speculative = false
+        case .noSSHClient:
+            // A surface with NO ssh at all is a local shell — the
+            // overwhelmingly common dictation target. It must not pay remote
+            // latency (a cold forward per candidate host) and must not flash
+            // a nonce in remote panels the user is not looking at, so it
+            // never probes. The cost: a nested wrapper whose inner ssh lives
+            // on another pty (tmux) stays unjoinable until a warm-forward
+            // speculative mode exists.
+            return nil
+        case .undeterminable:
+            // An ssh IS present but its argv cannot be read (a wrapper the
+            // parser refuses). That is a strong prior that the surface shows
+            // a remote session, so plausible servers are probed. Registry
+            // liveness bounds the candidates, and the hard prefix keeps one
+            // join from opening an unbounded number of forwards.
+            selectedHosts = Array(speculativeHosts().filter { host in
+                !host.isRevoked
+                    && host.sshHostAlias != nil
+                    && !registry.liveRemoteHerdrSessions(hostID: host.id).isEmpty
+            }.prefix(3))
+            speculative = true
+        }
+        guard !selectedHosts.isEmpty else { return nil }
+
+        let probe = HerdrPanelBindingProbe(
+            metadata: herdrPanelMetadata,
+            readGrid: readFocusedGrid,
+            now: panelNow,
+            sleepFor: panelSleepFor,
+            randomBits: panelRandomBits
+        )
+        var matches: [PanelCandidateMatch] = []
+
+        for host in selectedHosts {
+            guard let alias = host.sshHostAlias else { continue }
+            let candidates = registry.liveRemoteHerdrSessions(hostID: host.id)
+            let socketPaths = Set(candidates.compactMap {
+                $0.remoteSessionEnvironment?.herdrSocketPath
+            })
+            guard socketPaths.count == 1, let remoteSocketPath = socketPaths.first else {
+                Self.abstainedRemoteHerdrJoin(outcome: "panel candidate has multiple live herdr sockets")
+                continue
+            }
+            guard let forward = await remoteHerdrForwards.open(
+                alias: alias,
+                remoteSocketPath: remoteSocketPath
+            ) else {
+                let cause: HerdrPanelBindingAbstention = speculative
+                    ? .speculativeForwardUnavailable : .forwardUnavailable
+                HerdrPanelBindingProbe.noteAbstention(cause)
+                continue
+            }
+
+            let socketPath = forward.localSocketPath
+            guard let pane = await herdrPanes.focusedPane(socketPath: socketPath) else {
+                Self.abstainedRemoteHerdrJoin(outcome: "panel candidate focused pane unavailable")
+                forward.close()
+                continue
+            }
+            let paneMatches = candidates.filter {
+                $0.remoteSessionEnvironment?.herdrPaneID == pane.paneID
+            }
+            guard paneMatches.count == 1, let snapshot = paneMatches.first else {
+                Self.abstainedRemoteHerdrJoin(
+                    outcome: paneMatches.isEmpty
+                        ? "panel candidate focused pane has no live session"
+                        : "panel candidate focused pane is ambiguous"
+                )
+                forward.close()
+                continue
+            }
+
+            switch await probe.probe(
+                target: target,
+                socketPath: socketPath,
+                paneID: pane.paneID
+            ) {
+            case .matched(let match):
+                matches.append(PanelCandidateMatch(
+                    host: host,
+                    pane: pane,
+                    snapshot: snapshot,
+                    forward: forward,
+                    token: match.token
+                ))
+            case .noMatch(let cause):
+                HerdrPanelBindingProbe.noteAbstention(cause)
+                // Only a destination-known probe may diagnose the row: a
+                // speculative candidate's token not rendering usually means
+                // the user is not looking at THAT server, not that its
+                // config is missing.
+                if cause == .settleTimeout, !speculative {
+                    reportPanelStatus(.likelyNotConfigured)
+                    Log.claudeContext.info(
+                        "Remote herdr panel token was stamped but not rendered; agents-panel row likely not configured"
+                    )
+                }
+                await HerdrPanelBindingProbe.clear(
+                    metadata: herdrPanelMetadata,
+                    socketPath: socketPath,
+                    paneID: pane.paneID
+                )
+                forward.close()
+            }
+        }
+
+        if !matches.isEmpty { reportPanelStatus(.ok) }
+        guard matches.count <= 1 else {
+            HerdrPanelBindingProbe.noteAbstention(.multiHostDoubleMatch)
+            for match in matches {
+                await HerdrPanelBindingProbe.clear(
+                    metadata: herdrPanelMetadata,
+                    socketPath: match.forward.localSocketPath,
+                    paneID: match.pane.paneID
+                )
+                match.forward.close()
+            }
+            return .abstained
+        }
+        guard let match = matches.first else { return nil }
+
+        return await confirmPanelAuthorizedRemoteHerdr(
+            target: target,
+            match: match,
+            metadata: herdrPanelMetadata,
+            herdrPanes: herdrPanes
+        )
+    }
+
+    private func confirmPanelAuthorizedRemoteHerdr(
+        target: TerminalScreenTarget,
+        match: PanelCandidateMatch,
+        metadata: any HerdrPanelMetadataReporting,
+        herdrPanes: HerdrPaneQuerying
+    ) async -> RemoteHerdrArmOutcome {
+        let pane = match.pane
+        let snapshot = match.snapshot
+        let socketPath = match.forward.localSocketPath
+
+        func refuse(_ outcome: String) async -> RemoteHerdrArmOutcome {
+            Self.abstainedRemoteHerdrJoin(outcome: outcome)
+            await HerdrPanelBindingProbe.clear(
+                metadata: metadata,
+                socketPath: socketPath,
+                paneID: pane.paneID
+            )
+            match.forward.close()
+            return .abstained
+        }
+
+        guard let title = pane.terminalTitle,
+              let marker = ClaudeMarkerTitleParser.marker(inTitle: title),
+              marker == snapshot.marker
+        else { return await refuse("panel-bound pane marker confirmation failed") }
+
+        if let claimed = pane.claimedClaudeSessionID,
+           Self.scopedRemoteSessionID(
+               claimed: claimed, hostID: match.host.id, agent: snapshot.agent
+           ) != snapshot.sessionID {
+            return await refuse("pane session claim disagrees")
+        }
+        guard let foreground = await herdrPanes.paneForegroundInfo(
+            socketPath: socketPath, paneID: pane.paneID
+        ) else { return await refuse("foreground process query unavailable") }
+        guard let processes = foreground.foregroundProcesses else {
+            return await refuse("foreground process detection unavailable")
+        }
+        guard Self.remoteAgentIsForeground(
+            snapshot: snapshot,
+            foregroundProcesses: processes
+        ) else { return await refuse("registered remote agent is not foreground") }
+
+        let indicator = HerdrPanelMicIndicator(
+            metadata: metadata,
+            socketPath: socketPath,
+            paneID: pane.paneID,
+            token: match.token,
+            forward: match.forward,
+            sleepFor: indicatorSleepFor
+        )
+        Log.claudeContext.info(
+            "Terminal pane joined to a live Claude session via remote herdr agents-panel binding"
+        )
+        return .joined(ClaudeSessionJoin(
+            target: target,
+            marker: snapshot.marker,
+            snapshot: snapshot,
+            windowID: focusedWindowID(target.pid),
+            mechanism: .remoteHerdrPane,
+            herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath),
+            remoteHerdrForward: match.forward,
+            remoteHerdrIndicator: indicator
+        ))
     }
 
     /// What the over-the-forward half concluded.
