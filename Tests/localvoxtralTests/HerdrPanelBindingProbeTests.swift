@@ -84,7 +84,7 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
         XCTAssertEqual(metadata.reports.withLock { $0.map(\.ttlMilliseconds) }, [8_000, 8_000])
     }
 
-    func testProbeUsesAtMostTwoInjectedSettleReads() async throws {
+    func testProbeMatchesOnTheSecondReadWithoutFurtherPolls() async throws {
         let metadata = PanelMetadataRecorder()
         let token = HerdrPanelBindingProbe.token(randomBits: 9)
         var grids = ["agents", "agents \(token)"]
@@ -103,6 +103,59 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
         XCTAssertEqual(outcome, .matched(.init(token: token)))
         XCTAssertEqual(sleeps.withLock { $0 }, [HerdrPanelBindingProbe.settleDelay])
         XCTAssertTrue(grids.isEmpty, "the successful second read must be the final poll")
+    }
+
+    func testASlowRemoteRenderStillMatchesWithinTheSettleBudget() async throws {
+        // The first field dictation (2026-08-09): stamp accepted, row visibly
+        // rendering — but over a ProxyJump chain the frame took longer than
+        // two 120 ms polls, so the probe abstained with settle-timeout while
+        // the user watched the token appear. The loop must keep polling for
+        // the whole budget, not a fixed two reads.
+        let metadata = PanelMetadataRecorder()
+        let token = HerdrPanelBindingProbe.token(randomBits: 21)
+        var grids = Array(repeating: "agents", count: 7) + ["agents \(token)"]
+        let clock = Mutex(Date(timeIntervalSince1970: 1_000))
+        let sleeps = Mutex<[TimeInterval]>([])
+        let probe = HerdrPanelBindingProbe(
+            metadata: metadata,
+            readGrid: { _ in grids.removeFirst() },
+            now: { clock.withLock { $0 } },
+            sleepFor: { seconds in
+                sleeps.withLock { $0.append(seconds) }
+                clock.withLock { $0 = $0.addingTimeInterval(seconds) }
+            },
+            randomBits: { 21 }
+        )
+
+        let outcome = await probe.probe(
+            target: target, socketPath: "/tmp/herdr.sock", paneID: "p1"
+        )
+        XCTAssertEqual(outcome, .matched(.init(token: token)))
+        XCTAssertEqual(sleeps.withLock { $0.count }, 7)
+        XCTAssertTrue(grids.isEmpty)
+    }
+
+    func testAFrozenClockIsStillBoundedByTheHardReadCap() async {
+        // The budget is the real limit; the cap exists so an injected clock
+        // that never advances cannot loop forever.
+        let metadata = PanelMetadataRecorder()
+        let readCount = Mutex(0)
+        let probe = HerdrPanelBindingProbe(
+            metadata: metadata,
+            readGrid: { _ in
+                readCount.withLock { $0 += 1 }
+                return "agents panel without the token"
+            },
+            now: { Date(timeIntervalSince1970: 1_000) },
+            sleepFor: { _ in },
+            randomBits: { 22 }
+        )
+
+        let outcome = await probe.probe(
+            target: target, socketPath: "/tmp/herdr.sock", paneID: "p1"
+        )
+        XCTAssertEqual(outcome, .noMatch(.settleTimeout))
+        XCTAssertEqual(readCount.withLock { $0 }, HerdrPanelBindingProbe.maxGridReads)
     }
 
     func testStampRefusalReadsNoGrid() async {
@@ -149,7 +202,7 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
             target: target, socketPath: "/tmp/herdr.sock", paneID: "p1"
         )
         XCTAssertEqual(timeoutOutcome, .noMatch(.settleTimeout))
-        XCTAssertEqual(readCount, 2)
+        XCTAssertEqual(readCount, HerdrPanelBindingProbe.maxGridReads)
     }
 
     func testMicIndicatorRefreshesAtFourSecondsThenClearsBeforeClosingForward() async {

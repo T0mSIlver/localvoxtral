@@ -60,8 +60,15 @@ struct HerdrPanelBindingProbe {
 
     static let tokenTTLMilliseconds = 8_000
     static let settleDelay: TimeInterval = 0.12
-    static let settleBudget: TimeInterval = 0.5
-    static let maxGridReads = 2
+    /// The stamp must cross the forward, herdr must paint a frame, ssh must
+    /// carry it back, and the terminal must render it — over a ProxyJump
+    /// chain that is several hundred milliseconds end to end. The first field
+    /// dictation (2026-08-09) timed out at two reads ~120 ms apart while the
+    /// row was visibly rendering moments later; the budget below is what the
+    /// loop actually honors now, with `maxGridReads` only as a hard cap so a
+    /// test clock that never advances cannot loop forever.
+    static let settleBudget: TimeInterval = 1.0
+    static let maxGridReads = 9
 
     private let metadata: any HerdrPanelMetadataReporting
     private let readGrid: GridRead
