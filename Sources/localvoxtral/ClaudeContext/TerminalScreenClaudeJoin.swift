@@ -191,6 +191,7 @@ struct ClaudeSessionJoinResolver {
     private let reportCmuxStatus: @MainActor (CmuxSocketStatus) -> Void
     private let sshDestinationProbe: @Sendable (String) -> SSHDestinationTTYProbeResult
     private let enrolledHosts: @MainActor (String) -> [ClaudeRemoteHost]
+    private let canonicalizedEnrolledHosts: @MainActor (String) async -> [ClaudeRemoteHost]
     private let remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)?
 
     /// - Parameters:
@@ -247,6 +248,9 @@ struct ClaudeSessionJoinResolver {
     ///     destination. Defaults to none, for the same reason: no enrollment
     ///     lookup, no remote arm. Passed as a closure rather than the registry
     ///     because the host list is built later in launch than this resolver.
+    ///   - canonicalizedEnrolledHosts: the `ssh -G` fallback, consulted only
+    ///     when exact alias matching found nothing. Defaults to none so a test
+    ///     that forgets to inject never spawns a process.
     ///   - remoteHerdrForwards: opens the app-managed `ssh -L`. Nil means the
     ///     arm can never spawn anything, which is what a test that forgets to
     ///     inject must get.
@@ -269,6 +273,9 @@ struct ClaudeSessionJoinResolver {
             .undeterminable(.probeUnavailable)
         },
         enrolledHosts: @escaping @MainActor (String) -> [ClaudeRemoteHost] = { _ in [] },
+        canonicalizedEnrolledHosts: @escaping @MainActor (String) async -> [ClaudeRemoteHost] = {
+            _ in []
+        },
         remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)? = nil
     ) {
         self.registry = registry
@@ -283,6 +290,7 @@ struct ClaudeSessionJoinResolver {
         self.reportCmuxStatus = reportCmuxStatus
         self.sshDestinationProbe = sshDestinationProbe
         self.enrolledHosts = enrolledHosts
+        self.canonicalizedEnrolledHosts = canonicalizedEnrolledHosts
         self.remoteHerdrForwards = remoteHerdrForwards
     }
 
@@ -605,7 +613,10 @@ struct ClaudeSessionJoinResolver {
             connection = value
         }
 
-        let hosts = enrolledHosts(connection.destination)
+        var hosts = enrolledHosts(connection.destination)
+        if hosts.isEmpty {
+            hosts = await canonicalizedEnrolledHosts(connection.destination)
+        }
         guard !hosts.isEmpty else {
             // An ssh session to a host the user never enrolled. There is no
             // context to join, and the title marker still deserves its chance:

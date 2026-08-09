@@ -186,7 +186,18 @@ there is not.
     dictation is done with it. The bindings, ALL required, in cost order so an
     ordinary ssh session never pays for a tunnel:
     (1) the focused surface's own TTY hosts EXACTLY ONE FOREGROUND `ssh`
-    session, whose destination is exactly one enrolled host's alias. One,
+    session, whose destination identifies exactly one enrolled host. Exact
+    alias matching wins without spawning anything; only when it finds no host,
+    the app resolves the operand and each active enrolled alias through the
+    user's effective `ssh -G` config and compares `(hostname, port)` — never
+    `user`, which `ssh -G` always emits and which is always the local default
+    on the operand side because the probe strips `user@` upstream; comparing
+    it would reject an alias that sets `User`, the common build-host shape,
+    while two same-box enrollments still land in the multiple-match
+    abstention. Any refused operand, spawn/timeout
+    failure, or unparseable output discards the whole fallback; two canonical
+    matches remain ambiguous. Results are briefly TTL-cached because ssh config
+    can change on disk. One,
     because several in a group cannot be told apart from here, and unioning
     them let a plain connection borrow a sibling's herdr signal. `SSHDestinationTTYProbe`
     is deliberately paranoid here, because every way an argv can name one host
