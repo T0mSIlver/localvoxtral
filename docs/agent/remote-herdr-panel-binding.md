@@ -107,11 +107,18 @@ Why a grid match is sufficient evidence, to the standard of review rounds 1–7:
    at. The accepted cost: an inner ssh on another pty (tmux nesting) stays
    unjoinable until a warm-forward-only speculative mode exists (recorded
    follow-up).
-2. Per candidate host (existing machinery): open the forward, apply the
-   single-socket rule (unchanged in this PR; per-socket distinct nonces can
-   lift it later — noted as follow-up, out of scope), query `pane_current`,
-   find the unique candidate session claiming the focused pane (existing
-   logic, unchanged).
+2. Per candidate host: iterate its live herdr SOCKETS (sorted, ≤3 — the
+   single-socket abstention is lifted HERE and only here, because each
+   socket gets its own fresh nonce and only the displayed server can render
+   its token; a stale socket from a previous herdr boot fails its forward
+   and is skipped — field abstention 2026-08-09; the argv fallback keeps
+   the single-socket abstention, having no way to tell servers apart). Per
+   socket: open the forward, query `pane_current`, find the unique
+   candidate session of THAT socket claiming the focused pane. First
+   rendered match ends the socket loop (one grid renders one server, and
+   the per-host forward service would tear down the matched forward if a
+   further socket were opened); the cross-host double-match abstention
+   stays.
 3. Stamp: `pane.report_metadata` on that pane with `tokens:{lvmark:
    "lv-<nonce>"}`, `source:"localvoxtral"`, `ttl_ms:8000`.
 4. Read the focused surface's grid once; require the exact rendered token as

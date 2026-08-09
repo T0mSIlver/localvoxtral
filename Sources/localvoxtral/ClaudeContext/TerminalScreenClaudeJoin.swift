@@ -886,73 +886,90 @@ struct ClaudeSessionJoinResolver {
         for host in selectedHosts {
             guard let alias = host.sshHostAlias else { continue }
             let candidates = registry.liveRemoteHerdrSessions(hostID: host.id)
+            // Two live sockets on one host used to abstain outright (the argv
+            // fallback still does — it has no way to tell the servers apart).
+            // The nonce CAN tell them apart: each socket is stamped with its
+            // own fresh token, and only the server this surface displays can
+            // render its token. A stale socket — a session registered under a
+            // previous herdr boot, inside the registry TTL — simply fails its
+            // forward and is skipped (field abstention 2026-08-09). Sorted for
+            // determinism; bounded like the host prefix.
             let socketPaths = Set(candidates.compactMap {
                 $0.remoteSessionEnvironment?.herdrSocketPath
-            })
-            guard socketPaths.count == 1, let remoteSocketPath = socketPaths.first else {
-                Self.abstainedRemoteHerdrJoin(outcome: "panel candidate has multiple live herdr sockets")
-                continue
-            }
-            guard let forward = await remoteHerdrForwards.open(
-                alias: alias,
-                remoteSocketPath: remoteSocketPath
-            ) else {
-                let cause: HerdrPanelBindingAbstention = speculative
-                    ? .speculativeForwardUnavailable : .forwardUnavailable
-                HerdrPanelBindingProbe.noteAbstention(cause)
-                continue
-            }
+            }).sorted().prefix(3)
 
-            let socketPath = forward.localSocketPath
-            guard let pane = await herdrPanes.focusedPane(socketPath: socketPath) else {
-                Self.abstainedRemoteHerdrJoin(outcome: "panel candidate focused pane unavailable")
-                forward.close()
-                continue
-            }
-            let paneMatches = candidates.filter {
-                $0.remoteSessionEnvironment?.herdrPaneID == pane.paneID
-            }
-            guard paneMatches.count == 1, let snapshot = paneMatches.first else {
-                Self.abstainedRemoteHerdrJoin(
-                    outcome: paneMatches.isEmpty
-                        ? "panel candidate focused pane has no live session"
-                        : "panel candidate focused pane is ambiguous"
-                )
-                forward.close()
-                continue
-            }
-
-            switch await probe.probe(
-                target: target,
-                socketPath: socketPath,
-                paneID: pane.paneID
-            ) {
-            case .matched(let match):
-                matches.append(PanelCandidateMatch(
-                    host: host,
-                    pane: pane,
-                    snapshot: snapshot,
-                    forward: forward,
-                    token: match.token
-                ))
-            case .noMatch(let cause):
-                HerdrPanelBindingProbe.noteAbstention(cause)
-                // Only a destination-known probe may diagnose the row: a
-                // speculative candidate's token not rendering usually means
-                // the user is not looking at THAT server, not that its
-                // config is missing.
-                if cause == .settleTimeout, !speculative {
-                    reportPanelStatus(.likelyNotConfigured)
-                    Log.claudeContext.info(
-                        "Remote herdr panel token was stamped but not rendered; agents-panel row likely not configured"
-                    )
+            socketLoop: for remoteSocketPath in socketPaths {
+                let socketCandidates = candidates.filter {
+                    $0.remoteSessionEnvironment?.herdrSocketPath == remoteSocketPath
                 }
-                await HerdrPanelBindingProbe.clear(
-                    metadata: herdrPanelMetadata,
+                guard let forward = await remoteHerdrForwards.open(
+                    alias: alias,
+                    remoteSocketPath: remoteSocketPath
+                ) else {
+                    let cause: HerdrPanelBindingAbstention = speculative
+                        ? .speculativeForwardUnavailable : .forwardUnavailable
+                    HerdrPanelBindingProbe.noteAbstention(cause)
+                    continue
+                }
+
+                let socketPath = forward.localSocketPath
+                guard let pane = await herdrPanes.focusedPane(socketPath: socketPath) else {
+                    Self.abstainedRemoteHerdrJoin(outcome: "panel candidate focused pane unavailable")
+                    forward.close()
+                    continue
+                }
+                let paneMatches = socketCandidates.filter {
+                    $0.remoteSessionEnvironment?.herdrPaneID == pane.paneID
+                }
+                guard paneMatches.count == 1, let snapshot = paneMatches.first else {
+                    Self.abstainedRemoteHerdrJoin(
+                        outcome: paneMatches.isEmpty
+                            ? "panel candidate focused pane has no live session"
+                            : "panel candidate focused pane is ambiguous"
+                    )
+                    forward.close()
+                    continue
+                }
+
+                switch await probe.probe(
+                    target: target,
                     socketPath: socketPath,
                     paneID: pane.paneID
-                )
-                forward.close()
+                ) {
+                case .matched(let match):
+                    matches.append(PanelCandidateMatch(
+                        host: host,
+                        pane: pane,
+                        snapshot: snapshot,
+                        forward: forward,
+                        token: match.token
+                    ))
+                    // One grid renders exactly one server's panel, and the
+                    // forward service holds one entry per host — opening the
+                    // NEXT socket would tear down this matched forward. First
+                    // match ends the socket loop; the cross-HOST double-match
+                    // abstention below is untouched.
+                    break socketLoop
+                case .noMatch(let cause):
+                    HerdrPanelBindingProbe.noteAbstention(cause)
+                    // Only a destination-known SINGLE-socket probe may
+                    // diagnose the row: with a speculative host or a second
+                    // socket in play, a token not rendering usually means the
+                    // user is not looking at THAT server, not that its config
+                    // is missing.
+                    if cause == .settleTimeout, !speculative, socketPaths.count == 1 {
+                        reportPanelStatus(.likelyNotConfigured)
+                        Log.claudeContext.info(
+                            "Remote herdr panel token was stamped but not rendered; agents-panel row likely not configured"
+                        )
+                    }
+                    await HerdrPanelBindingProbe.clear(
+                        metadata: herdrPanelMetadata,
+                        socketPath: socketPath,
+                        paneID: pane.paneID
+                    )
+                    forward.close()
+                }
             }
         }
 

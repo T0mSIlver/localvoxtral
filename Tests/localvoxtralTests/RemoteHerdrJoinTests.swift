@@ -198,17 +198,25 @@ private final class RecordingForwards: ClaudeRemoteHerdrForwarding {
     let opens = Mutex<[Opened]>([])
     let localSocketPath: String
     private let succeeds: Bool
+    /// Remote socket labels whose forward fails to open — a stale socket from
+    /// a previous herdr boot, still inside the registry TTL.
+    private let failingRemoteSocketPaths: Set<String>
     let process = FakeForwardProcess()
     let workspaces = RecordingWorkspaces()
 
-    init(succeeds: Bool = true, localSocketPath: String = "/tmp/lvx-herdr-fwd-test/h.sock") {
+    init(
+        succeeds: Bool = true,
+        localSocketPath: String = "/tmp/lvx-herdr-fwd-test/h.sock",
+        failingRemoteSocketPaths: Set<String> = []
+    ) {
         self.succeeds = succeeds
         self.localSocketPath = localSocketPath
+        self.failingRemoteSocketPaths = failingRemoteSocketPaths
     }
 
     func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
         opens.withLock { $0.append(Opened(alias: alias, remoteSocketPath: remoteSocketPath)) }
-        guard succeeds else { return nil }
+        guard succeeds, !failingRemoteSocketPaths.contains(remoteSocketPath) else { return nil }
         return ClaudeRemoteHerdrForwardHandle(
             workspace: ClaudeRemoteHerdrForwardWorkspace(
                 directoryPath: (localSocketPath as NSString).deletingLastPathComponent,
@@ -518,6 +526,79 @@ final class RemoteHerdrJoinTests: XCTestCase {
 
         XCTAssertEqual(join.mechanism, .remoteHerdrPane)
         XCTAssertTrue(statuses.recorded.isEmpty)
+    }
+
+    func testTwoLiveSocketsResolveToTheOneWhoseNonceRenders() async throws {
+        // Two herdr servers (or one live plus one stale registration) on one
+        // host used to abstain outright. The nonce disambiguates: each socket
+        // is stamped with its own fresh token, and only the displayed server
+        // can render its token in the focused grid.
+        let secondMarker = "lvx-def456"
+        let registry = makeRegistry(markers: [markerValue, secondMarker])
+        _ = ingestRemoteHerdrSession(
+            into: registry, sessionID: "s-remote-1", socketPath: "/run/a.sock"
+        )
+        _ = ingestRemoteHerdrSession(
+            into: registry, sessionID: "s-remote-2", socketPath: "/run/b.sock"
+        )
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane(title: secondMarker))
+        let forwards = RecordingForwards()
+        var bits: [UInt64] = [5, 6]
+        let secondToken = HerdrPanelBindingProbe.token(randomBits: 6)
+
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: "agents  \(secondToken)",
+            panelRandomBitsProvider: { bits.removeFirst() }
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertEqual(
+            forwards.opens.withLock { $0.map(\.remoteSocketPath) },
+            ["/run/a.sock", "/run/b.sock"],
+            "sockets are probed in sorted order until one's nonce renders"
+        )
+        XCTAssertEqual(
+            join.snapshot.sessionID,
+            ClaudeRemoteSessionScope.scopedSessionID(hostID: hostID, sessionID: "s-remote-2"),
+            "the join must bind the session of the socket whose nonce rendered"
+        )
+    }
+
+    func testAStaleSocketWhoseForwardFailsIsSkipped() async throws {
+        // The exact field shape (2026-08-09): a session registered under a
+        // previous herdr boot lingers inside the registry TTL with a socket
+        // that no longer exists. Its forward fails; the live socket wins.
+        let secondMarker = "lvx-def456"
+        let registry = makeRegistry(markers: [markerValue, secondMarker])
+        _ = ingestRemoteHerdrSession(
+            into: registry, sessionID: "s-remote-1", socketPath: "/run/a.sock"
+        )
+        _ = ingestRemoteHerdrSession(
+            into: registry, sessionID: "s-remote-2", socketPath: "/run/b.sock"
+        )
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane(title: secondMarker))
+        let forwards = RecordingForwards(failingRemoteSocketPaths: ["/run/a.sock"])
+        let token = HerdrPanelBindingProbe.token(randomBits: 6)
+
+        let join = try unwrapAsync(await resolver(
+            registry: registry,
+            panes: panes,
+            forwards: forwards,
+            panelMetadata: panes,
+            panelGrid: "agents  \(token)",
+            panelRandomBits: 6
+        ).resolve(target: ghostty))
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertEqual(forwards.openCount, 2)
+        XCTAssertEqual(
+            panes.panelReports.withLock { $0.count }, 1,
+            "the stale socket must never be stamped — its forward already failed"
+        )
     }
 
     func testASpeculativeSettleTimeoutDoesNotClaimTheRowIsMissing() async {
