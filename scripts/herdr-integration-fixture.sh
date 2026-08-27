@@ -350,20 +350,29 @@ EOF
   : > "$dir/surface.pids"
   start_surface "$dir" "primary" "app"
 
-  local pane_id=""
+  # The pane the lane binds to must be the one the CLIENT owns, not herdr's
+  # transient startup pane. A headless server spawns a pane of its own before
+  # any client connects; the whole-view client then retires it and creates its
+  # own in a new workspace. Reading `pane current` once can latch that dying
+  # pane, and every later request answers `pane_not_found` for it (seen on the
+  # CI runner, where the timing differed from the dev box). So: require the id
+  # to be UNCHANGED across two reads a second apart AND to still resolve.
+  local pane_id="" previous=""
   waited=0
   while true; do
-    # `|| true`: before the client has painted, `pane current` answers with a
+    # `|| true`: before a pane exists, `pane current` answers with a
     # pane_not_found ERROR and a non-zero status, which `pipefail` would
     # otherwise turn into an abort on the very first poll.
     pane_id="$({ herdr_cli pane current 2>/dev/null || true; } \
       | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)"
-    if [[ -n "$pane_id" ]]; then
+    if [[ -n "$pane_id" && "$pane_id" == "$previous" ]] \
+      && herdr_cli pane get "$pane_id" >/dev/null 2>&1; then
       break
     fi
     if (( waited >= READY_TIMEOUT_SECONDS )); then
-      die "herdr never reported a focused pane; see $dir/surface-primary.log and $dir/server.log"
+      die "herdr never settled on a focused pane; see $dir/surface-primary.log and $dir/server.log"
     fi
+    previous="$pane_id"
     sleep 1
     waited=$((waited + 1))
   done
