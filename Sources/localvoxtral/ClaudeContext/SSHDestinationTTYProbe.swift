@@ -27,6 +27,30 @@ struct SSHSurfaceConnection: Sendable, Equatable {
     }
 }
 
+/// WHY the probe could not pin an ssh session down. Deliberately content-free
+/// — a category, never a path, host, or option letter — so it is safe to put
+/// in the log and the dogfood record. Three field dictations were diagnosed
+/// blind (2026-08-06) because every branch collapsed into one word; the cause
+/// had to be reconstructed from the REMOTE host's process table.
+enum SSHProbeIndeterminacy: String, Sendable, Equatable {
+    /// The tty device path did not resolve.
+    case deviceUnreadable = "device unreadable"
+    /// The machine-wide process scan failed. Not evidence of absence.
+    case tableUnreadable = "process table unreadable"
+    /// More than one foreground ssh CONNECTION on the surface.
+    case multipleForegroundClients = "multiple foreground ssh"
+    /// The surface process's executable is not one we trust to be OpenSSH.
+    case untrustedExecutable = "untrusted executable"
+    /// The surface process's argv could not be read.
+    case unreadableArguments = "unreadable argv"
+    /// The argv was read and refused: a destination-moving or non-interactive
+    /// option, an unknown option letter, or a destination shape outside the
+    /// grammar.
+    case refusedArguments = "refused argv"
+    /// The seam default: no live probe was injected, so the arm is disabled.
+    case probeUnavailable = "probe unavailable"
+}
+
 /// What the process table says about ssh clients on ONE terminal device.
 ///
 /// Three answers, and the difference between the last two is the whole point:
@@ -43,12 +67,19 @@ enum SSHDestinationTTYProbeResult: Sendable, Equatable {
     /// surface, whatever their destinations. Two to the same host abstain just
     /// as two to different hosts do: nothing here says which one the user is
     /// looking at, and unioning them let one borrow the other's herdr signal.
-    case undeterminable
+    /// The payload says WHICH refusal fired — it changes logging, never the
+    /// abstention.
+    case undeterminable(SSHProbeIndeterminacy)
 }
 
 /// One ssh process as the probe sees it.
 struct SSHClientProcess: Sendable, Equatable {
     var pid: Int32
+    /// Kernel-reported parent pid (`e_ppid`). This is what lets ProxyJump
+    /// machinery be told apart from a connection: OpenSSH spawns its `-W`
+    /// stdio-forward hop as a direct CHILD, and ppid is kernel truth — unlike
+    /// argv, no launcher gets to choose it.
+    var parentPID: Int32
     /// Controlling terminal device, or nil when it has none. A process with no
     /// terminal is not a surface anyone can be dictating into — our OWN
     /// `ssh -L` forward is exactly that, which is why it must not count.
@@ -62,6 +93,7 @@ struct SSHClientProcess: Sendable, Equatable {
 
     init(
         pid: Int32,
+        parentPID: Int32 = 0,
         ttyDevice: dev_t?,
         processGroupID: Int32,
         terminalForegroundGroupID: Int32,
@@ -69,6 +101,7 @@ struct SSHClientProcess: Sendable, Equatable {
         arguments: [String]?
     ) {
         self.pid = pid
+        self.parentPID = parentPID
         self.ttyDevice = ttyDevice
         self.processGroupID = processGroupID
         self.terminalForegroundGroupID = terminalForegroundGroupID
@@ -194,35 +227,59 @@ enum SSHDestinationTTYProbe {
         deviceID: @Sendable (String) -> dev_t?,
         sshProcesses: @Sendable () -> [SSHClientProcess]?
     ) -> SSHDestinationTTYProbeResult {
-        guard let device = deviceID(path), let processes = sshProcesses() else {
-            // A device we cannot resolve, or a process table we cannot read, is
-            // not evidence of absence.
-            return .undeterminable
+        guard let device = deviceID(path) else {
+            // A device we cannot resolve is not evidence of absence.
+            return .undeterminable(.deviceUnreadable)
         }
+        guard let processes = sshProcesses() else {
+            return .undeterminable(.tableUnreadable)
+        }
+
+        // CONNECTIONS are the ssh processes with no ssh parent. OpenSSH spawns
+        // its own helpers as direct children — a ProxyJump's `ssh -W` hop, on
+        // the SAME tty and in the SAME foreground process group as the session
+        // it carries (field abstention, 2026-08-06) — and such machinery is
+        // not a second connection anywhere below: not on the surface, and not
+        // in the uniqueness claim (its connection is its root, which is always
+        // also in this scan). The partition rides kernel ppid, which no
+        // launcher gets to write, so it cannot be used to HIDE a connection:
+        // only a real ssh parent demotes a process, and that parent is
+        // counted. A shell-mediated ProxyCommand (sh alive between the two
+        // sshs) stays a root and still abstains — refusing to guess there is
+        // cheaper than trusting one un-attested hop.
+        let connections = processes.filter { !hasSSHParent($0, in: processes) }
 
         // Only the foreground process group of THIS terminal can be what the
         // user is looking at. A backgrounded or stopped ssh on the same device
         // means the surface is showing the shell, not a remote session.
-        let onSurface = processes.filter {
+        let onSurface = connections.filter {
             $0.ttyDevice == device && $0.isForegroundOfItsTerminal
         }
         guard !onSurface.isEmpty else { return .noSSHClient }
 
-        // EXACTLY ONE foreground ssh, or nothing. The first version combined
-        // several — one destination set, `indicatesHerdr` OR-ed across them —
-        // and that union was itself a mis-join (review round 7): a foreground
-        // group holding both `ssh builder` and `ssh builder herdr` reported
-        // "unique" AND "is herdr", so the plain, visible connection joined the
-        // other process's herdr session. A pipeline or wrapper that launches
-        // several ssh children in one group is the same shape.
+        // EXACTLY ONE foreground ssh connection, or nothing. The first version
+        // combined several — one destination set, `indicatesHerdr` OR-ed across
+        // them — and that union was itself a mis-join (review round 7): a
+        // foreground group holding both `ssh builder` and `ssh builder herdr`
+        // reported "unique" AND "is herdr", so the plain, visible connection
+        // joined the other process's herdr session. A pipeline or wrapper that
+        // launches several ssh children in one group is the same shape — and
+        // stays refused: siblings have no ssh parent, so the machinery rule
+        // never reduces them to one.
         //
         // There is no way to tell from here WHICH of them the user is looking
         // at, and this arm's rule is to abstain rather than guess.
         guard onSurface.count == 1, let surfaceProcess = onSurface.first else {
-            return .undeterminable
+            return .undeterminable(.multipleForegroundClients)
         }
-        guard let parsed = verifiedInvocation(of: surfaceProcess) else {
-            return .undeterminable
+        guard let executablePath = surfaceProcess.executablePath,
+              isTrustedSSHExecutable(executablePath)
+        else { return .undeterminable(.untrustedExecutable) }
+        guard let arguments = surfaceProcess.arguments else {
+            return .undeterminable(.unreadableArguments)
+        }
+        guard let parsed = parse(arguments: arguments) else {
+            return .undeterminable(.refusedArguments)
         }
 
         return .connection(
@@ -231,11 +288,28 @@ enum SSHDestinationTTYProbe {
                 isOnlyConnectionToDestination: isOnlyConnection(
                     to: parsed.destination,
                     surfacePID: surfaceProcess.pid,
-                    processes: processes
+                    connections: connections
                 ),
                 indicatesHerdr: parsed.indicatesHerdr
             )
         )
+    }
+
+    /// Is this process a direct child of another ssh in the same scan?
+    ///
+    /// One hop is the whole walk on purpose: the scan holds only ssh
+    /// processes, so an ssh-to-ssh ancestry link IS a direct parent link
+    /// (multi-hop ProxyJump chains demote each hop by its own parent), and a
+    /// non-ssh intermediary — a shell running a ProxyCommand — breaks the
+    /// chain, leaving the grandchild a root. That is the conservative side:
+    /// an extra root can only ever cause an abstention, never a join.
+    private static func hasSSHParent(
+        _ process: SSHClientProcess, in processes: [SSHClientProcess]
+    ) -> Bool {
+        // The self-parent clause is defensive against hand-built test data
+        // only — no Darwin process is its own parent.
+        guard process.parentPID > 0, process.parentPID != process.pid else { return false }
+        return processes.contains { $0.pid == process.parentPID }
     }
 
     /// Is this terminal's the only connection to that destination?
@@ -252,14 +326,17 @@ enum SSHDestinationTTYProbe {
     /// determination above, and says nothing about how many connections exist.
     ///
     /// Excluded: the surface's own connection (the single foreground ssh this
-    /// answer is about), and anything with no controlling terminal — nobody can
-    /// be dictating into one, and our own `ssh -L` forward is exactly that.
+    /// answer is about), anything with no controlling terminal — nobody can
+    /// be dictating into one, and our own `ssh -L` forward is exactly that —
+    /// and ssh MACHINERY (the caller passes connections only): a ProxyJump's
+    /// `-W` child carries its root's connection, which is already counted, and
+    /// its refused argv must not read as "an ssh we cannot account for".
     private static func isOnlyConnection(
         to destination: String,
         surfacePID: Int32,
-        processes: [SSHClientProcess]
+        connections: [SSHClientProcess]
     ) -> Bool {
-        for process in processes
+        for process in connections
         where process.ttyDevice != nil && process.pid != surfacePID {
             guard let parsed = verifiedInvocation(of: process) else {
                 // An ssh elsewhere we cannot read could be to this destination.
@@ -451,6 +528,7 @@ enum SSHDestinationTTYProbe {
             .map { entry in
                 SSHClientProcess(
                     pid: entry.pid,
+                    parentPID: entry.parentProcessID,
                     ttyDevice: entry.ttyDevice,
                     processGroupID: entry.processGroupID,
                     terminalForegroundGroupID: entry.terminalForegroundGroupID,
@@ -536,6 +614,7 @@ enum SSHDestinationTTYProbe {
 enum TTYProcessTable {
     struct Entry: Sendable, Equatable {
         var pid: Int32
+        var parentProcessID: Int32
         var name: String
         var ttyDevice: dev_t?
         var processGroupID: Int32
@@ -543,12 +622,14 @@ enum TTYProcessTable {
 
         init(
             pid: Int32,
+            parentProcessID: Int32 = 0,
             name: String,
             ttyDevice: dev_t? = nil,
             processGroupID: Int32 = 0,
             terminalForegroundGroupID: Int32 = 0
         ) {
             self.pid = pid
+            self.parentProcessID = parentProcessID
             self.name = name
             self.ttyDevice = ttyDevice
             self.processGroupID = processGroupID
@@ -602,6 +683,7 @@ enum TTYProcessTable {
             let device = process.kp_eproc.e_tdev
             return Entry(
                 pid: process.kp_proc.p_pid,
+                parentProcessID: process.kp_eproc.e_ppid,
                 name: name,
                 // NODEV means no controlling terminal — not a surface.
                 ttyDevice: device == ~dev_t(0) ? nil : device,

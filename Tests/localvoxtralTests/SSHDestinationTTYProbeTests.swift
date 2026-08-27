@@ -55,11 +55,13 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
     }
 
     func testUnreadableDeviceAbstains() {
-        XCTAssertEqual(probe(deviceID: nil, processes: [ssh(["ssh", "builder"])]), .undeterminable)
+        XCTAssertEqual(probe(deviceID: nil, processes: [ssh(["ssh", "builder"])]),
+            .undeterminable(.deviceUnreadable)
+        )
     }
 
     func testUnreadableProcessTableAbstains() {
-        XCTAssertEqual(probe(processes: nil), .undeterminable)
+        XCTAssertEqual(probe(processes: nil), .undeterminable(.tableUnreadable))
     }
 
     func testOneForegroundSSHClientReportsItsConnection() throws {
@@ -72,7 +74,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
     func testUnreadableArgvOfAnSSHProcessAbstains() {
         // Absence of argv is not absence of ssh: this surface IS a remote
         // session, we just cannot say to where.
-        XCTAssertEqual(probe(processes: [ssh(nil)]), .undeterminable)
+        XCTAssertEqual(probe(processes: [ssh(nil)]), .undeterminable(.unreadableArguments))
     }
 
     // MARK: - Executable verification (review finding 2)
@@ -82,17 +84,18 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // whoever exec'd it. Neither is evidence of running OpenSSH.
         XCTAssertEqual(
             probe(processes: [ssh(["ssh", "builder"], executable: "/tmp/evil/ssh")]),
-            .undeterminable
+            .undeterminable(.untrustedExecutable)
         )
         XCTAssertEqual(
             probe(processes: [ssh(["ssh", "builder"], executable: "/Users/dev/bin/ssh")]),
-            .undeterminable
+            .undeterminable(.untrustedExecutable)
         )
     }
 
     func testUnknownExecutablePathAbstains() {
         XCTAssertEqual(
-            probe(processes: [ssh(["ssh", "builder"], executable: nil)]), .undeterminable
+            probe(processes: [ssh(["ssh", "builder"], executable: nil)]),
+            .undeterminable(.untrustedExecutable)
         )
     }
 
@@ -136,7 +139,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // an executable in a writable tree, must not produce a destination.
         XCTAssertEqual(
             probe(processes: [ssh(["ssh", "builder"], executable: "/opt/homebrew/tmp/ssh")]),
-            .undeterminable
+            .undeterminable(.untrustedExecutable)
         )
     }
 
@@ -361,7 +364,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                     ssh(["ssh", "builder", "herdr", "attach"], pid: 502),
                 ]
             ),
-            .undeterminable
+            .undeterminable(.multipleForegroundClients)
         )
     }
 
@@ -384,7 +387,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             executablePath: "/usr/bin/ssh",
             arguments: ["ssh", "builder"]
         )
-        XCTAssertEqual(probe(processes: [first, second]), .undeterminable)
+        XCTAssertEqual(probe(processes: [first, second]), .undeterminable(.multipleForegroundClients))
     }
 
     func testTwoForegroundSSHClientsToDifferentHostsOnOneSurfaceAbstain() {
@@ -395,7 +398,165 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                     ssh(["ssh", "other"], pid: 502),
                 ]
             ),
-            .undeterminable
+            .undeterminable(.multipleForegroundClients)
+        )
+    }
+
+    func testARefusedOptionOnTheSurfaceClientReportsItsOwnCause() {
+        // The categories exist because three field dictations were diagnosed
+        // blind (2026-08-06): every branch collapsed into one word.
+        XCTAssertEqual(
+            probe(processes: [ssh(["ssh", "-o", "HostName=other", "builder"])]),
+            .undeterminable(.refusedArguments)
+        )
+    }
+
+    // MARK: - ProxyJump machinery (field abstention, 2026-08-06)
+
+    /// The field shape verbatim: `Host sandbox-vpn` with `ProxyJump dell1`
+    /// makes OpenSSH spawn `ssh -W [ip]:22 dell1` as a direct child on the
+    /// SAME tty and in the SAME foreground process group. That child is the
+    /// connection's transport, not a second connection — kernel ppid says so —
+    /// and it must neither break the exactly-one surface rule nor the
+    /// machine-wide uniqueness claim.
+    private func proxyChild(
+        pid: Int32,
+        parent: Int32,
+        device: dev_t? = 42,
+        foregroundGroup: Int32? = nil
+    ) -> SSHClientProcess {
+        SSHClientProcess(
+            pid: pid,
+            parentPID: parent,
+            ttyDevice: device,
+            processGroupID: parent,
+            terminalForegroundGroupID: foregroundGroup ?? parent,
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "-W", "[192.168.1.98]:22", "dell1"]
+        )
+    }
+
+    func testAProxyJumpChildIsMachineryNotASecondSurfaceClient() throws {
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "sandbox-vpn", "herdr"], pid: 68369),
+                        proxyChild(pid: 68370, parent: 68369),
+                    ]
+                )
+            )
+        )
+        XCTAssertEqual(value.destination, "sandbox-vpn")
+        XCTAssertTrue(value.indicatesHerdr)
+        XCTAssertTrue(value.isOnlyConnectionToDestination)
+    }
+
+    func testAMultiHopProxyChainIsEntirelyMachinery() throws {
+        // `ProxyJump a,b` nests: the -W child spawns its own -W child.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
+                        proxyChild(pid: 502, parent: 501),
+                        // One device has ONE foreground pgid; what this test
+                        // pins is parent-chain demotion, not foreground
+                        // semantics, so the grandchild reports the same one.
+                        proxyChild(pid: 503, parent: 502, foregroundGroup: 501),
+                    ]
+                )
+            )
+        )
+        XCTAssertEqual(value.destination, "sandbox-vpn")
+        XCTAssertTrue(value.isOnlyConnectionToDestination)
+    }
+
+    func testAnotherTerminalsProxyChildDoesNotRemoveUniqueness() throws {
+        // A second terminal to a DIFFERENT host over its own jump: its root is
+        // parsed (destination `elsewhere`, no match) and its unreadable -W
+        // child is that root's machinery, not an unreadable connection.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
+                        ssh(["ssh", "elsewhere"], pid: 777, device: otherTerminal),
+                        proxyChild(pid: 778, parent: 777, device: otherTerminal),
+                    ]
+                )
+            )
+        )
+        XCTAssertTrue(value.isOnlyConnectionToDestination)
+    }
+
+    func testAnotherTerminalsRootToTheSameHostStillRemovesUniquenessDespiteItsChild() throws {
+        // The machinery rule must not swallow the root it serves.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
+                        ssh(["ssh", "sandbox-vpn"], pid: 777, device: otherTerminal),
+                        proxyChild(pid: 778, parent: 777, device: otherTerminal),
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(value.isOnlyConnectionToDestination)
+    }
+
+    func testAnOrphanedUnreadableSSHElsewhereStillRemovesUniqueness() throws {
+        // A tty-holding ssh whose parent is NOT an ssh (launchd after a
+        // reparent, a shell-mediated ProxyCommand) is still a root, and an
+        // unreadable root still spoils the claim — the paranoia is unchanged.
+        let orphan = SSHClientProcess(
+            pid: 777,
+            parentPID: 1, // reparented to launchd — a REAL orphan's e_ppid
+            ttyDevice: otherTerminal,
+            processGroupID: 777,
+            terminalForegroundGroupID: 777,
+            executablePath: "/usr/bin/ssh",
+            arguments: nil
+        )
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
+                        orphan,
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(value.isOnlyConnectionToDestination)
+    }
+
+    func testSiblingForegroundClientsAreNotMachineryAndStillAbstain() {
+        // The round-7 review case must survive the machinery rule: a wrapper
+        // launching two ssh SIBLINGS in one foreground group has no ssh
+        // parent on either, so both are connections and neither answers.
+        let first = SSHClientProcess(
+            pid: 601,
+            parentPID: 600, // a shell, not in the ssh scan
+            ttyDevice: surface,
+            processGroupID: 600,
+            terminalForegroundGroupID: 600,
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder", "herdr"]
+        )
+        let second = SSHClientProcess(
+            pid: 602,
+            parentPID: 600,
+            ttyDevice: surface,
+            processGroupID: 600,
+            terminalForegroundGroupID: 600,
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder"]
+        )
+        XCTAssertEqual(
+            probe(processes: [first, second]),
+            .undeterminable(.multipleForegroundClients)
         )
     }
 
@@ -635,6 +796,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         let entries = try XCTUnwrap(TTYProcessTable.allProcesses())
         let me = entries.first { $0.pid == getpid() }
         XCTAssertNotNil(me, "the scan must contain the test process itself")
+        XCTAssertEqual(
+            me?.parentProcessID, getppid(),
+            "the parent pid must be plumbed — the machinery rule depends on it"
+        )
     }
 
     func testTheLiveExecutablePathOfThisProcessResolves() throws {

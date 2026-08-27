@@ -204,7 +204,19 @@ there is not.
     a background one, or `scp`/`rsync`'s helper is not mistaken for the screen),
     and ABSTAINS on `-o`/`-F`/`-O`/`-S`/`-N`/`-f`/`-M`/`-D`/`-W`/`-w` rather
     than skipping them — `ssh -o HostName=other builder` must never answer
-    `builder`;
+    `builder`. ssh MACHINERY is invisible to this count and to the uniqueness
+    scan in (2): an ssh that is a direct CHILD of another scanned ssh — a
+    ProxyJump's `ssh -W` hop, which OpenSSH spawns on the same tty in the same
+    foreground process group (field abstention 2026-08-06) — is its root
+    connection's transport, not a second connection. The partition rides
+    kernel ppid, which no launcher gets to write, so it cannot hide a
+    connection (the demoting parent is itself counted); sibling ssh processes
+    in one group have no ssh parent and stay refused, and a shell-mediated
+    ProxyCommand's grandchild stays a root and abstains — conservative on
+    purpose. Probe abstentions carry a content-free cause category
+    (`SSHProbeIndeterminacy` — never a host, path, or option letter) into the
+    log and the dogfood record, because three field dictations were diagnosed
+    blind without one;
     (2) that ssh session IS herdr — its remote command's first argv token has
     basename `herdr` — AND this terminal holds the ONLY ssh connection to that
     destination on the machine (a `KERN_PROC_ALL` scan counting every other ssh

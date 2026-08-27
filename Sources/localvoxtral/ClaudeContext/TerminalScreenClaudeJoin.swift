@@ -266,7 +266,7 @@ struct ClaudeSessionJoinResolver {
         cmuxJoinEnabled: @escaping @MainActor () -> Bool = { false },
         reportCmuxStatus: @escaping @MainActor (CmuxSocketStatus) -> Void = { _ in },
         sshDestinationProbe: @escaping @Sendable (String) -> SSHDestinationTTYProbeResult = { _ in
-            .undeterminable
+            .undeterminable(.probeUnavailable)
         },
         enrolledHosts: @escaping @MainActor (String) -> [ClaudeRemoteHost] = { _ in [] },
         remoteHerdrForwards: (any ClaudeRemoteHerdrForwarding)? = nil
@@ -606,8 +606,12 @@ struct ClaudeSessionJoinResolver {
             // The overwhelmingly common case: a local shell. Not logged — this
             // is not an abstention, it is the arm not applying.
             return .notApplicable
-        case .undeterminable:
-            Self.abstainedRemoteHerdrJoin(outcome: "ssh session undeterminable")
+        case .undeterminable(let cause):
+            // The category is content-free by type (`SSHProbeIndeterminacy` —
+            // never a host, path, or option), so it may ride into the log and
+            // the dogfood record. Three field dictations were diagnosed blind
+            // without it (2026-08-06).
+            Self.abstainedRemoteHerdrJoin(outcome: "ssh session undeterminable (\(cause.rawValue))")
             return .notApplicable
         case .connection(let value):
             connection = value

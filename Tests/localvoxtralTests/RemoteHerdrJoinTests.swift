@@ -385,7 +385,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
                 registry: registry,
                 panes: RemoteJoinHerdrPanes(focused: focusedPane()),
                 forwards: forwards,
-                sshResult: .undeterminable,
+                sshResult: .undeterminable(.multipleForegroundClients),
                 title: markerValue
             ).resolve(target: ghostty)
         )
