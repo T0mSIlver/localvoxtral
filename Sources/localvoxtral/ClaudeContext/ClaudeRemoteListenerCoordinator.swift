@@ -73,9 +73,18 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         self.makeListener = makeListener
     }
 
-    public convenience init(hosts: ClaudeRemoteHostRegistry, sessions: ClaudeSessionRegistry) {
+    public convenience init(
+        hosts: ClaudeRemoteHostRegistry,
+        sessions: ClaudeSessionRegistry,
+        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
+    ) {
         self.init(hosts: hosts, sessions: sessions) { registry, rejections in
-            ClaudeRemoteContextListener(registry: sessions, hosts: registry, rejections: rejections)
+            ClaudeRemoteContextListener(
+                registry: sessions,
+                hosts: registry,
+                rejections: rejections,
+                onRemoteHerdrActivity: onRemoteHerdrActivity
+            )
         }
     }
 

@@ -27,13 +27,18 @@ final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, @uncheck
     /// never resumed — a supervisor hung forever on a process that already
     /// exited.
     private struct ExitState {
-        var status: Int32?
-        var waiters: [CheckedContinuation<Int32, Never>] = []
+        var status: ClaudeRemoteForwardExitStatus?
+        var waiters: [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] = []
     }
 
     private let exitState = Mutex(ExitState())
     private let partialLine = Mutex<String>("")
     private let descriptor: Int32
+
+    /// The spawned child's pid, for the pid ledger that lets the NEXT launch
+    /// find this process should this one die without tearing it down.
+    var processIdentifier: pid_t { process.processIdentifier }
+    var isRunning: Bool { process.isRunning }
 
     /// - Parameter argv: complete, including `ssh` at index 0 (the shape
     ///   `Configuration.argv` produces and the enrollment service already uses).
@@ -121,19 +126,21 @@ final class ClaudeRemoteForwardLiveProcess: ClaudeRemoteForwardProcess, @uncheck
         }
         if !tail.isEmpty { continuation.yield(tail) }
         continuation.finish()
-        let waiters = exitState.withLock { state -> [CheckedContinuation<Int32, Never>] in
-            state.status = status
+        let exitStatus = ClaudeRemoteForwardExitStatus.code(status)
+        let waiters = exitState.withLock {
+            state -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] in
+            state.status = exitStatus
             defer { state.waiters = [] }
             return state.waiters
         }
-        for waiter in waiters { waiter.resume(returning: status) }
+        for waiter in waiters { waiter.resume(returning: exitStatus) }
     }
 
-    func waitUntilExit() async -> Int32 {
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
         await withCheckedContinuation { continuation in
             // Check-and-register in ONE critical section, so an exit that lands
             // between the two cannot strand this waiter.
-            let alreadyExited = exitState.withLock { state -> Int32? in
+            let alreadyExited = exitState.withLock { state -> ClaudeRemoteForwardExitStatus? in
                 if let status = state.status { return status }
                 state.waiters.append(continuation)
                 return nil

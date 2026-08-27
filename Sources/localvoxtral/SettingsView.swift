@@ -1073,6 +1073,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     }
                     enrollmentForm
                     listenerStatus
+                    herdrPanelSetup
                 }
             }
         }
@@ -1290,6 +1291,43 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                 .lineLimit(3)
         }
     }
+
+    @ViewBuilder
+    private var herdrPanelSetup: some View {
+        if let message = model.herdrPanelStatus.message {
+            SettingsInlineMessage(message, color: .orange)
+            Text(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet)
+                .font(.system(.caption2, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            ForEach(model.hosts.filter { !$0.isRevoked && $0.sshHostAlias != nil }) { host in
+                let action = ClaudeIntegrationSettingsModel.EnrollmentAction.configureHerdrPanel(
+                    hostID: host.id
+                )
+                if let confirmation = model.enrollmentConfirmation,
+                   confirmation.action == action {
+                    Text(confirmation.title).font(.caption).bold()
+                    HStack {
+                        Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                        Button(confirmation.confirmButtonTitle) {
+                            Task { await model.confirmEnrollmentAction() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .controlSize(.small)
+                } else {
+                    Button("Configure on \(host.label)…") {
+                        model.requestHerdrPanelConfiguration(hostID: host.id)
+                    }
+                    .controlSize(.small)
+                }
+                if model.enrollmentResultsAction == action {
+                    ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
+                }
+            }
+        }
+    }
 }
 
 /// One action's outcome, rendered inside the section whose button ran it.
@@ -1381,6 +1419,16 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         actionTitle: presentation.canRunRemoteSetup ? "Run on SSH host" : nil,
                         enrollmentAction: .runRemoteSetup,
                         action: presentation.canRunRemoteSetup ? { model.requestRemoteSetup() } : nil
+                    )
+                    section(
+                        "3. Show the dictation indicator in herdr",
+                        body: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
+                        note: "After confirmation, localvoxtral appends this only when no agents table or rows key exists; otherwise it leaves the file unchanged.",
+                        actionTitle: presentation.canRunRemoteSetup ? "Configure on SSH host" : nil,
+                        enrollmentAction: .configureHerdrPanel(hostID: presentation.host.id),
+                        action: presentation.canRunRemoteSetup
+                            ? { model.requestHerdrPanelConfiguration(hostID: presentation.host.id) }
+                            : nil
                     )
                     section("Verify", body: plan.verifyCommands.joined(separator: "\n"), note: nil)
                     section(
@@ -1529,7 +1577,8 @@ private struct AboutSettingsPane: View {
 
                 // Constant row, variant-dependent content: "which binary am I
                 // running" is exactly the question that has cost field-debug
-                // time before (AGENTS.md), and version alone can't answer it —
+                // time before (docs/agent/field-debugging.md), and version
+                // alone can't answer it —
                 // dogfood builds keep the same version and bundle id.
                 SettingsFieldRow(
                     title: "Build",

@@ -103,6 +103,9 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// listener on every rebind, and evidence the user has not read yet must not
     /// be erased by enrolling a second host.
     private let rejections: ClaudeRemoteRejectionTally
+    /// Authenticated host activity can pre-start a slow herdr `-L` away from
+    /// dictation latency. The path remains an opaque remote label.
+    private let onRemoteHerdrActivity: @Sendable (String, String) -> Void
 
     #if DEBUG
     private let debugPostAuthenticationHook = Mutex<(@Sendable () -> Void)?>(nil)
@@ -141,7 +144,8 @@ public final class ClaudeRemoteContextListener: Sendable {
         limits: ClaudeRemoteListenerLimits = .default,
         rejections: ClaudeRemoteRejectionTally = ClaudeRemoteRejectionTally(),
         now: @escaping @Sendable () -> Date = { Date() },
-        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
+        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) {
         self.registry = registry
         self.hosts = hosts
@@ -149,6 +153,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         self.rejections = rejections
         self.now = now
         self.uptimeNanos = uptimeNanos
+        self.onRemoteHerdrActivity = onRemoteHerdrActivity
     }
 
     public var isRunning: Bool { state.withLock { $0.isRunning } }
@@ -490,6 +495,9 @@ public final class ClaudeRemoteContextListener: Sendable {
             return
         }
         hosts.noteActivity(hostID: host.id)
+        if let socketPath = prepared.environment?.herdrSocketPath {
+            onRemoteHerdrActivity(host.id, socketPath)
+        }
         respond(fd: fd, status: 200, body: ClaudeRemoteHTTPCodec.markerResponseBody(marker: marker?.value))
     }
 

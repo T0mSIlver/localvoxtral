@@ -3,27 +3,102 @@ import Foundation
 #if canImport(Darwin)
 import Darwin
 
+/// What an ssh remote command says about herdr — a CLASSIFICATION, not a
+/// boolean, because "mentions herdr first" spans shapes that display entirely
+/// different things (verified against herdr v0.8.0 / protocol 19, 2026-08-06):
+///
+/// * a bare client attach displays the server's GLOBAL focused pane — herdr
+///   focus is server-global and multi-client attach is a mirror
+///   (`src/app/api/panes.rs::handle_pane_current`, `tests/multi_client.rs`),
+///   which is the semantic the whole remote arm reads through `pane.current`;
+/// * `herdr terminal attach <id>` renders exactly ONE pane, and
+///   `herdr --session <name>` attaches a DIFFERENT server (named sessions have
+///   separate sockets) — joining the global focus of the candidates' socket
+///   while the user looks at either of those is a mis-join reachable with a
+///   single connection, which is why the boolean had to go.
+enum HerdrInvocation: Sendable, Equatable {
+    /// The remote command is not herdr (or there is no remote command).
+    case notHerdr
+    /// A bare `herdr` whole-view client attach — the only shape whose display
+    /// is the server's global focus. `sessionSelector` is the normalized
+    /// `--session` value (nil = the default session); two connections display
+    /// the same server only when their selectors are byte-identical.
+    case plainClient(sessionSelector: String?)
+    /// herdr with any other subcommand or flag shape: single-pane attaches,
+    /// observers, named-session verbs, `server`, or tokens this classifier
+    /// does not know. Refused by the arm — never a join, never a guess.
+    case otherHerdrSubcommand
+}
+
 /// The ssh connection a terminal surface is displaying, as far as the local
 /// process table can prove it.
 struct SSHSurfaceConnection: Sendable, Equatable {
     /// Normalized destination host/alias.
     var destination: String
-    /// No OTHER terminal on this machine hosts an ssh to the same destination.
+    /// Another terminal on this machine hosts an ssh to the same destination
+    /// that COULD be displaying a different herdr view: a herdr client with a
+    /// different session selector, a single-pane herdr attach, or an ssh whose
+    /// argv cannot rule herdr out.
     ///
-    /// Without this the probe binds to a HOST rather than to a CONNECTION: with
-    /// one terminal on a plain shell to `builder` and another attached to herdr
-    /// on `builder`, both surfaces answer "ssh to builder", and the plain shell
-    /// would join the herdr terminal's session (review blocker 1).
-    var isOnlyConnectionToDestination: Bool
-    /// The argv positively names herdr as the remote command — the shape
-    /// `herdr --remote` spawns, or a hand-typed `ssh host herdr …`. This binds
-    /// the CONNECTION to herdr, which no amount of host-level reasoning can.
-    var indicatesHerdr: Bool
+    /// This is deliberately narrower than the original "only connection to
+    /// the destination" rule. What that rule actually protected against is a
+    /// surface joining a herdr view it is not displaying — and a plain shell
+    /// on another tty can never be that: the probe only ever reads the FOCUSED
+    /// surface's tty, and herdr focus is server-global with mirror attach
+    /// (verified in herdr source, 2026-08-06), so even a second client of the
+    /// SAME server displays the same focused pane. What still competes is a
+    /// client of a DIFFERENT server (session selector mismatch), a single-pane
+    /// attach, or anything unreadable enough that it might be one.
+    var hasCompetingHerdrClient: Bool
+    /// The classified herdr invocation of THIS connection's remote command.
+    /// Binds the CONNECTION to herdr, which no amount of host-level reasoning
+    /// can — argv here is the exec-time vector of a VERIFIED OpenSSH binary,
+    /// i.e. the command ssh actually ran, not a self-report.
+    var herdr: HerdrInvocation
 
-    init(destination: String, isOnlyConnectionToDestination: Bool, indicatesHerdr: Bool) {
+    init(destination: String, hasCompetingHerdrClient: Bool, herdr: HerdrInvocation) {
         self.destination = destination
-        self.isOnlyConnectionToDestination = isOnlyConnectionToDestination
-        self.indicatesHerdr = indicatesHerdr
+        self.hasCompetingHerdrClient = hasCompetingHerdrClient
+        self.herdr = herdr
+    }
+}
+
+/// WHY the probe could not pin an ssh session down. Deliberately content-free
+/// — a category, never a path, host, or option letter — so it is safe to put
+/// in the log and the dogfood record. Three field dictations were diagnosed
+/// blind (2026-08-06) because every branch collapsed into one word; the cause
+/// had to be reconstructed from the REMOTE host's process table.
+enum SSHProbeIndeterminacy: String, Sendable, Equatable {
+    /// The tty device path did not resolve.
+    case deviceUnreadable = "device unreadable"
+    /// The machine-wide process scan failed. Not evidence of absence.
+    case tableUnreadable = "process table unreadable"
+    /// More than one foreground ssh CONNECTION on the surface.
+    case multipleForegroundClients = "multiple foreground ssh"
+    /// The surface process's executable is not one we trust to be OpenSSH.
+    case untrustedExecutable = "untrusted executable"
+    /// The surface process's argv could not be read.
+    case unreadableArguments = "unreadable argv"
+    /// The argv was read and refused: a destination-moving or non-interactive
+    /// option, an unknown option letter, or a destination shape outside the
+    /// grammar.
+    case refusedArguments = "refused argv"
+    /// The seam default: no live probe was injected, so the arm is disabled.
+    case probeUnavailable = "probe unavailable"
+}
+
+extension SSHProbeIndeterminacy {
+    /// An ssh process is present on the focused surface, but trusting its
+    /// destination would require guessing. A title there may be stale from the
+    /// pre-herdr outer session, so these categories suppress that arm too.
+    var suppressesTitleMarker: Bool {
+        switch self {
+        case .multipleForegroundClients, .untrustedExecutable,
+             .unreadableArguments, .refusedArguments:
+            return true
+        case .deviceUnreadable, .tableUnreadable, .probeUnavailable:
+            return false
+        }
     }
 }
 
@@ -43,12 +118,19 @@ enum SSHDestinationTTYProbeResult: Sendable, Equatable {
     /// surface, whatever their destinations. Two to the same host abstain just
     /// as two to different hosts do: nothing here says which one the user is
     /// looking at, and unioning them let one borrow the other's herdr signal.
-    case undeterminable
+    /// The payload says WHICH refusal fired — it changes logging, never the
+    /// abstention.
+    case undeterminable(SSHProbeIndeterminacy)
 }
 
 /// One ssh process as the probe sees it.
 struct SSHClientProcess: Sendable, Equatable {
     var pid: Int32
+    /// Kernel-reported parent pid (`e_ppid`). This is what lets ProxyJump
+    /// machinery be told apart from a connection: OpenSSH spawns its `-W`
+    /// stdio-forward hop as a direct CHILD, and ppid is kernel truth — unlike
+    /// argv, no launcher gets to choose it.
+    var parentPID: Int32
     /// Controlling terminal device, or nil when it has none. A process with no
     /// terminal is not a surface anyone can be dictating into — our OWN
     /// `ssh -L` forward is exactly that, which is why it must not count.
@@ -56,22 +138,34 @@ struct SSHClientProcess: Sendable, Equatable {
     var processGroupID: Int32
     /// The foreground process group of its controlling terminal.
     var terminalForegroundGroupID: Int32
+    /// Kernel credential (`e_ucred.cr_uid`), never self-reported. A process
+    /// owned by another user stays visible to the SURFACE question — a
+    /// `sudo ssh` in this terminal's foreground must abstain, not vanish —
+    /// but it is invisible to the competing-view scan, and its executable
+    /// path and argv are never read (they would fail cross-uid anyway).
+    /// The default exists for test convenience only; the live scan always
+    /// stamps the real credential.
+    var effectiveUserID: uid_t
     /// Resolved executable path (`proc_pidpath`), not argv[0] and not `p_comm`.
     var executablePath: String?
     var arguments: [String]?
 
     init(
         pid: Int32,
+        parentPID: Int32 = 0,
         ttyDevice: dev_t?,
         processGroupID: Int32,
         terminalForegroundGroupID: Int32,
+        effectiveUserID: uid_t = 0,
         executablePath: String?,
         arguments: [String]?
     ) {
         self.pid = pid
+        self.parentPID = parentPID
         self.ttyDevice = ttyDevice
         self.processGroupID = processGroupID
         self.terminalForegroundGroupID = terminalForegroundGroupID
+        self.effectiveUserID = effectiveUserID
         self.executablePath = executablePath
         self.arguments = arguments
     }
@@ -100,9 +194,9 @@ struct SSHClientProcess: Sendable, Equatable {
 ///   stopped ssh, a background one, or an ssh spawned by `scp`/`rsync` cannot
 ///   be mistaken for the session on screen;
 /// * any option that can move the destination or means "this is not an
-///   interactive session" — `-o` (HostName/Port/User/ProxyJump/…), `-F`, `-O`,
-///   `-S`, `-N`, `-f`, `-M`, `-D`, `-W`, `-w` — ABSTAINS instead of being
-///   skipped.
+///   interactive session" — `-o` (HostName/Port/User/ProxyJump/…) except
+///   destination-inert `SetEnv`/`SendEnv`, `-F`, `-O`, `-S`, `-N`, `-f`, `-M`,
+///   `-D`, `-W`, `-w` — ABSTAINS instead of being skipped.
 enum SSHDestinationTTYProbe {
     /// The only executables we are willing to believe are OpenSSH: three exact
     /// absolute paths, the system client plus Homebrew's on both architectures.
@@ -194,97 +288,180 @@ enum SSHDestinationTTYProbe {
         deviceID: @Sendable (String) -> dev_t?,
         sshProcesses: @Sendable () -> [SSHClientProcess]?
     ) -> SSHDestinationTTYProbeResult {
-        guard let device = deviceID(path), let processes = sshProcesses() else {
-            // A device we cannot resolve, or a process table we cannot read, is
-            // not evidence of absence.
-            return .undeterminable
+        guard let device = deviceID(path) else {
+            // A device we cannot resolve is not evidence of absence.
+            return .undeterminable(.deviceUnreadable)
         }
+        guard let processes = sshProcesses() else {
+            return .undeterminable(.tableUnreadable)
+        }
+
+        // CONNECTIONS are the ssh processes with no ssh parent. OpenSSH spawns
+        // its own helpers as direct children — a ProxyJump's `ssh -W` hop, on
+        // the SAME tty and in the SAME foreground process group as the session
+        // it carries (field abstention, 2026-08-06) — and such machinery is
+        // not a second connection anywhere below: not on the surface, and not
+        // in the uniqueness claim (its connection is its root, which is always
+        // also in this scan). The partition rides kernel ppid, which no
+        // launcher gets to write, so it cannot be used to HIDE a connection:
+        // only a real ssh parent demotes a process, and that parent is
+        // counted. A shell-mediated ProxyCommand (sh alive between the two
+        // sshs) stays a root and still abstains — refusing to guess there is
+        // cheaper than trusting one un-attested hop.
+        let connections = processes.filter { !hasSSHParent($0, in: processes) }
 
         // Only the foreground process group of THIS terminal can be what the
         // user is looking at. A backgrounded or stopped ssh on the same device
         // means the surface is showing the shell, not a remote session.
-        let onSurface = processes.filter {
+        let onSurface = connections.filter {
             $0.ttyDevice == device && $0.isForegroundOfItsTerminal
         }
         guard !onSurface.isEmpty else { return .noSSHClient }
 
-        // EXACTLY ONE foreground ssh, or nothing. The first version combined
-        // several — one destination set, `indicatesHerdr` OR-ed across them —
-        // and that union was itself a mis-join (review round 7): a foreground
-        // group holding both `ssh builder` and `ssh builder herdr` reported
-        // "unique" AND "is herdr", so the plain, visible connection joined the
-        // other process's herdr session. A pipeline or wrapper that launches
-        // several ssh children in one group is the same shape.
+        // EXACTLY ONE foreground ssh connection, or nothing. The first version
+        // combined several — one destination set, `indicatesHerdr` OR-ed across
+        // them — and that union was itself a mis-join (review round 7): a
+        // foreground group holding both `ssh builder` and `ssh builder herdr`
+        // reported "unique" AND "is herdr", so the plain, visible connection
+        // joined the other process's herdr session. A pipeline or wrapper that
+        // launches several ssh children in one group is the same shape — and
+        // stays refused: siblings have no ssh parent, so the machinery rule
+        // never reduces them to one.
         //
         // There is no way to tell from here WHICH of them the user is looking
         // at, and this arm's rule is to abstain rather than guess.
         guard onSurface.count == 1, let surfaceProcess = onSurface.first else {
-            return .undeterminable
+            return .undeterminable(.multipleForegroundClients)
         }
-        guard let parsed = verifiedInvocation(of: surfaceProcess) else {
-            return .undeterminable
+        guard let executablePath = surfaceProcess.executablePath,
+              isTrustedSSHExecutable(executablePath)
+        else { return .undeterminable(.untrustedExecutable) }
+        guard let arguments = surfaceProcess.arguments else {
+            return .undeterminable(.unreadableArguments)
+        }
+        guard let parsed = parse(arguments: arguments) else {
+            return .undeterminable(.refusedArguments)
         }
 
         return .connection(
             SSHSurfaceConnection(
                 destination: parsed.destination,
-                isOnlyConnectionToDestination: isOnlyConnection(
-                    to: parsed.destination,
+                hasCompetingHerdrClient: hasCompetingHerdrClient(
+                    destination: parsed.destination,
+                    surfaceHerdr: parsed.herdr,
                     surfacePID: surfaceProcess.pid,
-                    processes: processes
+                    surfaceUserID: surfaceProcess.effectiveUserID,
+                    connections: connections
                 ),
-                indicatesHerdr: parsed.indicatesHerdr
+                herdr: parsed.herdr
             )
         )
     }
 
-    /// Is this terminal's the only connection to that destination?
+    /// Is this process a direct child of another ssh in the same scan?
     ///
-    /// Every OTHER ssh counts, foreground or not, and — this is the part the
-    /// first version got wrong (review round 5b) — including ones on THIS
-    /// device. Excluding same-device background processes let `ssh builder
-    /// herdr` be suspended with Ctrl+Z, its server side still attached and its
-    /// pane still focused, while a plain `ssh builder` in the foreground of the
-    /// same terminal claimed to be the only connection.
-    ///
-    /// "The surface shows the shell, not that ssh" is a fact about which
-    /// connection this terminal DISPLAYS — it belongs to destination
-    /// determination above, and says nothing about how many connections exist.
-    ///
-    /// Excluded: the surface's own connection (the single foreground ssh this
-    /// answer is about), and anything with no controlling terminal — nobody can
-    /// be dictating into one, and our own `ssh -L` forward is exactly that.
-    private static func isOnlyConnection(
-        to destination: String,
-        surfacePID: Int32,
-        processes: [SSHClientProcess]
+    /// One hop is the whole walk on purpose: the scan holds only ssh
+    /// processes, so an ssh-to-ssh ancestry link IS a direct parent link
+    /// (multi-hop ProxyJump chains demote each hop by its own parent), and a
+    /// non-ssh intermediary — a shell running a ProxyCommand — breaks the
+    /// chain, leaving the grandchild a root. That is the conservative side:
+    /// an extra root can only ever cause an abstention, never a join.
+    private static func hasSSHParent(
+        _ process: SSHClientProcess, in processes: [SSHClientProcess]
     ) -> Bool {
-        for process in processes
-        where process.ttyDevice != nil && process.pid != surfacePID {
-            guard let parsed = verifiedInvocation(of: process) else {
-                // An ssh elsewhere we cannot read could be to this destination.
-                // Uniqueness is a claim, and an unreadable process cannot be
-                // part of one.
-                return false
-            }
-            if parsed.destination == destination { return false }
-        }
-        return true
+        // The self-parent clause is defensive against hand-built test data
+        // only — no Darwin process is its own parent.
+        guard process.parentPID > 0, process.parentPID != process.pid else { return false }
+        return processes.contains { $0.pid == process.parentPID }
     }
 
-    private static func verifiedInvocation(of process: SSHClientProcess) -> ParsedInvocation? {
-        guard let executablePath = process.executablePath,
-              isTrustedSSHExecutable(executablePath),
-              let arguments = process.arguments
-        else { return nil }
-        return parse(arguments: arguments)
+    /// Could another terminal be displaying a DIFFERENT herdr view of this
+    /// destination?
+    ///
+    /// The successor to the machine-wide "only connection" rule, narrowed to
+    /// what that rule actually defended: the join reads the candidates'
+    /// server-global focused pane, so the only dangerous neighbor is one that
+    /// could be a herdr client of a DIFFERENT server (or of a single pane).
+    /// A plain shell, a build session, an `ssh host ls` — none of those can
+    /// be the surface being dictated into (the probe reads only the focused
+    /// tty), and a second whole-view client of the SAME server mirrors the
+    /// same focused pane (herdr focus is server-global; verified in source,
+    /// 2026-08-06), so joining is correct for both.
+    ///
+    /// Every OTHER tty-holding connection still counts, foreground or not,
+    /// including suspended ones on THIS device (review round 5b: a suspended
+    /// `ssh builder herdr <verb>` keeps its server side attached). Excluded:
+    /// the surface's own connection, anything with no controlling terminal
+    /// (our own `ssh -L` forward), ssh MACHINERY (the caller passes
+    /// connections only — a ProxyJump's `-W` child is its root's transport),
+    /// and processes owned by ANOTHER user: their herdr view lives in their
+    /// own login session, not on a surface this user could be dictating
+    /// into, and their metadata is unreadable-by-design, so counting them
+    /// meant every root/other-user ssh on the machine was a blanket
+    /// abstention. (A cross-uid ssh ON the surface never reaches this scan —
+    /// its unreadable executable abstains the probe first.)
+    ///
+    /// The refusal ladder for a neighbor, most to least readable:
+    /// parsed to another destination — irrelevant (its herdr, if any, is
+    /// another host's server, which our candidates cannot name); parsed to
+    /// this destination — competes exactly when its herdr classification is
+    /// not "the same view" (`.plainClient` with a byte-identical selector, or
+    /// not herdr at all); argv readable but refused — competes only when some
+    /// token contains `herdr` (one-sided: can over-block, never under-block);
+    /// argv or executable unreadable — always competes, an unreadable process
+    /// cannot be ruled out.
+    private static func hasCompetingHerdrClient(
+        destination: String,
+        surfaceHerdr: HerdrInvocation,
+        surfacePID: Int32,
+        surfaceUserID: uid_t,
+        connections: [SSHClientProcess]
+    ) -> Bool {
+        for process in connections
+        where process.ttyDevice != nil && process.pid != surfacePID
+            && process.effectiveUserID == surfaceUserID {
+            guard let executablePath = process.executablePath,
+                  isTrustedSSHExecutable(executablePath),
+                  let arguments = process.arguments
+            else { return true }
+            guard let parsed = parse(arguments: arguments) else {
+                if mentionsHerdr(arguments) { return true }
+                continue
+            }
+            guard parsed.destination == destination else { continue }
+            switch parsed.herdr {
+            case .notHerdr:
+                continue
+            case .plainClient(let selector):
+                guard case .plainClient(let surfaceSelector) = surfaceHerdr,
+                      selector == surfaceSelector
+                else { return true }
+            case .otherHerdrSubcommand:
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Does any argv token mention herdr at all?
+    ///
+    /// Used ONLY for neighbors whose argv was read but refused by the parser:
+    /// we cannot name their destination, but an argv with no `herdr` substring
+    /// anywhere cannot have run herdr as its remote command. Substring, not
+    /// basename, on purpose — `sh -lc 'exec herdr'` arrives as one token, and
+    /// this test must only ever err toward blocking. Known over-block: a
+    /// HOSTNAME containing "herdr" trips it too (`ssh -o X herdrhost`) —
+    /// accepted, since the cost is an abstention on a refused-argv neighbor,
+    /// never a join.
+    static func mentionsHerdr(_ argv: [String]) -> Bool {
+        argv.contains { $0.contains("herdr") }
     }
 
     // MARK: - argv parsing
 
     struct ParsedInvocation: Sendable, Equatable {
         var destination: String
-        var indicatesHerdr: Bool
+        var herdr: HerdrInvocation
     }
 
     /// Options that take no argument, per ssh(1)'s synopsis
@@ -297,9 +474,10 @@ enum SSHDestinationTTYProbe {
     /// they mean this is not an interactive session on a terminal (`-N`, `-f`,
     /// `-M`, `-O`, `-S`, `-D`, `-W`, `-w`).
     ///
-    /// `-o` is refused wholesale rather than parsed: proving a specific option
-    /// inert means reimplementing OpenSSH's config semantics, and the cost of
-    /// refusing is one join that does not happen.
+    /// `-o` is refused wholesale except for exact `SetEnv=` / `SendEnv=` keys.
+    /// Those only shape the remote environment: they cannot move the
+    /// destination or change whether the session is interactive. No other
+    /// config semantics are reimplemented here.
     private static let refusedOptions = Set("oFOSNfMDWw")
 
     /// The destination host and whether the remote command names herdr, or nil
@@ -323,6 +501,12 @@ enum SSHDestinationTTYProbe {
                 )
             }
             if token.hasPrefix("-"), token.count > 1 {
+                if let consumed = destinationInertOOptionArgumentCount(
+                    token, nextArgument: index + 1 < argv.count ? argv[index + 1] : nil
+                ) {
+                    index += consumed
+                    continue
+                }
                 switch consumption(ofOptionToken: token) {
                 case .unrecognized, .refused:
                     return nil
@@ -348,8 +532,47 @@ enum SSHDestinationTTYProbe {
         guard let destination = normalizedDestination(destinationOperand) else { return nil }
         return ParsedInvocation(
             destination: destination,
-            indicatesHerdr: commandNamesHerdr(remoteCommand)
+            herdr: classifyHerdrCommand(remoteCommand)
         )
+    }
+
+    /// Classify a remote command's relationship to herdr.
+    ///
+    /// The first token must BE herdr (`commandNamesHerdr` — first token only,
+    /// by basename; a shell wrapper's first token is `sh` and what it goes on
+    /// to run is not something an argv can promise). What follows decides the
+    /// shape: nothing, or `--session <name>` / `--session=<name>`, is the
+    /// whole-view client attach; ANY other token — `terminal attach <id>`,
+    /// `session attach <name>`, `server`, a flag this classifier does not
+    /// know — is `.otherHerdrSubcommand`, refused. Unknown herdr verbs must
+    /// land there and not in `.plainClient`: a verb added by a future herdr
+    /// that displays one pane would otherwise become a mis-join.
+    static func classifyHerdrCommand(_ remoteCommand: [String]) -> HerdrInvocation {
+        guard commandNamesHerdr(remoteCommand) else { return .notHerdr }
+        var selector: String?
+        var index = 1
+        while index < remoteCommand.count {
+            let token = remoteCommand[index]
+            let value: String
+            if token == "--session" {
+                guard index + 1 < remoteCommand.count else { return .otherHerdrSubcommand }
+                value = remoteCommand[index + 1]
+                index += 2
+            } else if token.hasPrefix("--session=") {
+                value = String(token.dropFirst("--session=".count))
+                index += 1
+            } else {
+                return .otherHerdrSubcommand
+            }
+            // An empty selector is not a name we can compare byte-identically,
+            // and a REPEATED --session is refused rather than resolved: which
+            // occurrence herdr honors is its business, and a classifier that
+            // silently picks one can agree with itself while disagreeing with
+            // herdr (review finding, 2026-08-06).
+            guard !value.isEmpty, selector == nil else { return .otherHerdrSubcommand }
+            selector = value
+        }
+        return .plainClient(sessionSelector: selector)
     }
 
     /// Is the remote command herdr ITSELF?
@@ -406,6 +629,31 @@ enum SSHDestinationTTYProbe {
         return .selfContained
     }
 
+    /// Number of argv elements consumed by an allowlisted `-o`, including
+    /// `-o` after pure flags in a cluster (`-to SetEnv=…`). Anything before the
+    /// `o` that is not a pure flag belongs to the ordinary option parser.
+    private static func destinationInertOOptionArgumentCount(
+        _ token: String, nextArgument: String?
+    ) -> Int? {
+        let characters = Array(token.dropFirst())
+        for (index, character) in characters.enumerated() {
+            if flagOptions.contains(character) { continue }
+            guard character == "o" else { return nil }
+            if index == characters.count - 1 {
+                guard let nextArgument, isDestinationInertOOption(nextArgument) else { return nil }
+                return 2
+            }
+            let value = String(characters[(index + 1)...])
+            return isDestinationInertOOption(value) ? 1 : nil
+        }
+        return nil
+    }
+
+    private static func isDestinationInertOOption(_ value: String) -> Bool {
+        value.range(of: "SetEnv=", options: [.anchored, .caseInsensitive]) != nil
+            || value.range(of: "SendEnv=", options: [.anchored, .caseInsensitive]) != nil
+    }
+
     /// The host part of an ssh destination operand, lowercased, or nil when the
     /// operand is a shape we refuse to interpret.
     ///
@@ -441,21 +689,44 @@ enum SSHDestinationTTYProbe {
 
     // MARK: - Live reads
 
-    /// EVERY ssh process on the machine (`KERN_PROC_ALL`), with the metadata the
-    /// rules above need. One scan answers both the surface question and the
-    /// uniqueness question.
+    /// EVERY ssh process on the machine (`KERN_PROC_ALL`), with the metadata
+    /// the rules above need. One scan answers both the surface question and
+    /// the competing-view question. Cross-uid processes are carried WITHOUT
+    /// their metadata: they must stay visible to the surface count (a
+    /// `sudo ssh` in the foreground abstains rather than reading as "no ssh
+    /// here"), but their executable path and argv are another user's business
+    /// — never read, not merely expected to fail.
     static let liveSSHProcesses: @Sendable () -> [SSHClientProcess]? = {
         guard let entries = TTYProcessTable.allProcesses() else { return nil }
+        return sshProcesses(
+            from: entries,
+            effectiveUserID: geteuid(),
+            readExecutablePath: executablePath,
+            readArguments: processArguments
+        )
+    }
+
+    /// Maps the process-table scan into the ssh-specific shape at the live-read
+    /// boundary, keeping credential handling out of the pure decision code.
+    static func sshProcesses(
+        from entries: [TTYProcessTable.Entry],
+        effectiveUserID: uid_t,
+        readExecutablePath: (Int32) -> String?,
+        readArguments: (Int32) -> [String]?
+    ) -> [SSHClientProcess] {
         return entries
             .filter { $0.name == "ssh" }
             .map { entry in
-                SSHClientProcess(
+                let sameUser = entry.effectiveUserID == effectiveUserID
+                return SSHClientProcess(
                     pid: entry.pid,
+                    parentPID: entry.parentProcessID,
                     ttyDevice: entry.ttyDevice,
                     processGroupID: entry.processGroupID,
                     terminalForegroundGroupID: entry.terminalForegroundGroupID,
-                    executablePath: executablePath(pid: entry.pid),
-                    arguments: processArguments(pid: entry.pid)
+                    effectiveUserID: entry.effectiveUserID,
+                    executablePath: sameUser ? readExecutablePath(entry.pid) : nil,
+                    arguments: sameUser ? readArguments(entry.pid) : nil
                 )
             }
     }
@@ -536,6 +807,10 @@ enum SSHDestinationTTYProbe {
 enum TTYProcessTable {
     struct Entry: Sendable, Equatable {
         var pid: Int32
+        var parentProcessID: Int32
+        /// Kernel credential from `kp_eproc.e_ucred.cr_uid`, never a value the
+        /// process can choose or report about itself.
+        var effectiveUserID: uid_t
         var name: String
         var ttyDevice: dev_t?
         var processGroupID: Int32
@@ -543,12 +818,16 @@ enum TTYProcessTable {
 
         init(
             pid: Int32,
+            parentProcessID: Int32 = 0,
+            effectiveUserID: uid_t,
             name: String,
             ttyDevice: dev_t? = nil,
             processGroupID: Int32 = 0,
             terminalForegroundGroupID: Int32 = 0
         ) {
             self.pid = pid
+            self.parentProcessID = parentProcessID
+            self.effectiveUserID = effectiveUserID
             self.name = name
             self.ttyDevice = ttyDevice
             self.processGroupID = processGroupID
@@ -602,6 +881,8 @@ enum TTYProcessTable {
             let device = process.kp_eproc.e_tdev
             return Entry(
                 pid: process.kp_proc.p_pid,
+                parentProcessID: process.kp_eproc.e_ppid,
+                effectiveUserID: process.kp_eproc.e_ucred.cr_uid,
                 name: name,
                 // NODEV means no controlling terminal — not a surface.
                 ttyDevice: device == ~dev_t(0) ? nil : device,

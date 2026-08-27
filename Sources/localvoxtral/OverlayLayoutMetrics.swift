@@ -28,9 +28,19 @@ struct OverlayLayoutMetrics: Equatable {
 
     var scale: CGFloat { bodyFontSize / Self.baseBodyFontSize }
 
-    // Fonts (11pt title/error at the base 13pt body).
+    // Fonts (11pt title/error, 10pt badge at the base 13pt body).
     var titleFontSize: CGFloat { 11 * scale }
     var errorFontSize: CGFloat { 11 * scale }
+    /// The header's trailing pills ("Polished", the Claude join badge). Scaled
+    /// like every other font here: a fixed 10pt overflowed `headerHeight` at
+    /// the smallest body size (which is `ceil(16 * scale)`, so it shrinks while
+    /// an unscaled pill did not) and shrank to a speck at the largest.
+    var badgeFontSize: CGFloat { 10 * scale }
+    /// Pill chrome, scaled with the pill's own text — unlike `contentPadding`,
+    /// which is deliberately fixed because it frames the panel rather than a
+    /// piece of scaling text.
+    var badgeHorizontalPadding: CGFloat { 6 * scale }
+    var badgeVerticalPadding: CGFloat { 1 * scale }
 
     // Panel geometry (400/420/540 at scale 1.0).
     var panelMinWidth: CGFloat { 400 * scale }

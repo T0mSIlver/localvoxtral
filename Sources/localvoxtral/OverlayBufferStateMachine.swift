@@ -109,6 +109,10 @@ struct OverlayBufferStateMachine {
         /// while the polished text is held before dismissal. Set only by the
         /// stop-commit polish path; cleared on every new session.
         let polished: Bool
+        /// What to say about this dictation's Claude Code session join. Set
+        /// once, from the join resolved at session start; cleared on every new
+        /// session. `.hidden` renders nothing at all.
+        let claudeJoin: OverlayClaudeJoinBadge
         let anchor: OverlayAnchor
     }
 
@@ -117,6 +121,7 @@ struct OverlayBufferStateMachine {
     private(set) var errorMessage: String?
     private(set) var secureInputActive = false
     private(set) var polished = false
+    private(set) var claudeJoin: OverlayClaudeJoinBadge = .hidden
     private(set) var anchor: OverlayAnchor?
 
     var snapshot: Snapshot? {
@@ -127,11 +132,21 @@ struct OverlayBufferStateMachine {
             errorMessage: errorMessage,
             secureInputActive: secureInputActive,
             polished: polished,
+            claudeJoin: claudeJoin,
             anchor: anchor
         )
     }
 
-    mutating func startSession(anchor: OverlayAnchor) {
+    /// Starts a session, taking the Claude join badge WITH the anchor rather
+    /// than through a follow-up setter.
+    ///
+    /// The join is resolved before the realtime socket connects and this call
+    /// happens after it, so the badge is always already known here — unlike
+    /// `polished`, which genuinely arrives later, at commit. Passing it in is
+    /// what makes the ordering unbreakable: a separate setter had to run AFTER
+    /// this method (which resets the session) to survive, and nothing in the
+    /// type system said so.
+    mutating func startSession(anchor: OverlayAnchor, claudeJoin: OverlayClaudeJoinBadge) {
         guard phase == .idle else {
             let currentPhase = phase
             Log.overlay.warning("startSession called but phase is \(String(describing: currentPhase)), not idle — ignoring")
@@ -142,6 +157,10 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
+        // Assigned, never merely cleared: the previous dictation's join
+        // describes the previous dictation's session, and a badge that survived
+        // into this one would vouch for a grounding this session was not given.
+        self.claudeJoin = claudeJoin
         self.anchor = anchor
     }
 
@@ -196,6 +215,7 @@ struct OverlayBufferStateMachine {
         errorMessage = nil
         secureInputActive = false
         polished = false
+        claudeJoin = .hidden
         anchor = nil
     }
 }

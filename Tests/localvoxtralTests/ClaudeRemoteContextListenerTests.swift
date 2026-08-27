@@ -58,13 +58,15 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     ///   tests) — a test that needs expiry advances this seam immediately.
     private func startListener(
         limits: ClaudeRemoteListenerLimits? = nil,
-        uptimeNanos: (@Sendable () -> UInt64)? = nil
+        uptimeNanos: (@Sendable () -> UInt64)? = nil,
+        onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) throws {
         listener = ClaudeRemoteContextListener(
             registry: sessions,
             hosts: hosts,
             limits: limits ?? ClaudeRemoteListenerLimits(port: port),
-            uptimeNanos: uptimeNanos ?? { DispatchTime.now().uptimeNanoseconds }
+            uptimeNanos: uptimeNanos ?? { DispatchTime.now().uptimeNanoseconds },
+            onRemoteHerdrActivity: onRemoteHerdrActivity
         )
         try listener.start()
     }
@@ -188,6 +190,31 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(
             snapshot.sessionID,
             ClaudeRemoteSessionScope.scopedSessionID(hostID: hostID, sessionID: "s-1")
+        )
+    }
+
+    func testAuthenticatedHerdrActivityIsPublishedForForwardPreparation() throws {
+        struct Activity: Equatable {
+            var hostID: String
+            var socketPath: String
+        }
+        let activities = Mutex<[Activity]>([])
+        try startListener(onRemoteHerdrActivity: { hostID, socketPath in
+            activities.withLock { $0.append(Activity(hostID: hostID, socketPath: socketPath)) }
+        })
+
+        let response = try XCTUnwrap(try send(hookRequest(
+            token: token,
+            extraHeaders: [
+                "X-Lvx-Env-Herdr-Pane-Id: pane-7",
+                "X-Lvx-Env-Herdr-Socket-Path: /run/user/1000/herdr/default.sock",
+            ]
+        )))
+
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(
+            activities.withLock { $0 },
+            [Activity(hostID: hostID, socketPath: "/run/user/1000/herdr/default.sock")]
         )
     }
 

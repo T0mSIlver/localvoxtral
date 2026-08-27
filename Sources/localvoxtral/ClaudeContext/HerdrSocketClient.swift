@@ -75,12 +75,14 @@ protocol HerdrPaneQuerying: Sendable {
     func paneVisibleText(socketPath: String, paneID: String) async -> String?
 }
 
-/// Minimal read-only client for herdr's one-request-per-connection JSON API.
+/// Minimal capability-bounded client for herdr's one-request-per-connection
+/// JSON API. Reads are limited to the focused/joined pane; the sole mutation is
+/// the short-lived `lvmark` panel token used by remote surface authorization.
 ///
 /// Every syscall shares one absolute monotonic deadline. A per-phase timeout
 /// would let a slow connect, write, and response each consume the whole budget,
 /// while a per-read timeout would let a trickling peer retain the task forever.
-struct HerdrSocketClient: HerdrPaneQuerying {
+struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
     private let timeout: TimeInterval
     private let uptimeNanos: @Sendable () -> UInt64
     private let socketMetadata: @Sendable (String) -> ClaudeSocketGuard.PathMetadata?
@@ -189,6 +191,34 @@ struct HerdrSocketClient: HerdrPaneQuerying {
                 return nil
             }
             return result.read.text
+        }.value
+    }
+
+    func reportPanelToken(
+        socketPath: String,
+        paneID: String,
+        value: String?,
+        ttlMilliseconds: Int?
+    ) async -> Bool {
+        await Task.detached(priority: .userInitiated) { [self] in
+            let request = Request(
+                id: Self.requestID(),
+                method: "pane.report_metadata",
+                params: PaneReportMetadataParams(
+                    paneID: paneID,
+                    tokens: ["lvmark": value],
+                    ttlMilliseconds: ttlMilliseconds
+                )
+            )
+            guard let line = query(socketPath: socketPath, request: request),
+                  let envelope = try? JSONDecoder().decode(Envelope<OKResult>.self, from: line),
+                  envelope.id == request.id,
+                  envelope.result?.type == "ok"
+            else {
+                Log.claudeContext.info("Herdr panel metadata report abstained: invalid response")
+                return false
+            }
+            return true
         }.value
     }
 
@@ -410,6 +440,20 @@ struct HerdrSocketClient: HerdrPaneQuerying {
         }
     }
 
+    private struct PaneReportMetadataParams: Encodable {
+        var paneID: String
+        var source = "localvoxtral"
+        var tokens: [String: String?]
+        var ttlMilliseconds: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case paneID = "pane_id"
+            case source
+            case tokens
+            case ttlMilliseconds = "ttl_ms"
+        }
+    }
+
     private struct Envelope<Result: Decodable>: Decodable {
         var id: String
         var result: Result?
@@ -440,6 +484,10 @@ struct HerdrSocketClient: HerdrPaneQuerying {
     private struct ErrorBody: Decodable {
         var code: String
         var message: String
+    }
+
+    private struct OKResult: Decodable {
+        var type: String
     }
 
     private struct PaneCurrentResult: Decodable {

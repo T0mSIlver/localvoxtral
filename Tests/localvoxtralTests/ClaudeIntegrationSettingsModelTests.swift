@@ -627,6 +627,80 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         XCTAssertTrue(model.enrollmentStepStatuses.isEmpty)
     }
 
+    func testHerdrPanelOfferRequiresConsentAndClearsLikelyMissingStatusOnSuccess() async throws {
+        let registry = try makeRegistry()
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "reloaded")
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        model.herdrPanelStatus = .likelyNotConfigured
+
+        model.requestHerdrPanelConfiguration(hostID: hostID)
+
+        XCTAssertTrue(calls.withLock { $0 }.isEmpty, "the offer itself must never ssh")
+        let confirmation = try XCTUnwrap(model.enrollmentConfirmation)
+        XCTAssertEqual(confirmation.action, .configureHerdrPanel(hostID: hostID))
+        XCTAssertEqual(
+            confirmation.preview,
+            ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+        )
+
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(calls.withLock { $0 }.count, 1)
+        XCTAssertEqual(model.herdrPanelStatus, .ok)
+        XCTAssertEqual(model.enrollmentResultsAction, .configureHerdrPanel(hostID: hostID))
+        XCTAssertEqual(
+            model.enrollmentStepStatuses.first?.text,
+            "Configured the remote herdr agents panel."
+        )
+    }
+
+    func testCustomizedHerdrPanelIsLeftUntouchedAndSurfacesTheManualSnippet() async throws {
+        let registry = try makeRegistry()
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(
+                exitCode: 42,
+                message: ClaudeRemoteEnrollmentService.herdrPanelExistingConfigMarker
+            )
+        })
+        let model = makeModel(
+            registry: registry,
+            listener: StubListener(hosts: registry),
+            enrollmentService: service
+        )
+        model.enrollLabel = "buildhost"
+        model.enrollSSHAlias = "builder"
+        await model.enroll()
+        let hostID = try XCTUnwrap(model.hosts.first?.id)
+        model.herdrPanelStatus = .likelyNotConfigured
+
+        model.requestHerdrPanelConfiguration(hostID: hostID)
+        await model.confirmEnrollmentAction()
+
+        XCTAssertEqual(model.herdrPanelStatus, .likelyNotConfigured)
+        XCTAssertEqual(model.enrollmentStepStatuses.first?.text, "Herdr panel setup failed.")
+        XCTAssertTrue(
+            model.enrollmentStepStatuses.first?.detail.contains(
+                ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+            ) == true
+        )
+        XCTAssertTrue(
+            model.alert?.detail.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet)
+                == true
+        )
+    }
+
     func testANewEnrollmentSheetDoesNotInheritThePreviousHostsStepResults() async throws {
         let registry = try makeRegistry()
         let service = ClaudeRemoteEnrollmentService(runner: { _ in
