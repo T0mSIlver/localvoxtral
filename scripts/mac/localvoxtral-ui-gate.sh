@@ -1129,16 +1129,11 @@ run_term_close() {
 # Dispatch — deny by default
 # ---------------------------------------------------------------------------
 
-# Shell regression tests source the reviewed implementation directly; the
-# variable cannot cross the forced-command SSH boundary, where sshd fixes the
-# environment (keep AcceptEnv at its default — see scripts/mac/README.md).
-if [[ "${LOCALVOXTRAL_UI_GATE_SOURCE_ONLY:-0}" == "1" ]]; then
-  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
-    return 0
-  fi
-  exit 0
-fi
-
+# There is deliberately no "source only" escape hatch here (the build gate has
+# one): test-ui-gate.sh executes this script for real against PATH stubs, so
+# nothing needs to suppress dispatch — and an environment variable that turns
+# the gate into a no-op is attack surface with no user.
+#
 # Reject the whole command before it is split: no newlines (only the first
 # line would ever be parsed), no control characters, bounded length.
 [[ -n "$original_command" ]] || deny "empty command"
