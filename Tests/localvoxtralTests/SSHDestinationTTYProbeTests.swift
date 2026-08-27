@@ -67,8 +67,8 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
     func testOneForegroundSSHClientReportsItsConnection() throws {
         let value = try XCTUnwrap(connection(probe(processes: [ssh(["ssh", "builder"])])))
         XCTAssertEqual(value.destination, "builder")
-        XCTAssertTrue(value.isOnlyConnectionToDestination)
-        XCTAssertFalse(value.indicatesHerdr)
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+        XCTAssertEqual(value.herdr, .notHerdr)
     }
 
     func testUnreadableArgvOfAnSSHProcessAbstains() {
@@ -240,31 +240,176 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertEqual(probe(processes: [helper]), .noSSHClient)
     }
 
-    // MARK: - Machine-wide uniqueness (review blocker 1a)
+    // MARK: - Competing herdr views (narrowed from machine-wide uniqueness, 2026-08-06)
 
-    func testASecondTerminalToTheSameHostRemovesUniqueness() throws {
-        // Codex's scenario: this terminal is a plain shell to `builder`, and
-        // another terminal is attached to herdr on `builder`.
+    func testAPlainShellToTheSameHostDoesNotCompete() throws {
+        // THE field workflow the blanket uniqueness rule refused: one terminal
+        // attached to herdr, another keeping a plain shell to the same host
+        // for builds. The plain shell is on another tty, so it cannot be the
+        // surface being dictated into, and it runs no herdr — nothing about it
+        // changes what this surface displays.
         let value = try XCTUnwrap(
             connection(
                 probe(
                     processes: [
-                        ssh(["ssh", "builder"], pid: 501),
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
                         ssh(["ssh", "builder"], pid: 777, device: otherTerminal),
                     ]
                 )
             )
         )
         XCTAssertEqual(value.destination, "builder")
-        XCTAssertFalse(value.isOnlyConnectionToDestination)
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+        XCTAssertEqual(value.herdr, .plainClient(sessionSelector: nil))
     }
 
-    func testASuspendedSSHOnTHISDeviceRemovesUniqueness() throws {
-        // Review round 5b, major 2. Repro: `ssh builder herdr`, Ctrl+Z — the
-        // client is stopped but its server side is still attached and its pane
-        // still focused — then a plain `ssh builder` in the foreground of the
-        // SAME terminal. Skipping same-device background processes made that
-        // foreground session claim to be the only connection.
+    func testASecondWholeViewClientOfTheSameServerDoesNotCompete() throws {
+        // herdr focus is server-global and multi-client attach is a mirror
+        // (verified in herdr source: handle_pane_current resolves the app's
+        // active pane; tests/multi_client.rs broadcasts frames to all
+        // clients), so two whole-view clients of one server display the SAME
+        // focused pane and joining is correct for both.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(["ssh", "builder", "herdr"], pid: 777, device: otherTerminal),
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
+    func testAHerdrClientOfAnotherSessionSelectorCompetes() throws {
+        // Named sessions are separate servers with separate sockets. A client
+        // of `--session scratch` displays a different herdr than the default
+        // one the candidates named — the one shape that could put a different
+        // herdr view on another terminal, so it must still block.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(
+                            ["ssh", "builder", "herdr", "--session", "scratch"],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertTrue(value.hasCompetingHerdrClient)
+    }
+
+    func testMatchingSessionSelectorsDoNotCompete() throws {
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr", "--session", "scratch"], pid: 501),
+                        ssh(
+                            ["ssh", "builder", "herdr", "--session=scratch"],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertEqual(value.herdr, .plainClient(sessionSelector: "scratch"))
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
+    func testASinglePaneHerdrAttachElsewhereCompetes() throws {
+        // `herdr terminal attach <id>` renders one pane, not the server's
+        // focused view — from here it is indistinguishable from a different
+        // herdr view, so it blocks.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(
+                            ["ssh", "builder", "herdr", "terminal", "attach", "w1:p3"],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertTrue(value.hasCompetingHerdrClient)
+    }
+
+    func testARefusedArgvElsewhereCompetesOnlyWhenItMentionsHerdr() throws {
+        // An `-o` neighbor cannot have its destination parsed, but an argv
+        // with no `herdr` substring anywhere cannot have run herdr as its
+        // remote command. One-sided on purpose: it can over-block, never
+        // under-block.
+        let harmless = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(
+                            ["ssh", "-o", "Compression=yes", "builder"],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(harmless.hasCompetingHerdrClient)
+
+        let suspicious = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(
+                            ["ssh", "-o", "Compression=yes", "builder", "herdr"],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertTrue(suspicious.hasCompetingHerdrClient)
+    }
+
+    func testAnUntrustedExecutableElsewhereCompetes() throws {
+        // A tty-holding "ssh" that is not OpenSSH could be anything, including
+        // a herdr client by other means. Unreadable means unruled-out.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(
+                            ["ssh", "builder"],
+                            pid: 777,
+                            device: otherTerminal,
+                            executable: "/tmp/evil/ssh"
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertTrue(value.hasCompetingHerdrClient)
+    }
+
+    func testASuspendedHerdrVerbOnTHISDeviceStillCompetes() throws {
+        // Review round 5b, major 2, transposed: `ssh builder herdr attach`,
+        // Ctrl+Z — the client is stopped but its server side is still attached
+        // — then a plain `ssh builder` in the foreground of the SAME terminal.
+        // `herdr attach` is not a shape the classifier knows, so it is a
+        // possible different herdr view and still blocks; suspended
+        // connections still count.
         let suspendedHerdrClient = SSHClientProcess(
             pid: 777,
             ttyDevice: surface,
@@ -277,44 +422,91 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             connection(probe(processes: [ssh(["ssh", "builder"], pid: 501), suspendedHerdrClient]))
         )
         XCTAssertEqual(value.destination, "builder")
-        XCTAssertFalse(
-            value.isOnlyConnectionToDestination,
-            "a suspended ssh to the same host is still a second connection"
+        XCTAssertTrue(
+            value.hasCompetingHerdrClient,
+            "a suspended possible herdr client to the same host still competes"
         )
     }
 
-    func testASecondForegroundSSHInAnotherPaneOfTheSameDeviceRemovesUniqueness() throws {
-        // Same rule, without the suspension: two process groups on one device.
+    func testAHerdrSiblingPaneOnTheSameDeviceCompetesWhenItsViewMayDiffer() throws {
+        // Two process groups on one device (a terminal with split panes):
+        // the sibling attaches a different named session, so it is a different
+        // herdr view and blocks.
         let sibling = SSHClientProcess(
             pid: 888,
             ttyDevice: surface,
             processGroupID: 888,
             terminalForegroundGroupID: 501,
             executablePath: "/usr/bin/ssh",
-            arguments: ["ssh", "builder"]
+            arguments: ["ssh", "builder", "herdr", "--session", "scratch"]
         )
         let value = try XCTUnwrap(
-            connection(probe(processes: [ssh(["ssh", "builder"], pid: 501), sibling]))
+            connection(probe(processes: [ssh(["ssh", "-t", "builder", "herdr"], pid: 501), sibling]))
         )
-        XCTAssertFalse(value.isOnlyConnectionToDestination)
+        XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
-    func testAnotherTerminalToADIFFERENTHostLeavesUniquenessIntact() throws {
+    func testASuspendedBareHerdrClientOfTheSameServerDoesNotCompete() throws {
+        // The narrowed rule's headline change on the round-5b SHAPE: a
+        // suspended bare `ssh host herdr` next to a foreground bare
+        // `ssh host herdr` is a second whole-view client of the SAME server —
+        // a mirror — so it no longer blocks. (The VERB shape still does:
+        // testASuspendedHerdrVerbOnTHISDeviceStillCompetes.)
+        let suspendedMirror = SSHClientProcess(
+            pid: 777,
+            ttyDevice: surface,
+            processGroupID: 777,
+            terminalForegroundGroupID: 501, // the foreground client has the terminal
+            executablePath: "/usr/bin/ssh",
+            arguments: ["ssh", "builder", "herdr"]
+        )
+        let value = try XCTUnwrap(
+            connection(
+                probe(processes: [ssh(["ssh", "-t", "builder", "herdr"], pid: 501), suspendedMirror])
+            )
+        )
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
+    func testAPlainShellSurfaceReportsCompetitionAgainstAHerdrNeighbor() throws {
+        // Boundary pin, not a behavior anyone relies on: a `.notHerdr` surface
+        // has no selector to compare, so a herdr neighbor reads as competing.
+        // Harmless — the resolver refuses a `.notHerdr` surface before the
+        // competition flag matters — but pinned so a refactor that flips it
+        // ("a plain shell never competes with anything") is a deliberate
+        // decision, not an accident.
         let value = try XCTUnwrap(
             connection(
                 probe(
                     processes: [
                         ssh(["ssh", "builder"], pid: 501),
-                        ssh(["ssh", "elsewhere"], pid: 777, device: otherTerminal),
+                        ssh(["ssh", "builder", "herdr"], pid: 777, device: otherTerminal),
                     ]
                 )
             )
         )
-        XCTAssertTrue(value.isOnlyConnectionToDestination)
+        XCTAssertEqual(value.herdr, .notHerdr)
+        XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
-    func testAnUnreadableSSHElsewhereRemovesUniqueness() throws {
-        // Uniqueness is a claim; a process we cannot read cannot be part of one.
+    func testAHerdrClientToADIFFERENTHostDoesNotCompete() throws {
+        // Its herdr, if any, is another host's server — the candidates are
+        // namespaced by the enrolled host and cannot name it.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(["ssh", "elsewhere", "herdr"], pid: 777, device: otherTerminal),
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
+    func testAnUnreadableSSHElsewhereCompetes() throws {
+        // A process we cannot read cannot be ruled out as a herdr client.
         let value = try XCTUnwrap(
             connection(
                 probe(
@@ -325,10 +517,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.isOnlyConnectionToDestination)
+        XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
-    func testOurOwnTTYLessForwardDoesNotRemoveUniqueness() throws {
+    func testOurOwnTTYLessForwardDoesNotCompete() throws {
         // The app's `ssh -N -L … builder` has no controlling terminal, so it is
         // not a surface anyone can dictate into. (It also carries -N, which the
         // parser refuses outright — hence unreadable, hence excluded by the
@@ -347,7 +539,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertTrue(value.isOnlyConnectionToDestination)
+        XCTAssertFalse(value.hasCompetingHerdrClient)
     }
 
     func testTwoForegroundSSHClientsOnOneSurfaceAbstainEvenToTheSameHost() {
@@ -448,8 +640,8 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             )
         )
         XCTAssertEqual(value.destination, "sandbox-vpn")
-        XCTAssertTrue(value.indicatesHerdr)
-        XCTAssertTrue(value.isOnlyConnectionToDestination)
+        XCTAssertEqual(value.herdr, .plainClient(sessionSelector: nil))
+        XCTAssertFalse(value.hasCompetingHerdrClient)
     }
 
     func testAMultiHopProxyChainIsEntirelyMachinery() throws {
@@ -469,10 +661,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             )
         )
         XCTAssertEqual(value.destination, "sandbox-vpn")
-        XCTAssertTrue(value.isOnlyConnectionToDestination)
+        XCTAssertFalse(value.hasCompetingHerdrClient)
     }
 
-    func testAnotherTerminalsProxyChildDoesNotRemoveUniqueness() throws {
+    func testAnotherTerminalsProxyChildDoesNotCompete() throws {
         // A second terminal to a DIFFERENT host over its own jump: its root is
         // parsed (destination `elsewhere`, no match) and its unreadable -W
         // child is that root's machinery, not an unreadable connection.
@@ -487,29 +679,36 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertTrue(value.isOnlyConnectionToDestination)
+        XCTAssertFalse(value.hasCompetingHerdrClient)
     }
 
-    func testAnotherTerminalsRootToTheSameHostStillRemovesUniquenessDespiteItsChild() throws {
-        // The machinery rule must not swallow the root it serves.
+    func testACompetingRootStillCompetesDespiteItsOwnProxyChild() throws {
+        // The machinery rule must not swallow the root it serves: the other
+        // terminal's root attaches a different named session, and its -W
+        // child changes nothing about that.
         let value = try XCTUnwrap(
             connection(
                 probe(
                     processes: [
                         ssh(["ssh", "sandbox-vpn", "herdr"], pid: 501),
-                        ssh(["ssh", "sandbox-vpn"], pid: 777, device: otherTerminal),
+                        ssh(
+                            ["ssh", "sandbox-vpn", "herdr", "--session", "scratch"],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
                         proxyChild(pid: 778, parent: 777, device: otherTerminal),
                     ]
                 )
             )
         )
-        XCTAssertFalse(value.isOnlyConnectionToDestination)
+        XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
-    func testAnOrphanedUnreadableSSHElsewhereStillRemovesUniqueness() throws {
+    func testAnOrphanedUnreadableSSHElsewhereStillCompetes() throws {
         // A tty-holding ssh whose parent is NOT an ssh (launchd after a
         // reparent, a shell-mediated ProxyCommand) is still a root, and an
-        // unreadable root still spoils the claim — the paranoia is unchanged.
+        // unreadable root still cannot be ruled out — the paranoia is
+        // unchanged.
         let orphan = SSHClientProcess(
             pid: 777,
             parentPID: 1, // reparented to launchd — a REAL orphan's e_ppid
@@ -529,7 +728,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.isOnlyConnectionToDestination)
+        XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
     func testSiblingForegroundClientsAreNotMachineryAndStillAbstain() {
@@ -562,11 +761,86 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
 
     // MARK: - herdr connection signal (review blocker 1b)
 
-    func testARemoteCommandNamingHerdrBindsTheConnection() throws {
+    func testABareHerdrRemoteCommandBindsTheConnectionAsAWholeViewClient() throws {
         let value = try XCTUnwrap(
+            connection(probe(processes: [ssh(["ssh", "-t", "builder", "herdr"])]))
+        )
+        XCTAssertEqual(value.herdr, .plainClient(sessionSelector: nil))
+    }
+
+    func testAHerdrSubcommandOnTheSurfaceIsClassifiedAsOther() throws {
+        // `herdr terminal attach <id>` renders exactly ONE pane while the join
+        // reads the server's GLOBAL focus — a mis-join the boolean signal
+        // allowed (memo 2026-08-06). The classification refuses every shape
+        // that is not the whole-view client.
+        let attach = try XCTUnwrap(
+            connection(
+                probe(processes: [ssh(["ssh", "builder", "herdr", "terminal", "attach", "w1:p3"])])
+            )
+        )
+        XCTAssertEqual(attach.herdr, .otherHerdrSubcommand)
+
+        let unknownVerb = try XCTUnwrap(
             connection(probe(processes: [ssh(["ssh", "-t", "builder", "herdr", "attach"])]))
         )
-        XCTAssertTrue(value.indicatesHerdr)
+        XCTAssertEqual(unknownVerb.herdr, .otherHerdrSubcommand)
+    }
+
+    func testASessionSelectorOnTheSurfaceIsCarried() throws {
+        let value = try XCTUnwrap(
+            connection(
+                probe(processes: [ssh(["ssh", "-t", "builder", "herdr", "--session", "scratch"])])
+            )
+        )
+        XCTAssertEqual(value.herdr, .plainClient(sessionSelector: "scratch"))
+    }
+
+    func testHerdrCommandClassification() {
+        typealias Probe = SSHDestinationTTYProbe
+        XCTAssertEqual(Probe.classifyHerdrCommand([]), .notHerdr)
+        XCTAssertEqual(Probe.classifyHerdrCommand(["ls"]), .notHerdr)
+        XCTAssertEqual(Probe.classifyHerdrCommand(["herdr"]), .plainClient(sessionSelector: nil))
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["/usr/local/bin/herdr"]),
+            .plainClient(sessionSelector: nil)
+        )
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["herdr", "--session", "scratch"]),
+            .plainClient(sessionSelector: "scratch")
+        )
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["herdr", "--session=scratch"]),
+            .plainClient(sessionSelector: "scratch")
+        )
+        // A selector we cannot compare byte-identically, and every verb —
+        // known or unknown — refuses.
+        XCTAssertEqual(Probe.classifyHerdrCommand(["herdr", "--session"]), .otherHerdrSubcommand)
+        // Repeated --session is refused, not resolved: which occurrence herdr
+        // honors is herdr's business, and silently picking one lets the
+        // classifier agree with itself while disagreeing with herdr.
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["herdr", "--session", "a", "--session", "b"]),
+            .otherHerdrSubcommand
+        )
+        XCTAssertEqual(Probe.classifyHerdrCommand(["herdr", "--session="]), .otherHerdrSubcommand)
+        XCTAssertEqual(Probe.classifyHerdrCommand(["herdr", "server"]), .otherHerdrSubcommand)
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["herdr", "session", "attach", "x"]), .otherHerdrSubcommand
+        )
+        XCTAssertEqual(
+            Probe.classifyHerdrCommand(["herdr", "terminal", "session", "observe", "t1"]),
+            .otherHerdrSubcommand
+        )
+    }
+
+    func testMentionsHerdrIsSubstringBased() {
+        // For refused-argv neighbors only: `sh -lc 'exec herdr'` arrives as
+        // one token, and this test must only ever err toward blocking.
+        XCTAssertTrue(SSHDestinationTTYProbe.mentionsHerdr(["ssh", "-o", "X", "b", "herdr"]))
+        XCTAssertTrue(
+            SSHDestinationTTYProbe.mentionsHerdr(["ssh", "-o", "X", "b", "sh", "-lc", "exec herdr"])
+        )
+        XCTAssertFalse(SSHDestinationTTYProbe.mentionsHerdr(["ssh", "-o", "Compression=yes", "b"]))
     }
 
     func testAnAbsolutePathToHerdrCounts() {
@@ -600,12 +874,12 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.indicatesHerdr)
+        XCTAssertEqual(value.herdr, .notHerdr)
     }
 
     func testAPlainShellConnectionDoesNotIndicateHerdr() throws {
         let value = try XCTUnwrap(connection(probe(processes: [ssh(["ssh", "builder"])])))
-        XCTAssertFalse(value.indicatesHerdr)
+        XCTAssertEqual(value.herdr, .notHerdr)
     }
 
     // MARK: - argv parsing

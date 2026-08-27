@@ -643,45 +643,63 @@ struct ClaudeSessionJoinResolver {
             return .notApplicable
         }
 
-        // The connection-level bind, and it takes BOTH facts.
+        // The connection-level bind: this connection's own argv must be a
+        // plain herdr whole-view client, and no OTHER connection may be a
+        // competing herdr view of the same destination.
         //
-        // Uniqueness alone was a mis-join (review round 5b): it says nothing
-        // about what this terminal DISPLAYS. A herdr whose client detached —
-        // or whose pane still carries a marker and a running agent inside the
-        // registry TTL — keeps answering `pane.current` with that pane, so a
-        // later sole `ssh builder` passed the gate and every remaining check
-        // (pane id, marker, session claim, foreground) agreed about a session
-        // the user cannot see.
+        // The invocation requirement is the round-5b lesson unchanged: a herdr
+        // whose client detached — or whose pane still carries a marker and a
+        // running agent inside the registry TTL — keeps answering
+        // `pane.current`, so being the sole `ssh builder` proves nothing about
+        // what this terminal DISPLAYS. herdr exposes no read-only attachment
+        // signal (re-verified at v0.8.0 / protocol 19, 2026-08-06: the only
+        // `client.*` methods are still `window_title.set`/`clear`, both
+        // mutations, and `session.snapshot` has no client records), so the
+        // evidence has to come from the invocation — the exec-time argv of a
+        // VERIFIED OpenSSH binary, i.e. the command ssh actually ran.
         //
-        // The honest fix is to require positive evidence that THIS connection
-        // is a herdr client, and herdr does not expose one: verified against
-        // the 0.7.5 socket schema and the 0.8.0 docs, the only `client.*`
-        // methods are `window_title.set`/`clear` — both MUTATIONS, so neither
-        // is usable as a probe — and `session.snapshot` carries no attachment
-        // field. So the evidence has to come from the invocation itself, and
-        // `indicatesHerdr` is promoted from corroboration to a REQUIREMENT.
+        // The competing-client rule REPLACED machine-wide uniqueness
+        // (2026-08-06), on a protocol fact verified in herdr's source: focus
+        // is server-global and multi-client attach is a mirror, so a plain
+        // shell to the same host cannot be displaying "our" herdr, and a
+        // second whole-view client of the SAME server displays the same
+        // focused pane — joining is correct for both. What still blocks is a
+        // possible client of a DIFFERENT herdr view: another session selector,
+        // a single-pane attach, or an argv unreadable enough to be either.
+        // Blanket uniqueness was also not free: its abstention returns
+        // `.notApplicable`, which falls through to the title marker, where a
+        // stale marker left by an earlier session could win.
         //
         // The cost, stated accurately: the manual flow — `ssh host`, then type
-        // `herdr` — gets no HERDR join. It does not get "no context": this
-        // returns `.notApplicable`, so the title-marker arm still runs, and a
-        // marker left in the OUTER title by an earlier session on that host can
-        // still win. That residual is pre-existing (it is what a remote session
-        // has always done) and cannot be closed from here — nothing on the
-        // surface tells us a remote herdr is running inside it. A wrong HERDR
-        // join is what this refuses.
-        //
-        // Uniqueness stays REQUIRED alongside it: argv is written by whoever
-        // launched the process, so it must never be the only thing standing
-        // between two terminals and each other's sessions.
-        guard connection.isOnlyConnectionToDestination else {
-            Self.abstainedRemoteHerdrJoin(
-                outcome: "another terminal holds an ssh session to this destination"
-            )
-            return .notApplicable
-        }
-        guard connection.indicatesHerdr else {
+        // `herdr` — still gets no HERDR join (its argv has no remote command).
+        // It does not get "no context": the marker arm still runs. That
+        // residual is pre-existing and cannot be closed from here.
+        // The surface's own classification first: when the surface argv is the
+        // problem, the log must say so — a competing neighbor may exist too,
+        // and reporting it instead buried the actionable cause (review nit,
+        // 2026-08-06).
+        switch connection.herdr {
+        case .notHerdr:
             Self.abstainedRemoteHerdrJoin(
                 outcome: "the ssh command on this terminal is not herdr itself"
+            )
+            return .notApplicable
+        case .otherHerdrSubcommand:
+            // `herdr terminal attach <id>` renders ONE pane and
+            // `herdr --session <x>` in a shape we could not normalize may be
+            // another server entirely — while the join would read the
+            // candidates' server-global focus. Joining would pair the prompt
+            // with a pane the user is not looking at.
+            Self.abstainedRemoteHerdrJoin(
+                outcome: "this terminal attaches a partial or different herdr view"
+            )
+            return .notApplicable
+        case .plainClient:
+            break
+        }
+        guard !connection.hasCompetingHerdrClient else {
+            Self.abstainedRemoteHerdrJoin(
+                outcome: "another terminal may hold a different herdr view of this destination"
             )
             return .notApplicable
         }

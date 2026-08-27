@@ -277,7 +277,9 @@ final class RemoteHerdrJoinTests: XCTestCase {
         forwards: (any ClaudeRemoteHerdrForwarding)?,
         sshResult: SSHDestinationTTYProbeResult = .connection(
             SSHSurfaceConnection(
-                destination: "builder", isOnlyConnectionToDestination: true, indicatesHerdr: true
+                destination: "builder",
+                hasCompetingHerdrClient: false,
+                herdr: .plainClient(sessionSelector: nil)
             )
         ),
         hosts: [ClaudeRemoteHost]? = nil,
@@ -407,8 +409,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
                 sshResult: .connection(
                     SSHSurfaceConnection(
                         destination: "someone-elses-box",
-                        isOnlyConnectionToDestination: true,
-                        indicatesHerdr: true
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: nil)
                     )
                 ),
                 title: markerValue
@@ -728,7 +730,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
 
     // MARK: The connection-level bind (review blocker 1)
 
-    func testASecondTerminalToTheSameHostStopsTheArmAndKeepsTheMarkerJoin() async throws {
+    func testACompetingHerdrViewStopsTheArmAndKeepsTheMarkerJoin() async throws {
         // THE blocker: terminal A is a plain shell to `builder`, terminal B is
         // attached to herdr on `builder`. Dictating in A must not query B's
         // herdr, must not join B's session — and must not lose A's own
@@ -746,8 +748,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
                 sshResult: .connection(
                     SSHSurfaceConnection(
                         destination: "builder",
-                        isOnlyConnectionToDestination: false,
-                        indicatesHerdr: true
+                        hasCompetingHerdrClient: true,
+                        herdr: .plainClient(sessionSelector: nil)
                     )
                 ),
                 title: markerValue
@@ -759,11 +761,13 @@ final class RemoteHerdrJoinTests: XCTestCase {
         XCTAssertTrue(panes.requests.withLock { $0.isEmpty }, "no herdr query may be issued")
     }
 
-    func testTheHerdrArgvSignalNeverSubstitutesForUniqueness() async throws {
-        // argv is written by whoever launched the process, so a remote command
-        // that claims to be herdr must not stand in for the one fact that is
-        // not forgeable — how many connections to that host exist (review
-        // round 3, blocker 1a).
+    func testTheHerdrArgvSignalNeverOverridesACompetingHerdrView() async throws {
+        // The surface naming herdr does not settle WHICH herdr view it
+        // displays: with a possible client of a different herdr server on
+        // another tty (different --session selector, a single-pane attach, or
+        // an unreadable argv), the probe reports competition and the arm must
+        // stand down — the marker arm keeps its chance (review round 3,
+        // blocker 1a, narrowed 2026-08-06).
         let registry = makeRegistry(markers: [markerValue])
         ingestRemoteHerdrSession(into: registry)
         let panes = RemoteJoinHerdrPanes(focused: focusedPane())
@@ -777,8 +781,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
                 sshResult: .connection(
                     SSHSurfaceConnection(
                         destination: "builder",
-                        isOnlyConnectionToDestination: false,
-                        indicatesHerdr: true
+                        hasCompetingHerdrClient: true,
+                        herdr: .plainClient(sessionSelector: nil)
                     )
                 ),
                 title: markerValue
@@ -814,8 +818,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
                 sshResult: .connection(
                     SSHSurfaceConnection(
                         destination: "builder",
-                        isOnlyConnectionToDestination: true,
-                        indicatesHerdr: false
+                        hasCompetingHerdrClient: false,
+                        herdr: .notHerdr
                     )
                 ),
                 title: markerValue
@@ -850,8 +854,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
             sshResult: .connection(
                 SSHSurfaceConnection(
                     destination: "builder",
-                    isOnlyConnectionToDestination: true,
-                    indicatesHerdr: false
+                    hasCompetingHerdrClient: false,
+                    herdr: .notHerdr
                 )
             )
             // No outer title marker: herdr swallowed it.
@@ -877,8 +881,8 @@ final class RemoteHerdrJoinTests: XCTestCase {
                 sshResult: .connection(
                     SSHSurfaceConnection(
                         destination: "builder",
-                        isOnlyConnectionToDestination: true,
-                        indicatesHerdr: true
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: nil)
                     )
                 )
             ).resolve(target: ghostty)
