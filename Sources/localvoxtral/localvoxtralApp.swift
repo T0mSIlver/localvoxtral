@@ -3,7 +3,8 @@ import ClaudeContextWire
 import SwiftUI
 import Synchronization
 
-@main
+// No `@main`: `Sources/localvoxtral/main.swift` is the entry point, so
+// `--probe-surface` can answer and exit before any scene is constructed.
 struct localvoxtralApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 

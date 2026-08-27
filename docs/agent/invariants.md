@@ -451,6 +451,32 @@ there is not.
     capture (that grid is the composite herdr TUI, on someone else's machine),
     and never local repo collection — the origin is remote, so
     `localWorkspacePath` is nil by type.
+  - **The `--probe-surface` diagnostic verb runs the real resolver, so its
+    read-only-ness is enforced by what it is HANDED, not by what it chooses to
+    do.** A one-shot process is the worst possible owner for the two arms that
+    write anything: an `ssh -L` it opens has no supervisor and no idle window,
+    and a `pane.report_metadata` `lv-mic-…` stamp it leaves behind has nobody
+    left to clear it if the process is killed between stamping and clearing. So
+    `ClaudeSurfaceProbeCommand` passes `remoteHerdrForwards` and
+    `herdrPanelMetadata` as `nil` — the resolver's own documented "this arm can
+    never spawn anything" configuration — and the arm reaches `forward
+    capability unavailable` and stops. There is no flag that re-enables them,
+    which is the point: an opt-in would be a cleanup obligation, and this is the
+    absence of the capability. The arm's read-only halves (the process-table
+    ssh probe, enrolled-host matching including `ssh -G`, which resolves config
+    and opens no connection) DO run, because they are what the field questions
+    are about. Withheld for their own reasons and by the same construction:
+    `cmuxSurfaces`/`cmuxJoinEnabled` (the arm reads a Keychain password — a
+    diagnostic must not raise that prompt), `focusedBrowserTabURL` (a tab URL
+    is a page the user is looking at), and `readFocusedGrid` (screen text; only
+    the panel-nonce match ever needed it, and that match cannot happen here).
+    What the verb PRINTS is bounded by `ClaudeSessionJoinSummary`, the single
+    mapper the dogfood record also uses: an arm name, the resolver's own
+    content-free abstention categories, an origin CLASS, a terminal NAME, and
+    two Bools — never a marker, session id, pane id, socket path, host, nonce,
+    or workspace path. The registry is per-process and therefore empty in that
+    process; the verb says so as its first cause rather than letting the arms'
+    resulting declines read as a surface failure.
   - Screen capture is split by ROUTE (`TerminalScreenAllowlist`): raw AX grid
     capture remains Ghostty-only (its single-`AXTextArea` grid is verified;
     iTerm2's AX tree is ambiguous across splits, Terminal.app's unverified).

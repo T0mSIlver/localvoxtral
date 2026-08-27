@@ -116,6 +116,23 @@ enum TerminalScreenAllowlist {
         guard let bundleID, !bundleID.isEmpty else { return false }
         return socketCaptureBundleIDs.contains(bundleID)
     }
+
+    /// The app's name, for the join summaries that leave the process
+    /// (`ClaudeSessionJoinSummary`). Nil for anything not on the allowlist —
+    /// including a browser tab target, which has no terminal at all.
+    ///
+    /// A closed mapping rather than `localizedName` of the running process: a
+    /// diagnostic must name the four supported terminals in exactly one way
+    /// across machines and locales, and an app can call itself anything.
+    static func displayName(forBundleID bundleID: String?) -> String? {
+        switch bundleID {
+        case ghosttyBundleID: return "Ghostty"
+        case iterm2BundleID: return "iTerm2"
+        case appleTerminalBundleID: return "Terminal.app"
+        case cmuxBundleID: return "cmux"
+        default: return nil
+        }
+    }
 }
 
 /// The application a screen capture belongs to. Value type only — no
