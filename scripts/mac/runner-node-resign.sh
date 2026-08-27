@@ -25,7 +25,7 @@
 # first manual `run` may pop one keychain "Always Allow" prompt for the
 # signing key — trigger that by hand in a GUI terminal; never let the agent
 # be the first signer or it hangs on the prompt (same gotcha as CI signing,
-# AGENTS.md).
+# docs/agent/field-debugging.md).
 #
 # The agent double-fires benignly: our own codesign writes touch WatchPaths,
 # so launchd runs one extra pass that finds everything signed and exits.

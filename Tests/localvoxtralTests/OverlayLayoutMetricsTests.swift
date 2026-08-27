@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import localvoxtral
@@ -99,6 +100,44 @@ final class OverlayLayoutMetricsTests: XCTestCase {
         let nextSession = lock.metrics(currentFontSize: 24)
         XCTAssertEqual(nextSession.bodyFontSize, 24)
         XCTAssertGreaterThan(nextSession.panelWidth, first.panelWidth)
+    }
+
+    // The header's pills ("Polished", the Claude join badge) used a hardcoded
+    // 10pt while `headerHeight` scaled with the body-size setting — so the pill
+    // overflowed the header it sits in at the smallest size and shrank to a
+    // speck at the largest. Every font here scales from the one setting; these
+    // are not exceptions.
+    func testBadgeFontScalesWithTheBodyFontSetting() {
+        let smallest = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.minimumBodyFontSize)
+        let base = OverlayLayoutMetrics(bodyFontSize: Double(OverlayLayoutMetrics.baseBodyFontSize))
+        let largest = OverlayLayoutMetrics(bodyFontSize: OverlayLayoutMetrics.maximumBodyFontSize)
+
+        XCTAssertEqual(base.badgeFontSize, 10, "10pt at the base 13pt body, as before")
+        XCTAssertLessThan(smallest.badgeFontSize, base.badgeFontSize)
+        XCTAssertGreaterThan(largest.badgeFontSize, base.badgeFontSize)
+        XCTAssertEqual(smallest.badgeFontSize / smallest.titleFontSize,
+                       largest.badgeFontSize / largest.titleFontSize,
+                       accuracy: 0.0001,
+                       "the pill keeps its proportion to the title at every size")
+    }
+
+    // The pill must fit the header row it is framed by, at BOTH ends of the
+    // setting's range — that containment is what the unscaled font broke.
+    func testBadgePillFitsTheHeaderAtEverySize() {
+        for size in [
+            OverlayLayoutMetrics.minimumBodyFontSize,
+            OverlayLayoutMetrics.defaultBodyFontSize,
+            OverlayLayoutMetrics.maximumBodyFontSize,
+        ] {
+            let metrics = OverlayLayoutMetrics(bodyFontSize: size)
+            let font = NSFont.systemFont(ofSize: metrics.badgeFontSize)
+            let pillHeight = ceil(font.ascender - font.descender + font.leading)
+                + metrics.badgeVerticalPadding * 2
+            XCTAssertLessThanOrEqual(
+                pillHeight, metrics.headerHeight,
+                "badge pill overflows the header at body size \(size)"
+            )
+        }
     }
 
     func testErrorMessageAddsHeight() {

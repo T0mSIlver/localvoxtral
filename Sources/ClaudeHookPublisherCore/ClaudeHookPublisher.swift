@@ -125,6 +125,96 @@ public struct ClaudeHookPublisher: Sendable {
         }
     }
 
+    // MARK: - Status line
+
+    /// What a `--statusline` run learned. Distinct from `Outcome` because the
+    /// contract is inverted: a hook must stay silent on failure, while a
+    /// status line EXISTS to render failure. Every case maps to one fixed
+    /// output string (or none) in `statusLineText(for:)` — nothing read off
+    /// the wire is ever echoed.
+    public enum StatusOutcome: Equatable, Sendable {
+        /// The broker answered: the session is live in the registry.
+        case connected
+        /// The broker answered: it has no live session by that id — the app
+        /// runs but this session's hooks are not reaching it (plugin not
+        /// installed, or the app started after the session's last event).
+        case sessionUnknown
+        /// Nothing answered on the socket: the app is not running (or this
+        /// environment has no resolvable socket path at all).
+        case appUnreachable
+        /// stdin was not a status-line payload with a usable `session_id`.
+        /// Rendered as nothing: a claim about a session we could not even
+        /// identify would be a guess, and the status line must never guess.
+        case unparseablePayload
+    }
+
+    /// Read the status-line payload Claude Code pipes in, ask the broker
+    /// whether that session is live, and say which of the four worlds we are
+    /// in. Never throws, never blocks past the socket deadline — the status
+    /// line re-runs constantly and a slow command stalls its refresh.
+    public func runStatusQuery(stdin: Data) -> StatusOutcome {
+        guard let sessionID = Self.statusLineSessionID(payload: stdin, limits: limits) else {
+            return .unparseablePayload
+        }
+        let record = ClaudeHookRecord(
+            event: .statusQuery,
+            sessionID: sessionID,
+            timestamp: environment.now()
+        )
+        guard let line = ClaudeHookWireCodec.encodeLine(record, limits: limits),
+              let socketPath = ClaudeHookSocketPath.resolve(environment: environment.variables)
+        else {
+            return .appUnreachable
+        }
+        switch publisher.publishAndReadReply(line: line, to: socketPath) {
+        case .failure:
+            return .appUnreachable
+        case .success(let reply):
+            // A listener that answers but does not say `accepted: true` — an
+            // older app dropping the unknown event, a missing or undecodable
+            // reply — lands on "not connected": something owns the socket,
+            // but it did not vouch for this session.
+            guard let reply,
+                  let response = ClaudeBrokerResponse.decodeLine(reply, limits: limits),
+                  response.accepted == true
+            else {
+                return .sessionUnknown
+            }
+            return .connected
+        }
+    }
+
+    /// `session_id` from a Claude Code status-line payload (a JSON object,
+    /// schema owned by Claude Code; `session_id` is documented always-present).
+    /// Bounded exactly like every other identifier that crosses the wire.
+    static func statusLineSessionID(payload: Data, limits: ClaudeHookLimits) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: payload),
+              let dictionary = object as? [String: Any],
+              let sessionID = dictionary["session_id"] as? String,
+              !sessionID.isEmpty
+        else {
+            return nil
+        }
+        return ClaudeHookWireCodec.truncate(sessionID, toUTF8Bytes: limits.maxPathBytes)
+    }
+
+    /// The one line to print, or nil for nothing. FIXED strings only, chosen
+    /// by outcome — no wire byte, marker, path, or id is ever interpolated,
+    /// so nothing that crossed a socket can put a byte on the terminal.
+    /// ANSI SGR is deliberate: Claude Code renders it in the status line.
+    public static func statusLineText(for outcome: StatusOutcome) -> String? {
+        switch outcome {
+        case .connected:
+            return "\u{1B}[32m\u{25CF}\u{1B}[0m localvoxtral connected"
+        case .sessionUnknown:
+            return "\u{1B}[33m\u{25CB}\u{1B}[0m localvoxtral not connected"
+        case .appUnreachable:
+            return "\u{1B}[2m\u{25CB} localvoxtral not running\u{1B}[0m"
+        case .unparseablePayload:
+            return nil
+        }
+    }
+
     /// Safe metadata only: identity and location of the terminal, never its
     /// contents and never argv/env beyond an ALLOWLIST — `$TERM_PROGRAM` plus
     /// the multiplexer/bridge handles below.

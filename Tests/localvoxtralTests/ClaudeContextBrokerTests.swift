@@ -385,6 +385,106 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertEqual(response.accepted, true)
     }
 
+    // MARK: Status query — the read-only probe behind `--statusline`
+
+    func testUnknownEventLineIsRefusedWithAReplyNotADrop() throws {
+        // The version-skew story `--statusline` leans on: a NEW publisher
+        // sending StatusQuery to an OLD broker relies on the broker's
+        // unknown-event branch REPLYING `accepted: false` (which the
+        // publisher renders as "not connected") rather than dropping the
+        // connection (which would render "not running" against a healthy
+        // app). Pin the shape with an event name no build knows.
+        try broker.start()
+        let line = Data(
+            #"{"v":2,"event":"StatusQueryFromTheFuture","session_id":"skew","ts":1,"files":[]}"#
+                .utf8 + [0x0A]
+        )
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(line: line, to: socketPath)
+        guard case .success(let reply) = result else {
+            return XCTFail("an unknown event must still complete the exchange: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertEqual(response.accepted, false)
+        XCTAssertNil(response.marker)
+        XCTAssertTrue(registry.liveSessions().isEmpty, "an unknown event must not create a session")
+    }
+
+    func testStatusQueryForALiveSessionRepliesAcceptedWithoutAMarker() throws {
+        try broker.start()
+        // Seed a live session through the front door.
+        let start = ClaudeHookRecord(
+            event: .sessionStart,
+            sessionID: "probe-me",
+            timestamp: 1,
+            rawCwd: "/repo",
+            process: ClaudeHookProcessInfo(hookPID: 4242, claudePID: getpid())
+        )
+        _ = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(start)), to: socketPath
+        )
+
+        let query = ClaudeHookRecord(event: .statusQuery, sessionID: "probe-me", timestamp: 2)
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(query)), to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertEqual(response.accepted, true, "a live session must read as connected")
+        // This broker is constructed with the title fallback ON — the one
+        // configuration where a hook reply WOULD carry the marker. A probe is
+        // not a hook and has no terminal, so it must never get one.
+        XCTAssertNil(response.marker, "a probe reply must never carry a marker")
+    }
+
+    func testStatusQueryForAnUnknownSessionRepliesNotAcceptedAndCreatesNothing() throws {
+        try broker.start()
+        let query = ClaudeHookRecord(event: .statusQuery, sessionID: "never-hooked", timestamp: 1)
+        let result = UnixSocketPublisher(timeout: 2.0).publishAndReadReply(
+            line: try XCTUnwrap(ClaudeHookWireCodec.encodeLine(query)), to: socketPath
+        )
+        guard case .success(let reply) = result else {
+            return XCTFail("publish failed: \(result)")
+        }
+        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
+        XCTAssertEqual(response.accepted, false)
+        XCTAssertNil(response.marker)
+        // The probe must not have created the session it asked after —
+        // otherwise the second probe for any id would answer "connected".
+        XCTAssertNil(registry.snapshot(sessionID: "never-hooked"))
+        XCTAssertTrue(registry.liveSessions().isEmpty)
+    }
+
+    func testStatusLineModeEndToEndThroughThePublisher() throws {
+        // The production `--statusline` path: hook seeds the session, then
+        // `runStatusQuery` reads a real status-line payload and asks the same
+        // broker over the same socket.
+        try broker.start()
+        let hookJSON = #"{"hook_event_name":"SessionStart","session_id":"sl-e2e","cwd":"/repo"}"#
+        let seeder = ClaudeHookPublisher(
+            environment: ClaudeHookPublisher.Environment(
+                now: { 1 },
+                pid: { 31_337 },
+                ppid: { getpid() },
+                ttyName: { _ in nil },
+                variables: [ClaudeHookSocketPath.environmentKey: socketPath]
+            )
+        )
+        _ = seeder.run(stdin: Data(hookJSON.utf8), fallbackEvent: nil)
+
+        let payload = #"{"session_id":"sl-e2e","cwd":"/repo","model":{"id":"m","display_name":"M"}}"#
+        XCTAssertEqual(seeder.runStatusQuery(stdin: Data(payload.utf8)), .connected)
+        XCTAssertEqual(
+            seeder.runStatusQuery(stdin: Data(#"{"session_id":"some-other"}"#.utf8)),
+            .sessionUnknown
+        )
+        XCTAssertNil(
+            registry.snapshot(sessionID: "some-other"),
+            "asking after a session must not create it"
+        )
+    }
+
     func testPublisherEmitsMarkerOutputWhenLocalTitleFallbackIsEnabled() throws {
         // The end-to-end join through the production publisher entry point.
         try broker.start()
