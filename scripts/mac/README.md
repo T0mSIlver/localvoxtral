@@ -542,7 +542,7 @@ full-screen capture anywhere in it:
 | `ax type <selector> -- <text>` | types into a text-bearing element |
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
 | `quit` | terminates the recorded pid |
-| `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command (for herdr / terminal-integration work) |
+| `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
 
 Selectors are `key<op>value` pairs joined by `,` — `=` exact, `~` contains,
@@ -567,10 +567,10 @@ Three refusals are load-bearing and are what the regression suite
 
 - **No shell verb.** No `eval`, no `bash -c`, no verb taking a free command
   line. `term open` is the single constrained exception: its first token must
-  be in `LV_UI_TERM_COMMANDS`, every token must survive the same metacharacter
-  blocklist as any other argument, and the command is logged **in full**.
-  Allowlisting something that is itself a shell (`bash`, `ssh`, `osascript`)
-  or that takes an arbitrary child command hands the boundary away.
+  be in `LV_UI_TERM_COMMANDS` (empty by default), must not be on the permanent
+  denylist the conf file cannot override, every token must survive the same
+  metacharacter blocklist as any other argument, and the command is logged
+  **in full**. The rule for that allowlist is below and is not negotiable.
 - **Locked screen = hard refusal**, fail closed. The probe is shared with the
   ui-smoke lane (`scripts/ci/screen-lock-state.sh`); an undeterminable state
   denies here and runs there, on purpose.
@@ -640,11 +640,70 @@ write it can already replace the gate script).
 
 ```bash
 # LV_UI_ARTIFACT_ROOTS="$HOME/localvoxtral-ui-artifacts"  # where launch may look
-# LV_UI_TERM_COMMANDS="herdr claude opencode codex"       # term open's first tokens
+# LV_UI_TERM_COMMANDS="lv-attach"       # term open's first tokens; EMPTY by default
 # LV_UI_TERMINALS="ghostty iterm terminal"
 # LV_UI_WARN_SLEEP_SECONDS=3                              # 0 only if you are sitting there
 # LV_UI_SHOT_MAX_BYTES=8388608
 ```
+
+### What may go on `term open`'s allowlist
+
+**An allowlisted command must not be able to run a child command.** Not "must
+not be a shell" — must not be able to *start* one, at any remove, through any
+flag or subcommand. `list_contains` matches the **first token only** and
+nothing inspects flags, so a name on this list is trusted with every argument
+it will ever be given.
+
+The test to apply before adding a name: read its `--help`. If any flag or
+subcommand takes a command, a script, a prompt, or a file to execute — `-c`,
+`-e`, `exec`, `run`, `--eval`, `-p`, an agent that runs tools — it fails.
+
+That rejects the obvious shells and **every coding-agent CLI**. `claude
+--dangerously-skip-permissions -p <prompt>`, `codex exec`, `opencode run` and
+`herdr agent start` each execute arbitrary code as the GUI user, and none of
+them needs a space or a metacharacter to do it. An earlier revision of the gate
+shipped `herdr claude opencode codex` as the default allowlist; that was a
+fully-permissioned remote shell wearing four allowlisted names, and it is why
+the default is now empty and why `LV_UI_TERM_FORBIDDEN` — a permanent denylist
+assigned *after* the conf file is sourced — refuses those names even if this
+conf allowlists them.
+
+The way to make the verb useful is a **single-purpose wrapper you write and
+install**, which takes an identifier and execs one fixed command:
+
+```bash
+# ~/bin/lv-attach — allowlist THIS, not the tool it calls.
+#!/bin/sh
+case "$1" in
+  pane-[0-9]*) exec ssh -t fixture-host herdr attach "$1" ;;
+  *) echo "lv-attach: unknown pane" >&2; exit 2 ;;
+esac
+```
+
+```bash
+# ~/.localvoxtral-ui-gate.conf
+LV_UI_TERM_COMMANDS="lv-attach"
+```
+
+The wrapper, not the gate, is what decides the command — so review it with the
+same eyes as the gate itself, and never let it take a command from its
+argument.
+
+**Where the agent runs.** For terminal/agent-integration scenarios the agent
+(Claude Code, codex, …) is started on the **fixture side** — the Linux host
+running herdr, driven by the herdr-integration harness — and the Mac's
+`term open` only ever attaches to it, as `lv-attach` above does. The Mac gate
+never launches an agent, so the "allowlist a coding-agent CLI" pressure that
+produced the original hole does not exist.
+
+**Why `term open` is not a way around the app-scoped verbs.** `shot`,
+`ax dump`, `ax click`, `ax type` and `key` all take their pid from the
+`app.state` that `launch` wrote, and `launch` only ever records a validated
+localvoxtral bundle's pid. No verb retargets them at a terminal.
+`term focus`/`term close` do reach a terminal window, but only to raise or
+close it — they carry no selector, no keystroke and no capture, so nothing this
+gate types can reach a shell prompt. `test-ui-gate.sh` section 12 pins this
+with both an app under test and an open terminal recorded.
 
 ### Verifying from the Linux box
 
@@ -659,6 +718,9 @@ ssh lv-ui 'quit'
 ssh lv-ui 'echo pwned'                  # must print "denied command"
 ssh lv-ui 'bash -lc id'                 # must print "denied command"
 ssh lv-ui 'term open ghostty bash -c id' # must print "denied command"
+ssh lv-ui 'term open ghostty claude --dangerously-skip-permissions -p hi'
+                                        # must print "denied command" — the
+                                        # agent CLIs are permanently refused
 ```
 
 Every one of those, allowed or denied, appends a line to
@@ -689,7 +751,8 @@ behaviour, but nothing about a live desktop. On first install, confirm by hand:
    with no run loop, which is exactly where they are least likely to behave —
    if `key` always reports "could not be brought frontmost", that is the
    symptom.
-5. `term open ghostty herdr ...` opens a window whose title carries the
+5. `term open ghostty <your-wrapper> …` opens a window whose title carries the
    `lvui-…` marker, and `term focus`/`term close` find it. Terminal-specific
    flags (`ghostty -e`, the generated `.command` for Terminal/iTerm) are the
-   least-tested part of v1.
+   least-tested part of v1. Nothing here works until you have written a wrapper
+   and allowlisted it — the default allowlist is empty on purpose.

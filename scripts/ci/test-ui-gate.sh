@@ -249,6 +249,16 @@ clear_state() {
   rm -rf "$FAKE_HOME/.localvoxtral-ui-gate"
 }
 
+# The machine-local conf is the ONLY way `term open` ever becomes usable, so
+# the opt-in tests go through the real file rather than an env override.
+GATE_CONF="$FAKE_HOME/.localvoxtral-ui-gate.conf"
+write_conf() {
+  printf '%s\n' "$@" >"$GATE_CONF"
+}
+clear_conf() {
+  rm -f "$GATE_CONF"
+}
+
 APP_ENV=(
   STUB_PS_LSTART="Mon Aug 24 09:00:00 2026"
   STUB_PS_COMM="$CLEAN_APP/Contents/MacOS/localvoxtral"
@@ -336,14 +346,66 @@ assert_denied 'term open ghostty bash -c id' 'term open running bash'
 assert_denied 'term open ghostty sh' 'term open running sh'
 assert_denied 'term open ghostty ssh builder@mac' 'term open running ssh'
 assert_denied 'term open ghostty osascript -e id' 'term open running osascript'
-assert_denied 'term open bash herdr' 'a shell in the terminal position'
-assert_denied 'term open ghostty herdr;id' 'metacharacter inside an allowlisted command'
-assert_denied 'term open ghostty herdr `id`' 'backticks in a term command'
-assert_denied 'term open ghostty herdr a b c d e f g h i j k l m' 'more tokens than the cap'
+assert_denied 'term open ghostty python3 -c id' 'term open running python3'
+assert_denied 'term open bash lv-attach' 'a shell in the terminal position'
+assert_denied 'term open ghostty lv-attach;id' 'metacharacter inside a command' \
+  LV_UI_TERM_COMMANDS=lv-attach
+assert_denied 'term open ghostty lv-attach `id`' 'backticks in a term command' \
+  LV_UI_TERM_COMMANDS=lv-attach
+assert_denied 'term open ghostty lv-attach a b c d e f g h i j k l m' 'more tokens than the cap' \
+  LV_UI_TERM_COMMANDS=lv-attach
+
+# An agent CLI is a shell wearing one allowlisted name: only the first token is
+# checked and nothing inspects flags, so `claude -p`, `codex exec`,
+# `opencode run` and `herdr agent start` each execute arbitrary code as the GUI
+# user. An earlier revision shipped all four in the DEFAULT allowlist.
+assert_denied 'term open ghostty claude' 'term open running claude'
+assert_denied 'term open ghostty codex' 'term open running codex'
+assert_denied 'term open ghostty opencode' 'term open running opencode'
+assert_denied 'term open ghostty herdr' 'term open running herdr'
+assert_denied 'term open ghostty aider' 'term open running another agent CLI'
+assert_denied 'term open ghostty claude --dangerously-skip-permissions -p hello' \
+  'the exact escape: claude --dangerously-skip-permissions -p <prompt>'
+assert_denied 'term open ghostty codex exec whatever' 'codex exec'
+assert_denied 'term open ghostty opencode run whatever' 'opencode run'
+assert_denied 'term open ghostty herdr agent start' 'herdr agent start'
+
+# The denylist is checked before the allowlist and is assigned after the conf
+# is sourced, so a machine-local file cannot re-add any of these.
+write_conf 'LV_UI_TERM_COMMANDS="claude codex opencode herdr bash ssh lv-attach"'
+assert_denied 'term open ghostty claude -p hi' 'conf-allowlisted claude is STILL denied'
+assert_denied 'term open ghostty codex exec x' 'conf-allowlisted codex is STILL denied'
+assert_denied 'term open ghostty opencode run x' 'conf-allowlisted opencode is STILL denied'
+assert_denied 'term open ghostty herdr agent start' 'conf-allowlisted herdr is STILL denied'
+assert_denied 'term open ghostty bash -c id' 'conf-allowlisted bash is STILL denied'
+assert_denied 'term open ghostty ssh host' 'conf-allowlisted ssh is STILL denied'
+clear_conf
+
+# With no conf at all the allowlist is empty, so every command denies — the
+# verb is opt-in, not opt-out.
+assert_denied 'term open ghostty lv-attach' 'the default allowlist is empty'
+[[ "$(log_tail)" == *"no allowlisted commands"* ]] \
+  || fail "the empty-allowlist denial did not say why: $(log_tail)"
+
+# Pin the DEFAULT in the source, so re-adding a name fails here and not in the
+# field. The default must be empty; anything else is a review conversation.
+DEFAULT_LINE="$(grep -n 'LV_UI_TERM_COMMANDS="[$]{LV_UI_TERM_COMMANDS' "$GATE" | head -n 1)"
+[[ "$DEFAULT_LINE" == *'LV_UI_TERM_COMMANDS="${LV_UI_TERM_COMMANDS:-}"' ]] \
+  || fail "the default term-open allowlist is no longer empty: $DEFAULT_LINE"
+FORBIDDEN_BLOCK="$(awk '/^LV_UI_TERM_FORBIDDEN=/ { capture = 1 } capture { print } capture && /"$/ { exit }' "$GATE")"
+[[ -n "$FORBIDDEN_BLOCK" ]] || fail "the permanent denylist is gone"
+for forbidden in bash sh zsh ssh osascript python3 claude codex opencode herdr aider; do
+  grep -qw "$forbidden" <<<"$FORBIDDEN_BLOCK" \
+    || fail "$forbidden is no longer on the permanent denylist"
+done
+pass "the default allowlist is empty and the permanent denylist still names every shell and agent CLI"
 
 echo "== 5. the screen lock is a hard refusal (fail closed) =="
 
 write_app_state 4242
+# `term open` is opted in for this block on purpose: with the allowlist empty
+# it would deny anyway, and the test would pass without ever reaching the lock.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
 LOCK_STATE=locked
 for locked_command in \
   "launch $CLEAN_APP" \
@@ -352,7 +414,7 @@ for locked_command in \
   'ax click role=AXButton,title=General' \
   'ax type role=AXTextField -- hello' \
   'key escape' \
-  'term open ghostty herdr' \
+  'term open ghostty lv-attach' \
   'term focus term-1'; do
   assert_denied "$locked_command" "locked screen refuses: $locked_command" \
     "${APP_ENV[@]}" STUB_PGREP_PID=4242 STUB_WINDOW_RESULT="7 4242"
@@ -385,6 +447,7 @@ run_gate 'state' "${APP_ENV[@]}"
   || fail "state did not report the locked screen: $GATE_STDOUT"
 pass "allowed: state answers on a locked screen and reports it"
 LOCK_STATE=unlocked
+clear_conf
 
 echo "== 6. shot captures only a window owned by the launched pid =="
 
@@ -496,16 +559,19 @@ echo "== 9. term verbs =="
 clear_state
 : >"$LOG_FILE"
 : >"$TMP_DIR/open.log"
-run_gate 'term open ghostty herdr agent list' STUB_PGREP_PID=$$
+# The documented opt-in: a single-purpose wrapper the owner installs, which
+# takes an identifier and execs one fixed command. Never a general-purpose tool.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
+run_gate 'term open ghostty lv-attach pane-7' STUB_PGREP_PID=$$
 (( GATE_STATUS == 0 )) || fail "term open of an allowlisted command failed: $GATE_STDERR"
 [[ "$GATE_STDOUT" == "opened term-1 "* ]] || fail "term open did not report an id: $GATE_STDOUT"
-grep -q 'command=herdr agent list' "$LOG_FILE" \
+grep -q 'command=lv-attach pane-7' "$LOG_FILE" \
   || fail "term open did not log the command in full"
 SCRIPT_FILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.command' | head -n 1)"
 [[ -n "$SCRIPT_FILE" ]] || fail "term open did not write a launcher script"
-grep -q '^exec herdr agent list$' "$SCRIPT_FILE" \
+grep -q '^exec lv-attach pane-7$' "$SCRIPT_FILE" \
   || fail "launcher script does not exec exactly the validated argv: $(cat "$SCRIPT_FILE")"
-pass "allowed: term open runs an allowlisted command and logs it in full"
+pass "allowed: term open runs an opted-in wrapper and logs the command in full"
 
 assert_allowed 'term focus term-1' 'term focus on a window this gate opened'
 assert_allowed 'term close term-1' 'term close on a window this gate opened'
@@ -574,7 +640,66 @@ expect_lock_state switched-away.plist no-session
 expect_lock_state no-console.plist no-session
 expect_lock_state garbage.plist error
 
-echo "== 12. the embedded Swift helper compiles =="
+echo "== 12. a term-open window is not a lateral path into the app verbs =="
+
+# The reason `term open` can be tolerated at all: every app-driving verb takes
+# its pid from the app.state that `launch` wrote, and `launch` only ever
+# records a validated localvoxtral bundle. With BOTH an app under test (4242)
+# and a terminal this gate opened (this test's own pid) recorded, no verb may
+# ever address the terminal.
+SELF_PID=$$
+clear_state
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
+run_gate 'term open ghostty lv-attach pane-7' STUB_PGREP_PID="$SELF_PID"
+(( GATE_STATUS == 0 )) || fail "scoping fixture: term open failed: $GATE_STDERR"
+write_app_state 4242
+: >"$TMP_DIR/swift.log"
+
+for scoped_command in \
+  'ax dump all' \
+  'ax click role=AXButton,title=General' \
+  'ax type role=AXTextField,title=Endpoint -- typed' \
+  'key escape'; do
+  run_gate "$scoped_command" "${APP_ENV[@]}"
+  (( GATE_STATUS == 0 )) || fail "scoping fixture: '$scoped_command' failed: $GATE_STDERR"
+done
+run_gate 'shot settings' "${APP_ENV[@]}" STUB_WINDOW_RESULT="8123 4242"
+(( GATE_STATUS == 0 )) || fail "scoping fixture: shot failed: $GATE_STDERR"
+
+# Every helper call that can read or actuate the UI carries 4242.
+while read -r line; do
+  case "$line" in
+    *" axdump "* | *" axclick "* | *" axtype "* | *" key "* | *" window "*)
+      [[ "$line" == *" 4242 "* || "$line" == *" 4242" ]] \
+        || fail "an app verb addressed a pid that is not the app under test: $line"
+      ;;
+  esac
+done <"$TMP_DIR/swift.log"
+# "$$(" would start a command substitution, so the pid goes through SELF_PID.
+if grep -qE " (axdump|axclick|axtype|key|window) ${SELF_PID}( |$)" "$TMP_DIR/swift.log"; then
+  fail "an app verb addressed the terminal's pid ($SELF_PID)"
+fi
+pass "ax dump/click/type, key and shot all address the app under test, never the terminal"
+
+# And a window that belongs to the terminal is refused by the same ownership
+# check that refuses any other application's window.
+assert_denied 'shot settings' 'shot of a window owned by the terminal this gate opened' \
+  "${APP_ENV[@]}" STUB_WINDOW_RESULT="9001 $SELF_PID"
+
+# term focus/close do reach the terminal — but they carry no selector, no
+# keystroke and no capture, so nothing typed by this gate can reach a shell.
+: >"$TMP_DIR/swift.log"
+assert_allowed 'term focus term-1' 'term focus reaches the terminal'
+grep -q "termaction ${SELF_PID} " "$TMP_DIR/swift.log" \
+  || fail "term focus did not address the terminal it opened"
+if grep -qE " (axclick|axtype|key) " "$TMP_DIR/swift.log"; then
+  fail "term focus reached an actuation subcommand"
+fi
+pass "term focus/close reach the terminal only to raise or close it"
+clear_conf
+clear_state
+
+echo "== 13. the embedded Swift helper compiles =="
 
 # The gate's CoreGraphics/AX helper is a heredoc, so nothing else ever type
 # checks it — and a helper that does not compile turns every GUI verb into a

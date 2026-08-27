@@ -16,6 +16,16 @@ set -euo pipefail
 # every other token, and is logged IN FULL. Adding a verb that can run
 # arbitrary commands dissolves this boundary completely; do not.
 #
+# The invariant that keeps `term open` from BEING that verb, stated positively:
+# AN ALLOWLISTED COMMAND MUST NOT BE ABLE TO RUN A CHILD COMMAND.
+# Not "must not be a shell" — must not be able to start one, at any remove,
+# through any flag or subcommand. Only the first token is checked and nothing
+# inspects flags, so `claude --dangerously-skip-permissions -p <prompt>`,
+# `codex exec`, `opencode run` and `herdr agent start` are each a full shell
+# wearing one allowlisted name. The default allowlist is therefore EMPTY, a
+# permanent denylist sits under it that the conf file cannot override, and the
+# test to apply before adding a name is spelled out at LV_UI_TERM_COMMANDS.
+#
 # Why "semantic" verbs and not a computer-use harness: a generic harness
 # clicks inferred pixel coordinates on whatever is on screen, which on this
 # machine is the owner's mail, browser and messages. This gate cannot do that.
@@ -33,6 +43,16 @@ set -euo pipefail
 #     owner last touched.
 #   - `term focus` / `term close` act only on a window this gate opened,
 #     identified by a random marker it put in that window's title.
+#
+# A `term open` window is therefore NOT a lateral path into the app-driving
+# verbs, and the scoping above is why: `shot`, `ax dump`, `ax click`, `ax type`
+# and `key` all take their pid from the app.state that `launch` wrote, and
+# `launch` only ever records a validated localvoxtral bundle's pid. There is no
+# verb that retargets them at a terminal — `term focus`/`term close` reach a
+# terminal window, but only to raise or close it, and they carry no selector,
+# no keystroke and no capture. Nothing typed by this gate can reach a shell
+# prompt. (test-ui-gate.sh section 12 pins this: with both an app under test
+# and an open terminal recorded, every helper call still carries the app pid.)
 #
 # It refuses everything GUI-touching while the screen is locked (shared probe:
 # scripts/ci/screen-lock-state.sh, fail CLOSED here), and honours the owner's
@@ -70,13 +90,33 @@ STATE_DIR="${LV_UI_STATE_DIR:-$HOME/.localvoxtral-ui-gate}"
 # under one of these roots AND to be a real localvoxtral bundle.
 LV_UI_ARTIFACT_ROOTS="${LV_UI_ARTIFACT_ROOTS:-$HOME/Applications $HOME/localvoxtral-ui-artifacts}"
 
-# `term open`'s allowlists. The command allowlist is the ONLY thing standing
-# between this verb and a shell verb, so it holds first tokens only, and an
-# entry that is itself a shell (bash, sh, zsh, ssh, osascript, python) or that
-# takes an arbitrary child command (`claude --dangerously-skip-permissions`)
-# hands the whole boundary away. Keep it to non-shell tools.
+# `term open`'s allowlists.
+#
+# THE INVARIANT, stated positively: an allowlisted command must not be able to
+# run a child command. Not "must not be a shell" — must not be able to start
+# one, at any remove, through any flag or subcommand.
+#
+# The test to apply before adding a name: read its `--help`. If ANY flag or
+# subcommand takes a command, a script, a prompt, or a file to execute — `-c`,
+# `-e`, `exec`, `run`, `--eval`, `-p`, an agent that runs tools — it fails, and
+# it does not go on this list. `list_contains` matches the FIRST TOKEN ONLY and
+# nothing here inspects flags, so a name that passes the test is trusted with
+# every argument it will ever be given.
+#
+# This rejects the obvious shells (bash, sh, zsh, ssh, osascript, python) AND
+# every coding-agent CLI: `claude --dangerously-skip-permissions -p <prompt>`,
+# `codex exec`, `opencode run` and `herdr agent start` each execute arbitrary
+# code as this user, which is the whole boundary handed away by a default. An
+# earlier revision of this file shipped `herdr claude opencode codex` as the
+# default and was exactly that hole.
+#
+# So the default is EMPTY: `term open` denies until the owner opts in in
+# ~/.localvoxtral-ui-gate.conf. The documented way to make it useful is a
+# single-purpose wrapper the owner writes and installs — one that takes an
+# identifier and execs one fixed command, never a command of the caller's
+# choosing (scripts/mac/README.md).
 LV_UI_TERMINALS="${LV_UI_TERMINALS:-ghostty iterm terminal}"
-LV_UI_TERM_COMMANDS="${LV_UI_TERM_COMMANDS:-herdr claude opencode codex}"
+LV_UI_TERM_COMMANDS="${LV_UI_TERM_COMMANDS:-}"
 LV_UI_MAX_TERM_ARGS="${LV_UI_MAX_TERM_ARGS:-12}"
 
 # Owner rule (2026-07-09): warn audibly and wait before stealing focus, and
@@ -99,6 +139,17 @@ if [[ -f "$GATE_CONF" ]]; then
   # shellcheck source=/dev/null
   source "$GATE_CONF"
 fi
+
+# Second layer under the (empty by default) allowlist above: names that can run
+# a child command are refused even when the conf allowlists them. Deliberately
+# assigned AFTER the conf is sourced and NOT via ${VAR:-...}, so the conf can
+# widen the allowlist but can never re-add one of these. A blocklist is a poor
+# primary defence, which is why it is not the primary defence — it is here so
+# that a mistake in a machine-local file fails loudly instead of silently.
+LV_UI_TERM_FORBIDDEN="bash sh zsh ksh csh tcsh fish dash ssh scp sftp telnet \
+osascript applescript python python2 python3 perl ruby node deno bun php lua \
+env xargs find sudo doas su nohup script screen tmux herdr expect make just \
+claude codex opencode aider goose amp cursor-agent gemini ollama"
 
 original_command="${SSH_ORIGINAL_COMMAND:-}"
 ARGV=()
@@ -654,6 +705,12 @@ helper() {
 # A recorded pid is only trusted when the live process still has the same
 # start time and the same executable path, so a recycled pid can never inherit
 # the gate's authority to be photographed and driven.
+#
+# No verb writes this file except `launch`, and `launch` only ever records a
+# validated localvoxtral bundle's pid — that is what stops a `term open`
+# terminal from ever becoming the target of `shot`/`ax *`/`key`. Forging the
+# file needs local write access to the state dir, which is the same trust level
+# as replacing this script (see GATE_CONF above).
 
 APP_STATE="$STATE_DIR/app.state"
 APP_PID=""
@@ -1023,16 +1080,27 @@ run_term_open() {
   local terminal="$1"
   shift
   local -a argv=("$@")
+  # Lock first, like every other GUI-touching verb: on a locked screen this
+  # denies before any argument is even considered, so no locked-screen test can
+  # pass for an argument-validation reason.
+  require_unlocked_screen
   list_contains "$terminal" "$LV_UI_TERMINALS" || deny "terminal not allowlisted"
   (( ${#argv[@]} >= 1 )) || deny "term open needs a command"
   (( ${#argv[@]} <= LV_UI_MAX_TERM_ARGS )) || deny "term open takes at most $LV_UI_MAX_TERM_ARGS tokens"
+  # The denylist is checked FIRST and cannot be overridden by the conf file, so
+  # allowlisting a shell or an agent CLI by mistake still denies.
+  if list_contains "${argv[0]}" "$LV_UI_TERM_FORBIDDEN"; then
+    deny "command can run a child command and is permanently refused: ${argv[0]}"
+  fi
+  if [[ -z "${LV_UI_TERM_COMMANDS// /}" ]]; then
+    deny "term open has no allowlisted commands (the default is empty — see scripts/mac/README.md)"
+  fi
   list_contains "${argv[0]}" "$LV_UI_TERM_COMMANDS" || deny "command not allowlisted: ${argv[0]}"
   local token
   for token in "${argv[@]}"; do
     token_is_safe "$token" || deny "unsafe token in term command"
   done
 
-  require_unlocked_screen
   # Logged IN FULL: this is the one verb that carries a command line.
   log_command ALLOW "terminal=$terminal command=${argv[*]}"
 
