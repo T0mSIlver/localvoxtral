@@ -11,10 +11,9 @@ import Synchronization
 /// Deliberately NOT `ClaudeRemoteEnrollmentService.Runner`: that seam is
 /// run-to-completion (argv in, exit code out), and an `ssh -N` that returns is
 /// an ssh that is no longer forwarding anything. This one is spawn/observe/kill.
-protocol ClaudeRemoteHerdrForwardProcess: AnyObject, Sendable {
-    var isRunning: Bool { get }
+protocol ClaudeRemoteHerdrForwardProcess: ClaudeRemoteForwardProcess, AnyObject {
+    var processIdentifier: pid_t { get }
     /// SIGTERM, then SIGKILL if it does not go. Idempotent.
-    func terminate()
 }
 
 /// Spawns the forward's child process. Injected everywhere, defaulted nowhere:
@@ -44,11 +43,11 @@ protocol ClaudeRemoteHerdrWorkspaceProviding: Sendable {
 
 /// An open `ssh -L` forward to one remote herdr socket.
 ///
-/// Owned by the dictation that opened it and closed when that dictation is
-/// done with it — the stop-side `pane.read` needs the same tunnel the start
-/// side used, so the lifetime is the whole dictation and not one request.
-/// `close()` is idempotent and `deinit` calls it, so a join dropped on a path
-/// nobody thought about still takes the ssh child and the socket with it.
+/// A dictation-scoped lease on an app-owned forward. The stop-side `pane.read`
+/// needs the same local socket the start side used, so the lease lasts for the
+/// whole dictation. `close()` is idempotent and `deinit` calls it; releasing the
+/// last lease starts the service's injected-clock idle policy rather than
+/// killing a healthy process immediately.
 final class ClaudeRemoteHerdrForwardHandle: Sendable, Equatable {
     /// Identity, not value: two handles are the same forward only when they ARE
     /// the same object. This exists so `ClaudeSessionJoin` can stay `Equatable`
@@ -62,9 +61,9 @@ final class ClaudeRemoteHerdrForwardHandle: Sendable, Equatable {
     /// dialable by `HerdrSocketClient`'s unchanged local-socket guard.
     let localSocketPath: String
 
-    private let workspace: ClaudeRemoteHerdrForwardWorkspace
-    private let process: any ClaudeRemoteHerdrForwardProcess
-    private let removeWorkspace: @Sendable (ClaudeRemoteHerdrForwardWorkspace) -> Void
+    private let isProcessRunning: @Sendable () -> Bool
+    private let closeEveryTime: @Sendable () -> Void
+    private let closeOnce: @Sendable () -> Void
     private let closed = Mutex(false)
 
     init(
@@ -73,12 +72,26 @@ final class ClaudeRemoteHerdrForwardHandle: Sendable, Equatable {
         removeWorkspace: @escaping @Sendable (ClaudeRemoteHerdrForwardWorkspace) -> Void
     ) {
         self.localSocketPath = workspace.socketPath
-        self.workspace = workspace
-        self.process = process
-        self.removeWorkspace = removeWorkspace
+        self.isProcessRunning = { process.isRunning }
+        self.closeEveryTime = { process.terminate() }
+        self.closeOnce = {
+            removeWorkspace(workspace)
+            Log.claudeContext.info("Remote herdr forward closed")
+        }
     }
 
-    var isRunning: Bool { process.isRunning }
+    init(
+        localSocketPath: String,
+        isRunning: @escaping @Sendable () -> Bool,
+        release: @escaping @Sendable () -> Void
+    ) {
+        self.localSocketPath = localSocketPath
+        self.isProcessRunning = isRunning
+        self.closeEveryTime = {}
+        self.closeOnce = release
+    }
+
+    var isRunning: Bool { isProcessRunning() }
 
     func close() {
         // ALWAYS, before the idempotence guard: `terminate()` is itself
@@ -87,33 +100,32 @@ final class ClaudeRemoteHerdrForwardHandle: Sendable, Equatable {
         // could only ever be retried by a test calling `terminate()` twice —
         // deinit's `close()` was a no-op, so production had no second attempt
         // at all (review round 7).
-        process.terminate()
+        closeEveryTime()
         let alreadyClosed = closed.withLock { state -> Bool in
             if state { return true }
             state = true
             return false
         }
         guard !alreadyClosed else { return }
-        // The socket is ssh's to unlink on a clean exit, but a killed ssh
-        // leaves it behind — and the directory is ours either way.
-        removeWorkspace(workspace)
-        Log.claudeContext.info("Remote herdr forward closed")
+        closeOnce()
     }
 
     deinit { close() }
 }
 
-/// Opens an on-demand `ssh -L` tunnel to a REMOTE herdr's JSON socket.
+/// Supervises and leases a persistent `ssh -L` tunnel to a remote herdr socket.
 ///
 /// Why an app-managed forward at all: herdr's socket protocol is happy over a
 /// forwarded stream, but nothing on the user's machine forwards it — the
-/// enrollment tunnel is a RemoteForward carrying hook events the other way. So
-/// the join arm dials out for exactly as long as one dictation needs it.
+/// enrollment tunnel is a RemoteForward carrying hook events the other way.
+/// Authenticated host activity pre-starts this direction, and successful cold
+/// joins retain it across dictations until idle, revoke, or quit teardown.
 ///
 /// Every live capability is a seam, and the two that matter most are the
 /// clock and the sleep: readiness is a poll, and a poll with a real clock in it
 /// is a test that sleeps.
-struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
+@MainActor
+final class ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// How long a forward has to become dialable before it is abandoned.
     ///
     /// This is on the dictation-start path, so it is a latency ceiling as much
@@ -130,6 +142,49 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     private let sleepFor: @Sendable (TimeInterval) async -> Void
     private let readinessTimeout: TimeInterval
     private let pollInterval: TimeInterval
+    private let idleTimeout: TimeInterval
+    private let pidLedger: ClaudeRemoteForwardPidLedger?
+    private let processIdentity: @Sendable (pid_t) -> ClaudeRemoteForwardPidRecord?
+    private let hostIDForAlias: @MainActor (String) -> String?
+
+    private final class Entry {
+        let id = UUID()
+        let hostID: String
+        let alias: String
+        let remoteSocketPath: String
+        let workspace: ClaudeRemoteHerdrForwardWorkspace
+        let supervisor: ClaudeRemoteForwardSupervisor
+        var leaseCount = 0
+        var idleGeneration = 0
+        var idleTask: Task<Void, Never>?
+
+        init(
+            hostID: String,
+            alias: String,
+            remoteSocketPath: String,
+            workspace: ClaudeRemoteHerdrForwardWorkspace,
+            supervisor: ClaudeRemoteForwardSupervisor
+        ) {
+            self.hostID = hostID
+            self.alias = alias
+            self.remoteSocketPath = remoteSocketPath
+            self.workspace = workspace
+            self.supervisor = supervisor
+        }
+    }
+
+    private enum TeardownReason: String {
+        case healthFailure = "health failure"
+        case idle = "idle timeout"
+        case revoked = "enrollment revoked"
+        case quit = "app quit"
+        case coldFailure = "cold open failed"
+    }
+
+    private var entries: [String: Entry] = [:]
+    private var pendingTeardowns: [UUID: Task<Void, Never>] = [:]
+    private var orphanReapComplete: Bool
+    private var orphanReapWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         spawner: any ClaudeRemoteHerdrForwardSpawning,
@@ -142,7 +197,14 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
         },
         readinessTimeout: TimeInterval = ClaudeRemoteHerdrForwardService.defaultReadinessTimeout,
-        pollInterval: TimeInterval = 0.025
+        pollInterval: TimeInterval = 0.025,
+        idleTimeout: TimeInterval = 5 * 60,
+        pidLedger: ClaudeRemoteForwardPidLedger? = nil,
+        orphanReapInitiallyComplete: Bool = true,
+        hostIDForAlias: @escaping @MainActor (String) -> String? = { $0 },
+        processIdentity: @escaping @Sendable (pid_t) -> ClaudeRemoteForwardPidRecord? = {
+            ClaudeRemoteForwardProcessIdentity.snapshot(pid: $0)
+        }
     ) {
         self.spawner = spawner
         self.workspaces = workspaces
@@ -151,6 +213,11 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
         self.sleepFor = sleepFor
         self.readinessTimeout = readinessTimeout
         self.pollInterval = pollInterval
+        self.idleTimeout = idleTimeout
+        self.pidLedger = pidLedger
+        self.orphanReapComplete = orphanReapInitiallyComplete
+        self.hostIDForAlias = hostIDForAlias
+        self.processIdentity = processIdentity
     }
 
     /// Spawn the tunnel and wait for its local end to answer, or nil.
@@ -163,6 +230,7 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// thing that ever happens to it is being passed through to `ssh`, which
     /// resolves it on the host that named it.
     func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle? {
+        await waitForOrphanReap()
         guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias) else {
             Log.claudeContext.info("Remote herdr forward refused: invalid host alias")
             return nil
@@ -171,6 +239,151 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             Log.claudeContext.info("Remote herdr forward refused: unusable remote socket path")
             return nil
         }
+        guard let hostID = hostIDForAlias(alias) else {
+            Log.claudeContext.info("Remote herdr forward refused: alias no longer names one enrolled host")
+            return nil
+        }
+
+        if let entry = entries[hostID] {
+            let sameTarget = entry.alias == alias && entry.remoteSocketPath == remoteSocketPath
+            let processAlive = entry.supervisor.hasRunningProcess
+            let socketAnswers = processAlive && isSocketDialable(entry.workspace.socketPath)
+            if sameTarget, processAlive, socketAnswers {
+                Log.claudeContext.info(
+                    "Remote herdr forward reused for host \(hostID, privacy: .public)"
+                )
+                return makeLease(for: entry)
+            }
+            Log.claudeContext.notice(
+                "Remote herdr forward health failed for host \(hostID, privacy: .public) (process alive: \(processAlive, privacy: .public), socket answers: \(socketAnswers, privacy: .public)); replacing it"
+            )
+            await tearDown(hostID: hostID, reason: .healthFailure)
+        }
+
+        guard let entry = makeEntry(
+            hostID: hostID, alias: alias, remoteSocketPath: remoteSocketPath
+        ) else { return nil }
+        entries[hostID] = entry
+        entry.supervisor.start()
+        // `start()` registers supervision synchronously and launches on the
+        // main actor. Give that launch one actor turn before charging the cold
+        // readiness clock; spawn failures used to return before the first poll.
+        await Task.yield()
+
+        // Preserve the existing dictation-start ceiling. Activity-driven
+        // preparation starts the same supervised process off this path, so a
+        // slow ProxyJump can finish before the next dictation asks to reuse it.
+        let deadline = now().addingTimeInterval(max(0, readinessTimeout))
+        var sawRunningProcess = false
+        while true {
+            // Every loop follows an actor suspension (`yield` for the first,
+            // `sleepFor` thereafter). A different-target prepare may have
+            // legitimately replaced this entry while we were away; the cold
+            // opener no longer owns that host slot and must touch nothing.
+            guard let current = entries[hostID], current === entry else {
+                Log.claudeContext.info(
+                    "Remote herdr forward cold open superseded for host \(hostID, privacy: .public)"
+                )
+                return nil
+            }
+            guard now() < deadline else { break }
+            if entry.supervisor.hasRunningProcess {
+                sawRunningProcess = true
+                if isSocketDialable(entry.workspace.socketPath) {
+                    Log.claudeContext.info(
+                        "Remote herdr forward cold spawn ready for host \(hostID, privacy: .public)"
+                    )
+                    return makeLease(for: entry)
+                }
+            }
+            if entry.supervisor.state.isFailure
+                || (sawRunningProcess && !entry.supervisor.hasRunningProcess) {
+                Log.claudeContext.info(
+                    "Remote herdr forward abstained for host \(hostID, privacy: .public): ssh exited before readiness"
+                )
+                await tearDown(entry: entry, reason: .coldFailure)
+                return nil
+            }
+            await sleepFor(pollInterval)
+        }
+        Log.claudeContext.info(
+            "Remote herdr forward abstained for host \(hostID, privacy: .public): readiness timeout"
+        )
+        await tearDown(entry: entry, reason: .coldFailure)
+        return nil
+    }
+
+    /// Start or refresh a forward when an authenticated hook proves the host
+    /// active. Readiness is intentionally not awaited on this background path.
+    func prepare(hostID: String, alias: String, remoteSocketPath: String) async {
+        await waitForOrphanReap()
+        guard ClaudeRemoteEnrollmentService.isValidHostAlias(alias),
+              Self.isForwardableRemoteSocketPath(remoteSocketPath)
+        else {
+            Log.claudeContext.info(
+                "Remote herdr forward preparation refused for host \(hostID, privacy: .public): invalid target"
+            )
+            return
+        }
+        guard hostIDForAlias(alias) == hostID else {
+            Log.claudeContext.info(
+                "Remote herdr forward preparation refused for host \(hostID, privacy: .public): alias no longer uniquely names that enrolled host"
+            )
+            return
+        }
+        if let entry = entries[hostID] {
+            if entry.alias == alias,
+               entry.remoteSocketPath == remoteSocketPath,
+               !entry.supervisor.state.isFailure {
+                Log.claudeContext.info(
+                    "Remote herdr forward activity refresh for host \(hostID, privacy: .public)"
+                )
+                if entry.leaseCount == 0 { armIdleTeardown(for: entry) }
+                return
+            }
+            await tearDown(hostID: hostID, reason: .healthFailure)
+        }
+        guard let entry = makeEntry(
+            hostID: hostID, alias: alias, remoteSocketPath: remoteSocketPath
+        ) else { return }
+        entries[hostID] = entry
+        Log.claudeContext.info(
+            "Remote herdr forward preparing from host activity for host \(hostID, privacy: .public)"
+        )
+        entry.supervisor.start()
+        armIdleTeardown(for: entry)
+    }
+
+    func reconcileEnrollment(activeHostIDs: Set<String>) {
+        for hostID in Array(entries.keys) where !activeHostIDs.contains(hostID) {
+            stopNow(hostID: hostID, reason: .revoked)
+        }
+    }
+
+    func stopAllForQuit() {
+        for hostID in Array(entries.keys) { stopNow(hostID: hostID, reason: .quit) }
+    }
+
+    var drainingTeardowns: [Task<Void, Never>] { Array(pendingTeardowns.values) }
+
+    func markOrphanReapComplete() {
+        guard !orphanReapComplete else { return }
+        orphanReapComplete = true
+        let waiters = orphanReapWaiters
+        orphanReapWaiters = []
+        for waiter in waiters { waiter.resume() }
+    }
+
+    private func waitForOrphanReap() async {
+        guard !orphanReapComplete else { return }
+        await withCheckedContinuation { orphanReapWaiters.append($0) }
+    }
+
+    private func makeEntry(
+        hostID: String,
+        alias: String,
+        remoteSocketPath: String
+    ) -> Entry? {
 
         let workspace: ClaudeRemoteHerdrForwardWorkspace
         do {
@@ -187,49 +400,125 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
             return nil
         }
 
-        let process: any ClaudeRemoteHerdrForwardProcess
-        do {
-            process = try spawner.spawn(
-                argv: Self.argv(
-                    alias: alias,
-                    localSocketPath: workspace.socketPath,
-                    remoteSocketPath: remoteSocketPath
-                )
-            )
-        } catch {
-            Log.claudeContext.error(
-                "Remote herdr forward failed to spawn: \(String(describing: error), privacy: .public)"
-            )
-            workspaces.remove(workspace)
-            return nil
-        }
-
-        let handle = ClaudeRemoteHerdrForwardHandle(
-            workspace: workspace,
-            process: process,
-            removeWorkspace: { [workspaces] in workspaces.remove($0) }
+        let configuration = ClaudeRemoteForwardSupervisor.Configuration(
+            hostID: hostID,
+            sshHostAlias: alias,
+            localSocketPath: workspace.socketPath,
+            remoteSocketPath: remoteSocketPath
         )
+        let ledgerKey = Self.ledgerKey(hostID: hostID)
+        let supervisor = ClaudeRemoteForwardSupervisor(
+            configuration: configuration,
+            launch: { [spawner, pidLedger, processIdentity] config in
+                let process = try spawner.spawn(argv: config.argv)
+                if let pidLedger,
+                   var record = processIdentity(process.processIdentifier) {
+                    record.processGroupID = process.processIdentifier
+                    pidLedger.remember(hostID: ledgerKey, record: record)
+                }
+                return process
+            }
+        )
+        return Entry(
+            hostID: hostID,
+            alias: alias,
+            remoteSocketPath: remoteSocketPath,
+            workspace: workspace,
+            supervisor: supervisor
+        )
+    }
 
-        let deadline = now().addingTimeInterval(max(0, readinessTimeout))
-        while now() < deadline {
-            // An ssh that has already exited will never open the socket, and
-            // its exit is the common failure (auth refused, host down,
-            // BatchMode with no key). Noticing it is what turns a 2 s stall
-            // into a prompt abstention.
-            guard handle.isRunning else {
-                Log.claudeContext.info("Remote herdr forward abstained: ssh exited before readiness")
-                handle.close()
-                return nil
+    private func makeLease(for entry: Entry) -> ClaudeRemoteHerdrForwardHandle {
+        entry.idleTask?.cancel()
+        entry.idleTask = nil
+        entry.idleGeneration += 1
+        entry.leaseCount += 1
+        let entryID = entry.id
+        let hostID = entry.hostID
+        let generation = entry.idleGeneration
+        return ClaudeRemoteHerdrForwardHandle(
+            localSocketPath: entry.workspace.socketPath,
+            // The service performs the authoritative process+socket health
+            // check before issuing this lease. The handle itself owns no child.
+            isRunning: { true },
+            release: { [weak self] in
+                Task { @MainActor in
+                    self?.releaseLease(
+                        hostID: hostID,
+                        entryID: entryID,
+                        generation: generation
+                    )
+                }
             }
-            if isSocketDialable(workspace.socketPath) {
-                Log.claudeContext.info("Remote herdr forward ready")
-                return handle
-            }
-            await sleepFor(pollInterval)
+        )
+    }
+
+    private func releaseLease(hostID: String, entryID: UUID, generation: Int) {
+        guard let entry = entries[hostID],
+              entry.id == entryID,
+              entry.idleGeneration >= generation
+        else { return }
+        if entry.leaseCount > 0 { entry.leaseCount -= 1 }
+        guard entry.leaseCount == 0 else { return }
+        armIdleTeardown(for: entry)
+    }
+
+    private func armIdleTeardown(for entry: Entry) {
+        entry.idleTask?.cancel()
+        entry.idleGeneration += 1
+        let generation = entry.idleGeneration
+        let deadline = now().addingTimeInterval(max(0, idleTimeout))
+        let hostID = entry.hostID
+        entry.idleTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.sleepFor(max(0, self.idleTimeout))
+            guard !Task.isCancelled,
+                  let current = self.entries[hostID],
+                  current === entry,
+                  current.idleGeneration == generation,
+                  current.leaseCount == 0,
+                  self.now() >= deadline
+            else { return }
+            await self.tearDown(hostID: hostID, reason: .idle)
         }
-        Log.claudeContext.info("Remote herdr forward abstained: readiness timeout")
-        handle.close()
-        return nil
+    }
+
+    private func tearDown(hostID: String, reason: TeardownReason) async {
+        guard let teardown = stopNow(hostID: hostID, reason: reason) else { return }
+        await teardown.value
+    }
+
+    /// Cold-open failures are allowed to retire only the entry that cold open
+    /// created. The identity check and dictionary removal are one main-actor
+    /// operation, so a replacement cannot land between them.
+    private func tearDown(entry: Entry, reason: TeardownReason) async {
+        guard let current = entries[entry.hostID], current === entry else { return }
+        guard let teardown = stopNow(hostID: entry.hostID, reason: reason) else { return }
+        await teardown.value
+    }
+
+    @discardableResult
+    private func stopNow(hostID: String, reason: TeardownReason) -> Task<Void, Never>? {
+        guard let entry = entries.removeValue(forKey: hostID) else { return nil }
+        entry.idleTask?.cancel()
+        entry.idleTask = nil
+        entry.supervisor.stop()
+        workspaces.remove(entry.workspace)
+        Log.claudeContext.info(
+            "Remote herdr forward teardown for host \(hostID, privacy: .public): \(reason.rawValue, privacy: .public)"
+        )
+        guard let teardown = entry.supervisor.teardown else { return nil }
+        let teardownID = UUID()
+        pendingTeardowns[teardownID] = teardown
+        Task { @MainActor [weak self] in
+            await teardown.value
+            self?.pendingTeardowns[teardownID] = nil
+        }
+        return teardown
+    }
+
+    private static func ledgerKey(hostID: String) -> String {
+        "herdr-local:\(hostID)"
     }
 
     /// The exact argv. Assembled in one static function so a test can assert
@@ -257,8 +546,9 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// `ControlPath=none` is present for lifetime hygiene: over a shared
     /// master the forward would belong to the user's long-lived connection
     /// rather than to our child, and killing our child would not be a
-    /// teardown. It costs one handshake per dictation.
-    static func argv(
+    /// teardown. Persistence amortizes that handshake across dictations without
+    /// transferring ownership to a user's multiplexed session.
+    nonisolated static func argv(
         alias: String,
         localSocketPath: String,
         remoteSocketPath: String
@@ -299,7 +589,7 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     ///   remote path would re-split the argument into a different forward;
     /// * no leading `-` (implied by the absolute rule, asserted anyway) so it
     ///   can never be read as an option.
-    static func isForwardableRemoteSocketPath(_ path: String) -> Bool {
+    nonisolated static func isForwardableRemoteSocketPath(_ path: String) -> Bool {
         guard path.hasPrefix("/"), !path.hasPrefix("-") else { return false }
         guard !path.contains(":") else { return false }
         return ClaudeRemoteEnvironmentCodec.isAcceptableValue(path)
@@ -308,9 +598,9 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// `sun_path` is 104 bytes on Darwin including the terminator, and a path
     /// that does not fit produces a socket nothing can dial — a failure worth
     /// naming rather than discovering as a readiness timeout.
-    static let maxLocalSocketPathBytes = 100
+    nonisolated static let maxLocalSocketPathBytes = 100
 
-    static func isUsableLocalSocketPath(_ path: String) -> Bool {
+    nonisolated static func isUsableLocalSocketPath(_ path: String) -> Bool {
         path.hasPrefix("/") && !path.contains(":")
             && !path.isEmpty && path.utf8.count <= maxLocalSocketPathBytes
     }
@@ -322,7 +612,7 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
     /// listener at all — both look identical to `lstat`. A successful connect
     /// proves only the LOCAL listener, which is the point: what is on the other
     /// end is then re-proven by the herdr response itself.
-    static func dial(_ socketPath: String) -> Bool {
+    nonisolated static func dial(_ socketPath: String) -> Bool {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
@@ -347,7 +637,8 @@ struct ClaudeRemoteHerdrForwardService: ClaudeRemoteHerdrForwarding {
 
 /// Protocol the resolver depends on, so the join arm can be tested without any
 /// notion of processes at all.
-protocol ClaudeRemoteHerdrForwarding: Sendable {
+@MainActor
+protocol ClaudeRemoteHerdrForwarding: AnyObject {
     func open(alias: String, remoteSocketPath: String) async -> ClaudeRemoteHerdrForwardHandle?
 }
 
@@ -479,12 +770,16 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         /// Signals actually delivered to the group, so a test can prove none is
         /// sent after the reap.
         var groupSignalsSent = 0
+        var exitStatus: ClaudeRemoteForwardExitStatus?
+        var exitWaiters: [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] = []
     }
 
     private let pid: pid_t
     private let exited = DispatchSemaphore(value: 0)
     private let state = Mutex(State())
     private let source: any DispatchSourceProcess
+    private let stderrContinuation: AsyncStream<String>.Continuation
+    let standardErrorLines: AsyncStream<String>
     /// `waitpid`, injected so the reap path's error handling is testable
     /// without arranging real signal delivery. Same signature and same errno
     /// semantics as the real thing.
@@ -519,6 +814,9 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         reapEffortDidFinish: @escaping @Sendable () -> Void = {},
         willAttemptTeardownLock: @escaping @Sendable () -> Void = {}
     ) {
+        let (stderrLines, stderrContinuation) = AsyncStream<String>.makeStream(of: String.self)
+        self.standardErrorLines = stderrLines
+        self.stderrContinuation = stderrContinuation
         self.pid = pid
         self.waitForChild = waitForChild
         self.reapPollAttempts = reapPollAttempts
@@ -541,6 +839,7 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     }
 
     var isRunning: Bool { !state.withLock { $0.leaderExited } }
+    var processIdentifier: pid_t { pid }
 
     /// The group leader's pid. Exposed so the teardown test can kill the LEADER
     /// alone and prove that a dead leader does not suppress the group SIGKILL —
@@ -573,8 +872,8 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// So the exit source does not reap; it only records and wakes the waiter.
     /// The zombie it leaves is what RESERVES the pid (and with it the pgid) for
     /// as long as we might still need to signal the group. Teardown signals,
-    /// then reaps, and every later call is a no-op. Cost: one zombie per open
-    /// forward, for the life of one dictation.
+    /// then reaps, and every later call is a no-op. Cost: one zombie per
+    /// supervised forward if its leader exits before teardown.
     func terminate() {
         // Announced BEFORE the first thing that needs the mutex — the guard
         // below is itself a lock acquisition, so this is where a teardown
@@ -604,6 +903,24 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
         // says nothing about the rest of its group.
         signalGroup(SIGKILL)
         reapWithoutBlocking()
+    }
+
+    func forceTerminate() {
+        // `terminate()` already carries the load-bearing sequence: group TERM,
+        // unconditional group KILL, then reap. Re-entering it is the production
+        // retry for a collection that was not definitive the first time.
+        terminate()
+    }
+
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
+        await withCheckedContinuation { continuation in
+            let status = state.withLock { current -> ClaudeRemoteForwardExitStatus? in
+                if let status = current.exitStatus { return status }
+                current.exitWaiters.append(continuation)
+                return nil
+            }
+            if let status { continuation.resume(returning: status) }
+        }
     }
 
     /// Whether `-pid` still names OUR process group.
@@ -776,7 +1093,17 @@ final class LiveHerdrForwardProcess: ClaudeRemoteHerdrForwardProcess, @unchecked
     /// reap: the zombie is what keeps `-pid` meaning our group until teardown
     /// has finished signalling it.
     private func noteExit() {
-        state.withLock { $0.leaderExited = true }
+        let unavailable = ClaudeRemoteForwardExitStatus.unavailable
+        let waiters = state.withLock {
+            current -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] in
+            guard current.exitStatus == nil else { return [] }
+            current.leaderExited = true
+            current.exitStatus = unavailable
+            defer { current.exitWaiters = [] }
+            return current.exitWaiters
+        }
+        stderrContinuation.finish()
+        for waiter in waiters { waiter.resume(returning: unavailable) }
         exited.signal()
     }
 }

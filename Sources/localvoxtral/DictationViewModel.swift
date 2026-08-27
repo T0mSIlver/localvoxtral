@@ -399,7 +399,7 @@ final class DictationViewModel {
     /// prompt. Cleared on every session exit, like the screen capture.
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
-    /// Remote herdr `ssh -L` children this process has open. See
+    /// Remote herdr `ssh -L` leases this dictation has open. See
     /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
     /// the join that travels.
     private var liveRemoteHerdrForwards: [ClaudeRemoteHerdrForwardHandle] = []
@@ -2068,9 +2068,8 @@ final class DictationViewModel {
         claudeSessionJoin = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
-        // Every open `ssh -L`, not just this join's — the view model owns them
-        // all, so abandoning a dictation cannot leave one behind for a holder
-        // that no longer exists.
+        // Every `ssh -L` lease, not just this join's — abandoning a dictation
+        // cannot pin a persistent forward as actively used.
         closeRemoteHerdrForwards()
     }
 
@@ -2084,8 +2083,8 @@ final class DictationViewModel {
         liveRemoteHerdrForwards.append(forward)
     }
 
-    /// Closes every open remote herdr tunnel. Idempotent, and safe from any
-    /// path — including ones that never knew a tunnel existed.
+    /// Releases every remote herdr lease. Idempotent, and safe from any path —
+    /// including ones that never knew a tunnel existed.
     ///
     /// Called from every dictation exit (`discardTerminalScreenCapture`, the
     /// commit path once the stop-side pane read is done, `abortConnectingSession`)

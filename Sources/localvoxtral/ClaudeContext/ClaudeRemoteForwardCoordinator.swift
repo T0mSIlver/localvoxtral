@@ -47,6 +47,7 @@ public final class ClaudeRemoteForwardCoordinator {
     @ObservationIgnored private let remoteForwardPort: UInt16
     @ObservationIgnored private let listenerPort: UInt16
     @ObservationIgnored private let makeSupervisor: MakeSupervisor
+    @ObservationIgnored private let reconcileHerdrEnrollment: @MainActor (Set<String>) -> Void
     @ObservationIgnored private var supervisors: [String: any ClaudeRemoteForwarding] = [:]
 
     /// Whether the launch-time orphan reap has run yet. Forwards may not start
@@ -64,13 +65,15 @@ public final class ClaudeRemoteForwardCoordinator {
         isListenerBound: @escaping @MainActor () -> Bool,
         makeSupervisor: MakeSupervisor? = nil,
         pidLedger: ClaudeRemoteForwardPidLedger? = nil,
-        reapOrphans: (@Sendable () async -> Void)? = nil
+        reapOrphans: (@Sendable () async -> Void)? = nil,
+        reconcileHerdrEnrollment: @escaping @MainActor (Set<String>) -> Void = { _ in }
     ) {
         self.hosts = hosts
         self.remoteForwardPort = remoteForwardPort
         self.listenerPort = listenerPort
         self.isListenerBound = isListenerBound
         self.reapOrphans = reapOrphans
+        self.reconcileHerdrEnrollment = reconcileHerdrEnrollment
         // No reaper means nothing to wait for — the seam's absence must not
         // stall every forward forever.
         self.orphanReap = reapOrphans == nil ? .done : .pending
@@ -114,6 +117,7 @@ public final class ClaudeRemoteForwardCoordinator {
     /// twice starts nothing twice, which is what lets every mutation path call
     /// it unconditionally.
     public func reconcile() {
+        reconcileHerdrEnrollment(activeHostIDs())
         guard isListenerBound() else {
             if !supervisors.isEmpty {
                 Log.claudeContext.info(
@@ -205,7 +209,16 @@ public final class ClaudeRemoteForwardCoordinator {
     }
 
     public func stopAll() {
+        // On the revoke-last-host path the Settings model calls stopAll before
+        // the listener closes. Reconcile the independent `-L` entries here too;
+        // on app quit the registry is still active, so this does not mislabel a
+        // quit as revocation (AppDelegate stops them explicitly with that reason).
+        reconcileHerdrEnrollment(activeHostIDs())
         for hostID in Array(supervisors.keys) { stop(hostID: hostID) }
+    }
+
+    private func activeHostIDs() -> Set<String> {
+        Set(hosts.hosts().filter { !$0.isRevoked }.map(\.id))
     }
 
     /// Every teardown still draining, for a caller that must not return until

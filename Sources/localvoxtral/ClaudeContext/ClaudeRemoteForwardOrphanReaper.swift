@@ -5,7 +5,7 @@ import Darwin
 #endif
 
 /// Kills forward `ssh` children a previous app run left behind, before this
-/// run's forwards dial the same remote port.
+/// run starts hook `-R` or herdr `-L` forwards.
 ///
 /// The bug this closes (field report, 2026-08-05): quit-and-reopen sometimes
 /// landed the pane on "Port held — close ssh sessions to that host." with a
@@ -13,7 +13,9 @@ import Darwin
 /// `ssh -N -R` from a run that ended without `applicationWillTerminate`
 /// (crash, force-quit) or whose teardown outran the bounded quit drain. It
 /// reparents to launchd, keepalives keep it healthy forever, and nothing else
-/// ever kills it.
+/// ever kills it. Persistent `-L` children share the same ledger and reaper;
+/// their records carry a process-group id so ProxyJump descendants are reaped
+/// with the checked group leader.
 ///
 /// Safety rules, in order of importance:
 ///
@@ -98,7 +100,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     }
 
     private func reap(hostID: String, record: ClaudeRemoteForwardPidRecord) async {
-        guard let current = inspect(pid_t(record.pid)), current == record else {
+        guard record.matchesProcessIdentity(inspect(pid_t(record.pid))) else {
             // Dead, or the pid now names some other process entirely. Either
             // way there is nothing of ours to kill — only a record to retire.
             ledger.forget(hostID: hostID, pid: record.pid)
@@ -107,9 +109,9 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         // Signal first, log second: the log call would otherwise sit inside
         // the verify-to-signal window the type comment promises is only
         // microseconds wide.
-        sendSignal(pid_t(record.pid), SIGTERM)
+        sendSignal(signalTarget(for: record), SIGTERM)
         Log.claudeContext.notice(
-            "Claude remote forward orphan from a previous run found for host \(hostID, privacy: .public) (pid \(record.pid, privacy: .public)); sent SIGTERM to free the remote port"
+            "Claude remote forward orphan from a previous run found for key \(hostID, privacy: .public) (pid \(record.pid, privacy: .public)); sent SIGTERM"
         )
         if await waitUntilGone(record) {
             Log.claudeContext.info(
@@ -121,7 +123,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         // Re-verify before escalating. `waitUntilGone`'s last poll saw a
         // matching identity at most one interval ago, but SIGKILL is the one
         // signal nothing can decline, so it gets its own fresh check.
-        guard let beforeKill = inspect(pid_t(record.pid)), beforeKill == record else {
+        guard record.matchesProcessIdentity(inspect(pid_t(record.pid))) else {
             Log.claudeContext.info(
                 "Claude remote forward orphan for host \(hostID, privacy: .public) exited before SIGKILL; record retired"
             )
@@ -131,7 +133,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         Log.claudeContext.error(
             "Claude remote forward orphan pid \(record.pid, privacy: .public) ignored SIGTERM; escalating to SIGKILL"
         )
-        sendSignal(pid_t(record.pid), SIGKILL)
+        sendSignal(signalTarget(for: record), SIGKILL)
         if await waitUntilGone(record, within: killGrace) {
             Log.claudeContext.info(
                 "Claude remote forward orphan for host \(hostID, privacy: .public) killed; record retired"
@@ -143,7 +145,7 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
         // poll), and the next launch retrying costs nothing. Forgetting here
         // would make a SIGKILL survivor permanently invisible.
         Log.claudeContext.error(
-            "Claude remote forward orphan pid \(record.pid, privacy: .public) survived SIGKILL; the remote port may stay bound"
+            "Claude remote forward orphan pid \(record.pid, privacy: .public) survived SIGKILL; its forwarding resource may stay bound"
         )
     }
 
@@ -152,10 +154,19 @@ public struct ClaudeRemoteForwardOrphanReaper: Sendable {
     ) async -> Bool {
         let limit = limit ?? terminationGrace
         for _ in 0..<Self.pollCount(limit: limit, interval: pollInterval) {
-            if inspect(pid_t(record.pid)) != record { return true }
+            if !record.matchesProcessIdentity(inspect(pid_t(record.pid))) { return true }
             do { try await sleepFor(pollInterval) } catch { break }
         }
-        return inspect(pid_t(record.pid)) != record
+        return !record.matchesProcessIdentity(inspect(pid_t(record.pid)))
+    }
+
+    /// Negative pid means the whole process group. Only records created by the
+    /// checked POSIX_SPAWN_SETPGROUP path carry this metadata.
+    private func signalTarget(for record: ClaudeRemoteForwardPidRecord) -> pid_t {
+        if let processGroupID = record.processGroupID, processGroupID > 1 {
+            return -pid_t(processGroupID)
+        }
+        return pid_t(record.pid)
     }
 
     /// How many interval sleeps cover `limit`, at least one.

@@ -181,10 +181,13 @@ there is not.
     `SocketPaneScreenContext` gate as herdr's `pane.read`.
   - A herdr running on an ENROLLED REMOTE host is its own arm
     (`.remoteHerdrPane`), tried only after every local arm declined, and it
-    reaches that herdr over an app-managed, on-demand `ssh -L`
-    (`ClaudeRemoteHerdrForward`) opened at dictation start and closed when the
-    dictation is done with it. The bindings, ALL required, in cost order so an
-    ordinary ssh session never pays for a tunnel:
+    reaches that herdr over an app-managed, supervised `ssh -L`
+    (`ClaudeRemoteHerdrForward`). An authenticated hook carrying a usable herdr
+    socket label starts it off the dictation path; a successful cold join also
+    retains it. Dictations lease the local socket, and the app keeps the process
+    through a bounded injected-clock idle window so later dictations reuse the
+    completed SSH/ProxyJump handshake. The bindings, ALL required, in cost order
+    so an ordinary ssh session never pays for a tunnel:
     (1) the focused surface's own TTY hosts EXACTLY ONE FOREGROUND `ssh`
     session, whose destination identifies exactly one enrolled host. Exact
     alias matching wins without spawning anything; only when it finds no host,
@@ -337,10 +340,13 @@ there is not.
     process named for the agent; requiring both would fail closed forever on
     two ordinary installs (Claude Code spawns hooks through a shell, so `$PPID`
     is often that shell, and an npm install appears as `node`).
-    The tunnel is owned by `DictationViewModel`, never by the join value that
-    travels: the commit path CONSUMES the join, so an owner reaching the child
-    through `claudeSessionJoin` was nil at exactly the moments that mattered
-    (quit during polish, an aborted connect) and the ssh outlived the app.
+    The process is owned by the app-level `ClaudeRemoteHerdrForwardService`,
+    never by the join value that travels: the commit path CONSUMES the join, so
+    an owner reaching the child through `claudeSessionJoin` was nil at exactly
+    the moments that mattered (quit during polish, an aborted connect) and the
+    ssh outlived the app. `DictationViewModel` owns only leases, releasing every
+    one on its existing session-exit paths; the service owns idle, revoke, quit,
+    supervision, pid-ledger and next-launch orphan-reap lifecycles.
   - **The remote herdr forward is a trust inversion, and it is bounded by what
     we SEND, not by what the socket allows.** herdr's JSON socket is
     full-control: over that same forwarded stream one could create panes, write
@@ -360,15 +366,19 @@ there is not.
     session — into a fatal error for this connection (measured: ssh exits).
     Readiness is a bounded connect-poll of the local socket instead, on an
     injected clock, with a ~2 s ceiling that is a dictation-start latency
-    budget as much as a correctness one. The RESIDUAL of dropping them: this
-    short-lived connection still requests whatever forwards the alias's own
+    budget as much as a correctness one and is UNCHANGED for a cold dictation.
+    Before reuse, BOTH the supervised process and a fresh connect to the local
+    socket must be healthy; either failure tears the entry down and returns to
+    that cold path. Activity-driven preparation does not block a dictation, so
+    a slow ProxyJump may finish before the next one. The RESIDUAL of dropping
+    the two options: this retained connection still requests whatever forwards the alias's own
     `Host` block declares, including the enrollment `RemoteForward` — since
     #217 that is this Mac's own port, so a collision with the user's live
     session is a warning on a stderr we send to `/dev/null`, not a failure.
     Three options ARE forced, because the alias's config would otherwise reach
     into this child: `ControlPath=none` (so the forward belongs to our own
-    process and killing it IS the teardown, at the cost of one handshake per
-    dictation), `ForkAfterAuthentication=no` (a detached ssh is an orphan we
+    process and killing it IS the teardown; persistence amortizes the handshake
+    without borrowing the user's master), `ForkAfterAuthentication=no` (a detached ssh is an orphan we
     can neither observe nor kill), and `PermitLocalCommand=no` (a dictation
     must not be able to trigger `LocalCommand` on this machine). Teardown
     signals the process GROUP — the child is spawned as its own group leader
@@ -384,17 +394,18 @@ there is not.
     with it the pgid — is reserved only while the child is unreaped, so the
     zombie is what keeps `-pid` meaning OUR group; teardown signals first and
     reaps last, and once reaped NOTHING may signal that group again (a tunnel
-    that exits by itself mid-dictation is closed at stop time seconds later,
-    which is exactly when a reused pid would be someone else's). Cost: one
-    zombie per open forward, for the life of one dictation — and that bound
+    that exits by itself is finalized by the supervisor before restart, which
+    is exactly when a reused pid could otherwise be someone else's). Cost: one
+    zombie per supervised forward between leader exit and teardown — and that
+    bound
     only holds because the reap COMMITS only on a definitive answer (the child
     collected, or `ECHILD`), retrying `EINTR` and leaving anything else
     unreaped for the next teardown. Claiming the reap before calling `waitpid`
     turned an interrupted collection into a permanent lie about a zombie that
-    was still there, i.e. one leaked per dictation without bound. The collect
+    was still there, i.e. one leaked per restart without bound. The collect
     is also NON-BLOCKING first (`WNOHANG`, bounded poll, then handed to a
-    background queue): every caller is a user-visible path — stop, commit,
-    cancel, app quit, all on the main actor — and a child wedged in an
+    background queue): every caller is a user-visible path — idle, health
+    replacement, revoke, app quit, all on the main actor — and a child wedged in an
     uninterruptible wait must cost a background thread, never the UI.
     A remote herdr join authorizes no more than a local one: never the raw AX
     capture (that grid is the composite herdr TUI, on someone else's machine),
