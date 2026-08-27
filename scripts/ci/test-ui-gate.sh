@@ -408,7 +408,12 @@ EXPECTED_B64="$(printf 'PNGSTUB...' | base64 | tr -d '\n')"
 [[ "$GATE_STDERR" == *"window 8123"* ]] || fail "shot did not report the window id on stderr"
 grep -q -- '-l 8123' "$TMP_DIR/screencapture.log" \
   || fail "screencapture was not scoped to the resolved window id"
-pass "allowed: shot of the app-under-test's own window"
+# The image is the one thing this gate produces that is worth stealing; no exit
+# path may leave it behind.
+if compgen -G "$FAKE_HOME/.localvoxtral-ui-gate/shot.*" >/dev/null; then
+  fail "shot left the captured window image on disk"
+fi
+pass "allowed: shot of the app-under-test's own window, and the file does not survive it"
 
 # Pid reuse: the recorded pid is live but is a different process now.
 assert_denied 'shot settings' 'shot after the recorded pid was recycled' \

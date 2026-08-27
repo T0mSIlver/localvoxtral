@@ -251,7 +251,15 @@ announce_result() {
     say "localvoxtral u i gate failed" >/dev/null 2>&1 || true
   fi
 }
-trap announce_result EXIT
+
+# One EXIT path for the whole gate: no capture file ever outlives the
+# invocation that took it, whatever exit the verb takes.
+SHOT_FILE=""
+on_exit() {
+  [[ -n "$SHOT_FILE" ]] && rm -f "$SHOT_FILE"
+  announce_result
+}
+trap on_exit EXIT
 
 # ---------------------------------------------------------------------------
 # Swift helper — every CoreGraphics/AX call lives here
@@ -767,7 +775,8 @@ run_state() {
     marker="$(sed -n 's/^marker=//p' "$file" | head -n 1)"
     pid="$(sed -n 's/^pid=//p' "$file" | head -n 1)"
     [[ -n "$terminals" ]] && terminals+=","
-    terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":${pid:-0},\"alive\":$(kill -0 "${pid:-0}" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker")}"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || pid=0
+    terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":$pid,\"alive\":$( (( pid > 0 )) && kill -0 "$pid" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker")}"
   done
 
   printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s]}\n' \
@@ -857,18 +866,22 @@ run_shot() {
     || deny "resolved window $winid is owned by pid $owner, not the app under test ($APP_PID)"
 
   log_command ALLOW "window=$winid kind=$kind"
-  file="$STATE_DIR/shot.png"
+  mkdir -p "$STATE_DIR"
+  chmod 0700 "$STATE_DIR" 2>/dev/null || true
+  # Named per invocation (two concurrent shots must not swap images) and with a
+  # .png suffix so screencapture picks the format from it. The EXIT trap owns
+  # deletion, so no exit path leaves a window image on disk.
+  SHOT_FILE="$STATE_DIR/shot.$$.png"
+  file="$SHOT_FILE"
   rm -f "$file"
   screencapture -o -x -l "$winid" "$file" || fail "screencapture failed for window $winid"
   [[ -s "$file" ]] || fail "screencapture produced an empty file (Screen Recording grant?)"
   size="$(wc -c <"$file" | tr -d ' ')"
   if (( size > LV_UI_SHOT_MAX_BYTES )); then
-    rm -f "$file"
     fail "capture is ${size} bytes, over the ${LV_UI_SHOT_MAX_BYTES} byte cap"
   fi
   printf 'shot: window %s (%s), %s bytes\n' "$winid" "$kind" "$size" >&2
   base64 <"$file"
-  rm -f "$file"
   ACTION_COMPLETED=1
 }
 
