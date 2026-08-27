@@ -20,6 +20,29 @@ metal` succeeds even when the component is missing (the shim exists), so
 only an actual invocation (`xcrun metal --version`) proves it works. Runs
 as a normal user, no sudo needed.
 
+## herdr, for the live integration lane
+
+`./scripts/remote-build.sh integration-herdr` (and CI's conditional herdr
+lane) needs the `herdr` binary present on this machine. It is the only
+prerequisite — the lane provisions its own loopback sshd, its own keys and its
+own `authorized_keys` file, so nothing is added to any account's real SSH
+trust.
+
+```bash
+brew install herdr        # or https://herdr.dev; HERDR_BIN overrides the lookup
+herdr --version           # 0.8.2 is what the lane's assumptions were measured against
+```
+
+Its absence fails the lane loudly with the install step rather than skipping.
+
+What the lane borrows while it runs, and gives back on teardown: the running
+account's `~/.config/herdr/config.toml` and `session.json`, plus a delimited
+block in its `~/.ssh/config`. It refuses to start at all if that account
+already has a herdr server running, so it can never trample a live session —
+if the owner is using herdr on the runner account, the lane fails instead of
+taking over. Details and the full assumption list: `docs/agent/test-tiers.md`
+and `docs/agent/remote-herdr-panel-binding.md`.
+
 ## On-demand test servers (speechd + polishd) — owner runbook
 
 The two build-host model servers used by the integration/eval suites are the

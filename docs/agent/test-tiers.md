@@ -6,6 +6,7 @@
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every non-fast-path PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
+| 1 | `HerdrIntegrationTests`: the remote-herdr join machinery vs a LIVE `herdr` server over a REAL `ssh -L` forward — real socket client, real forward coordinator, real `ssh -G` canonicalization, real `~/.config/herdr/config.toml` patch; the only fixture is the focused surface (a real herdr client on a pty) | conditional in CI (self-hosted): only when the diff touches herdr-relevant paths or the PR opts in with `[run-herdr-integration]`; locally via `remote-build.sh integration-herdr [ssh-destination]` | ~1 min (no model weights) |
 | 2 | `ui-smoke.yml` AX smoke drill (status item, settings tabs, lazy managed-backend launch invariant); dictation-with-audio remains future work | evening lock-aware slots (18:00/19:30/21:00 UTC; `ui-smoke-guard.sh` skips green when the Mac is on battery, the screen is locked, or a slot's drill already ran and passed that day — the drill needs an unlocked GUI session) + manual on the self-hosted GUI runner | — |
 | 2 | `AgentDictationE2EEvalTests` (`eval-e2e.yml`): wide agent-dictation eval — human WAVs or TTS(`say`) → live speechd ASR → bundled polishd through the production stop-commit path, scored against `EvalCorpus/agent-dictation/` (7 migrated required cases asserted; the rest XFAIL; WER informational; raw-model pre-safety diagnostic column) | nightly (skips green when the Mac is on battery — `ac-power-guard.sh`, owner rule 2026-07-24: scheduled lanes never run unplugged; manual dispatch always runs) + manual, NEVER per-PR (owner decision 2026-07-11); locally via `remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]` (run `package` first) | many minutes (live ASR/4B polish over ~160 cases; TTS WAVs cached on the host) |
 
@@ -79,6 +80,65 @@ filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
 remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
+
+## The live herdr lane
+
+`HerdrIntegrationTests` (`remote-build.sh integration-herdr`) is the only
+place anything checks that **herdr still behaves the way the remote-herdr
+join assumes it does**. `docs/agent/remote-herdr-panel-binding.md` records
+those assumptions; before this lane they were documented hopes. Each one that
+a live server can answer has its own named test, so a herdr upgrade that
+changes it fails with a message naming the assumption rather than silently
+un-authorizing field joins.
+
+What is real in the lane: `HerdrSocketClient` on a forwarded unix socket,
+`ClaudeRemoteHerdrForwardService` spawning a real supervised `ssh -N -L`,
+`SSHDestinationCanonicalizer.live()` running real `ssh -G`,
+`ClaudeRemoteEnrollmentService.configureRemoteHerdrPanel` patching a real
+`~/.config/herdr/config.toml` over a real ssh session, and
+`HerdrPanelBindingProbe` / `HerdrPanelMicIndicator` on top of all of it. The
+ONE fixture is the focused surface: a real herdr client on a pty, read from
+its typescript instead of through accessibility.
+
+Assumptions currently pinned against the live server: only a whole-view App
+client renders the agents sidebar (`terminal attach` renders the raw pane and
+cannot echo the token — the load-bearing one); both a JSON `null` and an
+empty string clear a `pane.report_metadata` token; the `ttl_ms` window is
+1…86_400_000 inclusive; `pane.process_info` still reports named foreground
+processes; `pane.read` answers only about the pane asked for; and `ssh -G`
+identity matching accepts an alias that differs only in `User` while
+rejecting one that differs in port.
+
+Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
+
+- `herdr` must be installed on the machine running the lane. Its absence is a
+  LOUD failure naming the install step, never a skip — a lane that quietly
+  does nothing about herdr is indistinguishable from one that passed.
+- With no destination the fixture provisions its OWN loopback sshd (its own
+  host key, user key and `authorized_keys` file — the account's are never
+  touched), so the lane is hermetic and needs no second machine. Pass an ssh
+  destination to run the identical lane against a real second host.
+- For the duration of a run the fixture OWNS the account's
+  `~/.config/herdr/config.toml` and `session.json` and appends a delimited
+  block to `~/.ssh/config`, restoring all three on teardown (including when
+  `up` fails partway). It refuses to start at all when a herdr server is
+  already running for that account, rather than trampling a human's session.
+- The suite has no `XCTSkip`. Every other lane skips it by name
+  (`--skip HerdrIntegrationTests` in `remote-build.sh test` and in CI's unit
+  step), and running it without its marker fails with the enablement
+  instructions.
+
+When must it run? For `scripts/ci/herdr-lane-filter.sh` path matches or the
+literal `[run-herdr-integration]` marker, on the same event-payload terms as
+the LLM lanes. The rule behind the list: anything that changes what the app
+SAYS to herdr, what it BELIEVES herdr answered, how the forward reaching
+herdr is opened or leased, which host that forward reaches, or the recorded
+assumptions themselves. Editing
+`docs/agent/remote-herdr-panel-binding.md` matches too — a changed assumption
+that was never re-measured is exactly the failure this lane exists to
+prevent. Not required for UI, insertion, audio, or model work. Either way the
+PR's Proof section carries the scoreboard or a one-line justification for
+skipping.
 
 The speechd live-model lane follows the same owner constraint: it runs only for
 `scripts/ci/speechd-lane-filter.sh` matches or `[run-speechd-integration]`.

@@ -30,4 +30,5 @@ rm -rf dist logs format-lint.txt default.profraw
 # pattern): clean: false preserves them across runs, and a stray one would
 # flip a marker-gated live suite ON in a plain unit step.
 rm -f .agent-eval-e2e-enable.json .llm-polish-eval-enable.json \
-  .polishd-integration-enable.json .speechd-integration-enable.json
+  .polishd-integration-enable.json .speechd-integration-enable.json \
+  .herdr-integration-enable.json
