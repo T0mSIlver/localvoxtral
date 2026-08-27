@@ -631,6 +631,11 @@ public final class ClaudeContextBroker: Sendable {
     /// Connection-level rejections (foreign uid, unterminated over-cap line,
     /// too many records, read deadline) drop the connection WITHOUT a reply,
     /// unchanged — publishers observe those as an error/close, not a verdict.
+    ///
+    /// The one line that is not an ingest at all: a `StatusQuery` record is a
+    /// read-only probe whose reply reuses `accepted` to mean "that session is
+    /// live in the registry right now". It never reaches `ingest` and never
+    /// carries a marker back.
     @discardableResult
     private func handle(
         line: Data,
@@ -639,6 +644,24 @@ public final class ClaudeContextBroker: Sendable {
     ) -> (marker: ClaudeSessionMarker?, accepted: Bool, isHerdrHosted: Bool, replyVersion: Int) {
         do {
             let record = try ClaudeHookWireCodec.decodeLine(line, limits: limits.wire)
+            // A status probe (`--statusline` mode) is answered here and NEVER
+            // ingested: `accepted` carries "is that session live in the
+            // registry", nothing is created or refreshed by asking, and no
+            // marker ever rides a probe reply — a probe is not a hook, so it
+            // has no terminal to write a title into. `snapshot(sessionID:)`
+            // applies the same TTL + pid-liveness answer every join uses.
+            if record.event == .statusQuery {
+                let scopedID = ClaudeAgentSessionScope.scopedSessionID(
+                    agent: record.agent, sessionID: record.sessionID
+                )
+                let live = registry.snapshot(sessionID: scopedID) != nil
+                Log.claudeContext.debug("Status query: \(live ? "live" : "unknown", privacy: .public)")
+                // Deliberately NOT debugNotify: that seam means "a record was
+                // ingested or rejected", and a probe is neither — status-line
+                // traffic firing it would inflate any test counting real
+                // ingestions.
+                return (nil, live, false, record.version)
+            }
             // Per-agent pid cross-check against the KERNEL's answer. The
             // opencode plugin runs inside the agent process and dials this
             // socket from it, so the pid its records claim must be the pid on
@@ -648,8 +671,9 @@ public final class ClaudeContextBroker: Sendable {
             // transient child of the session, never the session process
             // itself, which is exactly why the claude pid rides in the record
             // (see ClaudeSocketGuard.peerPID). The residual same-user threat
-            // for THAT path is accepted and documented in AGENTS.md — trust
-            // is transport-derived, and every local peer shares this uid.
+            // for THAT path is accepted and documented in
+            // docs/agent/invariants.md — trust is transport-derived, and
+            // every local peer shares this uid.
             if record.agent == .opencode {
                 guard let peerPID, record.process?.claudePID == peerPID else {
                     Log.claudeContext.error(

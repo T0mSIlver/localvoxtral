@@ -49,21 +49,49 @@ public final class ClaudeRemoteForwardCoordinator {
     @ObservationIgnored private let makeSupervisor: MakeSupervisor
     @ObservationIgnored private var supervisors: [String: any ClaudeRemoteForwarding] = [:]
 
+    /// Whether the launch-time orphan reap has run yet. Forwards may not start
+    /// before it finishes: the orphan holds exactly the remote port the new
+    /// forward is about to dial, so starting early reproduces the "Port held"
+    /// state the reap exists to clear.
+    private enum OrphanReapPhase { case pending, running, done }
+    @ObservationIgnored private var orphanReap: OrphanReapPhase
+    @ObservationIgnored private let reapOrphans: (@Sendable () async -> Void)?
+
     public init(
         hosts: ClaudeRemoteHostRegistry,
         remoteForwardPort: UInt16,
         listenerPort: UInt16 = ClaudeRemoteListenerLimits.default.port,
         isListenerBound: @escaping @MainActor () -> Bool,
-        makeSupervisor: MakeSupervisor? = nil
+        makeSupervisor: MakeSupervisor? = nil,
+        pidLedger: ClaudeRemoteForwardPidLedger? = nil,
+        reapOrphans: (@Sendable () async -> Void)? = nil
     ) {
         self.hosts = hosts
         self.remoteForwardPort = remoteForwardPort
         self.listenerPort = listenerPort
         self.isListenerBound = isListenerBound
+        self.reapOrphans = reapOrphans
+        // No reaper means nothing to wait for — the seam's absence must not
+        // stall every forward forever.
+        self.orphanReap = reapOrphans == nil ? .done : .pending
         self.makeSupervisor = makeSupervisor ?? { configuration in
             ClaudeRemoteForwardSupervisor(
                 configuration: configuration,
-                launch: { try ClaudeRemoteForwardLiveProcess(argv: $0.argv) }
+                launch: { config in
+                    let process = try ClaudeRemoteForwardLiveProcess(argv: config.argv)
+                    // Written BEFORE the process is handed to the supervisor:
+                    // if this app dies without applicationWillTerminate, the
+                    // record is what lets the next launch find and kill the
+                    // orphan instead of reporting "Port held" at it.
+                    if let pidLedger,
+                       let record = ClaudeRemoteForwardProcessIdentity.snapshot(
+                           pid: process.processIdentifier
+                       )
+                    {
+                        pidLedger.remember(hostID: config.hostID, record: record)
+                    }
+                    return process
+                }
             )
         }
     }
@@ -94,6 +122,33 @@ public final class ClaudeRemoteForwardCoordinator {
                 stopAll()
             }
             return
+        }
+
+        // Orphans from a previous run die BEFORE the first forward dials. The
+        // gate sits after the listener check on purpose: only the instance
+        // holding the listener port gets here, so a second app instance can
+        // never reap the first one's healthy tunnels.
+        switch orphanReap {
+        case .running:
+            return
+        case .pending:
+            guard let reapOrphans else {
+                orphanReap = .done
+                break
+            }
+            orphanReap = .running
+            Log.claudeContext.info(
+                "Claude remote forwards waiting for the orphan reap before first start"
+            )
+            Task { @MainActor [weak self] in
+                await reapOrphans()
+                guard let self else { return }
+                self.orphanReap = .done
+                self.reconcile()
+            }
+            return
+        case .done:
+            break
         }
 
         let eligible = eligibleHosts()

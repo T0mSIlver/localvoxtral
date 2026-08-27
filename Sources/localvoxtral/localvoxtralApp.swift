@@ -469,11 +469,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // unbound port is worse than no forward (silent fail-open on the remote,
         // plus ssh noise in the user's terminal), so it refuses to run without
         // one. The listener is reconciled FIRST, below.
+        // Every spawned forward ssh is recorded here, and orphans a previous
+        // run left holding the remote port (crash, force-quit, a teardown that
+        // outran the quit drain) are killed before this run's forwards dial —
+        // otherwise the fresh forward is refused its own port and the pane
+        // reports "Port held" terminally at this Mac's own leftover.
+        let forwardPidLedger = ClaudeRemoteForwardPidLedger()
+        let forwardOrphanReaper = ClaudeRemoteForwardOrphanReaper(ledger: forwardPidLedger)
         let forwards = registry.map { hosts in
             ClaudeRemoteForwardCoordinator(
                 hosts: hosts,
                 remoteForwardPort: remoteForwardPort,
-                isListenerBound: { coordinator?.isListening ?? false }
+                isListenerBound: { coordinator?.isListening ?? false },
+                pidLedger: forwardPidLedger,
+                reapOrphans: { await forwardOrphanReaper.reap() }
             )
         }
         claudeRemoteForwards = forwards

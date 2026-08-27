@@ -190,7 +190,7 @@ ditto -x -k "$DEST/${ARTIFACT}.zip" "$DEST/extracted"
 APP="$DEST/extracted/localvoxtral.app"
 xattr -cr "$APP" 2>/dev/null || true
 
-# Which binary is this? The Info.plist stamp is the ground truth (AGENTS.md:
+# Which binary is this? The Info.plist stamp is the ground truth (docs/agent/field-debugging.md:
 # "confirm WHICH binary the user is actually running" has cost an hour once).
 STAMP="$(/usr/libexec/PlistBuddy -c 'Print :LVXDogfoodCapture' "$APP/Contents/Info.plist" 2>/dev/null || echo absent)"
 echo "Dogfood capture stamp: $STAMP"
