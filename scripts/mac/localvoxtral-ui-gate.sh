@@ -702,16 +702,17 @@ plist_value() { # <plist> <key>
   ' "$plist" 2>/dev/null
 }
 
-# A localvoxtral bundle and nothing else: the identifier, the executable name
-# and a real Mach-O at the expected path all have to agree. This is what stops
-# `launch` from being "start any application on the owner's Mac".
+# A localvoxtral bundle and nothing else: the identifier, the declared
+# executable name and an executable at the path that name implies all have to
+# agree. This is what stops `launch` from being "start any application on the
+# owner's Mac".
 validate_localvoxtral_bundle() { # <resolved-bundle-path>
   local bundle="$1" plist="$1/Contents/Info.plist"
   [[ -d "$bundle" && "$bundle" == *.app ]] || return 1
   [[ -f "$plist" ]] || return 1
   [[ "$(plist_value "$plist" CFBundleIdentifier)" == "com.localvoxtral.app" ]] || return 1
   [[ "$(plist_value "$plist" CFBundleExecutable)" == "localvoxtral" ]] || return 1
-  [[ -f "$bundle/Contents/MacOS/localvoxtral" ]] || return 1
+  [[ -x "$bundle/Contents/MacOS/localvoxtral" ]] || return 1
 }
 
 resolve_artifact() { # <argument> -> absolute, symlink-free path under a root
@@ -808,6 +809,12 @@ run_launch() {
   stamp="$(plist_value "$bundle/Contents/Info.plist" LVXDogfoodCapture)"
   if (( dogfood == 1 )) && [[ "$stamp" != "true" ]]; then
     deny "--dogfood on a bundle without the LVXDogfoodCapture stamp (got: ${stamp:-absent})"
+  fi
+
+  # Refuse to start a second instance: it would orphan the recorded pid (two
+  # menu bar icons, two hotkey owners) and silently retarget every later verb.
+  if load_app_state; then
+    deny "pid $APP_PID is already under test — quit it first"
   fi
 
   require_unlocked_screen

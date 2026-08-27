@@ -441,6 +441,11 @@ grep -q -- "-n $CLEAN_APP" "$TMP_DIR/open.log" \
   || fail "launch did not open the validated bundle"
 pass "allowed: launch records identity, warns audibly, announces completion"
 
+# A second launch while one is recorded would orphan that pid and silently
+# retarget every later verb.
+assert_denied "launch $CLEAN_APP" 'launch while an app is already under test' \
+  "${APP_ENV[@]}" STUB_PGREP_PID=4242
+
 # --dogfood requires the Info.plist stamp AND arms the runtime opt-in.
 clear_state
 : >"$TMP_DIR/defaults.log"
