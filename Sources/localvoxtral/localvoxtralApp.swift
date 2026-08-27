@@ -165,6 +165,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// listener binds, and torn down before the app exits so no orphan ssh
     /// outlives the process that spawned it.
     private var claudeRemoteForwards: ClaudeRemoteForwardCoordinator?
+    /// Shared lifecycle for both remote-hook `-R` and remote-herdr `-L`
+    /// children: one ledger/reaper sees every app-held SSH process.
+    private let claudeRemoteForwardPidLedger = ClaudeRemoteForwardPidLedger()
+    private lazy var claudeRemoteHerdrForwards = ClaudeRemoteHerdrForwardService(
+        spawner: ClaudeRemoteHerdrForwardSpawner(),
+        workspaces: ClaudeRemoteHerdrForwardWorkspaces(),
+        pidLedger: claudeRemoteForwardPidLedger,
+        orphanReapInitiallyComplete: false,
+        hostIDForAlias: { [weak self] alias in
+            guard let matches = self?.claudeRemoteHosts?.hosts(
+                matchingSSHDestination: alias
+            ), matches.count == 1 else { return nil }
+            return matches[0].id
+        }
+    )
     /// Customized-but-outdated config files awaiting the user's
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
@@ -212,6 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // nothing about enrollment — the hosts stay enrolled for next launch.
         // Forwards first, listener second — the mirror of startup order.
         claudeRemoteForwards?.stopAll()
+        claudeRemoteHerdrForwards.stopAllForQuit()
         // `stopAll` only STARTS each SIGTERM→SIGKILL escalation. Returning
         // here without it finishing is how an ssh that is slow to die outlives
         // the app: reparented to launchd, still holding the remote bind, and
@@ -228,11 +244,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // resolving joins against sessions nothing is feeding any more.
         viewModel.claudeSessionJoinResolver = nil
         viewModel.claudeSessionJoin = nil
-        // Quitting mid-dictation must take every remote herdr `ssh -L` with us.
-        // Asked of the view model, which OWNS them: during polish the join has
-        // already been consumed, so a quit that reached the child only through
-        // `claudeSessionJoin` found nil and left the ssh running past app exit
-        // (review finding 4).
+        // Drop any dictation leases after the app-owned service has stopped all
+        // persistent `ssh -L` children. During polish the join has already been
+        // consumed, so the explicit service owner is what makes quit complete.
         viewModel.closeRemoteHerdrForwards()
     }
 
@@ -246,7 +260,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// at quit, never a hang, and the escalation's own SIGKILL means the
     /// ordinary case finishes far inside it.
     private func drainRemoteForwardTeardowns(within seconds: TimeInterval) {
-        guard let teardowns = claudeRemoteForwards?.drainingTeardowns, !teardowns.isEmpty else {
+        let teardowns = (claudeRemoteForwards?.drainingTeardowns ?? [])
+            + claudeRemoteHerdrForwards.drainingTeardowns
+        guard !teardowns.isEmpty else {
             return
         }
         let deadline = Date().addingTimeInterval(seconds)
@@ -300,10 +316,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // test that forgot to inject — constructs them.
             let ttyReader = AppleScriptTerminalTTYReader()
             let browserTabReader = AppleScriptFocusedBrowserTabURLReader()
+            let herdrClient = HerdrSocketClient()
             // The cmux password is read from the Keychain lazily, per query, so
             // a user who never enables the arm is never prompted for keychain
             // access and the secret is not held in memory between dictations.
             let cmuxPasswords = CmuxSocketPasswordStore()
+            let sshDestinationCanonicalizer = SSHDestinationCanonicalizer.live()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
@@ -311,7 +329,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 herdrClientProbe: {
                     HerdrClientTTYProbe.isHerdrClient(onTTYDevicePath: $0)
                 },
-                herdrPanes: HerdrSocketClient(),
+                herdrPanes: herdrClient,
                 cmuxSurfaces: CmuxSocketClient(password: { cmuxPasswords.password() }),
                 cmuxJoinEnabled: { [weak viewModel] in
                     viewModel?.settings.cmuxSurfaceJoinEnabled ?? false
@@ -330,10 +348,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 enrolledHosts: { [weak self] destination in
                     self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
                 },
-                remoteHerdrForwards: ClaudeRemoteHerdrForwardService(
-                    spawner: ClaudeRemoteHerdrForwardSpawner(),
-                    workspaces: ClaudeRemoteHerdrForwardWorkspaces()
-                )
+                canonicalizedEnrolledHosts: { [weak self] destination in
+                    guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                    return await sshDestinationCanonicalizer.matchingHosts(
+                        destination: destination,
+                        enrolledHosts: hosts
+                    )
+                },
+                speculativeHosts: { [weak self] in
+                    self?.claudeRemoteHosts?.hosts() ?? []
+                },
+                remoteHerdrForwards: claudeRemoteHerdrForwards,
+                herdrPanelMetadata: herdrClient,
+                readFocusedGrid: { target in
+                    TerminalScreenContextSource.readVisibleScreen(target: target)?.text
+                },
+                reportPanelStatus: { [weak viewModel] status in
+                    viewModel?.claudeIntegrationSettings?.herdrPanelStatus = status
+                }
             )
             viewModel.claudeSessionJoinResolver = resolver
             // Pre-warm the Automation consent sheet OFF the dictation-start
@@ -451,7 +483,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudeRemoteHosts = registry
 
         let coordinator = registry.map { hosts in
-            ClaudeRemoteListenerCoordinator(hosts: hosts, sessions: claudeSessionRegistry)
+            ClaudeRemoteListenerCoordinator(
+                hosts: hosts,
+                sessions: claudeSessionRegistry,
+                onRemoteHerdrActivity: { [weak self] hostID, remoteSocketPath in
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              let host = self.claudeRemoteHosts?.host(id: hostID),
+                              !host.isRevoked,
+                              let alias = host.sshHostAlias
+                        else { return }
+                        await self.claudeRemoteHerdrForwards.prepare(
+                            hostID: hostID,
+                            alias: alias,
+                            remoteSocketPath: remoteSocketPath
+                        )
+                    }
+                }
+            )
         }
         claudeRemoteListenerCoordinator = coordinator
 
@@ -474,15 +523,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // outran the quit drain) are killed before this run's forwards dial —
         // otherwise the fresh forward is refused its own port and the pane
         // reports "Port held" terminally at this Mac's own leftover.
-        let forwardPidLedger = ClaudeRemoteForwardPidLedger()
-        let forwardOrphanReaper = ClaudeRemoteForwardOrphanReaper(ledger: forwardPidLedger)
+        let forwardOrphanReaper = ClaudeRemoteForwardOrphanReaper(
+            ledger: claudeRemoteForwardPidLedger
+        )
         let forwards = registry.map { hosts in
             ClaudeRemoteForwardCoordinator(
                 hosts: hosts,
                 remoteForwardPort: remoteForwardPort,
                 isListenerBound: { coordinator?.isListening ?? false },
-                pidLedger: forwardPidLedger,
-                reapOrphans: { await forwardOrphanReaper.reap() }
+                pidLedger: claudeRemoteForwardPidLedger,
+                reapOrphans: { [weak self] in
+                    await forwardOrphanReaper.reap()
+                    await MainActor.run { self?.claudeRemoteHerdrForwards.markOrphanReapComplete() }
+                },
+                reconcileHerdrEnrollment: { [weak self] activeHostIDs in
+                    self?.claudeRemoteHerdrForwards.reconcileEnrollment(
+                        activeHostIDs: activeHostIDs
+                    )
+                }
             )
         }
         claudeRemoteForwards = forwards

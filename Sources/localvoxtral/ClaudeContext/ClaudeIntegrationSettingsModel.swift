@@ -259,6 +259,7 @@ public final class ClaudeIntegrationSettingsModel {
         /// Per-host, because the pane shows one row per host and the outcome
         /// has to render in the row whose button ran it.
         case updateRemotePlugin(hostID: String)
+        case configureHerdrPanel(hostID: String)
     }
 
     public struct EnrollmentConfirmation: Identifiable, Equatable, Sendable {
@@ -313,6 +314,10 @@ public final class ClaudeIntegrationSettingsModel {
     /// dictates and sees no cmux context can read WHY here instead of in the
     /// log. `.ok` renders nothing — a working feature says nothing.
     var cmuxStatus: CmuxSocketStatus = .ok
+
+    /// Set by the join probe after a successful stamp whose value never
+    /// appeared in the focused grid. This is inferential, not a config read.
+    var herdrPanelStatus: HerdrPanelConfigurationStatus = .ok
 
     /// The password field's live text. Never seeded from the Keychain: the
     /// stored secret is not shown back to anyone, and an empty field on a
@@ -933,6 +938,22 @@ public final class ClaudeIntegrationSettingsModel {
         Log.claudeContext.info("Claude remote setup confirmation requested")
     }
 
+    public func requestHerdrPanelConfiguration(hostID: String) {
+        guard !isPerformingEnrollmentAction,
+              let host = hosts.first(where: { $0.id == hostID }),
+              host.sshHostAlias != nil
+        else { return }
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        enrollmentConfirmation = EnrollmentConfirmation(
+            action: .configureHerdrPanel(hostID: hostID),
+            title: "Configure this exact herdr agents-panel row?",
+            preview: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
+            confirmButtonTitle: "Confirm Configure"
+        )
+        Log.claudeContext.info("Claude remote herdr panel configuration confirmation requested")
+    }
+
     public func cancelEnrollmentActionConfirmation() {
         enrollmentConfirmation = nil
     }
@@ -944,6 +965,8 @@ public final class ClaudeIntegrationSettingsModel {
             await performPlanAction(confirmation)
         case .updateRemotePlugin:
             await performPluginUpdate(confirmation)
+        case .configureHerdrPanel:
+            await performHerdrPanelConfiguration(confirmation)
         }
     }
 
@@ -969,6 +992,8 @@ public final class ClaudeIntegrationSettingsModel {
             // Routed to performPluginUpdate: that action belongs to a host row,
             // has no plan and no token, and must not run against one.
             return
+        case .configureHerdrPanel:
+            return
         }
         enrollmentConfirmation = nil
         isPerformingEnrollmentAction = true
@@ -987,6 +1012,26 @@ public final class ClaudeIntegrationSettingsModel {
         guard presentedPlan == presentation else { return }
 
         publish(attempt, action: confirmation.action)
+    }
+
+    private func performHerdrPanelConfiguration(_ confirmation: EnrollmentConfirmation) async {
+        guard case .configureHerdrPanel(let hostID) = confirmation.action,
+              let host = hosts.first(where: { $0.id == hostID }),
+              let alias = host.sshHostAlias
+        else { return }
+        enrollmentConfirmation = nil
+        isPerformingEnrollmentAction = true
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        defer { isPerformingEnrollmentAction = false }
+
+        let service = enrollmentService
+        let attempt = await performEnrollmentAsync {
+            try service.configureRemoteHerdrPanel(sshHostAlias: alias)
+        }
+        guard hosts.contains(where: { $0.id == hostID }) else { return }
+        publish(attempt, action: confirmation.action)
+        if attempt.failure == nil { herdrPanelStatus = .ok }
     }
 
     private func performPluginUpdate(_ confirmation: EnrollmentConfirmation) async {
@@ -1059,6 +1104,15 @@ public final class ClaudeIntegrationSettingsModel {
                     detail: $0.message
                 )
             }
+        case .configureHerdrPanel:
+            enrollmentStepStatuses = [
+                EnrollmentStepStatus(
+                    id: 0,
+                    text: "Configured the remote herdr agents panel.",
+                    succeeded: true,
+                    detail: attempt.steps.first?.message ?? ""
+                )
+            ]
         }
         enrollmentResultsAction = action
     }
@@ -1067,6 +1121,7 @@ public final class ClaudeIntegrationSettingsModel {
         switch action {
         case .insertSSHConfig, .runRemoteSetup: return "Remote Claude Code setup"
         case .updateRemotePlugin: return "Remote Claude Code plugin"
+        case .configureHerdrPanel: return "Remote herdr panel"
         }
     }
 
@@ -1099,7 +1154,15 @@ public final class ClaudeIntegrationSettingsModel {
         default:
             var text = "Remote setup failed."
             if case .updateRemotePlugin = action { text = "Plugin update failed." }
-            return [EnrollmentStepStatus(id: 0, text: text, succeeded: false, detail: failure.describedError)]
+            if case .configureHerdrPanel = action { text = "Herdr panel setup failed." }
+            let detail: String
+            if failure.serviceError == .herdrPanelConfigAlreadyCustomized {
+                detail = "Add this row manually:\n\n"
+                    + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
+            } else {
+                detail = failure.describedError
+            }
+            return [EnrollmentStepStatus(id: 0, text: text, succeeded: false, detail: detail)]
         }
         let succeeded = (0..<failedStep).map {
             EnrollmentStepStatus(id: $0, text: "Step \($0 + 1) succeeded.", succeeded: true, detail: "")
@@ -1123,6 +1186,7 @@ public final class ClaudeIntegrationSettingsModel {
     ) -> String {
         var subject = "SSH setup"
         if case .updateRemotePlugin = action { subject = "Plugin update" }
+        if case .configureHerdrPanel = action { subject = "Herdr panel setup" }
         switch failure.serviceError {
         case .commandTimedOut(_, _, let seconds, let message):
             let output = message.isEmpty ? "" : "\n\n\(message)"
@@ -1147,6 +1211,9 @@ public final class ClaudeIntegrationSettingsModel {
             return "Running commands over SSH is not available in this build."
         case .invalidHostAlias:
             return "The SSH host alias is invalid."
+        case .herdrPanelConfigAlreadyCustomized:
+            return "The remote herdr config already has an agents table or rows key, so localvoxtral left it unchanged. Add this row manually:\n\n"
+                + ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet
         case .none:
             return failure.describedError
         }
