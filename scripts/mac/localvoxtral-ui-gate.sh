@@ -27,15 +27,19 @@ set -euo pipefail
 #   - `ax click` / `ax type` walk the accessibility tree rooted at
 #     AXUIElementCreateApplication(<that same pid>). A selector cannot name an
 #     element of another app.
-#   - `key` posts one keycode from a three-entry allowlist, and only while the
-#     app under test is frontmost.
+#   - `key` posts one keycode from a three-entry allowlist, and only once the
+#     app under test is frontmost — it activates that app first and refuses if
+#     the activation did not take, so a keystroke never lands in whatever the
+#     owner last touched.
 #   - `term focus` / `term close` act only on a window this gate opened,
 #     identified by a random marker it put in that window's title.
 #
 # It refuses everything GUI-touching while the screen is locked (shared probe:
 # scripts/ci/screen-lock-state.sh, fail CLOSED here), and honours the owner's
-# takeover rule: any verb that steals focus speaks a warning, waits, and
-# announces completion.
+# takeover rule: any verb that steals focus (launch, ax click, ax type, key,
+# term open, term focus) speaks a warning, waits, and announces completion.
+# `state`, `shot`, `ax dump`, `quit` and `term close` do not warn: none of them
+# takes the keyboard or raises a window in front of what the owner is doing.
 #
 # Verbs (each documented at its run_* function):
 #   state
@@ -464,6 +468,18 @@ func requirePID(_ raw: String) -> pid_t {
     return pid
 }
 
+// Bring one pid frontmost and give the activation up to two seconds to land.
+// Callers still re-check afterwards — this only asks.
+func activateAndWait(_ pid: pid_t) {
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
+    _ = NSRunningApplication(processIdentifier: pid)?.activate(options: [])
+    let deadline = Date().addingTimeInterval(2)
+    while Date() < deadline,
+          NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {
+        usleep(100_000)
+    }
+}
+
 guard let subcommand = argv.first else { die("no subcommand") }
 
 switch subcommand {
@@ -548,9 +564,10 @@ case "axtype":
         break
     }
     // Fallback: synthesise the keystrokes. These are SYSTEM-WIDE events, so
-    // they are only posted when the app under test owns the keyboard.
+    // they are only posted once the app under test owns the keyboard.
+    activateAndWait(pid)
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-        die("AXValue was rejected and the app under test is not frontmost — refusing to synthesise keystrokes")
+        die("AXValue was rejected and the app under test could not be brought frontmost — refusing to synthesise keystrokes")
     }
     guard let source = CGEventSource(stateID: .hidSystemState),
           let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
@@ -568,8 +585,12 @@ case "key":
     let pid = requirePID(argv[1])
     let codes: [String: CGKeyCode] = ["escape": 53, "tab": 48, "return": 36]
     guard let code = codes[argv[2]] else { die("key not in allowlist") }
+    // A CGEvent goes to whatever owns the keyboard, so the app under test has
+    // to own it. Ask for it, then RE-CHECK: the guarantee is not "we tried to
+    // focus it", it is "the keystroke landed there or nowhere".
+    activateAndWait(pid)
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-        die("app under test is not frontmost — refusing to post a key event")
+        die("app under test could not be brought frontmost — refusing to post a key event")
     }
     guard let source = CGEventSource(stateID: .hidSystemState),
           let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
@@ -1076,7 +1097,9 @@ load_term_state() { # <id>
   TERM_PID="$(sed -n 's/^pid=//p' "$file" | head -n 1)"
   TERM_MARKER="$(sed -n 's/^marker=//p' "$file" | head -n 1)"
   TERM_KIND="$(sed -n 's/^terminal=//p' "$file" | head -n 1)"
-  [[ "$TERM_PID" =~ ^[0-9]+$ && -n "$TERM_MARKER" ]] || deny "corrupt terminal state for $id"
+  # ^[1-9] on purpose: `kill -0 0` signals the whole process group and always
+  # succeeds, so pid 0 would read as a live terminal.
+  [[ "$TERM_PID" =~ ^[1-9][0-9]*$ && -n "$TERM_MARKER" ]] || deny "corrupt terminal state for $id"
   kill -0 "$TERM_PID" 2>/dev/null || deny "$id's terminal process is gone"
 }
 

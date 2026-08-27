@@ -540,7 +540,7 @@ full-screen capture anywhere in it:
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
 | `ax click <selector>` | presses the one element the selector matches |
 | `ax type <selector> -- <text>` | types into a text-bearing element |
-| `key <escape\|tab\|return>` | one keycode from a three-entry allowlist, only while the app under test is frontmost |
+| `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
 | `quit` | terminates the recorded pid |
 | `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command (for herdr / terminal-integration work) |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
@@ -574,9 +574,12 @@ Three refusals are load-bearing and are what the regression suite
 - **Locked screen = hard refusal**, fail closed. The probe is shared with the
   ui-smoke lane (`scripts/ci/screen-lock-state.sh`); an undeterminable state
   denies here and runs there, on purpose.
-- **Owner takeover rule.** Any verb that steals focus speaks a warning, waits
-  3 s, then announces completion or failure (`LV_UI_WARN_SLEEP_SECONDS` in the
-  conf file relaxes the wait; the default is the rule as stated).
+- **Owner takeover rule.** Any verb that steals focus — `launch`, `ax click`,
+  `ax type`, `key`, `term open`, `term focus` — speaks a warning, waits 3 s,
+  then announces completion or failure (`LV_UI_WARN_SLEEP_SECONDS` in the conf
+  file relaxes the wait; the default is the rule as stated). `state`, `shot`,
+  `ax dump`, `quit` and `term close` do not warn: none of them takes the
+  keyboard or raises a window in front of what the owner is doing.
 
 ### One-time install (owner GUI session on the Mac)
 
@@ -680,8 +683,12 @@ behaviour, but nothing about a live desktop. On first install, confirm by hand:
 3. `shot settings` returns a PNG of the Settings window and not a black or
    empty image (a black capture means the Screen Recording grant is not
    reaching the SSH session).
-4. `ax click` actually presses the right control, and `key`'s frontmost check
-   behaves (it refuses when the app under test is not frontmost).
+4. `ax click` actually presses the right control, and `key` works: it calls
+   `NSRunningApplication.activate` and then re-checks `frontmostApplication`.
+   Both of those are AppKit calls made from a short-lived SSH-hosted process
+   with no run loop, which is exactly where they are least likely to behave —
+   if `key` always reports "could not be brought frontmost", that is the
+   symptom.
 5. `term open ghostty herdr ...` opens a window whose title carries the
    `lvui-…` marker, and `term focus`/`term close` find it. Terminal-specific
    flags (`ghostty -e`, the generated `.command` for Terminal/iTerm) are the
