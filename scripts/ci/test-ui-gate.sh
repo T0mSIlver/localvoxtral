@@ -18,7 +18,11 @@ LOCK_PROBE_SRC="$ROOT_DIR/scripts/ci/screen-lock-state.sh"
 # Deliberately /tmp and not $TMPDIR: fixture bundle paths are fed through the
 # gate's token charset, and a macOS per-user $TMPDIR can carry characters that
 # charset rejects — which would fail the test for the wrong reason.
-TMP_DIR="$(mktemp -d "/tmp/lv-ui-gate-test.XXXXXX")"
+#
+# Resolved with `pwd -P` because `launch` resolves its argument the same way:
+# on macOS /tmp is a symlink to /private/tmp, so an unresolved fixture path
+# would never equal the path the gate records and passes to `open`.
+TMP_DIR="$(cd "$(mktemp -d "/tmp/lv-ui-gate-test.XXXXXX")" && pwd -P)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 FAKE_HOME="$TMP_DIR/home"
@@ -80,7 +84,10 @@ STUB
 
 cat >"$STUB_BIN/screencapture" <<'STUB'
 #!/usr/bin/env bash
-out="${!#}"
+# Last argument is the output file. Walked rather than "${!#}" so this runs
+# unchanged under the Mac's bash 3.2.
+out=""
+for out in "$@"; do :; done
 printf '%s\n' "$*" >>"$STUB_SCREENCAPTURE_LOG"
 printf 'PNGSTUB%s' "${STUB_SHOT_PAYLOAD:-...}" >"$out"
 STUB
