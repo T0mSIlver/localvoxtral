@@ -161,8 +161,9 @@ jobs:
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
 
       - name: Process-cleanup regression tests
-        # Pure shell tests for the workspace selector and the SSH build gate's
-        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        # Pure shell tests for the workspace selector, the SSH build gate's
+        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
+        # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
         # Deliberately NOT gated on the docs-only fast path: the gate script is
         # fast-path-eligible, so these seconds-cheap tests are what still
         # exercises a gate-only diff.
@@ -175,6 +176,7 @@ jobs:
           ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
           ./scripts/ci/test-ui-smoke-guard.sh
+          ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
@@ -189,8 +191,9 @@ jobs:
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
 
       - name: Process-cleanup regression tests
-        # Pure shell tests for the workspace selector and the SSH build gate's
-        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        # Pure shell tests for the workspace selector, the SSH build gate's
+        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
+        # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
         # Deliberately NOT gated on the docs-only fast path: the gate script is
         # fast-path-eligible, so these seconds-cheap tests are what still
         # exercises a gate-only diff.
@@ -202,6 +205,7 @@ jobs:
           ./scripts/ci/test-remote-build-reap.sh
           ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
+          ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-llm-lane-filter.sh
 

@@ -520,3 +520,169 @@ Notes:
 - Process listings deliberately print pid/user/executable only, never full
   command lines: other users' cmdlines can embed secrets (env assignments in
   remote-ssh invocations), and diag output flows into agent transcripts.
+
+## `localvoxtral-ui-gate.sh` — SSH UI gate (v1)
+
+A **second** forced-command gate, and the only one installed on the **GUI
+account**. The build gate (`builder`) deliberately is not the console user, so
+nothing routed through it can see or touch the desktop; this gate exists so an
+agent can drive the localvoxtral build under test — and only that — without
+being handed the owner's whole session.
+
+It is not a computer-use harness. There is no coordinate input and no
+full-screen capture anywhere in it:
+
+| verb | what it does |
+| --- | --- |
+| `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened |
+| `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid |
+| `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else |
+| `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
+| `ax click <selector>` | presses the one element the selector matches |
+| `ax type <selector> -- <text>` | types into a text-bearing element |
+| `key <escape\|tab\|return>` | one keycode from a three-entry allowlist, only while the app under test is frontmost |
+| `quit` | terminates the recorded pid |
+| `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command (for herdr / terminal-integration work) |
+| `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
+
+Selectors are `key<op>value` pairs joined by `,` — `=` exact, `~` contains,
+`+` for a space, keys `role`/`title`/`desc`/`value`/`index`/`window`:
+
+```
+ax click role=AXButton,title=General
+ax click role=AXButton,title~Text+Processing
+ax type  role=AXTextField,title~Endpoint -- http://127.0.0.1:8471/v1
+```
+
+An ambiguous selector is refused rather than guessed at; add `index=<n>` to
+pick among matches deliberately.
+
+Everything else is denied, and **every** invocation — allowed or denied — is
+logged with a timestamp to `~/Library/Logs/localvoxtral-ui-gate.log`. The one
+thing never written there is `ax type`'s text (it is how an API key gets into
+the Endpoints pane); the log keeps the selector and `-- <redacted>`.
+
+Three refusals are load-bearing and are what the regression suite
+(`scripts/ci/test-ui-gate.sh`, in ci.yml's shell-test step) exists to hold:
+
+- **No shell verb.** No `eval`, no `bash -c`, no verb taking a free command
+  line. `term open` is the single constrained exception: its first token must
+  be in `LV_UI_TERM_COMMANDS`, every token must survive the same metacharacter
+  blocklist as any other argument, and the command is logged **in full**.
+  Allowlisting something that is itself a shell (`bash`, `ssh`, `osascript`)
+  or that takes an arbitrary child command hands the boundary away.
+- **Locked screen = hard refusal**, fail closed. The probe is shared with the
+  ui-smoke lane (`scripts/ci/screen-lock-state.sh`); an undeterminable state
+  denies here and runs there, on purpose.
+- **Owner takeover rule.** Any verb that steals focus speaks a warning, waits
+  3 s, then announces completion or failure (`LV_UI_WARN_SLEEP_SECONDS` in the
+  conf file relaxes the wait; the default is the rule as stated).
+
+### One-time install (owner GUI session on the Mac)
+
+Run from a trusted owner session — **not** through either gate.
+
+```bash
+# 1. On the Linux dev box: a key used for nothing else.
+ssh-keygen -t ed25519 -f ~/.ssh/localvoxtral-ui-gate -C localvoxtral-ui-gate
+
+# 2. On the Mac, as the GUI (console) user:
+cd ~/work/localvoxtral && git pull
+install -d -m 0700 "$HOME/bin"
+install -m 0755 scripts/mac/localvoxtral-ui-gate.sh "$HOME/bin/localvoxtral-ui-gate.sh"
+install -m 0755 scripts/ci/screen-lock-state.sh "$HOME/bin/localvoxtral-screen-lock-state.sh"
+mkdir -p "$HOME/localvoxtral-ui-artifacts"     # where launchable .app bundles go
+
+# 3. Force the command on that key ONLY (one line in ~/.ssh/authorized_keys).
+#    `restrict` disables pty, agent/port/X11 forwarding and user rc files; the
+#    command= is then the entire trust boundary.
+cat >>"$HOME/.ssh/authorized_keys" <<'KEY'
+restrict,command="/Users/<gui-user>/bin/localvoxtral-ui-gate.sh" ssh-ed25519 AAAA...<the key from step 1>... localvoxtral-ui-gate
+KEY
+chmod 600 "$HOME/.ssh/authorized_keys"
+```
+
+Leave `sshd_config`'s `AcceptEnv` at its default (`LANG`/`LC_*`). The gate's
+test seams are ordinary environment variables; sshd fixing the environment is
+what keeps a client from setting them.
+
+Then the TCC grants, in System Settings > Privacy & Security. Both are
+required, and both are granted to **sshd**, not to the gate script — press
+Cmd-Shift-G in the "+" file picker and enter
+`/usr/libexec/sshd-keygen-wrapper`:
+
+- **Accessibility** — `ax dump/click/type` and `key` (AX API + CGEvent).
+- **Screen Recording** — `shot` (`screencapture -l`). Without it the capture
+  silently produces an empty or desktop-picture-only file.
+
+**Be clear-eyed about what that means:** granting those to sshd grants them to
+*everything* that arrives over SSH as this user, so the forced command is the
+only boundary left. That is why this script has no shell verb, why `term
+open`'s allowlist is short, and why it must stay that way.
+
+The stricter alternative, and the documented next hardening step: keep the TCC
+grants off sshd entirely by moving the GUI work into a small signed helper
+binary run by a LaunchAgent in the Aqua session, with the gate reduced to
+writing a request onto a queue the agent reads. Then sshd holds nothing, the
+helper is what macOS keys the grants to, and a compromised SSH session can only
+enqueue verbs the helper already implements. It also side-steps the open
+question below about whether an SSH-hosted process can reach the GUI session at
+all. It is more moving parts than a single reviewed script, so it is not what
+v1 does.
+
+### Machine-local config (`~/.localvoxtral-ui-gate.conf`, GUI account)
+
+Never committed; same trust argument as the build gate's conf (anyone who can
+write it can already replace the gate script).
+
+```bash
+# LV_UI_ARTIFACT_ROOTS="$HOME/localvoxtral-ui-artifacts"  # where launch may look
+# LV_UI_TERM_COMMANDS="herdr claude opencode codex"       # term open's first tokens
+# LV_UI_TERMINALS="ghostty iterm terminal"
+# LV_UI_WARN_SLEEP_SECONDS=3                              # 0 only if you are sitting there
+# LV_UI_SHOT_MAX_BYTES=8388608
+```
+
+### Verifying from the Linux box
+
+```bash
+ssh lv-ui 'state'                       # JSON; check tcc.accessibility and
+                                        # tcc.screen_recording are both true
+ssh lv-ui 'launch localvoxtral-ui-artifacts/localvoxtral.app'
+ssh lv-ui 'shot settings' | base64 -d > /tmp/settings.png
+ssh lv-ui 'ax dump settings' | python3 -m json.tool | head
+ssh lv-ui 'ax click role=AXButton,title=Dictation'
+ssh lv-ui 'quit'
+ssh lv-ui 'echo pwned'                  # must print "denied command"
+ssh lv-ui 'bash -lc id'                 # must print "denied command"
+ssh lv-ui 'term open ghostty bash -c id' # must print "denied command"
+```
+
+Every one of those, allowed or denied, appends a line to
+`~/Library/Logs/localvoxtral-ui-gate.log` — read it after the first session.
+
+### First-install checks the test suite cannot do
+
+`test-ui-gate.sh` stubs the GUI, so it proves the allowlist, the argument
+validation, the lock refusal, the window-ownership rule and the log/redaction
+behaviour, but nothing about a live desktop. On first install, confirm by hand:
+
+1. `state` reports `"screen_lock":"unlocked"` while you are logged in, and
+   `"locked"` after you lock the screen — this is the ONE probe standing
+   between the gate and a locked machine. It has two arms; over SSH the
+   IORegistry arm is the one that has to answer, and it has not been run
+   against a real `ioreg` yet.
+2. `tcc.accessibility` and `tcc.screen_recording` are both `true` **in a
+   session that arrived over SSH**. If they are false after granting sshd, the
+   sshd-holds-the-grants design does not work on this macOS version and the
+   LaunchAgent alternative above is the fix — do not work around it by
+   loosening the gate.
+3. `shot settings` returns a PNG of the Settings window and not a black or
+   empty image (a black capture means the Screen Recording grant is not
+   reaching the SSH session).
+4. `ax click` actually presses the right control, and `key`'s frontmost check
+   behaves (it refuses when the app under test is not frontmost).
+5. `term open ghostty herdr ...` opens a window whose title carries the
+   `lvui-…` marker, and `term focus`/`term close` find it. Terminal-specific
+   flags (`ghostty -e`, the generated `.command` for Terminal/iTerm) are the
+   least-tested part of v1.
