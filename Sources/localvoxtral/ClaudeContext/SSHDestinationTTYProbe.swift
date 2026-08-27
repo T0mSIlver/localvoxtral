@@ -123,6 +123,14 @@ struct SSHClientProcess: Sendable, Equatable {
     var processGroupID: Int32
     /// The foreground process group of its controlling terminal.
     var terminalForegroundGroupID: Int32
+    /// Kernel credential (`e_ucred.cr_uid`), never self-reported. A process
+    /// owned by another user stays visible to the SURFACE question — a
+    /// `sudo ssh` in this terminal's foreground must abstain, not vanish —
+    /// but it is invisible to the competing-view scan, and its executable
+    /// path and argv are never read (they would fail cross-uid anyway).
+    /// The default exists for test convenience only; the live scan always
+    /// stamps the real credential.
+    var effectiveUserID: uid_t
     /// Resolved executable path (`proc_pidpath`), not argv[0] and not `p_comm`.
     var executablePath: String?
     var arguments: [String]?
@@ -133,6 +141,7 @@ struct SSHClientProcess: Sendable, Equatable {
         ttyDevice: dev_t?,
         processGroupID: Int32,
         terminalForegroundGroupID: Int32,
+        effectiveUserID: uid_t = 0,
         executablePath: String?,
         arguments: [String]?
     ) {
@@ -141,6 +150,7 @@ struct SSHClientProcess: Sendable, Equatable {
         self.ttyDevice = ttyDevice
         self.processGroupID = processGroupID
         self.terminalForegroundGroupID = terminalForegroundGroupID
+        self.effectiveUserID = effectiveUserID
         self.executablePath = executablePath
         self.arguments = arguments
     }
@@ -169,9 +179,9 @@ struct SSHClientProcess: Sendable, Equatable {
 ///   stopped ssh, a background one, or an ssh spawned by `scp`/`rsync` cannot
 ///   be mistaken for the session on screen;
 /// * any option that can move the destination or means "this is not an
-///   interactive session" — `-o` (HostName/Port/User/ProxyJump/…), `-F`, `-O`,
-///   `-S`, `-N`, `-f`, `-M`, `-D`, `-W`, `-w` — ABSTAINS instead of being
-///   skipped.
+///   interactive session" — `-o` (HostName/Port/User/ProxyJump/…) except
+///   destination-inert `SetEnv`/`SendEnv`, `-F`, `-O`, `-S`, `-N`, `-f`, `-M`,
+///   `-D`, `-W`, `-w` — ABSTAINS instead of being skipped.
 enum SSHDestinationTTYProbe {
     /// The only executables we are willing to believe are OpenSSH: three exact
     /// absolute paths, the system client plus Homebrew's on both architectures.
@@ -325,6 +335,7 @@ enum SSHDestinationTTYProbe {
                     destination: parsed.destination,
                     surfaceHerdr: parsed.herdr,
                     surfacePID: surfaceProcess.pid,
+                    surfaceUserID: surfaceProcess.effectiveUserID,
                     connections: connections
                 ),
                 herdr: parsed.herdr
@@ -366,8 +377,14 @@ enum SSHDestinationTTYProbe {
     /// including suspended ones on THIS device (review round 5b: a suspended
     /// `ssh builder herdr <verb>` keeps its server side attached). Excluded:
     /// the surface's own connection, anything with no controlling terminal
-    /// (our own `ssh -L` forward), and ssh MACHINERY (the caller passes
-    /// connections only — a ProxyJump's `-W` child is its root's transport).
+    /// (our own `ssh -L` forward), ssh MACHINERY (the caller passes
+    /// connections only — a ProxyJump's `-W` child is its root's transport),
+    /// and processes owned by ANOTHER user: their herdr view lives in their
+    /// own login session, not on a surface this user could be dictating
+    /// into, and their metadata is unreadable-by-design, so counting them
+    /// meant every root/other-user ssh on the machine was a blanket
+    /// abstention. (A cross-uid ssh ON the surface never reaches this scan —
+    /// its unreadable executable abstains the probe first.)
     ///
     /// The refusal ladder for a neighbor, most to least readable:
     /// parsed to another destination — irrelevant (its herdr, if any, is
@@ -382,10 +399,12 @@ enum SSHDestinationTTYProbe {
         destination: String,
         surfaceHerdr: HerdrInvocation,
         surfacePID: Int32,
+        surfaceUserID: uid_t,
         connections: [SSHClientProcess]
     ) -> Bool {
         for process in connections
-        where process.ttyDevice != nil && process.pid != surfacePID {
+        where process.ttyDevice != nil && process.pid != surfacePID
+            && process.effectiveUserID == surfaceUserID {
             guard let executablePath = process.executablePath,
                   isTrustedSSHExecutable(executablePath),
                   let arguments = process.arguments
@@ -440,9 +459,10 @@ enum SSHDestinationTTYProbe {
     /// they mean this is not an interactive session on a terminal (`-N`, `-f`,
     /// `-M`, `-O`, `-S`, `-D`, `-W`, `-w`).
     ///
-    /// `-o` is refused wholesale rather than parsed: proving a specific option
-    /// inert means reimplementing OpenSSH's config semantics, and the cost of
-    /// refusing is one join that does not happen.
+    /// `-o` is refused wholesale except for exact `SetEnv=` / `SendEnv=` keys.
+    /// Those only shape the remote environment: they cannot move the
+    /// destination or change whether the session is interactive. No other
+    /// config semantics are reimplemented here.
     private static let refusedOptions = Set("oFOSNfMDWw")
 
     /// The destination host and whether the remote command names herdr, or nil
@@ -466,6 +486,12 @@ enum SSHDestinationTTYProbe {
                 )
             }
             if token.hasPrefix("-"), token.count > 1 {
+                if let consumed = destinationInertOOptionArgumentCount(
+                    token, nextArgument: index + 1 < argv.count ? argv[index + 1] : nil
+                ) {
+                    index += consumed
+                    continue
+                }
                 switch consumption(ofOptionToken: token) {
                 case .unrecognized, .refused:
                     return nil
@@ -588,6 +614,31 @@ enum SSHDestinationTTYProbe {
         return .selfContained
     }
 
+    /// Number of argv elements consumed by an allowlisted `-o`, including
+    /// `-o` after pure flags in a cluster (`-to SetEnv=…`). Anything before the
+    /// `o` that is not a pure flag belongs to the ordinary option parser.
+    private static func destinationInertOOptionArgumentCount(
+        _ token: String, nextArgument: String?
+    ) -> Int? {
+        let characters = Array(token.dropFirst())
+        for (index, character) in characters.enumerated() {
+            if flagOptions.contains(character) { continue }
+            guard character == "o" else { return nil }
+            if index == characters.count - 1 {
+                guard let nextArgument, isDestinationInertOOption(nextArgument) else { return nil }
+                return 2
+            }
+            let value = String(characters[(index + 1)...])
+            return isDestinationInertOOption(value) ? 1 : nil
+        }
+        return nil
+    }
+
+    private static func isDestinationInertOOption(_ value: String) -> Bool {
+        value.range(of: "SetEnv=", options: [.anchored, .caseInsensitive]) != nil
+            || value.range(of: "SendEnv=", options: [.anchored, .caseInsensitive]) != nil
+    }
+
     /// The host part of an ssh destination operand, lowercased, or nil when the
     /// operand is a shape we refuse to interpret.
     ///
@@ -623,22 +674,44 @@ enum SSHDestinationTTYProbe {
 
     // MARK: - Live reads
 
-    /// EVERY ssh process on the machine (`KERN_PROC_ALL`), with the metadata the
-    /// rules above need. One scan answers both the surface question and the
-    /// uniqueness question.
+    /// EVERY ssh process on the machine (`KERN_PROC_ALL`), with the metadata
+    /// the rules above need. One scan answers both the surface question and
+    /// the competing-view question. Cross-uid processes are carried WITHOUT
+    /// their metadata: they must stay visible to the surface count (a
+    /// `sudo ssh` in the foreground abstains rather than reading as "no ssh
+    /// here"), but their executable path and argv are another user's business
+    /// — never read, not merely expected to fail.
     static let liveSSHProcesses: @Sendable () -> [SSHClientProcess]? = {
         guard let entries = TTYProcessTable.allProcesses() else { return nil }
+        return sshProcesses(
+            from: entries,
+            effectiveUserID: geteuid(),
+            readExecutablePath: executablePath,
+            readArguments: processArguments
+        )
+    }
+
+    /// Maps the process-table scan into the ssh-specific shape at the live-read
+    /// boundary, keeping credential handling out of the pure decision code.
+    static func sshProcesses(
+        from entries: [TTYProcessTable.Entry],
+        effectiveUserID: uid_t,
+        readExecutablePath: (Int32) -> String?,
+        readArguments: (Int32) -> [String]?
+    ) -> [SSHClientProcess] {
         return entries
             .filter { $0.name == "ssh" }
             .map { entry in
-                SSHClientProcess(
+                let sameUser = entry.effectiveUserID == effectiveUserID
+                return SSHClientProcess(
                     pid: entry.pid,
                     parentPID: entry.parentProcessID,
                     ttyDevice: entry.ttyDevice,
                     processGroupID: entry.processGroupID,
                     terminalForegroundGroupID: entry.terminalForegroundGroupID,
-                    executablePath: executablePath(pid: entry.pid),
-                    arguments: processArguments(pid: entry.pid)
+                    effectiveUserID: entry.effectiveUserID,
+                    executablePath: sameUser ? readExecutablePath(entry.pid) : nil,
+                    arguments: sameUser ? readArguments(entry.pid) : nil
                 )
             }
     }
@@ -720,6 +793,9 @@ enum TTYProcessTable {
     struct Entry: Sendable, Equatable {
         var pid: Int32
         var parentProcessID: Int32
+        /// Kernel credential from `kp_eproc.e_ucred.cr_uid`, never a value the
+        /// process can choose or report about itself.
+        var effectiveUserID: uid_t
         var name: String
         var ttyDevice: dev_t?
         var processGroupID: Int32
@@ -728,6 +804,7 @@ enum TTYProcessTable {
         init(
             pid: Int32,
             parentProcessID: Int32 = 0,
+            effectiveUserID: uid_t,
             name: String,
             ttyDevice: dev_t? = nil,
             processGroupID: Int32 = 0,
@@ -735,6 +812,7 @@ enum TTYProcessTable {
         ) {
             self.pid = pid
             self.parentProcessID = parentProcessID
+            self.effectiveUserID = effectiveUserID
             self.name = name
             self.ttyDevice = ttyDevice
             self.processGroupID = processGroupID
@@ -789,6 +867,7 @@ enum TTYProcessTable {
             return Entry(
                 pid: process.kp_proc.p_pid,
                 parentProcessID: process.kp_eproc.e_ppid,
+                effectiveUserID: process.kp_eproc.e_ucred.cr_uid,
                 name: name,
                 // NODEV means no controlling terminal — not a surface.
                 ttyDevice: device == ~dev_t(0) ? nil : device,

@@ -242,6 +242,55 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
 
     // MARK: - Competing herdr views (narrowed from machine-wide uniqueness, 2026-08-06)
 
+    func testGhosttyShellIntegrationOptionsDoNotRefuseTheSurfaceProbe() throws {
+        // Exact argv shape injected by Ghostty's `ghostty +ssh` shell
+        // integration wrapper before the user's destination and command.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh([
+                            "ssh",
+                            "-o", "SetEnv=TERM=xterm-ghostty",
+                            "-o", "SendEnv=COLORTERM",
+                            "-o", "SendEnv=TERM_PROGRAM",
+                            "-o", "SendEnv=TERM_PROGRAM_VERSION",
+                            "builder", "herdr",
+                        ]),
+                    ]
+                )
+            )
+        )
+        XCTAssertEqual(value.destination, "builder")
+        XCTAssertEqual(value.herdr, .plainClient(sessionSelector: nil))
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
+    func testGhosttyWrappedHerdrInAnotherTabDoesNotCompete() throws {
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "-t", "builder", "herdr"], pid: 501),
+                        ssh(
+                            [
+                                "ssh",
+                                "-o", "SetEnv=TERM=xterm-ghostty",
+                                "-o", "SendEnv=COLORTERM",
+                                "-o", "SendEnv=TERM_PROGRAM",
+                                "-o", "SendEnv=TERM_PROGRAM_VERSION",
+                                "builder", "herdr",
+                            ],
+                            pid: 777,
+                            device: otherTerminal
+                        ),
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(value.hasCompetingHerdrClient)
+    }
+
     func testAPlainShellToTheSameHostDoesNotCompete() throws {
         // THE field workflow the blanket uniqueness rule refused: one terminal
         // attached to herdr, another keeping a plain shell to the same host
@@ -517,6 +566,114 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
+        XCTAssertTrue(value.hasCompetingHerdrClient)
+    }
+
+    func testCrossUIDUnreadableSSHCompetesBeforeTheScanBoundaryAndIsThenIgnored() throws {
+        // Historical behavior without the owner boundary: an unreadable ssh
+        // from root or another user poisons the decision unconditionally.
+        let unfiltered = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "builder", "herdr"], pid: 501),
+                        ssh(nil, pid: 777, device: otherTerminal),
+                    ]
+                )
+            )
+        )
+        XCTAssertTrue(unfiltered.hasCompetingHerdrClient)
+
+        let processes = SSHDestinationTTYProbe.sshProcesses(
+            from: [
+                TTYProcessTable.Entry(
+                    pid: 501,
+                    effectiveUserID: 501,
+                    name: "ssh",
+                    ttyDevice: surface,
+                    processGroupID: 501,
+                    terminalForegroundGroupID: 501
+                ),
+                TTYProcessTable.Entry(
+                    pid: 777,
+                    effectiveUserID: 0,
+                    name: "ssh",
+                    ttyDevice: otherTerminal,
+                    processGroupID: 777,
+                    terminalForegroundGroupID: 777
+                ),
+            ],
+            effectiveUserID: 501,
+            readExecutablePath: { pid in
+                if pid == 777 { XCTFail("cross-uid metadata must not be read") }
+                return pid == 501 ? "/usr/bin/ssh" : nil
+            },
+            readArguments: { pid in
+                if pid == 777 { XCTFail("cross-uid argv must not be read") }
+                return pid == 501 ? ["ssh", "builder", "herdr"] : nil
+            }
+        )
+        let filtered = try XCTUnwrap(connection(probe(processes: processes)))
+        XCTAssertFalse(filtered.hasCompetingHerdrClient)
+    }
+
+    func testACrossUIDForegroundSSHOnTheSurfaceStillAbstains() {
+        // `sudo ssh host` in THIS terminal's foreground: another user's
+        // process IS the surface. It must abstain exactly as any unreadable
+        // ssh does — reclassifying it as "no ssh here" would hand the surface
+        // to the title-marker arm while a remote session may be on screen.
+        // Its metadata must still never be read.
+        let processes = SSHDestinationTTYProbe.sshProcesses(
+            from: [
+                TTYProcessTable.Entry(
+                    pid: 777,
+                    effectiveUserID: 0,
+                    name: "ssh",
+                    ttyDevice: surface,
+                    processGroupID: 777,
+                    terminalForegroundGroupID: 777
+                )
+            ],
+            effectiveUserID: 501,
+            readExecutablePath: { _ in
+                XCTFail("cross-uid metadata must not be read")
+                return nil
+            },
+            readArguments: { _ in
+                XCTFail("cross-uid argv must not be read")
+                return nil
+            }
+        )
+        XCTAssertEqual(
+            probe(processes: processes), .undeterminable(.untrustedExecutable)
+        )
+    }
+
+    func testSameUIDUnreadableSSHStillCompetesAfterTheScanBoundary() throws {
+        let processes = SSHDestinationTTYProbe.sshProcesses(
+            from: [
+                TTYProcessTable.Entry(
+                    pid: 501,
+                    effectiveUserID: 501,
+                    name: "ssh",
+                    ttyDevice: surface,
+                    processGroupID: 501,
+                    terminalForegroundGroupID: 501
+                ),
+                TTYProcessTable.Entry(
+                    pid: 777,
+                    effectiveUserID: 501,
+                    name: "ssh",
+                    ttyDevice: otherTerminal,
+                    processGroupID: 777,
+                    terminalForegroundGroupID: 777
+                ),
+            ],
+            effectiveUserID: 501,
+            readExecutablePath: { $0 == 501 ? "/usr/bin/ssh" : nil },
+            readArguments: { $0 == 501 ? ["ssh", "builder", "herdr"] : nil }
+        )
+        let value = try XCTUnwrap(connection(probe(processes: processes)))
         XCTAssertTrue(value.hasCompetingHerdrClient)
     }
 
@@ -914,6 +1071,13 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertEqual(destination(["ssh", "-i", "/keys/id", "builder"]), "builder")
     }
 
+    func testDestinationInertOOptionsAreSkippedInEveryArgvShape() {
+        XCTAssertEqual(destination(["ssh", "-o", "SetEnv=TERM=xterm-ghostty", "builder"]), "builder")
+        XCTAssertEqual(destination(["ssh", "-oSeNdEnV=COLORTERM", "builder"]), "builder")
+        XCTAssertEqual(destination(["ssh", "-to", "SendEnv=TERM_PROGRAM", "builder"]), "builder")
+        XCTAssertEqual(destination(["ssh", "-toSetEnv=TERM=xterm-ghostty", "builder"]), "builder")
+    }
+
     func testClusteredFlagsAreSkipped() {
         XCTAssertEqual(destination(["ssh", "-tt", "builder"]), "builder")
         XCTAssertEqual(destination(["ssh", "-AC", "builder"]), "builder")
@@ -946,6 +1110,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             ["ssh", "-o", "HostName=other.example", "builder"],
             ["ssh", "-oHostName=other.example", "builder"],
             ["ssh", "-o", "ProxyJump=elsewhere", "builder"],
+            ["ssh", "-o", "Compression=yes", "builder"],
+            ["ssh", "-oSetEnvironment=TERM=xterm-ghostty", "builder"],
+            ["ssh", "-to", "HostName=other.example", "builder"],
+            ["ssh", "-toCompression=yes", "builder"],
             ["ssh", "-F", "/tmp/alt.conf", "builder"],
             ["ssh", "-O", "check", "builder"],
             ["ssh", "-S", "/tmp/cm.sock", "builder"],
@@ -1073,6 +1241,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertEqual(
             me?.parentProcessID, getppid(),
             "the parent pid must be plumbed — the machinery rule depends on it"
+        )
+        XCTAssertEqual(
+            me?.effectiveUserID, geteuid(),
+            "the effective uid must come from the kernel process-table entry"
         )
     }
 

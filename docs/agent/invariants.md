@@ -204,7 +204,11 @@ there is not.
     a background one, or `scp`/`rsync`'s helper is not mistaken for the screen),
     and ABSTAINS on `-o`/`-F`/`-O`/`-S`/`-N`/`-f`/`-M`/`-D`/`-W`/`-w` rather
     than skipping them — `ssh -o HostName=other builder` must never answer
-    `builder`. ssh MACHINERY is invisible to this count and to the uniqueness
+    `builder`. The exact, case-insensitive `SetEnv=` and `SendEnv=` `-o` keys
+    are the only exception: they can neither move the destination nor change
+    the session's interactivity, and accepting them keeps terminal wrappers
+    such as Ghostty's from making every probe abstain. ssh MACHINERY is
+    invisible to this count and to the uniqueness
     scan in (2): an ssh that is a direct CHILD of another scanned ssh — a
     ProxyJump's `ssh -W` hop, which OpenSSH spawns on the same tty in the same
     foreground process group (field abstention 2026-08-06) — is its root
@@ -230,7 +234,12 @@ there is not.
     device): a client with a different session selector, a herdr subcommand
     shape, an argv that was refused and mentions `herdr` (substring,
     one-sided), or anything unreadable. What deliberately does NOT compete
-    (2026-08-06, replacing blanket machine-wide uniqueness): a plain shell or
+    (2026-08-06, replacing blanket machine-wide uniqueness): ANOTHER USER's
+    ssh (kernel `e_ucred.cr_uid`, never self-reported) — their herdr view
+    lives in their own login session, not on a surface this user dictates
+    into, and their metadata is never read; a cross-uid ssh ON the focused
+    surface itself (`sudo ssh`) still abstains as an unreadable client rather
+    than vanishing; a plain shell or
     non-herdr ssh to the same host — it is on another tty and the probe only
     reads the FOCUSED surface's tty — and a second whole-view client with a
     byte-identical selector, because herdr focus is SERVER-GLOBAL and
