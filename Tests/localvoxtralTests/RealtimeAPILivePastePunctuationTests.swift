@@ -264,7 +264,7 @@ private final class MockOverlayCoordinator: OverlayBufferSessionCoordinating {
     func resolveAnchorNow() -> OverlayAnchor {
         OverlayAnchor(targetRect: CGRect(x: 0, y: 0, width: 100, height: 24), source: .windowCenter)
     }
-    func startSession(preResolvedAnchor: OverlayAnchor?) {}
+    func startSession(preResolvedAnchor: OverlayAnchor?, claudeJoin _: OverlayClaudeJoinBadge) {}
     func beginFinalizing(displayBufferText: String, commitBufferText: String) {}
     func refresh(displayBufferText: String, commitBufferText: String) {}
     func commitIfNeeded(

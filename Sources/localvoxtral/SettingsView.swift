@@ -913,7 +913,7 @@ private struct ContextSettingsPane: View {
                     SettingsFieldRow(
                         title: "Use Claude Code terminal screen as polish context",
                         help:
-                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Supported terminals (Ghostty, iTerm2, Terminal.app, cmux) only; local polishing endpoints only."
+                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Supported terminals (Ghostty, iTerm2, Terminal.app, cmux) only — in cmux this also needs the join set up below. Local polishing endpoints only."
                     ) {
                         Toggle("", isOn: $settings.terminalScreenContextEnabled)
                             .labelsHidden()
@@ -1139,6 +1139,7 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     }
                     enrollmentForm
                     listenerStatus
+                    herdrPanelSetup
                 }
             }
         }
@@ -1356,6 +1357,43 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                 .lineLimit(3)
         }
     }
+
+    @ViewBuilder
+    private var herdrPanelSetup: some View {
+        if let message = model.herdrPanelStatus.message {
+            SettingsInlineMessage(message, color: .orange)
+            Text(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet)
+                .font(.system(.caption2, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(6)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            ForEach(model.hosts.filter { !$0.isRevoked && $0.sshHostAlias != nil }) { host in
+                let action = ClaudeIntegrationSettingsModel.EnrollmentAction.configureHerdrPanel(
+                    hostID: host.id
+                )
+                if let confirmation = model.enrollmentConfirmation,
+                   confirmation.action == action {
+                    Text(confirmation.title).font(.caption).bold()
+                    HStack {
+                        Button("Cancel") { model.cancelEnrollmentActionConfirmation() }
+                        Button(confirmation.confirmButtonTitle) {
+                            Task { await model.confirmEnrollmentAction() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .controlSize(.small)
+                } else {
+                    Button("Configure on \(host.label)…") {
+                        model.requestHerdrPanelConfiguration(hostID: host.id)
+                    }
+                    .controlSize(.small)
+                }
+                if model.enrollmentResultsAction == action {
+                    ClaudeEnrollmentStepResults(statuses: model.enrollmentStepStatuses)
+                }
+            }
+        }
+    }
 }
 
 /// One action's outcome, rendered inside the section whose button ran it.
@@ -1459,6 +1497,16 @@ private struct ClaudeRemoteEnrollmentSheet: View {
                         enrollmentAction: .runRemoteSetup,
                         action: presentation.canRunRemoteSetup ? { model.requestRemoteSetup() } : nil
                     )
+                    section(
+                        "3. Show the dictation indicator in herdr",
+                        body: ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet,
+                        note: "After confirmation, localvoxtral appends this only when no agents table or rows key exists; otherwise it leaves the file unchanged.",
+                        primaryActionTitle: presentation.canRunRemoteSetup ? "Configure on SSH host" : nil,
+                        enrollmentAction: .configureHerdrPanel(hostID: presentation.host.id),
+                        action: presentation.canRunRemoteSetup
+                            ? { model.requestHerdrPanelConfiguration(hostID: presentation.host.id) }
+                            : nil
+                    )
                     verificationSection
                     section(
                         "Update later",
@@ -1499,7 +1547,7 @@ private struct ClaudeRemoteEnrollmentSheet: View {
     /// Interpretation belongs in code.
     private var verificationSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("3. Check the setup").font(.headline)
+            Text("4. Check the setup").font(.headline)
             Text(
                 presentation.canRunRemoteSetup
                     ? "Runs two read-only checks over SSH. Changes nothing."
@@ -1645,7 +1693,8 @@ private struct AboutSettingsPane: View {
 
                 // Constant row, variant-dependent content: "which binary am I
                 // running" is exactly the question that has cost field-debug
-                // time before (AGENTS.md), and version alone can't answer it —
+                // time before (docs/agent/field-debugging.md), and version
+                // alone can't answer it —
                 // dogfood builds keep the same version and bundle id.
                 SettingsFieldRow(
                     title: "Build",

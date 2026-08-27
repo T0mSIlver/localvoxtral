@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Off-screen Claude Code session context for the localvoxtral dictation app. Add this marketplace from a REMOTE host, where there is no app bundle to register a local directory from: claude plugin marketplace add T0mSIlver/localvoxtral",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "plugins": [
     {

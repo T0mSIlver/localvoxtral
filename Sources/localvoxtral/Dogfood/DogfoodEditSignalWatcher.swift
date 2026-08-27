@@ -31,8 +31,8 @@ enum DogfoodEditSignal: String, Codable, Equatable, Sendable {
     /// immediately — the monitor never retains, forwards, or counts it.
     ///
     /// ⌘A only with Command held and no other command-class modifier: ⌥⌘A /
-    /// ⌃⌘A are app shortcuts, not select-all, and counting them would inflate
-    /// the signal with ordinary navigation.
+    /// ⌃⌘A / ⇧⌘A are app shortcuts, not select-all, and counting them would
+    /// inflate the signal with ordinary navigation.
     static func from(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> DogfoodEditSignal? {
         let relevant = modifiers.intersection(.deviceIndependentFlagsMask)
         switch Int(keyCode) {
@@ -42,7 +42,8 @@ enum DogfoodEditSignal: String, Codable, Equatable, Sendable {
             return .backspace
         case kVK_ANSI_A where relevant.contains(.command)
             && !relevant.contains(.option)
-            && !relevant.contains(.control):
+            && !relevant.contains(.control)
+            && !relevant.contains(.shift):
             return .selectAll
         default:
             return nil
@@ -265,6 +266,15 @@ final class DogfoodEditSignalWatcher {
     private let sleepFor: SleepClosure
 
     private var watch: Watch?
+    /// Closed watches whose `attachRecord` has not arrived yet, keyed by
+    /// generation. The record write is awaited, so the next dictation's arm
+    /// can beat the attach — and the closed watch's verdict must survive
+    /// until its record shows up, or the record becomes indistinguishable
+    /// from "never observed". Bounded: an entry lives only while one record
+    /// write is in flight, so growth past the cap means the writes are
+    /// failing; the oldest generation is evicted first.
+    private var parkedWatches: [UInt64: Watch] = [:]
+    private static let parkedWatchCap = 8
     private var generation: UInt64 = 0
     /// The open window's timer, and the in-flight record patch. Retained so
     /// tests can await them the way they await `polishAndCommitTask`; nothing in
@@ -322,6 +332,7 @@ final class DogfoodEditSignalWatcher {
     @discardableResult
     func arm(committedText: String, outputMode: String) -> WatchToken? {
         supersede()
+        parkClosedWatchAwaitingAttach()
 
         let wordCount = DogfoodEditSignalPolicy.wordCount(of: committedText)
         guard wordCount > 0 else { return nil }
@@ -348,14 +359,31 @@ final class DogfoodEditSignalWatcher {
             outputMode: outputMode
         )
 
-        windowTask = Task { [weak self] in
-            guard let self else { return }
-            await self.sleepFor(.seconds(windowSeconds))
+        // `sleepFor` is captured by value so the sleep holds NO reference to
+        // the watcher: a strong `self` promoted before the await would retain
+        // it for the whole window and `isolated deinit` could never run
+        // mid-window. Promotion happens only after the sleep resumes.
+        windowTask = Task { [weak self, sleepFor] in
+            await sleepFor(.seconds(windowSeconds))
             guard !Task.isCancelled else { return }
-            self.closeWindow(outcome: .clean, signal: nil, generation: generation)
+            self?.closeWindow(outcome: .clean, signal: nil, generation: generation)
         }
 
         return WatchToken(generation: generation)
+    }
+
+    /// Moves a closed watch that is still waiting for its record out of the
+    /// active slot, so the next `arm` cannot erase its pending verdict. Runs
+    /// after `supersede()`, which guarantees any remaining watch is closed —
+    /// a closed AND attached watch has already flushed and left the slot nil.
+    private func parkClosedWatchAwaitingAttach() {
+        guard let watch else { return }
+        parkedWatches[watch.generation] = watch
+        self.watch = nil
+        if parkedWatches.count > Self.parkedWatchCap,
+           let oldest = parkedWatches.keys.min() {
+            parkedWatches.removeValue(forKey: oldest)
+        }
     }
 
     /// Hands the open (or already-closed) watch the record it belongs to.
@@ -366,11 +394,21 @@ final class DogfoodEditSignalWatcher {
     /// without the token this call would hand session A's record to session B's
     /// open window — which would then patch A's record with B's behavior.
     func attachRecord(url: URL, store: DogfoodCaptureStore, token: WatchToken) {
-        guard var watch, watch.generation == token.generation else { return }
-        watch.recordURL = url
-        watch.store = store
-        self.watch = watch
-        flushIfReady()
+        if var watch, watch.generation == token.generation {
+            watch.recordURL = url
+            watch.store = store
+            self.watch = watch
+            flushIfReady()
+            return
+        }
+        // A parked watch: its window closed (superseded by the next dictation,
+        // or a gesture landed) before the record write returned. The token
+        // still names it exactly; any other generation attaches to nothing.
+        if var parked = parkedWatches.removeValue(forKey: token.generation) {
+            parked.recordURL = url
+            parked.store = store
+            flush(parked)
+        }
     }
 
     /// Closes an open window because a new dictation began. Safe to call with
@@ -423,7 +461,18 @@ final class DogfoodEditSignalWatcher {
     /// where the record landed. Whichever arrives second triggers the write.
     private func flushIfReady(inline: Bool = false) {
         guard let watch,
-              let result = watch.result,
+              watch.result != nil,
+              watch.recordURL != nil,
+              watch.store != nil
+        else { return }
+        self.watch = nil
+        flush(watch, inline: inline)
+    }
+
+    /// The write itself, for a watch that has both halves — the active one, or
+    /// a parked one whose late attach just delivered its record.
+    private func flush(_ watch: Watch, inline: Bool = false) {
+        guard let result = watch.result,
               let url = watch.recordURL,
               let store = watch.store
         else { return }
@@ -437,7 +486,6 @@ final class DogfoodEditSignalWatcher {
             watchWindowSeconds: watch.windowSeconds,
             outputMode: watch.outputMode
         )
-        self.watch = nil
 
         guard !inline else {
             DogfoodCaptureWriter.attachSynchronously(behavior, toRecordAt: url, store: store)

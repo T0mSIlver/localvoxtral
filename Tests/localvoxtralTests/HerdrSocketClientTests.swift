@@ -165,6 +165,52 @@ private func herdrResponse(
 
 @MainActor
 final class HerdrSocketClientTests: XCTestCase {
+    func testPanelMetadataReportUsesTheBoundedLocalvoxtralTokenShape() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(for: request, result: ["type": "ok"])
+        }
+        defer { server.stop() }
+
+        let reported = await HerdrSocketClient().reportPanelToken(
+            socketPath: server.socketPath,
+            paneID: "pane-a",
+            value: "lv-mic-0000000001",
+            ttlMilliseconds: 8_000
+        )
+        XCTAssertTrue(reported)
+
+        let request = try XCTUnwrap(server.requestLine.flatMap(herdrRequest))
+        XCTAssertEqual(request["method"] as? String, "pane.report_metadata")
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertEqual(params["pane_id"] as? String, "pane-a")
+        XCTAssertEqual(params["source"] as? String, "localvoxtral")
+        XCTAssertEqual(params["ttl_ms"] as? Int, 8_000)
+        XCTAssertEqual(
+            (params["tokens"] as? [String: Any])?["lvmark"] as? String,
+            "lv-mic-0000000001"
+        )
+    }
+
+    func testPanelMetadataClearSendsANullTokenAndNoTTL() async throws {
+        let server = try HerdrOneShotServer { request in
+            herdrResponse(for: request, result: ["type": "ok"])
+        }
+        defer { server.stop() }
+
+        let cleared = await HerdrSocketClient().reportPanelToken(
+            socketPath: server.socketPath,
+            paneID: "pane-a",
+            value: nil,
+            ttlMilliseconds: nil
+        )
+        XCTAssertTrue(cleared)
+
+        let request = try XCTUnwrap(server.requestLine.flatMap(herdrRequest))
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertNil(params["ttl_ms"])
+        XCTAssertTrue((params["tokens"] as? [String: Any])?["lvmark"] is NSNull)
+    }
+
     func testFocusedPaneHappyPathUsesStringIDAndRequiredEmptyParams() async throws {
         let server = try HerdrOneShotServer { request in
             herdrResponse(

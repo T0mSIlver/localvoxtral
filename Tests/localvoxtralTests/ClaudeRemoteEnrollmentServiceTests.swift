@@ -82,6 +82,28 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         try ClaudeRemoteEnrollmentService.plan(host: host, sshHostAlias: alias, token: token)
     }
 
+    private func runShellScript(
+        _ script: Data,
+        environment: [String: String]
+    ) throws -> (status: Int32, output: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-s"]
+        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        let input = Pipe()
+        let output = Pipe()
+        process.standardInput = input
+        process.standardOutput = output
+        process.standardError = output
+
+        try process.run()
+        input.fileHandleForWriting.write(script)
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        let data = try output.fileHandleForReading.readToEnd() ?? Data()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+    }
+
     // MARK: SSH config snippet
 
     func testSSHSnippetForwardsTheListenerPortBothWays() throws {
@@ -1994,5 +2016,148 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
         _ = try service.executeVerification(sshHostAlias: "builder", listenerIsBound: true)
         XCTAssertTrue(fileSystem.snapshot.writes.isEmpty)
         XCTAssertTrue(fileSystem.snapshot.createdDirectoryPermissions.isEmpty)
+    }
+
+    // MARK: herdr agents-panel configuration
+
+    func testHerdrPanelConfigurationIsRefusedWithoutAnInjectedRunner() {
+        XCTAssertThrowsError(
+            try ClaudeRemoteEnrollmentService().configureRemoteHerdrPanel(
+                sshHostAlias: "builder"
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .executionNotConfigured
+            )
+        }
+    }
+
+    func testHerdrPanelConfigurationUsesTheEnrollmentSSHChannelAndConservativePatch() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "reloaded")
+        })
+
+        let steps = try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
+
+        let recorded = calls.withLock { $0 }
+        XCTAssertEqual(recorded.count, 1)
+        let invocation = try XCTUnwrap(recorded.first)
+        XCTAssertEqual(invocation.argv, [
+            "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+            "builder", "/bin/sh", "-s",
+        ])
+        let script = String(decoding: invocation.standardInput, as: UTF8.self)
+        XCTAssertTrue(script.contains("ui\\.sidebar\\.agents"))
+        XCTAssertTrue(script.contains("rows[[:space:]]*="))
+        XCTAssertTrue(script.contains("exit 42"), "existing user configuration must be refused")
+        XCTAssertTrue(script.contains(ClaudeRemoteEnrollmentService.herdrPanelConfigSnippet))
+        XCTAssertTrue(script.contains("herdr server reload-config"))
+        XCTAssertEqual(steps, [
+            .init(index: 0, command: "configure herdr agents panel", message: "reloaded")
+        ])
+    }
+
+    func testExistingHerdrAgentsConfigurationIsNeverOverwritten() {
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(
+                exitCode: 42,
+                message: ClaudeRemoteEnrollmentService.herdrPanelExistingConfigMarker
+            )
+        })
+
+        XCTAssertThrowsError(
+            try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
+        ) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .herdrPanelConfigAlreadyCustomized
+            )
+        }
+    }
+
+    func testHerdrAgentsHeaderWithTrailingCommentIsRefusedWithoutEditingTheConfig() throws {
+        let calls = Mutex<[ClaudeRemoteEnrollmentService.Invocation]>([])
+        let service = ClaudeRemoteEnrollmentService(runner: { invocation in
+            calls.withLock { $0.append(invocation) }
+            return .init(exitCode: 0, message: "captured")
+        })
+        _ = try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
+        let invocation = try XCTUnwrap(calls.withLock { $0.first })
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lvx-herdr-panel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configURL = directory.appendingPathComponent("config.toml")
+        let original = "[ui.sidebar.agents] # keep my custom panel\n"
+        try Data(original.utf8).write(to: configURL)
+
+        let result = try runShellScript(
+            invocation.standardInput,
+            environment: [
+                "HERDR_CONFIG_PATH": configURL.path,
+                "PATH": "/usr/bin:/bin",
+            ]
+        )
+
+        XCTAssertEqual(result.status, 42, "the existing table must take the refusal path")
+        XCTAssertTrue(result.output.contains(ClaudeRemoteEnrollmentService.herdrPanelExistingConfigMarker))
+        XCTAssertEqual(try String(contentsOf: configURL, encoding: .utf8), original)
+    }
+
+    func testHerdrReloadExit42WithoutTheRefusalMarkerIsACommandFailure() {
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            .init(exitCode: 42, message: "reload failed")
+        })
+
+        XCTAssertThrowsError(
+            try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
+        ) { error in
+            guard case .commandFailed(_, _, let exitCode, let message)? =
+                error as? ClaudeRemoteEnrollmentService.ServiceError
+            else { return XCTFail("expected commandFailed, got \(error)") }
+            XCTAssertEqual(exitCode, 42)
+            XCTAssertEqual(message, "reload failed")
+        }
+    }
+
+    func testHerdrPanelConfigurationPreservesRunnerTimeoutCategory() {
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            throw ClaudeRemoteEnrollmentService.RunnerFailure.timedOut(
+                seconds: 12,
+                message: "ssh timed out"
+            )
+        })
+
+        XCTAssertThrowsError(
+            try service.configureRemoteHerdrPanel(sshHostAlias: "builder")
+        ) { error in
+            guard case .commandTimedOut(_, _, let seconds, let message)? =
+                error as? ClaudeRemoteEnrollmentService.ServiceError
+            else { return XCTFail("expected commandTimedOut, got \(error)") }
+            XCTAssertEqual(seconds, 12)
+            XCTAssertEqual(message, "ssh timed out")
+        }
+    }
+
+    func testHerdrPanelConfigurationRefusesAnInvalidAliasBeforeSSH() {
+        let calls = Mutex(0)
+        let service = ClaudeRemoteEnrollmentService(runner: { _ in
+            calls.withLock { $0 += 1 }
+            return .init(exitCode: 0, message: "")
+        })
+
+        XCTAssertThrowsError(
+            try service.configureRemoteHerdrPanel(sshHostAlias: "builder; touch /tmp/no")
+        ) { error in
+            XCTAssertEqual(
+                error as? ClaudeRemoteEnrollmentService.ServiceError,
+                .invalidHostAlias
+            )
+        }
+        XCTAssertEqual(calls.withLock { $0 }, 0)
     }
 }

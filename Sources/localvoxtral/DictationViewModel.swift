@@ -257,6 +257,18 @@ final class DictationViewModel {
     /// clear lives in DictationViewModel+Session.swift.
     var sessionSecureInputActive = false
 
+    /// What this session's Claude Code join resolved to, held for the overlay's
+    /// header badge.
+    ///
+    /// Latched here for the same reason `sessionSecureInputActive` is: the join
+    /// is resolved at session start, while the app the user dictated into is
+    /// still frontmost, but the overlay panel does not open until the realtime
+    /// socket connects — and `startSession` clears the state machine, so a
+    /// badge pushed at resolution time would be wiped by the session that is
+    /// supposed to show it. Internal, because the session-end clear lives in
+    /// DictationViewModel+Session.swift.
+    var sessionClaudeJoinBadge: OverlayClaudeJoinBadge = .hidden
+
     /// Ends the refused-start warning when no session is running: the icon
     /// (and the "Blocked" status line) return to normal, while `lastError`
     /// keeps the one-line explanation in the popover. A stopped session that
@@ -387,7 +399,12 @@ final class DictationViewModel {
     /// prompt. Cleared on every session exit, like the screen capture.
     @ObservationIgnored
     var claudeSessionJoin: ClaudeSessionJoin?
-    /// Remote herdr `ssh -L` children this process has open. See
+    /// Panel indicators own their associated remote forward until an explicit
+    /// token clear has completed, so teardown cannot close the tunnel before
+    /// the clear request reaches herdr.
+    @ObservationIgnored
+    var liveRemoteHerdrIndicators: [HerdrPanelMicIndicator] = []
+    /// Remote herdr `ssh -L` leases this dictation has open. See
     /// `retainRemoteHerdrForward(of:)` for why they are owned here and not by
     /// the join that travels.
     private var liveRemoteHerdrForwards: [ClaudeRemoteHerdrForwardHandle] = []
@@ -792,7 +809,20 @@ final class DictationViewModel {
     // MARK: - Lifecycle Observers
 
     private func registerLifecycleObservers() {
-        let nc = NotificationCenter.default
+        registerLifecycleObservers(on: .default)
+    }
+
+    #if DEBUG
+    /// Test seam: registers the REAL lifecycle observers on a private center,
+    /// so a suite can post `willTerminateNotification` through the actual
+    /// wiring without broadcasting to every retained view model in the
+    /// process.
+    func debugRegisterLifecycleObservers(on center: NotificationCenter) {
+        registerLifecycleObservers(on: center)
+    }
+    #endif
+
+    private func registerLifecycleObservers(on nc: NotificationCenter) {
 
         let sleepObserver = nc.addObserver(
             forName: NSWorkspace.willSleepNotification,
@@ -810,20 +840,29 @@ final class DictationViewModel {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            // `willTerminate` is posted on the main thread and a `.main`-queue
+            // observer runs synchronously in it — this closure is the last
+            // execution the process guarantees. Anything that must survive
+            // quit happens inline HERE, before the Task below, which is
+            // best-effort only (a Task spawned at terminate is not guaranteed
+            // to run).
+            MainActor.assumeIsolated {
                 guard let self else { return }
-                self.cancelManagedStartupTask()
-                if self.isDictating {
-                    self.stopDictation(reason: "app terminating", finalizeRemainingAudio: false)
-                }
                 #if LOCALVOXTRAL_DOGFOOD
                 // Last chance for a still-open post-commit watch to patch its
                 // record: after this the process is gone and the dictation
-                // would keep no behavior block at all. Written inline — a Task
-                // spawned at terminate is not guaranteed to run.
+                // would keep no behavior block at all.
                 self.dogfoodEditSignalWatcher.flushForTermination()
                 #endif
-                await self.backendManager.stopAll()
+                Task {
+                    self.cancelManagedStartupTask()
+                    if self.isDictating {
+                        self.stopDictation(
+                            reason: "app terminating", finalizeRemainingAudio: false
+                        )
+                    }
+                    await self.backendManager.stopAll()
+                }
             }
         }
 
@@ -1905,6 +1944,11 @@ final class DictationViewModel {
             terminalScreenStartCapture = nil
             claudeSessionJoin = nil
             socketPaneStartCapture = nil
+            // No endpoint means the join is never consumed by anything, so
+            // there is no grounding to report on either way. Saying "no Claude
+            // session" here would be true and useless — nothing would have used
+            // one.
+            sessionClaudeJoinBadge = .hidden
             return
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -1921,6 +1965,17 @@ final class DictationViewModel {
         // exactly the moments it mattered — quit during polish, an aborted
         // connect — and the ssh outlived the app (review finding 4).
         retainRemoteHerdrForward(of: claudeSessionJoin)
+        // Read from the ONE resolved join, never by asking again. The badge is
+        // a description of `claudeSessionJoin`, so it cannot disagree with the
+        // context that actually ships.
+        sessionClaudeJoinBadge = OverlayClaudeJoinBadge.resolve(
+            join: claudeSessionJoin,
+            contextFeatureEnabled: settings.terminalScreenContextEnabled
+                || settings.claudeRepoContextEnabled,
+            liveSessionsExist: { [claudeSessionJoinResolver] in
+                claudeSessionJoinResolver?.hasLiveSessions() ?? false
+            }
+        )
         // Only a socket-routed pane join — herdr, remote herdr, or cmux —
         // produces a sample here (the function refuses everything else before
         // any socket request), and it reads exactly the joined pane. Fetched at
@@ -2018,9 +2073,8 @@ final class DictationViewModel {
         claudeSessionJoin = nil
         // And the pane text with the join: it is that session's screen.
         socketPaneStartCapture = nil
-        // Every open `ssh -L`, not just this join's — the view model owns them
-        // all, so abandoning a dictation cannot leave one behind for a holder
-        // that no longer exists.
+        // Every `ssh -L` lease, not just this join's — abandoning a dictation
+        // cannot pin a persistent forward as actively used.
         closeRemoteHerdrForwards()
     }
 
@@ -2030,12 +2084,17 @@ final class DictationViewModel {
     /// commit path and captured into a Task), and a resource whose owner is
     /// "whoever currently holds the value" has no owner at all.
     func retainRemoteHerdrForward(of join: ClaudeSessionJoin?) {
+        if let indicator = join?.remoteHerdrIndicator {
+            liveRemoteHerdrIndicators.append(indicator)
+            indicator.start()
+            return
+        }
         guard let forward = join?.remoteHerdrForward else { return }
         liveRemoteHerdrForwards.append(forward)
     }
 
-    /// Closes every open remote herdr tunnel. Idempotent, and safe from any
-    /// path — including ones that never knew a tunnel existed.
+    /// Releases every remote herdr lease. Idempotent, and safe from any path —
+    /// including ones that never knew a tunnel existed.
     ///
     /// Called from every dictation exit (`discardTerminalScreenCapture`, the
     /// commit path once the stop-side pane read is done, `abortConnectingSession`)
@@ -2043,6 +2102,10 @@ final class DictationViewModel {
     /// is what makes a leaked handle from some path nobody thought of
     /// self-healing at the next exit.
     func closeRemoteHerdrForwards() {
+        let indicators = liveRemoteHerdrIndicators
+        liveRemoteHerdrIndicators = []
+        for indicator in indicators { indicator.stop() }
+
         guard !liveRemoteHerdrForwards.isEmpty else { return }
         let forwards = liveRemoteHerdrForwards
         liveRemoteHerdrForwards = []
@@ -2050,7 +2113,9 @@ final class DictationViewModel {
     }
 
     /// Test seam: how many tunnels this view model is holding open.
-    var openRemoteHerdrForwardCount: Int { liveRemoteHerdrForwards.count }
+    var openRemoteHerdrForwardCount: Int {
+        liveRemoteHerdrForwards.count + liveRemoteHerdrIndicators.count
+    }
 
     /// Reconciles the start capture against a stop-time re-read of the SAME
     /// PID/bundle and clears it. See `TerminalScreenContext.reconcile` for the

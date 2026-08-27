@@ -198,6 +198,52 @@ Verify:
 claude plugin list
 ```
 
+## Connection indicator (opt-in status line)
+
+One glance at Claude Code's bottom bar answers the question this plugin
+otherwise leaves silent: *is localvoxtral connected to this session?*
+
+Claude Code has no plugin-owned status line, and localvoxtral never writes
+`~/.claude/settings.json` — so this is wired by **you**, once, in your own
+settings. The publisher binary has a `--statusline` mode that reads the
+status-line payload Claude Code pipes in, asks the app's socket whether THIS
+session (by `session_id`) is live in its registry, and prints exactly one of
+three fixed lines:
+
+| Line | Meaning |
+|---|---|
+| `● localvoxtral connected` (green) | the app is running and this session's hooks are reaching it |
+| `○ localvoxtral not connected` (yellow) | the app is running but has no live record of this session — plugin not installed, or the app started after this session's last hook (it catches up on your next prompt) |
+| `○ localvoxtral not running` (dim) | nothing is listening on the socket |
+
+In `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline"
+  }
+}
+```
+
+(Adjust the path for `~/Applications` or a dev build — it is the same binary
+`publisher_path` points at.) If you already have a status line, keep it and
+append ours: buffer stdin once and feed both, e.g.
+
+```sh
+#!/bin/sh
+input=$(cat)
+printf '%s' "$input" | ~/.claude/my-statusline.sh
+printf '%s' "$input" | /Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline
+```
+
+The query is read-only by construction: asking never creates a session,
+never refreshes one, and never carries a marker. The three strings above are
+compile-time constants — nothing read off the socket is ever echoed into
+your terminal — and a payload without a usable `session_id` prints nothing
+rather than guessing.
+
 ## Fail-open, always
 
 If localvoxtral is not running, not installed, or its socket is absent, the hook
@@ -383,8 +429,9 @@ If it landed there anyway, rotate the token in the app — that is what rotation
 for.
 
 Nothing else is installed. The marketplace add resolves the repository root's
-`.claude-plugin/marketplace.json`; the plugin is two JSON files and one
-POSIX-sh script that needs only `sh` and `curl` on the host.
+`.claude-plugin/marketplace.json`; the plugin is two JSON files and two
+POSIX-sh scripts — the hook shim, which needs only `sh` and `curl` on the
+host, and the opt-in status-line renderer below, which needs only `sh`.
 
 **3. Check it — press "Check Setup" in the sheet.**
 
@@ -407,6 +454,59 @@ that is a token this app no longer knows and therefore could not redact.
 
 The equivalent commands, if you would rather run them by hand, are in
 [docs/remote-claude-context.md](../../docs/remote-claude-context.md#checking-the-setup).
+
+## Connection indicator (opt-in status line)
+
+The same bottom-bar indicator the local plugin offers, adapted to a host
+where everything fails open by design: it tells you whether hooks from this
+host are actually reaching localvoxtral on your Mac, instead of you finding
+out by dictating into nothing.
+
+It never dials the tunnel — a status line re-runs constantly, and every dial
+against a live forward with no app behind it prints ssh's
+`connect_to …: failed.` onto your terminal (the exact storm the shim's
+backoff exists to end). Instead, `post.sh` records the outcome of each hook
+delivery in a private one-line stamp, and a tiny renderer script turns that
+into one fixed line. The indicator is exactly as fresh as this host's hook
+traffic, which is also what re-runs the status line:
+
+| Line | The last hook dial saw |
+|---|---|
+| `● localvoxtral connected` (green) | a 200 from the app, through the tunnel, within the last 15 minutes |
+| `○ localvoxtral no recent hooks` (dim) | a 200 too — but a while ago. The green light expires rather than vouch for an app that may have gone away since; your next prompt dials and restores the truth either way |
+| `○ localvoxtral unreachable` (dim) | no listener — tunnel down, Mac asleep, or the app not running |
+| `○ localvoxtral token rejected` (yellow) | a 401 — rotate the token, or finish an interrupted rotation |
+| `○ localvoxtral token not configured` (yellow) | the plugin has no `token` in its config at all |
+| `○ localvoxtral not connected` (yellow) | some other completed HTTP error |
+| `○ localvoxtral no hooks yet` (dim) | nothing — no hook has fired since this host last booted (the stamp lives in the runtime dir) |
+
+Set it up on the **remote host** (the plugin ships the renderer; Claude Code's
+versioned plugin cache is no place for a settings path, so copy it somewhere
+stable):
+
+```sh
+cp ~/.claude/plugins/marketplaces/localvoxtral/integrations/claude-code/plugins/localvoxtral-remote/hooks/statusline.sh \
+   ~/.claude/localvoxtral-statusline.sh
+```
+
+and in the host's `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "sh ~/.claude/localvoxtral-statusline.sh"
+  }
+}
+```
+
+The copy does not go stale in any way that matters: the renderer is
+deliberately dumb (read stamp, print fixed string) and the smart half lives
+in `post.sh`, which updates with the plugin. Like everything else on this
+path, the renderer's stdout fails closed: the stamp's first token only ever
+selects one of the strings above — no byte of the stamp file is ever
+echoed into your status line. If you already run a status line on that host,
+call the script from it and append its one line.
 
 ## Sessions nobody is sitting in front of
 

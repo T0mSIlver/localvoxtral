@@ -13,7 +13,24 @@ extension DictationViewModel {
     ///
     /// The tap is consumed EVEN when disarmed — its slots must not carry one
     /// session's facts into a later, armed session's record.
-    func writeDogfoodCaptureIfArmed(_ inputs: DogfoodCaptureInputs) async {
+    ///
+    /// `commitOutcome` gates the edit watch: only `.succeeded` put text in
+    /// front of the user, so only `.succeeded` is watchable. `.failed` and
+    /// `.copiedToClipboard` left nothing in the target app — a Backspace
+    /// there would be recorded as erasing an insertion that never happened,
+    /// and an uneventful window would pad the `clean` denominator.
+    ///
+    /// `committedTextForWatch` is the payload-SUBSTITUTED commit copy,
+    /// measured and discarded (the watcher keeps only its word-count bucket):
+    /// the window must scale with what was actually inserted — a 100-word
+    /// paste takes far longer to judge than its one-token placeholder — while
+    /// the record itself keeps only placeholder-bearing text. The clipboard
+    /// payload must not enter the record through this parameter.
+    func writeDogfoodCaptureIfArmed(
+        _ inputs: DogfoodCaptureInputs,
+        commitOutcome: OverlayBufferCommitOutcome,
+        committedTextForWatch: String
+    ) async {
         let abstentions = DogfoodCaptureTap.shared.consumeJoinAbstentions()
         let repoVocabularyHarvest = DogfoodCaptureTap.shared.consumeRepoVocabularyHarvest()
         guard settings.dogfoodCaptureEnabled else { return }
@@ -39,10 +56,17 @@ extension DictationViewModel {
         // the write below, because that write is awaited and the next dictation
         // can arm in the meantime — an untokened attach would hand this
         // record's URL to that session's window.
-        let watchToken = dogfoodEditSignalWatcher.arm(
-            committedText: inputs.text.committedText ?? inputs.text.groundedText,
-            outputMode: inputs.session.outputMode
-        )
+        let watchToken: DogfoodEditSignalWatcher.WatchToken?
+        if case .succeeded = commitOutcome {
+            watchToken = dogfoodEditSignalWatcher.arm(
+                committedText: committedTextForWatch,
+                outputMode: inputs.session.outputMode
+            )
+        } else {
+            // Unwatchable commit: the record is still written (the pipeline
+            // stages happened and stay attributable), with no behavior block.
+            watchToken = nil
+        }
 
         // Assembly walks complete retained buffers (harvest re-derivation);
         // `build` is nonisolated, so this await hops off the main actor the

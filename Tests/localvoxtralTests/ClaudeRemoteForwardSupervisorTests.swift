@@ -11,8 +11,8 @@ private final class FakeForwardProcess: ClaudeRemoteForwardProcess, @unchecked S
     private let continuation: AsyncStream<String>.Continuation
 
     private struct ExitState {
-        var status: Int32?
-        var waiters: [CheckedContinuation<Int32, Never>] = []
+        var status: ClaudeRemoteForwardExitStatus?
+        var waiters: [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] = []
     }
 
     private let exitState = Mutex(ExitState())
@@ -29,6 +29,7 @@ private final class FakeForwardProcess: ClaudeRemoteForwardProcess, @unchecked S
     var terminateCount: Int { terminations.withLock { $0 } }
     var forceTerminateCount: Int { forcedTerminations.withLock { $0 } }
     var hasExited: Bool { exitState.withLock { $0.status != nil } }
+    var isRunning: Bool { !hasExited }
 
     init(ignoresTermination: Bool = false) {
         self.ignoresTermination = ignoresTermination
@@ -45,18 +46,20 @@ private final class FakeForwardProcess: ClaudeRemoteForwardProcess, @unchecked S
     /// implementation guarantees, then waiters get the status.
     func finish(status: Int32) {
         continuation.finish()
-        let waiters = exitState.withLock { state -> [CheckedContinuation<Int32, Never>] in
+        let exitStatus = ClaudeRemoteForwardExitStatus.code(status)
+        let waiters = exitState.withLock {
+            state -> [CheckedContinuation<ClaudeRemoteForwardExitStatus, Never>] in
             guard state.status == nil else { return [] }
-            state.status = status
+            state.status = exitStatus
             defer { state.waiters = [] }
             return state.waiters
         }
-        for waiter in waiters { waiter.resume(returning: status) }
+        for waiter in waiters { waiter.resume(returning: exitStatus) }
     }
 
-    func waitUntilExit() async -> Int32 {
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus {
         await withCheckedContinuation { continuation in
-            let already = exitState.withLock { state -> Int32? in
+            let already = exitState.withLock { state -> ClaudeRemoteForwardExitStatus? in
                 if let status = state.status { return status }
                 state.waiters.append(continuation)
                 return nil
@@ -87,6 +90,7 @@ private final class ForwardHarness {
     private(set) var processes: [FakeForwardProcess] = []
     private(set) var states: [ClaudeRemoteForwardSupervisor.State] = []
     private(set) var sleeps: [Duration] = []
+    var onLaunch: (@MainActor (ClaudeRemoteForwardSupervisor.Configuration) -> Void)?
 
     struct WaitTimeout: Error {}
 
@@ -178,8 +182,9 @@ private final class ForwardHarness {
     ) -> ClaudeRemoteForwardSupervisor {
         let supervisor = ClaudeRemoteForwardSupervisor(
             configuration: configuration,
-            launch: { [weak self] _ in
+            launch: { [weak self] configuration in
                 if let launchFailure { throw launchFailure }
+                self?.onLaunch?(configuration)
                 let process = FakeForwardProcess(
                     ignoresTermination: self?.processesIgnoreTermination ?? false
                 )
@@ -313,6 +318,18 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
             remoteForwardPort: 28511,
             listenerPort: 8473,
             maxConsecutiveFailures: maxConsecutiveFailures,
+            settleDelay: .seconds(2)
+        )
+    }
+
+    private func localSocketConfiguration(
+        localSocketPath: String
+    ) -> ClaudeRemoteForwardSupervisor.Configuration {
+        ClaudeRemoteForwardSupervisor.Configuration(
+            hostID: "habc1234",
+            sshHostAlias: "builder",
+            localSocketPath: localSocketPath,
+            remoteSocketPath: "/run/user/1000/herdr/default.sock",
             settleDelay: .seconds(2)
         )
     }
@@ -504,6 +521,39 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
             [.seconds(2), .milliseconds(500), .seconds(2), .seconds(1)],
             "\(harness.sleeps)"
         )
+    }
+
+    func testLocalSocketIsUnlinkedBeforeEveryLaunchIncludingRestart() async throws {
+        let directory = NSTemporaryDirectory()
+            .appending("lvx-forward-restart-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let socketPath = (directory as NSString).appendingPathComponent("h.sock")
+        XCTAssertTrue(FileManager.default.createFile(atPath: socketPath, contents: Data()))
+
+        let harness = ForwardHarness()
+        var existedAtLaunch: [Bool] = []
+        harness.onLaunch = { configuration in
+            let path = configuration.localSocketForward?.localSocketPath ?? ""
+            existedAtLaunch.append(FileManager.default.fileExists(atPath: path))
+        }
+        let supervisor = harness.makeSupervisor(
+            configuration: localSocketConfiguration(localSocketPath: socketPath)
+        )
+        supervisor.start()
+
+        let first = try await harness.process(0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        XCTAssertTrue(FileManager.default.createFile(atPath: socketPath, contents: Data()))
+        first.finish(status: 255)
+        _ = try await harness.process(1)
+
+        XCTAssertEqual(existedAtLaunch, [false, false])
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: socketPath),
+            "a SIGKILLed predecessor may leave the AF_UNIX name behind"
+        )
+        supervisor.stop()
     }
 
     func testAProcessThatDiesInsideItsSettleWindowIsNeverReportedAsUp() async throws {

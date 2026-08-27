@@ -151,6 +151,13 @@ public final class ClaudeSessionRegistry: Sendable {
         environment: ClaudeRemoteSessionEnvironment? = nil
     ) -> ClaudeSessionSnapshot? {
         let timestamp = now()
+        // A status probe is read-only by contract and is answered by the
+        // broker BEFORE ingest (`ClaudeContextBroker.handle`). Refusing it
+        // here too is the backstop: an ingested probe would CREATE a session
+        // for an id nobody ever hooked, or refresh the activity of one whose
+        // process is gone — the probe would keep alive the very state it
+        // exists to report on.
+        if record.event == .statusQuery { return nil }
         // A LOCAL Claude record whose raw id spells another namespace's prefix
         // is spelling a key that can never be its own: Claude Code ids are
         // bare UUIDs, opencode ids get the prefix added HERE, and remote ids
@@ -614,6 +621,19 @@ public final class ClaudeSessionRegistry: Sendable {
             state.sessions.values
                 .filter { isFresh($0, now: timestamp) }
                 .sorted { $0.lastActivity > $1.lastActivity }
+        }
+    }
+
+    /// Whether ANY session is live, without materializing them.
+    ///
+    /// The overlay's join badge asks this once per unjoined dictation purely to
+    /// decide between "nothing attached" and silence, and it needs no snapshot
+    /// — `liveSessions()` would copy every session's recent files and snippets
+    /// to answer a question about emptiness.
+    public func hasLiveSessions() -> Bool {
+        let timestamp = now()
+        return state.withLock { state in
+            state.sessions.values.contains { isFresh($0, now: timestamp) }
         }
     }
 

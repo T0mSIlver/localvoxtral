@@ -46,6 +46,19 @@ final class ClaudeHookWireCodecTests: XCTestCase {
         XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded), original)
     }
 
+    func testStatusQueryRoundTripsOnTheCurrentWire() throws {
+        // The probe record is deliberately minimal: an id and a timestamp,
+        // no cwd, no prompt, no process block. Golden line pinned so the
+        // publisher's `--statusline` mode and the broker agree on bytes.
+        let query = ClaudeHookRecord(event: .statusQuery, sessionID: "sess-probe", timestamp: 7)
+        let encoded = try XCTUnwrap(ClaudeHookWireCodec.encodeLine(query))
+        XCTAssertEqual(
+            String(decoding: encoded, as: UTF8.self),
+            #"{"event":"StatusQuery","files":[],"session_id":"sess-probe","ts":7,"v":2}"# + "\n"
+        )
+        XCTAssertEqual(try ClaudeHookWireCodec.decodeLine(encoded), query)
+    }
+
     func testHerdrProcessFieldsUseGoldenWireNamesAndDecode() throws {
         let record = ClaudeHookRecord(
             event: .sessionStart,

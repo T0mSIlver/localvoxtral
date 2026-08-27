@@ -2,6 +2,10 @@ import Foundation
 import Observation
 import Synchronization
 
+#if canImport(Darwin)
+import Darwin
+#endif
+
 /// One long-lived `ssh -N -R` process, as a seam.
 ///
 /// A protocol rather than `Process` for the reason the backend supervisor
@@ -9,15 +13,32 @@ import Synchronization
 /// this one spawns **ssh against a real host**. No unit test may do that — not
 /// slowly, not flakily, not at all — so the process is injected and the tests
 /// drive a fake.
+public enum ClaudeRemoteForwardExitStatus: Sendable, Equatable {
+    case code(Int32)
+    /// The process-exit notification did not expose a status, and reaping here
+    /// would violate the local forward's PID/PGID lifetime invariant.
+    case unavailable
+
+    var logDescription: String {
+        switch self {
+        case .code(let status): return String(status)
+        case .unavailable: return "unavailable"
+        }
+    }
+}
+
 public protocol ClaudeRemoteForwardProcess: Sendable {
+    /// Cheap liveness used before reusing an app-held local forward.
+    var isRunning: Bool { get }
     /// stderr, line by line, finishing when the process does.
     ///
     /// stderr is not diagnostics here, it is the PRODUCT: `remote port
     /// forwarding failed` is the only thing that distinguishes "another machine
     /// holds this port" from any other reason ssh exited.
     var standardErrorLines: AsyncStream<String> { get }
-    /// Resumes with the exit status once the process ends.
-    func waitUntilExit() async -> Int32
+    /// Resumes with the exit status once the process ends, or an honest
+    /// unavailable value when observation and collection must stay separate.
+    func waitUntilExit() async -> ClaudeRemoteForwardExitStatus
     /// Ask it to stop (SIGTERM). Must be safe to call more than once, and after
     /// exit.
     func terminate()
@@ -136,6 +157,16 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
     }
 
     public struct Configuration: Sendable, Equatable {
+        public struct LocalSocketForward: Sendable, Equatable {
+            public var localSocketPath: String
+            public var remoteSocketPath: String
+
+            public init(localSocketPath: String, remoteSocketPath: String) {
+                self.localSocketPath = localSocketPath
+                self.remoteSocketPath = remoteSocketPath
+            }
+        }
+
         public var hostID: String
         public var sshHostAlias: String
         /// The port bound on the REMOTE host — this Mac's allocation.
@@ -169,6 +200,10 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         /// so in the log. A process in an uninterruptible wait can outlive even
         /// this; pretending otherwise is how a teardown blocks forever.
         public var killGrace: Duration
+        /// Present for a supervised herdr `-L`; nil for the original hook
+        /// delivery `-R`. The lifecycle is shared, while argv and bind-failure
+        /// interpretation remain direction-specific.
+        public var localSocketForward: LocalSocketForward?
 
         public init(
             hostID: String,
@@ -190,6 +225,33 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             self.healthyUptime = healthyUptime
             self.terminationGrace = terminationGrace
             self.killGrace = killGrace
+            self.localSocketForward = nil
+        }
+
+        public init(
+            hostID: String,
+            sshHostAlias: String,
+            localSocketPath: String,
+            remoteSocketPath: String,
+            maxConsecutiveFailures: Int = 5,
+            settleDelay: Duration = .seconds(2),
+            healthyUptime: Duration = .seconds(60),
+            terminationGrace: Duration = .seconds(2),
+            killGrace: Duration = .seconds(1)
+        ) {
+            self.hostID = hostID
+            self.sshHostAlias = sshHostAlias
+            self.remoteForwardPort = 0
+            self.listenerPort = 0
+            self.maxConsecutiveFailures = maxConsecutiveFailures
+            self.settleDelay = settleDelay
+            self.healthyUptime = healthyUptime
+            self.terminationGrace = terminationGrace
+            self.killGrace = killGrace
+            self.localSocketForward = LocalSocketForward(
+                localSocketPath: localSocketPath,
+                remoteSocketPath: remoteSocketPath
+            )
         }
 
         /// The complete argv. No token is involved anywhere on this path — the
@@ -201,7 +263,14 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         /// through a failed connection rather than a silently accepted option
         /// (the `-V` lesson from PR #197).
         public var argv: [String] {
-            [
+            if let localSocketForward {
+                return ClaudeRemoteHerdrForwardService.argv(
+                    alias: sshHostAlias,
+                    localSocketPath: localSocketForward.localSocketPath,
+                    remoteSocketPath: localSocketForward.remoteSocketPath
+                )
+            }
+            return [
                 "ssh", "-N",
                 "-o", "BatchMode=yes",
                 "-o", "ExitOnForwardFailure=yes",
@@ -250,6 +319,10 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
     /// before dialing it again.
     @ObservationIgnored public private(set) var teardown: Task<Void, Never>?
 
+    /// The process half of the reuse health gate. The socket half is owned by
+    /// the herdr service because only it knows the private local path.
+    public var hasRunningProcess: Bool { currentProcess?.isRunning == true }
+
     public init(
         configuration: Configuration,
         launch: @escaping Launch,
@@ -266,9 +339,15 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         guard superviseTask == nil else { return }
         stoppingIntentionally = false
         consecutiveFailures = 0
-        Log.claudeContext.info(
-            "Claude remote forward start requested for host \(self.configuration.hostID, privacy: .public) port \(self.configuration.remoteForwardPort, privacy: .public)"
-        )
+        if configuration.localSocketForward != nil {
+            Log.claudeContext.info(
+                "Claude remote herdr forward start requested for host \(self.configuration.hostID, privacy: .public)"
+            )
+        } else {
+            Log.claudeContext.info(
+                "Claude remote forward start requested for host \(self.configuration.hostID, privacy: .public) port \(self.configuration.remoteForwardPort, privacy: .public)"
+            )
+        }
         transition(to: .connecting)
         superviseTask = Task { @MainActor [weak self] in
             await self?.supervise()
@@ -385,6 +464,13 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         while !stoppingIntentionally, !Task.isCancelled {
             let process: any ClaudeRemoteForwardProcess
             do {
+                if let localForward = configuration.localSocketForward {
+                    // A SIGKILLed ssh cannot unlink its AF_UNIX listener. The
+                    // predecessor has exited before the restart loop reaches
+                    // this point, and this path lives in the entry's private
+                    // workspace, so clearing its stale name is safe.
+                    _ = Darwin.unlink(localForward.localSocketPath)
+                }
                 process = try launch(configuration)
             } catch {
                 Log.claudeContext.error(
@@ -436,6 +522,15 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             // that its stream finishes when the process does.
             let bindFailure = await watcher.value ?? nil
             let status = await process.waitUntilExit()
+            // A posix_spawn-backed local forward deliberately leaves its dead
+            // leader unreaped until teardown can issue the unconditional group
+            // SIGKILL. Calling this after the leader exit is therefore not
+            // redundant: it clears ProxyJump/ProxyCommand descendants before
+            // the pid/pgid can be reused. Foundation-backed `-R` processes make
+            // the call a harmless no-op after exit.
+            if configuration.localSocketForward != nil {
+                process.forceTerminate()
+            }
             currentProcess = nil
             // The process is DEAD. Retire its settle window here, while this
             // iteration's scope is still open — not in a `defer` that runs
@@ -455,7 +550,8 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
             // config block being inherited, not a contended port (issue #215's
             // migration leaves exactly this behind). Different cause, different
             // fix, so it must not be reported as a held port.
-            if let refusedPort = bindFailure, refusedPort != configuration.remoteForwardPort {
+            if configuration.localSocketForward == nil,
+               let refusedPort = bindFailure, refusedPort != configuration.remoteForwardPort {
                 Log.claudeContext.error(
                     "Claude remote forward for host \(self.configuration.hostID, privacy: .public) inherited a stale RemoteForward for port \(refusedPort, privacy: .public); this Mac asked for \(self.configuration.remoteForwardPort, privacy: .public)"
                 )
@@ -464,7 +560,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
                 return
             }
 
-            if bindFailure != nil {
+            if configuration.localSocketForward == nil, bindFailure != nil {
                 // Terminal by design. Restarting would dial a port another
                 // machine is holding, forever, silently.
                 Log.claudeContext.error(
@@ -499,7 +595,7 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
 
             consecutiveFailures += 1
             Log.claudeContext.info(
-                "Claude remote forward for host \(self.configuration.hostID, privacy: .public) exited with status \(status, privacy: .public) (failure \(self.consecutiveFailures, privacy: .public))"
+                "Claude remote forward for host \(self.configuration.hostID, privacy: .public) exited with status \(status.logDescription, privacy: .public) (failure \(self.consecutiveFailures, privacy: .public))"
             )
 
             if consecutiveFailures >= max(1, configuration.maxConsecutiveFailures) {
@@ -532,7 +628,8 @@ public final class ClaudeRemoteForwardSupervisor: ClaudeRemoteForwarding {
         var refusedPort: UInt16?
         for await line in process.standardErrorLines {
             let lowered = line.lowercased()
-            if lowered.contains(ClaudeRemoteForwardPort.forwardFailureSignature) {
+            if configuration.localSocketForward == nil,
+               lowered.contains(ClaudeRemoteForwardPort.forwardFailureSignature) {
                 // Fall back to our own port when the number is missing or
                 // unparseable: the refusal is still real, and the
                 // conservative reading is the port we asked for.
