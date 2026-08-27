@@ -174,6 +174,35 @@ private final class RemoteJoinTestLiveness: Sendable {
     func kill(_ pid: Int32) { dead.withLock { _ = $0.insert(pid) } }
 }
 
+private final class RemoteJoinSSHConfigRunner: @unchecked Sendable {
+    struct Invocation: Equatable {
+        let executableURL: URL
+        let value: ClaudeRemoteEnrollmentService.Invocation
+    }
+
+    enum Failure: Error { case scripted }
+
+    let invocations = Mutex<[Invocation]>([])
+    private let outputs: [String: String]
+    private let shouldFail: Bool
+
+    init(outputs: [String: String] = [:], shouldFail: Bool = false) {
+        self.outputs = outputs
+        self.shouldFail = shouldFail
+    }
+
+    var run: SSHDestinationCanonicalizer.ProcessRunner {
+        { [self] executableURL, invocation in
+            invocations.withLock { $0.append(Invocation(executableURL: executableURL, value: invocation)) }
+            if shouldFail { throw Failure.scripted }
+            guard let operand = invocation.argv.last, let output = outputs[operand] else {
+                return ClaudeRemoteEnrollmentService.RunResult(exitCode: 1, message: "")
+            }
+            return ClaudeRemoteEnrollmentService.RunResult(exitCode: 0, message: output)
+        }
+    }
+}
+
 // MARK: - Resolver: the remote herdr arm
 
 /// A Claude Code session inside a herdr on an ENROLLED REMOTE host.
@@ -283,6 +312,7 @@ final class RemoteHerdrJoinTests: XCTestCase {
             )
         ),
         hosts: [ClaudeRemoteHost]? = nil,
+        canonicalizer: SSHDestinationCanonicalizer? = nil,
         title: String? = nil
     ) -> ClaudeSessionJoinResolver {
         let hostList = hosts ?? [enrolledHost()]
@@ -306,6 +336,13 @@ final class RemoteHerdrJoinTests: XCTestCase {
                     guard !host.isRevoked, let alias = host.sshHostAlias else { return false }
                     return alias.lowercased() == destination.lowercased()
                 }
+            },
+            canonicalizedEnrolledHosts: { destination in
+                guard let canonicalizer else { return [] }
+                return await canonicalizer.matchingHosts(
+                    destination: destination,
+                    enrolledHosts: hostList
+                )
             },
             remoteHerdrForwards: forwards
         )
@@ -342,6 +379,152 @@ final class RemoteHerdrJoinTests: XCTestCase {
         XCTAssertEqual(requests.map(\.method), ["pane.current", "pane.process_info"])
         XCTAssertTrue(requests.allSatisfy { $0.socketPath == forwards.localSocketPath })
         XCTAssertEqual(requests.compactMap(\.paneID), [remotePaneID])
+    }
+
+    func testIPDestinationJoinsHostViaCanonicalSSHConfig() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let panes = RemoteJoinHerdrPanes(focused: focusedPane())
+        let forwards = RecordingForwards()
+        let config = """
+            host 192.168.1.167
+            user dev
+            hostname 192.168.1.167
+            port 22
+            """
+        let runner = RemoteJoinSSHConfigRunner(
+            outputs: ["192.168.1.167": config, "Builder": config]
+        )
+        let canonicalizer = SSHDestinationCanonicalizer(
+            now: { [epoch] in epoch },
+            runner: runner.run
+        )
+
+        let join = try unwrapAsync(
+            await resolver(
+                registry: registry,
+                panes: panes,
+                forwards: forwards,
+                sshResult: .connection(
+                    SSHSurfaceConnection(
+                        destination: "192.168.1.167",
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: nil)
+                    )
+                ),
+                canonicalizer: canonicalizer
+            ).resolve(target: ghostty)
+        )
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertEqual(Set(runner.invocations.withLock { $0.map(\.value.argv) }), [
+            ["ssh", "-G", "--", "192.168.1.167"],
+            ["ssh", "-G", "--", "Builder"],
+        ])
+        XCTAssertTrue(
+            runner.invocations.withLock { invocations in
+                invocations.allSatisfy {
+                    $0.executableURL.path == "/usr/bin/ssh"
+                        && $0.value.standardInput.isEmpty
+                        && $0.value.timeout == SSHDestinationCanonicalizer.defaultTimeout
+                }
+            }
+        )
+    }
+
+    func testCanonicalizationFailureKeepsExactMatchFallthroughBehavior() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let forwards = RecordingForwards()
+        let runner = RemoteJoinSSHConfigRunner(shouldFail: true)
+        let canonicalizer = SSHDestinationCanonicalizer(
+            now: { [epoch] in epoch },
+            runner: runner.run
+        )
+
+        let join = try unwrapAsync(
+            await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: forwards,
+                sshResult: .connection(
+                    SSHSurfaceConnection(
+                        destination: "192.168.1.167",
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: nil)
+                    )
+                ),
+                canonicalizer: canonicalizer,
+                title: markerValue
+            ).resolve(target: ghostty)
+        )
+
+        XCTAssertEqual(join.mechanism, .titleMarker)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertEqual(runner.invocations.withLock { $0.count }, 1)
+    }
+
+    func testCanonicalMatchToTwoEnrolledHostsKeepsAmbiguityFatal() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let forwards = RecordingForwards()
+        let config = "user dev\nhostname 192.168.1.167\nport 22\n"
+        let runner = RemoteJoinSSHConfigRunner(outputs: [
+            "192.168.1.167": config,
+            "sandbox-vpn": config,
+            "sandbox-lan": config,
+        ])
+        let canonicalizer = SSHDestinationCanonicalizer(
+            now: { [epoch] in epoch },
+            runner: runner.run
+        )
+
+        let join = try unwrapAsync(
+            await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: forwards,
+                sshResult: .connection(
+                    SSHSurfaceConnection(
+                        destination: "192.168.1.167",
+                        hasCompetingHerdrClient: false,
+                        herdr: .plainClient(sessionSelector: nil)
+                    )
+                ),
+                hosts: [
+                    enrolledHost(alias: "sandbox-vpn"),
+                    enrolledHost(id: "h9z9z9z9", alias: "sandbox-lan"),
+                ],
+                canonicalizer: canonicalizer,
+                title: markerValue
+            ).resolve(target: ghostty)
+        )
+
+        XCTAssertEqual(join.mechanism, .titleMarker)
+        XCTAssertEqual(forwards.openCount, 0)
+        XCTAssertEqual(runner.invocations.withLock { $0.count }, 3)
+    }
+
+    func testExactMatchNeverInvokesCanonicalizer() async throws {
+        let registry = makeRegistry(markers: [markerValue])
+        ingestRemoteHerdrSession(into: registry)
+        let runner = RemoteJoinSSHConfigRunner(shouldFail: true)
+        let canonicalizer = SSHDestinationCanonicalizer(
+            now: { [epoch] in epoch },
+            runner: runner.run
+        )
+
+        let join = try unwrapAsync(
+            await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: RecordingForwards(),
+                canonicalizer: canonicalizer
+            ).resolve(target: ghostty)
+        )
+
+        XCTAssertEqual(join.mechanism, .remoteHerdrPane)
+        XCTAssertTrue(runner.invocations.withLock { $0.isEmpty })
     }
 
     func testAJoinedRemoteSessionStaysJoinableByItsMarkerAtCommit() async throws {

@@ -295,6 +295,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // a user who never enables the arm is never prompted for keychain
             // access and the secret is not held in memory between dictations.
             let cmuxPasswords = CmuxSocketPasswordStore()
+            let sshDestinationCanonicalizer = SSHDestinationCanonicalizer.live()
             let resolver = ClaudeSessionJoinResolver(
                 registry: claudeSessionRegistry,
                 focusedTerminalTTY: { await ttyReader.focusedTerminalTTY(bundleID: $0) },
@@ -320,6 +321,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // registry ⇒ no candidates ⇒ the remote herdr arm never runs.
                 enrolledHosts: { [weak self] destination in
                     self?.claudeRemoteHosts?.hosts(matchingSSHDestination: destination) ?? []
+                },
+                canonicalizedEnrolledHosts: { [weak self] destination in
+                    guard let hosts = self?.claudeRemoteHosts?.hosts() else { return [] }
+                    return await sshDestinationCanonicalizer.matchingHosts(
+                        destination: destination,
+                        enrolledHosts: hosts
+                    )
                 },
                 remoteHerdrForwards: ClaudeRemoteHerdrForwardService(
                     spawner: ClaudeRemoteHerdrForwardSpawner(),
