@@ -119,10 +119,23 @@ Fixture and host requirements (`scripts/herdr-integration-fixture.sh`):
   touched), so the lane is hermetic and needs no second machine. Pass an ssh
   destination to run the identical lane against a real second host.
 - For the duration of a run the fixture OWNS the account's
-  `~/.config/herdr/config.toml` and `session.json` and appends a delimited
-  block to `~/.ssh/config`, restoring all three on teardown (including when
-  `up` fails partway). It refuses to start at all when a herdr server is
-  already running for that account, rather than trampling a human's session.
+  `~/.config/herdr/config.toml` and `session.json` and appends two delimited
+  blocks to `~/.ssh/config`. It touches the REAL ssh config on purpose: the
+  code under test never passes `-F`, so an alias that lived only in a
+  fixture-local file would exercise an invocation shape the app never
+  produces. The ssh config is restored by REMOVING those blocks, not by
+  writing a copy back, so an edit made while the lane runs survives.
+- Because nothing runs on SIGKILL, the pristine originals live at a stable
+  path (`~/.localvoxtral-herdr-fixture-hold/`) with a manifest naming the run
+  that took them — never in the run's own temp dir, which a killed run would
+  strand. `up` restores a dead run's hold before touching anything and
+  refuses while a live run owns it; it will never back up an already-modified
+  file over a pristine copy, which is the step that would destroy the
+  originals. `status` and `recover` do it by hand
+  (`scripts/mac/README.md`), and `scripts/ci/test-herdr-fixture-recovery.sh`
+  holds that behavior per-push without needing herdr at all.
+- It refuses to start when a herdr server is already running for that account,
+  rather than trampling a human's session.
 - The suite has no `XCTSkip`. Every other lane skips it by name
   (`--skip HerdrIntegrationTests` in `remote-build.sh test` and in CI's unit
   step), and running it without its marker fails with the enablement

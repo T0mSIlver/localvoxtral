@@ -14,17 +14,44 @@
 #   scripts/herdr-integration-fixture.sh surface <workdir> <name> <app|attach> [pane-id]
 #   scripts/herdr-integration-fixture.sh reload  <workdir>
 #   scripts/herdr-integration-fixture.sh down    <workdir>
+#   scripts/herdr-integration-fixture.sh recover
+#   scripts/herdr-integration-fixture.sh status
 #
 # `up` prints one JSON object on stdout describing the fixture; every other
 # diagnostic goes to stderr. With no ssh-destination it provisions its OWN
 # loopback sshd (hermetic: no second machine, nothing added to the account's
 # real authorized_keys) and uses the alias `lvx-herdr-fixture`. Pass a
 # destination to aim the same lane at a real second host instead; the ssh half
-# is then the caller's own already-working configuration and is left untouched.
+# is then the caller's own already-working configuration.
+#
+# ## Files this borrows from the account, and how they come back
+#
+# For the duration of a run the fixture replaces the account's herdr
+# `config.toml`, removes its `session.json`, and appends two delimited blocks
+# to its `~/.ssh/config`. It has to touch the REAL ssh config because the code
+# under test never passes `-F`: the app's forward argv and
+# `SSHDestinationCanonicalizer.live()` both run `ssh` / `ssh -G` against the
+# user's default configuration chain, so an alias that only existed in a
+# fixture-local file would exercise an invocation shape the app never
+# produces.
+#
+# Because a run can be SIGKILLed (a torn-down runner, a sleeping Mac, a manual
+# kill of a wedged xctest), the pristine originals do NOT live in the run's own
+# temp dir — that would strand them when the run dies, and the NEXT run would
+# then back up the already-modified files and destroy the originals for good.
+# They live at a stable, discoverable path instead:
+#
+#   ~/.localvoxtral-herdr-fixture-hold/   manifest + pristine copies
+#
+# The manifest is written AFTER the pristine copies and BEFORE the first
+# modification, so a crash at any point leaves either nothing held or a
+# complete, restorable hold. `up` refuses to overwrite an existing hold; it
+# restores a dead run's hold first, and refuses outright while a live run owns
+# it. `recover` restores by hand.
 #
 # Deliberately loud: every precondition that cannot be met exits non-zero with
-# the exact provisioning step. This lane must never look green because
-# something was missing.
+# the exact recovery or provisioning step. This lane must never look green
+# because something was missing.
 set -euo pipefail
 
 FIXTURE_ALIAS="lvx-herdr-fixture"
@@ -42,10 +69,19 @@ SURFACE_COLUMNS=130
 SURFACE_ROWS=45
 READY_TIMEOUT_SECONDS=30
 
+# Account-level paths, resolved once at load. A sourcing test sets HOME before
+# sourcing this file (see scripts/ci/test-herdr-fixture-recovery.sh).
+HERDR_CONFIG_FILE="$HOME/.config/herdr/config.toml"
+HERDR_SESSION_FILE="$HOME/.config/herdr/session.json"
+SSH_CONFIG_FILE="$HOME/.ssh/config"
+HOLD_DIR="$HOME/.localvoxtral-herdr-fixture-hold"
+HOLD_MANIFEST="$HOLD_DIR/manifest"
+
 log() { printf '[herdr-fixture] %s\n' "$*" >&2; }
 
-# Set while `up` holds account-level files (herdr config/session, an
-# ~/.ssh/config block). Cleared once `up` has fully succeeded.
+# Set while `up` is between "started modifying things" and "fully succeeded".
+# A failure in that window restores through the EXIT trap; a KILL in it (or at
+# any point afterwards) is what the hold directory exists for.
 UP_IN_PROGRESS_DIR=""
 
 restore_after_failed_up() {
@@ -55,12 +91,165 @@ restore_after_failed_up() {
     command_down "$UP_IN_PROGRESS_DIR" >/dev/null 2>&1 || true
   fi
 }
-trap restore_after_failed_up EXIT
 
 die() {
   printf '[herdr-fixture] ERROR: %s\n' "$*" >&2
   exit 1
 }
+
+recovery_hint() {
+  printf '%s recover' "${BASH_SOURCE[0]}"
+}
+
+# ---------------------------------------------------------- held state
+
+hold_is_present() { [[ -f "$HOLD_MANIFEST" ]]; }
+
+hold_field() {
+  local key="$1"
+  [[ -f "$HOLD_MANIFEST" ]] || return 0
+  sed -n "s/^${key}=//p" "$HOLD_MANIFEST" | head -1
+}
+
+# Is the process that took the hold still running THIS script? A pid alone
+# would be fooled by reuse; the command check makes a false "live" essentially
+# impossible, and a false "dead" only costs a restore that was going to happen
+# anyway.
+hold_owner_is_alive() {
+  local pid
+  pid="$(hold_field pid)"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  ps -o command= -p "$pid" 2>/dev/null | grep -q 'herdr-integration-fixture' || return 1
+  return 0
+}
+
+# Copy the account's files aside and COMMIT the manifest, in that order, before
+# anything is modified. Refuses if a hold already exists: overwriting a
+# pristine copy with an already-modified file is the one step that turns a
+# recoverable interruption into permanent data loss.
+hold_account_files() {
+  local dir="$1"
+  if hold_is_present; then
+    die "held state already exists at $HOLD_DIR; refusing to overwrite the pristine copies.
+  Run: $(recovery_hint)"
+  fi
+  mkdir -p "$HOLD_DIR"
+  chmod 700 "$HOLD_DIR"
+  rm -f "$HOLD_DIR"/*.pristine "$HOLD_DIR"/*.absent "$HOLD_DIR"/*.created 2>/dev/null || true
+
+  mkdir -p "$(dirname "$HERDR_CONFIG_FILE")"
+  if [[ -f "$HERDR_CONFIG_FILE" ]]; then
+    cp "$HERDR_CONFIG_FILE" "$HOLD_DIR/herdr-config.pristine"
+  else
+    : > "$HOLD_DIR/herdr-config.absent"
+  fi
+  if [[ -f "$HERDR_SESSION_FILE" ]]; then
+    cp "$HERDR_SESSION_FILE" "$HOLD_DIR/herdr-session.pristine"
+  else
+    : > "$HOLD_DIR/herdr-session.absent"
+  fi
+  mkdir -p "$(dirname "$SSH_CONFIG_FILE")"
+  chmod 700 "$(dirname "$SSH_CONFIG_FILE")"
+  if [[ -f "$SSH_CONFIG_FILE" ]]; then
+    # Informational only — the ssh config is restored by REMOVING our
+    # delimited blocks, never by writing this copy back, so an edit the user
+    # makes while the lane runs survives.
+    cp "$SSH_CONFIG_FILE" "$HOLD_DIR/ssh-config.pristine"
+  else
+    : > "$HOLD_DIR/ssh-config.created"
+  fi
+
+  # Manifest last, and atomically: a crash before this leaves pristine copies
+  # nobody will read and nothing modified; a crash after it leaves a hold that
+  # `up` or `recover` can act on.
+  {
+    printf 'workdir=%s\n' "$dir"
+    printf 'pid=%s\n' "$$"
+    printf 'startedAt=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'home=%s\n' "$HOME"
+  } > "$HOLD_DIR/manifest.tmp"
+  mv "$HOLD_DIR/manifest.tmp" "$HOLD_MANIFEST"
+  log "holding this account's herdr config, session and ssh config (backups in $HOLD_DIR)"
+}
+
+# Drop our delimited blocks from the ssh config in place. Idempotent, and it
+# leaves anything the user added while the lane ran untouched.
+strip_ssh_config_blocks() {
+  [[ -f "$SSH_CONFIG_FILE" ]] || return 0
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/lvx-sshcfg.XXXXXX")"
+  awk -v b1="$SSH_CONFIG_BEGIN" -v e1="$SSH_CONFIG_END" \
+      -v b2="$SSH_CONFIG_ALT_BEGIN" -v e2="$SSH_CONFIG_ALT_END" '
+    $0 == b1 || $0 == b2 { skip = 1; next }
+    $0 == e1 || $0 == e2 { skip = 0; next }
+    !skip { print }
+  ' "$SSH_CONFIG_FILE" > "$tmp"
+  cat "$tmp" > "$SSH_CONFIG_FILE"
+  rm -f "$tmp"
+  chmod 600 "$SSH_CONFIG_FILE"
+  # Only remove the file if the fixture is the reason it exists at all.
+  if [[ ! -s "$SSH_CONFIG_FILE" && -f "$HOLD_DIR/ssh-config.created" ]]; then
+    rm -f "$SSH_CONFIG_FILE"
+  fi
+}
+
+# Put the account back and drop the hold. Safe to call when nothing is held.
+release_account_files() {
+  hold_is_present || return 0
+  mkdir -p "$(dirname "$HERDR_CONFIG_FILE")"
+  if [[ -f "$HOLD_DIR/herdr-config.pristine" ]]; then
+    cp "$HOLD_DIR/herdr-config.pristine" "$HERDR_CONFIG_FILE"
+  elif [[ -f "$HOLD_DIR/herdr-config.absent" ]]; then
+    rm -f "$HERDR_CONFIG_FILE"
+  fi
+  if [[ -f "$HOLD_DIR/herdr-session.pristine" ]]; then
+    cp "$HOLD_DIR/herdr-session.pristine" "$HERDR_SESSION_FILE"
+  elif [[ -f "$HOLD_DIR/herdr-session.absent" ]]; then
+    rm -f "$HERDR_SESSION_FILE"
+  fi
+  strip_ssh_config_blocks
+  rm -rf "$HOLD_DIR"
+  log "restored this account's herdr config, session and ssh config"
+}
+
+# `down <dir>` must not release a hold that belongs to a DIFFERENT run.
+release_account_files_if_held_by() {
+  local dir="$1" owner
+  hold_is_present || return 0
+  owner="$(hold_field workdir)"
+  if [[ -n "$owner" && "$owner" != "$dir" ]]; then
+    log "held state belongs to $owner, not $dir — leaving it alone"
+    return 0
+  fi
+  release_account_files
+}
+
+# Called at the START of `up`. A hold from a run that is still alive means two
+# lanes are racing for one account: refuse. A hold from a dead run is exactly
+# what the stable path exists for: restore it, loudly, and carry on.
+reclaim_or_refuse_stale_hold() {
+  hold_is_present || return 0
+  local owner started
+  owner="$(hold_field workdir)"
+  started="$(hold_field startedAt)"
+  if hold_owner_is_alive; then
+    die "another herdr fixture run (pid $(hold_field pid), started $started) is holding
+  this account's files. Wait for it to finish, or if you know it is dead:
+    $(recovery_hint)"
+  fi
+  log "found held state from an interrupted run (started $started, workdir $owner)"
+  if [[ -n "$owner" && -d "$owner" ]]; then
+    stop_workdir_processes "$owner"
+    rm -rf "$owner"
+  fi
+  release_account_files
+  if hold_is_present; then
+    die "could not restore the interrupted run's held state. Run: $(recovery_hint)"
+  fi
+}
+
+# ------------------------------------------------------------- helpers
 
 # Absolute path to the herdr binary. PATH first (so an owner's own install
 # wins), then the two package-manager prefixes; never a relative path.
@@ -111,6 +300,28 @@ free_port() {
     fi
   done
   die "could not find a free loopback port for the fixture sshd"
+}
+
+herdr_cli() {
+  HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" "$HERDR_BINARY" "$@"
+}
+
+# Kill whatever a run left behind in its own workdir. Touches no account files.
+stop_workdir_processes() {
+  local dir="$1" pid binary
+  [[ -d "$dir" ]] || return 0
+  binary="$(cat "$dir/herdr.bin" 2>/dev/null || true)"
+  if [[ -f "$dir/surface.pids" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+    done < "$dir/surface.pids"
+  fi
+  if [[ -x "$binary" ]]; then
+    HERDR_SOCKET_PATH="$dir/herdr.sock" "$binary" server stop >/dev/null 2>&1 || true
+  fi
+  for pid in "$dir/server.child.pid" "$dir/sshd.child.pid" "$dir/sshd.pid"; do
+    kill "$(cat "$pid" 2>/dev/null || true)" 2>/dev/null || true
+  done
 }
 
 # ---------------------------------------------------------------- up
@@ -182,8 +393,8 @@ EOF
     printf '  UserKnownHostsFile %s\n' "$dir/known_hosts"
     printf '  StrictHostKeyChecking yes\n'
     printf '%s\n' "$SSH_CONFIG_END"
-  } >> "$HOME/.ssh/config"
-  chmod 600 "$HOME/.ssh/config"
+  } >> "$SSH_CONFIG_FILE"
+  chmod 600 "$SSH_CONFIG_FILE"
   printf '%s\n' "$port" > "$dir/sshd.port"
 }
 
@@ -197,7 +408,7 @@ EOF
 # Written for BOTH modes so the test asserts the same thing whether the lane
 # runs hermetically or against a real second host.
 write_canonicalization_aliases() {
-  local dir="$1" alias_used="$2" hostname port other_port
+  local alias_used="$1" hostname port other_port
   hostname="$(ssh -G -- "$alias_used" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')"
   port="$(ssh -G -- "$alias_used" 2>/dev/null | awk '$1 == "port" { print $2; exit }')"
   if [[ -z "$hostname" || -z "$port" ]]; then
@@ -214,8 +425,8 @@ write_canonicalization_aliases() {
     printf '  HostName %s\n' "$hostname"
     printf '  Port %s\n' "$other_port"
     printf '%s\n' "$SSH_CONFIG_ALT_END"
-  } >> "$HOME/.ssh/config"
-  chmod 600 "$HOME/.ssh/config"
+  } >> "$SSH_CONFIG_FILE"
+  chmod 600 "$SSH_CONFIG_FILE"
 }
 
 start_surface() {
@@ -242,10 +453,6 @@ start_surface() {
   log "surface '$name' ($mode) started -> $dir/surface-$name.log"
 }
 
-herdr_cli() {
-  HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" "$HERDR_BINARY" "$@"
-}
-
 command_up() {
   local dir="$1" destination="${2:-}"
   validate_workdir "$dir"
@@ -254,10 +461,10 @@ command_up() {
   HERDR_BINARY="$(resolve_herdr)"
   log "herdr binary: $HERDR_BINARY ($("$HERDR_BINARY" --version 2>&1 | head -1))"
 
-  # The fixture owns this account's `~/.config/herdr/config.toml`, its
-  # `session.json`, and a block in `~/.ssh/config` for the duration of the
-  # lane. If the account already has a herdr running, those files belong to a
-  # human right now — refuse rather than trample them.
+  # The fixture owns this account's herdr config, its session state and a
+  # block in its ssh config for the duration of the lane. If the account
+  # already has a herdr running, those files belong to a human right now —
+  # refuse rather than trample them.
   if "$HERDR_BINARY" status server 2>/dev/null | grep -q '^status: running'; then
     die "a herdr server is already running for $(id -un).
   This lane takes over the account's herdr config and session state for the
@@ -265,31 +472,28 @@ command_up() {
   (or run the lane as a different account) and try again."
   fi
 
+  # Before anything is created or modified: hand back whatever an interrupted
+  # run left held, or refuse if a live run owns it.
+  reclaim_or_refuse_stale_hold
+
   mkdir -p "$dir"
   chmod 700 "$dir"
-  # From here on the fixture holds account-level files. Any failure must put
-  # them back: a half-provisioned `up` that left the account's herdr config
-  # replaced would be worse than no lane at all.
   UP_IN_PROGRESS_DIR="$dir"
   HERDR_SOCKET_PATH="$dir/herdr.sock"
   export HERDR_SOCKET_PATH
-  # Recorded first, so `down` can still reach the binary if `up` dies partway.
+  # Recorded first, so teardown can still reach the binary if `up` dies partway.
   printf '%s\n' "$HERDR_BINARY" > "$dir/herdr.bin"
 
-  # The forward under test builds its argv from the ALIAS alone, so the
-  # fixture's connection details have to live where ssh finds them: the
-  # account's ~/.ssh/config, in delimited blocks `down` removes again. This is
-  # the same file the app's own enrollment writes its host blocks into.
-  mkdir -p "$HOME/.ssh"
-  chmod 700 "$HOME/.ssh"
-  if [[ -f "$HOME/.ssh/config" ]]; then
-    cp "$HOME/.ssh/config" "$dir/ssh_config.bak"
-    if grep -qF "$SSH_CONFIG_BEGIN" "$HOME/.ssh/config" \
-      || grep -qF "$SSH_CONFIG_ALT_BEGIN" "$HOME/.ssh/config"; then
-      die "an earlier fixture block is still in ~/.ssh/config; run 'down' first"
-    fi
-  else
-    : > "$dir/ssh_config.absent"
+  hold_account_files "$dir"
+
+  # The forward under test builds its argv from the ALIAS alone and never
+  # passes -F, so the fixture's connection details have to live where ssh
+  # actually looks: the account's ~/.ssh/config, in delimited blocks teardown
+  # removes again. This is the same file the app's own enrollment writes its
+  # host blocks into.
+  if [[ -f "$SSH_CONFIG_FILE" ]] \
+    && grep -qF "$SSH_CONFIG_BEGIN" "$SSH_CONFIG_FILE"; then
+    die "a fixture block is still in $SSH_CONFIG_FILE. Run: $(recovery_hint)"
   fi
 
   local alias_used="$destination" provisioned_ssh=0
@@ -300,31 +504,17 @@ command_up() {
   else
     log "using caller-supplied ssh destination '$destination' (no sshd provisioned)"
   fi
-  write_canonicalization_aliases "$dir" "$alias_used"
+  write_canonicalization_aliases "$alias_used"
 
-  # The panel row the whole-view client must render for the binding probe.
-  # Written as the account's REAL herdr config (backed up here, restored by
-  # `down`), because that is the file `herdr server reload-config` reads.
-  mkdir -p "$HOME/.config/herdr"
-  if [[ -f "$HOME/.config/herdr/config.toml" ]]; then
-    cp "$HOME/.config/herdr/config.toml" "$dir/herdr-config.bak"
-  else
-    : > "$dir/herdr-config.absent"
-  fi
   # herdr persists its workspace/pane layout and restores it on the next
-  # start. A leftover session makes pane ids (and how many panes exist)
-  # depend on what ran before, which is exactly what a lane must not do.
-  if [[ -f "$HOME/.config/herdr/session.json" ]]; then
-    cp "$HOME/.config/herdr/session.json" "$dir/herdr-session.bak"
-  else
-    : > "$dir/herdr-session.absent"
-  fi
-  rm -f "$HOME/.config/herdr/session.json"
+  # start. A leftover session makes pane ids (and how many panes exist) depend
+  # on what ran before, which is exactly what a lane must not do.
+  rm -f "$HERDR_SESSION_FILE"
   # `onboarding = false` matters: herdr's first-run setup screen has no
   # workspace and therefore no pane, so `pane.current` answers pane_not_found
   # forever and the fixture would never become ready. The update checks are
   # off so the lane makes no network requests.
-  cat > "$HOME/.config/herdr/config.toml" <<'EOF'
+  cat > "$HERDR_CONFIG_FILE" <<'EOF'
 onboarding = false
 
 [update]
@@ -424,50 +614,61 @@ command_reload() {
 command_down() {
   local dir="$1"
   validate_workdir "$dir"
-  if [[ ! -d "$dir" ]]; then
+  if [[ -d "$dir" ]]; then
+    stop_workdir_processes "$dir"
+    rm -rf "$dir"
+    log "torn down $dir"
+  else
     log "nothing to tear down at $dir"
+  fi
+  release_account_files_if_held_by "$dir"
+}
+
+# The verb a human runs after a killed run. Needs no workdir: everything it
+# needs is in the hold directory.
+command_recover() {
+  if ! hold_is_present; then
+    log "nothing held — this account's files are already its own"
     return 0
   fi
-  HERDR_BINARY="$(cat "$dir/herdr.bin" 2>/dev/null || true)"
-  HERDR_SOCKET_PATH="$dir/herdr.sock"
-  export HERDR_SOCKET_PATH
-
-  local pid
-  if [[ -f "$dir/surface.pids" ]]; then
-    while IFS= read -r pid; do
-      [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
-    done < "$dir/surface.pids"
+  local owner
+  owner="$(hold_field workdir)"
+  if hold_owner_is_alive; then
+    die "a herdr fixture run (pid $(hold_field pid)) is still alive and holding these
+  files. Stop it first, then re-run recover."
   fi
-  if [[ -x "$HERDR_BINARY" ]]; then
-    HERDR_SOCKET_PATH="$HERDR_SOCKET_PATH" "$HERDR_BINARY" server stop >/dev/null 2>&1 || true
+  log "recovering held state from $owner (started $(hold_field startedAt))"
+  if [[ -n "$owner" && -d "$owner" ]]; then
+    stop_workdir_processes "$owner"
+    rm -rf "$owner"
   fi
-  for pid in "$dir/server.child.pid" "$dir/sshd.child.pid"; do
-    kill "$(cat "$pid" 2>/dev/null || true)" 2>/dev/null || true
-  done
-  if [[ -f "$dir/sshd.pid" ]]; then
-    kill "$(cat "$dir/sshd.pid" 2>/dev/null || true)" 2>/dev/null || true
-  fi
-
-  # Restore the account's files before anything else can fail.
-  if [[ -f "$dir/ssh_config.bak" ]]; then
-    cp "$dir/ssh_config.bak" "$HOME/.ssh/config"
-  elif [[ -f "$dir/ssh_config.absent" ]]; then
-    rm -f "$HOME/.ssh/config"
-  fi
-  if [[ -f "$dir/herdr-config.bak" ]]; then
-    cp "$dir/herdr-config.bak" "$HOME/.config/herdr/config.toml"
-  elif [[ -f "$dir/herdr-config.absent" ]]; then
-    rm -f "$HOME/.config/herdr/config.toml"
-  fi
-  if [[ -f "$dir/herdr-session.bak" ]]; then
-    cp "$dir/herdr-session.bak" "$HOME/.config/herdr/session.json"
-  elif [[ -f "$dir/herdr-session.absent" ]]; then
-    rm -f "$HOME/.config/herdr/session.json"
-  fi
-
-  rm -rf "$dir"
-  log "torn down $dir"
+  release_account_files
 }
+
+command_status() {
+  if ! hold_is_present; then
+    printf 'held=false\n'
+    return 0
+  fi
+  printf 'held=true\n'
+  printf 'workdir=%s\n' "$(hold_field workdir)"
+  printf 'pid=%s\n' "$(hold_field pid)"
+  printf 'startedAt=%s\n' "$(hold_field startedAt)"
+  printf 'ownerAlive=%s\n' "$(hold_owner_is_alive && echo true || echo false)"
+  printf 'backups=%s\n' "$HOLD_DIR"
+}
+
+# Shell regression tests source the reviewed implementation directly, exactly
+# like scripts/mac/localvoxtral-build-gate.sh does. This variable cannot make
+# a real invocation behave differently: it only suppresses dispatch.
+if [[ "${LOCALVOXTRAL_HERDR_FIXTURE_SOURCE_ONLY:-0}" == "1" ]]; then
+  if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+  fi
+  exit 0
+fi
+
+trap restore_after_failed_up EXIT
 
 VERB="${1:-}"
 shift || true
@@ -488,7 +689,15 @@ case "$VERB" in
     [[ $# -eq 1 ]] || die "usage: $0 down <workdir>"
     command_down "$@"
     ;;
+  recover)
+    [[ $# -eq 0 ]] || die "usage: $0 recover"
+    command_recover
+    ;;
+  status)
+    [[ $# -eq 0 ]] || die "usage: $0 status"
+    command_status
+    ;;
   *)
-    die "usage: $0 [up|surface|reload|down] ..."
+    die "usage: $0 [up|surface|reload|down|recover|status] ..."
     ;;
 esac

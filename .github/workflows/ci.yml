@@ -180,6 +180,7 @@ jobs:
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
+          ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
 
       - name: Clean abandoned test processes in this workspace
@@ -207,6 +208,7 @@ jobs:
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
+          ./scripts/ci/test-herdr-fixture-recovery.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
