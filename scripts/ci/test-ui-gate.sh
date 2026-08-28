@@ -722,5 +722,56 @@ else
   printf 'SKIP: swiftc not available — the embedded Swift helper was not type checked\n'
 fi
 
+# ---------------------------------------------------------------------------
+# 14. `state`'s live probes survive SIGPIPE
+#
+# Regression for the first-install failure (2026-08-28): `state` was reached,
+# authorized, logged ALLOW — and then died with rc 141 and no output. `ioreg`
+# writes far more than the first HIDIdleTime line, `awk` exits on that match,
+# ioreg takes SIGPIPE, and `pipefail` + `set -e` killed the gate before it
+# printed a byte. The suite could not see it because it stubs `ioreg`, so the
+# guard here is twofold: the source shape (everywhere) and a real run (macOS).
+# ---------------------------------------------------------------------------
+
+echo
+echo "== 14. state's live probes survive SIGPIPE =="
+
+for probe in 'ioreg -c IOHIDSystem' 'pmset -g ps'; do
+  line="$(grep -n -- "$probe" "$GATE" | head -n 1 || true)"
+  [[ -n "$line" ]] || fail "no $probe probe found in the gate — did state change shape?"
+done
+
+# The ioreg substitution spans two lines; check the one carrying the pipeline.
+grep -q "awk '/HIDIdleTime/.*|| true)\"" "$GATE" \
+  || fail "the ioreg idle probe lost its \`|| true\` — state will die with rc 141 on a real Mac"
+pass "the ioreg idle probe tolerates SIGPIPE"
+
+grep -q 'pmset -g ps 2>/dev/null | head -n 1 || true' "$GATE" \
+  || fail "the pmset power probe lost its \`|| true\`"
+pass "the pmset power probe tolerates SIGPIPE"
+
+# The source check above pins the shape; this runs the real thing. Extracting
+# from the gate rather than restating the pipeline means a future edit is what
+# gets tested, not a copy of it that can drift.
+if command -v ioreg >/dev/null 2>&1 && command -v pmset >/dev/null 2>&1; then
+  idle_expr="$(sed -n '/idle="\$(ioreg -c IOHIDSystem/,/|| true)"/p' "$GATE")"
+  [[ -n "$idle_expr" ]] || fail "could not extract the idle probe from the gate"
+  power_expr="$(grep -- 'pmset -g ps 2>/dev/null | head -n 1 || true' "$GATE" \
+    | sed 's/^ *case "/probe_out="/; s/" in$/"/')"
+  [[ -n "$power_expr" ]] || fail "could not extract the power probe from the gate"
+
+  if ! ( set -euo pipefail; eval "$idle_expr"; printf '%s' "$idle" >/dev/null ) 2>/dev/null; then
+    fail "the gate's real ioreg idle probe still fails under set -euo pipefail (rc 141 class)"
+  fi
+  pass "the idle probe runs clean against the real ioreg"
+
+  if ! ( set -euo pipefail; eval "$power_expr" ) 2>/dev/null; then
+    fail "the gate's real pmset power probe still fails under set -euo pipefail"
+  fi
+  pass "the power probe runs clean against the real pmset"
+else
+  printf 'SKIP: ioreg/pmset unavailable — the live SIGPIPE probes were not run\n'
+fi
+
 echo
 echo "ui gate tests passed"

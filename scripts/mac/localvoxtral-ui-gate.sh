@@ -824,10 +824,17 @@ json_string() {
 run_state() {
   local lock idle power preflight accessibility screen_recording running_json terminals
   lock="$(screen_lock_state)"
+  # `|| true` is load-bearing, not defensive noise: awk `exit`s on the first
+  # match while ioreg is still writing, so ioreg takes SIGPIPE and `pipefail`
+  # makes the whole substitution non-zero — under `set -e` that killed `state`
+  # with rc 141 and no output at all (first install, 2026-08-28). The validity
+  # guard on the next line already covers an empty result.
   idle="$(ioreg -c IOHIDSystem 2>/dev/null \
-    | awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { print int($NF / 1000000000); exit } }')"
+    | awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { print int($NF / 1000000000); exit } }' || true)"
   [[ "$idle" =~ ^[0-9]+$ ]] || idle="null"
-  case "$(pmset -g ps 2>/dev/null | head -n 1)" in
+  # Same SIGPIPE shape as the idle probe above: `head` closes the pipe while
+  # pmset is still writing. `*)` already yields "unknown" for an empty read.
+  case "$(pmset -g ps 2>/dev/null | head -n 1 || true)" in
     *"AC Power"*) power="ac" ;;
     *"Battery Power"* | *"UPS Power"*) power="battery" ;;
     *) power="unknown" ;;
