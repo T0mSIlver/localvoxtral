@@ -41,6 +41,10 @@ set -euo pipefail
 #     app under test is frontmost — it activates that app first and refuses if
 #     the activation did not take, so a keystroke never lands in whatever the
 #     owner last touched.
+#   - `menu open` / `menu click` / `menu dismiss` reach the status item of
+#     that same pid, through AXUIElementCreateApplication(<it>). They exist
+#     because localvoxtral opens no window at launch — without them every verb
+#     above has nothing to address. No other app's menu bar is expressible.
 #   - `term focus` / `term close` act only on a window this gate opened,
 #     identified by a random marker it put in that window's title.
 #
@@ -57,9 +61,10 @@ set -euo pipefail
 # It refuses everything GUI-touching while the screen is locked (shared probe:
 # scripts/ci/screen-lock-state.sh, fail CLOSED here), and honours the owner's
 # takeover rule: any verb that steals focus (launch, ax click, ax type, key,
-# term open, term focus) speaks a warning, waits, and announces completion.
-# `state`, `shot`, `ax dump`, `quit` and `term close` do not warn: none of them
-# takes the keyboard or raises a window in front of what the owner is doing.
+# menu open, menu click, term open, term focus) speaks a warning, waits, and
+# announces completion. `state`, `shot`, `ax dump`, `menu dismiss`, `quit` and
+# `term close` do not warn: none of them takes the keyboard or raises a window
+# in front of what the owner is doing.
 #
 # Verbs (each documented at its run_* function):
 #   state
@@ -69,6 +74,7 @@ set -euo pipefail
 #   ax click <selector>
 #   ax type <selector> -- <text>
 #   key <escape|tab|return>
+#   menu <open|click <item-title>|dismiss>
 #   quit
 #   term open <ghostty|iterm|terminal> <command> [args...]
 #   term focus <id>
@@ -234,6 +240,17 @@ validate_selector() {
   (( matchable == 1 ))
 }
 
+# A menu item title arrives as ONE token in the charset above, `+` for a space
+# (`menu click Show+Log`). Real titles routinely carry characters that charset
+# cannot express — localvoxtral's is "Settings…" — which is why the helper
+# matches by containment with an exact title winning: `menu click Settings` is
+# how you reach it, and an ambiguous substring is refused, not guessed at.
+validate_menu_title() {
+  local title="$1"
+  token_is_safe "$title" || return 1
+  (( ${#title} >= 1 && ${#title} <= 128 ))
+}
+
 # Typed text is the one place a wider charset is allowed: it never reaches a
 # shell (the Swift helper receives it as argv) and API keys/URLs need it.
 validate_typed_text() {
@@ -343,6 +360,9 @@ import Foundation
 //   axclick <pid> <selector>
 //   axtype <pid> <selector> <text>
 //   key <pid> <escape|tab|return>
+//   menuopen <pid>
+//   menuclick <pid> <item-title>
+//   menudismiss <pid>
 //   termwindow <ownerpid> <marker>                           -> "<winid> <ownerpid>"
 //   termaction <ownerpid> <marker> <focus|close>
 
@@ -519,6 +539,42 @@ func requirePID(_ raw: String) -> pid_t {
     return pid
 }
 
+// MARK: - The status item
+//
+// localvoxtral is a menu bar app: it opens NO window at launch, so every
+// window verb above has nothing to address until its status item is clicked.
+// This is that click, and it stays inside the same boundary as everything
+// else — the element is reached from AXUIElementCreateApplication(<the pid
+// `launch` recorded>), so no other application's menu bar is expressible here.
+//
+// AX rather than System Events/AppleScript on purpose: the AX route needs only
+// the Accessibility grant sshd already holds, while an Apple event to System
+// Events would need a separate Automation grant whose consent sheet cannot be
+// answered over SSH.
+func extrasMenuBarItem(_ pid: pid_t) -> AXUIElement {
+    let app = AXUIElementCreateApplication(pid)
+    // Pressing a status item blocks the AX server for as long as the menu
+    // tracks — the same reason capture-readme-assets.sh wraps its AppleScript
+    // in `ignoring application responses`. Bound the wait instead of hanging
+    // the SSH session. This is safe only because the press is verified
+    // afterwards by looking for the menu: a timeout is never read as success.
+    _ = AXUIElementSetMessagingTimeout(app, 2.0)
+    guard let bar = copyAttr(app, "AXExtrasMenuBar") else {
+        die("pid \(pid) exposes no status item (AXExtrasMenuBar)")
+    }
+    let items = (copyAttr(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+    guard let item = items.first else { die("pid \(pid) has an empty status menu bar") }
+    return item
+}
+
+func openMenu(of item: AXUIElement) -> AXUIElement? {
+    for child in (copyAttr(item, kAXChildrenAttribute) as? [AXUIElement]) ?? []
+    where str(child, kAXRoleAttribute) == "AXMenu" {
+        return child
+    }
+    return nil
+}
+
 // Bring one pid frontmost and give the activation up to two seconds to land.
 // Callers still re-check afterwards — this only asks.
 func activateAndWait(_ pid: pid_t) {
@@ -649,6 +705,71 @@ case "key":
     else { die("could not create keyboard events") }
     down.post(tap: .cghidEventTap)
     up.post(tap: .cghidEventTap)
+    print("ok")
+
+case "menuopen":
+    guard argv.count >= 2 else { die("usage: menuopen <pid>") }
+    let item = extrasMenuBarItem(requirePID(argv[1]))
+    if openMenu(of: item) != nil {
+        print("ok already-open")
+        break
+    }
+    _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+    // The press's own status is not the answer — it reports .cannotComplete
+    // while the menu tracks. The menu's existence is the answer.
+    let menuDeadline = Date().addingTimeInterval(3)
+    while Date() < menuDeadline {
+        if openMenu(of: item) != nil {
+            print("ok")
+            exit(0)
+        }
+        usleep(150_000)
+    }
+    die("the status item was pressed but no menu opened")
+
+case "menuclick":
+    guard argv.count >= 3 else { die("usage: menuclick <pid> <item-title>") }
+    let wanted = argv[2].replacingOccurrences(of: "+", with: " ")
+    guard let menu = openMenu(of: extrasMenuBarItem(requirePID(argv[1]))) else {
+        die("no status menu is open — run `menu open` first")
+    }
+    let entries = ((copyAttr(menu, kAXChildrenAttribute) as? [AXUIElement]) ?? [])
+        .filter { !str($0, kAXTitleAttribute).isEmpty }
+    // Menu titles carry characters the gate's token charset cannot express
+    // (localvoxtral's is "Settings…"), so the argument is matched by
+    // containment. An exact title still wins, so "Save" is never ambiguous
+    // with "Save As…"; beyond that, ambiguity is refused rather than guessed
+    // at — the same rule the element selector applies.
+    var menuMatches = entries.filter { str($0, kAXTitleAttribute) == wanted }
+    if menuMatches.isEmpty {
+        menuMatches = entries.filter { str($0, kAXTitleAttribute).contains(wanted) }
+    }
+    guard !menuMatches.isEmpty else {
+        die("no menu item matches \"\(wanted)\"; the menu holds: "
+            + entries.map { str($0, kAXTitleAttribute) }.joined(separator: " | "))
+    }
+    guard menuMatches.count == 1 else {
+        die("\(menuMatches.count) menu items contain \"\(wanted)\" — name more of the title")
+    }
+    let pressResult = AXUIElementPerformAction(menuMatches[0], kAXPressAction as CFString)
+    guard pressResult == .success else { die("AXPress on the menu item failed (\(pressResult.rawValue))") }
+    print("ok")
+
+case "menudismiss":
+    guard argv.count >= 2 else { die("usage: menudismiss <pid>") }
+    let dismissItem = extrasMenuBarItem(requirePID(argv[1]))
+    guard let openMenuElement = openMenu(of: dismissItem) else {
+        print("ok no-menu-open")
+        break
+    }
+    // AXCancel on the app's own menu, not a synthesised Escape: a keystroke
+    // goes to whatever owns the keyboard, and closing a menu never has to.
+    if AXUIElementPerformAction(openMenuElement, kAXCancelAction as CFString) == .success {
+        print("ok")
+        break
+    }
+    // Fall back to toggling the status item shut — still the app's own element.
+    _ = AXUIElementPerformAction(dismissItem, kAXPressAction as CFString)
     print("ok")
 
 case "termwindow":
@@ -872,7 +993,7 @@ run_state() {
 
 # launch [--dogfood] <artifact>
 run_launch() {
-  local dogfood=0 argument="" bundle stamp pid deadline
+  local dogfood=0 argument="" bundle stamp pid deadline foreign
   while (( $# > 0 )); do
     case "$1" in
       --dogfood) dogfood=1 ;;
@@ -900,6 +1021,19 @@ run_launch() {
   # menu bar icons, two hotkey owners) and silently retarget every later verb.
   if load_app_state; then
     deny "pid $APP_PID is already under test — quit it first"
+  fi
+
+  # A localvoxtral this gate did NOT start is the same conflict wearing a
+  # different hat, and the gate cannot quit it (no recorded identity) or
+  # address it (every other verb reads app.state). Two instances re-register
+  # the global hotkey and fight over the speechd/polishd ports 8471/8472, and
+  # the owner's daily driver is exactly what is running on this machine — on
+  # 2026-08-29 `launch` would have started a second one beside pid 91687 and
+  # only the operator noticing prevented it. So: refuse, and name the pid.
+  foreign="$(pgrep -x localvoxtral 2>/dev/null | tr '\n' ' ' || true)"
+  foreign="${foreign% }"
+  if [[ -n "$foreign" ]]; then
+    deny "localvoxtral is already running (pid $foreign) and this gate did not start it — quit it first (its menu bar item, or kill $foreign)"
   fi
 
   require_unlocked_screen
@@ -1025,6 +1159,44 @@ run_key() {
   log_command ALLOW "key=$name"
   announce_takeover "sending $name to localvoxtral"
   helper key "$APP_PID" "$name" || fail "key event refused (is the app under test frontmost?)"
+  ACTION_COMPLETED=1
+}
+
+# menu open | menu click <item-title> | menu dismiss
+#
+# The verb that makes every other verb reachable. localvoxtral opens no window
+# at launch, so until the status item is clicked `shot`, `ax dump`, `ax click`,
+# `ax type` and `key` all correctly report that there is nothing to address
+# (field check, 2026-08-29: `launch` succeeded, `ax dump all` returned `[]`,
+# and every UI verb was unusable). Scoped exactly like the others: the pid is
+# the one `launch` recorded, and the AX element is that app's own status item.
+run_menu_open() {
+  require_unlocked_screen
+  require_app_under_test
+  log_command ALLOW "menu=open pid=$APP_PID"
+  announce_takeover "opening the localvoxtral status menu"
+  helper menuopen "$APP_PID" || fail "the status menu did not open"
+  ACTION_COMPLETED=1
+}
+
+run_menu_click() {
+  local title="$1"
+  validate_menu_title "$title" || deny "malformed menu item title"
+  require_unlocked_screen
+  require_app_under_test
+  log_command ALLOW "menu=click item=$title"
+  announce_takeover "clicking $title in the localvoxtral status menu"
+  helper menuclick "$APP_PID" "$title" || fail "menu item click failed"
+  ACTION_COMPLETED=1
+}
+
+# No takeover warning, for the same reason `quit` has none: closing a menu
+# takes nothing from the owner — it gives the screen back.
+run_menu_dismiss() {
+  require_unlocked_screen
+  require_app_under_test
+  log_command ALLOW "menu=dismiss pid=$APP_PID"
+  helper menudismiss "$APP_PID" || fail "could not dismiss the status menu"
   ACTION_COMPLETED=1
 }
 
@@ -1250,6 +1422,25 @@ case "${ARGV[0]}" in
   quit)
     (( ${#ARGV[@]} == 1 )) || deny "quit takes no arguments"
     run_quit
+    ;;
+  menu)
+    case "${ARGV[1]:-}" in
+      open)
+        (( ${#ARGV[@]} == 2 )) || deny "menu open takes no arguments"
+        run_menu_open
+        ;;
+      click)
+        (( ${#ARGV[@]} == 3 )) || deny "menu click takes exactly one item title"
+        run_menu_click "${ARGV[2]}"
+        ;;
+      dismiss)
+        (( ${#ARGV[@]} == 2 )) || deny "menu dismiss takes no arguments"
+        run_menu_dismiss
+        ;;
+      *)
+        deny "unknown menu subverb"
+        ;;
+    esac
     ;;
   ax)
     case "${ARGV[1]:-}" in

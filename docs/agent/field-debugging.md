@@ -12,6 +12,12 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   a `workflow_dispatch` with `dogfood=true`); when the target run lacks it,
   the script offers to trigger a dispatch build and shows the latest run
   that has one.
+  `--ui-gate` (composable with `--dogfood`) installs the bundle into the SSH
+  UI gate's artifact root instead of leaving it in `/tmp`, and stops short of
+  launching it — `ssh lv-ui 'launch ...'` is what starts it, and what records
+  the pid every other gate verb addresses. The gate's roots are owner-writable
+  only on purpose, so the install destination moves rather than the roots
+  (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
 - **Code signing (why TCC used to reset)**: `package_app.sh` signs with
   `$LOCALVOXTRAL_CODESIGN_IDENTITY` when set, else ad-hoc. The owner's Mac
   has a self-signed code-signing cert `localvoxtral-dev`; the identity env

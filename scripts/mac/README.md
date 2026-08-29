@@ -535,12 +535,13 @@ full-screen capture anywhere in it:
 | verb | what it does |
 | --- | --- |
 | `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened |
-| `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid |
+| `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start |
 | `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else |
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
 | `ax click <selector>` | presses the one element the selector matches |
 | `ax type <selector> -- <text>` | types into a text-bearing element |
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
+| `menu open` / `menu click <item-title>` / `menu dismiss` | drives the status item of the recorded pid. localvoxtral opens no window at launch, so this is what makes every row above it reachable |
 | `quit` | terminates the recorded pid |
 | `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
@@ -594,7 +595,7 @@ cd ~/work/localvoxtral && git pull
 install -d -m 0700 "$HOME/bin"
 install -m 0755 scripts/mac/localvoxtral-ui-gate.sh "$HOME/bin/localvoxtral-ui-gate.sh"
 install -m 0755 scripts/ci/screen-lock-state.sh "$HOME/bin/localvoxtral-screen-lock-state.sh"
-mkdir -p "$HOME/localvoxtral-ui-artifacts"     # where launchable .app bundles go
+install -d -m 0700 "$HOME/localvoxtral-ui-artifacts"  # where launchable .app bundles go
 
 # 3. Force the command on that key ONLY (one line in ~/.ssh/authorized_keys).
 #    `restrict` disables pty, agent/port/X11 forwarding and user rc files; the
@@ -632,6 +633,63 @@ enqueue verbs the helper already implements. It also side-steps the open
 question below about whether an SSH-hosted process can reach the GUI session at
 all. It is more moving parts than a single reviewed script, so it is not what
 v1 does.
+
+### `menu` — the verb that makes every other verb reachable
+
+localvoxtral is a menu bar app and opens **no window at launch**. Straight
+after `launch`, `ax dump all` returns `[]`, `shot settings` reports no window,
+and `ax click` matches nothing — all correct, and all useless. `menu open`
+clicks the status item; the menu it opens is what `shot popover` photographs,
+and `menu click Settings` is what produces the Settings window every other verb
+then addresses.
+
+Item titles are matched by containment, with an exact title winning and
+ambiguity refused — because a real title (`Settings…`) contains characters the
+gate's token charset cannot carry, so `menu click Settings` is the way in. A
+space is spelled `+`, as in selector values: `menu click Show+Log`.
+
+`menu dismiss` closes the menu through the app's own AX cancel action rather
+than a synthesised Escape, so no keystroke is ever posted at whatever owns the
+keyboard. It takes nothing from the owner and therefore does not warn.
+
+The mechanism is the Accessibility API (`AXExtrasMenuBar` on the recorded pid),
+not System Events: an Apple event would need a separate Automation grant whose
+consent sheet cannot be answered over SSH, while Accessibility is a grant sshd
+already holds.
+
+### Getting a build into the artifact root
+
+`launch` only accepts bundles under `LV_UI_ARTIFACT_ROOTS`, and those roots
+must stay writable by the owner alone: inside one, a bundle claiming
+`com.localvoxtral.app` is trusted, so a world-writable root would let any local
+process plant one and have the gate start it as the GUI user. `try-pr.sh`
+extracts to `/tmp`, which is exactly such a directory — so the bundle moves,
+never the roots.
+
+```bash
+# On the Mac's GUI account. Fetches the CI artifact and installs it; does NOT
+# launch it, because launching is the gate's job.
+./scripts/try-pr.sh 238 --ui-gate
+./scripts/try-pr.sh main --dogfood --ui-gate     # instrumented build
+
+# A locally packaged bundle, same destination:
+./scripts/mac/install-ui-artifact.sh dist/localvoxtral.app
+```
+
+Two slots, replaced in place: `localvoxtral.app` and (for a
+`LVXDogfoodCapture`-stamped build) `localvoxtral-dogfood.app`. Keeping one copy
+per build would be worse than useless — they share a bundle id, a defaults
+domain and a TCC grant, so a stale one is indistinguishable at runtime, which
+is the wrong-binary confusion `docs/agent/field-debugging.md` is about. What
+each slot currently holds is in `<bundle>.app.source` next to it.
+
+The installer refuses a root it cannot write, a root that is group- or
+other-writable, a bundle that is not a validated localvoxtral app, and any
+overwrite of a bundle that is **currently running** from that slot. It does not
+quit anything: `quit` is a gate verb, and only the operator knows whether a
+dictation is in flight. Do quit the running app before `launch` — a second
+instance fights the first for the global hotkey and for the speechd/polishd
+ports 8471/8472.
 
 ### Machine-local config (`~/.localvoxtral-ui-gate.conf`, GUI account)
 
@@ -711,6 +769,9 @@ with both an app under test and an open terminal recorded.
 ssh lv-ui 'state'                       # JSON; check tcc.accessibility and
                                         # tcc.screen_recording are both true
 ssh lv-ui 'launch localvoxtral-ui-artifacts/localvoxtral.app'
+ssh lv-ui 'menu open'                   # localvoxtral has NO window until this
+ssh lv-ui 'shot popover' | base64 -d > /tmp/popover.png
+ssh lv-ui 'menu click Settings'         # substring: the real title is Settings…
 ssh lv-ui 'shot settings' | base64 -d > /tmp/settings.png
 ssh lv-ui 'ax dump settings' | python3 -m json.tool | head
 ssh lv-ui 'ax click role=AXButton,title=Dictation'

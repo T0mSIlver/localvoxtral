@@ -14,6 +14,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
 GATE="$ROOT_DIR/scripts/mac/localvoxtral-ui-gate.sh"
+INSTALLER="$ROOT_DIR/scripts/mac/install-ui-artifact.sh"
+TRY_PR="$ROOT_DIR/scripts/try-pr.sh"
 LOCK_PROBE_SRC="$ROOT_DIR/scripts/ci/screen-lock-state.sh"
 # Deliberately /tmp and not $TMPDIR: fixture bundle paths are fed through the
 # gate's token charset, and a macOS per-user $TMPDIR can carry characters that
@@ -30,6 +32,10 @@ STUB_BIN="$TMP_DIR/stubbin"
 LOG_FILE="$FAKE_HOME/Library/Logs/localvoxtral-ui-gate.log"
 ARTIFACT_ROOT="$FAKE_HOME/localvoxtral-ui-artifacts"
 mkdir -p "$FAKE_HOME/bin" "$STUB_BIN" "$ARTIFACT_ROOT" "$(dirname "$LOG_FILE")"
+# Pinned rather than left to the runner's umask: install-ui-artifact.sh refuses
+# a group/other-writable root, and a umask of 002 would otherwise make that
+# refusal fire on the happy path.
+chmod 0700 "$ARTIFACT_ROOT"
 : >"$LOG_FILE"
 
 LOCK_STATE=unlocked
@@ -63,8 +69,19 @@ printf '%s\n' "$*" >>"$STUB_OPEN_LOG"
 exit "${STUB_OPEN_STATUS:-0}"
 STUB
 
+# `pgrep -x localvoxtral` asks a different question from every other pgrep the
+# gate runs — "is ANY localvoxtral running", the refusal to launch beside an
+# instance this gate did not start — so it gets its own answer. The bundle-path
+# lookup (`-n -f`) and the terminal lookup (`-n -x Ghostty`) keep the old one.
 cat >"$STUB_BIN/pgrep" <<'STUB'
 #!/usr/bin/env bash
+last=""
+for last in "$@"; do :; done
+if [[ "$last" == "localvoxtral" ]]; then
+  [[ -n "${STUB_PGREP_RUNNING:-}" ]] || exit 1
+  printf '%s\n' "$STUB_PGREP_RUNNING"
+  exit 0
+fi
 [[ -n "${STUB_PGREP_PID:-}" ]] || exit 1
 printf '%s\n' "$STUB_PGREP_PID"
 STUB
@@ -114,6 +131,10 @@ case "$2" in
   axclick | axtype | key | termaction)
     echo ok
     ;;
+  menuopen | menuclick | menudismiss)
+    [[ -z "${STUB_MENU_FAIL:-}" ]] || exit 1
+    echo ok
+    ;;
   *)
     exit 1
     ;;
@@ -146,7 +167,13 @@ install -m 0755 "$LOCK_PROBE_SRC" "$FAKE_HOME/bin/localvoxtral-screen-lock-state
 # --- fixtures --------------------------------------------------------------
 
 make_bundle() { # <name> <bundle-id> <executable> <dogfood-stamp:true|absent>
-  local dir="$ARTIFACT_ROOT/$1" stamp=""
+  make_bundle_in "$ARTIFACT_ROOT" "$@"
+}
+
+make_bundle_in() { # <parent> <name> <bundle-id> <executable> <dogfood-stamp>
+  local parent="$1"
+  shift
+  local dir="$parent/$1" stamp=""
   mkdir -p "$dir/Contents/MacOS"
   : >"$dir/Contents/MacOS/$3"
   chmod +x "$dir/Contents/MacOS/$3"
@@ -324,6 +351,12 @@ assert_denied 'ax click role=AXButton,' 'selector with a trailing comma'
 assert_denied 'ax click window=zero,title=A' 'selector with a non-numeric window index'
 assert_denied 'ax type role=AXTextField hello' 'ax type without the -- separator'
 assert_denied 'ax type role=AXTextField --' 'ax type with an empty text'
+assert_denied 'menu' 'menu without a subverb'
+assert_denied 'menu poke' 'unknown menu subverb'
+assert_denied 'menu open now' 'menu open with an argument'
+assert_denied 'menu dismiss all' 'menu dismiss with an argument'
+assert_denied 'menu click' 'menu click without an item title'
+assert_denied 'menu click Settings Advanced' 'menu click with two title words (use + for a space)'
 assert_denied 'term' 'term without a subverb'
 assert_denied 'term open' 'term open without a terminal'
 assert_denied 'term open ghostty' 'term open without a command'
@@ -515,6 +548,26 @@ pass "allowed: launch records identity, warns audibly, announces completion"
 # retarget every later verb.
 assert_denied "launch $CLEAN_APP" 'launch while an app is already under test' \
   "${APP_ENV[@]}" STUB_PGREP_PID=4242
+
+# The same conflict without a recorded pid: the owner's daily driver, started
+# from Finder or try-pr.sh. The gate can neither address it (every verb reads
+# app.state) nor quit it, and a second instance re-registers the global hotkey
+# and fights for the speechd/polishd ports 8471/8472. Field check 2026-08-29:
+# launch would have started one beside pid 91687.
+clear_state
+assert_denied "launch $CLEAN_APP" 'launch beside a localvoxtral this gate did not start' \
+  "${APP_ENV[@]}" STUB_PGREP_PID=4242 STUB_PGREP_RUNNING=91687
+[[ "$(log_tail)" == *"91687"* ]] \
+  || fail "the foreign-instance denial did not name the running pid: $(log_tail)"
+[[ "$(log_tail)" == *"this gate did not start it"* ]] \
+  || fail "the foreign-instance denial did not say why: $(log_tail)"
+# It must be a refusal, not a warning: nothing may have been opened.
+: >"$TMP_DIR/open.log"
+run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242 STUB_PGREP_RUNNING=91687
+[[ ! -s "$TMP_DIR/open.log" ]] \
+  || fail "launch opened the bundle despite a foreign instance: $(cat "$TMP_DIR/open.log")"
+pass "launch refuses beside an instance it did not start, and opens nothing"
+clear_state
 
 # --dogfood requires the Info.plist stamp AND arms the runtime opt-in.
 clear_state
@@ -772,6 +825,365 @@ if command -v ioreg >/dev/null 2>&1 && command -v pmset >/dev/null 2>&1; then
 else
   printf 'SKIP: ioreg/pmset unavailable — the live SIGPIPE probes were not run\n'
 fi
+
+echo "== 15. menu — the verb that makes every other verb reachable =="
+
+# Field check 2026-08-29: `launch` worked, `state` reported the app running,
+# and `ax dump all` returned `[]` while `shot settings` reported no window.
+# All correct: localvoxtral is a menu bar app and opens NO window at launch, so
+# every window verb had nothing to address. `menu` is the missing first step.
+
+clear_state
+assert_denied 'menu open' 'menu open with no app under test'
+assert_denied 'menu click Settings' 'menu click with no app under test'
+assert_denied 'menu dismiss' 'menu dismiss with no app under test'
+
+write_app_state 4242
+LOCK_STATE=locked
+assert_denied 'menu open' 'menu open while the screen is locked' "${APP_ENV[@]}"
+assert_denied 'menu click Settings' 'menu click while the screen is locked' "${APP_ENV[@]}"
+assert_denied 'menu dismiss' 'menu dismiss while the screen is locked' "${APP_ENV[@]}"
+LOCK_STATE=unlocked
+
+: >"$TMP_DIR/swift.log"
+: >"$TMP_DIR/say.log"
+assert_allowed 'menu open' 'menu open clicks the status item of the app under test' "${APP_ENV[@]}"
+grep -q "menuopen 4242" "$TMP_DIR/swift.log" \
+  || fail "menu open did not reach the helper for the app under test: $(cat "$TMP_DIR/swift.log")"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "menu open did not speak the takeover warning (owner rule)"
+grep -q "done" "$TMP_DIR/say.log" \
+  || fail "menu open did not announce completion (owner rule)"
+
+: >"$TMP_DIR/swift.log"
+assert_allowed 'menu click Settings' 'menu click by item title' "${APP_ENV[@]}"
+grep -q "menuclick 4242 Settings" "$TMP_DIR/swift.log" \
+  || fail "menu click did not pass the title through to the helper: $(cat "$TMP_DIR/swift.log")"
+
+# A space in a title is spelled `+`, exactly as selector values are, because
+# the token charset has no room for whitespace.
+: >"$TMP_DIR/swift.log"
+assert_allowed 'menu click Show+Log' 'menu click with + standing in for a space' "${APP_ENV[@]}"
+grep -q "menuclick 4242 Show+Log" "$TMP_DIR/swift.log" \
+  || fail "the + form was not passed through verbatim: $(cat "$TMP_DIR/swift.log")"
+
+# Real menu titles carry characters the charset cannot express (localvoxtral's
+# is "Settings…"). That is denied at the command level, which is why the helper
+# matches by containment — `menu click Settings` is the way in.
+assert_denied "$(printf 'menu click Settings\xe2\x80\xa6')" 'menu click with a non-ASCII title'
+
+# Dismiss gives the screen back rather than taking it, so it does not warn —
+# same rule as `quit`.
+: >"$TMP_DIR/say.log"
+: >"$TMP_DIR/swift.log"
+assert_allowed 'menu dismiss' 'menu dismiss closes the app under test menu' "${APP_ENV[@]}"
+grep -q "menudismiss 4242" "$TMP_DIR/swift.log" \
+  || fail "menu dismiss did not reach the helper: $(cat "$TMP_DIR/swift.log")"
+[[ ! -s "$TMP_DIR/say.log" ]] \
+  || fail "menu dismiss spoke a takeover warning for a verb that steals nothing: $(cat "$TMP_DIR/say.log")"
+
+# A helper that refuses must not be reported as success.
+run_gate 'menu open' "${APP_ENV[@]}" STUB_MENU_FAIL=1
+(( GATE_STATUS != 0 )) || fail "menu open reported success when the helper failed"
+[[ "$GATE_STDERR" == *"status menu did not open"* ]] \
+  || fail "menu open's failure message is unhelpful: $GATE_STDERR"
+pass "a failed status-item click is a failure, not an ok"
+
+# The scoping rule that section 12 pins for the other verbs, restated for
+# `menu`: the pid is app.state's, so no other application's menu bar — the
+# owner's, or a terminal this gate opened — is expressible.
+: >"$TMP_DIR/swift.log"
+run_gate 'menu open' "${APP_ENV[@]}"
+while read -r line; do
+  [[ "$line" == *"menu"* ]] || continue
+  [[ "$line" == *" 4242"* ]] \
+    || fail "a menu helper call did not carry the app-under-test pid: $line"
+done <"$TMP_DIR/swift.log"
+pass "menu addresses only the pid launch recorded"
+
+# The shell verb and the helper subcommand have to land together: a verb whose
+# helper case is missing fails only on the owner's desktop.
+for subcommand in menuopen menuclick menudismiss; do
+  grep -q "case \"$subcommand\":" "$GATE" \
+    || fail "the Swift helper has no $subcommand subcommand"
+done
+# `AXExtrasMenuBar` is the whole mechanism: without it there is no status item.
+grep -q 'AXExtrasMenuBar' "$GATE" \
+  || fail "the helper no longer reaches the status item through AXExtrasMenuBar"
+# The bounded messaging timeout is not a nicety: pressing a status item blocks
+# the AX server for as long as the menu tracks, which without it hangs the SSH
+# session (capture-readme-assets.sh needs `ignoring application responses` for
+# exactly this reason).
+grep -q 'AXUIElementSetMessagingTimeout' "$GATE" \
+  || fail "the status-item press lost its messaging timeout — it can hang the gate"
+pass "the menu helper subcommands, AXExtrasMenuBar and the messaging timeout are all present"
+
+clear_state
+
+echo "== 16. the artifact roots stay owner-only ground =="
+
+# The roots are the whole reason `launch` is not "start any app on the owner's
+# Mac": inside one, a bundle claiming com.localvoxtral.app is trusted. Add a
+# world-writable directory and any local process can plant such a bundle and
+# have the gate start it as the GUI user. The pressure to widen them is real —
+# try-pr.sh extracts to /tmp — so the answer has to stay "move the install",
+# and these assertions are what stops the other answer from landing quietly.
+
+ROOTS_LINE="$(grep 'LV_UI_ARTIFACT_ROOTS="[$]{LV_UI_ARTIFACT_ROOTS' "$GATE" | head -n 1)"
+[[ -n "$ROOTS_LINE" ]] || fail "could not find the default LV_UI_ARTIFACT_ROOTS in the gate"
+ROOTS_DEFAULT="${ROOTS_LINE#*:-}"
+ROOTS_DEFAULT="${ROOTS_DEFAULT%\}\"}"
+[[ -n "$ROOTS_DEFAULT" ]] || fail "the default artifact-root list is empty: $ROOTS_LINE"
+
+# Unquoted on purpose: word-splitting only. The entries are literal text here,
+# so $HOME is NOT expanded — which is exactly what the prefix check wants.
+for root in $ROOTS_DEFAULT; do
+  case "$root" in
+    '$HOME/'*) ;;
+    *) fail "artifact root '$root' is not under \$HOME — only the owner may write a launchable root" ;;
+  esac
+  case "$root" in
+    *'/tmp'* | *'/var/folders'* | *'/Users/Shared'* | *'/dev/shm'* | *'/var/tmp'*)
+      fail "artifact root '$root' is a world-writable location — the gate would launch anything planted there" ;;
+  esac
+done
+pass "every default artifact root is under \$HOME and none is a world-writable location"
+
+mode_of() { # <path> -> octal permission bits (BSD stat, then GNU stat)
+  # Validated per attempt, not chained with ||: GNU stat reads `-f` as
+  # --file-system and prints a block of its own before failing.
+  local mode
+  mode="$(stat -f '%Lp' "$1" 2>/dev/null || true)"
+  [[ "$mode" =~ ^[0-7]+$ ]] || mode="$(stat -c '%a' "$1" 2>/dev/null || true)"
+  printf '%s\n' "$mode"
+}
+
+# The source pin above catches a widened list; this catches the same hole
+# arriving through the filesystem — a root that exists but is group/other
+# writable is as good as /tmp to an attacker.
+for root in $ROOTS_DEFAULT; do
+  expanded="$HOME${root#\$HOME}"
+  [[ -d "$expanded" ]] || continue
+  mode="$(mode_of "$expanded")"
+  [[ "$mode" =~ ^[0-7]+$ ]] || fail "could not read the mode of $expanded"
+  (( (8#$mode & 0022) == 0 )) \
+    || fail "$expanded is mode $mode — group/other writable, so anyone local can plant a bundle the gate will launch"
+  pass "existing artifact root $expanded is mode $mode (owner-writable only)"
+done
+
+# No script in this repo may hand the gate a world-writable root either.
+for source_file in "$GATE" "$INSTALLER" "$TRY_PR"; do
+  assignments="$(grep -h 'LV_UI_ARTIFACT_ROOTS=\|LV_UI_ARTIFACT_DEST_ROOT=' "$source_file" || true)"
+  case "$assignments" in
+    *'/tmp'* | *'/var/folders'* | *'/Users/Shared'* | *'/dev/shm'*)
+      fail "$source_file points an artifact root at a world-writable directory" ;;
+  esac
+done
+pass "no repo script points an artifact root at a world-writable directory"
+
+echo "== 17. install-ui-artifact.sh puts bundles where launch can reach them =="
+
+[[ -x "$INSTALLER" ]] || fail "$INSTALLER is not executable"
+
+# The installer's destination must be one of the gate's roots; if these two
+# defaults ever drift the install silently produces something unlaunchable.
+grep -q 'LV_UI_ARTIFACT_DEST_ROOT:-\$HOME/localvoxtral-ui-artifacts' "$INSTALLER" \
+  || fail "the installer's default destination changed — is it still a gate root?"
+case "$ROOTS_DEFAULT" in
+  *'$HOME/localvoxtral-ui-artifacts'*) ;;
+  *) fail "the installer installs into \$HOME/localvoxtral-ui-artifacts but the gate no longer allowlists it" ;;
+esac
+pass "the installer's default destination is one of the gate's allowlisted roots"
+
+SRC_DIR="$TMP_DIR/src"
+mkdir -p "$SRC_DIR"
+SRC_CLEAN="$(make_bundle_in "$SRC_DIR" build-clean.app com.localvoxtral.app localvoxtral absent)"
+SRC_DOGFOOD="$(make_bundle_in "$SRC_DIR" build-dogfood.app com.localvoxtral.app localvoxtral true)"
+SRC_IMPOSTOR="$(make_bundle_in "$SRC_DIR" Mail.app com.apple.mail Mail absent)"
+INSTALL_ROOT="$FAKE_HOME/install-root"
+
+INSTALL_STATUS=0
+INSTALL_STDOUT=""
+INSTALL_STDERR=""
+INSTALL_ENV=()
+
+run_install() { # <installer args...>   (env via INSTALL_ENV, consumed per call)
+  local out_file="$TMP_DIR/install.out" err_file="$TMP_DIR/install.err"
+  INSTALL_STATUS=0
+  env -i \
+    PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    HOME="$FAKE_HOME" \
+    STUB_OPEN_LOG="$TMP_DIR/open.log" \
+    ${INSTALL_ENV[@]+"${INSTALL_ENV[@]}"} \
+    bash "$INSTALLER" "$@" >"$out_file" 2>"$err_file" || INSTALL_STATUS=$?
+  INSTALL_ENV=()
+  INSTALL_STDOUT="$(cat "$out_file")"
+  INSTALL_STDERR="$(cat "$err_file")"
+}
+
+assert_install_refused() { # <description> <installer args...>
+  local description="$1"
+  shift
+  run_install "$@"
+  (( INSTALL_STATUS != 0 )) \
+    || fail "$description: the install succeeded (stdout: $INSTALL_STDOUT)"
+  [[ "$INSTALL_STDERR" == *"install-ui-artifact:"* ]] \
+    || fail "$description: no install-ui-artifact diagnostic (stderr: $INSTALL_STDERR)"
+  pass "refused: $description"
+}
+
+# --- the happy path, into the real default root ----------------------------
+
+: >"$TMP_DIR/open.log"
+run_install "$SRC_CLEAN" --label "pr-238 @ CI run 123"
+(( INSTALL_STATUS == 0 )) || fail "installing a clean bundle failed: $INSTALL_STDERR"
+[[ "$INSTALL_STDOUT" == "$ARTIFACT_ROOT/localvoxtral.app" ]] \
+  || fail "installer stdout is not the installed bundle path: $INSTALL_STDOUT"
+[[ -x "$ARTIFACT_ROOT/localvoxtral.app/Contents/MacOS/localvoxtral" ]] \
+  || fail "the installed bundle has no executable"
+grep -q '^variant=clean$' "$ARTIFACT_ROOT/localvoxtral.app.source" \
+  || fail "the provenance file does not record the clean variant"
+grep -q "^label=pr-238 @ CI run 123$" "$ARTIFACT_ROOT/localvoxtral.app.source" \
+  || fail "the provenance file does not record which build this is"
+[[ ! -s "$TMP_DIR/open.log" ]] \
+  || fail "the installer launched something — launching is the gate's job: $(cat "$TMP_DIR/open.log")"
+# The hint is the gate-relative path, because that is what `launch` resolves.
+[[ "$INSTALL_STDERR" == *"launch localvoxtral-ui-artifacts/localvoxtral.app"* ]] \
+  || fail "no gate-launch hint, or not the path the gate resolves: $INSTALL_STDERR"
+pass "a clean bundle installs into the default root, with provenance and no launch"
+
+run_install "$SRC_CLEAN" --no-hint
+(( INSTALL_STATUS == 0 )) || fail "--no-hint install failed: $INSTALL_STDERR"
+[[ "$INSTALL_STDERR" != *"gate launch"* ]] \
+  || fail "--no-hint still printed a launch hint (try-pr.sh prints its own, later)"
+pass "--no-hint suppresses the duplicate launch hint"
+
+# The point of the whole exercise: the gate accepts what the installer wrote.
+clear_state
+assert_allowed "launch $ARTIFACT_ROOT/localvoxtral.app" \
+  'the gate launches the bundle the installer just installed' \
+  "${APP_ENV[@]}" STUB_PGREP_PID=4242
+clear_state
+
+run_install "$SRC_DOGFOOD"
+(( INSTALL_STATUS == 0 )) || fail "installing a dogfood bundle failed: $INSTALL_STDERR"
+[[ "$INSTALL_STDOUT" == "$ARTIFACT_ROOT/localvoxtral-dogfood.app" ]] \
+  || fail "the stamped bundle did not take the dogfood slot: $INSTALL_STDOUT"
+grep -q '^variant=dogfood$' "$ARTIFACT_ROOT/localvoxtral-dogfood.app.source" \
+  || fail "the provenance file does not record the dogfood variant"
+assert_allowed "launch --dogfood $ARTIFACT_ROOT/localvoxtral-dogfood.app" \
+  'the gate launches the installed dogfood bundle with --dogfood' \
+  STUB_PS_LSTART="Mon Aug 24 09:00:00 2026" \
+  STUB_PS_COMM="$ARTIFACT_ROOT/localvoxtral-dogfood.app/Contents/MacOS/localvoxtral" \
+  STUB_PGREP_PID=4343
+clear_state
+pass "clean and dogfood builds occupy separate slots and both launch"
+
+# --- reinstall replaces its slot -------------------------------------------
+#
+# Two slots, not one per build: N copies of the same bundle id share one
+# defaults domain and one TCC grant, so a stale one is indistinguishable at
+# runtime — the wrong-binary confusion, on disk.
+SRC_SECOND="$(make_bundle_in "$SRC_DIR" build-second.app com.localvoxtral.app localvoxtral absent)"
+printf 'second build\n' >"$SRC_SECOND/Contents/MacOS/localvoxtral"
+chmod +x "$SRC_SECOND/Contents/MacOS/localvoxtral"
+BEFORE_SLOTS="$(ls -d "$ARTIFACT_ROOT"/*.app 2>/dev/null | wc -l | tr -d ' ')"
+INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$ARTIFACT_ROOT")
+run_install "$SRC_SECOND"
+(( INSTALL_STATUS == 0 )) || fail "reinstalling failed: $INSTALL_STDERR"
+AFTER_SLOTS="$(ls -d "$ARTIFACT_ROOT"/*.app 2>/dev/null | wc -l | tr -d ' ')"
+[[ "$BEFORE_SLOTS" == "$AFTER_SLOTS" ]] \
+  || fail "a reinstall added a bundle instead of replacing its slot ($BEFORE_SLOTS -> $AFTER_SLOTS)"
+grep -q 'second build' "$ARTIFACT_ROOT/localvoxtral.app/Contents/MacOS/localvoxtral" \
+  || fail "the reinstall did not replace the previous bundle's contents"
+grep -q "^source=$SRC_SECOND$" "$ARTIFACT_ROOT/localvoxtral.app.source" \
+  || fail "the provenance file still points at the previous build"
+[[ -z "$(ls -d "$ARTIFACT_ROOT"/.incoming-* "$ARTIFACT_ROOT"/.outgoing-* 2>/dev/null)" ]] \
+  || fail "the install left staging directories behind"
+pass "a reinstall replaces its slot and leaves no staging droppings"
+
+# --- refusals --------------------------------------------------------------
+
+assert_install_refused 'a source bundle that does not exist' \
+  "$SRC_DIR/nope.app"
+assert_install_refused 'a directory that is not a .app' \
+  "$SRC_DIR"
+assert_install_refused "another vendor's bundle" \
+  "$SRC_IMPOSTOR"
+assert_install_refused 'a .app with no Info.plist' \
+  "$(mkdir -p "$SRC_DIR/empty.app" && printf '%s' "$SRC_DIR/empty.app")"
+assert_install_refused 'an unknown flag' \
+  "$SRC_CLEAN" --launch-it
+
+# A destination the owner cannot write is a broken install, not a silent no-op.
+mkdir -p "$INSTALL_ROOT/readonly"
+chmod 0500 "$INSTALL_ROOT/readonly"
+if [[ "$(id -u)" == "0" ]]; then
+  printf 'SKIP: running as root — the unwritable-destination refusal cannot be exercised\n'
+else
+  INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/readonly")
+  assert_install_refused 'a destination root that is not writable' "$SRC_CLEAN"
+fi
+chmod 0700 "$INSTALL_ROOT/readonly"
+
+# The install-side half of section 15: the installer refuses to feed a root
+# that anyone local can write, rather than quietly making the gate launchable
+# from one.
+mkdir -p "$INSTALL_ROOT/world"
+chmod 0777 "$INSTALL_ROOT/world"
+INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/world")
+assert_install_refused 'a group/other-writable destination root' "$SRC_CLEAN"
+[[ "$INSTALL_STDERR" == *"writable"* ]] \
+  || fail "the world-writable refusal did not say why: $INSTALL_STDERR"
+chmod 0755 "$INSTALL_ROOT/world"
+INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/world")
+run_install "$SRC_CLEAN"
+(( INSTALL_STATUS == 0 )) \
+  || fail "an owner-only-writable root was refused: $INSTALL_STDERR"
+pass "the same root installs fine once group/other write is removed"
+
+# A root the installer creates itself must not be world-writable either.
+INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/fresh")
+run_install "$SRC_CLEAN"
+(( INSTALL_STATUS == 0 )) || fail "installing into a fresh root failed: $INSTALL_STDERR"
+FRESH_MODE="$(mode_of "$INSTALL_ROOT/fresh")"
+(( (8#$FRESH_MODE & 0022) == 0 )) \
+  || fail "the installer created its root as mode $FRESH_MODE"
+pass "a root the installer creates is owner-writable only (mode $FRESH_MODE)"
+
+# Replacing files under a running process is how you get a half-swapped app.
+# Quitting it is the operator's call (the gate has a `quit` verb); refusing is
+# the installer's.
+INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$ARTIFACT_ROOT" STUB_PGREP_PID=4242)
+assert_install_refused 'overwriting a bundle that is currently running' "$SRC_CLEAN"
+[[ "$INSTALL_STDERR" == *"quit it first"* ]] \
+  || fail "the running-bundle refusal did not say what to do: $INSTALL_STDERR"
+
+echo "== 18. try-pr.sh --ui-gate hands off to the gate =="
+
+grep -q -- '--ui-gate) UI_GATE=1' "$TRY_PR" \
+  || fail "try-pr.sh no longer parses --ui-gate"
+grep -q 'mac/install-ui-artifact.sh' "$TRY_PR" \
+  || fail "try-pr.sh --ui-gate no longer delegates to the installer"
+pass "try-pr.sh --ui-gate installs through install-ui-artifact.sh"
+
+# --ui-gate must not `open` the app itself: an instance the gate did not start
+# is invisible to app.state and rivals the one it will start for the global
+# hotkey and the speechd/polishd ports.
+OPEN_LINE="$(grep -n '^open "\$APP"' "$TRY_PR" | head -n 1 | cut -d: -f1)"
+[[ -n "$OPEN_LINE" ]] || fail "try-pr.sh no longer ends by opening the app"
+GUARD_LINE="$(grep -n 'exit 0' "$TRY_PR" | awk -F: -v limit="$OPEN_LINE" '$1 < limit { last = $1 } END { print last }')"
+[[ -n "$GUARD_LINE" ]] \
+  || fail "nothing returns before try-pr.sh's final open — --ui-gate would launch an unrecorded instance"
+awk -v start="$GUARD_LINE" -v stop="$OPEN_LINE" 'NR >= start - 20 && NR <= stop' "$TRY_PR" \
+  | grep -q 'UI_GATE' \
+  || fail "the early return before try-pr.sh's final open is not the --ui-gate branch"
+pass "try-pr.sh --ui-gate returns before the launch, leaving it to the gate"
+
+# The default is unchanged: /tmp, then launch.
+grep -q 'DEST="\$(mktemp -d /tmp/localvoxtral-try.XXXXXX)"' "$TRY_PR" \
+  || fail "try-pr.sh's default extraction directory changed — --ui-gate was meant to be additive"
+pass "try-pr.sh's default (extract to /tmp, then open) is untouched"
 
 echo
 echo "ui gate tests passed"
