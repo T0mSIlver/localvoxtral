@@ -135,6 +135,10 @@ case "$2" in
     [[ -z "${STUB_MENU_FAIL:-}" ]] || exit 1
     echo ok
     ;;
+  dictate)
+    [[ -z "${STUB_DICTATE_FAIL:-}" ]] || exit 1
+    echo "ok $5 trigger=$4 frontmost=7777 (Ghostty)"
+    ;;
   *)
     exit 1
     ;;
@@ -155,9 +159,20 @@ cat >"$STUB_BIN/pmset" <<'STUB'
 echo "Now drawing from 'AC Power'"
 STUB
 
+# Reads as well as writes: `dictate` reads the app's OWN trigger settings out
+# of its defaults domain rather than hard-coding a key, so the suite has to be
+# able to say what the app is configured with. `settings.foo` is answered from
+# $STUB_DEFAULT_settings_foo; an unset variable reads as "key absent".
 cat >"$STUB_BIN/defaults" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_DEFAULTS_LOG"
+if [[ "${1:-}" == "read" ]]; then
+  key="${3:-}"
+  var="STUB_DEFAULT_${key//./_}"
+  value="${!var:-}"
+  [[ -n "$value" ]] || exit 1
+  printf '%s\n' "$value"
+fi
 STUB
 
 chmod +x "$STUB_BIN"/*
@@ -351,6 +366,12 @@ assert_denied 'ax click role=AXButton,' 'selector with a trailing comma'
 assert_denied 'ax click window=zero,title=A' 'selector with a non-numeric window index'
 assert_denied 'ax type role=AXTextField hello' 'ax type without the -- separator'
 assert_denied 'ax type role=AXTextField --' 'ax type with an empty text'
+assert_denied 'dictate' 'dictate without a subverb'
+assert_denied 'dictate now' 'unknown dictate subverb'
+assert_denied 'dictate tap 3' 'dictate tap with a duration'
+assert_denied 'dictate cancel now' 'dictate cancel with an argument'
+assert_denied 'dictate hold' 'dictate hold without a duration'
+assert_denied 'dictate hold 2 3' 'dictate hold with two durations'
 assert_denied 'menu' 'menu without a subverb'
 assert_denied 'menu poke' 'unknown menu subverb'
 assert_denied 'menu open now' 'menu open with an argument'
@@ -920,7 +941,115 @@ pass "the menu helper subcommands, AXExtrasMenuBar and the messaging timeout are
 
 clear_state
 
-echo "== 16. the artifact roots stay owner-only ground =="
+echo "== 16. dictate — the only verb that can start a session =="
+
+# Without this verb the gate can open the UI but never exercise the thing it
+# exists to debug: the Claude Code / herdr join resolves when a dictation
+# STARTS, and `key`'s allowlist is escape/tab/return while the app's trigger is
+# a modifier-only gesture.
+
+DICTATE_ENV=(
+  "${APP_ENV[@]}"
+  STUB_DEFAULT_settings_modifier_only_hotkey_enabled=1
+  STUB_DEFAULT_settings_modifier_only_hotkey_modifier=right_command
+  STUB_DEFAULT_settings_modifier_only_hold_delay=0.35
+)
+
+clear_state
+assert_denied 'dictate tap' 'dictate with no app under test' "${DICTATE_ENV[@]}"
+
+write_app_state 4242
+LOCK_STATE=locked
+assert_denied 'dictate tap' 'dictate while the screen is locked' "${DICTATE_ENV[@]}"
+assert_denied 'dictate cancel' 'dictate cancel while the screen is locked' "${DICTATE_ENV[@]}"
+LOCK_STATE=unlocked
+
+# Reading the trigger, never assuming it: a guess here is a modifier posted
+# into whatever the owner has focused.
+assert_denied 'dictate tap' 'dictate when the app trigger settings cannot be read' "${APP_ENV[@]}"
+[[ "$(log_tail)" == *"refusing to guess"* ]] \
+  || fail "the unreadable-settings denial did not say why: $(log_tail)"
+assert_denied 'dictate tap' 'dictate when the modifier-only trigger is disabled' \
+  "${APP_ENV[@]}" STUB_DEFAULT_settings_modifier_only_hotkey_enabled=0
+assert_denied 'dictate tap' 'dictate when the configured trigger is unset' \
+  "${APP_ENV[@]}" STUB_DEFAULT_settings_modifier_only_hotkey_enabled=1
+[[ "$(log_tail)" == *"cannot determine the configured trigger"* ]] \
+  || fail "the unset-trigger denial did not say why: $(log_tail)"
+assert_denied 'dictate tap' 'dictate with a trigger the app does not define' \
+  "${APP_ENV[@]}" STUB_DEFAULT_settings_modifier_only_hotkey_enabled=1 \
+  STUB_DEFAULT_settings_modifier_only_hotkey_modifier=left_shift
+
+: >"$TMP_DIR/swift.log"
+: >"$TMP_DIR/say.log"
+assert_allowed 'dictate tap' 'dictate tap posts the configured trigger' "${DICTATE_ENV[@]}"
+grep -q "dictate 4242 right_command tap" "$TMP_DIR/swift.log" \
+  || fail "dictate tap did not post the app's configured trigger: $(cat "$TMP_DIR/swift.log")"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "dictate tap did not speak the takeover warning (owner rule)"
+[[ "$GATE_STDOUT" == *"frontmost="* ]] \
+  || fail "dictate did not report where the dictation landed: $GATE_STDOUT"
+
+# The configured trigger is read per invocation, not baked in.
+: >"$TMP_DIR/swift.log"
+assert_allowed 'dictate tap' 'dictate follows a changed trigger setting' \
+  "${APP_ENV[@]}" STUB_DEFAULT_settings_modifier_only_hotkey_enabled=1 \
+  STUB_DEFAULT_settings_modifier_only_hotkey_modifier=fn
+grep -q "dictate 4242 fn tap" "$TMP_DIR/swift.log" \
+  || fail "dictate ignored the app's configured trigger: $(cat "$TMP_DIR/swift.log")"
+
+# A hold shorter than the app's own threshold is a TAP: it would open an
+# Overlay Buffer session while the caller asked for Live Auto-Paste, and
+# nothing would say so.
+assert_denied 'dictate hold 0.2' 'a hold shorter than the app hold delay' "${DICTATE_ENV[@]}"
+assert_denied 'dictate hold 0.35' 'a hold exactly equal to the hold delay' "${DICTATE_ENV[@]}"
+assert_denied 'dictate hold 600' 'a hold past the duration cap' "${DICTATE_ENV[@]}"
+assert_denied 'dictate hold soon' 'a non-numeric hold duration' "${DICTATE_ENV[@]}"
+: >"$TMP_DIR/swift.log"
+assert_allowed 'dictate hold 2' 'a hold past the threshold and inside the cap' "${DICTATE_ENV[@]}"
+grep -q "dictate 4242 right_command hold 2" "$TMP_DIR/swift.log" \
+  || fail "dictate hold did not pass the duration through: $(cat "$TMP_DIR/swift.log")"
+# The cap follows the app's configured delay, not a constant.
+assert_allowed 'dictate hold 0.2' 'a hold that clears a SHORTER configured delay' \
+  "${APP_ENV[@]}" STUB_DEFAULT_settings_modifier_only_hotkey_enabled=1 \
+  STUB_DEFAULT_settings_modifier_only_hotkey_modifier=right_command \
+  STUB_DEFAULT_settings_modifier_only_hold_delay=0.1
+
+# Cancel is Escape: it gives a session back rather than taking the screen, so
+# like `quit` it does not warn, and it needs no trigger setting at all.
+: >"$TMP_DIR/say.log"
+: >"$TMP_DIR/swift.log"
+assert_allowed 'dictate cancel' 'dictate cancel with no trigger settings readable' "${APP_ENV[@]}"
+grep -q "dictate 4242 none cancel" "$TMP_DIR/swift.log" \
+  || fail "dictate cancel did not reach the helper: $(cat "$TMP_DIR/swift.log")"
+[[ ! -s "$TMP_DIR/say.log" ]] \
+  || fail "dictate cancel spoke a takeover warning for a verb that takes nothing"
+
+# A refused gesture must not read as a started session.
+run_gate 'dictate tap' "${DICTATE_ENV[@]}" STUB_DICTATE_FAIL=1
+(( GATE_STATUS != 0 )) || fail "dictate reported success when the helper refused"
+[[ "$GATE_STDERR" == *"trigger gesture was refused"* ]] \
+  || fail "dictate's failure message is unhelpful: $GATE_STDERR"
+pass "a refused trigger gesture is a failure, not an ok"
+
+# Source pins for the two things that make this verb work at all and cannot be
+# exercised without a desktop.
+grep -q 'event.type = .flagsChanged' "$GATE" \
+  || fail "the trigger event is no longer a flagsChanged — a plain keyDown never reaches the app's monitor"
+grep -q 'IsSecureEventInputEnabled()' "$GATE" \
+  || fail "the Secure Keyboard Entry guard is gone — the verb would silently no-op"
+grep -q 'DispatchSource.makeSignalSource' "$GATE" \
+  || fail "a killed hold would leave the modifier latched down across the owner's session"
+# Never activate the app under test before dictating: the session grounds its
+# context in whatever is FOCUSED, so stealing focus first defeats the test.
+DICTATE_BODY="$(awk '/^run_dictate\(\) \{/ { capture = 1 } capture { print } capture && /^\}$/ { exit }' "$GATE")"
+[[ -n "$DICTATE_BODY" ]] || fail "could not find run_dictate in the gate"
+grep -q 'activate' <<<"$DICTATE_BODY" \
+  && fail "run_dictate activates something — the dictation must land in the FOCUSED app, not localvoxtral"
+pass "the dictate verb posts a flagsChanged gesture, guards Secure Keyboard Entry, releases on signal, and never steals focus"
+
+clear_state
+
+echo "== 17. the artifact roots stay owner-only ground =="
 
 # The roots are the whole reason `launch` is not "start any app on the owner's
 # Mac": inside one, a bundle claiming com.localvoxtral.app is trusted. Add a
@@ -981,7 +1110,7 @@ for source_file in "$GATE" "$INSTALLER" "$TRY_PR"; do
 done
 pass "no repo script points an artifact root at a world-writable directory"
 
-echo "== 17. install-ui-artifact.sh puts bundles where launch can reach them =="
+echo "== 18. install-ui-artifact.sh puts bundles where launch can reach them =="
 
 [[ -x "$INSTALLER" ]] || fail "$INSTALLER is not executable"
 
@@ -1158,8 +1287,20 @@ INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$ARTIFACT_ROOT" STUB_PGREP_PID=4242)
 assert_install_refused 'overwriting a bundle that is currently running' "$SRC_CLEAN"
 [[ "$INSTALL_STDERR" == *"quit it first"* ]] \
   || fail "the running-bundle refusal did not say what to do: $INSTALL_STDERR"
+# That refusal, and ONLY that one, is exit 3: ci.yml turns it into a warning
+# instead of a red build, because the build was fine and the owner merely had
+# the app open. Every other refusal must stay fatal.
+(( INSTALL_STATUS == 3 )) \
+  || fail "the slot-is-running refusal is exit $INSTALL_STATUS, not the documented 3"
+INSTALL_ENV=(LV_UI_ARTIFACT_DEST_ROOT="$INSTALL_ROOT/world")
+chmod 0777 "$INSTALL_ROOT/world"
+assert_install_refused 'a world-writable root (again, to pin its exit code)' "$SRC_CLEAN"
+(( INSTALL_STATUS == 1 )) \
+  || fail "a security refusal used exit $INSTALL_STATUS — ci.yml would treat 3 as a warning"
+chmod 0755 "$INSTALL_ROOT/world"
+pass "only the slot-is-running refusal is exit 3; security refusals stay exit 1"
 
-echo "== 18. try-pr.sh --ui-gate hands off to the gate =="
+echo "== 19. try-pr.sh --ui-gate hands off to the gate =="
 
 grep -q -- '--ui-gate) UI_GATE=1' "$TRY_PR" \
   || fail "try-pr.sh no longer parses --ui-gate"
@@ -1184,6 +1325,48 @@ pass "try-pr.sh --ui-gate returns before the launch, leaving it to the gate"
 grep -q 'DEST="\$(mktemp -d /tmp/localvoxtral-try.XXXXXX)"' "$TRY_PR" \
   || fail "try-pr.sh's default extraction directory changed — --ui-gate was meant to be additive"
 pass "try-pr.sh's default (extract to /tmp, then open) is untouched"
+
+echo "== 20. the dispatched CI build installs itself for the gate =="
+
+# try-pr.sh --ui-gate serves an operator with a shell on the Mac. An agent
+# driving the gate has neither a shell nor a verb that runs try-pr.sh, so the
+# runner does the install instead: it is a launchd agent in the owner's GUI
+# session, which is why $HOME there is the same home the gate's artifact root
+# lives under.
+CI_YML="$ROOT_DIR/.github/workflows/ci.yml"
+INSTALL_STEP="$(awk '/^      - name: Install the dogfood build into the UI gate/ { capture = 1 }
+                     capture && /^      - name: / && ++seen > 1 { exit }
+                     capture { print }' "$CI_YML")"
+[[ -n "$INSTALL_STEP" ]] || fail "ci.yml has no UI-gate install step"
+grep -q 'install-ui-artifact.sh' <<<"$INSTALL_STEP" \
+  || fail "the UI-gate install step does not go through install-ui-artifact.sh"
+
+# The gating is the whole safety story: an ordinary PR push must never write
+# into the owner's home, and the [dogfood-package] marker fires on those.
+STEP_IF="$(awk '/^ *if: >-$/ { capture = 1; next } capture && /^ *run:/ { exit } capture { print }' <<<"$INSTALL_STEP")"
+[[ -n "$STEP_IF" ]] || fail "the UI-gate install step has no multi-line if: gate"
+for required in "runner.environment == 'self-hosted'" \
+                "github.event_name == 'workflow_dispatch'" \
+                "github.event.inputs.dogfood == 'true'"; do
+  grep -qF "$required" <<<"$STEP_IF" \
+    || fail "the UI-gate install step is not gated on $required"
+done
+# `inputs.dogfood` is declared `type: boolean`; comparing a boolean to the
+# string 'true' coerces both to numbers (1 vs NaN), so that form is always
+# false and the step would silently never run. Only the event payload's
+# string copy compares as written.
+grep -q "github\.event\.inputs\.dogfood == 'true'" <<<"$STEP_IF" \
+  || fail "the dogfood gate must read github.event.inputs.dogfood (the boolean input never equals 'true')"
+pass "the UI-gate install step runs only on a workflow_dispatch with dogfood=true"
+
+# Exit 3 (the slot is running) is a warning; anything else fails the build.
+grep -q 'STATUS == 3' <<<"$INSTALL_STEP" \
+  || fail "the install step no longer special-cases the slot-is-running exit code"
+grep -q '::warning::' <<<"$INSTALL_STEP" \
+  || fail "the slot-is-running case must warn, not pass silently"
+grep -q 'STATUS != 0' <<<"$INSTALL_STEP" \
+  || fail "the install step swallows failures other than the slot-is-running one"
+pass "a running slot warns; every other install failure is red"
 
 echo
 echo "ui gate tests passed"

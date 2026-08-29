@@ -22,7 +22,13 @@ set -euo pipefail
 DEST_ROOT="${LV_UI_ARTIFACT_DEST_ROOT:-$HOME/localvoxtral-ui-artifacts}"
 
 say() { printf '%s\n' "$*" >&2; }
-die() { printf 'install-ui-artifact: %s\n' "$*" >&2; exit 1; }
+die() { printf 'install-ui-artifact: %s\n' "$*" >&2; exit "${2:-1}"; }
+
+# Exit 3 means ONE thing: the destination slot is executing right now, so the
+# operator can fix it by quitting the app. ci.yml's install step turns that
+# into a warning rather than a red build — the build was fine, the owner just
+# had the app open. Every other refusal stays exit 1 and stays fatal.
+EXIT_SLOT_RUNNING=3
 
 SOURCE=""
 LABEL=""
@@ -151,7 +157,8 @@ DEST="$DEST_ROOT/$NAME"
 if command -v pgrep >/dev/null 2>&1; then
   RUNNING_HERE="$(pgrep -f "^$DEST/Contents/MacOS/localvoxtral" 2>/dev/null || true)"
   if [[ -n "$RUNNING_HERE" ]]; then
-    die "$DEST is running (pid $(printf '%s' "$RUNNING_HERE" | tr '\n' ' ')) — quit it first (ssh lv-ui 'quit', or the menu bar item)"
+    die "$DEST is running (pid $(printf '%s' "$RUNNING_HERE" | tr '\n' ' ')) — quit it first (ssh lv-ui 'quit', or the menu bar item)" \
+      "$EXIT_SLOT_RUNNING"
   fi
   # A localvoxtral running from anywhere else is not a reason to refuse the
   # copy, but it IS a reason the gate's launch will misbehave: two instances

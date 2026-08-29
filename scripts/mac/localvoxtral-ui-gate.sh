@@ -45,6 +45,13 @@ set -euo pipefail
 #     that same pid, through AXUIElementCreateApplication(<it>). They exist
 #     because localvoxtral opens no window at launch — without them every verb
 #     above has nothing to address. No other app's menu bar is expressible.
+#   - `dictate` posts the app's OWN configured trigger — read from the app's
+#     defaults, never hard-coded — as a modifier-only gesture at the HID tap.
+#     It is the one verb that does not target a window, because the trigger is
+#     global by design and the dictation grounds itself in whatever is FOCUSED;
+#     activating localvoxtral first would defeat the thing under test. It
+#     refuses unless the app is running, its modifier trigger is enabled in its
+#     own settings, and Secure Keyboard Entry is not held.
 #   - `term focus` / `term close` act only on a window this gate opened,
 #     identified by a random marker it put in that window's title.
 #
@@ -60,11 +67,12 @@ set -euo pipefail
 #
 # It refuses everything GUI-touching while the screen is locked (shared probe:
 # scripts/ci/screen-lock-state.sh, fail CLOSED here), and honours the owner's
-# takeover rule: any verb that steals focus (launch, ax click, ax type, key,
-# menu open, menu click, term open, term focus) speaks a warning, waits, and
-# announces completion. `state`, `shot`, `ax dump`, `menu dismiss`, `quit` and
-# `term close` do not warn: none of them takes the keyboard or raises a window
-# in front of what the owner is doing.
+# takeover rule: any verb that steals focus or takes input (launch, ax click,
+# ax type, key, menu open, menu click, dictate tap/hold, term open, term focus)
+# speaks a warning, waits, and announces completion. `state`, `shot`,
+# `ax dump`, `menu dismiss`, `dictate cancel`, `quit` and `term close` do not
+# warn: none of them takes the keyboard or raises a window in front of what the
+# owner is doing.
 #
 # Verbs (each documented at its run_* function):
 #   state
@@ -75,6 +83,7 @@ set -euo pipefail
 #   ax type <selector> -- <text>
 #   key <escape|tab|return>
 #   menu <open|click <item-title>|dismiss>
+#   dictate <tap|hold <seconds>|cancel>
 #   quit
 #   term open <ghostty|iterm|terminal> <command> [args...]
 #   term focus <id>
@@ -133,6 +142,11 @@ LV_UI_WARN_SLEEP_SECONDS="${LV_UI_WARN_SLEEP_SECONDS:-3}"
 # A window PNG is a few hundred KB; the cap exists so a pathological capture
 # cannot dump tens of MB into an agent transcript.
 LV_UI_SHOT_MAX_BYTES="${LV_UI_SHOT_MAX_BYTES:-8388608}"
+
+# `dictate hold` holds a real modifier down for this long at most. The SSH
+# command blocks for the duration, and a modifier left latched is the owner's
+# problem for the rest of the session, so it is bounded.
+LV_UI_MAX_HOLD_SECONDS="${LV_UI_MAX_HOLD_SECONDS:-30}"
 
 LV_UI_MAX_COMMAND_BYTES="${LV_UI_MAX_COMMAND_BYTES:-2048}"
 LV_UI_MAX_TEXT_BYTES="${LV_UI_MAX_TEXT_BYTES:-512}"
@@ -350,6 +364,7 @@ write_helper() {
   cat >"$HELPER_PATH" <<'SWIFT'
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
@@ -363,6 +378,7 @@ import Foundation
 //   menuopen <pid>
 //   menuclick <pid> <item-title>
 //   menudismiss <pid>
+//   dictate <pid> <fn|right_command|right_option> <tap|hold|cancel> [seconds]
 //   termwindow <ownerpid> <marker>                           -> "<winid> <ownerpid>"
 //   termaction <ownerpid> <marker> <focus|close>
 
@@ -771,6 +787,90 @@ case "menudismiss":
     // Fall back to toggling the status item shut — still the app's own element.
     _ = AXUIElementPerformAction(dismissItem, kAXPressAction as CFString)
     print("ok")
+
+case "dictate":
+    guard argv.count >= 4 else { die("usage: dictate <pid> <modifier> <tap|hold|cancel> [seconds]") }
+    let dictatePID = requirePID(argv[1])
+    guard NSRunningApplication(processIdentifier: dictatePID) != nil else {
+        die("the app under test (pid \(dictatePID)) is not running")
+    }
+    // Secure Keyboard Entry discards synthesised input outright — a locked
+    // screen, a password field, or a terminal with the setting on. Without
+    // this check the verb's failure shape is a silent no-op, which is the
+    // worst one to debug (record-demo.sh checks the same thing before its
+    // live-dictation beat).
+    if IsSecureEventInputEnabled() {
+        die("Secure Keyboard Entry is held by some process — synthesised input would be discarded")
+    }
+    let gesture = argv[3]
+    if gesture == "cancel" {
+        // The app registers a Carbon hotkey on plain Escape for the duration
+        // of a dictation and consumes it system-wide, so cancelling needs
+        // neither the trigger modifier nor a frontmost app.
+        guard let cancelSource = CGEventSource(stateID: .hidSystemState),
+              let escDown = CGEvent(keyboardEventSource: cancelSource, virtualKey: 53, keyDown: true),
+              let escUp = CGEvent(keyboardEventSource: cancelSource, virtualKey: 53, keyDown: false)
+        else { die("could not create keyboard events") }
+        escDown.post(tap: .cghidEventTap)
+        escUp.post(tap: .cghidEventTap)
+        print("ok cancel")
+        break
+    }
+    // The trigger is a modifier-ONLY gesture: a keyboard event whose type is
+    // overridden to .flagsChanged and which carries that modifier's flag mask.
+    // A plain keyDown never reaches the app's handleFlagsChanged and does
+    // nothing at all. This is the shape scripts/record-demo.sh has driven on
+    // this machine since the demo recording.
+    let triggers: [String: (CGKeyCode, CGEventFlags)] = [
+        "fn": (CGKeyCode(kVK_Function), .maskSecondaryFn),
+        "right_command": (CGKeyCode(kVK_RightCommand), .maskCommand),
+        "right_option": (CGKeyCode(kVK_RightOption), .maskAlternate),
+    ]
+    guard let trigger = triggers[argv[2]] else { die("unknown trigger modifier \(argv[2])") }
+    func postTrigger(down: Bool) {
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: trigger.0, keyDown: down) else {
+            die("could not create the trigger event")
+        }
+        event.type = .flagsChanged
+        event.flags = down ? trigger.1 : []
+        event.post(tap: .cghidEventTap)
+    }
+    // A hold holds a real modifier down for seconds. If this process is killed
+    // in between — a dropped SSH connection is the ordinary case — the flag
+    // stays latched across the owner's entire session. Release it on the way
+    // out rather than leaving that behind.
+    var signalSources: [DispatchSourceSignal] = []
+    for interrupting in [SIGTERM, SIGINT, SIGHUP] {
+        signal(interrupting, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: interrupting, queue: .global())
+        source.setEventHandler {
+            postTrigger(down: false)
+            exit(1)
+        }
+        source.resume()
+        signalSources.append(source)
+    }
+    switch gesture {
+    case "tap":
+        postTrigger(down: true)
+        Thread.sleep(forTimeInterval: 0.08)
+        postTrigger(down: false)
+    case "hold":
+        guard argv.count >= 5, let seconds = Double(argv[4]), seconds > 0, seconds <= 60 else {
+            die("hold needs a duration in seconds (0 < s <= 60)")
+        }
+        postTrigger(down: true)
+        Thread.sleep(forTimeInterval: seconds)
+        postTrigger(down: false)
+    default:
+        die("unknown gesture \(gesture)")
+    }
+    // Where the dictation actually landed. The trigger is global by design and
+    // the session grounds itself in whatever is focused, so this is the single
+    // most useful thing to report back.
+    let front = NSWorkspace.shared.frontmostApplication
+    let frontName = (front?.localizedName ?? "?").replacingOccurrences(of: "\n", with: " ")
+    print("ok \(gesture) trigger=\(argv[2]) frontmost=\(front?.processIdentifier ?? -1) (\(frontName))")
 
 case "termwindow":
     guard argv.count >= 3 else { die("usage: termwindow <ownerpid> <marker>") }
@@ -1200,6 +1300,96 @@ run_menu_dismiss() {
   ACTION_COMPLETED=1
 }
 
+# dictate tap | dictate hold <seconds> | dictate cancel
+#
+# The gate exists to debug the Claude Code / herdr session join, and that join
+# resolves when a dictation STARTS — but nothing else here can start one.
+# `key`'s allowlist is escape/tab/return and the app's trigger is a
+# modifier-only GESTURE, so without this verb the thing under test cannot be
+# exercised at all.
+#
+# It posts the app's OWN configured trigger, read from the app's defaults
+# rather than hard-coded, at the HID tap — the path scripts/record-demo.sh has
+# driven on this machine since the demo recording. The app detects it with an
+# NSEvent .flagsChanged monitor and filters nothing, so this is the real
+# gesture path, not a side door.
+#
+# It deliberately does NOT bring localvoxtral frontmost, and that is a
+# decision, not an oversight: the modifier trigger is global by design and the
+# session grounds its context in whatever IS focused — a terminal running
+# Claude Code. Activating localvoxtral first would make every session resolve
+# against the wrong surface, which is the exact thing under test. What stands
+# in for the frontmost check is stricter about the only real hazard, a stray
+# modifier landing in the owner's window: the app must be running AND its
+# modifier-only trigger must be enabled in its own settings AND Secure
+# Keyboard Entry must not be held; the frontmost app is then named in the
+# result and the log so the operator knows where the dictation went.
+
+app_default() { # <key> -> the app's stored value, empty when unset
+  defaults read com.localvoxtral.app "$1" 2>/dev/null || true
+}
+
+TRIGGER_MODIFIER=""
+TRIGGER_HOLD_DELAY=""
+
+# Read, never assume. A guess about which key to press is a modifier posted
+# into whatever the owner is doing.
+resolve_dictation_trigger() {
+  local enabled modifier delay
+  enabled="$(app_default settings.modifier_only_hotkey_enabled)"
+  [[ -n "$enabled" ]] \
+    || deny "cannot read com.localvoxtral.app's trigger settings — refusing to guess which key to press"
+  [[ "$enabled" == "1" ]] \
+    || deny "the app's modifier-only trigger is disabled (settings.modifier_only_hotkey_enabled=$enabled); this verb does not synthesise the Carbon shortcut path — enable it in Settings"
+  modifier="$(app_default settings.modifier_only_hotkey_modifier)"
+  case "$modifier" in
+    # fn/Globe is supported because it is a configurable trigger, but only
+    # right_command has been driven synthetically on this machine
+    # (record-demo.sh). If `dictate` reports ok and nothing happens under fn,
+    # that is the first thing to suspect.
+    fn | right_command | right_option) TRIGGER_MODIFIER="$modifier" ;;
+    "") deny "settings.modifier_only_hotkey_modifier is unset — cannot determine the configured trigger" ;;
+    *) deny "unrecognised configured trigger: $modifier" ;;
+  esac
+  delay="$(app_default settings.modifier_only_hold_delay)"
+  # Absent means the app's own default, which is a value rather than an
+  # identity — unlike the trigger, defaulting it guesses nothing.
+  [[ "$delay" =~ ^[0-9]+(\.[0-9]+)?$ ]] || delay="0.35"
+  TRIGGER_HOLD_DELAY="$delay"
+}
+
+run_dictate() {
+  local gesture="$1" seconds="${2:-}"
+  require_unlocked_screen
+  require_app_under_test
+
+  if [[ "$gesture" == "cancel" ]]; then
+    log_command ALLOW "dictate=cancel pid=$APP_PID"
+    # Escape only. It gives a session back rather than taking the screen, so
+    # like `quit` and `menu dismiss` it does not warn.
+    helper dictate "$APP_PID" none cancel || fail "could not post the cancel key"
+    ACTION_COMPLETED=1
+    return
+  fi
+
+  resolve_dictation_trigger
+  if [[ "$gesture" == "hold" ]]; then
+    [[ "$seconds" =~ ^[0-9]+(\.[0-9]+)?$ ]] || deny "hold needs a duration in seconds"
+    # A hold shorter than the app's own threshold is a tap, silently: it would
+    # start an Overlay Buffer session while the caller asked for Live
+    # Auto-Paste, and nothing would say so.
+    awk -v s="$seconds" -v d="$TRIGGER_HOLD_DELAY" -v cap="$LV_UI_MAX_HOLD_SECONDS" \
+      'BEGIN { exit !(s > d && s <= cap) }' \
+      || deny "hold must be longer than the app's hold delay (${TRIGGER_HOLD_DELAY}s) and at most ${LV_UI_MAX_HOLD_SECONDS}s"
+  fi
+
+  log_command ALLOW "dictate=$gesture trigger=$TRIGGER_MODIFIER${seconds:+ seconds=$seconds}"
+  announce_takeover "starting a localvoxtral dictation into the focused window"
+  helper dictate "$APP_PID" "$TRIGGER_MODIFIER" "$gesture" ${seconds:+"$seconds"} \
+    || fail "the trigger gesture was refused"
+  ACTION_COMPLETED=1
+}
+
 run_quit() {
   require_app_under_test
   log_command ALLOW "pid=$APP_PID"
@@ -1422,6 +1612,21 @@ case "${ARGV[0]}" in
   quit)
     (( ${#ARGV[@]} == 1 )) || deny "quit takes no arguments"
     run_quit
+    ;;
+  dictate)
+    case "${ARGV[1]:-}" in
+      tap | cancel)
+        (( ${#ARGV[@]} == 2 )) || deny "dictate ${ARGV[1]} takes no arguments"
+        run_dictate "${ARGV[1]}"
+        ;;
+      hold)
+        (( ${#ARGV[@]} == 3 )) || deny "dictate hold takes exactly one duration in seconds"
+        run_dictate hold "${ARGV[2]}"
+        ;;
+      *)
+        deny "unknown dictate subverb"
+        ;;
+    esac
     ;;
   menu)
     case "${ARGV[1]:-}" in

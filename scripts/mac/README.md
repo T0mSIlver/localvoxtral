@@ -542,6 +542,7 @@ full-screen capture anywhere in it:
 | `ax type <selector> -- <text>` | types into a text-bearing element |
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
 | `menu open` / `menu click <item-title>` / `menu dismiss` | drives the status item of the recorded pid. localvoxtral opens no window at launch, so this is what makes every row above it reachable |
+| `dictate tap` / `dictate hold <seconds>` / `dictate cancel` | posts the app's OWN configured modifier trigger (read from its defaults) as a gesture at the HID tap — the only way to start a dictation, and therefore to exercise the Claude Code / herdr join |
 | `quit` | terminates the recorded pid |
 | `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
@@ -657,6 +658,48 @@ not System Events: an Apple event would need a separate Automation grant whose
 consent sheet cannot be answered over SSH, while Accessibility is a grant sshd
 already holds.
 
+### `dictate` — the only verb that can start a session
+
+The gate exists to debug the Claude Code / herdr join, and that join resolves
+when a dictation **starts**. `key`'s allowlist is `escape|tab|return` and the
+app's trigger is a modifier-only gesture, so nothing else here can start one.
+
+`dictate` posts the app's own configured trigger — read out of
+`com.localvoxtral.app`'s defaults each invocation, never hard-coded — as a
+`flagsChanged` event at the HID tap. That is the same path
+`scripts/record-demo.sh` has driven on this machine since the demo recording;
+the app detects the gesture with an `NSEvent` monitor and filters nothing, so
+this is the real gesture, not a side door. A plain `keyDown` would do nothing:
+the event's type has to be `flagsChanged` and carry the modifier's flag mask.
+
+- `dictate tap` → Overlay Buffer session (a second tap stops it)
+- `dictate hold <seconds>` → Live Auto-Paste push-to-talk, held for that long.
+  Must exceed the app's own `settings.modifier_only_hold_delay`, else it is a
+  tap wearing a hold's name; capped at `LV_UI_MAX_HOLD_SECONDS` (30).
+- `dictate cancel` → Escape, which the app consumes system-wide for the
+  duration of a session.
+
+It refuses when the app is not running, when the screen is locked, when the
+trigger settings cannot be read (**it will not guess which key to press**),
+when the modifier-only trigger is disabled in the app's settings, and when
+Secure Keyboard Entry is held — that last one because the events would be
+silently discarded, which is the worst failure shape to debug. `tap`/`hold`
+take the audible warning; `cancel` does not.
+
+**It does not bring localvoxtral frontmost, on purpose.** The trigger is global
+by design and the dictation grounds its context in whatever *is* focused — a
+terminal running Claude Code. Activating localvoxtral first would make every
+session resolve against the wrong surface, which is the thing under test. The
+result line names the frontmost app instead, so you know where it landed.
+
+Reading the outcome: `ax dump overlay` after a `dictate tap`. The overlay's
+Claude-join badge is a real AX element with an explicit label —
+`Grounded in Claude Code session <workspace>`, or
+`No Claude Code session joined for this dictation`. Two caveats: the badge only
+appears when terminal-screen or repo context is enabled, and **only Overlay
+Buffer sessions open an overlay at all** — `dictate hold` (Live Auto-Paste)
+never shows one, so `tap` is the oracle.
+
 ### Getting a build into the artifact root
 
 `launch` only accepts bundles under `LV_UI_ARTIFACT_ROOTS`, and those roots
@@ -675,6 +718,23 @@ never the roots.
 # A locally packaged bundle, same destination:
 ./scripts/mac/install-ui-artifact.sh dist/localvoxtral.app
 ```
+
+**An agent driving the gate has no shell on that account and no verb that runs
+`try-pr.sh`, so CI does the install instead.** The self-hosted runner is a
+launchd agent inside the owner's GUI session — its `$HOME` is the GUI
+account's home, which is where the artifact root lives — so a
+`workflow_dispatch` of `ci.yml` with `dogfood=true` builds *and* installs:
+
+```bash
+gh workflow run CI --ref <branch> -f dogfood=true
+# the run summary then carries the exact:  ssh lv-ui 'launch --dogfood …'
+```
+
+That step is gated to `workflow_dispatch` **and** `dogfood=true` — narrower
+than the dogfood lane itself, whose `[dogfood-package]` marker fires on
+ordinary PR pushes, none of which should write into the owner's home. If the
+target slot is running the step warns and skips rather than failing the build
+(exit 3 from the installer); every other install failure is red.
 
 Two slots, replaced in place: `localvoxtral.app` and (for a
 `LVXDogfoodCapture`-stamped build) `localvoxtral-dogfood.app`. Keeping one copy
@@ -773,6 +833,8 @@ ssh lv-ui 'menu open'                   # localvoxtral has NO window until this
 ssh lv-ui 'shot popover' | base64 -d > /tmp/popover.png
 ssh lv-ui 'menu click Settings'         # substring: the real title is Settings…
 ssh lv-ui 'shot settings' | base64 -d > /tmp/settings.png
+ssh lv-ui 'dictate tap'                 # starts an Overlay Buffer session
+ssh lv-ui 'ax dump overlay'             # the Claude-join badge names the session
 ssh lv-ui 'ax dump settings' | python3 -m json.tool | head
 ssh lv-ui 'ax click role=AXButton,title=Dictation'
 ssh lv-ui 'quit'

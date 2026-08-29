@@ -18,6 +18,12 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   the pid every other gate verb addresses. The gate's roots are owner-writable
   only on purpose, so the install destination moves rather than the roots
   (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
+  An agent driving the gate has no shell on that account: for it, the install
+  is `gh workflow run CI --ref <branch> -f dogfood=true`. The self-hosted
+  runner is a launchd agent in the owner's GUI session, so its `$HOME` is the
+  artifact root's home, and that dispatch (and ONLY a dispatch — the
+  `[dogfood-package]` marker must never write into the owner's home) installs
+  the bundle and prints the `launch` command in the run summary.
 - **Code signing (why TCC used to reset)**: `package_app.sh` signs with
   `$LOCALVOXTRAL_CODESIGN_IDENTITY` when set, else ad-hoc. The owner's Mac
   has a self-signed code-signing cert `localvoxtral-dev`; the identity env
