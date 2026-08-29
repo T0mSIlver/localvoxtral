@@ -67,6 +67,17 @@ final class DogfoodControlService {
     /// `ClaudeJoinAbstentionTap.collecting` is documented as non-reentrant, and
     /// two overlapping probes would interleave one another's causes.
     private var isExecuting = false
+    /// True while a resolve started by `surface probe` has not returned —
+    /// INCLUDING one the deadline already abandoned.
+    ///
+    /// `isExecuting` is not enough on its own: the probe is bounded by
+    /// abandonment, so a wedged resolve outlives the command that started it
+    /// and is still inside `ClaudeJoinAbstentionTap.collecting` when the next
+    /// probe would arm it again. Refusing by name is the honest answer — and
+    /// unlike holding `isExecuting`, it leaves the other four commands usable
+    /// while the resolver is stuck, which is exactly when `registry list` is
+    /// worth asking.
+    private var isResolvingSurface = false
 
     init(
         viewModel: DictationViewModel?,
@@ -97,6 +108,7 @@ final class DogfoodControlService {
         case notDictating = "no dictation is running"
         case dictationInProgress = "refusing to probe while a dictation is resolving its own join"
         case probeTimedOut = "the resolver did not answer within the probe deadline"
+        case probeStillRunning = "an earlier probe's resolve has not returned yet"
     }
 
     /// Run one command. Returns the JSON body for `result`, or a refusal.
@@ -239,6 +251,7 @@ final class DogfoodControlService {
         if let viewModel, viewModel.isDictating || viewModel.isConnectingRealtimeSession {
             return .failure(.dictationInProgress)
         }
+        guard !isResolvingSurface else { return .failure(.probeStillRunning) }
         let sessions = liveSessions().count
         let trusted = accessibilityTrusted()
         let target = frontmostTarget()
@@ -267,13 +280,19 @@ final class DogfoodControlService {
                 guard isFirst else { return }
                 continuation.resume(returning: value)
             }
+            isResolvingSurface = true
             Task { @MainActor in
-                finish(await ClaudeSurfaceProbe.summarize(
+                let summary = await ClaudeSurfaceProbe.summarize(
                     accessibilityTrusted: trusted,
                     frontmostTarget: target,
                     hasLiveSessions: liveness,
                     resolve: resolve
-                ))
+                )
+                // Cleared HERE, not at the deadline: the flag tracks the
+                // resolve, and an abandoned one is exactly the case it exists
+                // for.
+                self.isResolvingSurface = false
+                finish(summary)
             }
             Task {
                 await sleepFor(deadline)

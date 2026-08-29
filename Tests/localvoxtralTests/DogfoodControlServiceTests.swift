@@ -272,7 +272,38 @@ final class DogfoodControlServiceTests: XCTestCase {
     /// The probe is bounded by ABANDONMENT: a resolver that never returns must
     /// not hold the socket, and the deadline task must not be waiting on it.
     func testSurfaceProbeIsBoundedWhenTheResolverNeverAnswers() async {
-        let service = makeService(
+        let service = makeWedgedProbeService()
+
+        let refusal = await expectFailure(service, .surfaceProbe)
+        XCTAssertEqual(refusal, .probeTimedOut)
+    }
+
+    /// The other side of that bound: the abandoned resolve is still inside
+    /// `ClaudeJoinAbstentionTap.collecting`, which is documented as
+    /// non-reentrant, so a second probe must be refused by name rather than
+    /// interleave its causes.
+    func testASecondProbeIsRefusedWhileTheAbandonedResolveIsStillRunning() async {
+        let service = makeWedgedProbeService()
+
+        let first = await expectFailure(service, .surfaceProbe)
+        XCTAssertEqual(first, .probeTimedOut)
+        let second = await expectFailure(service, .surfaceProbe)
+        XCTAssertEqual(second, .probeStillRunning)
+    }
+
+    /// And it refuses only the probe: a wedged resolver is exactly when the
+    /// other verbs are worth asking.
+    func testAWedgedResolveDoesNotBlockTheOtherCommands() async {
+        let service = makeWedgedProbeService()
+
+        _ = await expectFailure(service, .surfaceProbe)
+        let reply = await expectSuccess(service, .registryList)
+
+        XCTAssertEqual(reply["count"] as? Int, 0)
+    }
+
+    private func makeWedgedProbeService() -> DogfoodControlService {
+        makeService(
             viewModel: makeViewModel(),
             accessibilityTrusted: true,
             frontmostTarget: TerminalScreenTarget(pid: 42, bundleID: "com.mitchellh.ghostty"),
@@ -282,9 +313,6 @@ final class DogfoodControlServiceTests: XCTestCase {
             },
             sleepFor: { _ in }
         )
-
-        let refusal = await expectFailure(service, .surfaceProbe)
-        XCTAssertEqual(refusal, .probeTimedOut)
     }
 
     // MARK: - Fixtures

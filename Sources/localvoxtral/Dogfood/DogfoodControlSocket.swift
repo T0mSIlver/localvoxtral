@@ -363,11 +363,27 @@ final class DogfoodControlSocket: Sendable {
         writeAll(fd: fd, string: scrubbed + "\n")
     }
 
+    /// How long the serving thread will wait for the app to answer. Longer
+    /// than `DogfoodControlService.probeDeadlineSeconds` on purpose: a
+    /// legitimate `surface probe` must not be truncated by the transport
+    /// carrying it.
+    private static let handlerDeadline: TimeInterval = 40
+
     /// Bridges the async handler to this synchronous serving thread.
     ///
     /// A semaphore is correct HERE and would be a deadlock in the app's own
     /// main-actor code: this is a dedicated socket thread that owns nothing and
     /// blocks nobody, and the handler hops to the main actor on its own.
+    ///
+    /// It is BOUNDED, and shutdown-aware, because an unbounded wait here is a
+    /// hang at quit. `applicationWillTerminate` runs on the main actor and
+    /// calls `stop()`, which does not return until the accept loop has exited
+    /// — and the accept loop is inside this function, waiting for a handler
+    /// that needs the very main actor `stop()` is standing on. So the wait
+    /// polls: it gives up the moment `isRunning` goes false (stop() clears it
+    /// before signalling the wake pipe), and in any case at the deadline. The
+    /// abandoned task finishes later into a box nobody is holding, which costs
+    /// nothing.
     private func runHandler(_ line: String) -> String {
         let box = Mutex<String?>(nil)
         let done = DispatchSemaphore(value: 0)
@@ -377,11 +393,26 @@ final class DogfoodControlSocket: Sendable {
             box.withLock { $0 = reply }
             done.signal()
         }
-        done.wait()
+        let deadline = Date().addingTimeInterval(Self.handlerDeadline)
+        var answered = false
+        while Date() < deadline {
+            if done.wait(timeout: .now() + .milliseconds(100)) == .success {
+                answered = true
+                break
+            }
+            // stop() has been requested; leave now so the accept loop can
+            // release the socket and the quit can finish.
+            if !state.withLock({ $0.isRunning }) { break }
+        }
+        if !answered {
+            Log.claudeContext.error(
+                "Dogfood control: the app did not answer a command before the transport deadline"
+            )
+        }
         return box.withLock { $0 } ?? DogfoodControlProtocol.reply(
             command: nil,
             result: nil,
-            error: "handler produced no reply"
+            error: "the app did not answer"
         )
     }
 
