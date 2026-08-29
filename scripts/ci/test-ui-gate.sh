@@ -139,6 +139,12 @@ case "$2" in
     [[ -z "${STUB_DICTATE_FAIL:-}" ]] || exit 1
     echo "ok $5 trigger=$4 frontmost=7777 (Ghostty)"
     ;;
+  control)
+    # $3 is the socket path, $4 the forwarded line. Echoed back so the suite
+    # can assert exactly what crossed, and nothing more.
+    [[ -z "${STUB_CONTROL_FAIL:-}" ]] || exit 1
+    printf '{"ok":true,"command":"%s","error":null,"result":{}}\n' "$4"
+    ;;
   *)
     exit 1
     ;;
@@ -152,6 +158,30 @@ if [[ -n "${STUB_IOREG_FILE:-}" && -f "${STUB_IOREG_FILE}" ]]; then
   exit 0
 fi
 echo '"HIDIdleTime" = 42000000000'
+STUB
+
+# `log show ...` — the unified-log reader the `log` verb wraps. Answers from
+# fixtures so the suite can exercise the happy path, the restricted-store
+# refusal, and the line cap without a real log store.
+cat >"$STUB_BIN/log" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_LOG_LOG"
+if [[ -n "${STUB_LOG_RESTRICTED:-}" ]]; then
+  echo "log: Could not open local log store: Operation not permitted" >&2
+  exit 64
+fi
+if [[ -n "${STUB_LOG_OUTPUT_FILE:-}" && -f "$STUB_LOG_OUTPUT_FILE" ]]; then
+  cat "$STUB_LOG_OUTPUT_FILE"
+  exit 0
+fi
+exit 0
+STUB
+
+# `lv-attach` execs exactly one ssh. The stub records the argv it was handed,
+# which is the whole assertion.
+cat >"$STUB_BIN/ssh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_SSH_LOG"
 STUB
 
 cat >"$STUB_BIN/pmset" <<'STUB'
@@ -236,6 +266,7 @@ run_gate() { # <command> [env assignments...]
     STUB_SWIFT_LOG="$TMP_DIR/swift.log" \
     STUB_DEFAULTS_LOG="$TMP_DIR/defaults.log" \
     STUB_SCREENCAPTURE_LOG="$TMP_DIR/screencapture.log" \
+    STUB_LOG_LOG="$TMP_DIR/log.log" \
     "$@" \
     bash "$GATE" >"$out_file" 2>"$err_file" || GATE_STATUS=$?
   GATE_STDOUT="$(cat "$out_file")"
@@ -276,14 +307,15 @@ assert_allowed() { # <command> <description> [env...]
   pass "allowed: $description"
 }
 
-write_app_state() { # <pid>
-  local pid="$1" dir="$FAKE_HOME/.localvoxtral-ui-gate"
+write_app_state() { # <pid> [dogfood:0|1] [bundle]
+  local pid="$1" dogfood="${2:-0}" bundle="${3:-$CLEAN_APP}"
+  local dir="$FAKE_HOME/.localvoxtral-ui-gate"
   mkdir -p "$dir"
   {
     printf 'pid=%s\n' "$pid"
-    printf 'bundle=%s\n' "$CLEAN_APP"
-    printf 'identity=%s|%s\n' "Mon Aug 24 09:00:00 2026" "$CLEAN_APP/Contents/MacOS/localvoxtral"
-    printf 'dogfood=0\n'
+    printf 'bundle=%s\n' "$bundle"
+    printf 'identity=%s|%s\n' "Mon Aug 24 09:00:00 2026" "$bundle/Contents/MacOS/localvoxtral"
+    printf 'dogfood=%s\n' "$dogfood"
   } >"$dir/app.state"
 }
 
@@ -1367,6 +1399,373 @@ grep -q '::warning::' <<<"$INSTALL_STEP" \
 grep -q 'STATUS != 0' <<<"$INSTALL_STEP" \
   || fail "the install step swallows failures other than the slot-is-running one"
 pass "a running slot warns; every other install failure is red"
+
+echo "== 21. app — the passthrough to the dogfood control socket =="
+
+# The verb exists because two things about the join are invisible from outside
+# the app's process: a dictation has no deterministic trigger, and the session
+# registry is per-process, so `--probe-surface` can only ever resolve against
+# an empty one. What is proved here is that the passthrough stayed a
+# passthrough — one fixed socket, five known shapes, a dogfood-only gate.
+
+DOGFOOD_APP_ENV=(
+  STUB_PS_LSTART="Mon Aug 24 09:00:00 2026"
+  STUB_PS_COMM="$DOGFOOD_APP/Contents/MacOS/localvoxtral"
+)
+
+# A real AF_UNIX inode: `[[ -S ]]` is the gate's "is the app exposing one"
+# check, and a regular file would pass a laxer test while failing this one.
+CONTROL_SOCKET="$TMP_DIR/control.sock"
+command -v python3 >/dev/null 2>&1 \
+  || fail "python3 is needed to create the AF_UNIX fixture socket"
+python3 - "$CONTROL_SOCKET" <<'PYSOCK'
+import socket
+import sys
+
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(sys.argv[1])
+server.listen(1)
+PYSOCK
+[[ -S "$CONTROL_SOCKET" ]] || fail "the fixture control socket was not created"
+NOT_A_SOCKET="$TMP_DIR/not-a-socket"
+: >"$NOT_A_SOCKET"
+
+APP_SOCKET_ENV=(LV_UI_CONTROL_SOCKET="$CONTROL_SOCKET")
+
+clear_state
+assert_denied 'app join report' 'app with no app under test' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+
+# A shipped build compiles no socket at all, so this refusal is the difference
+# between one clear line and a connect that never answers.
+write_app_state 4242 0 "$CLEAN_APP"
+assert_denied 'app join report' 'app against a build with no dogfood stamp' \
+  "${APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+[[ "$(log_tail)" == *"not a dogfood build"* ]] \
+  || fail "the non-dogfood refusal did not say why: $(log_tail)"
+
+write_app_state 4242 1 "$DOGFOOD_APP"
+assert_denied 'app join report' 'app when the app is not exposing a socket' \
+  "${DOGFOOD_APP_ENV[@]}" LV_UI_CONTROL_SOCKET="$NOT_A_SOCKET"
+[[ "$(log_tail)" == *"dogfood_control_socket_enabled"* ]] \
+  || fail "the missing-socket refusal did not name the runtime opt-in: $(log_tail)"
+
+# The forwardable shapes are an allowlist, not "whatever the socket happens to
+# understand today". A verb added to the app must be added here too — which is
+# the point: an already-installed gate must not gain a capability from an app
+# update.
+for hostile in \
+  'app session start' \
+  'app session start turbo' \
+  'app session restart overlay' \
+  'app registry dump' \
+  'app surface read' \
+  'app join' \
+  'app quit' \
+  'app state' \
+  'app rm -rf /'
+do
+  assert_denied "$hostile" "app refuses: ${hostile#app }" \
+    "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+done
+
+# The socket path is not an argument, and there is no verb shape that makes it
+# one — so a second socket on the machine is unreachable through this gate.
+assert_denied "app join report $TMP_DIR/other.sock" 'app cannot be pointed at another socket' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+grep -q 'LV_UI_CONTROL_SOCKET' <<<"$(awk '/^run_app\(\) \{/ { capture = 1 } capture { print } capture && /^\}$/ { exit }' "$GATE")" \
+  || fail "run_app no longer reads the fixed socket path"
+
+: >"$TMP_DIR/swift.log"
+: >"$TMP_DIR/say.log"
+assert_allowed 'app join report' 'app forwards a read-only command' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+grep -q "control $CONTROL_SOCKET join report" "$TMP_DIR/swift.log" \
+  || fail "app did not forward the line to the fixed socket: $(cat "$TMP_DIR/swift.log")"
+[[ "$GATE_STDOUT" == *'"ok":true'* ]] \
+  || fail "app did not return the socket's reply: $GATE_STDOUT"
+[[ ! -s "$TMP_DIR/say.log" ]] \
+  || fail "a read-only control command spoke a takeover warning"
+
+: >"$TMP_DIR/swift.log"
+assert_allowed 'app registry list' 'app forwards registry list' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+grep -q "control $CONTROL_SOCKET registry list" "$TMP_DIR/swift.log" \
+  || fail "registry list did not reach the socket: $(cat "$TMP_DIR/swift.log")"
+
+# Owner rule: anything that takes the keyboard warns and waits first.
+: >"$TMP_DIR/say.log"
+assert_allowed 'app session start overlay' 'app session start warns before taking the screen' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+grep -q "taking control in 3" "$TMP_DIR/say.log" \
+  || fail "app session start did not speak the takeover warning (owner rule)"
+
+: >"$TMP_DIR/say.log"
+assert_allowed 'app session stop' 'app session stop gives the session back without warning' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+[[ ! -s "$TMP_DIR/say.log" ]] \
+  || fail "session stop spoke a takeover warning for a verb that takes nothing"
+
+# Lock policy is per COMMAND: what takes the keyboard, and what would answer a
+# question about the wrong surface, are both refused; in-process reads are not.
+LOCK_STATE=locked
+assert_denied 'app session start overlay' 'app session start while the screen is locked' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+assert_denied 'app session start live' 'app session start live while the screen is locked' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+assert_denied 'app surface probe' 'app surface probe while the screen is locked' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+assert_allowed 'app join report' 'app join report is a read and survives a locked screen' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+assert_allowed 'app registry list' 'app registry list survives a locked screen' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+assert_allowed 'app session stop' 'app session stop survives a locked screen' \
+  "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}"
+LOCK_STATE=unlocked
+
+# A socket that does not answer must not read as a completed command.
+run_gate 'app join report' "${DOGFOOD_APP_ENV[@]}" "${APP_SOCKET_ENV[@]}" STUB_CONTROL_FAIL=1
+(( GATE_STATUS != 0 )) || fail "app reported success when the control socket refused"
+[[ "$GATE_STDERR" == *"control socket did not answer"* ]] \
+  || fail "app's failure message is unhelpful: $GATE_STDERR"
+pass "a control socket that does not answer is a failure, not an ok"
+
+# Every invocation is logged with the exact line that crossed.
+grep -q 'ALLOW app join report .*(app=join report' "$LOG_FILE" \
+  || fail "the gate log does not record what was forwarded"
+pass "every app invocation is logged with the forwarded line"
+
+clear_state
+
+echo "== 22. log — bounded, scoped, and never silently empty =="
+
+LOG_FIXTURE="$TMP_DIR/logfixture.txt"
+
+clear_state
+# Read-only and focus-free, so unlike the actuation verbs it needs no app under
+# test and survives a locked screen.
+{
+  echo '2026-08-30 10:00:00 localvoxtral ClaudeContext: join abstained tty: stale'
+  echo '2026-08-30 10:00:01 localvoxtral Backends: speechd ready'
+} >"$LOG_FIXTURE"
+: >"$TMP_DIR/log.log"
+assert_allowed 'log' 'log with no app under test' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+[[ "$GATE_STDOUT" == *"join abstained"* ]] \
+  || fail "log did not return the app's lines: $GATE_STDOUT"
+
+LOCK_STATE=locked
+assert_allowed 'log' 'log survives a locked screen' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+LOCK_STATE=unlocked
+
+# The predicate is the difference between a diagnostic and a system-log reader
+# on the owner's personal machine.
+grep -q 'subsystem == "com.localvoxtral"' "$TMP_DIR/log.log" \
+  || fail "log show was not scoped to localvoxtral's subsystem: $(cat "$TMP_DIR/log.log")"
+grep -q -- '--last 15m' "$TMP_DIR/log.log" \
+  || fail "log did not use its default window: $(cat "$TMP_DIR/log.log")"
+pass "log is predicate-scoped to localvoxtral's own subsystem"
+
+: >"$TMP_DIR/log.log"
+assert_allowed 'log 42' 'log with an explicit window' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+grep -q -- '--last 42m' "$TMP_DIR/log.log" || fail "log ignored the requested window"
+
+assert_denied 'log 0' 'a zero-minute window'
+assert_denied 'log 121' 'a window past the clamp'
+assert_denied 'log soon' 'a non-numeric window'
+assert_denied 'log 15 30' 'two windows'
+assert_denied 'log -5' 'a negative window'
+
+# The app writes its categories `privacy: .public` on purpose; this is the
+# cheap way not to depend on every line anyone ever adds being safe.
+{
+  printf 'token %s in a line\n' "$(printf 'a%.0s' $(seq 1 43))"
+  printf 'not a token %s\n' "$(printf 'b%.0s' $(seq 1 42))"
+} >"$LOG_FIXTURE"
+assert_allowed 'log' 'log masks token-shaped runs' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+[[ "$GATE_STDOUT" == *"<redacted>"* ]] \
+  || fail "log did not mask a 43-character base64url run: $GATE_STDOUT"
+[[ "$GATE_STDOUT" != *"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]] \
+  || fail "log emitted a token-shaped run verbatim"
+[[ "$GATE_STDOUT" == *"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"* ]] \
+  || fail "log masked a run that is not the token shape — the rule must match DogfoodCaptureRedaction exactly"
+pass "log applies the same token-shaped scrub as the dogfood records"
+
+# A cap that silently truncated would make a missing line look like a missing
+# event, so the drop is announced.
+seq 1 900 | sed 's/^/2026-08-30 10:00:00 localvoxtral line /' >"$LOG_FIXTURE"
+assert_allowed 'log' 'log caps its own output' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+(( $(printf '%s\n' "$GATE_STDOUT" | wc -l) <= 400 )) \
+  || fail "log exceeded its line cap"
+[[ "$GATE_STDERR" == *"dropped by the cap"* ]] \
+  || fail "log truncated silently: $GATE_STDERR"
+
+# Nothing to report and the reader being broken must not look the same.
+: >"$LOG_FIXTURE"
+assert_allowed 'log' 'log says so when there is nothing to report' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+[[ "$GATE_STDERR" == *"no com.localvoxtral entries"* ]] \
+  || fail "an empty log window produced no explanation: $GATE_STDERR"
+
+# The restriction the build gate account actually hits (scripts/mac/README.md).
+# It is unverified for the GUI account, so the failure has to name itself.
+run_gate 'log' STUB_LOG_RESTRICTED=1
+(( GATE_STATUS != 0 )) || fail "a restricted log store read as success"
+[[ "$GATE_STDERR" == *"Could not open local log store"* ]] \
+  || fail "the restricted-store failure did not quote the reason: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"cannot read the unified log"* ]] \
+  || fail "the restricted-store failure did not explain itself: $GATE_STDERR"
+pass "a restricted log store fails loudly and names itself, rather than returning an empty page"
+
+echo "== 23. lv-attach — the wrapper that makes term open usable =="
+
+# `term open` matches the FIRST token only and then trusts the command with
+# every argument it will ever be given, so an allowlisted name is holding the
+# boundary. The documented answer used to be a script the owner wrote by hand;
+# it ships here instead, and these are the properties that make allowlisting it
+# safe.
+
+ATTACH="$ROOT_DIR/scripts/mac/lv-attach.sh"
+ATTACH_CONF="$TMP_DIR/lv-attach.conf"
+SSH_LOG="$TMP_DIR/ssh.log"
+
+run_attach() { # <conf-contents> [args...]
+  local conf="$1"
+  shift
+  printf '%s\n' "$conf" >"$ATTACH_CONF"
+  ATTACH_STATUS=0
+  ATTACH_STDERR=""
+  : >"$SSH_LOG"
+  env -i \
+    PATH="$STUB_BIN:/usr/bin:/bin" \
+    HOME="$FAKE_HOME" \
+    LV_ATTACH_CONF="$ATTACH_CONF" \
+    STUB_SSH_LOG="$SSH_LOG" \
+    bash "$ATTACH" "$@" >"$TMP_DIR/attach.out" 2>"$TMP_DIR/attach.err" \
+    || ATTACH_STATUS=$?
+  ATTACH_STDERR="$(cat "$TMP_DIR/attach.err")"
+}
+
+assert_attach_refused() { # <description> <conf> [args...]
+  local description="$1"
+  shift
+  run_attach "$@"
+  (( ATTACH_STATUS != 0 )) \
+    || fail "lv-attach accepted $description (ssh argv: $(cat "$SSH_LOG"))"
+  [[ ! -s "$SSH_LOG" ]] \
+    || fail "lv-attach ran ssh for $description: $(cat "$SSH_LOG")"
+  pass "lv-attach refuses: $description"
+}
+
+# The only two shapes the app's own HerdrInvocation classifier accepts. A
+# wrapper that opened `herdr terminal attach <pane>` would reliably produce a
+# window the app deliberately never joins.
+run_attach 'destination=builder' work
+(( ATTACH_STATUS == 0 )) || fail "lv-attach refused a valid session name: $ATTACH_STDERR"
+[[ "$(cat "$SSH_LOG")" == "-t -- builder herdr --session work" ]] \
+  || fail "lv-attach built the wrong argv: $(cat "$SSH_LOG")"
+pass "lv-attach execs a fixed whole-view herdr client"
+
+run_attach 'destination=builder'
+(( ATTACH_STATUS == 0 )) || fail "lv-attach refused the no-session form: $ATTACH_STDERR"
+[[ "$(cat "$SSH_LOG")" == "-t -- builder herdr" ]] \
+  || fail "the no-session form built the wrong argv: $(cat "$SSH_LOG")"
+
+run_attach $'destination=builder\nsession=default'
+[[ "$(cat "$SSH_LOG")" == "-t -- builder herdr --session default" ]] \
+  || fail "lv-attach ignored the configured default session: $(cat "$SSH_LOG")"
+
+run_attach 'destination=deploy@build.local' work
+[[ "$(cat "$SSH_LOG")" == "-t -- deploy@build.local herdr --session work" ]] \
+  || fail "lv-attach mangled a user@host destination: $(cat "$SSH_LOG")"
+
+# Injection through the identifier — the only caller-controlled value, and one
+# that ssh assembles into a string a remote login shell interprets.
+assert_attach_refused 'a semicolon in the identifier'   'destination=builder' 'work;id'
+assert_attach_refused 'a command substitution'          'destination=builder' 'work$(id)'
+assert_attach_refused 'a backtick'                      'destination=builder' 'work`id`'
+assert_attach_refused 'a pipe'                          'destination=builder' 'work|id'
+assert_attach_refused 'an ampersand'                    'destination=builder' 'work&'
+assert_attach_refused 'a space'                         'destination=builder' 'work sh'
+assert_attach_refused 'a newline'                       'destination=builder' $'work\nid'
+assert_attach_refused 'a quote'                         'destination=builder' "work'"
+assert_attach_refused 'a slash'                         'destination=builder' 'work/../etc'
+assert_attach_refused 'an ssh option'                   'destination=builder' '-oProxyCommand=id'
+assert_attach_refused 'a leading dash'                  'destination=builder' '-t'
+assert_attach_refused 'a long identifier'               'destination=builder' "$(printf 'a%.0s' $(seq 1 65))"
+assert_attach_refused 'a second argument'               'destination=builder' 'work' 'extra'
+assert_attach_refused 'an empty identifier'             'destination=builder' ''
+
+# The destination is not caller-controlled, but a config file is still a file.
+rm -f "$ATTACH_CONF"
+ATTACH_STATUS=0
+env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$FAKE_HOME" \
+  LV_ATTACH_CONF="$ATTACH_CONF" STUB_SSH_LOG="$SSH_LOG" \
+  bash "$ATTACH" work >/dev/null 2>&1 || ATTACH_STATUS=$?
+(( ATTACH_STATUS != 0 )) || fail "lv-attach ran with no config file"
+pass "lv-attach refuses: no config file"
+
+assert_attach_refused 'a config with no destination' 'session=work' 'work'
+assert_attach_refused 'a destination that is an ssh option' 'destination=-oProxyCommand=id' 'work'
+assert_attach_refused 'a destination with a space'   'destination=builder sh' 'work'
+assert_attach_refused 'a destination with a colon'   'destination=builder:2222' 'work'
+
+# Source pins: the properties that make the NAME safe to allowlist, which no
+# argv test can prove on its own.
+# CODE lines only: the file's own header names `bash -c` and `eval` as the
+# things it must not contain, and a scan that could not tell a comment from a
+# call would report the documentation as the violation.
+ATTACH_SRC="$(grep -v '^[[:space:]]*#' "$ATTACH")"
+for forbidden in 'eval ' 'bash -c' 'sh -c' 'source ' '. "$CONF"'; do
+  grep -qF "$forbidden" <<<"$ATTACH_SRC" \
+    && fail "lv-attach contains a path that can run a command of its own: $forbidden"
+done
+# Exactly two exec lines, both the fixed ssh argv.
+EXEC_LINES="$(grep -c '^[[:space:]]*exec ' <<<"$ATTACH_SRC")"
+(( EXEC_LINES == 2 )) || fail "lv-attach has $EXEC_LINES exec lines; expected exactly the two fixed ssh invocations"
+grep -q '^[[:space:]]*exec ssh -t -- "\$DESTINATION" herdr$' <<<"$ATTACH_SRC" \
+  || fail "the no-session exec is no longer the fixed argv"
+grep -q '^[[:space:]]*exec ssh -t -- "\$DESTINATION" herdr --session "\$SESSION"$' <<<"$ATTACH_SRC" \
+  || fail "the session exec is no longer the fixed argv"
+grep -q '"\$@"' <<<"$ATTACH_SRC" \
+  && fail 'lv-attach expands "$@" — an allowlisted command must never forward its arguments to anything'
+pass "lv-attach has no path that runs a command of the caller's choosing"
+
+# `ssh` itself must stay permanently refused: the wrapper is the way in, not a
+# precedent for widening the denylist.
+clear_conf
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach ssh"'
+assert_denied 'term open ghostty ssh builder' 'ssh stays denylisted even when a conf allowlists it'
+: >"$TMP_DIR/open.log"
+assert_allowed 'term open ghostty lv-attach work' 'an allowlisted lv-attach reaches term open' \
+  STUB_PGREP_PID=5150
+clear_conf
+
+echo "== 24. install-ui-artifact.sh ships the wrapper with the build =="
+
+WRAPPER_HOME="$TMP_DIR/wrapper-home"
+mkdir -p "$WRAPPER_HOME"
+WRAPPER_ROOT="$WRAPPER_HOME/localvoxtral-ui-artifacts"
+mkdir -p "$WRAPPER_ROOT"
+chmod 0700 "$WRAPPER_ROOT"
+WRAPPER_SRC_APP="$(make_bundle_in "$TMP_DIR" wrapper-src.app com.localvoxtral.app localvoxtral absent)"
+env HOME="$WRAPPER_HOME" LV_UI_ARTIFACT_DEST_ROOT="$WRAPPER_ROOT" \
+  bash "$INSTALLER" "$WRAPPER_SRC_APP" --no-hint >/dev/null 2>&1 \
+  || fail "the installer failed on a clean bundle"
+[[ -x "$WRAPPER_HOME/bin/lv-attach" ]] \
+  || fail "the installer did not place lv-attach where a GUI terminal can resolve it"
+# It execs ssh as the owner; other accounts do not get to read or run it.
+# BSD stat first, GNU second, each validated on its own — GNU stat's `-f` means
+# --file-system and prints a whole block before failing, so an `a || b`
+# substitution would capture that block instead of a mode (the same trap
+# install-ui-artifact.sh documents).
+WRAPPER_MODE="$(stat -f '%Lp' "$WRAPPER_HOME/bin/lv-attach" 2>/dev/null || true)"
+[[ "$WRAPPER_MODE" =~ ^[0-7]+$ ]] \
+  || WRAPPER_MODE="$(stat -c '%a' "$WRAPPER_HOME/bin/lv-attach" 2>/dev/null || true)"
+[[ "$WRAPPER_MODE" == "700" ]] \
+  || fail "the installed wrapper is mode $WRAPPER_MODE, not 700"
+cmp -s "$ROOT_DIR/scripts/mac/lv-attach.sh" "$WRAPPER_HOME/bin/lv-attach" \
+  || fail "the installed wrapper is not the reviewed one from the repo"
+pass "a build install ships the reviewed wrapper rather than leaving it hand-maintained"
+
 
 echo
 echo "ui gate tests passed"

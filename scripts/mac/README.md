@@ -543,6 +543,8 @@ full-screen capture anywhere in it:
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
 | `menu open` / `menu click <item-title>` / `menu dismiss` | drives the status item of the recorded pid. localvoxtral opens no window at launch, so this is what makes every row above it reachable |
 | `dictate tap` / `dictate hold <seconds>` / `dictate cancel` | posts the app's OWN configured modifier trigger (read from its defaults) as a gesture at the HID tap — the only way to start a dictation, and therefore to exercise the Claude Code / herdr join |
+| `app <control command>` | forwards ONE line to the **dogfood** control socket of the app under test and returns the reply. Five shapes only: `session start overlay\|live`, `session stop`, `join report`, `surface probe`, `registry list`. Refuses a build with no `LVXDogfoodCapture` stamp — see "`app` — asking the app what it joined" |
+| `log [minutes]` | localvoxtral's own unified-log lines over a clamped window (default 15, max 120), line-capped and token-scrubbed. Predicate-scoped to `subsystem == "com.localvoxtral"`; never a system-log reader. Read-only, so it works while the screen is locked |
 | `quit` | terminates the recorded pid |
 | `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
@@ -700,6 +702,86 @@ appears when terminal-screen or repo context is enabled, and **only Overlay
 Buffer sessions open an overlay at all** — `dictate hold` (Live Auto-Paste)
 never shows one, so `tap` is the oracle.
 
+### `app` — asking the app what it joined
+
+`dictate` can start a session; it cannot tell you what the session **joined**.
+Two things about that are invisible from outside the app's process: a dictation
+has no deterministic trigger (which is what `dictate` works around, at the cost
+of synthesising a gesture), and `ClaudeSessionRegistry` is in-memory and
+per-process — so `localvoxtral --probe-surface`, a separate one-shot process,
+always resolves against an **empty registry** and can never report a real join
+arm.
+
+A dogfood build answers both, over a local AF_UNIX socket it binds only when
+`debug.dogfood_control_socket_enabled` is armed
+(`docs/dogfood-builds.md`). `app` forwards one line to it:
+
+```bash
+ssh lv-ui 'app registry list'         # is the registry empty, or the surface unidentified?
+ssh lv-ui 'app surface probe'         # resolve the FOCUSED surface now, live registry
+ssh lv-ui 'app session start overlay' # a real dictation, through the app's own tap handler
+ssh lv-ui 'app session stop'
+ssh lv-ui 'app join report'           # what the last dictation actually joined
+```
+
+`registry list` is the one to reach for first: an empty registry and a surface
+the resolver could not identify produce the same silence, and that ambiguity is
+the most common dead end in this area.
+
+What bounds the verb:
+
+- **The socket path is fixed**, not an argument. No shape of this verb points
+  it at another socket on the machine.
+- **Dogfood only.** A shipped build compiles no socket at all, so the verb
+  refuses unless `launch --dogfood` recorded a stamped bundle — one clear line
+  instead of a connect that never answers.
+- **Five shapes, allowlisted in the gate.** A verb added to the app's socket is
+  not automatically reachable through an already-installed gate.
+- **Lock policy is per command.** `session start` takes the keyboard, so it is
+  refused on a locked screen and speaks the takeover warning like `dictate`.
+  `surface probe` reads the *focused* surface, and behind a lock screen that is
+  not the surface you are asking about, so it is refused too. `session stop`,
+  `join report` and `registry list` are in-process reads (or a give-back) and
+  work while locked.
+- **A started session is capped** by the app itself, so an SSH command that
+  dies mid-dictation cannot leave it recording.
+- The reply is a closed vocabulary of bools, counts and enum names — no
+  workspace, marker, tty, pane id, host or session id ever crosses.
+
+### `log` — the app's own lines, and nothing else
+
+Join abstentions are diagnosed from `Log.claudeContext`, and without them the
+answer is one category word.
+
+```bash
+ssh lv-ui 'log'        # the last 15 minutes
+ssh lv-ui 'log 60'     # clamped 1..120
+```
+
+Predicate-scoped to `subsystem == "com.localvoxtral"`. It is deliberately not a
+general system-log reader: this is the owner's personal machine, and every
+other application's activity stays out of reach. Output is capped at 400 lines
+(the drop is announced, never silent) and passed through the same 43-character
+base64url scrub the dogfood records use — the app writes its categories
+`privacy: .public` on purpose, but "every line anyone ever adds is safe" is not
+an assumption worth depending on.
+
+It steals no focus and writes nothing, so unlike the actuation verbs it is
+allowed while the screen is locked.
+
+**Caveat, and it is not yet resolved.** `log show` is restricted for
+**non-admin** accounts — the build gate's account hits exactly that, and this
+file records it a few sections down ("Could not open local log store: Operation
+not permitted"). The UI gate runs as the GUI user, a different and *admin*
+account, so it is expected to work here; that has **not** been verified on this
+machine as of 2026-08-30. The verb is built so the difference is impossible to
+miss: a restricted store exits non-zero and quotes the reason rather than
+returning an empty page, and an empty window says "no com.localvoxtral entries
+in the last N minute(s)" on stderr. If it does turn out to be restricted for
+the GUI account too, there is no flag that lifts it — the alternatives are
+`mac-crashlog.yml` on the runner (which already ships a subsystem-filtered log)
+or having the app write its own file.
+
 ### Getting a build into the artifact root
 
 `launch` only accepts bundles under `LV_UI_ARTIFACT_ROOTS`, and those roots
@@ -786,26 +868,52 @@ the default is now empty and why `LV_UI_TERM_FORBIDDEN` — a permanent denylist
 assigned *after* the conf file is sourced — refuses those names even if this
 conf allowlists them.
 
-The way to make the verb useful is a **single-purpose wrapper you write and
-install**, which takes an identifier and execs one fixed command:
+The way to make the verb useful is a **single-purpose wrapper**, which takes
+an identifier and execs one fixed command. That wrapper ships in this repo —
+`scripts/mac/lv-attach.sh` — precisely because it is the thing holding the
+boundary, and an unreviewed shell script written once into `~/bin` is the
+weakest possible place for that. `install-ui-artifact.sh` puts it at
+`~/bin/lv-attach` (mode 0700) with every build, so it arrives reviewed and
+stays current.
 
-```bash
-# ~/bin/lv-attach — allowlist THIS, not the tool it calls.
-#!/bin/sh
-case "$1" in
-  pane-[0-9]*) exec ssh -t fixture-host herdr attach "$1" ;;
-  *) echo "lv-attach: unknown pane" >&2; exit 2 ;;
-esac
-```
+Allowlist it:
 
 ```bash
 # ~/.localvoxtral-ui-gate.conf
 LV_UI_TERM_COMMANDS="lv-attach"
 ```
 
-The wrapper, not the gate, is what decides the command — so review it with the
-same eyes as the gate itself, and never let it take a command from its
-argument.
+and tell it where to go — the destination is deliberately **not** an argument:
+
+```bash
+# ~/.lv-attach.conf
+destination=builder      # an ssh alias, or user@host
+session=work             # optional default herdr session
+```
+
+Then `ssh lv-ui 'term open ghostty lv-attach work'`.
+
+**Allowlisting `lv-attach` is safe precisely because it cannot take a command,
+which is the property `ssh` lacks.** `ssh <host> <anything>` runs that
+anything; that is why `ssh` is on the permanent denylist and why allowlisting
+it would hand the whole boundary away. `lv-attach` takes at most ONE argument,
+a herdr session name matched against `^[A-Za-z0-9._-]{1,64}$` and refused if it
+starts with `-`; it takes no flags, no second positional and no command; it
+*reads* its config with `sed` rather than sourcing it; and it ends in one of
+exactly two fixed `exec ssh -t -- <destination> herdr [--session <name>]`
+lines. `test-ui-gate.sh` section 23 proves the refusals, tries injection
+through the identifier, and pins that the file contains no `eval`, no
+`bash -c`/`sh -c`, no `source`, and no `"$@"` in a command position.
+
+It opens a **whole-view** herdr client rather than `herdr terminal attach
+<pane>` on purpose: the app's `HerdrInvocation` classifier refuses every herdr
+shape except a bare `herdr` or `herdr --session <name>`
+(`docs/agent/invariants.md`), so a pane-attach wrapper would reliably open a
+window the app deliberately never joins — useless for the exact debugging
+`term open` exists for. Pick the pane inside herdr, after attaching.
+
+If you write your own wrapper instead, review it with the same eyes as the
+gate itself, and never let it take a command from its argument.
 
 **Where the agent runs.** For terminal/agent-integration scenarios the agent
 (Claude Code, codex, …) is started on the **fixture side** — the Linux host
@@ -835,6 +943,10 @@ ssh lv-ui 'menu click Settings'         # substring: the real title is Settings�
 ssh lv-ui 'shot settings' | base64 -d > /tmp/settings.png
 ssh lv-ui 'dictate tap'                 # starts an Overlay Buffer session
 ssh lv-ui 'ax dump overlay'             # the Claude-join badge names the session
+ssh lv-ui 'log 5'                       # localvoxtral's own log lines only
+ssh lv-ui 'app registry list'           # dogfood build only; refused otherwise
+ssh lv-ui 'app surface probe'           # resolve the focused surface, live registry
+ssh lv-ui 'app rm -rf /'                # must print "denied command"
 ssh lv-ui 'ax dump settings' | python3 -m json.tool | head
 ssh lv-ui 'ax click role=AXButton,title=Dictation'
 ssh lv-ui 'quit'
@@ -855,6 +967,10 @@ Every one of those, allowed or denied, appends a line to
 validation, the lock refusal, the window-ownership rule and the log/redaction
 behaviour, but nothing about a live desktop. On first install, confirm by hand:
 
+0. `log` returns lines rather than failing. If it prints "Could not open local
+   log store: Operation not permitted", the unified log is restricted for this
+   account too and the verb is dead — say so rather than working around it; see
+   the caveat under "`log` — the app's own lines".
 1. `state` reports `"screen_lock":"unlocked"` while you are logged in, and
    `"locked"` after you lock the screen — this is the ONE probe standing
    between the gate and a locked machine. It has two arms; over SSH the

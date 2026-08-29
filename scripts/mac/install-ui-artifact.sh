@@ -210,6 +210,32 @@ esac
 GATE_FLAG=""
 [[ "$VARIANT_KEY" == dogfood ]] && GATE_FLAG="--dogfood "
 
+# --- the term-open wrapper -------------------------------------------------
+#
+# `term open` allowlists a command by NAME and then trusts it with every
+# argument it will ever be given, so the wrapper that name refers to is holding
+# the boundary. Shipping it here rather than leaving the owner to write one by
+# hand is the point: it arrives with the build, it is reviewed like the rest of
+# the repo, and a fix to it lands the next time a build is installed instead of
+# waiting for someone to remember an unversioned file in ~/bin.
+#
+# ~/bin rather than beside the bundle because a GUI-launched terminal has to be
+# able to RESOLVE the name: `term open` writes a launcher that execs the
+# command, and PATH is how that resolves. ~/bin is already where the gate's
+# lock probe lives.
+WRAPPER_SRC="$(cd "$(dirname "$0")" && pwd -P)/lv-attach.sh"
+WRAPPER_DEST="$HOME/bin/lv-attach"
+if [[ -f "$WRAPPER_SRC" ]]; then
+  mkdir -p "$HOME/bin" || die "cannot create $HOME/bin"
+  # 0700: it execs ssh as the owner, so it is not something other accounts on
+  # the machine get to read or run.
+  install -m 0700 "$WRAPPER_SRC" "$WRAPPER_DEST" \
+    || die "could not install the term-open wrapper to $WRAPPER_DEST"
+  say "Installed term-open wrapper -> $WRAPPER_DEST"
+else
+  say "WARNING: $WRAPPER_SRC is missing; the term-open wrapper was not installed."
+fi
+
 say "Installed $VARIANT -> $DEST"
 if [[ -n "$LABEL" ]]; then say "  build: $LABEL"; fi
 say "  provenance: $DEST.source"

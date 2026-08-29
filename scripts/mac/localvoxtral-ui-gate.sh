@@ -54,6 +54,16 @@ set -euo pipefail
 #     own settings, and Secure Keyboard Entry is not held.
 #   - `term focus` / `term close` act only on a window this gate opened,
 #     identified by a random marker it put in that window's title.
+#   - `app` forwards ONE line to the control socket of the app under test —
+#     never a shell, never a path of the caller's choosing. The socket only
+#     exists in a dogfood build, so the verb refuses unless `launch --dogfood`
+#     recorded one, and the forwarded line must be one of the five shapes the
+#     socket's own grammar accepts. The socket answers in a closed vocabulary
+#     of bools, counts and enum names (docs/dogfood-builds.md).
+#   - `log` reads the unified log for localvoxtral's OWN subsystem only, over a
+#     clamped window, with a line cap and token-shaped runs masked. It is not a
+#     general system-log reader; every other application's activity on this
+#     machine stays out of reach.
 #
 # A `term open` window is therefore NOT a lateral path into the app-driving
 # verbs, and the scoping above is why: `shot`, `ax dump`, `ax click`, `ax type`
@@ -84,6 +94,8 @@ set -euo pipefail
 #   key <escape|tab|return>
 #   menu <open|click <item-title>|dismiss>
 #   dictate <tap|hold <seconds>|cancel>
+#   app <control command>
+#   log [minutes]
 #   quit
 #   term open <ghostty|iterm|terminal> <command> [args...]
 #   term focus <id>
@@ -150,6 +162,22 @@ LV_UI_MAX_HOLD_SECONDS="${LV_UI_MAX_HOLD_SECONDS:-30}"
 
 LV_UI_MAX_COMMAND_BYTES="${LV_UI_MAX_COMMAND_BYTES:-2048}"
 LV_UI_MAX_TEXT_BYTES="${LV_UI_MAX_TEXT_BYTES:-512}"
+
+# `app`'s target: the dogfood control socket of the app under test. Not
+# discovered, not passed in — the one path a dogfood build ever binds
+# (DogfoodControlSocket.defaultSocketPath). Overridable only so the test suite
+# can point it at a fixture.
+LV_UI_CONTROL_SOCKET="${LV_UI_CONTROL_SOCKET:-$HOME/Library/Application Support/localvoxtral/dogfood/control/control.sock}"
+
+# `log`'s bounds. The window is clamped the way the build gate's `applog`
+# clamps its own, and the line cap exists so a chatty minute cannot dump tens
+# of thousands of lines into an agent transcript.
+LV_UI_LOG_DEFAULT_MINUTES="${LV_UI_LOG_DEFAULT_MINUTES:-15}"
+LV_UI_LOG_MAX_MINUTES="${LV_UI_LOG_MAX_MINUTES:-120}"
+LV_UI_LOG_MAX_LINES="${LV_UI_LOG_MAX_LINES:-400}"
+# The app's OWN subsystem and nothing else. This is the difference between a
+# diagnostic and a machine-wide log reader on the owner's personal Mac.
+LV_UI_LOG_SUBSYSTEM="${LV_UI_LOG_SUBSYSTEM:-com.localvoxtral}"
 
 # Machine-local overrides (never committed). Same argument as the build gate:
 # anyone who can write this file can already replace this script, so sourcing
@@ -366,6 +394,7 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import CoreGraphics
+import Darwin
 import Foundation
 
 // Subcommands (argv[1..]):
@@ -907,6 +936,78 @@ case "termaction":
         die("unknown termaction")
     }
 
+// control <socket-path> <line>
+//
+// One line to the dogfood control socket of the app under test, one line back.
+// Written here rather than shelled out to `nc` for two reasons: the exact
+// half-close/EOF behaviour of BSD nc's `-U` is a detail this must not depend
+// on, and the embedded helper is compile-checked by test-ui-gate.sh while a
+// shell pipeline would not be.
+//
+// It connects, writes, reads, prints, exits. It has no idea what the line
+// means; the shell side decided that (run_app) and the app's own socket
+// validates it again.
+case "control":
+    guard argv.count >= 3 else { die("usage: control <socket-path> <line>") }
+    let socketPath = argv[1]
+    let line = argv[2]
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Array(socketPath.utf8)
+    guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
+        die("socket path is too long")
+    }
+    withUnsafeMutableBytes(of: &address.sun_path) { raw in
+        raw.copyBytes(from: pathBytes)
+        raw[pathBytes.count] = 0
+    }
+    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    let controlFD = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard controlFD >= 0 else { die("could not create a socket (\(errno))") }
+    defer { close(controlFD) }
+    let connected = withUnsafePointer(to: &address) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            connect(controlFD, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    guard connected == 0 else {
+        die("could not connect to the control socket (\(errno)) — is the app a dogfood build with debug.dogfood_control_socket_enabled armed?")
+    }
+    // Bounded on both halves: a wedged app must cost the operator a refusal,
+    // never a hung SSH command.
+    var controlTimeout = timeval(tv_sec: 30, tv_usec: 0)
+    setsockopt(controlFD, SOL_SOCKET, SO_SNDTIMEO, &controlTimeout, socklen_t(MemoryLayout<timeval>.size))
+    setsockopt(controlFD, SOL_SOCKET, SO_RCVTIMEO, &controlTimeout, socklen_t(MemoryLayout<timeval>.size))
+    let outgoing = Array((line + "\n").utf8)
+    var sent = 0
+    while sent < outgoing.count {
+        let written = outgoing.withUnsafeBytes { raw -> Int in
+            write(controlFD, raw.baseAddress!.advanced(by: sent), outgoing.count - sent)
+        }
+        if written <= 0 {
+            if written < 0, errno == EINTR { continue }
+            die("could not send the command (\(errno))")
+        }
+        sent += written
+    }
+    var incoming = [UInt8]()
+    var controlChunk = [UInt8](repeating: 0, count: 4096)
+    // 64 KiB is far past any reply the socket produces; the cap is a backstop
+    // against a peer that is not the app we think it is.
+    while incoming.count < 65_536 {
+        let count = read(controlFD, &controlChunk, controlChunk.count)
+        if count < 0 {
+            if errno == EINTR { continue }
+            die("could not read the reply (\(errno))")
+        }
+        if count == 0 { break }
+        incoming.append(contentsOf: controlChunk[0..<count])
+        if incoming.contains(0x0A) { break }
+    }
+    guard !incoming.isEmpty else { die("the control socket closed without answering") }
+    if let newline = incoming.firstIndex(of: 0x0A) { incoming = Array(incoming[0..<newline]) }
+    print(String(decoding: incoming, as: UTF8.self))
+
 default:
     die("unknown subcommand \(subcommand)")
 }
@@ -1390,6 +1491,162 @@ run_dictate() {
   ACTION_COMPLETED=1
 }
 
+# app <control command>
+#
+# Forwards ONE line to the dogfood control socket of the app under test and
+# prints the reply. This is what makes the join debuggable at all: the socket
+# can start a dictation deterministically (the real trigger is a modifier
+# gesture) and can resolve the focused surface against the app's LIVE session
+# registry, which is per-process and therefore invisible to `--probe-surface`
+# or to anything else outside that process.
+#
+# What keeps it from being a lateral path:
+#
+#   * The socket path is fixed, not an argument. There is no way to point this
+#     verb at another socket on the machine.
+#   * The app under test must be a DOGFOOD build. A shipped build compiles no
+#     socket at all, so forwarding to one would be a lie; refusing on the
+#     recorded stamp says so in one line instead of hanging on a connect.
+#   * The forwarded line must be one of the five shapes below. The socket
+#     validates its own grammar too — this list exists so the GATE knows which
+#     commands take the screen, and so a future socket verb is not
+#     automatically reachable through an already-installed gate.
+#   * Every token already survived the dispatch charset, so the reassembled
+#     line is printable ASCII separated by single spaces, which is exactly what
+#     the socket's parser accepts. Nothing here builds a shell command.
+#
+# Lock policy is per COMMAND, not per verb, because these differ in kind:
+# `session start` takes the keyboard and types into whatever is focused, so it
+# is refused on a locked screen and warns like `dictate`. `surface probe` reads
+# the FOCUSED surface, and behind a lock screen the focused surface is not the
+# one the operator is asking about — a truthful answer to the wrong question is
+# the worst kind — so it is refused too. The rest are in-process reads (or, for
+# `session stop`, a give-back) and are allowed while locked, like `state`.
+run_app() {
+  local -a parts=("$@")
+  local line="${parts[*]}"
+  local steals_focus=0 needs_unlocked=0
+
+  case "$line" in
+    "session start overlay" | "session start live")
+      steals_focus=1
+      needs_unlocked=1
+      ;;
+    # Not a focus steal — a correctness refusal. See above.
+    "surface probe") needs_unlocked=1 ;;
+    "session stop" | "join report" | "registry list") ;;
+    *)
+      deny "not a forwardable control command: $line"
+      ;;
+  esac
+
+  # Lock before anything else the way `term open` does it, so no locked-screen
+  # test can pass for an unrelated reason.
+  if (( needs_unlocked == 1 )); then
+    require_unlocked_screen
+  fi
+  require_app_under_test
+  [[ "$APP_DOGFOOD" == "1" ]] \
+    || deny "the app under test is not a dogfood build (launch it with --dogfood); a shipped build has no control socket"
+  [[ -S "$LV_UI_CONTROL_SOCKET" ]] \
+    || deny "no control socket at $LV_UI_CONTROL_SOCKET — arm it with: defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true (then relaunch)"
+
+  log_command ALLOW "app=$line pid=$APP_PID"
+  if (( steals_focus == 1 )); then
+    announce_takeover "starting a localvoxtral dictation into the focused window"
+  fi
+  helper control "$LV_UI_CONTROL_SOCKET" "$line" || fail "the control socket did not answer"
+  ACTION_COMPLETED=1
+}
+
+# Masks maximal runs of exactly 43 base64url characters — the remote-enrollment
+# token's shape. Deliberately the SAME rule as DogfoodCaptureRedaction (and the
+# same trade: it over-matches an isolated 43-character identifier, and misses a
+# token glued into a longer run), so a reviewer reading a `<redacted>` here and
+# one in a capture record is reading the same decision.
+redact_token_shaped_runs() {
+  awk '{
+    out = ""; run = ""; n = length($0)
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (c ~ /[A-Za-z0-9_-]/) { run = run c }
+      else {
+        out = out ((length(run) == 43) ? "<redacted>" : run) c
+        run = ""
+      }
+    }
+    print out ((length(run) == 43) ? "<redacted>" : run)
+  }'
+}
+
+# log [minutes]
+#
+# The app's own unified-log lines, and nothing else on this machine.
+#
+# Read-only and focus-free, so unlike every actuation verb it is allowed while
+# the screen is locked — a diagnostic that only works when the owner is sitting
+# there is not a diagnostic for an agent.
+#
+# Three bounds, each doing a different job:
+#   * the PREDICATE scopes to localvoxtral's own subsystem. This is a debugging
+#     aid on a personal machine, not a system-log reader; every other app's
+#     activity stays out of reach and no argument widens it.
+#   * the WINDOW is clamped 1..LV_UI_LOG_MAX_MINUTES, mirroring the build
+#     gate's `applog`.
+#   * the OUTPUT is line-capped and passed through the same token-shaped scrub
+#     the dogfood records use. The app writes its categories `privacy: .public`
+#     on purpose, but "the app's own lines are safe" is an assumption about
+#     every line anyone ever adds, and this is the cheap way not to depend on it.
+#
+# `log show` is restricted for NON-ADMIN accounts — the build gate's account
+# hits exactly that and scripts/mac/README.md records it ("Could not open local
+# log store: Operation not permitted"). The UI gate runs as the GUI user, which
+# is a different, admin account, so it is expected to work here. It is NOT
+# verified as of this writing, so the failure is deliberately loud and
+# specific: a diagnostic that returns an empty page when it is actually
+# forbidden is worse than one that says it is forbidden.
+run_log() {
+  local minutes="${1:-$LV_UI_LOG_DEFAULT_MINUTES}" output="" status=0
+
+  [[ "$minutes" =~ ^[0-9]{1,4}$ ]] || deny "log takes a whole number of minutes"
+  (( minutes >= 1 )) || deny "log needs at least 1 minute"
+  (( minutes <= LV_UI_LOG_MAX_MINUTES )) \
+    || deny "log window is clamped to $LV_UI_LOG_MAX_MINUTES minutes"
+
+  log_command ALLOW "log minutes=$minutes subsystem=$LV_UI_LOG_SUBSYSTEM"
+
+  # `|| status=$?` rather than dying under `set -e`: a restricted log store
+  # exits non-zero AND prints the reason, and the reason is the whole answer.
+  output="$(log show --style compact --info \
+    --last "${minutes}m" \
+    --predicate "subsystem == \"$LV_UI_LOG_SUBSYSTEM\"" 2>&1)" || status=$?
+
+  if (( status != 0 )) || [[ "$output" == *"Could not open local log store"* ]]; then
+    printf 'localvoxtral ui gate: log show failed (status %s).\n' "$status" >&2
+    printf 'localvoxtral ui gate: %s\n' "$(printf '%s' "${output:0:400}" | tr -c '[:print:]' ' ')" >&2
+    printf 'localvoxtral ui gate: if that says "Could not open local log store: Operation not permitted", this account cannot read the unified log — the same restriction scripts/mac/README.md records for the build gate account. No flag lifts it; the alternatives are mac-crashlog.yml on the runner, or the app writing its own file.\n' >&2
+    exit 1
+  fi
+
+  output="$(printf '%s\n' "$output" | redact_token_shaped_runs)"
+
+  local total capped
+  total="$(printf '%s\n' "$output" | wc -l | tr -d ' ')"
+  capped="$(printf '%s\n' "$output" | tail -n "$LV_UI_LOG_MAX_LINES")"
+  printf '%s\n' "$capped"
+  if (( total > LV_UI_LOG_MAX_LINES )); then
+    printf 'localvoxtral ui gate: %s earlier line(s) dropped by the cap of %s\n' \
+      "$(( total - LV_UI_LOG_MAX_LINES ))" "$LV_UI_LOG_MAX_LINES" >&2
+  fi
+  # Never silently empty: "no matching entries" and "the reader is broken" look
+  # identical otherwise, and only one of them is a finding.
+  if [[ -z "${capped//[[:space:]]/}" ]]; then
+    printf 'localvoxtral ui gate: no %s entries in the last %s minute(s).\n' \
+      "$LV_UI_LOG_SUBSYSTEM" "$minutes" >&2
+  fi
+  ACTION_COMPLETED=1
+}
+
 run_quit() {
   require_app_under_test
   log_command ALLOW "pid=$APP_PID"
@@ -1612,6 +1869,18 @@ case "${ARGV[0]}" in
   quit)
     (( ${#ARGV[@]} == 1 )) || deny "quit takes no arguments"
     run_quit
+    ;;
+  app)
+    # Bounded here as well as in run_app: the forwardable shapes are two or
+    # three tokens, so anything longer is refused before it is even joined
+    # into a line.
+    (( ${#ARGV[@]} >= 3 && ${#ARGV[@]} <= 4 )) \
+      || deny "app takes a control command of two or three tokens"
+    run_app "${ARGV[@]:1}"
+    ;;
+  log)
+    (( ${#ARGV[@]} <= 2 )) || deny "log takes at most a number of minutes"
+    if (( ${#ARGV[@]} == 1 )); then run_log; else run_log "${ARGV[1]}"; fi
     ;;
   dictate)
     case "${ARGV[1]:-}" in
