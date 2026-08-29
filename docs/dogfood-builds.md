@@ -104,6 +104,63 @@ there is no denominator. It is a global `NSEvent` keyDown observer (no new
 permission beyond the Accessibility trust insertion already requires),
 installed only while a window is open and torn down the instant it closes.
 
+## The control socket
+
+An instrumented build can also expose a local AF_UNIX control socket, so an
+operator on the same machine can run a dictation and ask the app what it
+joined and why
+([`DogfoodControlSocket.swift`](../Sources/localvoxtral/Dogfood/DogfoodControlSocket.swift)).
+It exists because two things cannot be observed from outside the process: a
+dictation has no deterministic trigger (the real one is a modifier *gesture*),
+and `ClaudeSessionRegistry` is per-process with no persistence — so
+`localvoxtral --probe-surface` always resolves against an empty registry and
+can never report a real join arm.
+
+**Two gates, both required**, and the second is NOT the capture's:
+
+```
+defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true
+```
+
+Writing capture records and accepting commands are different consents, so
+arming one never arms the other. Read once at launch: turning it on needs a
+relaunch, because a listener must not appear under a running app.
+
+Socket at `~/Library/Application Support/localvoxtral/dogfood/control/control.sock`,
+0600 inside a 0700 directory, and the peer's uid is verified (`getpeereid`)
+before a single byte is read.
+
+Wire: one printable-ASCII line in (≤ 256 bytes), one line of JSON out, then
+the server closes.
+
+```
+$ printf 'registry list\n' | nc -U ~/Library/Application\ Support/localvoxtral/dogfood/control/control.sock
+{"ok":true,"command":"registry list","error":null,"result":{"count":1,"sessions":[…]}}
+```
+
+| Command | Answers |
+| --- | --- |
+| `session start overlay` / `session start live` | starts a dictation through the app's own modifier-tap handler; reports the phase and any refusal |
+| `session stop` | ends it |
+| `join report` | the join the LAST dictation resolved, as `ClaudeSessionJoinSummary` |
+| `surface probe` | resolves the focused surface NOW, against the live in-process registry |
+| `registry list` | the live sessions, as shapes — so "nothing registered" is distinguishable from "resolution failed" |
+
+Bounds worth knowing before touching it:
+
+- **`session start` is capped.** It auto-stops after two minutes, so a client
+  that disconnects mid-dictation cannot leave the app recording.
+- **It never bypasses a guard.** `session start` reaches
+  `handleModifierOnlyTap`, the same function the HID gesture reaches, and is
+  subject to the same Secure Keyboard Entry refusal, Accessibility state,
+  microphone gate and backend readiness. A refusal is reported, never
+  overridden.
+- **Nothing identifying crosses.** Every reply value is a bool, a count or a
+  closed enum name; no field is built from a token, nonce, marker, host, path,
+  tty, pane id or session id.
+- **Nothing can be injected.** No command carries a surface, a session or a
+  join. Every verb observes real resolution.
+
 ## What it deliberately does not do
 
 - **No uploader, ever.** Records are local files; adding an uploader would

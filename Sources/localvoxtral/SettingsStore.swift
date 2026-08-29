@@ -295,6 +295,11 @@ final class SettingsStore {
         /// flag above: it exists only in an instrumented build and is not a
         /// product preference.
         static let dogfoodCaptureEnabled = "debug.dogfood_capture_enabled"
+        /// The runtime half of the control-socket gate, kept SEPARATE from the
+        /// capture one: writing records and opening a socket that can start
+        /// dictations are different consents, and an owner running an
+        /// instrumented build for capture must not silently acquire a listener.
+        static let dogfoodControlSocketEnabled = "debug.dogfood_control_socket_enabled"
         #endif
         static let modifierOnlyHotKeyEnabled = "settings.modifier_only_hotkey_enabled"
         static let modifierOnlyHotKeyModifier = "settings.modifier_only_hotkey_modifier"
@@ -662,6 +667,23 @@ final class SettingsStore {
     var dogfoodCaptureEnabled: Bool {
         didSet { defaults.set(dogfoodCaptureEnabled, forKey: Keys.dogfoodCaptureEnabled) }
     }
+
+    /// Whether this instrumented build opens its local control socket
+    /// (`DogfoodControlSocket`), which can start and stop dictations and report
+    /// what the context pipeline resolved.
+    ///
+    /// Off by default, and separate from `dogfoodCaptureEnabled` on purpose: a
+    /// capture writes a file, a socket accepts commands, and consenting to the
+    /// first is not consenting to the second. Toggled the same way:
+    ///   `defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true`
+    /// Read once at launch — the socket binds in `applicationDidFinishLaunching`
+    /// or not at all, so flipping this needs a relaunch, which is the point:
+    /// a listener must not appear under a running app.
+    var dogfoodControlSocketEnabled: Bool {
+        didSet {
+            defaults.set(dogfoodControlSocketEnabled, forKey: Keys.dogfoodControlSocketEnabled)
+        }
+    }
     #endif
 
     var modifierOnlyHotKeyEnabled: Bool {
@@ -894,6 +916,8 @@ final class SettingsStore {
         #if LOCALVOXTRAL_DOGFOOD
         dogfoodCaptureEnabled = Self.loadBool(
             defaults: defaults, key: Keys.dogfoodCaptureEnabled, fallback: false)
+        dogfoodControlSocketEnabled = Self.loadBool(
+            defaults: defaults, key: Keys.dogfoodControlSocketEnabled, fallback: false)
         #endif
         modifierOnlyHotKeyEnabled = Self.loadBool(
             defaults: defaults, key: Keys.modifierOnlyHotKeyEnabled, fallback: false)

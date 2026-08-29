@@ -93,6 +93,16 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `forward capability unavailable` and stops. Same reasoning withholds the cmux
   arm (Keychain prompt), the browser arm (reads the address bar), and every
   screen read.
+
+  Both of those limits are gone in a **dogfood build with the control socket
+  armed** (`docs/dogfood-builds.md`): `surface probe` runs the same
+  `ClaudeSurfaceProbe.summarize` decision INSIDE the app, so it resolves
+  against the registry the broker has been filling since launch and against
+  the app's full-capability resolver. `registry list` beside it answers the
+  question the one-shot probe cannot — whether the chain reads that way
+  because the registry is empty or because the surface was not identified. Use
+  the verb here when you have the shipping binary and the socket when you are
+  dogfooding; they print the same six fields from the same mapper.
 - **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
   stages the scene, drives the real Right-Command tap/hold gesture with
   synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator
