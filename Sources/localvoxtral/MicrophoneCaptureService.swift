@@ -119,7 +119,9 @@ private func auhalInputCallback(
     let inputFormatDescriptor = MicrophoneCaptureService.inputFormatDescriptor(for: inputFormat)
 
     if converterState.converter == nil || converterState.inputFormatDescriptor != inputFormatDescriptor {
-        guard let converter = AVAudioConverter(from: inputFormat, to: context.outputFormat) else {
+        guard let converter = MicrophoneCaptureService.makeTranscriptionConverter(
+            from: inputFormat, to: context.outputFormat
+        ) else {
             if context.debugLoggingEnabled {
                 context.service?.debugLog(
                     "converter creation failed sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount)"
@@ -132,7 +134,6 @@ private func auhalInputCallback(
             }
             return noErr
         }
-        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
         converterState.converter = converter
         converterState.inputFormatDescriptor = inputFormatDescriptor
         converterState.consecutiveFailureCount = 0
@@ -350,7 +351,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         )
 
         if formatStatus == noErr, asbd.mSampleRate > 0,
-           let newFormat = AVAudioFormat(streamDescription: &asbd)
+           let newFormat = Self.makeDeviceFormat(&asbd)
         {
             let ctx = unmanagedCtx.takeUnretainedValue()
             let currentDescriptor = Self.inputFormatDescriptor(for: ctx.deviceAVFormat)
@@ -489,7 +490,7 @@ final class MicrophoneCaptureService: @unchecked Sendable {
                     "get device format", getFormatStatus)
             }
 
-            guard let deviceFormat = AVAudioFormat(streamDescription: &deviceASBD) else {
+            guard let deviceFormat = Self.makeDeviceFormat(&deviceASBD) else {
                 throw MicrophoneCaptureError.invalidInputFormat
             }
 
@@ -818,6 +819,43 @@ final class MicrophoneCaptureService: @unchecked Sendable {
     fileprivate func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
         Log.microphone.debug("\(message)")
+    }
+
+    /// Wraps a device ASBD in an AVAudioFormat, falling back to a discrete
+    /// channel layout for channel counts that have no standard layout.
+    /// Pro audio interfaces (e.g. a 16-input Universal Audio Thunderbolt)
+    /// report such formats natively, and the layout-less initializer returns
+    /// nil for them — which used to surface as "Microphone input format is
+    /// invalid" even though the device works fine.
+    /// Internal (not fileprivate) for the regression tests.
+    static func makeDeviceFormat(
+        _ asbd: inout AudioStreamBasicDescription
+    ) -> AVAudioFormat? {
+        if let format = AVAudioFormat(streamDescription: &asbd) { return format }
+        guard asbd.mChannelsPerFrame > 0 else { return nil }
+        let tag = kAudioChannelLayoutTag_DiscreteInOrder | asbd.mChannelsPerFrame
+        guard let layout = AVAudioChannelLayout(layoutTag: tag) else { return nil }
+        return AVAudioFormat(streamDescription: &asbd, channelLayout: layout)
+    }
+
+    /// Builds the capture converter for one device format. For channel counts
+    /// above stereo there is no downmix matrix to mono — AVAudioConverter
+    /// silently converts every frame to ZEROS — so the interface's first
+    /// input channel is mapped to the mono output instead; that is where a
+    /// microphone lives on a multi-channel interface.
+    /// Internal (not fileprivate) for the regression tests.
+    static func makeTranscriptionConverter(
+        from inputFormat: AVAudioFormat,
+        to outputFormat: AVAudioFormat
+    ) -> AVAudioConverter? {
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            return nil
+        }
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        if inputFormat.channelCount > 2 {
+            converter.channelMap = [0]
+        }
+        return converter
     }
 
     fileprivate static func inputFormatDescriptor(for format: AVAudioFormat) -> InputFormatDescriptor {
