@@ -164,6 +164,10 @@ enum ClaudeRemoteForwardOwnershipCheck {
     /// Sent over stdin rather than argv so the nonce never appears in a remote
     /// process listing, the same rule the enrollment scripts follow for the
     /// token.
+    ///
+    /// The first line discards both streams on purpose. Whatever holds that
+    /// port gets to write a response, and none of it is evidence — so none of
+    /// it is carried back into this process to be captured, capped, or logged.
     static func script(nonce: String, remoteForwardPort: UInt16) -> String {
         """
         exec >/dev/null 2>&1

@@ -434,6 +434,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         // re-running its enrollment (field report, 2026-07-26). The category is
         // derived from the header's shape and the authentication result only —
         // no token material reaches the log, the tally, or the UI.
+
         // The ONE thing looked at before the token, and the exception proves
         // the rule above rather than weakening it: the value compared is a
         // random nonce THIS process minted moments ago and is still waiting
