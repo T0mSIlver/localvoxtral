@@ -131,7 +131,13 @@ case "$2" in
   axclick | axtype | key | termaction)
     echo ok
     ;;
-  menuopen | menuclick | menudismiss)
+  menuopen)
+    # The real helper prints the CGWindowID of the menu it resolved, so a
+    # caller can tell a real open from a no-op. The stub says one too.
+    [[ -z "${STUB_MENU_FAIL:-}" ]] || exit 1
+    printf '%s\n' "${STUB_MENUOPEN_OUTPUT:-ok window=90210}"
+    ;;
+  menuclick | menudismiss)
     [[ -z "${STUB_MENU_FAIL:-}" ]] || exit 1
     echo ok
     ;;
@@ -275,6 +281,26 @@ run_gate() { # <command> [env assignments...]
 
 log_tail() {
   tail -n 1 "$LOG_FILE" 2>/dev/null || true
+}
+
+# The embedded helper is a heredoc, so its subcommands cannot be exercised
+# without a live desktop — but WHICH evidence a subcommand decides on is a
+# property of the source, and that is the half that regressed. These read one
+# `case "<name>":` body (and one `func` body) out of the heredoc so an
+# assertion can be about that block rather than about the whole 2000-line file.
+helper_case_body() { # <helper subcommand>
+  awk -v want="case \"$1\":" '
+    /^case "[a-z]+":$/ { inside = ($0 == want) }
+    inside { print }
+  ' "$GATE"
+}
+
+helper_func_body() { # <swift function name>
+  awk -v want="func $1(" '
+    index($0, want) == 1 { inside = 1 }
+    inside { print }
+    inside && /^}/ { exit }
+  ' "$GATE"
 }
 
 assert_denied() { # <command> <description> [env...]
@@ -562,6 +588,12 @@ EXPECTED_B64="$(printf 'PNGSTUB...' | base64 | tr -d '\n')"
 [[ "$(printf '%s' "$GATE_STDOUT" | tr -d '\n')" == "$EXPECTED_B64" ]] \
   || fail "shot stdout was not the base64 of the captured file: $GATE_STDOUT"
 [[ "$GATE_STDERR" == *"window 8123"* ]] || fail "shot did not report the window id on stderr"
+# Said twice on purpose: `shot … | base64 -d > x.png` is the documented form,
+# and it is only correct while stdout carries nothing but the payload. The
+# "shot: window …" line reads like a header over an interactive ssh, which
+# delivers both streams to one terminal — it must never actually be one.
+[[ "$GATE_STDOUT" != *"shot:"* ]] \
+  || fail "the shot header reached stdout — a caller piping into base64 -d now needs a tail: $GATE_STDOUT"
 grep -q -- '-l 8123' "$TMP_DIR/screencapture.log" \
   || fail "screencapture was not scoped to the resolved window id"
 # The image is the one thing this gate produces that is worth stealing; no exit
@@ -953,6 +985,77 @@ while read -r line; do
     || fail "a menu helper call did not carry the app-under-test pid: $line"
 done <"$TMP_DIR/swift.log"
 pass "menu addresses only the pid launch recorded"
+
+# `menu open` must report a menu it can SEE, not one that is merely attached.
+#
+# Field check 2026-08-29: against a freshly launched build that had displayed
+# nothing, `menu open` printed "ok already-open" and returned instantly,
+# `shot popover` then reported no popover window owned by that pid, and
+# `ax dump all` returned `[]`. An NSMenu handed to an NSStatusItem is an AXMenu
+# CHILD of the status item whether or not it is on screen, so the pre-check
+# that looked for that child matched every time, the status item was never
+# pressed, and the verb reported success for doing nothing.
+#
+# The suite stubs the helper, so it cannot run these AX/CGWindow calls. What it
+# can pin — and what actually regressed — is which evidence each subcommand
+# decides on.
+: >"$TMP_DIR/swift.log"
+assert_allowed 'menu open' 'menu open passes the helper evidence through' "${APP_ENV[@]}"
+[[ "$GATE_STDOUT" == *"window=90210"* ]] \
+  || fail "menu open swallowed the window id the helper resolved — a caller cannot tell an open from a no-op: $GATE_STDOUT"
+pass "menu open reports the window it resolved, not a bare ok"
+
+grep -q 'func displayedMenuWindow' "$GATE" \
+  || fail "the helper has no displayed-menu test — menu open is deciding openness from something else"
+
+# It must BE `shot popover`'s window rule, not a second copy of it: that is
+# what makes `menu open` succeed exactly when `shot popover` can then find
+# something, and what stops the two verbs drifting apart.
+DISPLAYED_BODY="$(helper_func_body displayedMenuWindow)"
+[[ "$DISPLAYED_BODY" == *'resolveWindow('*'kind: "popover"'* ]] \
+  || fail "displayedMenuWindow does not go through resolveWindow(kind: \"popover\") — menu open and shot popover can now disagree: $DISPLAYED_BODY"
+
+MENUOPEN_BODY="$(helper_case_body menuopen)"
+[[ -n "$MENUOPEN_BODY" ]] || fail "could not read the menuopen case body out of the helper"
+[[ "$MENUOPEN_BODY" == *'displayedMenuWindow('* ]] \
+  || fail "menuopen does not consult the window list — it cannot know a menu is displayed"
+[[ "$MENUOPEN_BODY" != *'attachedMenu('* ]] \
+  || fail "menuopen decides from the ATTACHED AXMenu again: that child exists whether or not a menu is on screen, so the verb reports success without ever pressing (the 2026-08-29 field bug)"
+# The press, and the deliberate not-trusting of its return code, both stay: it
+# reports .cannotComplete while a menu tracks.
+[[ "$MENUOPEN_BODY" == *'_ = AXUIElementPerformAction(item, kAXPressAction as CFString)'* ]] \
+  || fail "menuopen either stopped pressing the status item or started trusting AXPress's return code"
+pass "menu open decides openness from the same window rule shot popover resolves"
+
+# The name was the bug: a function called openMenu that answers "is a menu
+# attached" reads as correct at every call site.
+if grep -q 'func openMenu' "$GATE"; then
+  fail "openMenu(of:) is back — the name says 'open', the test is 'attached', and that gap is the whole 2026-08-29 field bug"
+fi
+
+# `menu click` deliberately does NOT require a displayed menu: AXPress on a
+# menu item works either way, which is how the gate reached Settings while
+# `menu open` was broken. It is the fallback when the window test cannot see a
+# menu that is genuinely up.
+MENUCLICK_BODY="$(helper_case_body menuclick)"
+[[ "$MENUCLICK_BODY" == *'attachedMenu('* ]] \
+  || fail "menu click no longer reaches the attached menu — it must keep working with the menu closed"
+pass "menu click still works against an attached-but-closed menu"
+
+# Dismiss had the same root cause with a worse outcome: its "nothing is open"
+# branch was decided by attachment, which is always true, so it never ran — and
+# the fallback below it presses the status item, which on a CLOSED menu opens
+# one. A dismiss verb must never be able to open a menu.
+MENUDISMISS_BODY="$(helper_case_body menudismiss)"
+[[ "$MENUDISMISS_BODY" == *'displayedMenuWindow('* ]] \
+  || fail "menu dismiss still decides 'nothing is open' from attachment"
+NO_MENU_LINE="$(printf '%s\n' "$MENUDISMISS_BODY" | grep -n 'no-menu-open' | head -n 1 | cut -d: -f1)"
+FIRST_PRESS_LINE="$(printf '%s\n' "$MENUDISMISS_BODY" | grep -n 'kAXPressAction' | head -n 1 | cut -d: -f1)"
+[[ -n "$NO_MENU_LINE" && -n "$FIRST_PRESS_LINE" ]] \
+  || fail "menudismiss lost either its no-menu-open answer or its status-item fallback"
+(( NO_MENU_LINE < FIRST_PRESS_LINE )) \
+  || fail "menu dismiss can reach a status-item press with nothing displayed — a press on a closed menu OPENS one, so dismiss would open the thing it exists to close"
+pass "menu dismiss returns no-menu-open before it can press anything"
 
 # The shell verb and the helper subcommand have to land together: a verb whose
 # helper case is missing fails only on the owner's desktop.
@@ -1565,6 +1668,70 @@ grep -q -- '--last 15m' "$TMP_DIR/log.log" \
   || fail "log did not use its default window: $(cat "$TMP_DIR/log.log")"
 pass "log is predicate-scoped to localvoxtral's own subsystem"
 
+# --- and the subsystem alone is NOT enough on this machine ------------------
+#
+# The Mac that runs this gate is also the self-hosted CI runner, and a unit
+# suite logs under localvoxtral's OWN subsystem from `xctest`. Field check
+# 2026-08-30: `log 2` returned 111 lines of which exactly one was the app under
+# test; the rest were a concurrent CI run, including "Terminal pane joined to a
+# live Claude session via title marker". Attributing that to the dictation you
+# just made is a wrong conclusion drawn from a real log line — the worst kind
+# this verb can produce. So the predicate carries a process as well.
+
+{
+  echo '2026-08-30 12:31:47 xctest[19586] [com.localvoxtral:ClaudeContext] Terminal pane joined to a live Claude session via title marker'
+  echo '2026-08-30 12:31:49 localvoxtral[4242] [com.localvoxtral:ClaudeContext] Remote herdr forward activity refresh'
+} >"$LOG_FIXTURE"
+
+write_app_state 4242
+: >"$TMP_DIR/log.log"
+assert_allowed 'log' 'log with an app under test is scoped to its pid' \
+  "${APP_ENV[@]}" STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+grep -q 'processIdentifier == 4242' "$TMP_DIR/log.log" \
+  || fail "log was not scoped to the pid launch recorded: $(cat "$TMP_DIR/log.log")"
+grep -q 'subsystem == "com.localvoxtral"' "$TMP_DIR/log.log" \
+  || fail "the pid scope replaced the subsystem scope instead of narrowing it: $(cat "$TMP_DIR/log.log")"
+[[ "$GATE_STDERR" != *"not one instance"* ]] \
+  || fail "log warned that it is not pid-scoped while it was: $GATE_STDERR"
+grep -q 'log minutes=15 .*pid=4242' "$LOG_FILE" \
+  || fail "the gate log does not record which scope the read used: $(log_tail)"
+pass "log with an app under test carries the recorded pid in its predicate"
+
+# No app under test: still never `xctest`, but no longer one instance — and it
+# has to SAY so. Silently answering with another process's lines is the one
+# behaviour that is not available.
+clear_state
+: >"$TMP_DIR/log.log"
+assert_allowed 'log' 'log without an app under test falls back to the process name' \
+  STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+grep -q 'process == "localvoxtral"' "$TMP_DIR/log.log" \
+  || fail "the fallback scope is not the app's process name: $(cat "$TMP_DIR/log.log")"
+if grep -q 'processIdentifier' "$TMP_DIR/log.log"; then
+  fail "log claimed a pid scope with no app under test: $(cat "$TMP_DIR/log.log")"
+fi
+[[ "$GATE_STDERR" == *"not one instance"* ]] \
+  || fail "the un-pid-scoped fallback did not say so: $GATE_STDERR"
+grep -q 'not-pid-scoped' "$LOG_FILE" \
+  || fail "the gate log does not record that the read was not pid-scoped: $(log_tail)"
+pass "log without an app under test falls back by process name and says it is not one instance"
+
+# A recycled pid must fall back rather than read a stranger's lines: `log` goes
+# through the same identity check every other verb does.
+write_app_state 4242
+: >"$TMP_DIR/log.log"
+assert_allowed 'log' 'log falls back when the recorded pid was recycled' \
+  STUB_PS_LSTART="Tue Aug 25 11:11:11 2026" \
+  STUB_PS_COMM="$CLEAN_APP/Contents/MacOS/localvoxtral" \
+  STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
+if grep -q 'processIdentifier == 4242' "$TMP_DIR/log.log"; then
+  fail "log read the lines of a recycled pid as if it were the app under test"
+fi
+grep -q 'process == "localvoxtral"' "$TMP_DIR/log.log" \
+  || fail "a recycled pid did not fall back to process scoping: $(cat "$TMP_DIR/log.log")"
+pass "a recycled pid falls back instead of scoping the read to a stranger"
+
+clear_state
+
 : >"$TMP_DIR/log.log"
 assert_allowed 'log 42' 'log with an explicit window' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
 grep -q -- '--last 42m' "$TMP_DIR/log.log" || fail "log ignored the requested window"
@@ -1604,6 +1771,10 @@ assert_allowed 'log' 'log caps its own output' STUB_LOG_OUTPUT_FILE="$LOG_FIXTUR
 assert_allowed 'log' 'log says so when there is nothing to report' STUB_LOG_OUTPUT_FILE="$LOG_FIXTURE"
 [[ "$GATE_STDERR" == *"no com.localvoxtral entries"* ]] \
   || fail "an empty log window produced no explanation: $GATE_STDERR"
+# Which scope found nothing is half the answer: "the app said nothing" and
+# "you were reading some other process" look identical without it.
+[[ "$GATE_STDERR" == *"entries for process=localvoxtral"* ]] \
+  || fail "the empty-window message does not name the scope it searched: $GATE_STDERR"
 
 # The restriction the build gate account actually hits (scripts/mac/README.md).
 # It is unverified for the GUI account, so the failure has to name itself.

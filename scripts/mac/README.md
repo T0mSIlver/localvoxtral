@@ -536,15 +536,15 @@ full-screen capture anywhere in it:
 | --- | --- |
 | `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened |
 | `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start |
-| `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else |
+| `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else. stdout is pure base64; the `shot: window …` line is on **stderr**, so pipe straight into `base64 -d` — no `tail` |
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
 | `ax click <selector>` | presses the one element the selector matches |
 | `ax type <selector> -- <text>` | types into a text-bearing element |
 | `key <escape\|tab\|return>` | one keycode from a three-entry allowlist; brings the app under test frontmost first and refuses if that did not take, so a keystroke never lands in whatever the owner last touched |
-| `menu open` / `menu click <item-title>` / `menu dismiss` | drives the status item of the recorded pid. localvoxtral opens no window at launch, so this is what makes every row above it reachable |
+| `menu open` / `menu click <item-title>` / `menu dismiss` | drives the status item of the recorded pid. localvoxtral opens no window at launch, so this is what makes every row above it reachable. `open`/`dismiss` confirm the result against the window list — the same layer the `shot popover` row resolves — so they cannot report a menu that is not on screen |
 | `dictate tap` / `dictate hold <seconds>` / `dictate cancel` | posts the app's OWN configured modifier trigger (read from its defaults) as a gesture at the HID tap — the only way to start a dictation, and therefore to exercise the Claude Code / herdr join |
 | `app <control command>` | forwards ONE line to the **dogfood** control socket of the app under test and returns the reply. Five shapes only: `session start overlay\|live`, `session stop`, `join report`, `surface probe`, `registry list`. Refuses a build with no `LVXDogfoodCapture` stamp — see "`app` — asking the app what it joined" |
-| `log [minutes]` | localvoxtral's own unified-log lines over a clamped window (default 15, max 120), line-capped and token-scrubbed. Predicate-scoped to `subsystem == "com.localvoxtral"`; never a system-log reader. Read-only, so it works while the screen is locked |
+| `log [minutes]` | localvoxtral's own unified-log lines over a clamped window (default 15, max 120), line-capped and token-scrubbed. Predicate-scoped to `subsystem == "com.localvoxtral"` **and** to one process — the recorded pid, else the app's process name, which it says. Never a system-log reader. Read-only, so it works while the screen is locked |
 | `quit` | terminates the recorded pid |
 | `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
 | `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
@@ -654,6 +654,26 @@ space is spelled `+`, as in selector values: `menu click Show+Log`.
 `menu dismiss` closes the menu through the app's own AX cancel action rather
 than a synthesised Escape, so no keystroke is ever posted at whatever owns the
 keyboard. It takes nothing from the owner and therefore does not warn.
+
+**How `open` and `dismiss` know a menu is on screen — and why it is not the
+obvious test.** An `NSMenu` handed to an `NSStatusItem` hangs off that item as
+an `AXMenu` child for the app's whole life, displayed or not. Taking that
+attachment for "the menu is open" is what the first cut did, and it made
+`menu open` a no-op that returned `ok already-open` instantly while nothing
+appeared, `shot popover` then found nothing, and `ax dump all` stayed `[]`
+(field check 2026-08-29). Both verbs now ask the **window list** instead: a
+window owned by the recorded pid at layer ≥ 100, which is the very same rule
+`shot popover` resolves with. So `menu open` succeeds exactly when
+`shot popover` can photograph something, by construction, and a press that
+produced nothing is a failure that says so. `menu dismiss` gains a second
+property from the same test: with nothing on screen it returns
+`ok no-menu-open` **without touching the status item**, where before it could
+fall through to a press — and a press on a closed menu opens one.
+
+`menu click` deliberately does *not* require a displayed menu: `AXPress` on a
+menu item works either way, which is how the gate reached Settings while
+`menu open` was broken. Keep it that way — it is the fallback when the window
+test cannot see a menu that is genuinely up.
 
 The mechanism is the Accessibility API (`AXExtrasMenuBar` on the recorded pid),
 not System Events: an Apple event would need a separate Automation grant whose
@@ -766,6 +786,28 @@ base64url scrub the dogfood records use — the app writes its categories
 `privacy: .public` on purpose, but "every line anyone ever adds is safe" is not
 an assumption worth depending on.
 
+**The subsystem alone is not enough on this machine, and that was a real
+finding.** This Mac is also the self-hosted CI runner, and a unit-suite run
+logs under localvoxtral's own subsystem from `xctest`. Field check 2026-08-30:
+`log 2` returned 111 lines of which exactly one came from the app under test;
+the rest were a concurrent CI run, including
+`Terminal pane joined to a live Claude session via title marker`. Attributing
+that to the dictation you just made is a wrong conclusion drawn from a real log
+line, which is the worst thing this verb could do. So the predicate carries a
+process as well:
+
+- with an app under test, `processIdentifier == <the pid launch recorded>` —
+  one instance, scoped exactly like every other verb in the gate;
+- with none, `process == "localvoxtral"`, which still excludes `xctest` but no
+  longer excludes a second instance or a `--probe-surface` one-shot. The verb
+  says so on **stderr, before the lines**, so the caveat is read before the
+  conclusion.
+
+Even correctly scoped, a build running on the runner is writing to the same log
+store at the same time, so timestamps interleave with CI's noise in the
+surrounding system log — the predicate keeps the *lines* clean, not the
+neighbourhood. `state` and the gate's own log tell you which pid is which.
+
 It steals no focus and writes nothing, so unlike the actuation verbs it is
 allowed while the screen is locked.
 
@@ -777,7 +819,7 @@ account, so it is expected to work here; that has **not** been verified on this
 machine as of 2026-08-30. The verb is built so the difference is impossible to
 miss: a restricted store exits non-zero and quotes the reason rather than
 returning an empty page, and an empty window says "no com.localvoxtral entries
-in the last N minute(s)" on stderr. If it does turn out to be restricted for
+for <scope> in the last N minute(s)" on stderr. If it does turn out to be restricted for
 the GUI account too, there is no flag that lifts it — the alternatives are
 `mac-crashlog.yml` on the runner (which already ships a subsystem-filtered log)
 or having the app write its own file.
@@ -939,11 +981,15 @@ ssh lv-ui 'state'                       # JSON; check tcc.accessibility and
 ssh lv-ui 'launch localvoxtral-ui-artifacts/localvoxtral.app'
 ssh lv-ui 'menu open'                   # localvoxtral has NO window until this
 ssh lv-ui 'shot popover' | base64 -d > /tmp/popover.png
+                                        # stdout is pure base64; the
+                                        # "shot: window …" line is on stderr
 ssh lv-ui 'menu click Settings'         # substring: the real title is Settings…
 ssh lv-ui 'shot settings' | base64 -d > /tmp/settings.png
 ssh lv-ui 'dictate tap'                 # starts an Overlay Buffer session
 ssh lv-ui 'ax dump overlay'             # the Claude-join badge names the session
-ssh lv-ui 'log 5'                       # localvoxtral's own log lines only
+ssh lv-ui 'log 5'                       # the app-under-test pid's own lines
+                                        # (subsystem alone also matches CI's
+                                        # xctest runs on this same machine)
 ssh lv-ui 'app registry list'           # dogfood build only; refused otherwise
 ssh lv-ui 'app surface probe'           # resolve the focused surface, live registry
 ssh lv-ui 'app rm -rf /'                # must print "denied command"
@@ -995,3 +1041,15 @@ behaviour, but nothing about a live desktop. On first install, confirm by hand:
    flags (`ghostty -e`, the generated `.command` for Terminal/iTerm) are the
    least-tested part of v1. Nothing here works until you have written a wrapper
    and allowlisted it — the default allowlist is empty on purpose.
+6. `menu open` prints `ok window=<n>`, `shot popover` then returns a PNG of
+   that same menu, and `menu dismiss` prints `ok`. This is the one behaviour
+   the shell suite cannot reach at all: it stubs the helper, so what it pins is
+   that the decision is made from the window list, never that macOS puts a
+   status menu there. If `menu open` says the status item was pressed but no
+   window appeared at layer ≥ 100, then either the press did nothing or a
+   displayed status menu is not a pid-owned window on this macOS version —
+   check with `menu click Settings` (which works either way) and say which, do
+   not go back to trusting the attached `AXMenu`.
+7. `log` returns only the app under test. Start a build on the runner, then run
+   `log 2` and confirm no `xctest[` line comes back. Without `launch`, the same
+   command warns on stderr that it is not pid-scoped.

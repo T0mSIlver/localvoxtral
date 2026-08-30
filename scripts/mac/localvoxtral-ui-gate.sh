@@ -33,7 +33,12 @@ set -euo pipefail
 #
 #   - `shot` resolves a CGWindowID from the window list FILTERED to the pid
 #     this gate itself launched, and refuses when the resolved window's owner
-#     is not that pid. It can never photograph another application.
+#     is not that pid. It can never photograph another application. Its stdout
+#     is PURE base64 and nothing else; the `shot: window <id> (<kind>), <n>
+#     bytes` line goes to stderr, so `shot popover | base64 -d > x.png` is
+#     correct as written and needs no `tail`. Over an interactive ssh both
+#     streams land in the same terminal, which is the only reason it can look
+#     like a header.
 #   - `ax click` / `ax type` walk the accessibility tree rooted at
 #     AXUIElementCreateApplication(<that same pid>). A selector cannot name an
 #     element of another app.
@@ -45,6 +50,13 @@ set -euo pipefail
 #     that same pid, through AXUIElementCreateApplication(<it>). They exist
 #     because localvoxtral opens no window at launch — without them every verb
 #     above has nothing to address. No other app's menu bar is expressible.
+#     `menu open` and `menu dismiss` decide "is a menu on screen" from the
+#     WINDOW LIST, using the same layer >= 100 rule `shot popover` resolves,
+#     so the two verbs agree by construction. The AXMenu attached to a status
+#     item is NOT that evidence — it is there whether or not anything is
+#     displayed, and taking it for evidence is what made `menu open` report
+#     "ok already-open" without ever pressing anything (field check
+#     2026-08-29).
 #   - `dictate` posts the app's OWN configured trigger — read from the app's
 #     defaults, never hard-coded — as a modifier-only gesture at the HID tap.
 #     It is the one verb that does not target a window, because the trigger is
@@ -63,7 +75,11 @@ set -euo pipefail
 #   - `log` reads the unified log for localvoxtral's OWN subsystem only, over a
 #     clamped window, with a line cap and token-shaped runs masked. It is not a
 #     general system-log reader; every other application's activity on this
-#     machine stays out of reach.
+#     machine stays out of reach. It is scoped to one PROCESS as well as the
+#     subsystem — the pid `launch` recorded, or the app's process name when
+#     there is no app under test, which it then says. This Mac is also the
+#     self-hosted CI runner and `xctest` logs under the same subsystem, so
+#     subsystem alone hands back another run's lines (field check 2026-08-30).
 #
 # A `term open` window is therefore NOT a lateral path into the app-driving
 # verbs, and the scoping above is why: `shot`, `ax dump`, `ax click`, `ax type`
@@ -178,6 +194,14 @@ LV_UI_LOG_MAX_LINES="${LV_UI_LOG_MAX_LINES:-400}"
 # The app's OWN subsystem and nothing else. This is the difference between a
 # diagnostic and a machine-wide log reader on the owner's personal Mac.
 LV_UI_LOG_SUBSYSTEM="${LV_UI_LOG_SUBSYSTEM:-com.localvoxtral}"
+# The subsystem alone is NOT enough on this machine: the self-hosted CI runner
+# shares it, and `xctest` running the unit suite logs under the very same
+# subsystem (field check 2026-08-30: `log 2` returned 111 lines, all but one
+# of them `xctest[19586]`). So the predicate also carries a process. The pid
+# `launch` recorded is the preferred one — it scopes to the instance under
+# test the way every other verb does; this name is the fallback used when
+# there is no app under test, and the output says so when it is.
+LV_UI_LOG_PROCESS="${LV_UI_LOG_PROCESS:-localvoxtral}"
 
 # Machine-local overrides (never committed). Same argument as the build gate:
 # anyone who can write this file can already replace this script, so sourcing
@@ -612,12 +636,67 @@ func extrasMenuBarItem(_ pid: pid_t) -> AXUIElement {
     return item
 }
 
-func openMenu(of item: AXUIElement) -> AXUIElement? {
+// The AXMenu ATTACHED to the status item — reachable, pressable, and NOT
+// evidence that anything is on screen.
+//
+// An NSMenu handed to an NSStatusItem is an AXMenu child of that item for the
+// whole life of the app, displayed or not. Field check 2026-08-29, against a
+// freshly launched build that had shown nothing: `menu open` printed
+// "ok already-open" and returned instantly, `shot popover` then reported no
+// popover window at all, and `ax dump all` returned `[]`. The pre-check that
+// used this function as "is the menu open" therefore matched every time, the
+// status item was never pressed, and the verb reported success while doing
+// nothing. Whatever else changes here, do not spell this `openMenu` again —
+// the name was the bug.
+//
+// It stays because pressing a menu ITEM through AX works whether or not the
+// menu is displayed (that is how the gate reached Settings while `menu open`
+// was broken), so `menuclick` wants exactly this and not the window test
+// below.
+func attachedMenu(of item: AXUIElement) -> AXUIElement? {
     for child in (copyAttr(item, kAXChildrenAttribute) as? [AXUIElement]) ?? []
     where str(child, kAXRoleAttribute) == "AXMenu" {
         return child
     }
     return nil
+}
+
+// "A menu is DISPLAYED" — the only honest test, and deliberately the SAME one
+// `shot popover` resolves with: a window owned by this pid at layer >= 100
+// (kCGPopUpMenuWindowLevel). Sharing resolveWindow rather than writing a
+// second, similar rule is the point — `menu open` then succeeds exactly when
+// `shot popover` can photograph something, by construction, and the two verbs
+// cannot drift apart. If this ever answers wrongly on a live desktop, both
+// verbs say so together instead of one lying to cover the other.
+//
+// Caveat worth knowing rather than coding around: any pid-owned window at that
+// layer counts, so a context menu open inside Settings reads as "displayed"
+// here. That is the same window `shot popover` would capture, which is the
+// agreement this is for.
+func displayedMenuWindow(pid: pid_t) -> CGWindowRecord? {
+    resolveWindow(pid: Int(pid), kind: "popover", index: nil)
+}
+
+// Poll for the menu window to appear (`open`) or go away (`dismiss`). The AX
+// press's own status is never the answer — it reports .cannotComplete while a
+// menu tracks — so both verbs wait on the window list instead, which keeps
+// answering while the app's AX server is blocked.
+func waitForMenuWindow(pid: pid_t, seconds: Double) -> CGWindowRecord? {
+    let deadline = Date().addingTimeInterval(seconds)
+    while true {
+        if let window = displayedMenuWindow(pid: pid) { return window }
+        if Date() >= deadline { return nil }
+        usleep(150_000)
+    }
+}
+
+func waitForMenuWindowToClose(pid: pid_t, seconds: Double) -> Bool {
+    let deadline = Date().addingTimeInterval(seconds)
+    while true {
+        if displayedMenuWindow(pid: pid) == nil { return true }
+        if Date() >= deadline { return false }
+        usleep(150_000)
+    }
 }
 
 // Bring one pid frontmost and give the activation up to two seconds to land.
@@ -754,29 +833,40 @@ case "key":
 
 case "menuopen":
     guard argv.count >= 2 else { die("usage: menuopen <pid>") }
-    let item = extrasMenuBarItem(requirePID(argv[1]))
-    if openMenu(of: item) != nil {
-        print("ok already-open")
+    let openPID = requirePID(argv[1])
+    // The fast path is kept, but on evidence: a menu already ON SCREEN. The
+    // window id is printed so the caller can see WHY this said ok, and so a
+    // silent no-op can never look like a success again.
+    if let existing = displayedMenuWindow(pid: openPID) {
+        print("ok already-open window=\(existing.id)")
         break
     }
+    let item = extrasMenuBarItem(openPID)
     _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
-    // The press's own status is not the answer — it reports .cannotComplete
-    // while the menu tracks. The menu's existence is the answer.
-    let menuDeadline = Date().addingTimeInterval(3)
-    while Date() < menuDeadline {
-        if openMenu(of: item) != nil {
-            print("ok")
-            exit(0)
-        }
-        usleep(150_000)
+    // The press's own status is deliberately not trusted: it reports
+    // .cannotComplete while the menu tracks. A window on screen is the answer.
+    if let opened = waitForMenuWindow(pid: openPID, seconds: 3) {
+        print("ok window=\(opened.id)")
+        break
     }
-    die("the status item was pressed but no menu opened")
+    // Reached with the press already delivered, so the menu MAY be up and
+    // simply not visible to the window list. Say that, rather than inviting a
+    // second press that would toggle a tracking menu shut.
+    die("the status item of pid \(openPID) was pressed but no window appeared at "
+        + "layer >= 100 within 3s — the same window `shot popover` resolves. "
+        + "Run `menu dismiss` before retrying; `menu click <title>` works "
+        + "without a displayed menu.")
 
 case "menuclick":
     guard argv.count >= 3 else { die("usage: menuclick <pid> <item-title>") }
     let wanted = argv[2].replacingOccurrences(of: "+", with: " ")
-    guard let menu = openMenu(of: extrasMenuBarItem(requirePID(argv[1]))) else {
-        die("no status menu is open — run `menu open` first")
+    // ATTACHED, not displayed, and that is the point: AXPress on a menu item
+    // works whether or not the menu is on screen, so this verb keeps working
+    // when `menu open` cannot resolve a window (it is how the gate reached
+    // Settings on 2026-08-29).
+    let clickPID = requirePID(argv[1])
+    guard let menu = attachedMenu(of: extrasMenuBarItem(clickPID)) else {
+        die("pid \(clickPID) exposes no status menu (no AXMenu under its status item)")
     }
     let entries = ((copyAttr(menu, kAXChildrenAttribute) as? [AXUIElement]) ?? [])
         .filter { !str($0, kAXTitleAttribute).isEmpty }
@@ -802,20 +892,35 @@ case "menuclick":
 
 case "menudismiss":
     guard argv.count >= 2 else { die("usage: menudismiss <pid>") }
-    let dismissItem = extrasMenuBarItem(requirePID(argv[1]))
-    guard let openMenuElement = openMenu(of: dismissItem) else {
+    let dismissPID = requirePID(argv[1])
+    // Nothing on screen: return BEFORE touching the status item. This branch
+    // used to be decided by attachment, which is always true, so it never ran
+    // — and the fallback below presses the status item, which on a closed menu
+    // OPENS one. A dismiss verb must never be able to open a menu.
+    guard displayedMenuWindow(pid: dismissPID) != nil else {
         print("ok no-menu-open")
         break
     }
+    let dismissItem = extrasMenuBarItem(dismissPID)
     // AXCancel on the app's own menu, not a synthesised Escape: a keystroke
     // goes to whatever owns the keyboard, and closing a menu never has to.
-    if AXUIElementPerformAction(openMenuElement, kAXCancelAction as CFString) == .success {
-        print("ok")
+    // Its return code is trusted no further than AXPress's: the window going
+    // away is the answer.
+    if let attached = attachedMenu(of: dismissItem) {
+        _ = AXUIElementPerformAction(attached, kAXCancelAction as CFString)
+        if waitForMenuWindowToClose(pid: dismissPID, seconds: 2) {
+            print("ok")
+            break
+        }
+    }
+    // Fall back to toggling the status item shut — still the app's own
+    // element, and only ever reached with a menu confirmed on screen.
+    _ = AXUIElementPerformAction(dismissItem, kAXPressAction as CFString)
+    if waitForMenuWindowToClose(pid: dismissPID, seconds: 2) {
+        print("ok pressed")
         break
     }
-    // Fall back to toggling the status item shut — still the app's own element.
-    _ = AXUIElementPerformAction(dismissItem, kAXPressAction as CFString)
-    print("ok")
+    die("the menu window of pid \(dismissPID) is still on screen after AXCancel and a status-item press")
 
 case "dictate":
     guard argv.count >= 4 else { die("usage: dictate <pid> <modifier> <tap|hold|cancel> [seconds]") }
@@ -1272,6 +1377,13 @@ run_launch() {
 
 # shot [settings|popover|overlay|window <n>] — ONE window, by CGWindowID, and
 # only if that window's owner is the pid this gate launched.
+#
+# stdout is the base64 of the PNG and NOTHING else, so the documented form
+#   ssh lv-ui 'shot popover' | base64 -d > /tmp/popover.png
+# is correct with no `tail -n +2`. The `shot: window …` line below is on
+# stderr for exactly that reason. It reads like a header only because an
+# interactive ssh delivers both streams to the same terminal; redirect stdout
+# and the header stays behind on the terminal, where it is useful.
 run_shot() {
   local kind="${1:-settings}" index="${2:-}" resolved winid owner file size
   case "$kind" in
@@ -1588,9 +1700,25 @@ redact_token_shaped_runs() {
 # there is not a diagnostic for an agent.
 #
 # Three bounds, each doing a different job:
-#   * the PREDICATE scopes to localvoxtral's own subsystem. This is a debugging
-#     aid on a personal machine, not a system-log reader; every other app's
-#     activity stays out of reach and no argument widens it.
+#   * the PREDICATE scopes to localvoxtral's own subsystem AND to one process.
+#     This is a debugging aid on a personal machine, not a system-log reader;
+#     every other app's activity stays out of reach and no argument widens it.
+#
+#     The process half is not tidiness, it is correctness. This Mac is also the
+#     self-hosted CI runner, and a unit-suite run logs under localvoxtral's own
+#     subsystem from `xctest` — different process, different machine-state,
+#     same subsystem. Field check 2026-08-30: `log 2` returned 111 lines of
+#     which exactly one was the app under test; the rest were a concurrent
+#     xctest run, including "Terminal pane joined to a live Claude session via
+#     title marker". Reading that as the join for the dictation you just made
+#     is a wrong conclusion drawn from a real log line, which is the worst kind
+#     this verb can produce.
+#
+#     So: with an app under test, the predicate carries `processIdentifier ==
+#     <the pid launch recorded>` and the lines are ONE instance's. With none,
+#     it falls back to `process == "localvoxtral"` — still never xctest, but no
+#     longer one instance — and says so on stderr. Silently answering with
+#     another process's lines is the one behaviour that is not available.
 #   * the WINDOW is clamped 1..LV_UI_LOG_MAX_MINUTES, mirroring the build
 #     gate's `applog`.
 #   * the OUTPUT is line-capped and passed through the same token-shaped scrub
@@ -1613,13 +1741,32 @@ run_log() {
   (( minutes <= LV_UI_LOG_MAX_MINUTES )) \
     || deny "log window is clamped to $LV_UI_LOG_MAX_MINUTES minutes"
 
-  log_command ALLOW "log minutes=$minutes subsystem=$LV_UI_LOG_SUBSYSTEM"
+  # Scope, decided before anything is read. `load_app_state` is the same
+  # pid-with-identity check every other verb goes through, so a recycled pid
+  # falls back rather than reading a stranger's lines.
+  local predicate scope
+  if load_app_state; then
+    predicate="subsystem == \"$LV_UI_LOG_SUBSYSTEM\" AND processIdentifier == $APP_PID"
+    scope="pid=$APP_PID"
+  else
+    predicate="subsystem == \"$LV_UI_LOG_SUBSYSTEM\" AND process == \"$LV_UI_LOG_PROCESS\""
+    scope="process=$LV_UI_LOG_PROCESS not-pid-scoped"
+  fi
+
+  log_command ALLOW "log minutes=$minutes subsystem=$LV_UI_LOG_SUBSYSTEM $scope"
+
+  # Said before the lines, not after: an operator who reads the output first
+  # and the caveat second has already drawn the conclusion.
+  if [[ -z "$APP_PID" ]]; then
+    printf 'localvoxtral ui gate: no app under test — these lines are every process named "%s" on this machine, not one instance. Run `launch <artifact>` first to scope them to the build under test.\n' \
+      "$LV_UI_LOG_PROCESS" >&2
+  fi
 
   # `|| status=$?` rather than dying under `set -e`: a restricted log store
   # exits non-zero AND prints the reason, and the reason is the whole answer.
   output="$(log show --style compact --info \
     --last "${minutes}m" \
-    --predicate "subsystem == \"$LV_UI_LOG_SUBSYSTEM\"" 2>&1)" || status=$?
+    --predicate "$predicate" 2>&1)" || status=$?
 
   if (( status != 0 )) || [[ "$output" == *"Could not open local log store"* ]]; then
     printf 'localvoxtral ui gate: log show failed (status %s).\n' "$status" >&2
@@ -1641,8 +1788,8 @@ run_log() {
   # Never silently empty: "no matching entries" and "the reader is broken" look
   # identical otherwise, and only one of them is a finding.
   if [[ -z "${capped//[[:space:]]/}" ]]; then
-    printf 'localvoxtral ui gate: no %s entries in the last %s minute(s).\n' \
-      "$LV_UI_LOG_SUBSYSTEM" "$minutes" >&2
+    printf 'localvoxtral ui gate: no %s entries for %s in the last %s minute(s).\n' \
+      "$LV_UI_LOG_SUBSYSTEM" "$scope" "$minutes" >&2
   fi
   ACTION_COMPLETED=1
 }
