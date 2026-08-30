@@ -2274,9 +2274,6 @@ run_term_open() {
     token_is_safe "$token" || deny "unsafe token in term command"
   done
 
-  # Resolved BEFORE anything is opened. An allowlisted name that is not
-  # installed used to open an empty window and then fail with a window-identity
-  # message; this refuses with nothing opened and names the real problem.
   # Bash 3.2 (the Mac's /bin/bash) errors on an EMPTY array slice under set -u,
   # so the arguments after the command name are rendered once, guarded, rather
   # than expanded at each use.
@@ -2285,6 +2282,9 @@ run_term_open() {
     args_text=" ${argv[*]:1}"
   fi
 
+  # Resolved BEFORE anything is opened. An allowlisted name that is not
+  # installed used to open an empty window and then fail with a window-identity
+  # message; this refuses with nothing opened and names the real problem.
   local resolved_command
   resolved_command="$(resolve_term_command "${argv[0]}")" \
     || deny "${argv[0]} is allowlisted but is not an executable file in $LV_UI_TERM_COMMAND_DIRS — nothing was opened (install it: scripts/mac/install-ui-artifact.sh, or see \`state\`'s setup.term_open.unresolvable)"
