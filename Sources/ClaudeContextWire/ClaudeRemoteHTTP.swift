@@ -68,7 +68,8 @@ public enum ClaudeRemoteAuthorizationShape: Sendable, Equatable {
     /// during setup, anything else on loopback.
     case absent
     /// An `Authorization` header arrived and yielded no credential: a `Bearer`
-    /// scheme with nothing after it, or a value with no scheme at all.
+    /// scheme with nothing after it, or a value that is blank. (A non-blank
+    /// value naming some other scheme is `.malformed`, not this.)
     ///
     /// This is the pre-1.1.0 plugin's exact signature (`Bearer `, from a
     /// `${CLAUDE_PLUGIN_OPTION_TOKEN}` Claude Code never expanded into an http
