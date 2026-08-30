@@ -28,21 +28,38 @@ enum AudioDeviceManager {
         }
     }
 
-    /// Channels the device's input stream format reports. A 16-in interface
-    /// answers 16 here; the built-in mic answers 1.
+    /// Input channels the device offers, summed across ALL its input streams.
+    ///
+    /// Deliberately not `kAudioDevicePropertyStreamFormat`, which describes
+    /// stream 0 only: MADI/AVB-class interfaces and aggregate devices present
+    /// several input streams, and the AUHAL's element-1 format concatenates
+    /// them. Counting stream 0 alone would offer "Channel 1…8" on a device
+    /// whose channel 11 the capture path can address perfectly well.
     static func inputChannelCount(for deviceID: AudioObjectID) -> UInt32? {
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamFormat,
-            mScope: kAudioObjectPropertyScopeInput,
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
             mElement: kAudioObjectPropertyElementMain
         )
-        var asbd = AudioStreamBasicDescription()
-        var dataSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &asbd) == noErr
-        else {
-            return nil
-        }
-        return asbd.mChannelsPerFrame
+
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        guard sizeStatus == noErr, dataSize > 0 else { return nil }
+
+        let rawPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(dataSize),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { rawPointer.deallocate() }
+
+        let dataStatus = AudioObjectGetPropertyData(
+            deviceID, &address, 0, nil, &dataSize, rawPointer)
+        guard dataStatus == noErr else { return nil }
+
+        let audioBufferList = rawPointer.assumingMemoryBound(to: AudioBufferList.self)
+        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        let channelCount = buffers.reduce(UInt32(0)) { $0 + $1.mNumberChannels }
+        return channelCount > 0 ? channelCount : nil
     }
 
     static func defaultInputDeviceObjectID() -> AudioObjectID? {

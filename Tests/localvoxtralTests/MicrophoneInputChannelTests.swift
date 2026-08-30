@@ -178,4 +178,82 @@ final class MicrophoneInputChannelTests: XCTestCase {
         }
         return (sumOfSquares / Float(outputBuffer.frameLength)).squareRoot()
     }
+
+    // MARK: - Narrow-vs-fallback decision (review follow-up)
+
+    /// The decision table around the two AUHAL property calls. The calls
+    /// themselves need multi-channel hardware; this is the branch whose
+    /// failure means silence, and it was previously untestable — deleting the
+    /// unconditional wide re-set left every other test green.
+    func testBothPropertiesMustSucceedToKeepTheNarrowedBus() {
+        XCTAssertEqual(
+            MicrophoneCaptureService.clientFormatChoice(formatStatus: noErr, mapStatus: noErr),
+            .narrowed)
+    }
+
+    func testRejectedChannelMapFallsBackToTheWideFormat() {
+        // The dangerous case: format took, map didn't. A mono client format
+        // with no map downmixes a discrete layout to silence.
+        XCTAssertEqual(
+            MicrophoneCaptureService.clientFormatChoice(formatStatus: noErr, mapStatus: -10851),
+            .wide)
+    }
+
+    func testRejectedClientFormatFallsBackToTheWideFormat() {
+        XCTAssertEqual(
+            MicrophoneCaptureService.clientFormatChoice(formatStatus: -10868, mapStatus: -10868),
+            .wide)
+    }
+
+    // MARK: - Narrowing declines formats it cannot describe
+
+    /// 24 significant bits in 32-bit slots: shrinking by mBitsPerChannel/8
+    /// would declare a 3-byte frame for 4-byte samples. Declining costs the
+    /// optimization and keeps the proven wide path.
+    func testNarrowingDeclinesUnpackedSampleStorage() {
+        var asbd = multiChannelASBD(channels: 16)
+        asbd.mFormatFlags = kAudioFormatFlagIsSignedInteger  // not packed
+        asbd.mBitsPerChannel = 24
+        XCTAssertNil(MicrophoneCaptureService.narrowedClientFormat(from: asbd, channel: 0))
+    }
+
+    func testNarrowingDeclinesNonPCMFormats() {
+        var asbd = multiChannelASBD(channels: 16)
+        asbd.mFormatID = kAudioFormatMPEG4AAC
+        XCTAssertNil(MicrophoneCaptureService.narrowedClientFormat(from: asbd, channel: 0))
+    }
+
+    /// Non-interleaved is the HAL default for many interfaces: there
+    /// mBytesPerFrame already describes ONE channel, so the narrowed format
+    /// must keep it rather than divide it by the channel count.
+    func testNarrowingHandlesNonInterleavedDevices() throws {
+        var asbd = multiChannelASBD(channels: 16)
+        asbd.mFormatFlags |= kAudioFormatFlagIsNonInterleaved
+        asbd.mBytesPerFrame = 4
+        asbd.mBytesPerPacket = 4
+
+        let narrowed = try XCTUnwrap(
+            MicrophoneCaptureService.narrowedClientFormat(from: asbd, channel: 5))
+        XCTAssertEqual(narrowed.mChannelsPerFrame, 1)
+        XCTAssertEqual(narrowed.mBytesPerFrame, 4)
+        XCTAssertEqual(
+            narrowed.mFormatFlags, asbd.mFormatFlags,
+            "format flags must survive narrowing or the AUHAL sees a different sample type")
+    }
+
+    /// At or below stereo the channel selection must not be applied at all:
+    /// the standard downmix is correct there, and a stale index from a
+    /// multi-channel device must not reach the converter. Asking for channel 5
+    /// on a MONO input must leave the identity map AVAudioConverter builds
+    /// itself (`[0]`), never `[5]`.
+    func testMonoInputIgnoresTheSelectedChannel() throws {
+        let inputFormat = try XCTUnwrap(
+            AVAudioFormat(
+                commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 1,
+                interleaved: false))
+        let converter = try XCTUnwrap(
+            MicrophoneCaptureService.makeTranscriptionConverter(
+                from: inputFormat, to: monoTranscriptionFormat(), channel: 5))
+        XCTAssertEqual(converter.channelMap, [0])
+    }
 }
