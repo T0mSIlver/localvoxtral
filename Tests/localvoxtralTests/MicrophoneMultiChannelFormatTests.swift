@@ -1,5 +1,6 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import AudioToolbox
+import Synchronization
 import XCTest
 
 @testable import localvoxtral
@@ -100,14 +101,18 @@ final class MicrophoneMultiChannelFormatTests: XCTestCase {
 
         let outputBuffer = try XCTUnwrap(
             AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 4000))
-        var fedInput = false
+        let didFeedInput = Mutex(false)
         var conversionError: NSError?
         converter.convert(to: outputBuffer, error: &conversionError) { _, status in
-            if fedInput {
+            let alreadyFed = didFeedInput.withLock { fed in
+                let was = fed
+                fed = true
+                return was
+            }
+            if alreadyFed {
                 status.pointee = .noDataNow
                 return nil
             }
-            fedInput = true
             status.pointee = .haveData
             return inputBuffer
         }
@@ -151,14 +156,18 @@ final class MicrophoneMultiChannelFormatTests: XCTestCase {
 
         let outputBuffer = try XCTUnwrap(
             AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 4000))
-        var fedInput = false
+        let didFeedInput = Mutex(false)
         var conversionError: NSError?
         converter.convert(to: outputBuffer, error: &conversionError) { _, status in
-            if fedInput {
+            let alreadyFed = didFeedInput.withLock { fed in
+                let was = fed
+                fed = true
+                return was
+            }
+            if alreadyFed {
                 status.pointee = .noDataNow
                 return nil
             }
-            fedInput = true
             status.pointee = .haveData
             return inputBuffer
         }
