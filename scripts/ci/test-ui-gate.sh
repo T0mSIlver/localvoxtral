@@ -883,10 +883,10 @@ run_gate 'term open ghostty lv-attach pane-7' \
   || fail "term open did not say what went wrong: $GATE_STDERR"
 [[ "$GATE_STDERR" == *"terminated the command it started"* ]] \
   || fail "term open did not reclaim the process it started: $GATE_STDERR"
-ORPHAN_PIDFILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.pid' 2>/dev/null | head -n 1)"
+ORPHAN_PIDFILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.pid' 2>/dev/null | head -n 1 || true)"
 [[ -z "$ORPHAN_PIDFILE" ]] \
   || fail "term open left a pid file behind after failing: $ORPHAN_PIDFILE"
-[[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null)" ]] \
+[[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null || true)" ]] \
   || fail "a failed term open registered a terminal anyway"
 pass "a term open that cannot identify its window kills what it started and registers nothing"
 
@@ -933,7 +933,7 @@ run_gate 'term open ghostty lv-attach pane-7' \
   || fail "the ambiguous case did not explain itself: $GATE_STDERR"
 [[ "$GATE_STDERR" == *"terminated the command it started"* ]] \
   || fail "the ambiguous case did not reclaim the process it started: $GATE_STDERR"
-[[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null)" ]] \
+[[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null || true)" ]] \
   || fail "the ambiguous case registered a terminal anyway"
 pass "term open refuses to guess between windows that appeared at the same moment"
 
@@ -2714,11 +2714,11 @@ BASH4_FILES=(
 # pipeline whose status is ignored, an associative array declaration is a
 # syntax error only when reached, and case conversion expands unmodified.
 BASH4_IDIOMS=(
-  'BASHPID::\$\{?BASHPID'
+  'BASHPID::\$[{]?BASHPID'
   'mapfile::(^|[^[:alnum:]_])mapfile[[:space:]]'
   'readarray::(^|[^[:alnum:]_])readarray[[:space:]]'
   'an associative array::(declare|local|typeset)[[:space:]]+-[A-Za-z]*A[A-Za-z]*[[:space:]]'
-  'case-conversion expansion::\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(\^\^|,,)'
+  'case-conversion expansion::\$[{][A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(\^\^|,,)'
   'the |& pipe::[^|]\|&'
 )
 # BASH4-SCANNER-END
