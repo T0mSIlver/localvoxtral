@@ -86,6 +86,33 @@ When either grant is missing, the smoke script fails immediately with an
 actionable TCC message. Grant it once in System Settings > Privacy & Security,
 then rerun the workflow.
 
+## `hosted-tcc-probe.yml`
+
+Dispatch-only research probe on GitHub-**hosted** macOS (`macos-15` and
+`macos-26` matrix), answering whether the UI tier could leave the owner's Mac.
+It reports whether a hosted runner has a real GUI/WindowServer session, what
+`csrutil status` says, which TCC rows the image ships (`actions/runner-images`
+bakes Accessibility, Screen Recording, PostEvent and AppleEvents grants for
+`/bin/bash` and `/usr/bin/osascript` into both databases at image-build time),
+whether System Events UI scripting and `screencapture` actually work there, and
+whether a microphone device exists at all. It then packages the app and runs
+`ui-smoke.sh` for real.
+
+The decisive step runs first: `AXIsProcessTrusted()` /
+`CGPreflightScreenCaptureAccess()` under all three invocation shapes
+(interpreted `swift file.swift` — what `ui-smoke.sh` uses today — compiled, and
+`osascript`-spawned), printed adjacently, because TCC attributes a grant to the
+*responsible* process and it is unresolved whether a `swift`-spawned child
+inherits bash's.
+
+Every probe step is `continue-on-error: true` on purpose: a red step is a
+result, not a breakage. Only the hosted-only guard may fail the job — it aborts
+unless `runner.environment == github-hosted`, so the probe can never touch the
+owner's personal machine. Never add `self-hosted` to its matrix. Output lands in
+the `hosted-tcc-probe-<image>` artifact, including a full-screen PNG (whether
+the framebuffer is real is a question a screenshot answers better than a byte
+count).
+
 ## `capture-assets.yml`
 
 Manual-dispatch screenshot refresh on the self-hosted Mac runner. It packages
