@@ -20,6 +20,48 @@ metal` succeeds even when the component is missing (the shim exists), so
 only an actual invocation (`xcrun metal --version`) proves it works. Runs
 as a normal user, no sudo needed.
 
+## herdr, for the live integration lane
+
+`./scripts/remote-build.sh integration-herdr` (and CI's conditional herdr
+lane) needs the `herdr` binary present on this machine. It is the only
+prerequisite — the lane provisions its own loopback sshd, its own keys and its
+own `authorized_keys` file, so nothing is added to any account's real SSH
+trust.
+
+```bash
+brew install herdr        # or https://herdr.dev; HERDR_BIN overrides the lookup
+herdr --version           # 0.8.2 is what the lane's assumptions were measured against
+```
+
+Its absence fails the lane loudly with the install step rather than skipping.
+
+What the lane borrows while it runs, and gives back on teardown: the running
+account's `~/.config/herdr/config.toml` and `session.json`, plus two delimited
+blocks in its `~/.ssh/config`. It refuses to start at all if that account
+already has a herdr server running, so it can never trample a live session —
+if the owner is using herdr on the runner account, the lane fails instead of
+taking over.
+
+### If a run is killed before it gives them back
+
+Nothing runs on SIGKILL, so the pristine originals do not live in the run's
+temp dir — they live at a stable path, `~/.localvoxtral-herdr-fixture-hold/`,
+with a manifest naming the run that took them. The next `up` restores a dead
+run's hold before doing anything else and refuses while a live run owns it, so
+a killed run heals itself and two runs never fight over one account. To do it
+by hand:
+
+```bash
+./scripts/herdr-integration-fixture.sh status    # is anything held, and by whom
+./scripts/herdr-integration-fixture.sh recover   # restore and drop the hold
+```
+
+`recover` needs no arguments and works even if the run's temp dir is gone. It
+refuses while the holding process is still alive — stop that first.
+
+Details and the full assumption list: `docs/agent/test-tiers.md` and
+`docs/agent/remote-herdr-panel-binding.md`.
+
 ## On-demand test servers (speechd + polishd) — owner runbook
 
 The two build-host model servers used by the integration/eval suites are the

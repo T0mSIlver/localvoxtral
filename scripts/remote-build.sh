@@ -6,7 +6,7 @@ set -euo pipefail
 # tree (no commit needed) and runs the toolchain remotely over SSH.
 #
 # Usage:
-#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
+#   ./scripts/remote-build.sh [build|test|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status|disk|gc] [extra args...]
 #     build        swift build
 #     test         swift build + unit tests (default; skips live-backend suites)
 #     integration  realtime pipeline tests against the live speechd STT service
@@ -18,6 +18,14 @@ set -euo pipefail
 #                  spawn the packaged speech helper (built by `package`),
 #                  transcribe real audio through the production websocket
 #                  client, and assert accuracy + delta + parent-pid contracts
+#     integration-herdr
+#                  the remote-herdr join machinery against a LIVE herdr server
+#                  over a REAL ssh -L forward: real HerdrSocketClient, real
+#                  forward coordinator, real ssh -G canonicalization, real
+#                  ~/.config/herdr/config.toml patch. With no argument the
+#                  fixture provisions its own loopback sshd (hermetic); pass an
+#                  ssh destination for a true two-host run. Needs `herdr`
+#                  installed on the build host.
 #     speechd-bench run the packaged speech helper's streaming benchmark;
 #                  optional args = seconds (default 60), cadence ms
 #                  (default 100 = the production step cadence), and
@@ -247,7 +255,8 @@ esac
 
 UNIT_TEST_SKIPS=(--skip RealtimeAPIVLLMIntegrationTests --skip LLMPolishPromptEvalTests
   --skip PolishHelperIntegrationTests --skip SpeechHelperIntegrationTests
-  --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests)
+  --skip SpeechdStreamingBenchTests --skip AgentDictationE2EEvalTests
+  --skip HerdrIntegrationTests)
 
 # On-demand test server to warm before the suite runs (empty = none). The
 # build host's speechd/polishd launchd test services are launch-on-demand to
@@ -314,6 +323,42 @@ case "$CMD" in
         >"$SPEECHD_MARKER"
     fi
     REMOTE_CMD=(swift test --filter SpeechHelperIntegrationTests)
+    ;;
+  integration-herdr)
+    # Live herdr join machinery: a real `herdr` server, a real `ssh -L`
+    # forward opened by the app's own coordinator, and the real socket
+    # client/probe/enrollment patch on top of them. Same
+    # marker-through-the-tree shape as the other live lanes, because the SSH
+    # build gate only allowlists exact `swift test ...` payloads and cannot
+    # carry per-command environment.
+    #
+    # With no argument the suite's fixture provisions its OWN loopback sshd
+    # (its own keys, its own authorized_keys file — the account's are never
+    # touched), so the lane is hermetic and needs no second machine. Pass an
+    # ssh destination to run the identical lane against a real second host
+    # you have already configured.
+    #
+    # Requires `herdr` on the build host; its absence fails the lane loudly
+    # rather than skipping (see docs/agent/test-tiers.md).
+    if [[ $# -gt 1 ]]; then
+      echo "integration-herdr accepts at most one argument (ssh destination)" >&2
+      exit 1
+    fi
+    HERDR_DESTINATION="${1:-}"
+    if [[ -n "$HERDR_DESTINATION" && ! "$HERDR_DESTINATION" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "integration-herdr destination must be a plain ssh alias or host" >&2
+      exit 1
+    fi
+    HERDR_MARKER="$ROOT_DIR/.herdr-integration-enable.json"
+    # Registered before the marker exists, so no kill window leaves a stale
+    # marker behind — locally or in the remote work dir.
+    trap 'cleanup_transient_marker "$HERDR_MARKER"' EXIT
+    if [[ -n "$HERDR_DESTINATION" ]]; then
+      printf '{"destination": "%s"}\n' "$HERDR_DESTINATION" >"$HERDR_MARKER"
+    else
+      printf '{}\n' >"$HERDR_MARKER"
+    fi
+    REMOTE_CMD=(swift test --filter HerdrIntegrationTests)
     ;;
   speechd-bench)
     # The SSH gate does not allow arbitrary packaged-binary execution. A marker-gated
@@ -468,7 +513,7 @@ case "$CMD" in
     REMOTE_CMD=("$@")
     ;;
   *)
-    echo "Usage: $0 [build|test|integration|integration-polishd|integration-speechd|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
+    echo "Usage: $0 [build|test|integration|integration-polishd|integration-speechd|integration-herdr|speechd-bench|eval-llm|eval-e2e|dogfood|dogfood-package|package|exec|diag|applog|voxlog|svc-status] [extra args...]" >&2
     exit 1
     ;;
 esac
