@@ -53,7 +53,9 @@ while (( $# > 0 )); do
     -h | --help)
       # The usage block only — a help that trails off mid-sentence into the
       # rationale is worse than none.
-      sed -n '/^# ui-gate-doctor —/,/--state-file <f>/p' "$0" | sed 's/^# \{0,1\}//'
+      # ASCII-only addresses: this is the one regex in the repo that would
+      # otherwise carry a multibyte character, and BSD sed is what runs it.
+      sed -n '/^# ui-gate-doctor /,/--state-file <f>/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
