@@ -55,8 +55,25 @@ public struct ClaudeRemoteHTTPLimits: Sendable, Equatable {
 /// cases — no length, no prefix, no digest. A diagnostic that narrows a secret
 /// is not a diagnostic worth having.
 public enum ClaudeRemoteAuthorizationShape: Sendable, Equatable {
-    /// No `Authorization` header, or a `Bearer` scheme with an empty credential.
-    case missing
+    /// No `Authorization` header at all — the caller never attempted to
+    /// authenticate.
+    ///
+    /// Split from `.empty` deliberately, because the two have different
+    /// senders and opposite diagnoses. No generation of the plugin can produce
+    /// this shape: the pre-1.1.0 http hook declared a static
+    /// `Authorization: Bearer ${…}` entry in its manifest, and the command shim
+    /// that replaced it writes the header before it dials and fails open
+    /// without ever dialing when the token is unset. So an absent header means
+    /// something that is not a hook — the enrollment verify probe, a `curl`
+    /// during setup, anything else on loopback.
+    case absent
+    /// An `Authorization` header arrived and yielded no credential: a `Bearer`
+    /// scheme with nothing after it, or a value with no scheme at all.
+    ///
+    /// This is the pre-1.1.0 plugin's exact signature (`Bearer `, from a
+    /// `${CLAUDE_PLUGIN_OPTION_TOKEN}` Claude Code never expanded into an http
+    /// hook) and the only shape that earns the update-the-plugin remedy.
+    case empty
     /// Present, but not a `Bearer` credential we are willing to read.
     case malformed
     case bearer(String)
@@ -253,25 +270,35 @@ public enum ClaudeRemoteHTTPCodec {
     /// hours of rejections said nothing about which of the two fixes — update the
     /// plugin, or re-run enrollment — the user actually needed.
     ///
+    /// `.absent` and `.empty` are likewise kept apart rather than collapsed into
+    /// one "no credential" answer. Collapsing them made the update-the-plugin
+    /// remedy fire for callers that are not hooks at all — the enrollment verify
+    /// probe posts to this endpoint with no `Authorization` header ON PURPOSE
+    /// and reads the 401 as its success signal — so a healthy setup wrote a line
+    /// accusing a current plugin, in the one subsystem whose documented
+    /// diagnostic route is reading the log later.
+    ///
     /// It classifies SHAPE only. The credential is returned for the caller to
     /// authenticate; nothing here measures, hashes, or reports it.
     public static func authorizationShape(
         in headerValue: String?,
         limits: ClaudeRemoteHTTPLimits = .default
     ) -> ClaudeRemoteAuthorizationShape {
-        guard let headerValue else { return .missing }
+        guard let headerValue else { return .absent }
         // Oversized before anything else: a header this long is not a credential
         // we failed to read, it is a header we refuse to read.
         guard headerValue.utf8.count <= limits.maxTokenBytes else { return .malformed }
         let parts = headerValue.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-        guard let scheme = parts.first else { return .missing }
+        // A header that is present and blank still means the sender TRIED: a
+        // hook whose template expanded to nothing looks like this, and an
+        // anonymous caller does not send the field at all.
+        guard let scheme = parts.first else { return .empty }
         guard scheme.lowercased() == "bearer" else { return .malformed }
         // `Bearer` with an empty credential — including the header parser's
-        // already-trimmed `Bearer ` — is the pre-1.1.0 plugin's exact shape, and
-        // is reported as a missing token rather than a malformed header.
-        guard parts.count == 2 else { return .missing }
+        // already-trimmed `Bearer ` — is the pre-1.1.0 plugin's exact shape.
+        guard parts.count == 2 else { return .empty }
         let token = parts[1].trimmingCharacters(in: .whitespaces)
-        return token.isEmpty ? .missing : .bearer(token)
+        return token.isEmpty ? .empty : .bearer(token)
     }
 
     /// The event name a hook URL carries, e.g. `/v1/hook/SessionStart`.

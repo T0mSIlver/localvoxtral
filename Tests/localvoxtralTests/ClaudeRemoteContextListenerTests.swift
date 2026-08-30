@@ -474,15 +474,86 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(response.status, 401)
 
         let tally = listener.rejectionSnapshot
-        XCTAssertEqual(tally.missingToken, 1)
+        XCTAssertEqual(tally.emptyCredential, 1)
+        XCTAssertEqual(tally.absentAuthorization, 0)
         XCTAssertEqual(tally.unknownToken, 0)
         XCTAssertEqual(tally.malformedAuthorization, 0)
     }
 
-    func testAnAbsentAuthorizationHeaderCountsAsAMissingToken() throws {
+    /// The regression, stated in the terms that matter to whoever reads this log
+    /// next rather than in the names of our own categories: the line written for
+    /// a connection that offered no credential must not prescribe a fix aimed at
+    /// a host's plugin, and the line written for the pre-1.1.0 signature still
+    /// must.
+    ///
+    /// Deliberately phrased against the SHAPES, so it says the same thing before
+    /// and after the split and cannot be satisfied by softening the pre-1.1.0
+    /// remedy into something vague enough to cover both.
+    func testAnUnauthenticatedProbeIsNeverToldToUpdateAHealthyPlugin() throws {
+        try startListener()
+        // Byte for byte what the enrollment verify step sends, and what any
+        // `curl` against the tunnel sends: no Authorization header at all.
+        XCTAssertEqual(try send(hookRequest(token: nil))?.status, 401)
+
+        let probe = try XCTUnwrap(
+            ClaudeRemoteRejectionCategory.category(
+                for: ClaudeRemoteHTTPCodec.authorizationShape(in: nil), authenticated: false
+            )
+        )
+        XCTAssertFalse(
+            probe.logLine.contains("update the plugin"),
+            "the verify probe posts without a credential ON PURPOSE and reads the 401 as success — "
+                + "telling its reader to update a current plugin sends them chasing a phantom"
+        )
+
+        let pre110 = try XCTUnwrap(
+            ClaudeRemoteRejectionCategory.category(
+                for: ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer "), authenticated: false
+            )
+        )
+        XCTAssertTrue(
+            pre110.logLine.contains("update the plugin"),
+            "the 2026-07-26 diagnosis is the point of this taxonomy and must survive intact"
+        )
+    }
+
+    /// The mirror of the field case, and the reason this category exists.
+    ///
+    /// The enrollment verify step posts here with NO `Authorization` header on
+    /// purpose and reads the 401 as its success signal, so checking a healthy
+    /// setup used to write a line telling the reader to update a current plugin
+    /// — a phantom for whoever reads this log next, in the subsystem where
+    /// reading the log later IS the diagnostic route. An absent header is its
+    /// own category, carries no host remedy, and is not a fault.
+    func testAnAbsentAuthorizationHeaderIsNotBlamedOnTheHostsPlugin() throws {
         try startListener()
         XCTAssertEqual(try send(hookRequest(token: nil))?.status, 401)
-        XCTAssertEqual(listener.rejectionSnapshot.missingToken, 1)
+
+        let tally = listener.rejectionSnapshot
+        XCTAssertEqual(tally.absentAuthorization, 1)
+        XCTAssertEqual(
+            tally.emptyCredential, 0,
+            "nothing here looks like a plugin: no generation of it omits the header"
+        )
+        XCTAssertEqual(tally.unknownToken, 0)
+        XCTAssertEqual(tally.malformedAuthorization, 0)
+        XCTAssertFalse(
+            ClaudeRemoteRejectionCategory.absentAuthorization.logLine.contains("update the plugin"),
+            "the remedy clause must not reach a caller that is not a host"
+        )
+        XCTAssertFalse(ClaudeRemoteRejectionCategory.absentAuthorization.isFault)
+    }
+
+    /// The tally drives user-facing copy, so our own setup check must not raise
+    /// a hint accusing a host that has nothing wrong with it.
+    func testAnUnauthenticatedProbeLeavesTheUserFacingTallyEmpty() throws {
+        try startListener()
+        // Exactly what the verify step sends: POST, JSON body, no credential.
+        for _ in 0..<3 { XCTAssertEqual(try send(hookRequest(token: nil))?.status, 401) }
+
+        let tally = listener.rejectionSnapshot
+        XCTAssertEqual(tally.absentAuthorization, 3, "still counted — the evidence is not thrown away")
+        XCTAssertTrue(tally.isEmpty, "but nothing here is a fault a host could fix")
     }
 
     /// The other half of the same night's ambiguity: a credential that is a
@@ -493,7 +564,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
         let tally = listener.rejectionSnapshot
         XCTAssertEqual(tally.unknownToken, 1)
-        XCTAssertEqual(tally.missingToken, 0, "a token DID arrive; blaming the plugin would misdirect")
+        XCTAssertEqual(tally.emptyCredential, 0, "a token DID arrive; blaming the plugin would misdirect")
         XCTAssertEqual(tally.malformedAuthorization, 0)
     }
 
@@ -502,7 +573,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         _ = try hosts.rotateToken(hostID: hostID)
         XCTAssertEqual(try send(hookRequest(token: token))?.status, 401)
         XCTAssertEqual(listener.rejectionSnapshot.unknownToken, 1)
-        XCTAssertEqual(listener.rejectionSnapshot.missingToken, 0)
+        XCTAssertEqual(listener.rejectionSnapshot.emptyCredential, 0)
     }
 
     func testANonBearerSchemeIsItsOwnCategory() throws {
@@ -514,14 +585,16 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
         let tally = listener.rejectionSnapshot
         XCTAssertEqual(tally.malformedAuthorization, 1)
-        XCTAssertEqual(tally.missingToken, 0)
+        XCTAssertEqual(tally.emptyCredential, 0)
+        XCTAssertEqual(tally.absentAuthorization, 0)
         XCTAssertEqual(tally.unknownToken, 0)
     }
 
-    func testTheThreeCategoriesAccumulateIndependently() throws {
+    func testEveryCategoryAccumulatesIndependently() throws {
         try startListener()
         _ = try send(hookRequest(token: nil, rawAuthorization: "Bearer "))
         _ = try send(hookRequest(token: nil, rawAuthorization: "Bearer "))
+        _ = try send(hookRequest(token: nil))
         _ = try send(hookRequest(token: ClaudeRemoteTokenDigest.makeToken()))
         _ = try send(hookRequest(token: nil, rawAuthorization: "Basic ZGV2"))
         // A successful request must not be counted as anything.
@@ -530,7 +603,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         XCTAssertEqual(
             listener.rejectionSnapshot,
             ClaudeRemoteRejectionTally.Snapshot(
-                missingToken: 2, unknownToken: 1, malformedAuthorization: 1
+                absentAuthorization: 1, emptyCredential: 2, unknownToken: 1, malformedAuthorization: 1
             )
         )
     }
@@ -551,7 +624,11 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     func testShapeAndAuthenticationResultDecideTheCategory() {
         XCTAssertEqual(
-            ClaudeRemoteRejectionCategory.category(for: .missing, authenticated: false), .missingToken
+            ClaudeRemoteRejectionCategory.category(for: .absent, authenticated: false),
+            .absentAuthorization
+        )
+        XCTAssertEqual(
+            ClaudeRemoteRejectionCategory.category(for: .empty, authenticated: false), .emptyCredential
         )
         XCTAssertEqual(
             ClaudeRemoteRejectionCategory.category(for: .malformed, authenticated: false),
@@ -574,8 +651,29 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             XCTAssertFalse(line.contains("\n"), "\(category): one line")
             XCTAssertLessThan(line.count, 180, "\(category): the detail belongs in the code, not the log")
         }
-        XCTAssertTrue(ClaudeRemoteRejectionCategory.missingToken.logLine.contains("update the plugin"))
+        XCTAssertTrue(ClaudeRemoteRejectionCategory.emptyCredential.logLine.contains("update the plugin"))
         XCTAssertTrue(ClaudeRemoteRejectionCategory.unknownToken.logLine.contains("re-run enrollment"))
+    }
+
+    /// The pre-1.1.0 diagnosis is the thing this taxonomy exists for, and
+    /// narrowing which shape earns it must not have made it reachable by fewer
+    /// hosts. `Bearer ` — the only shape a pre-1.1.0 plugin could send — still
+    /// gets the full remedy, and no other category borrows it.
+    func testOnlyTheEmptyCredentialCarriesThePluginRemedy() {
+        XCTAssertEqual(
+            ClaudeRemoteRejectionCategory.category(for: .empty, authenticated: false),
+            .emptyCredential
+        )
+        for category in ClaudeRemoteRejectionCategory.allCases where category != .emptyCredential {
+            XCTAssertFalse(
+                category.logLine.contains("update the plugin"),
+                "\(category) must not accuse a host's plugin"
+            )
+        }
+        XCTAssertTrue(
+            ClaudeRemoteRejectionCategory.emptyCredential.isFault,
+            "an empty credential is the field failure; it stays an error"
+        )
     }
 
     func testAnUnparseablePayloadNamesItsEventAndNothingElse() throws {
