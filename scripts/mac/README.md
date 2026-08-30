@@ -1197,7 +1197,7 @@ ssh lv-ui 'term open ghostty claude --dangerously-skip-permissions -p hi'
 Every one of those, allowed or denied, appends a line to
 `~/Library/Logs/localvoxtral-ui-gate.log` — read it after the first session.
 
-### First install: run the doctor, then the four things it cannot reach
+### First install: run the doctor, then the checks no script can make
 
 ```bash
 # On the Mac's GUI account, from the checkout:
