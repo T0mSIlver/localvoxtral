@@ -2674,6 +2674,27 @@ run_doctor_local
   || fail "the doctor accepted a key with no forced command at all: $DOCTOR_OUT"
 pass "the doctor flags a key that does not force the gate, or forces it unrestricted"
 
+# A help that trails off mid-sentence into the file's rationale is worse than
+# none, so the range it prints is anchored on the usage block's own last line.
+run_doctor_help() {
+  DOCTOR_STATUS=0
+  env -i PATH="/usr/bin:/bin" HOME="$FAKE_HOME" \
+    bash "$DOCTOR" --help >"$TMP_DIR/doctor.out" 2>&1 || DOCTOR_STATUS=$?
+  DOCTOR_OUT="$(cat "$TMP_DIR/doctor.out")"
+}
+run_doctor_help
+(( DOCTOR_STATUS == 0 )) || fail "--help exited $DOCTOR_STATUS"
+[[ "$DOCTOR_OUT" == *"--remote lv-ui"* && "$DOCTOR_OUT" == *"--state-file"* ]] \
+  || fail "--help does not show all three modes: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" != *"Why it exists"* ]] \
+  || fail "--help spilled past the usage block into the rationale: $DOCTOR_OUT"
+# The trailing `# on the Mac's GUI account` comments are part of the usage;
+# what must not survive is the leading comment marker of each source line.
+if grep -q '^#' "$TMP_DIR/doctor.out"; then
+  fail "--help printed the source's leading comment markers: $DOCTOR_OUT"
+fi
+pass "the doctor's --help prints the usage block, and stops there"
+
 # The README's numbered list is what this replaces; the pointer has to hold.
 grep -q 'ui-gate-doctor.sh' "$ROOT_DIR/scripts/mac/README.md" \
   || fail "scripts/mac/README.md does not point at the doctor"

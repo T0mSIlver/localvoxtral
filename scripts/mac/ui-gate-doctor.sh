@@ -51,7 +51,9 @@ while (( $# > 0 )); do
       STATE_FILE="$1"
       ;;
     -h | --help)
-      sed -n '3,12p' "$0"
+      # The usage block only — a help that trails off mid-sentence into the
+      # rationale is worse than none.
+      sed -n '/^# ui-gate-doctor —/,/--state-file <f>/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
