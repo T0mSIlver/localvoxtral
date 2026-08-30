@@ -447,12 +447,19 @@ jobs:
             echo "Dogfood artifact lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Setup Swift
-        if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
-
+      # No "Setup Swift" step here on purpose. A prior `swift-actions/setup-swift@v2`
+      # step (floating swift-version: "6.2") pinned the swift.org toolchain,
+      # which now resolves to 6.2.1 — built with assertions ON, and it asserts
+      # (signal 6) lowering this app's `@MainActor deinit` (isolated destructor,
+      # DictationViewModel.swift) to SIL. The self-hosted lane never hit this:
+      # it always builds with the Mac's Xcode toolchain, which ships
+      # assertions OFF. Fork PRs (the only jobs that land here — see the
+      # runs-on expression above) now build with the hosted runner image's
+      # default Xcode toolchain too, matching the self-hosted lane's toolchain
+      # *kind* instead of diverging onto swift.org's. That Xcode ships a
+      # Swift 6.2-line compiler (needed for `Mutex`/`Synchronization` and this
+      # package's swift-tools-version), so no explicit toolchain setup is
+      # needed — `swift`/`xcodebuild` resolve it from PATH.
       - name: Cache SwiftPM build
         if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
         uses: actions/cache@v4

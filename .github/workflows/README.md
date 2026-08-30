@@ -11,6 +11,13 @@ with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
 retention) for symbolicating field crashes. Same-repo branches run on the
 self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
 
+Both lanes build with whatever Xcode toolchain is already on the machine —
+no `Setup Swift` step. Fork PRs previously pinned a separate swift.org
+toolchain (`swift-actions/setup-swift@v2`, `swift-version: "6.2"`), but its
+6.2.1 resolution ships with assertions enabled and asserts compiling this
+app's `@MainActor deinit`; Xcode's bundled toolchain doesn't have that
+problem, so hosted runners now use it too, same as self-hosted.
+
 Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
 PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
 the job packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle after
