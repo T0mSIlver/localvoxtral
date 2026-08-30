@@ -5,6 +5,13 @@ import Foundation
 struct MicrophoneInputDevice: Identifiable, Hashable {
     let id: String
     let name: String
+    /// Input channels the device reports. Above stereo there is no meaningful
+    /// downmix to mono — a microphone occupies ONE of these channels — so the
+    /// capture path picks a single channel and the UI offers the choice.
+    /// Defaults to 1 for devices whose stream format can't be read.
+    let channelCount: UInt32
+
+    var isMultiChannel: Bool { channelCount > 2 }
 }
 
 enum AudioDeviceManager {
@@ -13,8 +20,29 @@ enum AudioDeviceManager {
             guard isSelectableInputDevice(deviceID) else { return nil }
             guard let uid = deviceUID(for: deviceID) else { return nil }
             let name = deviceName(for: deviceID) ?? "Input \(uid)"
-            return MicrophoneInputDevice(id: uid, name: name)
+            return MicrophoneInputDevice(
+                id: uid,
+                name: name,
+                channelCount: inputChannelCount(for: deviceID) ?? 1
+            )
         }
+    }
+
+    /// Channels the device's input stream format reports. A 16-in interface
+    /// answers 16 here; the built-in mic answers 1.
+    static func inputChannelCount(for deviceID: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamFormat,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var asbd = AudioStreamBasicDescription()
+        var dataSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &asbd) == noErr
+        else {
+            return nil
+        }
+        return asbd.mChannelsPerFrame
     }
 
     static func defaultInputDeviceObjectID() -> AudioObjectID? {

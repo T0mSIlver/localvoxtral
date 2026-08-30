@@ -98,6 +98,28 @@ struct StatusPopoverView: View {
                 }
             }
 
+            // Above stereo there is no meaningful downmix to mono, so capture
+            // takes ONE channel and the user says which (a mic sits on one
+            // preamp of a multi-input interface). Hidden for mono/stereo
+            // devices, where the standard downmix applies and the choice would
+            // be meaningless.
+            if viewModel.selectedInputDeviceChannelCount > 2 {
+                Menu("Input Channel") {
+                    ForEach(0..<Int(viewModel.selectedInputDeviceChannelCount), id: \.self) {
+                        channel in
+                        Button {
+                            viewModel.selectMicrophoneInputChannel(channel)
+                        } label: {
+                            if viewModel.selectedInputChannel == channel {
+                                Label("Channel \(channel + 1)", systemImage: "checkmark")
+                            } else {
+                                Text("Channel \(channel + 1)")
+                            }
+                        }
+                    }
+                }
+            }
+
             Button("Copy Latest Segment") {
                 viewModel.copyLatestSegment()
             }
