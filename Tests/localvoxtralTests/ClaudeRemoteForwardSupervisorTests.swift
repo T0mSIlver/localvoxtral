@@ -176,10 +176,28 @@ private final class ForwardHarness {
         heldSleeps.removeFirst().resume()
     }
 
+    /// Answers handed to the supervisor's ownership probe, in order — one per
+    /// refused bind. Running out means `.unproved`, which is also the answer a
+    /// supervisor with no probe at all gets.
+    var ownershipAnswers: [ClaudeRemoteForwardOwnership] = []
+    private(set) var ownershipProbeCalls: [(alias: String, port: UInt16)] = []
+    /// Nil unless a test asks for one, so every pre-existing test keeps
+    /// exercising the no-probe (fail-closed) path unchanged.
+    var providesOwnershipProbe = false
+
     func makeSupervisor(
         configuration: ClaudeRemoteForwardSupervisor.Configuration,
         launchFailure: (any Error)? = nil
     ) -> ClaudeRemoteForwardSupervisor {
+        let answer: ClaudeRemoteForwardOwnershipProbe = { [weak self] alias, port in
+            await MainActor.run { () -> ClaudeRemoteForwardOwnership in
+                guard let self else { return .unproved }
+                self.ownershipProbeCalls.append((alias: alias, port: port))
+                guard !self.ownershipAnswers.isEmpty else { return .unproved }
+                return self.ownershipAnswers.removeFirst()
+            }
+        }
+        let probe: ClaudeRemoteForwardOwnershipProbe? = providesOwnershipProbe ? answer : nil
         let supervisor = ClaudeRemoteForwardSupervisor(
             configuration: configuration,
             launch: { [weak self] configuration in
@@ -191,6 +209,7 @@ private final class ForwardHarness {
                 self?.record(process)
                 return process
             },
+            ownershipProbe: probe,
             sleepFor: { [weak self] duration in
                 guard let self else { return }
                 await self.recordSleep(duration)
@@ -440,12 +459,158 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
             "a refusal is not a crash: \(harness.states)"
         )
         XCTAssertTrue(supervisor.state.isFailure)
-        // The copy has to name the thing to close. The overwhelmingly common
-        // holder is an ssh session from this very Mac, and "Port already held
-        // on the host." left the user with a Retry button and no idea what to
-        // do before pressing it.
-        XCTAssertEqual(supervisor.state.text, "Port held — close ssh sessions to that host.")
+        // No probe on this harness, so ownership is unproved and the pessimistic
+        // reading is the right one. The copy no longer tells the user to close
+        // ssh sessions: the case where a session of theirs is the holder is
+        // `externallyForwarded`, and this state is what is left over.
+        XCTAssertEqual(supervisor.state.text, "Port held by another program on that host.")
         XCTAssertLessThan(supervisor.state.text.count, 60, "owner rule: one short sentence")
+    }
+
+    // MARK: - Ownership of a refused port (field report, 2026-08-29)
+
+    /// The bug this exists for: the owner's own ssh session to the enrolled
+    /// host carries the enrollment block's `RemoteForward`, so it BINDS the
+    /// port — and the supervised probe ssh is then refused by the very tunnel
+    /// it wanted to create. The app reported that as contention and told the
+    /// user to close the session providing the working channel, while hooks
+    /// from that host were arriving over it the whole time.
+    func testARefusedBindThatIsOurOwnLiveForwardIsNotContention() async throws {
+        let harness = ForwardHarness()
+        harness.providesOwnershipProbe = true
+        harness.ownershipAnswers = [.ourListener]
+        // The recheck park has to block, or the loop would immediately dial
+        // again and the state under test would not be observable.
+        harness.holdSleeps = true
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+
+        let process = try await harness.process(0)
+        process.emitStandardError(
+            "Warning: remote port forwarding failed for listen port 28511"
+        )
+        process.finish(status: 255)
+
+        try await harness.waitForState { $0 == .externallyForwarded }
+        // Let the loop reach its park before reading the recorded sleeps: the
+        // state lands synchronously in `transition`, the sleep one hop later.
+        await harness.drainMainActor()
+        XCTAssertEqual(supervisor.state, .externallyForwarded)
+        XCTAssertFalse(
+            supervisor.state.isFailure,
+            "a working channel must not paint the row red or offer a Retry button"
+        )
+        XCTAssertFalse(
+            harness.states.contains(.portUnavailable),
+            "the harmful verdict must never be published, not even in passing: \(harness.states)"
+        )
+        XCTAssertEqual(
+            harness.ownershipProbeCalls.map(\.port), [28511],
+            "the probe asks about the port that was refused"
+        )
+        XCTAssertEqual(harness.ownershipProbeCalls.map(\.alias), ["builder"])
+        XCTAssertEqual(harness.processes.count, 1, "nothing is redialed while the tunnel is up")
+        XCTAssertTrue(
+            harness.sleeps.contains(.seconds(300)),
+            "the claim is bounded by a recheck park: \(harness.sleeps)"
+        )
+    }
+
+    /// The other half, and the one that must not regress: anything the probe
+    /// cannot PROVE is ours stays contention. A stranger on that port — an
+    /// unrelated service, another Mac's forward, something hostile — receives
+    /// the remote plugin's bearer token on every hook, so "probably fine" is
+    /// exactly the wrong default.
+    func testARefusedBindWithUnprovedOwnershipStaysContention() async throws {
+        let harness = ForwardHarness()
+        harness.providesOwnershipProbe = true
+        harness.ownershipAnswers = [.unproved]
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+
+        let process = try await harness.process(0)
+        process.emitStandardError(
+            "Warning: remote port forwarding failed for listen port 28511"
+        )
+        process.finish(status: 255)
+
+        try await harness.waitForState { $0 == .portUnavailable }
+        XCTAssertEqual(supervisor.state, .portUnavailable)
+        XCTAssertTrue(supervisor.state.isFailure)
+        XCTAssertEqual(harness.ownershipProbeCalls.count, 1)
+        XCTAssertEqual(harness.processes.count, 1, "still terminal, still no retry storm")
+    }
+
+    /// The lifecycle answer. The session holding the tunnel is not ours and
+    /// ends without telling us, so the state is re-proved on a long park — and
+    /// when the port comes free the app takes the tunnel over instead of
+    /// sitting in a state it can never leave.
+    func testAnExternallyHeldForwardIsTakenOverOnceTheSessionEnds() async throws {
+        let harness = ForwardHarness()
+        harness.providesOwnershipProbe = true
+        harness.ownershipAnswers = [.ourListener]
+        harness.holdSleeps = true
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+
+        let refused = try await harness.process(0)
+        refused.emitStandardError(
+            "Warning: remote port forwarding failed for listen port 28511"
+        )
+        refused.finish(status: 255)
+        try await harness.waitForState { $0 == .externallyForwarded }
+
+        // The user closes their terminal. The recheck park expires and the
+        // second dial binds cleanly — no stderr, so no refusal.
+        harness.holdSleeps = false
+        harness.releaseSleeps()
+
+        _ = try await harness.process(1)
+        try await harness.waitForState { $0 == .forwarding }
+        XCTAssertEqual(supervisor.state, .forwarding)
+        XCTAssertEqual(
+            harness.ownershipProbeCalls.count, 1,
+            "a bind that succeeded asks nobody anything"
+        )
+    }
+
+    /// And the fail-closed half of the lifecycle: if the re-check can no longer
+    /// prove the port is ours, the app stops claiming a channel it does not
+    /// have — rather than keeping a comfortable state because it once held.
+    func testAnExternallyHeldForwardStopsClaimingTheChannelWhenTheProofFails() async throws {
+        let harness = ForwardHarness()
+        harness.providesOwnershipProbe = true
+        harness.ownershipAnswers = [.ourListener, .unproved]
+        harness.holdSleeps = true
+        let supervisor = harness.makeSupervisor(configuration: configuration())
+        supervisor.start()
+
+        let first = try await harness.process(0)
+        first.emitStandardError("Warning: remote port forwarding failed for listen port 28511")
+        first.finish(status: 255)
+        try await harness.waitForState { $0 == .externallyForwarded }
+
+        harness.holdSleeps = false
+        harness.releaseSleeps()
+
+        let second = try await harness.process(1)
+        second.emitStandardError("Warning: remote port forwarding failed for listen port 28511")
+        second.finish(status: 255)
+
+        try await harness.waitForState { $0 == .portUnavailable }
+        XCTAssertEqual(supervisor.state, .portUnavailable)
+        XCTAssertTrue(supervisor.state.isFailure)
+        XCTAssertEqual(harness.ownershipProbeCalls.count, 2)
+    }
+
+    func testTheExternallyForwardedCopyAsksTheUserForNothing() {
+        let text = ClaudeRemoteForwardSupervisor.State.externallyForwarded.text
+        XCTAssertEqual(text, "Tunnel up — an ssh session already holds it.")
+        XCTAssertLessThan(text.count, 60, "owner rule: one short sentence")
+        XCTAssertFalse(
+            text.lowercased().contains("close"),
+            "the old advice was to close the session providing the tunnel"
+        )
     }
 
     func testARefusalForAPortWeNeverAskedForBlamesTheConfigNotTheHost() async throws {

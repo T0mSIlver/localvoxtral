@@ -58,6 +58,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     ///   tests) — a test that needs expiry advances this seam immediately.
     private func startListener(
         limits: ClaudeRemoteListenerLimits? = nil,
+        forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         uptimeNanos: (@Sendable () -> UInt64)? = nil,
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) throws {
@@ -65,6 +66,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
             registry: sessions,
             hosts: hosts,
             limits: limits ?? ClaudeRemoteListenerLimits(port: port),
+            forwardProbes: forwardProbes,
             uptimeNanos: uptimeNanos ?? { DispatchTime.now().uptimeNanoseconds },
             onRemoteHerdrActivity: onRemoteHerdrActivity
         )
@@ -163,6 +165,79 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         text += "Content-Length: \(contentLengthOverride ?? body.count)\r\n\r\n"
         if contentLengthOverride != nil { body = Data() }
         return Data(text.utf8) + body
+    }
+
+    // MARK: - Forward-ownership probe (field report, 2026-08-29)
+
+    private func probeHeader(_ nonce: String) -> String {
+        "X-Lvx-Forward-Probe: \(nonce)"
+    }
+
+    /// A refused `RemoteForward` cannot say WHO holds the port, so the
+    /// supervisor mints a nonce, sends it down the port from the remote host,
+    /// and asks whether it came out here. This is the "came out here" half, and
+    /// what it must not do is disturb anything: the peer gets the same 401 as
+    /// any other unauthenticated request, and the rejection tally — which tells
+    /// the user which of three real fixes to apply — stays clean.
+    func testAnOwnershipProbeArrivesWithoutBeingCountedAsARejection() throws {
+        let witness = ClaudeRemoteForwardProbeWitness()
+        let nonce = ClaudeRemoteForwardProbeWitness.randomNonce()
+        witness.arm(nonce)
+        try startListener(forwardProbes: witness)
+
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: nil, extraHeaders: [probeHeader(nonce)]))
+        )
+
+        XCTAssertEqual(response.status, 401, "an unauthenticated peer is still refused")
+        XCTAssertTrue(witness.consume(nonce), "arrival IS the proof; nothing else is read")
+        XCTAssertTrue(
+            listener.rejectionSnapshot.isEmpty,
+            "our own probe must not look like a host that needs re-enrolling"
+        )
+        XCTAssertTrue(sessions.liveSessions().isEmpty)
+    }
+
+    /// A nonce this process did not mint proves nothing and is not treated as
+    /// anything: the request is the ordinary unauthenticated one it looks like.
+    /// This is what keeps a stranger on the remote port from being adopted — it
+    /// can reproduce every byte of our responses, but it cannot produce a value
+    /// we are currently waiting for.
+    func testAProbeHeaderWeNeverMintedIsJustAnUnauthenticatedRequest() throws {
+        let witness = ClaudeRemoteForwardProbeWitness()
+        let mine = ClaudeRemoteForwardProbeWitness.randomNonce()
+        witness.arm(mine)
+        try startListener(forwardProbes: witness)
+
+        let stranger = ClaudeRemoteForwardProbeWitness.randomNonce()
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: nil, extraHeaders: [probeHeader(stranger)]))
+        )
+
+        XCTAssertEqual(response.status, 401)
+        XCTAssertFalse(witness.consume(mine), "the armed nonce is untouched")
+        XCTAssertEqual(
+            listener.rejectionSnapshot.missingToken, 1,
+            "and it is counted exactly as it would have been without the header"
+        )
+    }
+
+    /// The probe branch runs before authentication, so it has to be provably
+    /// incapable of laundering anything past it: a matching nonce short-circuits
+    /// to the same 401 even when a perfectly good token rides along, and nothing
+    /// is ingested.
+    func testAMatchingNonceCannotCarryAPayloadPastAuthentication() throws {
+        let witness = ClaudeRemoteForwardProbeWitness()
+        let nonce = ClaudeRemoteForwardProbeWitness.randomNonce()
+        witness.arm(nonce)
+        try startListener(forwardProbes: witness)
+
+        let response = try XCTUnwrap(
+            try send(hookRequest(token: token, extraHeaders: [probeHeader(nonce)]))
+        )
+
+        XCTAssertEqual(response.status, 401)
+        XCTAssertTrue(sessions.liveSessions().isEmpty, "no record, no marker, no session")
     }
 
     // MARK: - Happy path
