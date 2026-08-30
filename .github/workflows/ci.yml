@@ -455,18 +455,34 @@ jobs:
       # it always builds with the Mac's Xcode toolchain, which ships
       # assertions OFF. Fork PRs (the only jobs that land here — see the
       # runs-on expression above) now build with the hosted runner image's
-      # default Xcode toolchain too, matching the self-hosted lane's toolchain
-      # *kind* instead of diverging onto swift.org's. That Xcode ships a
-      # Swift 6.2-line compiler (needed for `Mutex`/`Synchronization` and this
-      # package's swift-tools-version), so no explicit toolchain setup is
-      # needed — `swift`/`xcodebuild` resolve it from PATH.
+      # Xcode toolchain too, matching the self-hosted lane's toolchain *kind*
+      # instead of diverging onto swift.org's. Which Xcode that is comes from
+      # the active developer directory (xcode-select / DEVELOPER_DIR), not
+      # PATH, and the image's default floats the same way the swift-version
+      # did — so the step below records it, both for the log and for the cache
+      # key. A toolchain that is too old fails loudly at compile time; the
+      # package needs swift-tools-version 6.2 to parse the manifest at all.
+      - name: Record hosted toolchain
+        id: hosted_toolchain
+        if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+          # Cache-key component: a .build tree produced by one toolchain must
+          # never be restored into a build running under another.
+          SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
       - name: Cache SwiftPM build
         if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-${{ runner.os }}-
+          # Keyed on the toolchain as well as Package.resolved: the old key
+          # (and its bare `swiftpm-macOS-` restore prefix) would happily
+          # restore a swift.org-6.2.1-built .build into an Xcode build.
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
 
       - name: Installer asset-resolution regression test (issue #131)
         # Pure bash against a stubbed curl — no network, sub-second.

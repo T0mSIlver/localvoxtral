@@ -16,7 +16,11 @@ no `Setup Swift` step. Fork PRs previously pinned a separate swift.org
 toolchain (`swift-actions/setup-swift@v2`, `swift-version: "6.2"`), but its
 6.2.1 resolution ships with assertions enabled and asserts compiling this
 app's `@MainActor deinit`; Xcode's bundled toolchain doesn't have that
-problem, so hosted runners now use it too, same as self-hosted.
+problem, so hosted runners now use it too, same as self-hosted. Neither
+lane pins a version, so the hosted job records `xcodebuild -version` and
+`swift --version` in its step summary and keys the SwiftPM cache on them —
+when the image's default Xcode moves, the log says which build ran and no
+`.build` tree crosses toolchains.
 
 Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
 PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
