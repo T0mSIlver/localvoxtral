@@ -868,7 +868,17 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     fileprivate func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        Log.microphone.debug("\(message)")
+        // `privacy: .public` because an interpolated String defaults to
+        // PRIVATE in os_log, and every line here redacted to `<private>` —
+        // which made these diagnostics unreadable on the machines they exist
+        // to diagnose. Reading them otherwise needs the system-wide
+        // Enable-Private-Data profile, which is far too big a hammer for a
+        // capture log. Safe to publish: this carries device names, formats,
+        // channel indices, byte counts and OSStatus values, never audio or
+        // transcript content, and the whole function is already gated behind
+        // the LOCALVOXTRAL_DEBUG opt-in. Same posture as the delta log and
+        // the insertion scalar trace.
+        Log.microphone.debug("\(message, privacy: .public)")
     }
 
     /// Wraps a device ASBD in an AVAudioFormat, falling back to a discrete
