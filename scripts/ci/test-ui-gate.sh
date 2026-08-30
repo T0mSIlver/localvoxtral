@@ -67,26 +67,33 @@ cat >"$STUB_BIN/open" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_OPEN_LOG"
 # With STUB_OPEN_SPAWN set, stand in for a terminal that actually ran the
-# launcher: a long-lived process that recorded its pid the way the launcher's
-# `printf "$$" > <pidfile>` does before `exec`. That is the handle `term open`
-# uses to take back what it started when it cannot identify the window, so the
-# suite has to have a real process to watch die. /bin/sleep, not the stubbed
+# launcher: a process that recorded its own pid the way the launcher's
+# `printf "$$" > <pidfile>` does before `exec`. That pid is the handle
+# `term open` uses to take back what it started when it cannot identify the
+# window, so the suite needs a real process to watch die.
+#
+# `/bin/sh -c` and `$$`, NOT a `( … ) &` subshell and `$BASHPID`: the Mac's
+# /bin/bash is 3.2, where BASHPID does not exist and expands to nothing — the
+# pid file came out empty, the gate correctly read that as "the launcher never
+# ran", and the test failed on the runner while passing on a bash-5 dev box
+# (CI 33313541728). A separate `sh` process makes `$$` its OWN pid, which is
+# also exactly what the real launcher does. `/bin/sleep`, not the stubbed
 # `sleep` that returns instantly.
 case "${STUB_OPEN_SPAWN:-}" in
   "") ;;
   dead)
     # The launcher ran and the command exited immediately — the pid file is
     # there, the process is not. An empty terminal window is what the owner
-    # sees when this happens.
+    # sees when this happens. Run it in the FOREGROUND so it has certainly
+    # exited by the time the gate looks.
     launcher=""
     for launcher in "$@"; do :; done
-    ( printf '%s' "$BASHPID" >"${launcher%.command}.pid" ) &
-    wait
+    /bin/sh -c 'printf "%s" "$$" > "$1"' _ "${launcher%.command}.pid"
     ;;
   *)
     launcher=""
     for launcher in "$@"; do :; done
-    ( printf '%s' "$BASHPID" >"${launcher%.command}.pid"; exec /bin/sleep 300 ) &
+    /bin/sh -c 'printf "%s" "$$" > "$1"; exec /bin/sleep 300' _ "${launcher%.command}.pid" &
     # The pid file has to exist before this returns, or the gate races it.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       [[ -s "${launcher%.command}.pid" ]] && break
@@ -2670,6 +2677,89 @@ pass "the doctor flags a key that does not force the gate, or forces it unrestri
 # The README's numbered list is what this replaces; the pointer has to hold.
 grep -q 'ui-gate-doctor.sh' "$ROOT_DIR/scripts/mac/README.md" \
   || fail "scripts/mac/README.md does not point at the doctor"
+
+echo
+echo "== 28. nothing here needs a bash newer than the Mac's /bin/bash 3.2 =="
+
+# The gate runs under the Mac's /bin/bash, which is 3.2 (Apple has shipped that
+# since the GPLv3 licence change). A bash-4 idiom is therefore a construct that
+# works perfectly on a Linux dev box and misbehaves on the machine this gate
+# exists for — the worst shape of failure available here, because the dev-box
+# suite goes green and only the runner, or the OWNER, finds out.
+#
+# This branch has now hit it twice: once in a stub (daf6364) and once with
+# BASHPID in the `open` stub, where an empty pid file made the gate report "the
+# launcher never ran" and the test failed only on the runner (CI 33313541728).
+# So it is a check rather than a habit.
+#
+# Two things are stripped before scanning, and both are the same lesson: a scan
+# that cannot tell its own vocabulary from a call reports itself. Comments go
+# (the explanations above name every idiom they warn about), and so does the
+# definition block below, between its own sentinels — that is the grep
+# self-poisoning trap, and the scanner is the most likely thing to trip it.
+
+BASH4_FILES=(
+  "$GATE"
+  "$ATTACH"
+  "$INSTALLER"
+  "$ROOT_DIR/scripts/mac/ui-gate-doctor.sh"
+  "$0"
+)
+
+# BASH4-SCANNER-BEGIN — not scanned; see above.
+#
+# name::extended-regex, `::` because one of the names contains a pipe. Each is
+# bash 4.0+ and misbehaves QUIETLY on 3.2 rather than failing loudly: BASHPID
+# expands to nothing, mapfile/readarray are "command not found" inside a
+# pipeline whose status is ignored, an associative array declaration is a
+# syntax error only when reached, and case conversion expands unmodified.
+BASH4_IDIOMS=(
+  'BASHPID::\$\{?BASHPID'
+  'mapfile::(^|[^[:alnum:]_])mapfile[[:space:]]'
+  'readarray::(^|[^[:alnum:]_])readarray[[:space:]]'
+  'an associative array::(declare|local|typeset)[[:space:]]+-[A-Za-z]*A[A-Za-z]*[[:space:]]'
+  'case-conversion expansion::\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(\^\^|,,)'
+  'the |& pipe::[^|]\|&'
+)
+# BASH4-SCANNER-END
+
+for bash4_file in "${BASH4_FILES[@]}"; do
+  [[ -f "$bash4_file" ]] || fail "the bash-3.2 scan points at a file that is not there: $bash4_file"
+  # The Swift heredoc goes too: the helper is Swift, where `,,` and `|&` mean
+  # nothing to bash and `${…}` is not an expansion at all.
+  BASH4_CODE="$(awk '/BASH4-SCANNER-BEGIN/ { skip = 1 }
+                     /BASH4-SCANNER-END/   { skip = 0; next }
+                     /^  cat >"\$HELPER_PATH" <<.SWIFT.$/ { skip = 1 }
+                     skip && /^SWIFT$/ { skip = 0; next }
+                     skip { next }
+                     { print }' "$bash4_file" | grep -v '^[[:space:]]*#' || true)"
+  for bash4_idiom in "${BASH4_IDIOMS[@]}"; do
+    idiom_name="${bash4_idiom%%::*}"
+    idiom_re="${bash4_idiom#*::}"
+    if grep -qE "$idiom_re" <<<"$BASH4_CODE"; then
+      fail "$bash4_file uses $idiom_name, which is bash 4+ and misbehaves quietly on the Mac's /bin/bash 3.2: $(grep -nE "$idiom_re" <<<"$BASH4_CODE" | head -n 1)"
+    fi
+  done
+done
+pass "the gate, the wrapper, the installer, the doctor and this suite are bash 3.2 clean"
+
+# An empty array expanded under `set -u` is the OTHER 3.2 trap, and the one the
+# dispatch already carries a comment about: bash 3.2 calls "${a[@]:1}" unbound
+# when the slice is empty. Every such expansion in the gate has to sit behind a
+# length guard, so this pins that none of them is bare.
+GATE_SLICES="$(grep -n '\${[A-Za-z_][A-Za-z0-9_]*\[[@*]\]:[0-9]' "$GATE" \
+  | grep -v '^[0-9]*:[[:space:]]*#' || true)"
+[[ -n "$GATE_SLICES" ]] || fail "no array slices found in the gate — did the scan's pattern rot?"
+while IFS= read -r slice_line; do
+  [[ -n "$slice_line" ]] || continue
+  slice_no="${slice_line%%:*}"
+  # The guard is on the same line (`if (( ${#a[@]} > 1 )); then …`) or within
+  # the two lines above it.
+  if ! sed -n "$(( slice_no > 2 ? slice_no - 2 : 1 )),${slice_no}p" "$GATE" | grep -q '\${#'; then
+    fail "an unguarded array slice at $GATE:$slice_no — bash 3.2 calls an empty slice unbound under set -u: $slice_line"
+  fi
+done <<<"$GATE_SLICES"
+pass "every array slice in the gate sits behind a length guard"
 
 echo
 echo "ui gate tests passed"
