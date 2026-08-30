@@ -89,6 +89,11 @@ there is not.
     arm works on all three supported terminals), and from that point the join
     is herdr-or-nothing: no
     marker fallback, because a lingering title marker could only mis-join.
+    The same property binds anything OUTSIDE the app that tries to identify a
+    herdr-hosted window by its title: the UI gate's `term open` did exactly
+    that and could never see the window it opened (field failure 2026-08-30),
+    so it now identifies a window by a CGWindowID diff taken before the window
+    exists (`scripts/mac/localvoxtral-ui-gate.sh`).
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
     `pane.current`, `pane.process_info`, and `pane.read`; its sole mutation is

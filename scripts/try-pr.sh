@@ -9,6 +9,15 @@ set -euo pipefail
 #   ./scripts/try-pr.sh <pr-number>            # e.g. ./scripts/try-pr.sh 30
 #   ./scripts/try-pr.sh main                   # latest green build of main
 #   ./scripts/try-pr.sh main --dogfood         # instrumented dogfood build
+#   ./scripts/try-pr.sh 42 --dogfood --ui-gate # install where the UI gate can launch it
+#
+# --ui-gate installs the bundle into the SSH UI gate's artifact root
+# (~/localvoxtral-ui-artifacts) instead of leaving it in /tmp, and does NOT
+# launch it — starting it is the gate's `launch` verb, which records the pid
+# every other verb then addresses. The gate refuses to launch anything outside
+# that root on purpose (a world-writable root would let any local process plant
+# a bundle claiming com.localvoxtral.app), so the install destination is what
+# moves, never the roots. Default behaviour is unchanged: /tmp, then `open`.
 #
 # --dogfood fetches the LOCALVOXTRAL_DOGFOOD-instrumented artifact
 # (localvoxtral-app-dogfood), verifies its Info.plist stamp, arms the runtime
@@ -25,19 +34,22 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
+USAGE="usage: $0 <pr-number|main> [--dogfood] [--ui-gate]"
 TARGET=""
 DOGFOOD=0
+UI_GATE=0
 for arg in "$@"; do
   case "$arg" in
     --dogfood) DOGFOOD=1 ;;
+    --ui-gate) UI_GATE=1 ;;
     -*)
       echo "unknown flag: $arg" >&2
-      echo "usage: $0 <pr-number|main> [--dogfood]" >&2
+      echo "$USAGE" >&2
       exit 1
       ;;
     *)
       if [[ -n "$TARGET" ]]; then
-        echo "usage: $0 <pr-number|main> [--dogfood]" >&2
+        echo "$USAGE" >&2
         exit 1
       fi
       TARGET="$arg"
@@ -45,7 +57,7 @@ for arg in "$@"; do
   esac
 done
 if [[ -z "$TARGET" ]]; then
-  echo "usage: $0 <pr-number|main> [--dogfood]" >&2
+  echo "$USAGE" >&2
   exit 1
 fi
 
@@ -203,6 +215,18 @@ if (( ! DOGFOOD )) && [[ "$STAMP" != "absent" ]]; then
   echo "WARNING: this 'clean' artifact is stamped LVXDogfoodCapture=$STAMP — it can capture if armed."
 fi
 
+# --ui-gate: move the bundle out of /tmp and into the gate's artifact root
+# BEFORE signing, so the copy that actually runs is the one that got the
+# ad-hoc re-sign (macOS 26 stalls the first launch of an unsigned-locally
+# downloaded bundle, and TCC keys the grant to the signature of the binary
+# that launches). Done after the stamp check so a wrong-variant artifact is
+# rejected before a few hundred MB get copied.
+if (( UI_GATE )); then
+  APP="$("$(dirname "$0")/mac/install-ui-artifact.sh" "$APP" --no-hint \
+    --label "$TARGET @ CI run $RUN_ID")"
+  xattr -cr "$APP" 2>/dev/null || true
+fi
+
 # Detect whether the downloaded bundle is ad-hoc. The reliable marker is the
 # 'Signature=adhoc' line — and it MUST be read at -dvv (verbose>=2): at -dv the
 # Authority/Signature detail lines are not printed at all, so grepping -dv for
@@ -245,7 +269,11 @@ fi
 
 LAUNCH_LABEL="$SIGNER"
 (( DOGFOOD )) && LAUNCH_LABEL="$LAUNCH_LABEL, dogfood"
-echo "Launching build of '$TARGET' (CI run $RUN_ID, ${LAUNCH_LABEL}): $APP"
+if (( UI_GATE )); then
+  echo "Installed build of '$TARGET' (CI run $RUN_ID, ${LAUNCH_LABEL}): $APP"
+else
+  echo "Launching build of '$TARGET' (CI run $RUN_ID, ${LAUNCH_LABEL}): $APP"
+fi
 # The designated requirement is what TCC keys the Accessibility grant on.
 # Compare this block between two try-pr runs: identical DR => the grant
 # survives; a DR that changes every run (ad-hoc pins the per-build cdhash) is
@@ -260,4 +288,21 @@ if [[ "$SIGNER" == "Authority=ad-hoc" ]]; then
   echo "      An ad-hoc same-repo artifact means the self-hosted runner user lost"
   echo "      the localvoxtral-dev cert (check: security find-identity -v -p codesigning)."
 fi
+
+if (( UI_GATE )); then
+  # Deliberately no `open`: the gate's `launch` records the pid that `ax`,
+  # `key`, `shot` and `quit` all address, and it refuses to start a second
+  # instance. An instance started here would be unrecorded — invisible to the
+  # gate, and a hotkey / port 8471-8472 rival for the one it does start.
+  GATE_ARG="$APP"
+  case "$APP" in
+    "$HOME"/*) GATE_ARG="${APP#"$HOME"/}" ;;
+  esac
+  GATE_FLAG=""
+  (( DOGFOOD )) && GATE_FLAG="--dogfood "
+  echo "Not launched — the UI gate owns launching. From the dev box:"
+  echo "  ssh lv-ui 'launch ${GATE_FLAG}${GATE_ARG}'"
+  exit 0
+fi
+
 open "$APP"
