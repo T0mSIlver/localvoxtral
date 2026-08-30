@@ -206,6 +206,46 @@ paths stay loud (`Log.backends` convention).
   argv, where the manual flow still gets no join).
 - The marker-arm suppression rule and its exact category set.
 
+## Pinned against a live server
+
+Everything above was read out of herdr's source and is therefore an EXTERNAL
+assumption: true of the version that was read, not guaranteed of the next one.
+The `integration-herdr` lane (`HerdrIntegrationTests`,
+`scripts/herdr-integration-fixture.sh`, `remote-build.sh integration-herdr`)
+holds the checkable half of it to a running herdr — a real server, a real
+pane, a real `ssh -L` forward, and a real whole-view client on a pty whose
+rendered text is the surface the probe reads. Each assumption has its own
+named test, so an upgrade that changes one fails with a message naming it.
+
+Measured against herdr 0.8.2 (protocol 20) while writing that lane:
+
+- A whole-view App client renders the `$lvmark` row; a
+  `herdr terminal attach <pane>` client of the SAME pane never does. This is
+  the discriminator the trust argument rests on and it holds.
+- The agents panel renders per AGENT-BEARING pane, so a pane with no reported
+  agent renders no row and therefore no token at all. A join targets a pane
+  running an agent, so this is the shape that matters — but it means "the row
+  is configured" is not sufficient for a token to appear.
+- `pane.report_metadata` clears on BOTH a JSON `null` and an empty string, as
+  `normalize_metadata_tokens` promised. The production teardown sends null.
+- `ttl_ms` is enforced at exactly 1…86_400_000; 0 and 86_400_001 are refused
+  with `invalid_metadata_ttl`.
+- CORRECTION to the constraints above: an 81-character token VALUE is
+  ACCEPTED, not refused. Nothing may be built on a length refusal. The
+  production token is 17 characters, well inside whatever bound exists.
+- `pane.current` did NOT carry an `agent_session` field for a pane whose
+  agent session id was reported through `herdr pane report-agent[-session]`,
+  so `claimedClaudeSessionID` came back nil. The join's "herdr's own claim
+  must not disagree" cross-check is therefore vacuous for panes in that
+  state — it can still catch a disagreement, but absence is the common case
+  and the pane-id plus broker-marker confirmations carry the weight.
+
+Unpinnable from the Mac side, and still documented hopes: that all App-mode
+clients share one server-global focus (a second whole-view client on the same
+socket disturbed the fixture's own pane rather than mirroring it, so the lane
+does not assert it), and that `terminal_observe` behaves like
+`terminal_attach` (herdr 0.8.2's CLI exposes no observe subcommand).
+
 ## Out of scope (recorded follow-ups)
 
 - Per-socket distinct nonces to lift the single-socket-per-host abstention.

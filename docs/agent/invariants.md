@@ -213,7 +213,14 @@ there is not.
     clients still omit the sidebar (`src/server/headless.rs` render loop) and
     that all App clients still render one server-global panel/focus
     (`tests/multi_client.rs`). Per-client focus or a sidebar in attach mode
-    invalidates this authorization argument.
+    invalidates this authorization argument. The first half is now MEASURED
+    rather than assumed: the `integration-herdr` lane stamps a nonce through a
+    real forward and asserts that a whole-view client renders it while a
+    `terminal attach` client of the same pane does not
+    (`HerdrIntegrationTests`, `docs/agent/test-tiers.md`). The server-global
+    focus half remains unmeasured — see the panel-binding doc's "Pinned against
+    a live server" section for exactly which assumptions are covered and which
+    are still documented hopes.
 
     Any stamp refusal, unavailable grid, hidden/unconfigured/scrolled panel row,
     or bounded settle timeout can only produce NO MATCH. It closes that attempt
