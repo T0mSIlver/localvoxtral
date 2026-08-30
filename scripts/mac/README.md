@@ -819,10 +819,10 @@ account, so it is expected to work here; that has **not** been verified on this
 machine as of 2026-08-30. The verb is built so the difference is impossible to
 miss: a restricted store exits non-zero and quotes the reason rather than
 returning an empty page, and an empty window says "no com.localvoxtral entries
-for <scope> in the last N minute(s)" on stderr. If it does turn out to be restricted for
-the GUI account too, there is no flag that lifts it — the alternatives are
-`mac-crashlog.yml` on the runner (which already ships a subsystem-filtered log)
-or having the app write its own file.
+for <scope> in the last N minute(s)" on stderr. If it does turn out to be
+restricted for the GUI account too, there is no flag that lifts it — the
+alternatives are `mac-crashlog.yml` on the runner (which already ships a
+subsystem-filtered log) or having the app write its own file.
 
 ### Getting a build into the artifact root
 

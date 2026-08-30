@@ -1049,8 +1049,8 @@ pass "menu click still works against an attached-but-closed menu"
 MENUDISMISS_BODY="$(helper_case_body menudismiss)"
 [[ "$MENUDISMISS_BODY" == *'displayedMenuWindow('* ]] \
   || fail "menu dismiss still decides 'nothing is open' from attachment"
-NO_MENU_LINE="$(printf '%s\n' "$MENUDISMISS_BODY" | grep -n 'no-menu-open' | head -n 1 | cut -d: -f1)"
-FIRST_PRESS_LINE="$(printf '%s\n' "$MENUDISMISS_BODY" | grep -n 'kAXPressAction' | head -n 1 | cut -d: -f1)"
+NO_MENU_LINE="$(printf '%s\n' "$MENUDISMISS_BODY" | grep -n 'no-menu-open' | head -n 1 | cut -d: -f1 || true)"
+FIRST_PRESS_LINE="$(printf '%s\n' "$MENUDISMISS_BODY" | grep -n 'kAXPressAction' | head -n 1 | cut -d: -f1 || true)"
 [[ -n "$NO_MENU_LINE" && -n "$FIRST_PRESS_LINE" ]] \
   || fail "menudismiss lost either its no-menu-open answer or its status-item fallback"
 (( NO_MENU_LINE < FIRST_PRESS_LINE )) \
