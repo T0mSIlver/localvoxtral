@@ -520,7 +520,12 @@ final class DogfoodCaptureWiringTests: XCTestCase {
             abstentions: []
         )
         XCTAssertEqual(cmuxJoin.arm, "cmuxSurface")
-        XCTAssertEqual(cmuxJoin.terminal, TerminalScreenAllowlist.cmuxBundleID)
+        XCTAssertEqual(
+            cmuxJoin.terminal, "cmux",
+            "the record and `--probe-surface` derive this field from one shared summary, so it "
+                + "carries the terminal's NAME (as this type has always documented) rather than "
+                + "its bundle id"
+        )
         XCTAssertEqual(cmuxJoin.origin, "local")
         XCTAssertEqual(
             cmuxJoin.herdrBound, false,

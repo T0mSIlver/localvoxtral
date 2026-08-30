@@ -46,6 +46,53 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `scripts/mac-diag.sh` on the Mac, Export Diagnostics… in Settings > About,
   and (once the v2 gate is installed — owner runbook: `scripts/mac/README.md`)
   `./scripts/remote-build.sh diag|applog|voxlog|svc-status|disk|gc`.
+- **"Why won't this terminal join a Claude session?"** — `--probe-surface`
+  resolves the join for the frontmost surface once, prints it, and exits
+  without a menu bar item or any other UI:
+
+  ```
+  /Applications/localvoxtral.app/Contents/MacOS/localvoxtral --probe-surface
+  /Applications/localvoxtral.app/Contents/MacOS/localvoxtral --probe-surface --json
+  ```
+
+  Run it **from the terminal you would dictate into**: that terminal is the
+  frontmost application, so it is the surface being probed. Run the binary
+  **inside the .app bundle**, not a `.build/debug` copy: TCC keys grants to a
+  code signature, so an unsigned loose build can only ever report
+  `probe: accessibility permission not granted`. UNVERIFIED as of this writing
+  (2026-08-28), and worth confirming on the first real run: whether a bundled
+  binary started from a shell is attributed to the app's own identity or to the
+  terminal as its responsible process. If it is the latter, the first probe
+  raises consent prompts naming the terminal, and a refused Accessibility grant
+  shows up as that same named reason rather than as anything about the surface.
+
+  `--json` prints one line: `arm`, `abstentionReason`, `origin`, `terminal`,
+  `herdrBound`, `workspaceIsLocal` — the same six fields, from the same
+  mapper, as a dogfood record's `join` block
+  (`ClaudeSessionJoinSummary`). Exit status is 0 when an arm joined, 1 when
+  none did, 2 on a usage error.
+
+  **`abstentionReason` is the diagnostic**, not `arm`. It is the resolver's own
+  cause chain, oldest arm first — `tty: no live session on this device;
+  remote-herdr: ssh session undeterminable (unreadableArguments); marker: no
+  marker in title` says the tty read worked and the ssh probe could not read
+  the client's arguments, which is a completely different bug from an empty
+  chain (the surface was never identified at all). This is the signal that was
+  missing when a Ghostty ssh wrapper made every remote probe report
+  `undeterminable` (2026-08-03).
+
+  Two limits to read the output with. **The registry is per-process**: live
+  session records live in the running app, built from hook traffic its broker
+  received, so a separate one-shot process starts with none and says so first
+  (`probe: no live Claude sessions in this process`) — the arms then decline
+  for that reason, and what you are reading is how far each one got on the
+  SURFACE side. **The remote-herdr arm is read-only here by construction**: the
+  forward and panel-metadata capabilities are passed as `nil`, so the probe
+  cannot open an `ssh -L` that outlives it or leave an `lv-mic-…` stamp in an
+  agents panel, and there is no flag that turns them on. It reaches
+  `forward capability unavailable` and stops. Same reasoning withholds the cmux
+  arm (Keychain prompt), the browser arm (reads the address bar), and every
+  screen read.
 - **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
   stages the scene, drives the real Right-Command tap/hold gesture with
   synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator

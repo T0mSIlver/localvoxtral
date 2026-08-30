@@ -150,41 +150,28 @@ enum DogfoodCaptureBuilder {
         return "remote"
     }
 
+    /// The record's join block, derived from the SHARED summary rather than
+    /// from a second reading of `ClaudeSessionJoin`.
+    ///
+    /// `--probe-surface` reports the same six facts, and a record and a probe
+    /// run that disagreed about one dictation would make both useless. So the
+    /// arm vocabulary, the origin class, the terminal name, and the abstention
+    /// joining all live in `ClaudeSessionJoinSummary`, and this is a field copy.
     static func join(
         from join: ClaudeSessionJoin?,
         abstentions: [String]
     ) -> DogfoodCaptureRecord.Join {
-        guard let join else {
-            return DogfoodCaptureRecord.Join(
-                arm: "none",
-                abstentionReason: abstentions.isEmpty
-                    ? nil : abstentions.joined(separator: "; "),
-                origin: nil,
-                terminal: nil,
-                herdrBound: nil,
-                workspaceIsLocal: nil
-            )
-        }
-        let arm: String
-        switch join.mechanism {
-        case .ttyDevice: arm = "tty"
-        case .titleMarker: arm = "titleMarker"
-        case .herdrPane: arm = "herdrPane"
-        case .browserTab: arm = "browserTab"
-        case .cmuxSurface: arm = "cmuxSurface"
-        case .remoteHerdrPane: arm = "remoteHerdrPane"
-        }
+        // A resolved join can still have earlier arms' abstentions (tty
+        // abstained, marker answered) — kept, because "the tty arm never
+        // answers" is invisible in a record that only names the winner.
+        let summary = ClaudeSessionJoinSummary.summarize(join: join, abstentions: abstentions)
         return DogfoodCaptureRecord.Join(
-            arm: arm,
-            // A resolved join can still have earlier arms' abstentions (tty
-            // abstained, marker answered) — kept, because "the tty arm never
-            // answers" is invisible in a record that only names the winner.
-            abstentionReason: abstentions.isEmpty
-                ? nil : abstentions.joined(separator: "; "),
-            origin: join.snapshot.origin.isLocalAuthenticated ? "local" : "remote",
-            terminal: join.target.bundleID,
-            herdrBound: join.herdrPane != nil,
-            workspaceIsLocal: join.snapshot.localWorkspacePath != nil
+            arm: summary.arm,
+            abstentionReason: summary.abstentionReason,
+            origin: summary.origin,
+            terminal: summary.terminal,
+            herdrBound: summary.herdrBound,
+            workspaceIsLocal: summary.workspaceIsLocal
         )
     }
 
