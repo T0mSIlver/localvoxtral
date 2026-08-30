@@ -236,6 +236,44 @@ else
   say "WARNING: $WRAPPER_SRC is missing; the term-open wrapper was not installed."
 fi
 
+# --- the wrapper's config, as a template only ------------------------------
+#
+# ~/.lv-attach.conf holds a destination. That is ordinary configuration, and
+# "what is this file called and what goes in it" was one of the unknowns that
+# cost a round trip through the owner — so an empty, commented template is
+# written when the file does not exist. NEVER overwritten: the destination is
+# the owner's, and a reinstall that resets it would be worse than no template.
+#
+# It deliberately arrives with NO active destination. An installer that filled
+# one in would be guessing which machine to open a terminal onto.
+#
+# Note what is NOT written here, and why. `~/.localvoxtral-ui-gate.conf` sets
+# LV_UI_TERM_COMMANDS, which is the gate's ALLOWLIST — the same object as the
+# gate script itself, one layer up. CI must not write the gate; CI must not
+# write what the gate will accept either, or an empty default that exists to
+# force a deliberate grant becomes something that arrives with a build. The
+# owner runs one documented append; `ui-gate-doctor.sh` prints it verbatim and
+# `state` reports the result.
+ATTACH_CONF_DEST="$HOME/.lv-attach.conf"
+if [[ ! -e "$ATTACH_CONF_DEST" ]]; then
+  cat >"$ATTACH_CONF_DEST" <<'ATTACHCONF'
+# lv-attach — where `term open ghostty lv-attach [session]` connects.
+#
+# Uncomment and set the destination. It is an ssh alias from ~/.ssh/config, or
+# user@host; only [A-Za-z0-9._-] (plus one @) is accepted, and it must not
+# start with '-'.
+#
+# destination=builder
+#
+# Optional default herdr session, used when `term open` passes no name:
+# session=work
+#
+# Check it with:  ~/bin/lv-attach --check
+ATTACHCONF
+  chmod 0600 "$ATTACH_CONF_DEST" 2>/dev/null || true
+  say "Wrote a template $ATTACH_CONF_DEST (set destination= before using term open)"
+fi
+
 say "Installed $VARIANT -> $DEST"
 if [[ -n "$LABEL" ]]; then say "  build: $LABEL"; fi
 say "  provenance: $DEST.source"

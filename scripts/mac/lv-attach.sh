@@ -16,8 +16,11 @@ set -euo pipefail
 # This wrapper passes it, and here is the whole argument:
 #
 #   * It takes ONE optional argument, a herdr session NAME, and nothing else.
-#     No flags. No command. No second positional. Anything unrecognised is
-#     refused, not passed on.
+#     No command. No second positional. Anything unrecognised is refused, not
+#     passed on. There is exactly one flag, `--check`, which prints a readiness
+#     verdict and exits WITHOUT running anything (the UI gate's `state` uses it
+#     so the destination validator below has one implementation, not two);
+#     every other `-*` is still refused outright.
 #   * That name must match ^[A-Za-z0-9._-]{1,64}$ and must not begin with `-`.
 #     There is no character in that set that a shell treats specially, so the
 #     name cannot become a flag to ssh, cannot escape the remote command that
@@ -44,6 +47,9 @@ set -euo pipefail
 #     destination=builder            # an ssh alias, or user@host
 #     session=work                   # optional default session name
 #
+#   `lv-attach --check` says whether that file resolves, and
+#   `ssh lv-ui state` reports the same verdict under setup.lv_attach.
+#
 # ALLOWLISTING IT — in ~/.localvoxtral-ui-gate.conf:
 #
 #   LV_UI_TERM_COMMANDS="lv-attach"
@@ -65,26 +71,70 @@ die() {
 # the charset check, so the error message names the real problem.
 
 SESSION=""
+CHECK=0
 if (( $# > 1 )); then
   die "takes at most one argument (a herdr session name); got $#"
 fi
 if (( $# == 1 )); then
   case "$1" in
+    # The ONE accepted flag, and the only code path in this file that does not
+    # end in `exec ssh`. It exists because the UI gate's `state` has to be able
+    # to say whether this wrapper is installed and whether its config resolves,
+    # and re-implementing the validator below inside the gate would give the
+    # boundary two copies that can drift. It reads the same file with the same
+    # `sed`, prints a verdict, and returns — it opens no connection and starts
+    # no child, so allowlisting `lv-attach` still admits nothing that can run a
+    # command. Every other `-*` is refused exactly as before.
+    --check) CHECK=1 ;;
     -*) die "does not take flags (got: $1)" ;;
   esac
-  # An explicitly empty argument is a mistake, not "use the configured
-  # default": silently falling back would make `lv-attach "$SOMETHING_UNSET"`
-  # open a session nobody asked for.
-  [[ -n "$1" ]] || die "the session name is empty"
-  SESSION="$1"
+  if (( CHECK == 0 )); then
+    # An explicitly empty argument is a mistake, not "use the configured
+    # default": silently falling back would make `lv-attach "$SOMETHING_UNSET"`
+    # open a session nobody asked for.
+    [[ -n "$1" ]] || die "the session name is empty"
+    SESSION="$1"
+  fi
 fi
+
+# --- --check's report ------------------------------------------------------
+#
+# key=value lines on stdout, exit 0 only when this wrapper would actually run.
+#
+#   conf=ok|missing|no-destination|invalid-destination|invalid-session
+#   destination_kind=alias|user@host        (present when conf=ok)
+#   destination=<alias>                     (ONLY when the destination is a
+#                                            bare alias — see below)
+#   session=configured|absent               (present when conf=ok)
+#
+# The destination is echoed only when it is a bare alias, and this is a
+# deliberate line rather than squeamishness. A bare alias is a label in the
+# owner's own ~/.ssh/config: it names no account and no address, and it is the
+# value an operator actually needs, because the failure it catches is "this
+# points at the wrong machine". A `user@host` destination IS an account and an
+# address, and this gate's stated posture is that no host, session id or
+# account crosses it (see `app`'s closed reply vocabulary). So the shape is
+# reported and the value is not.
+report_check() { # <status> [kind] [destination] [session]
+  printf 'conf=%s\n' "$1"
+  if [[ "$1" == ok ]]; then
+    printf 'destination_kind=%s\n' "$2"
+    [[ "$2" == alias ]] && printf 'destination=%s\n' "$3"
+    printf 'session=%s\n' "$4"
+    return 0
+  fi
+  return 1
+}
 
 # --- config ----------------------------------------------------------------
 #
 # READ, never sourced. Sourcing would make the config file a shell script, and
 # the whole point of this wrapper is that no caller-reachable path runs one.
 
-[[ -f "$CONF" ]] || die "no config at $CONF (needs a line: destination=<ssh alias>)"
+if [[ ! -f "$CONF" ]]; then
+  if (( CHECK == 1 )); then report_check missing || exit 1; fi
+  die "no config at $CONF (needs a line: destination=<ssh alias>)"
+fi
 
 read_conf_value() { # <key>
   # First assignment wins; trailing whitespace and comments dropped. `sed`,
@@ -95,7 +145,10 @@ read_conf_value() { # <key>
 }
 
 DESTINATION="$(read_conf_value destination)"
-[[ -n "$DESTINATION" ]] || die "$CONF has no destination= line"
+if [[ -z "$DESTINATION" ]]; then
+  if (( CHECK == 1 )); then report_check no-destination || exit 1; fi
+  die "$CONF has no destination= line"
+fi
 
 if [[ -z "$SESSION" ]]; then
   SESSION="$(read_conf_value session)"
@@ -135,12 +188,26 @@ is_safe_destination() { # <value>
   is_safe_name "$host"
 }
 
-is_safe_destination "$DESTINATION" \
-  || die "refusing destination from $CONF: must be an alias or user@host of [A-Za-z0-9._-], not starting with '-' (got: $DESTINATION)"
+if ! is_safe_destination "$DESTINATION"; then
+  # `--check` deliberately does NOT echo the value it is rejecting: a refused
+  # destination is the one case where the file's contents are arbitrary text.
+  if (( CHECK == 1 )); then report_check invalid-destination || exit 1; fi
+  die "refusing destination from $CONF: must be an alias or user@host of [A-Za-z0-9._-], not starting with '-' (got: $DESTINATION)"
+fi
 
-if [[ -n "$SESSION" ]]; then
-  is_safe_name "$SESSION" \
-    || die "refusing session name: must be 1-64 characters of [A-Za-z0-9._-] and must not start with '-' (got: $SESSION)"
+if [[ -n "$SESSION" ]] && ! is_safe_name "$SESSION"; then
+  if (( CHECK == 1 )); then report_check invalid-session || exit 1; fi
+  die "refusing session name: must be 1-64 characters of [A-Za-z0-9._-] and must not start with '-' (got: $SESSION)"
+fi
+
+# Everything this wrapper needs resolved. `--check` stops here, one step short
+# of the only thing this file ever runs.
+if (( CHECK == 1 )); then
+  DESTINATION_KIND=alias
+  [[ "$DESTINATION" == *@* ]] && DESTINATION_KIND=user@host
+  report_check ok "$DESTINATION_KIND" "$DESTINATION" \
+    "$([[ -n "$SESSION" ]] && printf 'configured' || printf 'absent')"
+  exit 0
 fi
 
 # --- exec ------------------------------------------------------------------

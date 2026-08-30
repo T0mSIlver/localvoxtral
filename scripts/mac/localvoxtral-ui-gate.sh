@@ -12,8 +12,9 @@ set -euo pipefail
 # file; everything else is denied and logged. There is deliberately NO shell
 # verb: no `eval`, no `bash -c`, no verb that takes a free command line — with
 # one narrowly constrained exception, `term open`, whose command must start
-# with an allowlisted binary, must survive the same metacharacter blocklist as
-# every other token, and is logged IN FULL. Adding a verb that can run
+# with an allowlisted binary, is resolved to an absolute path under
+# LV_UI_TERM_COMMAND_DIRS before anything is opened, must survive the same
+# metacharacter blocklist as every other token, and is logged IN FULL. Adding a verb that can run
 # arbitrary commands dissolves this boundary completely; do not.
 #
 # The invariant that keeps `term open` from BEING that verb, stated positively:
@@ -65,7 +66,11 @@ set -euo pipefail
 #     refuses unless the app is running, its modifier trigger is enabled in its
 #     own settings, and Secure Keyboard Entry is not held.
 #   - `term focus` / `term close` act only on a window this gate opened,
-#     identified by a random marker it put in that window's title.
+#     identified by the CGWindowID that appeared while it was opening one. NOT
+#     by a title marker: the command this verb exists to run is a whole-view
+#     herdr client, and herdr owns the title from the moment it starts, so a
+#     marker never survives to be seen (field failure 2026-08-30; the same
+#     property is why the app's titleMarker join arm is suppressed there).
 #   - `app` forwards ONE line to the control socket of the app under test —
 #     never a shell, never a path of the caller's choosing. The socket only
 #     exists in a dogfood build, so the verb refuses unless `launch --dogfood`
@@ -80,6 +85,17 @@ set -euo pipefail
 #     there is no app under test, which it then says. This Mac is also the
 #     self-hosted CI runner and `xctest` logs under the same subsystem, so
 #     subsystem alone hands back another run's lines (field check 2026-08-30).
+#   - `gate-log` reads THIS gate's own log file and nothing else — the file
+#     this script writes, one sanitised printable line per invocation. It is
+#     how a denial's reason becomes readable without `deny` explaining itself
+#     to the caller, which it deliberately does not.
+#
+# `state` additionally reports SETUP readiness — which config files exist,
+# whether they parse, what `term open` would currently accept, whether the
+# wrapper is installed, whether the app exposes a control socket — because in
+# a real session (2026-08-30) every one of those was indistinguishable from a
+# broken verb. It reports presence, parse verdicts and the gate's own
+# vocabulary; never a file's contents (see setup_json).
 #
 # A `term open` window is therefore NOT a lateral path into the app-driving
 # verbs, and the scoping above is why: `shot`, `ax dump`, `ax click`, `ax type`
@@ -96,8 +112,8 @@ set -euo pipefail
 # takeover rule: any verb that steals focus or takes input (launch, ax click,
 # ax type, key, menu open, menu click, dictate tap/hold, term open, term focus)
 # speaks a warning, waits, and announces completion. `state`, `shot`,
-# `ax dump`, `menu dismiss`, `dictate cancel`, `quit` and `term close` do not
-# warn: none of them takes the keyboard or raises a window in front of what the
+# `ax dump`, `menu dismiss`, `dictate cancel`, `log`, `gate-log`, `quit` and
+# `term close` do not warn: none of them takes the keyboard or raises a window in front of what the
 # owner is doing.
 #
 # Verbs (each documented at its run_* function):
@@ -112,6 +128,7 @@ set -euo pipefail
 #   dictate <tap|hold <seconds>|cancel>
 #   app <control command>
 #   log [minutes]
+#   gate-log [lines]
 #   quit
 #   term open <ghostty|iterm|terminal> <command> [args...]
 #   term focus <id>
@@ -162,6 +179,34 @@ LV_UI_TERMINALS="${LV_UI_TERMINALS:-ghostty iterm terminal}"
 LV_UI_TERM_COMMANDS="${LV_UI_TERM_COMMANDS:-}"
 LV_UI_MAX_TERM_ARGS="${LV_UI_MAX_TERM_ARGS:-12}"
 
+# Where an allowlisted NAME is resolved to a file, and the reason resolution
+# happens here at all (field failure 2026-08-30).
+#
+# `term open` used to write `exec lv-attach` into the launcher and let PATH
+# find it. A script started by `open -n -a Ghostty --args -e <script>` does not
+# get a login shell's environment, `$HOME/bin` is not on the PATH sshd hands
+# this gate either, and the wrapper lives in `$HOME/bin`. So the launcher hit
+# `command not found`, exited instantly, and left an EMPTY terminal window on
+# the owner's desktop — which the gate then reported as a window-identification
+# timeout. Two different faults telling one wrong story cost the operator
+# twenty minutes and produced a confidently wrong root cause on top.
+#
+# So the name is resolved to an absolute path BEFORE anything is opened, the
+# file has to exist and be executable, and a name that does not resolve is
+# refused with nothing opened. `state` reports the same thing under
+# setup.term_open.unresolvable, so it is visible before a verb is tried.
+#
+# The directory list is short on purpose: a name resolved out of a directory
+# other accounts can write is the allowlist handed away. $HOME/bin is where
+# install-ui-artifact.sh puts the wrapper and where the lock probe already
+# lives.
+LV_UI_TERM_COMMAND_DIRS="${LV_UI_TERM_COMMAND_DIRS:-$HOME/bin}"
+
+# How long `term open` waits for its window. A seam, not a knob: the shell
+# suite drives the three failure paths below and a 20-second wall-clock wait
+# per case is most of the suite's runtime.
+LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${LV_UI_TERM_OPEN_TIMEOUT_SECONDS:-20}"
+
 # Owner rule (2026-07-09): warn audibly and wait before stealing focus, and
 # announce completion. Set to 0 in the conf file only if you are sitting in
 # front of the machine — the default is the rule as stated.
@@ -203,13 +248,44 @@ LV_UI_LOG_SUBSYSTEM="${LV_UI_LOG_SUBSYSTEM:-com.localvoxtral}"
 # there is no app under test, and the output says so when it is.
 LV_UI_LOG_PROCESS="${LV_UI_LOG_PROCESS:-localvoxtral}"
 
+# `gate-log`'s bounds. This file is written BY this gate, one sanitised
+# printable line per invocation, so the cap is about transcript size and not
+# about what may be seen.
+LV_UI_GATE_LOG_DEFAULT_LINES="${LV_UI_GATE_LOG_DEFAULT_LINES:-20}"
+LV_UI_GATE_LOG_MAX_LINES="${LV_UI_GATE_LOG_MAX_LINES:-200}"
+
+# The `term open` wrapper `state` interrogates, and the config file the wrapper
+# reads. `state` runs the wrapper's `--check` rather than re-implementing its
+# destination validator: the validator is the load-bearing part of the wrapper
+# and there must be exactly one of it, and asking the INSTALLED copy is what
+# makes "the wrapper is missing" and "the wrapper is older than this gate"
+# different answers instead of the same silence.
+LV_UI_ATTACH_WRAPPER="${LV_UI_ATTACH_WRAPPER:-$HOME/bin/lv-attach}"
+LV_UI_ATTACH_CONF="${LV_UI_ATTACH_CONF:-$HOME/.lv-attach.conf}"
+
 # Machine-local overrides (never committed). Same argument as the build gate:
 # anyone who can write this file can already replace this script, so sourcing
 # it adds no new trust.
+#
+# Parsed before it is sourced, and IGNORED if it does not parse. A syntax error
+# here used to kill every verb: `source` returns non-zero, `set -e` takes the
+# whole gate down, and the client sees an empty answer with no exit line worth
+# reading — the exact shape of failure this gate's setup reporting exists to
+# end. So a broken conf now degrades to the built-in defaults (which are the
+# CLOSED ones: an empty `term open` allowlist), says so on stderr on every
+# invocation, and is reported by `state`.
 GATE_CONF="${LV_UI_GATE_CONF:-$HOME/.localvoxtral-ui-gate.conf}"
+GATE_CONF_STATUS=absent
 if [[ -f "$GATE_CONF" ]]; then
-  # shellcheck source=/dev/null
-  source "$GATE_CONF"
+  if bash -n "$GATE_CONF" 2>/dev/null; then
+    GATE_CONF_STATUS=ok
+    # shellcheck source=/dev/null
+    source "$GATE_CONF"
+  else
+    GATE_CONF_STATUS=unparsable
+    printf 'localvoxtral ui gate: %s has a syntax error and was IGNORED — every setting in it is at its built-in default, which means `term open` has an EMPTY allowlist. Check it with: bash -n %s\n' \
+      "$GATE_CONF" "$GATE_CONF" >&2
+  fi
 fi
 
 # Second layer under the (empty by default) allowlist above: names that can run
@@ -432,8 +508,9 @@ import Foundation
 //   menuclick <pid> <item-title>
 //   menudismiss <pid>
 //   dictate <pid> <fn|right_command|right_option> <tap|hold|cancel> [seconds]
-//   termwindow <ownerpid> <marker>                           -> "<winid> <ownerpid>"
-//   termaction <ownerpid> <marker> <focus|close>
+//   termsnapshot [<pid>...]                                  -> "<id>,<id>,..."
+//   termnew <ownerpid> <marker|-> <excluded-ids|->           -> "ok <winid> <ownerpid>"
+//   termaction <ownerpid> <winid> <focus|close>
 
 let argv = Array(CommandLine.arguments.dropFirst())
 
@@ -458,6 +535,31 @@ func str(_ element: AXUIElement, _ name: String) -> String {
 func windowsOf(_ pid: pid_t) -> [AXUIElement] {
     let app = AXUIElementCreateApplication(pid)
     return (copyAttr(app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+}
+
+// The AX window whose frame matches a CGWindow's, or nil when zero or several
+// do. Used to act on a window identified by CGWindowID (see termaction).
+func axWindow(pid: pid_t, matching frame: CGRect) -> AXUIElement? {
+    var matches: [AXUIElement] = []
+    for window in windowsOf(pid) {
+        guard let rawPosition = copyAttr(window, kAXPositionAttribute),
+              let rawSize = copyAttr(window, kAXSizeAttribute),
+              CFGetTypeID(rawPosition) == AXValueGetTypeID(),
+              CFGetTypeID(rawSize) == AXValueGetTypeID()
+        else { continue }
+        var origin = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(rawPosition as! AXValue, .cgPoint, &origin),
+              AXValueGetValue(rawSize as! AXValue, .cgSize, &size)
+        else { continue }
+        // A couple of points of slack: the window list and AX round
+        // independently, and a title bar can differ by a hair.
+        if abs(origin.x - frame.origin.x) <= 2, abs(origin.y - frame.origin.y) <= 2,
+           abs(size.width - frame.width) <= 2, abs(size.height - frame.height) <= 2 {
+            matches.append(window)
+        }
+    }
+    return matches.count == 1 ? matches[0] : nil
 }
 
 func jsonEscape(_ s: String) -> String {
@@ -485,6 +587,10 @@ struct CGWindowRecord {
     let layer: Int
     let area: Double
     let title: String
+    // Kept so a CGWindowID can be mapped to an AX window later: AX exposes no
+    // window id without private API, but AXPosition/AXSize are in the same
+    // top-left screen coordinates kCGWindowBounds uses.
+    let frame: CGRect
 }
 
 func cgWindows(ownedBy pid: Int) -> [CGWindowRecord] {
@@ -498,7 +604,9 @@ func cgWindows(ownedBy pid: Int) -> [CGWindowRecord] {
               let width = bounds["Width"], let height = bounds["Height"]
         else { continue }
         let title = window[kCGWindowName as String] as? String ?? ""
-        out.append(CGWindowRecord(id: id, ownerPID: owner, layer: layer, area: width * height, title: title))
+        let frame = CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0, width: width, height: height)
+        out.append(CGWindowRecord(id: id, ownerPID: owner, layer: layer, area: width * height,
+                                  title: title, frame: frame))
     }
     return out.sorted { $0.id < $1.id }
 }
@@ -1006,23 +1114,70 @@ case "dictate":
     let frontName = (front?.localizedName ?? "?").replacingOccurrences(of: "\n", with: " ")
     print("ok \(gesture) trigger=\(argv[2]) frontmost=\(front?.processIdentifier ?? -1) (\(frontName))")
 
-case "termwindow":
-    guard argv.count >= 3 else { die("usage: termwindow <ownerpid> <marker>") }
+// The window ids a terminal application owns right now, taken BEFORE `open`.
+// A title marker cannot be the identity of a `term open` window: the one
+// command this verb exists to run is a whole-view herdr client, and herdr owns
+// the terminal title from the moment it starts (docs/agent/invariants.md says
+// so outright, and the app's own titleMarker join arm is suppressed for the
+// same reason). A window that is NEW since this snapshot needs no cooperation
+// from the child process at all.
+case "termsnapshot":
+    var snapshot: [String] = []
+    for raw in argv.dropFirst() {
+        guard let pid = Int(raw), pid > 0 else { continue }
+        snapshot.append(contentsOf: cgWindows(ownedBy: pid).filter { $0.area > 10_000 }.map { String($0.id) })
+    }
+    print(snapshot.joined(separator: ","))
+
+// The window that appeared since that snapshot.
+//
+// Exit codes are the contract: 0 with "ok <winid> <ownerpid>", 1 when nothing
+// new is there yet (the caller polls), 2 when SEVERAL windows appeared and
+// this cannot tell which one it opened — that last one never guesses, because
+// binding the wrong window would point `term close` at whatever the owner just
+// opened.
+case "termnew":
+    guard argv.count >= 4 else { die("usage: termnew <ownerpid> <marker|-> <excluded-ids|->") }
     let pid = Int(requirePID(argv[1]))
     let marker = argv[2]
-    guard let record = cgWindows(ownedBy: pid).first(where: { $0.title.contains(marker) }) else {
-        die("no window of pid \(pid) carries marker \(marker)")
+    let excluded = Set(argv[3].split(separator: ",").compactMap { Int($0) })
+    let candidates = cgWindows(ownedBy: pid).filter { $0.area > 10_000 && !excluded.contains($0.id) }
+    // The OSC title marker is kept as a TIE-BREAKER, never as the identity: it
+    // still disambiguates for commands that leave the title alone, and it is
+    // simply absent for a herdr-hosted one.
+    let tagged = candidates.filter { !marker.isEmpty && marker != "-" && $0.title.contains(marker) }
+    if tagged.count == 1 {
+        print("ok \(tagged[0].id) \(tagged[0].ownerPID)")
+        exit(0)
     }
-    print("\(record.id) \(record.ownerPID)")
+    if candidates.count == 1 {
+        print("ok \(candidates[0].id) \(candidates[0].ownerPID)")
+        exit(0)
+    }
+    if candidates.isEmpty { die("no window of pid \(pid) appeared since the snapshot") }
+    let ids = candidates.map { String($0.id) }.joined(separator: " ")
+    FileHandle.standardError.write(Data((
+        "helper: \(candidates.count) windows of pid \(pid) appeared since the snapshot "
+        + "(ids \(ids)) and none carries the marker — refusing to guess which one this gate opened\n"
+    ).utf8))
+    exit(2)
 
 case "termaction":
-    guard argv.count >= 4 else { die("usage: termaction <ownerpid> <marker> <focus|close>") }
+    guard argv.count >= 4 else { die("usage: termaction <ownerpid> <winid> <focus|close>") }
     let pid = requirePID(argv[1])
-    let marker = argv[2]
-    // The marker in the title is the proof that THIS gate opened the window;
-    // a window without it is never touched.
-    guard let window = windowsOf(pid).first(where: { str($0, kAXTitleAttribute).contains(marker) }) else {
-        die("no AX window of pid \(pid) carries marker \(marker)")
+    guard let winid = Int(argv[2]), winid > 0 else { die("malformed window id") }
+    // The recorded CGWindowID is the proof that THIS gate opened the window,
+    // and it is still checked against the recorded owner pid: a window id is
+    // only ever acted on when the live window list says that pid owns it.
+    guard let record = cgWindows(ownedBy: Int(pid)).first(where: { $0.id == winid }) else {
+        die("no window \(winid) owned by pid \(pid) — it is closed, or it was never this gate's")
+    }
+    // AX exposes no window id without private API, so the bridge is the frame:
+    // AXPosition/AXSize and kCGWindowBounds are the same top-left screen
+    // coordinates. Two windows sharing a frame to the pixel is refused rather
+    // than guessed at.
+    guard let window = axWindow(pid: pid, matching: record.frame) else {
+        die("window \(winid) of pid \(pid) has no unique accessibility window at its frame")
     }
     switch argv[3] {
     case "focus":
@@ -1246,6 +1401,182 @@ json_string() {
   printf '"%s"' "$value"
 }
 
+json_bool() { # <truthy test result as 0/1>
+  (( $1 == 1 )) && printf 'true' || printf 'false'
+}
+
+# A whitespace-separated list -> a JSON array of strings.
+json_word_array() {
+  local word out=""
+  for word in $1; do
+    [[ -n "$out" ]] && out+=","
+    out+="$(json_string "$word")"
+  done
+  printf '[%s]' "$out"
+}
+
+# ---------------------------------------------------------------------------
+# Setup readiness — the half of `state` that predicts a denial
+# ---------------------------------------------------------------------------
+#
+# Why this exists, from a real session (2026-08-30): an operator drove this
+# gate for an hour and hit `term open` refusing everything and `app` denying,
+# and neither refusal was distinguishable from "the verb is broken" or "the
+# gate is old". The causes were three ABSENT files and one unset default —
+# each a one-line fix, each invisible until a verb failed. So `state` now
+# reports the setup, and the bar it is held to is: an operator should be able
+# to predict which verbs will work BEFORE trying them.
+#
+# What it reports and what it does not: file PRESENCE, whether a file PARSES,
+# and the values that are already the gate's own vocabulary (allowlisted
+# command names, terminal names, bundle names under a root this gate names in
+# its own denials). Never a file's contents.
+
+# Which build of this script is installed. The whole reason it is here: "the
+# gate is old" was one of the indistinguishable explanations above, and a
+# 12-character digest the operator can compare against
+# `shasum -a 256 scripts/mac/localvoxtral-ui-gate.sh` settles it in one line.
+gate_revision() {
+  local digest=""
+  if command -v shasum >/dev/null 2>&1; then
+    digest="$(shasum -a 256 "$0" 2>/dev/null || true)"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum "$0" 2>/dev/null || true)"
+  fi
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { printf 'unknown'; return; }
+  printf '%s' "${digest:0:12}"
+}
+
+# The launchable bundles `launch` would accept, by NAME. Nothing here is a
+# disclosure: the roots are named in `launch`'s own refusal text, and the two
+# names the installer ever writes are in scripts/mac/README.md.
+setup_artifacts_json() {
+  local root bundle out="" name stamp
+  for root in $LV_UI_ARTIFACT_ROOTS; do
+    [[ -d "$root" ]] || continue
+    for bundle in "$root"/*.app; do
+      [[ -d "$bundle" ]] || continue
+      name="${bundle##*/}"
+      validate_localvoxtral_bundle "$bundle" || continue
+      stamp="$(plist_value "$bundle/Contents/Info.plist" LVXDogfoodCapture)"
+      [[ -n "$out" ]] && out+=","
+      out+="{\"name\":$(json_string "$name"),\"dogfood\":$([[ "$stamp" == "true" ]] && echo true || echo false)}"
+    done
+  done
+  printf '[%s]' "$out"
+}
+
+# Every conf-allowlisted name that the permanent denylist refuses anyway. A
+# conf that allowlists `ssh` reads as configured and behaves as unconfigured;
+# without this the operator sees only "denied command".
+setup_denylisted_json() {
+  local name out=""
+  for name in $LV_UI_TERM_COMMANDS; do
+    list_contains "$name" "$LV_UI_TERM_FORBIDDEN" || continue
+    [[ -n "$out" ]] && out+=","
+    out+="$(json_string "$name")"
+  done
+  printf '[%s]' "$out"
+}
+
+# Every allowlisted name with no executable file behind it. This is the whole
+# of the 2026-08-30 failure, reported before a verb is tried: the name was
+# allowlisted, the wrapper was not installed where the launcher could find it,
+# and `term open` opened an empty window rather than saying so.
+setup_unresolvable_json() {
+  local name out=""
+  for name in $LV_UI_TERM_COMMANDS; do
+    list_contains "$name" "$LV_UI_TERM_FORBIDDEN" && continue
+    resolve_term_command "$name" >/dev/null && continue
+    [[ -n "$out" ]] && out+=","
+    out+="$(json_string "$name")"
+  done
+  printf '[%s]' "$out"
+}
+
+ATTACH_CONF_STATUS="absent"
+ATTACH_DESTINATION=""
+ATTACH_SESSION=0
+
+# Ask the INSTALLED wrapper, rather than re-reading its config here.
+#
+# One validator, in the file whose whole job is to hold that boundary: a copy
+# of it in this script could drift, and the copy that matters is the one the
+# `term open` window will actually run. It also makes three different failures
+# three different answers — no wrapper, a wrapper too old to answer, and a
+# wrapper that answers "no destination".
+#
+# `lv-attach --check` reads a file with `sed` and prints; it opens no network
+# connection and starts no child. It is 0700 and owner-written, which is the
+# same trust level as this script and as the conf file this gate sources.
+attach_check() {
+  ATTACH_CONF_STATUS="absent"
+  ATTACH_DESTINATION=""
+  ATTACH_SESSION=0
+  if [[ ! -x "$LV_UI_ATTACH_WRAPPER" ]]; then
+    [[ -f "$LV_UI_ATTACH_CONF" ]] && ATTACH_CONF_STATUS="present-unchecked"
+    return
+  fi
+  local output status destination session
+  output="$(LV_ATTACH_CONF="$LV_UI_ATTACH_CONF" "$LV_UI_ATTACH_WRAPPER" --check 2>/dev/null || true)"
+  # An older wrapper refuses every flag, which is correct of it and is also
+  # exactly how "you are running a wrapper from before this gate" looks.
+  status="$(awk -F= '/^conf=/ { sub(/^conf=/, ""); print; exit }' <<<"$output")"
+  [[ -n "$status" ]] || { ATTACH_CONF_STATUS="wrapper-too-old"; return; }
+  case "$status" in
+    ok | missing | no-destination | invalid-destination) ATTACH_CONF_STATUS="$status" ;;
+    *) ATTACH_CONF_STATUS="unknown" ;;
+  esac
+  destination="$(awk -F= '/^destination=/ { sub(/^destination=/, ""); print; exit }' <<<"$output")"
+  # Re-validated here even though the wrapper validated it: this string is
+  # about to be printed, and a `state` that echoes whatever a file contained
+  # is the disclosure this section exists to avoid.
+  [[ "$destination" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || destination=""
+  ATTACH_DESTINATION="$destination"
+  session="$(awk -F= '/^session=/ { sub(/^session=/, ""); print; exit }' <<<"$output")"
+  [[ "$session" == "configured" ]] && ATTACH_SESSION=1
+}
+
+setup_json() {
+  local socket_consent gate_conf_present lock_probe_present
+  local attach_installed attach_allowlisted
+
+  attach_check
+
+  socket_consent="$(app_default debug.dogfood_control_socket_enabled)"
+  case "$socket_consent" in
+    1) socket_consent="on" ;;
+    0) socket_consent="off" ;;
+    *) socket_consent="unset" ;;
+  esac
+
+  gate_conf_present=0
+  [[ -f "$GATE_CONF" ]] && gate_conf_present=1
+  lock_probe_present=0
+  [[ -x "$LOCK_PROBE" ]] && lock_probe_present=1
+  attach_installed=0
+  [[ -x "$LV_UI_ATTACH_WRAPPER" ]] && attach_installed=1
+  attach_allowlisted=0
+  list_contains lv-attach "$LV_UI_TERM_COMMANDS" && attach_allowlisted=1
+
+  printf '{"gate":{"revision":%s},"lock_probe":{"installed":%s},"gate_conf":{"present":%s,"status":%s},"artifacts":%s,"term_open":{"terminals":%s,"commands":%s,"refused_by_denylist":%s,"unresolvable":%s},"lv_attach":{"installed":%s,"allowlisted":%s,"conf":%s,"destination":%s,"session_default":%s},"control_socket":{"present":%s,"consent":%s}}' \
+    "$(json_string "$(gate_revision)")" \
+    "$(json_bool "$lock_probe_present")" \
+    "$(json_bool "$gate_conf_present")" "$(json_string "$GATE_CONF_STATUS")" \
+    "$(setup_artifacts_json)" \
+    "$(json_word_array "$LV_UI_TERMINALS")" \
+    "$(json_word_array "$LV_UI_TERM_COMMANDS")" \
+    "$(setup_denylisted_json)" \
+    "$(setup_unresolvable_json)" \
+    "$(json_bool "$attach_installed")" "$(json_bool "$attach_allowlisted")" \
+    "$(json_string "$ATTACH_CONF_STATUS")" \
+    "$([[ -n "$ATTACH_DESTINATION" ]] && json_string "$ATTACH_DESTINATION" || printf 'null')" \
+    "$(json_bool "$ATTACH_SESSION")" \
+    "$([[ -S "$LV_UI_CONTROL_SOCKET" ]] && printf 'true' || printf 'false')" \
+    "$(json_string "$socket_consent")"
+}
+
 # state — the only verb that answers while the screen is locked, because
 # "is it safe to drive right now" is exactly what it is for. Read-only.
 run_state() {
@@ -1279,7 +1610,7 @@ run_state() {
   fi
 
   terminals=""
-  local file id term marker pid
+  local file id term marker pid window
   for file in "$STATE_DIR"/terms/*.state; do
     [[ -f "$file" ]] || continue
     id="${file##*/}"
@@ -1287,14 +1618,17 @@ run_state() {
     term="$(sed -n 's/^terminal=//p' "$file" | head -n 1)"
     marker="$(sed -n 's/^marker=//p' "$file" | head -n 1)"
     pid="$(sed -n 's/^pid=//p' "$file" | head -n 1)"
+    window="$(sed -n 's/^window=//p' "$file" | head -n 1)"
     [[ -n "$terminals" ]] && terminals+=","
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || pid=0
-    terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":$pid,\"alive\":$( (( pid > 0 )) && kill -0 "$pid" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker")}"
+    [[ "$window" =~ ^[1-9][0-9]*$ ]] || window=0
+    terminals+="{\"id\":$(json_string "$id"),\"terminal\":$(json_string "$term"),\"pid\":$pid,\"window\":$window,\"alive\":$( (( pid > 0 )) && kill -0 "$pid" 2>/dev/null && echo true || echo false),\"marker\":$(json_string "$marker")}"
   done
 
-  printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s]}\n' \
+  printf '{"screen_lock":%s,"idle_seconds":%s,"power":%s,"tcc":{"accessibility":%s,"screen_recording":%s},"app":%s,"terminals":[%s],"setup":%s}\n' \
     "$(json_string "$lock")" "$idle" "$(json_string "$power")" \
-    "$accessibility" "$screen_recording" "$running_json" "$terminals"
+    "$accessibility" "$screen_recording" "$running_json" "$terminals" \
+    "$(setup_json)"
 }
 
 # launch [--dogfood] <artifact>
@@ -1794,6 +2128,55 @@ run_log() {
   ACTION_COMPLETED=1
 }
 
+# gate-log [lines]
+#
+# The gate's OWN log — the one file that records why a command was denied.
+#
+# Why a verb and not a reason on stderr. `deny` answers every refusal with the
+# same `denied command` on purpose: a gate that explains itself is an oracle
+# for state the caller cannot otherwise see — whether a path exists, whether a
+# bundle validated, whether a pid is running, which names a conf allowlists.
+# The reason is still written, and it always was; what was missing is that NO
+# verb could read it back, so an agent driving over SSH saw the generic line
+# and had to go through the owner to learn the one-line fix behind it. That is
+# a round trip, not a boundary — so the fix is a bounded reader, and the deny
+# contract is untouched.
+#
+# What this can disclose is exactly what this gate wrote about itself: one
+# sanitised, printable, 512-byte-capped line per invocation, `ax type`'s text
+# already replaced by `<redacted>` at write time. It is passed through the
+# same token-shaped scrub `log` uses, for the same reason — the lines are
+# ours, but "every line anyone ever adds is safe" is not worth depending on.
+#
+# Read-only and focus-free, so it is allowed while the screen is locked: a
+# diagnostic that stops working when the owner locks the machine is the one
+# case an agent most needs it.
+run_gate_log() {
+  local lines="${1:-$LV_UI_GATE_LOG_DEFAULT_LINES}" output
+
+  [[ "$lines" =~ ^[0-9]{1,4}$ ]] || deny "gate-log takes a whole number of lines"
+  (( lines >= 1 )) || deny "gate-log needs at least 1 line"
+  (( lines <= LV_UI_GATE_LOG_MAX_LINES )) \
+    || deny "gate-log is clamped to $LV_UI_GATE_LOG_MAX_LINES lines"
+
+  # Logged BEFORE the read, so this invocation is not in its own output and a
+  # reader is never confused about which line is the one they are looking for.
+  log_command ALLOW "gate-log lines=$lines"
+
+  # The ALLOW line above is this invocation's own; dropping it keeps the
+  # requested count meaning "the N entries before this one". It also means the
+  # file always exists by the time it is read — `log_command` created it — so
+  # an empty answer has exactly one meaning, said below.
+  output="$(tail -n $((lines + 1)) "$LOG_FILE" 2>/dev/null | sed '$d' | redact_token_shaped_runs)"
+  if [[ -z "${output//[[:space:]]/}" ]]; then
+    printf 'localvoxtral ui gate: no entries before this one in %s (this is the first command through this gate).\n' "$LOG_FILE" >&2
+    ACTION_COMPLETED=1
+    return 0
+  fi
+  printf '%s\n' "$output"
+  ACTION_COMPLETED=1
+}
+
 run_quit() {
   require_app_under_test
   log_command ALLOW "pid=$APP_PID"
@@ -1831,6 +2214,23 @@ terminal_process_name() {
     terminal) printf 'Terminal\n' ;;
     *) return 1 ;;
   esac
+}
+
+# An allowlisted NAME -> the absolute path of the file that will run.
+resolve_term_command() { # <name> -> absolute path, or non-zero
+  local name="$1" dir root candidate
+  # A name, never a path: the allowlist matches whole tokens, so `/bin/bash`
+  # would not match `bash` anyway, but refusing the shape keeps the allowlist
+  # about names and this function about where names live.
+  [[ "$name" != */* && "$name" != "." && "$name" != ".." ]] || return 1
+  for dir in $LV_UI_TERM_COMMAND_DIRS; do
+    root="$(cd "$dir" 2>/dev/null && pwd -P)" || continue
+    candidate="$root/$name"
+    [[ -f "$candidate" && -x "$candidate" ]] || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+  return 1
 }
 
 next_term_id() {
@@ -1874,25 +2274,72 @@ run_term_open() {
     token_is_safe "$token" || deny "unsafe token in term command"
   done
 
-  # Logged IN FULL: this is the one verb that carries a command line.
-  log_command ALLOW "terminal=$terminal command=${argv[*]}"
+  # Resolved BEFORE anything is opened. An allowlisted name that is not
+  # installed used to open an empty window and then fail with a window-identity
+  # message; this refuses with nothing opened and names the real problem.
+  # Bash 3.2 (the Mac's /bin/bash) errors on an EMPTY array slice under set -u,
+  # so the arguments after the command name are rendered once, guarded, rather
+  # than expanded at each use.
+  local args_text=""
+  if (( ${#argv[@]} > 1 )); then
+    args_text=" ${argv[*]:1}"
+  fi
 
-  local id marker script app
+  local resolved_command
+  resolved_command="$(resolve_term_command "${argv[0]}")" \
+    || deny "${argv[0]} is allowlisted but is not an executable file in $LV_UI_TERM_COMMAND_DIRS — nothing was opened (install it: scripts/mac/install-ui-artifact.sh, or see \`state\`'s setup.term_open.unresolvable)"
+
+  # Logged IN FULL: this is the one verb that carries a command line.
+  log_command ALLOW "terminal=$terminal command=${argv[*]} resolved=$resolved_command"
+
+  local id marker script app procname pidfile
   id="$(next_term_id)"
   marker="lvui-$id-$RANDOM$RANDOM"
   app="$(terminal_app_name "$terminal")"
+  procname="$(terminal_process_name "$terminal")"
   mkdir -p "$STATE_DIR/terms"
   script="$STATE_DIR/terms/$marker.command"
+  pidfile="$STATE_DIR/terms/$marker.pid"
   {
     printf '#!/bin/sh\n'
-    # OSC 0 title: how focus/close later prove this window is ours. Terminal
-    # and iTerm also show the script's file name, which carries the marker.
+    # `exec` keeps this pid, so the file names the process that ends up running
+    # the command inside the window. It is the ONLY handle on that process once
+    # the command has replaced this shell, and it is what lets a `term open`
+    # that cannot identify its window still take back what it started instead
+    # of leaving it on the owner's desktop.
+    printf 'printf %%s "$$" > %q\n' "$pidfile"
+    # OSC 0 title. A TIE-BREAKER, not the identity — see the snapshot below.
     printf 'printf %s "%s"\n' "'\\033]0;%s\\007'" "$marker"
-    printf 'exec'
-    printf ' %q' "${argv[@]}"
+    # The ABSOLUTE path, not the name: PATH is not this launcher's to rely on.
+    printf 'exec %q' "$resolved_command"
+    if (( ${#argv[@]} > 1 )); then
+      printf ' %q' "${argv[@]:1}"
+    fi
     printf '\n'
   } >"$script"
   chmod 0700 "$script"
+
+  # WHY A SNAPSHOT AND NOT THE TITLE MARKER (field failure 2026-08-30).
+  #
+  # The marker used to be the identity: the launcher printed it as an OSC 0
+  # title and the gate polled for a window carrying it. That cannot work for
+  # the one command this verb exists to run. `lv-attach` execs a whole-view
+  # herdr client, and herdr owns the terminal title from the moment it starts
+  # — docs/agent/invariants.md states it outright ("herdr intercepts OSC 2 per
+  # pane, so a title marker can neither reach nor come back from a
+  # herdr-hosted session"), which is also why the app's own titleMarker join
+  # arm is suppressed there. The marker was overwritten before the poll could
+  # see it, so `term open` reported failure while a real window sat on the
+  # owner's screen that `term focus`/`term close` could never address.
+  #
+  # A window that is NEW since a snapshot taken immediately before `open`
+  # needs no cooperation from the child process at all, so nothing the command
+  # does to its title can hide it.
+  local before_pids before_ids
+  before_pids="$(pgrep -x "$procname" 2>/dev/null | tr '\n' ' ' || true)"
+  # shellcheck disable=SC2086
+  before_ids="$(helper termsnapshot $before_pids 2>/dev/null || true)"
+  [[ -n "$before_ids" ]] || before_ids="-"
 
   announce_takeover "opening a $terminal window"
   case "$terminal" in
@@ -1900,22 +2347,65 @@ run_term_open() {
     *) open -a "$app" "$script" || fail "could not open $app" ;;
   esac
 
-  local pid deadline resolved winid owner=""
-  deadline=$((SECONDS + 20))
+  local pid deadline resolved status winid owner="" ambiguous=0
+  deadline=$((SECONDS + LV_UI_TERM_OPEN_TIMEOUT_SECONDS))
   while (( SECONDS < deadline )); do
-    pid="$(pgrep -n -x "$(terminal_process_name "$terminal")" 2>/dev/null || true)"
+    pid="$(pgrep -n -x "$procname" 2>/dev/null || true)"
     if [[ -n "$pid" ]]; then
-      resolved="$(helper termwindow "$pid" "$marker" 2>/dev/null || true)"
-      if [[ -n "$resolved" ]]; then
+      status=0
+      resolved="$(helper termnew "$pid" "$marker" "$before_ids" 2>/dev/null)" || status=$?
+      if (( status == 0 )) && [[ "$resolved" == ok\ * ]]; then
+        resolved="${resolved#ok }"
         winid="${resolved%% *}"
         owner="${resolved##* }"
+        break
+      fi
+      # Several windows appeared at once and none carries the marker. Waiting
+      # longer cannot make that less ambiguous, so stop now rather than binding
+      # whatever the owner just opened.
+      if (( status == 2 )); then
+        ambiguous=1
         break
       fi
     fi
     sleep 0.5
   done
+
   if [[ -z "$owner" ]]; then
-    fail "opened $app but never saw a window carrying marker $marker"
+    # THREE different faults live here and they have completely different
+    # fixes, so they get three different sentences. Reporting a command that
+    # never ran as a window-identification timeout is what sent the last
+    # investigation down the wrong path entirely.
+    #
+    # The launcher writes its pid before `exec`, so the pid file separates
+    # them: absent means the terminal never ran the launcher at all; present
+    # with a dead process means the command ran and exited immediately (an
+    # empty window is exactly what that looks like); present and alive means
+    # the command is running and only the WINDOW could not be identified.
+    local orphan="" reclaimed="nothing was left running"
+    [[ -f "$pidfile" ]] && orphan="$(cat "$pidfile" 2>/dev/null || true)"
+    local launcher_ran=0 still_running=0
+    [[ "$orphan" =~ ^[1-9][0-9]*$ ]] && launcher_ran=1
+    if (( launcher_ran == 1 )) && kill -0 "$orphan" 2>/dev/null; then
+      still_running=1
+      # A term open that cannot confirm what it started must not leave a window
+      # on the owner's desktop. The pid is the only handle on it once the
+      # window is unidentifiable.
+      kill -TERM "$orphan" 2>/dev/null || true
+      reclaimed="terminated the command it started (pid $orphan); in Ghostty the window closes with it, in Terminal/iTerm it stays showing a finished command"
+    fi
+    rm -f "$script" "$pidfile"
+
+    if (( launcher_ran == 0 )); then
+      fail "$app opened but never ran the launcher, so ${argv[0]} was never executed — $reclaimed. This is not a window-identification problem: check that $app accepts the launcher ($script was removed; re-run to regenerate it)."
+    fi
+    if (( still_running == 0 )); then
+      fail "${argv[0]} ran and exited immediately, which is what an empty terminal window means — $reclaimed. This is the COMMAND failing, not the window being unidentifiable: run it by hand as this user ($resolved_command$args_text) and read its error."
+    fi
+    if (( ambiguous == 1 )); then
+      fail "$app opened, ${argv[0]} is running, but several windows appeared at once so this cannot tell which one it opened — $reclaimed. Re-run without opening a terminal window yourself at the same moment."
+    fi
+    fail "$app opened and ${argv[0]} is running, but no new window appeared within $LV_UI_TERM_OPEN_TIMEOUT_SECONDS seconds — $reclaimed"
   fi
 
   {
@@ -1937,10 +2427,12 @@ load_term_state() { # <id>
   [[ -f "$file" ]] || deny "unknown terminal id $id — this gate did not open it"
   TERM_PID="$(sed -n 's/^pid=//p' "$file" | head -n 1)"
   TERM_MARKER="$(sed -n 's/^marker=//p' "$file" | head -n 1)"
+  TERM_WINDOW="$(sed -n 's/^window=//p' "$file" | head -n 1)"
   TERM_KIND="$(sed -n 's/^terminal=//p' "$file" | head -n 1)"
   # ^[1-9] on purpose: `kill -0 0` signals the whole process group and always
   # succeeds, so pid 0 would read as a live terminal.
-  [[ "$TERM_PID" =~ ^[1-9][0-9]*$ && -n "$TERM_MARKER" ]] || deny "corrupt terminal state for $id"
+  [[ "$TERM_PID" =~ ^[1-9][0-9]*$ && "$TERM_WINDOW" =~ ^[1-9][0-9]*$ ]] \
+    || deny "corrupt terminal state for $id"
   kill -0 "$TERM_PID" 2>/dev/null || deny "$id's terminal process is gone"
 }
 
@@ -1950,7 +2442,7 @@ run_term_focus() {
   load_term_state "$id"
   log_command ALLOW "id=$id pid=$TERM_PID"
   announce_takeover "focusing $TERM_KIND window $id"
-  helper termaction "$TERM_PID" "$TERM_MARKER" focus || fail "could not focus $id"
+  helper termaction "$TERM_PID" "$TERM_WINDOW" focus || fail "could not focus $id"
   ACTION_COMPLETED=1
   printf 'focused %s\n' "$id"
 }
@@ -1960,8 +2452,9 @@ run_term_close() {
   require_unlocked_screen
   load_term_state "$id"
   log_command ALLOW "id=$id pid=$TERM_PID"
-  helper termaction "$TERM_PID" "$TERM_MARKER" close || fail "could not close $id"
-  rm -f "$STATE_DIR/terms/$id.state" "$STATE_DIR/terms/$TERM_MARKER.command"
+  helper termaction "$TERM_PID" "$TERM_WINDOW" close || fail "could not close $id"
+  rm -f "$STATE_DIR/terms/$id.state" \
+    "$STATE_DIR/terms/$TERM_MARKER.command" "$STATE_DIR/terms/$TERM_MARKER.pid"
   ACTION_COMPLETED=1
   printf 'closed %s\n' "$id"
 }
@@ -2028,6 +2521,10 @@ case "${ARGV[0]}" in
   log)
     (( ${#ARGV[@]} <= 2 )) || deny "log takes at most a number of minutes"
     if (( ${#ARGV[@]} == 1 )); then run_log; else run_log "${ARGV[1]}"; fi
+    ;;
+  gate-log)
+    (( ${#ARGV[@]} <= 2 )) || deny "gate-log takes at most a number of lines"
+    if (( ${#ARGV[@]} == 1 )); then run_gate_log; else run_gate_log "${ARGV[1]}"; fi
     ;;
   dictate)
     case "${ARGV[1]:-}" in

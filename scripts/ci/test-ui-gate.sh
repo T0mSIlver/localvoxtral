@@ -66,6 +66,34 @@ STUB
 cat >"$STUB_BIN/open" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_OPEN_LOG"
+# With STUB_OPEN_SPAWN set, stand in for a terminal that actually ran the
+# launcher: a long-lived process that recorded its pid the way the launcher's
+# `printf "$$" > <pidfile>` does before `exec`. That is the handle `term open`
+# uses to take back what it started when it cannot identify the window, so the
+# suite has to have a real process to watch die. /bin/sleep, not the stubbed
+# `sleep` that returns instantly.
+case "${STUB_OPEN_SPAWN:-}" in
+  "") ;;
+  dead)
+    # The launcher ran and the command exited immediately — the pid file is
+    # there, the process is not. An empty terminal window is what the owner
+    # sees when this happens.
+    launcher=""
+    for launcher in "$@"; do :; done
+    ( printf '%s' "$BASHPID" >"${launcher%.command}.pid" ) &
+    wait
+    ;;
+  *)
+    launcher=""
+    for launcher in "$@"; do :; done
+    ( printf '%s' "$BASHPID" >"${launcher%.command}.pid"; exec /bin/sleep 300 ) &
+    # The pid file has to exist before this returns, or the gate races it.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [[ -s "${launcher%.command}.pid" ]] && break
+      /bin/sleep 0.1
+    done
+    ;;
+esac
 exit "${STUB_OPEN_STATUS:-0}"
 STUB
 
@@ -122,8 +150,23 @@ case "$2" in
     [[ -n "${STUB_WINDOW_RESULT:-}" ]] || exit 1
     printf '%s\n' "$STUB_WINDOW_RESULT"
     ;;
-  termwindow)
-    printf '9001 %s\n' "$3"
+  termsnapshot)
+    # The window ids the terminal owned BEFORE `open`. The gate diffs against
+    # these, so the suite can say "one new window", "none" or "several".
+    printf '%s\n' "${STUB_TERM_SNAPSHOT:-}"
+    ;;
+  termnew)
+    # $3 owner pid, $4 marker, $5 excluded ids. The exit code is the contract:
+    # 0 with `ok <winid> <ownerpid>`, 1 for "nothing new yet", 2 for "several
+    # appeared and I will not guess".
+    case "${STUB_TERMNEW:-ok}" in
+      ok) printf 'ok %s %s\n' "${STUB_TERMNEW_WINDOW:-9001}" "$3" ;;
+      none) exit 1 ;;
+      ambiguous)
+        printf 'helper: 2 windows of pid %s appeared since the snapshot (ids 9001 9002)\n' "$3" >&2
+        exit 2
+        ;;
+    esac
     ;;
   axdump)
     echo '[{"role":"AXWindow","children":[]}]'
@@ -214,6 +257,11 @@ STUB
 chmod +x "$STUB_BIN"/*
 
 install -m 0755 "$LOCK_PROBE_SRC" "$FAKE_HOME/bin/localvoxtral-screen-lock-state.sh"
+# `term open` resolves an allowlisted NAME to an executable file under
+# LV_UI_TERM_COMMAND_DIRS ($HOME/bin) before it opens anything, so the happy
+# paths below need the wrapper actually installed — which is also the state the
+# owner's Mac was NOT in on 2026-08-30.
+install -m 0700 "$ROOT_DIR/scripts/mac/lv-attach.sh" "$FAKE_HOME/bin/lv-attach"
 
 # --- fixtures --------------------------------------------------------------
 
@@ -266,6 +314,7 @@ run_gate() { # <command> [env assignments...]
     HOME="$FAKE_HOME" \
     SSH_ORIGINAL_COMMAND="$command" \
     LV_UI_LOCK_PROBE="$FAKE_HOME/bin/localvoxtral-screen-lock-state.sh" \
+    LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${TERM_OPEN_TIMEOUT:-2}" \
     LV_SCREEN_LOCK_STATE="${LOCK_STATE:-unlocked}" \
     STUB_SAY_LOG="$TMP_DIR/say.log" \
     STUB_OPEN_LOG="$TMP_DIR/open.log" \
@@ -707,13 +756,181 @@ grep -q 'command=lv-attach pane-7' "$LOG_FILE" \
   || fail "term open did not log the command in full"
 SCRIPT_FILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.command' | head -n 1)"
 [[ -n "$SCRIPT_FILE" ]] || fail "term open did not write a launcher script"
-grep -q '^exec lv-attach pane-7$' "$SCRIPT_FILE" \
+grep -q "^exec $FAKE_HOME/bin/lv-attach pane-7\$" "$SCRIPT_FILE" \
   || fail "launcher script does not exec exactly the validated argv: $(cat "$SCRIPT_FILE")"
-pass "allowed: term open runs an opted-in wrapper and logs the command in full"
+pass "allowed: term open runs an opted-in wrapper, by absolute path, and logs the command in full"
 
 assert_allowed 'term focus term-1' 'term focus on a window this gate opened'
 assert_allowed 'term close term-1' 'term close on a window this gate opened'
 assert_denied 'term focus term-1' 'term focus after the window was closed'
+
+# --- the command is resolved to a file BEFORE anything is opened ------------
+#
+# Field failure 2026-08-30: `term open ghostty lv-attach` opened an EMPTY
+# Ghostty window and then failed with a window-identification message. The
+# launcher said `exec lv-attach` and relied on PATH; a script started by
+# `open -n -a Ghostty --args -e <script>` gets no login-shell environment and
+# `$HOME/bin` is on neither its PATH nor sshd's, so the launcher hit `command
+# not found` and exited instantly. The window was real, the diagnosis was not.
+
+# An allowlisted name with nothing behind it must refuse with NOTHING opened,
+# and say which of the two problems it is.
+mv "$FAKE_HOME/bin/lv-attach" "$FAKE_HOME/bin/lv-attach.aside"
+: >"$TMP_DIR/open.log"
+assert_denied 'term open ghostty lv-attach' 'an allowlisted command that is not installed'
+[[ ! -s "$TMP_DIR/open.log" ]] \
+  || fail "term open opened a window for a command it could not resolve: $(cat "$TMP_DIR/open.log")"
+[[ "$(log_tail)" == *"is not an executable file"* ]] \
+  || fail "the unresolvable refusal did not name the real problem: $(log_tail)"
+pass "an allowlisted command that is not installed refuses without opening a window"
+
+# And it is visible BEFORE a verb is tried, which is the whole point.
+run_gate 'state'
+[[ "$GATE_STDOUT" == *'"unresolvable":["lv-attach"]'* ]] \
+  || fail "state did not report the allowlisted name that resolves to nothing: $GATE_STDOUT"
+pass "state reports an allowlisted command with no executable behind it"
+
+# Not executable is the same fault wearing a different hat (a copy that lost
+# its mode bit is exactly what an interrupted install leaves).
+install -m 0600 "$FAKE_HOME/bin/lv-attach.aside" "$FAKE_HOME/bin/lv-attach"
+assert_denied 'term open ghostty lv-attach' 'an allowlisted command that is not executable'
+run_gate 'state'
+[[ "$GATE_STDOUT" == *'"unresolvable":["lv-attach"]'* ]] \
+  || fail "state treated a non-executable file as resolvable: $GATE_STDOUT"
+install -m 0700 "$FAKE_HOME/bin/lv-attach.aside" "$FAKE_HOME/bin/lv-attach"
+rm -f "$FAKE_HOME/bin/lv-attach.aside"
+pass "a file that is not executable does not read as an installed command"
+
+# The allowlist is about NAMES; resolution is about where a name lives. A path
+# in the command position is refused outright rather than resolved.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach /bin/sh ../bin/lv-attach"'
+assert_denied 'term open ghostty /bin/sh' 'an absolute path in the command position'
+assert_denied 'term open ghostty ../bin/lv-attach' 'a relative path in the command position'
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
+pass "term open takes a command name, never a path"
+
+# --- the window is identified by a CGWindowID, never by a title marker ------
+#
+# Field failure 2026-08-30: `term open ghostty lv-attach` reported "opened
+# Ghostty but never saw a window carrying marker lvui-term-1-…" while a real
+# window sat on the owner's screen. `lv-attach` execs a whole-view herdr
+# client, and herdr owns the terminal title from the moment it starts —
+# docs/agent/invariants.md says a title marker "can neither reach nor come
+# back from a herdr-hosted session", which is also why the app's own
+# titleMarker join arm is suppressed there. The gate reused a title marker
+# anyway, so the one command this verb exists to run could never be seen, and
+# the window it did open was left unregistered: `term focus`/`term close`
+# could not address it, and nothing could close it.
+
+clear_state
+: >"$TMP_DIR/swift.log"
+run_gate 'term open ghostty lv-attach pane-7' STUB_PGREP_PID=$$ STUB_TERM_SNAPSHOT="4001,4002"
+(( GATE_STATUS == 0 )) || fail "term open failed: $GATE_STDERR"
+# The snapshot is taken BEFORE `open`, and the ids it found are what the new
+# window is diffed against. Without that this verb is back to asking the child
+# process to tag its own window.
+grep -q 'termsnapshot' "$TMP_DIR/swift.log" \
+  || fail "term open did not snapshot the terminal's windows before opening one: $(cat "$TMP_DIR/swift.log")"
+grep -q 'termnew .* 4001,4002' "$TMP_DIR/swift.log" \
+  || fail "term open did not exclude the windows that existed before it ran: $(cat "$TMP_DIR/swift.log")"
+TERM_ID="${GATE_STDOUT#opened }"
+TERM_ID="${TERM_ID%% *}"
+grep -q 'window=9001' "$FAKE_HOME/.localvoxtral-ui-gate/terms/$TERM_ID.state" \
+  || fail "term open did not record the window id it resolved"
+pass "term open identifies its window by what appeared since a pre-open snapshot"
+
+: >"$TMP_DIR/swift.log"
+assert_allowed "term focus $TERM_ID" 'term focus by recorded window id'
+grep -q "termaction $$ 9001 focus" "$TMP_DIR/swift.log" \
+  || fail "term focus did not address the recorded window id: $(cat "$TMP_DIR/swift.log")"
+: >"$TMP_DIR/swift.log"
+assert_allowed "term close $TERM_ID" 'term close by recorded window id'
+grep -q "termaction $$ 9001 close" "$TMP_DIR/swift.log" \
+  || fail "term close did not address the recorded window id: $(cat "$TMP_DIR/swift.log")"
+pass "term focus and term close address a window id, not a title"
+
+# The marker survives only as a tie-breaker for commands that leave the title
+# alone. It must not be what any verb depends on.
+TERMNEW_BODY="$(helper_case_body termnew)"
+grep -q 'excluded' <<<"$TERMNEW_BODY" \
+  || fail "termnew no longer decides on the pre-open snapshot"
+grep -q 'TIE-BREAKER' <<<"$TERMNEW_BODY" \
+  || fail "the marker is no longer documented as a tie-breaker in termnew"
+TERMACTION_BODY="$(helper_case_body termaction)"
+grep -q 'marker' <<<"$TERMACTION_BODY" \
+  && fail "termaction still resolves a window by title marker — herdr overwrites it"
+pass "no term verb resolves a window by a title herdr can overwrite"
+
+# --- a failed term open leaves no residue -----------------------------------
+#
+# The same field failure left an orphaned Ghostty window running a herdr client
+# that no verb could reach. If this verb cannot identify what it opened, it
+# must take back what it started.
+
+clear_state
+: >"$TMP_DIR/open.log"
+run_gate 'term open ghostty lv-attach pane-7' \
+  STUB_PGREP_PID=$$ STUB_TERMNEW=none STUB_OPEN_SPAWN=1
+(( GATE_STATUS != 0 )) || fail "term open reported success with no window resolved"
+[[ "$GATE_STDERR" == *"no new window appeared"* ]] \
+  || fail "term open did not say what went wrong: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"terminated the command it started"* ]] \
+  || fail "term open did not reclaim the process it started: $GATE_STDERR"
+ORPHAN_PIDFILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.pid' 2>/dev/null | head -n 1)"
+[[ -z "$ORPHAN_PIDFILE" ]] \
+  || fail "term open left a pid file behind after failing: $ORPHAN_PIDFILE"
+[[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null)" ]] \
+  || fail "a failed term open registered a terminal anyway"
+pass "a term open that cannot identify its window kills what it started and registers nothing"
+
+# --- and it does not tell the wrong story about WHY -------------------------
+#
+# Three faults live behind "no window": the terminal never ran the launcher,
+# the command ran and exited immediately, and the command is running but the
+# window could not be identified. They have completely different fixes, and
+# reporting the second as the third is what produced a confidently wrong root
+# cause on 2026-08-30. The launcher writes its pid before `exec`, so the pid
+# file separates them.
+
+clear_state
+run_gate 'term open ghostty lv-attach pane-7' STUB_PGREP_PID=$$ STUB_TERMNEW=none
+(( GATE_STATUS != 0 )) || fail "term open reported success with no launcher run"
+[[ "$GATE_STDERR" == *"never ran the launcher"* ]] \
+  || fail "a launcher that never ran was not reported as such: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"not a window-identification problem"* ]] \
+  || fail "the message does not rule out the fault it is NOT: $GATE_STDERR"
+pass "a terminal that never ran the launcher says so, and says what it is not"
+
+clear_state
+run_gate 'term open ghostty lv-attach pane-7' \
+  STUB_PGREP_PID=$$ STUB_TERMNEW=none STUB_OPEN_SPAWN=dead
+(( GATE_STATUS != 0 )) || fail "term open reported success for a command that exited"
+[[ "$GATE_STDERR" == *"exited immediately"* ]] \
+  || fail "a command that exited was not reported as such: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"empty terminal window"* ]] \
+  || fail "the message does not connect the fault to what the owner sees: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"$FAKE_HOME/bin/lv-attach pane-7"* ]] \
+  || fail "the message does not hand back the command to run by hand: $GATE_STDERR"
+[[ "$GATE_STDERR" != *"no new window appeared"* ]] \
+  || fail "a failed COMMAND was reported as a window-identification timeout: $GATE_STDERR"
+pass "a command that exits immediately is reported as a failed command, not a missing window"
+
+# Several windows at once: waiting longer cannot make that less ambiguous, and
+# binding the wrong one would point `term close` at whatever the owner just
+# opened. Refuse, say so, and still leave nothing behind.
+clear_state
+run_gate 'term open ghostty lv-attach pane-7' \
+  STUB_PGREP_PID=$$ STUB_TERMNEW=ambiguous STUB_OPEN_SPAWN=1
+(( GATE_STATUS != 0 )) || fail "term open bound a window while several appeared at once"
+[[ "$GATE_STDERR" == *"several windows appeared"* ]] \
+  || fail "the ambiguous case did not explain itself: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"terminated the command it started"* ]] \
+  || fail "the ambiguous case did not reclaim the process it started: $GATE_STDERR"
+[[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null)" ]] \
+  || fail "the ambiguous case registered a terminal anyway"
+pass "term open refuses to guess between windows that appeared at the same moment"
+
+clear_state
 
 echo "== 10. quit terminates only the recorded process =="
 
@@ -828,7 +1045,7 @@ assert_denied 'shot settings' 'shot of a window owned by the terminal this gate 
 # keystroke and no capture, so nothing typed by this gate can reach a shell.
 : >"$TMP_DIR/swift.log"
 assert_allowed 'term focus term-1' 'term focus reaches the terminal'
-grep -q "termaction ${SELF_PID} " "$TMP_DIR/swift.log" \
+grep -q "termaction ${SELF_PID} [0-9]" "$TMP_DIR/swift.log" \
   || fail "term focus did not address the terminal it opened"
 if grep -qE " (axclick|axtype|key) " "$TMP_DIR/swift.log"; then
   fail "term focus reached an actuation subcommand"
@@ -1879,6 +2096,72 @@ assert_attach_refused 'a destination that is an ssh option' 'destination=-oProxy
 assert_attach_refused 'a destination with a space'   'destination=builder sh' 'work'
 assert_attach_refused 'a destination with a colon'   'destination=builder:2222' 'work'
 
+# --- `--check`: the one flag, and the reason the gate has one source of truth
+#
+# The UI gate's `state` asks the INSTALLED wrapper whether its config resolves
+# rather than re-reading ~/.lv-attach.conf itself, so this flag is now part of
+# the boundary's contract. What has to stay true: it prints a verdict, it runs
+# NOTHING, and it does not turn the wrapper into a thing that takes flags.
+
+run_attach $'destination=builder\n' --check
+(( ATTACH_STATUS == 0 )) || fail "--check refused a resolvable config: $ATTACH_STDERR"
+CHECK_OUT="$(cat "$TMP_DIR/attach.out")"
+[[ "$CHECK_OUT" == *"conf=ok"* ]] || fail "--check did not report conf=ok: $CHECK_OUT"
+[[ "$CHECK_OUT" == *"destination_kind=alias"* ]] \
+  || fail "--check did not classify a bare alias: $CHECK_OUT"
+[[ "$CHECK_OUT" == *"destination=builder"* ]] \
+  || fail "--check withheld a bare alias, which is the value an operator needs: $CHECK_OUT"
+[[ "$CHECK_OUT" == *"session=absent"* ]] || fail "--check misreported the session: $CHECK_OUT"
+[[ ! -s "$SSH_LOG" ]] || fail "--check ran ssh: $(cat "$SSH_LOG")"
+pass "lv-attach --check reports a resolvable config and runs nothing"
+
+run_attach $'destination=builder\nsession=work\n' --check
+[[ "$(cat "$TMP_DIR/attach.out")" == *"session=configured"* ]] \
+  || fail "--check did not see the configured default session"
+
+# A `user@host` destination is an account AND an address. The gate's stated
+# posture is that no host, account or session id crosses it (`app` answers in a
+# closed vocabulary for the same reason), so the SHAPE is reported and the
+# value is not. A bare alias is a label in the owner's own ~/.ssh/config and is.
+run_attach $'destination=deploy@build.local\n' --check
+CHECK_OUT="$(cat "$TMP_DIR/attach.out")"
+(( ATTACH_STATUS == 0 )) || fail "--check refused a valid user@host destination"
+[[ "$CHECK_OUT" == *"destination_kind=user@host"* ]] \
+  || fail "--check did not classify a user@host destination: $CHECK_OUT"
+[[ "$CHECK_OUT" != *"build.local"* ]] \
+  || fail "--check echoed a user@host destination — an account and an address must not cross"
+[[ "$CHECK_OUT" != *"deploy"* ]] \
+  || fail "--check echoed the account half of a user@host destination"
+pass "lv-attach --check reports a user@host destination's shape and withholds its value"
+
+for check_case in "no-destination:session=work" "invalid-destination:destination=-oProxyCommand=id"; do
+  expected="${check_case%%:*}"
+  conf="${check_case#*:}"
+  run_attach "$conf" --check
+  (( ATTACH_STATUS != 0 )) || fail "--check reported success for $expected"
+  [[ "$(cat "$TMP_DIR/attach.out")" == *"conf=$expected"* ]] \
+    || fail "--check did not report conf=$expected: $(cat "$TMP_DIR/attach.out")"
+  [[ ! -s "$SSH_LOG" ]] || fail "--check ran ssh while reporting $expected"
+  pass "lv-attach --check reports: $expected"
+done
+# The value it is refusing is arbitrary text from a file; it is not echoed.
+[[ "$(cat "$TMP_DIR/attach.out")" != *"ProxyCommand"* ]] \
+  || fail "--check echoed the destination it was refusing"
+
+rm -f "$ATTACH_CONF"
+ATTACH_STATUS=0
+env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$FAKE_HOME" \
+  LV_ATTACH_CONF="$ATTACH_CONF" STUB_SSH_LOG="$SSH_LOG" \
+  bash "$ATTACH" --check >"$TMP_DIR/attach.out" 2>/dev/null || ATTACH_STATUS=$?
+(( ATTACH_STATUS != 0 )) || fail "--check reported success with no config file"
+[[ "$(cat "$TMP_DIR/attach.out")" == *"conf=missing"* ]] \
+  || fail "--check did not report a missing config: $(cat "$TMP_DIR/attach.out")"
+pass "lv-attach --check reports: missing"
+
+# --check must not be a precedent. Every other flag is still refused outright.
+assert_attach_refused 'a flag that is not --check' 'destination=builder' '--session'
+assert_attach_refused 'a flag glued to a value'    'destination=builder' '--check=1'
+
 # Source pins: the properties that make the NAME safe to allowlist, which no
 # argv test can prove on its own.
 # CODE lines only: the file's own header names `bash -c` and `eval` as the
@@ -1937,6 +2220,403 @@ cmp -s "$ROOT_DIR/scripts/mac/lv-attach.sh" "$WRAPPER_HOME/bin/lv-attach" \
   || fail "the installed wrapper is not the reviewed one from the repo"
 pass "a build install ships the reviewed wrapper rather than leaving it hand-maintained"
 
+# The destination is ordinary configuration, and "what is this file called and
+# what goes in it" cost a round trip through the owner. A template is written
+# when nothing is there — with NO active destination, because an installer that
+# filled one in would be guessing which machine to open a terminal onto.
+ATTACH_TEMPLATE="$WRAPPER_HOME/.lv-attach.conf"
+[[ -f "$ATTACH_TEMPLATE" ]] \
+  || fail "the installer left the operator to discover ~/.lv-attach.conf's name and format"
+grep -q '^[[:space:]]*destination=' "$ATTACH_TEMPLATE" \
+  && fail "the installer wrote an ACTIVE destination — it cannot know which machine to reach"
+grep -q '# destination=' "$ATTACH_TEMPLATE" \
+  || fail "the template does not show the destination= line it is asking for"
+# It resolves to a distinguishable verdict rather than looking like a missing
+# file: `no-destination` is what ui-gate-doctor turns into a one-line fix.
+ATTACH_STATUS=0
+env -i PATH="$STUB_BIN:/usr/bin:/bin" HOME="$WRAPPER_HOME" \
+  LV_ATTACH_CONF="$ATTACH_TEMPLATE" STUB_SSH_LOG="$SSH_LOG" \
+  bash "$ATTACH" --check >"$TMP_DIR/attach.out" 2>/dev/null || ATTACH_STATUS=$?
+[[ "$(cat "$TMP_DIR/attach.out")" == *"conf=no-destination"* ]] \
+  || fail "the installed template does not read as no-destination: $(cat "$TMP_DIR/attach.out")"
+
+# Never overwritten: a reinstall that reset the owner's destination would be
+# worse than shipping no template at all.
+printf 'destination=mymachine\n' >"$ATTACH_TEMPLATE"
+env HOME="$WRAPPER_HOME" LV_UI_ARTIFACT_DEST_ROOT="$WRAPPER_ROOT" \
+  bash "$INSTALLER" "$WRAPPER_SRC_APP" --no-hint >/dev/null 2>&1 \
+  || fail "the installer failed on a reinstall"
+[[ "$(cat "$ATTACH_TEMPLATE")" == "destination=mymachine" ]] \
+  || fail "a reinstall clobbered the owner's lv-attach destination"
+pass "the installer templates ~/.lv-attach.conf once and never overwrites it"
+
+# --- and it does NOT write the gate's allowlist -----------------------------
+#
+# LV_UI_TERM_COMMANDS lives in ~/.localvoxtral-ui-gate.conf and is the gate's
+# ALLOWLIST — the same object as the gate script, one layer up. The rule that
+# CI must never write the gate script applies to what the gate will accept for
+# exactly the same reason: an empty default exists to force a deliberate grant,
+# and a grant that arrives with a build is not one. The owner runs one
+# documented append (ui-gate-doctor.sh prints it); this pins that no installer
+# ever does it for them.
+[[ ! -e "$WRAPPER_HOME/.localvoxtral-ui-gate.conf" ]] \
+  || fail "the installer wrote the gate's conf — the term-open allowlist must stay an owner grant"
+grep -q 'LV_UI_TERM_COMMANDS=' "$INSTALLER" \
+  && fail "install-ui-artifact.sh mentions LV_UI_TERM_COMMANDS as an assignment — it must never write the allowlist"
+pass "no installer widens term open's allowlist"
+
+
+echo
+echo "== 25. state reports SETUP readiness, and reports facts rather than contents =="
+
+# Field session 2026-08-30: an operator drove this gate for an hour and hit
+# `term open` refusing everything and `app` denying. The causes were three
+# ABSENT files and one unset default, each a one-line fix, and NONE of them was
+# visible from outside — a missing conf and a broken verb produce the same
+# `denied command`. `state` now answers the question the operator actually has,
+# which is "which verbs will work if I try them".
+
+state_json() { # <description> [env...]
+  local description="$1"
+  shift
+  run_gate 'state' "$@"
+  (( GATE_STATUS == 0 )) \
+    || fail "$description: state exited $GATE_STATUS ($GATE_STDERR)"
+  printf '%s' "$GATE_STDOUT"
+}
+
+state_field() { # <json> <python expression over `s`>
+  python3 -c 'import json,sys; s=json.loads(sys.stdin.read()); print(eval(sys.argv[1]))' "$2" <<<"$1"
+}
+
+clear_state
+clear_conf
+rm -f "$FAKE_HOME/.lv-attach.conf" "$FAKE_HOME/bin/lv-attach"
+
+# 1. The state the owner's Mac was actually in.
+STATE="$(state_json 'the unconfigured machine')"
+python3 -m json.tool <<<"$STATE" >/dev/null || fail "state is no longer valid JSON: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["gate_conf"]["status"]')" == "absent" ]] \
+  || fail "state did not report the missing gate conf: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["term_open"]["commands"]')" == "[]" ]] \
+  || fail "state claimed term open would accept something with no conf: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["lv_attach"]["installed"]')" == "False" ]] \
+  || fail "state claimed the wrapper is installed when it is not: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["consent"]')" == "unset" ]] \
+  || fail "state did not report the control socket's runtime consent: $STATE"
+pass "state names every absent piece of setup instead of leaving a verb to fail"
+
+# The prediction has to hold: this is the same refusal the operator hit.
+assert_denied 'term open ghostty lv-attach' 'term open with the setup state above'
+pass "state's report and term open's refusal agree"
+
+# 2. Configured. The wrapper answers for its own config (one validator, in the
+#    file that holds the boundary), so `state` reports what the INSTALLED
+#    wrapper says rather than a second copy of its rules.
+install -m 0700 "$ATTACH" "$FAKE_HOME/bin/lv-attach"
+printf 'destination=builder\nsession=work\n' >"$FAKE_HOME/.lv-attach.conf"
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
+STATE="$(state_json 'the configured machine')"
+[[ "$(state_field "$STATE" 's["setup"]["gate_conf"]["status"]')" == "ok" ]] \
+  || fail "state did not report a parsing conf: $STATE"
+[[ "$(state_field "$STATE" '" ".join(s["setup"]["term_open"]["commands"])')" == "lv-attach" ]] \
+  || fail "state did not report what term open would accept: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["lv_attach"]["allowlisted"]')" == "True" ]] \
+  || fail "state did not notice the wrapper is allowlisted: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["lv_attach"]["conf"]')" == "ok" ]] \
+  || fail "state did not resolve the wrapper's config: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["lv_attach"]["destination"]')" == "builder" ]] \
+  || fail "state withheld a bare ssh alias, which is the value an operator needs: $STATE"
+pass "state predicts a working term open, down to the destination it would reach"
+
+: >"$TMP_DIR/open.log"
+assert_allowed 'term open ghostty lv-attach work' 'term open with the setup state above' \
+  STUB_PGREP_PID=5150
+pass "state's report and term open's success agree"
+
+# 3. A user@host destination is an account and an address. `app`'s reply
+#    vocabulary deliberately carries no host or session id; the same line is
+#    drawn here.
+printf 'destination=deploy@build.local\n' >"$FAKE_HOME/.lv-attach.conf"
+STATE="$(state_json 'a user@host destination')"
+[[ "$(state_field "$STATE" 's["setup"]["lv_attach"]["conf"]')" == "ok" ]] \
+  || fail "a valid user@host destination did not resolve: $STATE"
+[[ "$(state_field "$STATE" 'repr(s["setup"]["lv_attach"]["destination"])')" == "None" ]] \
+  || fail "state echoed a user@host destination: $STATE"
+[[ "$STATE" != *"build.local"* ]] || fail "state leaked a destination host: $STATE"
+[[ "$STATE" != *"deploy"* ]] || fail "state leaked a destination account: $STATE"
+pass "state reports a user@host destination as resolvable without naming it"
+
+printf 'destination=-oProxyCommand=id\n' >"$FAKE_HOME/.lv-attach.conf"
+STATE="$(state_json 'a destination the wrapper refuses')"
+[[ "$(state_field "$STATE" 's["setup"]["lv_attach"]["conf"]')" == "invalid-destination" ]] \
+  || fail "state did not report a refused destination: $STATE"
+[[ "$STATE" != *"ProxyCommand"* ]] || fail "state echoed the destination it was refusing: $STATE"
+pass "state reports a refused destination without quoting it"
+
+printf 'destination=builder\n' >"$FAKE_HOME/.lv-attach.conf"
+
+# 4. A conf that allowlists a permanently-denied name reads as configured and
+#    behaves as unconfigured. Without this the operator sees only "denied".
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach ssh"'
+STATE="$(state_json 'a conf that allowlists a denylisted name')"
+[[ "$(state_field "$STATE" '" ".join(s["setup"]["term_open"]["refused_by_denylist"])')" == "ssh" ]] \
+  || fail "state did not flag an allowlisted name the denylist refuses anyway: $STATE"
+pass "state flags an allowlist entry the permanent denylist refuses"
+
+# 5. A conf with a syntax error used to take the WHOLE gate down: `source`
+#    returns non-zero, `set -e` exits, and the client sees nothing at all. It
+#    now degrades to the closed defaults, says so, and is reported.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach'
+STATE="$(state_json 'a conf with a syntax error')"
+[[ "$(state_field "$STATE" 's["setup"]["gate_conf"]["status"]')" == "unparsable" ]] \
+  || fail "state did not report an unparsable conf: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["term_open"]["commands"]')" == "[]" ]] \
+  || fail "an unparsable conf did not fall back to the CLOSED default: $STATE"
+# A fresh run, not the one above: `STATE="$(state_json ...)"` is a command
+# substitution, so run_gate's GATE_STDERR is set in a subshell and never
+# reaches here.
+run_gate 'state'
+[[ "$GATE_STDERR" == *"syntax error"* ]] \
+  || fail "an unparsable conf was ignored silently: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"EMPTY allowlist"* ]] \
+  || fail "the warning does not say what the fallback means: $GATE_STDERR"
+assert_denied 'term open ghostty lv-attach' 'term open under an unparsable conf'
+pass "an unparsable conf degrades to the closed defaults instead of killing every verb"
+clear_conf
+
+# 6. What `launch` would accept, by name — and nothing that is not a validated
+#    localvoxtral bundle. Mail.app sits in the same fixture root.
+STATE="$(state_json 'the artifact roots')"
+ARTIFACT_NAMES="$(state_field "$STATE" '" ".join(sorted(a["name"] for a in s["setup"]["artifacts"]))')"
+[[ "$ARTIFACT_NAMES" == "localvoxtral-dogfood.app localvoxtral.app" ]] \
+  || fail "state listed the wrong launchable bundles: $ARTIFACT_NAMES"
+[[ "$STATE" != *"Mail.app"* ]] \
+  || fail "state listed a bundle launch would refuse — the list must be what launch accepts"
+[[ "$(state_field "$STATE" 'str([a["dogfood"] for a in s["setup"]["artifacts"] if a["name"]=="localvoxtral-dogfood.app"])')" == "[True]" ]] \
+  || fail "state did not distinguish the dogfood slot: $STATE"
+pass "state lists exactly the bundles launch would accept, and which are dogfood"
+
+# 7. The control socket: both halves, because `app` needs both.
+STATE="$(state_json 'the control socket, armed and bound' \
+  STUB_DEFAULT_debug_dogfood_control_socket_enabled=1 \
+  LV_UI_CONTROL_SOCKET="$CONTROL_SOCKET")"
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["present"]')" == "True" ]] \
+  || fail "state did not see a bound control socket: $STATE"
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["consent"]')" == "on" ]] \
+  || fail "state did not read the runtime consent: $STATE"
+STATE="$(state_json 'the control socket, unbound' LV_UI_CONTROL_SOCKET="$NOT_A_SOCKET")"
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["present"]')" == "False" ]] \
+  || fail "a regular file read as a bound socket: $STATE"
+pass "state reports the control socket's consent and whether anything is bound"
+
+# 8. Facts, never contents. A conf is sourced by this gate and read by the
+#    wrapper; neither file's text may reach the caller.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"' 'LV_UI_UNRELATED_SECRET="hunter2"'
+printf 'destination=builder\n# a private note about the host\n' >"$FAKE_HOME/.lv-attach.conf"
+STATE="$(state_json 'a conf carrying an unrelated value')"
+[[ "$STATE" != *"hunter2"* ]] || fail "state echoed a conf file's contents: $STATE"
+[[ "$STATE" != *"private note"* ]] || fail "state echoed the lv-attach conf's contents: $STATE"
+[[ "$STATE" != *"LV_UI_UNRELATED_SECRET"* ]] || fail "state echoed a conf key it does not use: $STATE"
+pass "state reports presence and verdicts, never a config file's contents"
+clear_conf
+
+# 9. The gate's own revision — "the gate is old" was one of the explanations
+#    the operator could not rule out.
+STATE="$(state_json 'the gate revision')"
+GATE_REV="$(state_field "$STATE" 's["setup"]["gate"]["revision"]')"
+[[ "$GATE_REV" =~ ^[0-9a-f]{12}$ ]] || fail "state did not report a gate revision: $GATE_REV"
+GATE_SUM="$(shasum -a 256 "$GATE" 2>/dev/null || sha256sum "$GATE" 2>/dev/null || true)"
+[[ "${GATE_SUM:0:12}" == "$GATE_REV" ]] \
+  || fail "the reported revision is not this file's digest ($GATE_REV vs ${GATE_SUM:0:12})"
+pass "state reports which build of the gate answered"
+
+# 10. Still the one verb that answers while locked: readiness is exactly what
+#     an operator needs before deciding whether to ask the owner to unlock.
+LOCK_STATE=locked
+STATE="$(state_json 'state while the screen is locked')"
+[[ "$(state_field "$STATE" 's["screen_lock"]')" == "locked" ]] \
+  || fail "state lost its lock reporting: $STATE"
+[[ -n "$(state_field "$STATE" 's["setup"]["gate"]["revision"]')" ]] \
+  || fail "state stopped reporting setup while locked: $STATE"
+LOCK_STATE=unlocked
+pass "state reports setup while the screen is locked"
+
+echo
+echo "== 26. gate-log — the denial reason, without deny explaining itself =="
+
+# `deny` answers every refusal with the same `denied command` ON PURPOSE: a
+# gate that explains itself is an oracle for state the caller cannot otherwise
+# see. The reason was always written to the gate's own log; what was missing is
+# that no verb could read it back, so an agent over SSH saw the generic line
+# and had to go through the OWNER to learn a one-line fix. That is a round
+# trip, not a boundary. So: a bounded reader, and the deny contract untouched
+# (every assert_denied above still pins stdout, stderr and exit 126).
+
+clear_state
+clear_conf
+assert_denied 'term open ghostty lv-attach' 'the refusal whose reason was invisible'
+assert_allowed 'gate-log 5' 'gate-log reads the gate own log'
+[[ "$GATE_STDOUT" == *"no allowlisted commands"* ]] \
+  || fail "gate-log did not return the reason behind the last denial: $GATE_STDOUT"
+[[ "$GATE_STDOUT" == *"DENY term open ghostty lv-attach"* ]] \
+  || fail "gate-log did not return the denied command: $GATE_STDOUT"
+pass "a denial's reason is reachable in one verb instead of one round trip through the owner"
+
+# Its own ALLOW line is logged BEFORE the read and dropped from the output, so
+# `gate-log 1` means "the entry before this one" and never answers with itself.
+[[ "$GATE_STDOUT" != *"ALLOW gate-log"* ]] \
+  || fail "gate-log returned its own invocation: $GATE_STDOUT"
+grep -q 'ALLOW gate-log 5 (gate-log lines=5)' "$LOG_FILE" \
+  || fail "gate-log did not log its own invocation: $(log_tail)"
+pass "gate-log logs itself and does not answer with itself"
+
+assert_denied 'gate-log 0' 'a zero-line window'
+assert_denied 'gate-log 201' 'a window past the clamp'
+assert_denied 'gate-log all' 'a non-numeric window'
+assert_denied 'gate-log 5 10' 'two windows'
+assert_denied 'gate-log -3' 'a negative window'
+
+# Read-only and focus-free, like `log`: a diagnostic that stops working when
+# the owner locks the machine is the one case an agent most needs it.
+LOCK_STATE=locked
+assert_allowed 'gate-log' 'gate-log survives a locked screen'
+LOCK_STATE=unlocked
+: >"$TMP_DIR/say.log"
+run_gate 'gate-log'
+[[ ! -s "$TMP_DIR/say.log" ]] \
+  || fail "gate-log spoke a takeover warning: $(cat "$TMP_DIR/say.log")"
+
+# It reads ONE file — the one this gate wrote — and it is not a second `log`.
+run_gate 'gate-log' STUB_LOG_RESTRICTED=1
+(( GATE_STATUS == 0 )) || fail "gate-log went near the unified log: $GATE_STDERR"
+pass "gate-log reads the gate's own file and nothing else"
+
+# The same token-shaped scrub the dogfood records and `log` use. These lines
+# are ours, but "every line anyone ever adds is safe" is not worth depending on.
+printf '%s\n' "2026-08-30T10:00:00+0000 DENY launch $(printf 'a%.0s' $(seq 1 43))" >>"$LOG_FILE"
+assert_allowed 'gate-log 3' 'gate-log masks token-shaped runs'
+[[ "$GATE_STDOUT" == *"<redacted>"* ]] \
+  || fail "gate-log did not mask a 43-character base64url run: $GATE_STDOUT"
+[[ "$GATE_STDOUT" != *"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"* ]] \
+  || fail "gate-log emitted a token-shaped run verbatim"
+
+# `ax type`'s text is redacted AT WRITE TIME (it is how an API key reaches the
+# Endpoints pane), so reading the log back cannot resurrect it.
+assert_denied 'ax type role=AXTextField,title~Endpoint -- sk-secret-value' \
+  'ax type with no app under test'
+assert_allowed 'gate-log 2' 'gate-log after an ax type'
+[[ "$GATE_STDOUT" != *"sk-secret-value"* ]] \
+  || fail "gate-log resurrected ax type's text: $GATE_STDOUT"
+[[ "$GATE_STDOUT" == *"<redacted>"* ]] \
+  || fail "gate-log did not show the redaction marker: $GATE_STDOUT"
+pass "gate-log cannot resurrect ax type's text"
+
+# Nothing to show is a sentence, not an empty answer — the same rule `log`
+# follows. Its own ALLOW line is always there by then, so an empty result means
+# one thing and the message says which.
+mv "$LOG_FILE" "$LOG_FILE.aside"
+run_gate 'gate-log'
+(( GATE_STATUS == 0 )) || fail "gate-log failed with no log file: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"no entries before this one"* ]] \
+  || fail "gate-log answered emptily with no log file: $GATE_STDERR"
+[[ -z "$GATE_STDOUT" ]] || fail "gate-log invented output with no log file: $GATE_STDOUT"
+mv "$LOG_FILE.aside" "$LOG_FILE"
+pass "gate-log says so when there is nothing before this invocation"
+
+echo
+echo "== 27. ui-gate-doctor — the first-install checklist, executable =="
+
+DOCTOR="$ROOT_DIR/scripts/mac/ui-gate-doctor.sh"
+DOCTOR_STATE="$TMP_DIR/doctor-state.json"
+
+run_doctor() { # <state-file>
+  DOCTOR_STATUS=0
+  env -i PATH="/usr/bin:/bin" HOME="$FAKE_HOME" \
+    bash "$DOCTOR" --state-file "$1" >"$TMP_DIR/doctor.out" 2>"$TMP_DIR/doctor.err" \
+    || DOCTOR_STATUS=$?
+  DOCTOR_OUT="$(cat "$TMP_DIR/doctor.out")"
+  DOCTOR_ERR="$(cat "$TMP_DIR/doctor.err")"
+}
+
+# The unconfigured machine, rendered from a REAL `state` rather than a
+# hand-written fixture: the doctor and the gate must not drift apart.
+clear_state
+clear_conf
+rm -f "$FAKE_HOME/.lv-attach.conf"
+state_json 'the doctor input' >"$DOCTOR_STATE"
+run_doctor "$DOCTOR_STATE"
+(( DOCTOR_STATUS == 1 )) \
+  || fail "the doctor did not report an unconfigured machine as needing attention (rc $DOCTOR_STATUS): $DOCTOR_ERR"
+[[ "$DOCTOR_OUT" == *"[FIX] gate conf"* ]] \
+  || fail "the doctor did not flag the missing gate conf: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" == *"[FIX] control socket"* ]] \
+  || fail "the doctor did not flag the control socket consent: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" == *"[FIX] lv-attach destination"* ]] \
+  || fail "the doctor did not flag the missing lv-attach config: $DOCTOR_OUT"
+pass "the doctor turns each invisible piece of setup into a named item"
+
+# The point of a fix line is that it FIXES it. This runs the one the doctor
+# printed and then asks the gate whether the verb works — the same loop the
+# owner will run, with nothing restated by hand.
+DOCTOR_FIX="$(sed -n 's/^ *fix: //p' "$TMP_DIR/doctor.out" | grep 'LV_UI_TERM_COMMANDS' | head -n 1)"
+[[ -n "$DOCTOR_FIX" ]] || fail "the doctor named no fix for the empty allowlist: $DOCTOR_OUT"
+DOCTOR_FIX="${DOCTOR_FIX//\~\/.localvoxtral-ui-gate.conf/$GATE_CONF}"
+( eval "$DOCTOR_FIX" ) || fail "the doctor's fix command did not run: $DOCTOR_FIX"
+install -m 0700 "$ATTACH" "$FAKE_HOME/bin/lv-attach"
+printf 'destination=builder\n' >"$FAKE_HOME/.lv-attach.conf"
+: >"$TMP_DIR/open.log"
+assert_allowed 'term open ghostty lv-attach' 'term open after running the doctor fix verbatim' \
+  STUB_PGREP_PID=5150
+pass "the doctor's fix line is the command that actually fixes it"
+
+state_json 'the doctor input, configured' \
+  STUB_DEFAULT_debug_dogfood_control_socket_enabled=1 \
+  LV_UI_CONTROL_SOCKET="$CONTROL_SOCKET" >"$DOCTOR_STATE"
+run_doctor "$DOCTOR_STATE"
+[[ "$DOCTOR_OUT" == *"[ok ] term open allowlist"* ]] \
+  || fail "the doctor still flags a configured allowlist: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" == *"[ok ] control socket"* ]] \
+  || fail "the doctor still flags an armed control socket: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" == *"[ok ] lv-attach destination"* ]] \
+  || fail "the doctor still flags a resolvable destination: $DOCTOR_OUT"
+pass "the doctor clears each item as it is fixed"
+
+# The 2026-08-30 blocking failure, as a readiness item: allowlisted, and
+# nothing installed behind the name. `term open` used to open an empty window
+# and report a window-identification timeout; the doctor now says which of the
+# two it is before anything is opened.
+mv "$FAKE_HOME/bin/lv-attach" "$FAKE_HOME/bin/lv-attach.aside"
+state_json 'the doctor input, allowlisted but not installed' >"$DOCTOR_STATE"
+run_doctor "$DOCTOR_STATE"
+(( DOCTOR_STATUS == 1 )) || fail "the doctor passed an allowlist that resolves to nothing"
+[[ "$DOCTOR_OUT" == *"no executable in ~/bin: lv-attach"* ]] \
+  || fail "the doctor did not name the allowlisted command with nothing behind it: $DOCTOR_OUT"
+mv "$FAKE_HOME/bin/lv-attach.aside" "$FAKE_HOME/bin/lv-attach"
+pass "the doctor names an allowlisted command that is not installed"
+clear_conf
+
+# An OLD gate answers `state` without a setup section. Reporting "everything is
+# fine" from a document that cannot say otherwise is the failure this whole
+# change exists to end.
+printf '{"screen_lock":"unlocked","tcc":{"accessibility":true,"screen_recording":true},"app":{"running":false}}\n' \
+  >"$DOCTOR_STATE"
+run_doctor "$DOCTOR_STATE"
+(( DOCTOR_STATUS == 2 )) || fail "the doctor accepted a pre-setup state document (rc $DOCTOR_STATUS)"
+[[ "$DOCTOR_ERR" == *"predates setup reporting"* ]] \
+  || fail "the doctor did not say the gate is older than it: $DOCTOR_ERR"
+pass "the doctor refuses to grade a gate that predates setup reporting"
+
+printf 'localvoxtral ui gate: denied command\n' >"$DOCTOR_STATE"
+run_doctor "$DOCTOR_STATE"
+(( DOCTOR_STATUS == 2 )) || fail "the doctor read a non-JSON answer as a verdict"
+[[ "$DOCTOR_ERR" == *"did not return JSON"* ]] \
+  || fail "the doctor did not quote what it got instead of JSON: $DOCTOR_ERR"
+pass "the doctor says what it got when the gate did not answer with JSON"
+
+# The README's numbered list is what this replaces; the pointer has to hold.
+grep -q 'ui-gate-doctor.sh' "$ROOT_DIR/scripts/mac/README.md" \
+  || fail "scripts/mac/README.md does not point at the doctor"
 
 echo
 echo "ui gate tests passed"

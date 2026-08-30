@@ -534,7 +534,7 @@ full-screen capture anywhere in it:
 
 | verb | what it does |
 | --- | --- |
-| `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened |
+| `state` | JSON: lock state, idle seconds, AC/battery, the Accessibility + Screen Recording preflight, whether an app under test is running, which terminals this gate opened — and a `setup` section that says which verbs will work before you try them (below) |
 | `launch [--dogfood] <artifact>` | launches a `.app` that is under an allowlisted root **and** has `CFBundleIdentifier com.localvoxtral.app`; records pid + start time + executable path; prints the pid. Refuses beside any running localvoxtral, including one this gate did not start |
 | `shot [settings\|popover\|overlay\|window <n>]` | base64 PNG of ONE window, resolved from the window list filtered to that pid, refused if the resolved window's owner is anything else. stdout is pure base64; the `shot: window …` line is on **stderr**, so pipe straight into `base64 -d` — no `tail` |
 | `ax dump [all\|settings\|overlay\|window <n>]` | the AX element tree of that pid's windows, as JSON |
@@ -545,9 +545,10 @@ full-screen capture anywhere in it:
 | `dictate tap` / `dictate hold <seconds>` / `dictate cancel` | posts the app's OWN configured modifier trigger (read from its defaults) as a gesture at the HID tap — the only way to start a dictation, and therefore to exercise the Claude Code / herdr join |
 | `app <control command>` | forwards ONE line to the **dogfood** control socket of the app under test and returns the reply. Five shapes only: `session start overlay\|live`, `session stop`, `join report`, `surface probe`, `registry list`. Refuses a build with no `LVXDogfoodCapture` stamp — see "`app` — asking the app what it joined" |
 | `log [minutes]` | localvoxtral's own unified-log lines over a clamped window (default 15, max 120), line-capped and token-scrubbed. Predicate-scoped to `subsystem == "com.localvoxtral"` **and** to one process — the recorded pid, else the app's process name, which it says. Never a system-log reader. Read-only, so it works while the screen is locked |
+| `gate-log [lines]` | the last N lines of this gate's OWN log (default 20, max 200) — where a denial's reason is written. Read-only, works while the screen is locked |
 | `quit` | terminates the recorded pid |
-| `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
-| `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by a random marker it put in that window's title |
+| `term open <ghostty\|iterm\|terminal> <command> [args]` | opens a terminal window running an allowlisted command, resolved to an absolute path under `$HOME/bin` before anything opens. **The allowlist is empty by default** — see "What may go on `term open`'s allowlist" below |
+| `term focus <id>` / `term close <id>` | acts on one window this gate opened, identified by the CGWindowID that appeared while it was opening one |
 
 Selectors are `key<op>value` pairs joined by `,` — `=` exact, `~` contains,
 `+` for a space, keys `role`/`title`/`desc`/`value`/`index`/`window`:
@@ -636,6 +637,98 @@ enqueue verbs the helper already implements. It also side-steps the open
 question below about whether an SSH-hosted process can reach the GUI session at
 all. It is more moving parts than a single reviewed script, so it is not what
 v1 does.
+
+### `state`'s `setup` section — which verbs will work, before you try one
+
+Every refusal in this gate is deliberately uniform: `denied command`, exit 126,
+nothing on stdout. That is right, and it was also the whole problem. Driving
+the installed gate on 2026-08-30 hit `term open` refusing everything and `app`
+denying, and the causes were three files that did not exist and one runtime
+default that was off — each a one-line fix, and none of them distinguishable
+from "the verb is broken" or "the gate is old".
+
+So `state` reports setup:
+
+```json
+"setup": {
+  "gate": {"revision": "f44a91a15001"},
+  "lock_probe": {"installed": true},
+  "gate_conf": {"present": true, "status": "ok"},
+  "artifacts": [{"name": "localvoxtral-dogfood.app", "dogfood": true}],
+  "term_open": {"terminals": ["ghostty", "iterm", "terminal"],
+                "commands": ["lv-attach"], "refused_by_denylist": [],
+                "unresolvable": []},
+  "lv_attach": {"installed": true, "allowlisted": true, "conf": "ok",
+                "destination": "builder", "session_default": true},
+  "control_socket": {"present": false, "consent": "off"}
+}
+```
+
+Reading it:
+
+- `gate.revision` is the first 12 hex of the installed script's SHA-256.
+  Compare with `shasum -a 256 scripts/mac/localvoxtral-ui-gate.sh` to settle
+  "is the gate old", which used to be an unfalsifiable theory.
+- `gate_conf.status` is `absent`, `ok` or `unparsable`. A conf with a syntax
+  error used to take the **whole gate** down — `source` returns non-zero and
+  `set -e` exits before anything prints. It now degrades to the built-in
+  defaults, which are the closed ones, warns on stderr on every invocation,
+  and shows up here.
+- `term_open.commands` is exactly what `term open`'s first token is matched
+  against. `[]` means every command is refused, which is the shipped default.
+  `refused_by_denylist` names allowlisted entries the permanent denylist
+  refuses anyway — a conf that reads as configured and behaves as not.
+  `unresolvable` names allowlisted entries with no executable file behind
+  them, which is the failure below, reported before a verb is tried.
+- `lv_attach.conf` comes from `~/bin/lv-attach --check`, so it is the
+  **installed** wrapper's own verdict rather than a second copy of its rules:
+  `ok`, `missing`, `no-destination`, `invalid-destination`, `invalid-session`,
+  `present-unchecked` (a config with no wrapper to validate it) or
+  `wrapper-too-old`.
+- `artifacts` lists what `launch` would accept, by name, with the dogfood slot
+  marked. Anything that is not a validated localvoxtral bundle is not listed.
+- `control_socket` is the two halves `app` needs: `consent` is
+  `debug.dogfood_control_socket_enabled`, `present` is whether a socket is
+  actually bound.
+
+**What it reports and what it does not.** Presence, parse verdicts, and values
+that are already this gate's own vocabulary — allowlisted command names,
+terminal names, bundle names under a root the gate names in its own refusals.
+Never a config file's contents. The one judgement call is the lv-attach
+destination: a **bare alias** is echoed, because it is a label in the owner's
+own `~/.ssh/config`, names no account and no address, and is the value that
+catches the real failure ("this points at the wrong machine"). A `user@host`
+destination is an account **and** an address, so its shape is reported and its
+value is not — the same line `app`'s closed reply vocabulary draws.
+
+### `gate-log` — reading why something was denied
+
+The reason behind a `denied command` was always written to
+`~/Library/Logs/localvoxtral-ui-gate.log`; what was missing is that no verb
+could read it back, so an agent over SSH saw the generic line and had to go
+through the owner to learn a one-line fix.
+
+```bash
+ssh lv-ui 'term open ghostty lv-attach'   # denied command
+ssh lv-ui 'gate-log 5'
+# 2026-08-30T14:39:37+0200 DENY term open ghostty lv-attach (term open has no
+#   allowlisted commands (the default is empty — see scripts/mac/README.md))
+```
+
+**`deny` still does not explain itself, and that is the point.** A gate that
+answered each refusal with its reason would be an oracle for state the caller
+cannot otherwise see — whether a path exists, whether a bundle validated,
+whether a pid is running, which names a conf allowlists. The fix for an
+invisible reason is a bounded reader, not a chattier refusal.
+
+What `gate-log` can disclose is exactly what this gate wrote about itself: one
+sanitised, printable, 512-byte-capped line per invocation, with `ax type`'s
+text already replaced by `<redacted>` **at write time**, so reading the log
+back cannot resurrect an API key. Output goes through the same 43-character
+base64url scrub `log` uses. It logs its own invocation before reading and drops
+that line from the answer, so `gate-log 1` means "the entry before this one".
+It is read-only and focus-free, so like `log` it works while the screen is
+locked.
 
 ### `menu` — the verb that makes every other verb reachable
 
@@ -765,6 +858,19 @@ What bounds the verb:
   work while locked.
 - **A started session is capped** by the app itself, so an SSH command that
   dies mid-dictation cannot leave it recording.
+- **The socket's runtime consent is a SECOND grant, and stays one.** A dogfood
+  build writes capture records when `debug.dogfood_capture_enabled` is armed
+  (which `launch --dogfood` does); it binds the control socket only when
+  `debug.dogfood_control_socket_enabled` is armed as well, and nothing arms
+  that for you — not `try-pr.sh --ui-gate`, not the CI install step. The split
+  is deliberate: "records what I do" and "accepts commands on a local socket
+  **any** process on this Mac can connect to" are different permissions, and
+  this machine is also the self-hosted CI runner. `state` reports
+  `setup.control_socket.consent`, and the refusal names the fix:
+
+  ```bash
+  defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true
+  ```
 - The reply is a closed vocabulary of bools, counts and enum names — no
   workspace, marker, tty, pane id, host or session id ever crosses.
 
@@ -883,10 +989,29 @@ write it can already replace the gate script).
 ```bash
 # LV_UI_ARTIFACT_ROOTS="$HOME/localvoxtral-ui-artifacts"  # where launch may look
 # LV_UI_TERM_COMMANDS="lv-attach"       # term open's first tokens; EMPTY by default
+# LV_UI_TERM_COMMAND_DIRS="$HOME/bin"   # where an allowlisted name is resolved
 # LV_UI_TERMINALS="ghostty iterm terminal"
 # LV_UI_WARN_SLEEP_SECONDS=3                              # 0 only if you are sitting there
 # LV_UI_SHOT_MAX_BYTES=8388608
 ```
+
+**No installer writes this file, and none ever should.** `LV_UI_TERM_COMMANDS`
+is the gate's allowlist — the same object as the gate script, one layer up. The
+rule that CI must not write the gate script applies for exactly the same reason
+to what the gate will accept: an empty default exists to force a deliberate
+grant, and a grant that arrives with a build is not one. So the one manual step
+is an **append**, which cannot clobber a file that already exists and wins over
+any earlier assignment when the file is sourced:
+
+```bash
+printf 'LV_UI_TERM_COMMANDS="lv-attach"\n' >> ~/.localvoxtral-ui-gate.conf
+```
+
+`ui-gate-doctor.sh` prints that exact line when the allowlist is empty, and
+`state`'s `setup.term_open.commands` shows the result. A syntax error in this
+file no longer breaks the gate: it is ignored, every setting falls back to its
+built-in (closed) default, and `state` reports `"gate_conf":{"status":
+"unparsable"}`.
 
 ### What may go on `term open`'s allowlist
 
@@ -918,22 +1043,35 @@ weakest possible place for that. `install-ui-artifact.sh` puts it at
 `~/bin/lv-attach` (mode 0700) with every build, so it arrives reviewed and
 stays current.
 
-Allowlist it:
+Allowlist it — append, so the line cannot clobber an existing conf:
 
 ```bash
-# ~/.localvoxtral-ui-gate.conf
-LV_UI_TERM_COMMANDS="lv-attach"
+printf 'LV_UI_TERM_COMMANDS="lv-attach"\n' >> ~/.localvoxtral-ui-gate.conf
 ```
 
 and tell it where to go — the destination is deliberately **not** an argument:
 
 ```bash
-# ~/.lv-attach.conf
+# ~/.lv-attach.conf   (install-ui-artifact.sh writes this as a commented
+#                      template if it does not exist, and never overwrites it)
 destination=builder      # an ssh alias, or user@host
 session=work             # optional default herdr session
 ```
 
+`~/bin/lv-attach --check` answers whether that resolves, and it is the same
+answer `state` reports under `setup.lv_attach` — the gate asks the installed
+wrapper rather than re-reading the file, so the destination validator has one
+implementation and not two.
+
 Then `ssh lv-ui 'term open ghostty lv-attach work'`.
+
+**Why the wrapper's config is templated by the installer and the gate's
+allowlist is not.** A destination is ordinary configuration; the only cost of
+getting it wrong is a terminal that opens onto the wrong machine, and "what is
+this file called and what goes in it" was itself a round trip through the
+owner. The allowlist is the boundary. So the installer writes an
+`~/.lv-attach.conf` with **no active destination** (it cannot know which
+machine you mean) and never touches `~/.localvoxtral-ui-gate.conf`.
 
 **Allowlisting `lv-attach` is safe precisely because it cannot take a command,
 which is the property `ssh` lacks.** `ssh <host> <anything>` runs that
@@ -964,6 +1102,56 @@ running herdr, driven by the herdr-integration harness — and the Mac's
 never launches an agent, so the "allowlist a coding-agent CLI" pressure that
 produced the original hole does not exist.
 
+### `term open` — what it runs, and how it finds the window it opened
+
+Both halves of this were wrong on 2026-08-30, and between them they told the
+operator a story that was false in every particular.
+
+**The command is resolved to an absolute path before anything opens.** The
+launcher used to say `exec lv-attach` and let PATH find it. A script started by
+`open -n -a Ghostty --args -e <script>` gets no login-shell environment, and
+`$HOME/bin` — where `install-ui-artifact.sh` puts the wrapper — is on neither
+that PATH nor sshd's. So the launcher hit `command not found`, exited
+instantly, and left an **empty** Ghostty window. `term open` now resolves the
+allowlisted name against `LV_UI_TERM_COMMAND_DIRS` (default `$HOME/bin`),
+requires a file that exists and is executable, and refuses **with nothing
+opened** when there is none. The directory list stays short on purpose: a name
+resolved out of a directory other accounts can write is the allowlist handed
+away. `state`'s `setup.term_open.unresolvable` reports the same thing without
+opening anything at all.
+
+**The window is identified by a CGWindowID diff, not a title marker.** The
+launcher printed an OSC 0 title carrying a random marker and the gate polled
+for a window with it. That cannot work for the one command this verb exists to
+run: `lv-attach` execs a whole-view herdr client, and herdr owns the title from
+the moment it starts — `docs/agent/invariants.md` says a title marker "can
+neither reach nor come back from a herdr-hosted session", which is why the
+app's own `titleMarker` join arm is suppressed there. So `term open` snapshots
+the terminal application's window ids **before** `open`, then binds the window
+that is new since that snapshot; nothing the command does to its title can hide
+it. The marker survives only as a tie-breaker for commands that leave the title
+alone. `term focus`/`term close` then address that window id, mapped to an AX
+window by frame (AX exposes no window id without private API).
+
+**Three faults, three messages.** "No window" used to mean all of these at
+once, and reporting the second as the third is what produced a confidently
+wrong root cause. The launcher writes its pid before `exec`, which separates
+them:
+
+| what the pid file says | what happened | what to do |
+| --- | --- | --- |
+| absent | the terminal never ran the launcher | the command was never executed; this is not a window problem |
+| present, process gone | the command ran and exited immediately — an empty window is exactly what that looks like | run `~/bin/<command> <args>` by hand as the GUI user and read its error |
+| present, process alive | the command is running; only the window could not be identified | re-run without opening a terminal window yourself at the same moment |
+
+**A failed `term open` leaves nothing behind.** If it cannot confirm which
+window it opened, it kills the process it started (that pid file is the only
+handle once the window is unaddressable), removes the launcher, and registers
+no terminal. In Ghostty the window closes with the command; in Terminal/iTerm
+it stays showing a finished command. Several windows appearing at the same
+moment is refused rather than guessed at — binding the wrong one would point
+`term close` at whatever the owner just opened.
+
 **Why `term open` is not a way around the app-scoped verbs.** `shot`,
 `ax dump`, `ax click`, `ax type` and `key` all take their pid from the
 `app.state` that `launch` wrote, and `launch` only ever records a validated
@@ -976,8 +1164,10 @@ with both an app under test and an open terminal recorded.
 ### Verifying from the Linux box
 
 ```bash
-ssh lv-ui 'state'                       # JSON; check tcc.accessibility and
-                                        # tcc.screen_recording are both true
+./scripts/mac/ui-gate-doctor.sh --remote lv-ui   # every readiness item, ticked
+                                        # or with the one command that fixes it
+ssh lv-ui 'state'                       # the same facts as JSON
+ssh lv-ui 'gate-log 20'                 # why the last thing was denied
 ssh lv-ui 'launch localvoxtral-ui-artifacts/localvoxtral.app'
 ssh lv-ui 'menu open'                   # localvoxtral has NO window until this
 ssh lv-ui 'shot popover' | base64 -d > /tmp/popover.png
@@ -1007,11 +1197,31 @@ ssh lv-ui 'term open ghostty claude --dangerously-skip-permissions -p hi'
 Every one of those, allowed or denied, appends a line to
 `~/Library/Logs/localvoxtral-ui-gate.log` — read it after the first session.
 
-### First-install checks the test suite cannot do
+### First install: run the doctor, then the four things it cannot reach
 
-`test-ui-gate.sh` stubs the GUI, so it proves the allowlist, the argument
-validation, the lock refusal, the window-ownership rule and the log/redaction
-behaviour, but nothing about a live desktop. On first install, confirm by hand:
+```bash
+# On the Mac's GUI account, from the checkout:
+./scripts/mac/ui-gate-doctor.sh
+
+# From the Linux dev box, against the installed gate:
+./scripts/mac/ui-gate-doctor.sh --remote lv-ui
+```
+
+Every line is either `ok` or `FIX` followed by one copy-pasteable command; it
+exits 0 when nothing needs attention, 1 when something does, 2 when the gate
+could not be reached at all. It covers the gate script's revision (and, locally,
+whether the installed copy matches this checkout), the forced-command line, the
+lock probe, both TCC grants as the gate's own preflight saw them, the gate conf
+and what `term open` would accept, whether `lv-attach` is installed, allowlisted
+and pointed somewhere, what `launch` would accept, and the dogfood control
+socket's two consents. Run it again after each fix.
+
+The prose list this replaces is gone on purpose: it was seven numbered items
+the owner read and mis-followed, and every one of them that a script *can*
+check is now checked.
+
+**What no script can check**, and what still has to be done by hand on the
+first install — the doctor prints this list too:
 
 0. `log` returns lines rather than failing. If it prints "Could not open local
    log store: Operation not permitted", the unified log is restricted for this
@@ -1022,34 +1232,34 @@ behaviour, but nothing about a live desktop. On first install, confirm by hand:
    between the gate and a locked machine. It has two arms; over SSH the
    IORegistry arm is the one that has to answer, and it has not been run
    against a real `ioreg` yet.
-2. `tcc.accessibility` and `tcc.screen_recording` are both `true` **in a
-   session that arrived over SSH**. If they are false after granting sshd, the
+2. `tcc.accessibility` and `tcc.screen_recording` are true **in a session that
+   arrived over SSH**. The doctor reports what the gate's preflight saw, which
+   is the right answer only if you ran it through `--remote`; a local run
+   reports a local process's grants. If they are false after granting sshd, the
    sshd-holds-the-grants design does not work on this macOS version and the
    LaunchAgent alternative above is the fix — do not work around it by
    loosening the gate.
 3. `shot settings` returns a PNG of the Settings window and not a black or
    empty image (a black capture means the Screen Recording grant is not
-   reaching the SSH session).
-4. `ax click` actually presses the right control, and `key` works: it calls
-   `NSRunningApplication.activate` and then re-checks `frontmostApplication`.
-   Both of those are AppKit calls made from a short-lived SSH-hosted process
-   with no run loop, which is exactly where they are least likely to behave —
-   if `key` always reports "could not be brought frontmost", that is the
-   symptom.
-5. `term open ghostty <your-wrapper> …` opens a window whose title carries the
-   `lvui-…` marker, and `term focus`/`term close` find it. Terminal-specific
-   flags (`ghostty -e`, the generated `.command` for Terminal/iTerm) are the
-   least-tested part of v1. Nothing here works until you have written a wrapper
-   and allowlisted it — the default allowlist is empty on purpose.
-6. `menu open` prints `ok window=<n>`, `shot popover` then returns a PNG of
-   that same menu, and `menu dismiss` prints `ok`. This is the one behaviour
-   the shell suite cannot reach at all: it stubs the helper, so what it pins is
-   that the decision is made from the window list, never that macOS puts a
-   status menu there. If `menu open` says the status item was pressed but no
-   window appeared at layer ≥ 100, then either the press did nothing or a
-   displayed status menu is not a pid-owned window on this macOS version —
-   check with `menu click Settings` (which works either way) and say which, do
-   not go back to trusting the attached `AXMenu`.
-7. `log` returns only the app under test. Start a build on the runner, then run
+   reaching the SSH session), `ax click` presses the right control, and `key`
+   works — it calls `NSRunningApplication.activate` and re-checks
+   `frontmostApplication`, both AppKit calls made from a short-lived
+   SSH-hosted process with no run loop, which is exactly where they are least
+   likely to behave. "Could not be brought frontmost" is that symptom.
+4. `menu open` prints `ok window=<n>`, `shot popover` returns a PNG of that same
+   menu, and `menu dismiss` prints `ok`. The shell suite stubs the helper, so
+   what it pins is that the decision is made from the window list, never that
+   macOS puts a status menu there. If `menu open` says the status item was
+   pressed but no window appeared at layer >= 100, check with `menu click
+   Settings` (which works either way) and say which — do not go back to
+   trusting the attached `AXMenu`.
+5. `term open ghostty lv-attach` opens a window that actually reaches the
+   configured host, `term focus`/`term close` find it, and a failed one leaves
+   nothing behind. The gate now distinguishes "the command never ran", "the
+   command exited immediately" and "the window could not be identified"; what
+   it cannot tell you is whether the herdr client on the far end attached to
+   the session you meant. Confirm that from the remote host (`last` shows a new
+   pty login from the `-t` ssh).
+6. `log` returns only the app under test. Start a build on the runner, then run
    `log 2` and confirm no `xctest[` line comes back. Without `launch`, the same
    command warns on stderr that it is not pid-scoped.
