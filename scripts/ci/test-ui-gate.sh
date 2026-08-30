@@ -2614,6 +2614,59 @@ run_doctor "$DOCTOR_STATE"
   || fail "the doctor did not quote what it got instead of JSON: $DOCTOR_ERR"
 pass "the doctor says what it got when the gate did not answer with JSON"
 
+# --- local mode: the two facts the gate cannot report about itself ----------
+#
+# "The gate is old" and "the key does not force the gate" are the two
+# explanations an operator could never rule out from the other end of an SSH
+# connection, and they are the two this mode exists for. It runs the INSTALLED
+# gate exactly as sshd would, so it grades the copy the key actually reaches.
+
+DOCTOR_HOME="$TMP_DIR/doctor-home"
+mkdir -p "$DOCTOR_HOME/bin" "$DOCTOR_HOME/.ssh"
+INSTALLED_GATE="$DOCTOR_HOME/bin/localvoxtral-ui-gate.sh"
+install -m 0755 "$GATE" "$INSTALLED_GATE"
+printf 'restrict,command="%s" ssh-ed25519 AAAA localvoxtral-ui-gate\n' \
+  "$INSTALLED_GATE" >"$DOCTOR_HOME/.ssh/authorized_keys"
+
+run_doctor_local() {
+  DOCTOR_STATUS=0
+  env -i PATH="/usr/bin:/bin" HOME="$DOCTOR_HOME" \
+    LV_UI_INSTALLED_GATE="$INSTALLED_GATE" \
+    bash "$DOCTOR" >"$TMP_DIR/doctor.out" 2>"$TMP_DIR/doctor.err" \
+    || DOCTOR_STATUS=$?
+  DOCTOR_OUT="$(cat "$TMP_DIR/doctor.out")"
+  DOCTOR_ERR="$(cat "$TMP_DIR/doctor.err")"
+}
+
+run_doctor_local
+[[ "$DOCTOR_OUT" == *"matches this checkout"* ]] \
+  || fail "the doctor did not compare the installed gate with this checkout: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" == *"[ok ] forced command"* ]] \
+  || fail "the doctor did not read the forced-command line: $DOCTOR_OUT"
+pass "the doctor grades the INSTALLED gate, and says whether it is this one"
+
+printf '# an older gate\n' >>"$INSTALLED_GATE"
+run_doctor_local
+[[ "$DOCTOR_OUT" == *"[FIX] gate script"* ]] \
+  || fail "the doctor called a stale installed gate current: $DOCTOR_OUT"
+[[ "$DOCTOR_OUT" == *"install -m 0755"* ]] \
+  || fail "the doctor did not name the reinstall command: $DOCTOR_OUT"
+install -m 0755 "$GATE" "$INSTALLED_GATE"
+pass "an installed gate that differs from this checkout is a FIX, not a silent pass"
+
+# `restrict` is what disables pty, forwarding and user rc files; a forced
+# command without it is a gate with the door left ajar.
+printf 'command="%s" ssh-ed25519 AAAA localvoxtral-ui-gate\n' \
+  "$INSTALLED_GATE" >"$DOCTOR_HOME/.ssh/authorized_keys"
+run_doctor_local
+[[ "$DOCTOR_OUT" == *"without \`restrict\`"* ]] \
+  || fail "the doctor accepted a forced command with no restrict: $DOCTOR_OUT"
+: >"$DOCTOR_HOME/.ssh/authorized_keys"
+run_doctor_local
+[[ "$DOCTOR_OUT" == *"the key would get a shell"* ]] \
+  || fail "the doctor accepted a key with no forced command at all: $DOCTOR_OUT"
+pass "the doctor flags a key that does not force the gate, or forces it unrestricted"
+
 # The README's numbered list is what this replaces; the pointer has to hold.
 grep -q 'ui-gate-doctor.sh' "$ROOT_DIR/scripts/mac/README.md" \
   || fail "scripts/mac/README.md does not point at the doctor"
