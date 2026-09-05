@@ -706,12 +706,40 @@ there is not.
       socket. sshd derives `$SSH_CONNECTION` from the underlying CONNECTION,
       so B's Claude session truthfully reports A's ports — and a dictation
       into A, a plain shell with no agent in it, would join B's session. The
-      check is `SSHSurfaceConnection.hasSocketlessSiblingToDestination`: any
-      same-uid ssh CONNECTION to the same destination whose fd table is
-      readable-and-socketless (or unreadable) abstains the arm. It costs the
-      ordinary two-terminals-two-connections case nothing — those each hold a
-      socket and are told apart by their ports. Also found by review
+      check is `SSHSiblingSurvey`, carried on `SSHSurfaceConnection.siblings`:
+      the other same-uid ssh CONNECTIONS to the same destination are counted
+      by what the kernel could say about each, and any that is
+      readable-and-socketless, or unreadable at all, abstains the arm. It
+      costs the ordinary two-terminals-two-connections case nothing — those
+      each hold a socket and are told apart by their ports. Found by review
       (2026-09-05).
+
+      The survey is COUNTED rather than a boolean because the first field run
+      of this arm (2026-09-06) abstained on it and the abstention could not
+      say why: "a real ControlMaster client is open in another window" and
+      "some ssh's fd table could not be read" are the same non-join and
+      opposite fixes. They are now separate causes carrying `n of m`. Two
+      processes are excluded from the survey outright, and both exclusions are
+      about not manufacturing that abstention: an ssh whose kernel PARENT is
+      this app (its `RemoteForward` supervisor, its herdr `ssh -L` — ours, and
+      never somebody's terminal), and any ssh with no controlling terminal (a
+      mux client that could mis-join is a session in another WINDOW; a
+      tty-less ssh is machinery).
+
+      The surface's OWN two refusals are named the same way and for the same
+      reason: `this ssh holds no connection of its own (a ControlMaster client
+      or a ProxyCommand)` is the readable-and-empty case — which the field
+      also hit — and `this ssh's socket table is unreadable` means a syscall
+      failed, which
+      `SSHProcessSocketReaderCrossProcessTests` says should not happen for a
+      same-user process. That test exists because the original reader tests
+      only ever read `getpid()`: a reader that works on its own process alone
+      passes all of them and then sees nothing for every real `ssh` on the
+      machine. MEASURED on the build host 2026-09-06:
+      `proc_pidinfo(PROC_PIDLISTFDS)` + `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`
+      answer for a same-uid process this one did NOT spawn (`rc=792`,
+      `kind=SOCKINFO_TCP`, `state=TSI_S_ESTABLISHED`), so the API is not the
+      constraint and the app needs no entitlement for it.
 
   - A Claude Code "Remote Control" session (the agent runs on a machine of the
     user's, `claude.ai/code` in a browser is the UI) has no pane, no TTY, and no

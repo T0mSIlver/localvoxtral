@@ -1268,29 +1268,48 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedPlainSSHJoin(outcome: "the connection goes through a jump host")
             return nil
         }
-        guard !connection.hasSocketlessSiblingToDestination else {
-            // The ControlMaster case: another ssh to this destination holds no
-            // TCP socket of its own, so one connection may be carrying several
-            // terminals' sessions and a truthful `$SSH_CONNECTION` no longer
-            // identifies a surface. See
-            // `SSHSurfaceConnection.hasSocketlessSiblingToDestination`.
+        // The ControlMaster case, in TWO causes rather than one. Both abstain,
+        // and they always did — but the field could not tell them apart from
+        // the abstention alone (2026-09-06), and they call for opposite fixes:
+        // a real mux client is the user's own ssh config, an unreadable
+        // sibling is a bug or a permission we do not have. The counts ride
+        // along because "1 of 1" and "1 of 6" are different stories and
+        // neither names a host, a port, or a path.
+        let siblings = connection.siblings
+        if siblings.socketless > 0 {
             Self.abstainedPlainSSHJoin(
-                outcome: "this destination may be carrying multiplexed ssh sessions"
+                outcome: "another ssh session to this destination holds no connection of "
+                    + "its own (\(siblings.socketless) of \(siblings.considered))"
+            )
+            return nil
+        }
+        if siblings.unreadable > 0 {
+            Self.abstainedPlainSSHJoin(
+                outcome: "another ssh session to this destination is unreadable "
+                    + "(\(siblings.unreadable) of \(siblings.considered))"
             )
             return nil
         }
         guard let sockets = connection.sockets else {
             // Nil is UNREADABLE. Treating it as "no sockets" would turn a
             // failed syscall into a decline that looks exactly like a genuine
-            // mismatch.
-            Self.abstainedPlainSSHJoin(outcome: "socket table unreadable")
+            // mismatch. `SSHProcessSocketReaderCrossProcessTests` is what says
+            // a same-user process this app did not spawn IS readable, so this
+            // cause means something went wrong rather than "as expected".
+            Self.abstainedPlainSSHJoin(outcome: "this ssh's socket table is unreadable")
             return nil
         }
         guard !sockets.isEmpty else {
-            // A `ProxyCommand` from ssh_config (invisible in argv) is the
-            // ordinary way to get here: the client talks over a pipe to a
-            // helper and holds no TCP socket of its own.
-            Self.abstainedPlainSSHJoin(outcome: "no established connection on this ssh")
+            // Readable, and holding nothing. Two ordinary causes, and the
+            // wording says so because the field hit this and could not tell
+            // which: a `ProxyCommand` from ssh_config (the client talks over a
+            // pipe to a helper), or an OpenSSH ControlMaster CLIENT, whose
+            // whole session rides another process's connection over an AF_UNIX
+            // control path.
+            Self.abstainedPlainSSHJoin(
+                outcome: "this ssh holds no connection of its own "
+                    + "(a ControlMaster client or a ProxyCommand)"
+            )
             return nil
         }
 

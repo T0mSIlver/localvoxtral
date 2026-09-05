@@ -109,7 +109,7 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         usesProxyJump: Bool = false,
         sockets: [SSHClientSocket]? = nil,
         unreadableSockets: Bool = false,
-        socketlessSibling: Bool = false
+        siblings: SSHSiblingSurvey = SSHSiblingSurvey()
     ) -> SSHDestinationTTYProbeResult {
         .connection(
             SSHSurfaceConnection(
@@ -118,7 +118,7 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
                 herdr: .notHerdr,
                 usesProxyJump: usesProxyJump,
                 sockets: unreadableSockets ? nil : (sockets ?? [surfaceSocket]),
-                hasSocketlessSiblingToDestination: socketlessSibling
+                siblings: siblings
             )
         )
     }
@@ -412,7 +412,7 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         ingestRemoteSession(into: registry)
         await assertNoJoin(
             surfaceConnection(unreadableSockets: true), registry: registry,
-            expectedCause: "socket table unreadable"
+            expectedCause: "this ssh's socket table is unreadable"
         )
     }
 
@@ -423,7 +423,8 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         ingestRemoteSession(into: registry)
         await assertNoJoin(
             surfaceConnection(sockets: []), registry: registry,
-            expectedCause: "no established connection on this ssh"
+            expectedCause: "this ssh holds no connection of its own "
+                + "(a ControlMaster client or a ProxyCommand)"
         )
     }
 
@@ -525,9 +526,38 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         let registry = makeRegistry()
         ingestRemoteSession(into: registry)
         await assertNoJoin(
-            surfaceConnection(socketlessSibling: true), registry: registry,
-            expectedCause: "this destination may be carrying multiplexed ssh sessions"
+            surfaceConnection(siblings: SSHSiblingSurvey(considered: 1, socketless: 1)),
+            registry: registry,
+            expectedCause: "another ssh session to this destination holds no connection "
+                + "of its own (1 of 1)"
         )
+    }
+
+    func testAnUnreadableSiblingAbstainsUnderItsOWNCause() async {
+        // Same abstention, different story, and the field needs to be able to
+        // tell them apart: a real ControlMaster client is the user's ssh
+        // config, an unreadable process is a bug or a missing permission.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(siblings: SSHSiblingSurvey(considered: 6, unreadable: 2)),
+            registry: registry,
+            expectedCause: "another ssh session to this destination is unreadable (2 of 6)"
+        )
+    }
+
+    func testSiblingsThatAllHoldTheirOwnConnectionDoNotAbstain() async throws {
+        // The ordinary shape — several terminals, several connections — must
+        // keep joining. This is what the counted survey is FOR: `considered`
+        // can be large as long as nothing is socketless or unreadable.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        let resolved = await resolver(
+            registry: registry,
+            sshResult: surfaceConnection(siblings: SSHSiblingSurvey(considered: 4))
+        ).resolve(target: ghostty)
+        let join = try XCTUnwrap(resolved)
+        XCTAssertEqual(join.mechanism, .remoteSSHConnection)
     }
 
     func testASessionInsideScreenDoesNotJoinThroughThisArm() async {

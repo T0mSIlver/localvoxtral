@@ -276,6 +276,61 @@ final class DogfoodControlServiceTests: XCTestCase {
         XCTAssertEqual(row?["remoteCmuxSurface"] as? Bool, false)
     }
 
+    /// The plain-ssh arm's own three facts.
+    ///
+    /// A field run on 2026-09-06 produced `no join` for a live plain-ssh
+    /// session and there was no way, from the app, to tell whether the
+    /// `$SSH_CONNECTION` header had even ARRIVED — the same ambiguity the
+    /// herdr fields were added for a day earlier. Bools only: the connection
+    /// tuple is the join material and never crosses this boundary.
+    func testRegistryListReportsWhetherThePlainSSHJoinsInputsArrived() async {
+        var snapshot = Self.remoteSnapshot()
+        snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(
+            sshTTY: "/dev/pts/4", sshConnection: "10.0.0.2,51960,10.0.0.9,22"
+        )
+        let service = makeService(viewModel: makeViewModel(), sessions: [snapshot])
+        let reply = await expectSuccess(service, .registryList)
+        let row = ((reply["sessions"] as? [[String: Any]]) ?? []).first
+
+        XCTAssertEqual(row?["remoteSSHConnection"] as? Bool, true)
+        XCTAssertEqual(row?["remoteSSHTTY"] as? Bool, true)
+        XCTAssertEqual(
+            row?["remoteMultiplexerLabel"] as? Bool, false,
+            "a plain ssh shell carries no multiplexer label — that is what makes it joinable"
+        )
+    }
+
+    func testRegistryListSeparatesASessionThatReportedNoConnectionFromOneInsideAMultiplexer()
+        async
+    {
+        // The two shapes that both end in "no join" and need opposite fixes:
+        // a host on a plugin older than 1.6.0 publishes no connection at all,
+        // while a session inside tmux publishes one that belongs to whichever
+        // connection started the server.
+        var old = Self.remoteSnapshot()
+        old.remoteEnvironment = ClaudeRemoteSessionEnvironment(sshTTY: "/dev/pts/4")
+        var multiplexed = Self.remoteSnapshot()
+        multiplexed.remoteEnvironment = ClaudeRemoteSessionEnvironment(
+            tmux: "/tmp/tmux-1000/default,3721,0",
+            sshTTY: "/dev/pts/4",
+            sshConnection: "10.0.0.2,51960,10.0.0.9,22"
+        )
+
+        let first = await expectSuccess(
+            makeService(viewModel: makeViewModel(), sessions: [old]), .registryList
+        )
+        let oldRow = ((first["sessions"] as? [[String: Any]]) ?? []).first
+        XCTAssertEqual(oldRow?["remoteSSHConnection"] as? Bool, false)
+        XCTAssertEqual(oldRow?["remoteMultiplexerLabel"] as? Bool, false)
+
+        let second = await expectSuccess(
+            makeService(viewModel: makeViewModel(), sessions: [multiplexed]), .registryList
+        )
+        let multiplexedRow = ((second["sessions"] as? [[String: Any]]) ?? []).first
+        XCTAssertEqual(multiplexedRow?["remoteSSHConnection"] as? Bool, true)
+        XCTAssertEqual(multiplexedRow?["remoteMultiplexerLabel"] as? Bool, true)
+    }
+
     /// And a remote session that reported no herdr at all is distinguishable
     /// from one that did — which is the whole point of adding the fields.
     func testRegistryListSeparatesARemoteSessionWithNoHerdrLabels() async {
