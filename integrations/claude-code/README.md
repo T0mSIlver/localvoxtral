@@ -42,9 +42,10 @@ model touches without watching your whole tree.
 
 Every mechanism below matches ONE identifier your session's own hooks
 published against the SAME identifier read off the surface you are looking at.
-There is no fallback that guesses, and in particular **nothing reads your
-window title** — that was removed in September 2026 (see "What was removed"
-below).
+There is no fallback that guesses, and in particular **no join reads your
+window title** — that mechanism was removed in September 2026 (see "What was
+removed" below). (Repo vocabulary, a separate opt-in feature, still reads a
+terminal title to find a git root; it never picks a Claude session.)
 
 **TTY join (the default — Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
 and Terminal.app).** The hooks report

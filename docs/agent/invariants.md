@@ -85,6 +85,13 @@ there is not.
     from had already refused for a reason. `TerminalScreenAXReader` retains
     only `focusedWindowIdentity`, which reads no title: it exists so the
     authorizer can pair a screen capture with the join that authorized it.
+    Precision matters in that sentence: no JOIN reads a title. One title read
+    survives elsewhere in the app and is deliberately untouched —
+    `TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID:)` mines
+    the commit target's title for a git root, behind `repoVocabularyEnabled`,
+    to extract local vocabulary. It selects no session, authorizes no capture,
+    and reaches no `ClaudeSessionJoin`; a wrong answer there costs a few
+    unhelpful vocabulary terms rather than another session's repository.
     ACCEPTED CONSEQUENCE, stated plainly: a PLAIN ssh remote session — Claude
     Code in `ssh host` with no herdr, no cmux, no Remote Control — has no join
     arm at all any more. It was the only one the title marker uniquely served.
@@ -398,18 +405,39 @@ there is not.
     against a session lying about a pane it never occupied).
     AFTER: the same host publishes the same forged pane id and is refused by
     herdr's own `agent_session` claim when herdr has one, and by the pane's
-    foreground process list when it does not — both of which are answers from
-    herdr, the party that actually watches the pane, rather than from the
-    session making the claim. The honest residual, which the old marker did not
-    close either: a forger on a pane herdr claims nothing about, running a
-    process named for the agent, is indistinguishable from the real occupant.
-    That is pinned by
+    foreground process list when it does not.
+
+    **Read the strength of those two carefully; they are not equal, and the
+    second is weaker than it looks.** The `agent_session` claim is an answer
+    from herdr — the party that actually watches the pane — and a forger cannot
+    produce it. The foreground check is not: `remoteAgentIsForeground` is
+    satisfied by EITHER the session's own published `hookParentPID` (the remote
+    shim's `$PPID`, an `X-Lvx-Env-Hook-Parent-Pid` header the CLAIMANT wrote)
+    appearing in herdr's list, OR any foreground process merely NAMED for the
+    agent. So it asks "is an agent running in that pane", not "is THIS session
+    running in that pane" — and both satisfiers are things a claimant on the
+    host can arrange without occupying the pane: same-uid code can read the
+    victim pane's foreground pid and publish it, and any pane running `claude`
+    at all satisfies the name check.
+
+    Which makes the residual wider than a forgery story, and it has an innocent
+    form that matters more: an ordinary session carrying a STALE
+    `HERDR_PANE_ID` — inherited by an exec, or left over after herdr moved
+    panes — joins onto whichever session is actually in that pane, whenever
+    herdr reports no `agent_session` for it and an agent is running there. And
+    the lane measured that absence as the COMMON case
+    (`remote-herdr-panel-binding.md`, "Pinned against a live server":
+    `pane.current` did NOT carry `agent_session` for a pane whose agent session
+    id had been reported through `herdr pane report-agent-session`). The marker
+    was the check that told two sessions in one pane apart, and nothing
+    replaces it; what bounds this now is that the candidate set is scoped to
+    ONE enrolled host, that only ONE candidate may claim the focused pane id at
+    all, and that enrollment is revocable. Do not build a new argument on the
+    foreground check without re-reading this paragraph.
+    The refusals that DO hold are pinned by
     `testASessionForgingAnotherPaneIDIsRefusedByHerdrsOwnClaim` and its
-    foreground sibling, and it is bounded by enrollment the user can revoke.
-    Note also what the lane measured (`remote-herdr-panel-binding.md`, "Pinned
-    against a live server"): `pane.current` did NOT carry `agent_session` for a
-    pane whose agent session id had been reported, so the CLAIM is often
-    absent and the foreground check carries most of the weight in practice.
+    foreground sibling; the residual above is deliberately not pinned by a test
+    that would assert a mis-join is possible.
 
     What the panel nonce still proves, and it is the load-bearing half: that
     the FOCUSED LOCAL SURFACE — the window the user is looking at, read through

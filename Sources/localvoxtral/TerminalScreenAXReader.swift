@@ -176,9 +176,14 @@ enum TerminalScreenAXReader {
             return nil
         }
 
-        // No `kAXTitle` round trip: the title is not read anywhere any more,
-        // and requiring one here would make identity depend on a string this
-        // code does not consult. Consequence, stated because it is a change:
+        // No `kAXTitle` round trip. No JOIN reads a title (the arm that did
+        // was removed 2026-09-05), and requiring one here would make identity
+        // depend on a string this code does not consult. The one title read
+        // left in the app is a different feature on a different gate —
+        // `TerminalWorkingDirectoryResolver.windowTitle(forApplicationPID:)`,
+        // which mines a terminal title for a git root under
+        // `repoVocabularyEnabled` and decides no join.
+        // Consequence, stated because it is a change:
         // a focused window with no readable title now yields an identity where
         // it used to abstain. That can only make the authorizer's
         // join-window == capture-window comparison MORE precise — it compares

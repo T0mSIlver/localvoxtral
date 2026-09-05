@@ -1027,7 +1027,65 @@ final class RemoteHerdrJoinTests: XCTestCase {
         }
     }
 
+    /// `deviceUnreadable` / `tableUnreadable` / `probeUnavailable` mean the ssh
+    /// probe could not inspect the SURFACE AT ALL, which is a different thing
+    /// from "an ssh is present and unreadable" (the four causes above).
+    ///
+    /// Until 2026-09-05 that distinction gated the title-marker arm, through
+    /// `SSHProbeIndeterminacy.suppressesTitleMarker`. That logic is deleted,
+    /// and this is the invariant it existed to protect, restated for the arms
+    /// that remain: a probe that could not look must not cost the LOCAL tty arm
+    /// its answer. So the fixture seeds a LOCAL session on the focused
+    /// surface's own device and asserts a POSITIVE join — a nil assertion here
+    /// would hold no matter what the ssh probe did to the local arms, which is
+    /// exactly the coverage this test must not manufacture.
     func testProbeWideIndeterminacyStillLetsALocalTTYJoinAnswer() async throws {
+        let causes: [SSHProbeIndeterminacy] = [
+            .deviceUnreadable,
+            .tableUnreadable,
+            .probeUnavailable,
+        ]
+        for cause in causes {
+            let registry = makeRegistry()
+            XCTAssertNotNil(
+                registry.ingest(
+                    ClaudeHookRecord(
+                        event: .sessionStart,
+                        sessionID: "s-local",
+                        timestamp: epoch.timeIntervalSince1970,
+                        rawCwd: "/repo",
+                        process: ClaudeHookProcessInfo(
+                            hookPID: 777, claudePID: 9001, tty: surfaceTTY
+                        )
+                    ),
+                    origin: .localAuthenticated(peerUID: 501)
+                ),
+                "precondition: a local session lives on the focused surface's device"
+            )
+            let forwards = RecordingForwards()
+            let join = await resolver(
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: forwards,
+                sshResult: .undeterminable(cause)
+            ).resolve(target: ghostty)
+
+            XCTAssertEqual(
+                join?.mechanism, .ttyDevice,
+                "\(cause.rawValue) means the probe could not look at the surface; it must not cost the local tty arm its answer"
+            )
+            XCTAssertEqual(join?.snapshot.sessionID, "s-local")
+            XCTAssertEqual(
+                forwards.openCount, 0,
+                "and the remote arm never runs, because the tty arm answered first"
+            )
+        }
+    }
+
+    /// The mirror: with NO local session on the surface's device, the same
+    /// three causes leave nothing at all. Split from the test above so each
+    /// half asserts one thing, and so neither can quietly become the other.
+    func testProbeWideIndeterminacyWithNoLocalSessionJoinsNothing() async {
         let causes: [SSHProbeIndeterminacy] = [
             .deviceUnreadable,
             .tableUnreadable,
@@ -1037,14 +1095,15 @@ final class RemoteHerdrJoinTests: XCTestCase {
             let registry = makeRegistry()
             ingestRemoteHerdrSession(into: registry)
             let join = await resolver(
-            registry: registry,
-            panes: RemoteJoinHerdrPanes(focused: focusedPane()),
-            forwards: RecordingForwards(),
-            sshResult: .undeterminable(cause)).resolve(target: ghostty)
+                registry: registry,
+                panes: RemoteJoinHerdrPanes(focused: focusedPane()),
+                forwards: RecordingForwards(),
+                sshResult: .undeterminable(cause)
+            ).resolve(target: ghostty)
             XCTAssertNil(
-            join,
-            "the remote-herdr arm declines; no weaker arm remains to answer for this surface"
-        )
+                join,
+                "the remote-herdr arm declines; no weaker arm remains to answer for this surface"
+            )
         }
     }
 
