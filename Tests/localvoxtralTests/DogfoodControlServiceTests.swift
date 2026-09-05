@@ -252,6 +252,44 @@ final class DogfoodControlServiceTests: XCTestCase {
         XCTAssertEqual(row?["workspaceIsLocal"] as? Bool, true)
     }
 
+    /// A REMOTE session has no process block at all, so the `has*` fields are
+    /// structurally false for it. Without a remote half this verb could not
+    /// answer the one thing it exists for on the remote path — did the herdr
+    /// labels arrive from that host — and a field session on 2026-09-05 read
+    /// `hasHerdrPane: false` for a session whose labels HAD arrived.
+    func testRegistryListReportsARemoteSessionsHerdrLabels() async {
+        let service = makeService(viewModel: makeViewModel(), sessions: [Self.remoteSnapshot()])
+        let reply = await expectSuccess(service, .registryList)
+        let row = ((reply["sessions"] as? [[String: Any]]) ?? []).first
+
+        XCTAssertEqual(row?["origin"] as? String, "remote")
+        // Unchanged, and still false: these read the LOCAL process block, and a
+        // remote label is not one. Reporting it here would claim the resolver
+        // has a local binding it does not have.
+        XCTAssertEqual(row?["hasProcessBlock"] as? Bool, false)
+        XCTAssertEqual(row?["hasHerdrPane"] as? Bool, false)
+        XCTAssertEqual(row?["hasHerdrSocket"] as? Bool, false)
+        // The half that was missing.
+        XCTAssertEqual(row?["hasRemoteEnvironment"] as? Bool, true)
+        XCTAssertEqual(row?["remoteHerdrPane"] as? Bool, true)
+        XCTAssertEqual(row?["remoteHerdrSocket"] as? Bool, true)
+        XCTAssertEqual(row?["remoteCmuxSurface"] as? Bool, false)
+    }
+
+    /// And a remote session that reported no herdr at all is distinguishable
+    /// from one that did — which is the whole point of adding the fields.
+    func testRegistryListSeparatesARemoteSessionWithNoHerdrLabels() async {
+        var snapshot = Self.remoteSnapshot()
+        snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(sshTTY: "/dev/pts/4")
+        let service = makeService(viewModel: makeViewModel(), sessions: [snapshot])
+        let reply = await expectSuccess(service, .registryList)
+        let row = ((reply["sessions"] as? [[String: Any]]) ?? []).first
+
+        XCTAssertEqual(row?["hasRemoteEnvironment"] as? Bool, true)
+        XCTAssertEqual(row?["remoteHerdrPane"] as? Bool, false)
+        XCTAssertEqual(row?["remoteHerdrSocket"] as? Bool, false)
+    }
+
     /// Field by field: the registry holds a marker, a workspace path, a tty, a
     /// pane id, a socket path and a session id, and NONE of them may cross.
     func testRegistryListNamesNothingThatIdentifiesASession() async {
@@ -456,6 +494,23 @@ final class DogfoodControlServiceTests: XCTestCase {
             herdrPaneID: paneID,
             herdrSocketPath: herdrSocketPath,
             bridgeSessionID: bridgeSessionID
+        )
+        return snapshot
+    }
+
+    /// The shape a remote host's hooks actually produce: no process block (the
+    /// pids and the tty are another machine's), and the herdr handles carried
+    /// as untrusted labels in the remote environment instead.
+    private static func remoteSnapshot() -> ClaudeSessionSnapshot {
+        var snapshot = ClaudeSessionSnapshot(
+            sessionID: sessionID,
+            origin: .remote(channel: "remote-listener"),
+            marker: ClaudeSessionMarker(value: markerValue),
+            firstSeen: Date(timeIntervalSince1970: 1_000)
+        )
+        snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(
+            herdrPaneID: paneID,
+            herdrSocketPath: herdrSocketPath
         )
         return snapshot
     }

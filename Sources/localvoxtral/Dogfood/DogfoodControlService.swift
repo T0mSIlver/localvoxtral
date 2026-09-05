@@ -383,10 +383,27 @@ final class DogfoodControlService {
     /// none of them is here: no session id, no marker, no workspace, no tty, no
     /// pane id, no socket path, no bridge id, no host. Every field below is a
     /// bool, a count or a closed enum name.
+    ///
+    /// The `has*` fields read the LOCAL process block and the `remote*` fields
+    /// read the remote environment, and they are separate on purpose — the same
+    /// reason `ClaudeRemoteSessionEnvironment` is a separate type from
+    /// `ClaudeHookProcessInfo`, rather than more fields on it. A remote label
+    /// names a pane on ANOTHER machine and no local arm may read it, so folding
+    /// the two into one boolean would report a fact the resolver does not have.
+    ///
+    /// Both halves are needed, though, and the second was missing: a remote
+    /// session has no process block at all, so `hasHerdrPane`/`hasHerdrSocket`
+    /// were structurally `false` for every remote row and this verb could not
+    /// answer the one question it exists for on the remote path — did the
+    /// herdr labels arrive from that host, or not. Field session 2026-09-05:
+    /// `registry list` said `hasHerdrPane: false` for a session whose labels HAD
+    /// arrived, and the only way to tell was an unrelated forward line in the
+    /// unified log.
     private func registryList() -> String {
         let sessions = liveSessions()
         let rows = sessions.map { snapshot -> String in
             let process = snapshot.process
+            let remote = snapshot.remoteSessionEnvironment
             return DogfoodControlJSON.object([
                 ("origin", DogfoodControlJSON.string(
                     snapshot.origin.isLocalAuthenticated ? "local" : "remote"
@@ -399,9 +416,10 @@ final class DogfoodControlService {
                 ("hasHerdrSocket", DogfoodControlJSON.bool(process?.herdrSocketPath != nil)),
                 ("hasCmuxSurface", DogfoodControlJSON.bool(process?.cmuxSurfaceID != nil)),
                 ("hasBridgeSession", DogfoodControlJSON.bool(snapshot.bridgeSessionID != nil)),
-                ("hasRemoteEnvironment", DogfoodControlJSON.bool(
-                    snapshot.remoteSessionEnvironment != nil
-                )),
+                ("hasRemoteEnvironment", DogfoodControlJSON.bool(remote != nil)),
+                ("remoteHerdrPane", DogfoodControlJSON.bool(remote?.herdrPaneID != nil)),
+                ("remoteHerdrSocket", DogfoodControlJSON.bool(remote?.herdrSocketPath != nil)),
+                ("remoteCmuxSurface", DogfoodControlJSON.bool(remote?.cmuxSurfaceID != nil)),
                 ("recentFiles", DogfoodControlJSON.int(snapshot.recentFiles.count)),
                 ("hasPriorPrompt", DogfoodControlJSON.bool(
                     snapshot.latestPriorUserPrompt != nil
