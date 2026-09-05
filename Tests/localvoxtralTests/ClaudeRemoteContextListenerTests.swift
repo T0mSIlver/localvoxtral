@@ -216,9 +216,17 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
         XCTAssertEqual(response.status, 401)
         XCTAssertFalse(witness.consume(mine), "the armed nonce is untouched")
+        // Counted exactly as it would have been without the header. Which
+        // category that is comes from THIS branch's split: the request carries
+        // no `Authorization` header at all, so it is `.absentAuthorization` —
+        // not a plugin fault, because no plugin generation omits the header.
+        // Asserting both halves pins the composition of the two changes: an
+        // unminted probe header makes a request neither a probe nor a host's
+        // fault.
+        XCTAssertEqual(listener.rejectionSnapshot.absentAuthorization, 1)
         XCTAssertEqual(
-            listener.rejectionSnapshot.missingToken, 1,
-            "and it is counted exactly as it would have been without the header"
+            listener.rejectionSnapshot.emptyCredential, 0,
+            "a header we never minted must not be read as a pre-1.1.0 plugin"
         )
     }
 
