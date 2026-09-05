@@ -27,9 +27,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     }
 
     /// The shared stub lives for the whole class, so it is removed once here
-    /// rather than by whichever case happened to run last.
+    /// rather than by whichever case happened to run last. A no-op when no case
+    /// needed it: `stubCurlRoot` is a path, not a side effect.
     override class func tearDown() {
-        try? FileManager.default.removeItem(at: stubCurlDirectory)
+        try? FileManager.default.removeItem(at: stubCurlRoot)
         super.tearDown()
     }
 
@@ -508,17 +509,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    /// The stub `curl` every `runShimWithStubCurl` call puts first on PATH.
-    ///
-    /// Byte-identical on every call, so it is written ONCE for the whole class
-    /// instead of being created, chmodded and torn down on each of the ~40
-    /// calls. What varies per call — the body fixture, the status, the exit
-    /// code, the header dump — is passed in the environment and already was.
-    private static let stubCurlDirectory: URL = {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("shim-stub-\(UUID().uuidString)")
-        let stub = directory.appendingPathComponent("curl")
-        let script = """
+    /// Where the stub `curl` lives. A path only — computing it touches nothing,
+    /// so the class teardown that removes this directory cannot bring the stub
+    /// into existence in order to delete it.
+    private static let stubCurlRoot: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("shim-stub-\(UUID().uuidString)")
+
+    private static let stubCurlScript = """
         #!/bin/sh
         out=""
         previous=""
@@ -542,18 +539,31 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         printf '%s' "$FAKE_CURL_STATUS"
         exit "${FAKE_CURL_EXIT:-0}"
         """
-        // A fixture this whole class depends on: if it cannot be written there
-        // is nothing to test, and a silent failure would look like the shim
-        // never dialing.
-        try! FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true
-        )
-        try! script.write(to: stub, atomically: true, encoding: .utf8)
-        try! FileManager.default.setAttributes(
+
+    /// Materialises the stub on first use and hands back the directory to put
+    /// first on PATH.
+    ///
+    /// The script is byte-identical on every call, so it is written ONCE for
+    /// the whole class instead of being created, chmodded and torn down on each
+    /// of the ~40 calls; a later call pays one `fileExists`. Everything that
+    /// varies per call — the body fixture, the status, the exit code, the
+    /// header dump — is passed in the environment and already was.
+    ///
+    /// `throws` rather than `try!` in a stored property: a temp directory that
+    /// cannot be written should fail the one case that needed it, the way the
+    /// per-call version did, not abort the whole test process and take every
+    /// other class's results with it.
+    private func stubCurlDirectory() throws -> URL {
+        let directory = Self.stubCurlRoot
+        let stub = directory.appendingPathComponent("curl")
+        guard !FileManager.default.fileExists(atPath: stub.path) else { return directory }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Self.stubCurlScript.write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
             [.posixPermissions: 0o755], ofItemAtPath: stub.path
         )
         return directory
-    }()
+    }
 
     func testStatusLineRendererMapsEachStampStateToItsFixedString() throws {
         let esc = "\u{1B}"
@@ -775,7 +785,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // The stub itself is shared (see `stubCurlDirectory`); the body fixture
         // is the part that differs per call and keeps its own directory, so no
         // case can read the answer the previous one staged.
-        let stubDirectory = Self.stubCurlDirectory
+        let stubDirectory = try stubCurlDirectory()
         let bodyDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-body-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: bodyDirectory, withIntermediateDirectories: true)
