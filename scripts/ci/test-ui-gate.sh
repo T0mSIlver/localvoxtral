@@ -365,6 +365,11 @@ GATE_STATUS=0
 GATE_STDOUT=""
 GATE_STDERR=""
 
+# Two of the gate's waits are budgets in WALL CLOCK, and this suite stubs
+# `sleep` to return instantly — so a case that drives one of them to its
+# deadline spins for the whole budget instead of polling through it. Both are
+# seams in the gate (defaults 20 s); here they are as short as the case needs.
+# `TERM_OPEN_TIMEOUT` / `LAUNCH_WAIT` override them for a single case.
 run_gate() { # <command> [env assignments...]
   local command="$1"
   shift
@@ -375,7 +380,8 @@ run_gate() { # <command> [env assignments...]
     HOME="$FAKE_HOME" \
     SSH_ORIGINAL_COMMAND="$command" \
     LV_UI_LOCK_PROBE="$FAKE_HOME/bin/localvoxtral-screen-lock-state.sh" \
-    LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${TERM_OPEN_TIMEOUT:-2}" \
+    LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${TERM_OPEN_TIMEOUT:-1}" \
+    LV_UI_LAUNCH_WAIT_SECONDS="${LAUNCH_WAIT:-0}" \
     LV_SCREEN_LOCK_STATE="${LOCK_STATE:-unlocked}" \
     STUB_SAY_LOG="$TMP_DIR/say.log" \
     STUB_OPEN_LOG="$TMP_DIR/open.log" \
@@ -385,8 +391,10 @@ run_gate() { # <command> [env assignments...]
     STUB_LOG_LOG="$TMP_DIR/log.log" \
     "$@" \
     bash "$GATE" >"$out_file" 2>"$err_file" || GATE_STATUS=$?
-  GATE_STDOUT="$(cat "$out_file")"
-  GATE_STDERR="$(cat "$err_file")"
+  # `$(<file)` and not `$(cat file)`: bash reads the file itself, and this runs
+  # twice for every one of the ~240 gate invocations below.
+  GATE_STDOUT="$(<"$out_file")"
+  GATE_STDERR="$(<"$err_file")"
 }
 
 log_tail() {
@@ -416,7 +424,7 @@ helper_func_body() { # <swift function name>
 assert_denied() { # <command> <description> [env...]
   local command="$1" description="$2"
   shift 2
-  local before after
+  local before after last
   before="$(wc -l <"$LOG_FILE" 2>/dev/null || echo 0)"
   run_gate "$command" "$@"
   (( GATE_STATUS == 126 )) \
@@ -425,10 +433,13 @@ assert_denied() { # <command> <description> [env...]
     || fail "$description: stderr did not say 'denied command' ($GATE_STDERR)"
   after="$(wc -l <"$LOG_FILE" 2>/dev/null || echo 0)"
   (( after > before )) || fail "$description: nothing was appended to the gate log"
-  [[ "$(log_tail)" == *" DENY "* ]] \
-    || fail "$description: last log line is not a DENY line: $(log_tail)"
-  [[ "$(log_tail)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]] \
-    || fail "$description: DENY line has no timestamp: $(log_tail)"
+  # Read the last line ONCE. The three assertions below are unchanged; they
+  # used to re-run `tail` for each of them, five times per denial.
+  last="$(log_tail)"
+  [[ "$last" == *" DENY "* ]] \
+    || fail "$description: last log line is not a DENY line: $last"
+  [[ "$last" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2} ]] \
+    || fail "$description: DENY line has no timestamp: $last"
   pass "denied: $description"
 }
 
@@ -438,8 +449,10 @@ assert_allowed() { # <command> <description> [env...]
   run_gate "$command" "$@"
   (( GATE_STATUS == 0 )) \
     || fail "$description: expected exit 0, got $GATE_STATUS (stderr: $GATE_STDERR)"
-  [[ "$(log_tail)" == *" ALLOW "* ]] \
-    || fail "$description: no ALLOW line was logged (last line: $(log_tail))"
+  local last
+  last="$(log_tail)"
+  [[ "$last" == *" ALLOW "* ]] \
+    || fail "$description: no ALLOW line was logged (last line: $last)"
   pass "allowed: $description"
 }
 
@@ -824,15 +837,41 @@ pass "launch records the APP, never a helper sharing the pgrep prefix"
 
 # And the other direction: if the ONLY thing matching the prefix is a helper,
 # there is no app under test and launch must say so rather than adopt it.
+#
+# The one case in this suite that runs `launch`'s wait loop to its DEADLINE, so
+# it is also the one that pays for it: `sleep` is stubbed to return instantly,
+# which turns the poll into a fork storm that runs for the whole budget. At the
+# gate's 20-second default this single assertion was 19.2 s of a 32.6 s suite
+# (measured 2026-09-05). One second still retries, still expires, still proves
+# exactly what it proved before.
 clear_state
+LAUNCH_WAIT=1
 run_gate "launch $CLEAN_APP" \
   STUB_PS_LSTART="Mon Aug 24 09:00:00 2026" \
   STUB_PGREP_PID="5100" \
   STUB_PS_COMM_5100="$CLEAN_APP/Contents/MacOS/localvoxtral-speechd"
+unset LAUNCH_WAIT
 (( GATE_STATUS != 0 )) || fail "launch adopted a helper as the app under test"
 [[ ! -f "$FAKE_HOME/.localvoxtral-ui-gate/app.state" ]] \
   || fail "launch wrote app.state for a helper"
 pass "a helper alone is not an app under test"
+clear_state
+
+# A hand-edited conf is where `20s` comes from, and the wait budget is consumed
+# by `$(( ))`: a non-numeric value there is an arithmetic error, which under
+# `set -e` kills the gate AFTER `open` has started the app and BEFORE app.state
+# records it — the unrecorded-instance wedge the gate header warns about,
+# reached by a typo. It must degrade to the built-in default instead.
+clear_state
+: >"$TMP_DIR/open.log"
+write_conf 'LV_UI_LAUNCH_WAIT_SECONDS="20s"'
+run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+clear_conf
+(( GATE_STATUS == 0 )) \
+  || fail "a junk launch budget in the conf broke launch: $GATE_STATUS ($GATE_STDERR)"
+grep -q "pid=4242" "$FAKE_HOME/.localvoxtral-ui-gate/app.state" \
+  || fail "launch opened the app but recorded nothing — the unrecorded-instance wedge"
+pass "a junk launch budget in the conf falls back to the default, never opening without recording"
 clear_state
 
 echo "== 8. ax and key verbs =="
@@ -879,6 +918,22 @@ SCRIPT_FILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.command' |
 grep -q "^exec $FAKE_HOME/bin/lv-attach pane-7\$" "$SCRIPT_FILE" \
   || fail "launcher script does not exec exactly the validated argv: $(cat "$SCRIPT_FILE")"
 pass "allowed: term open runs an opted-in wrapper, by absolute path, and logs the command in full"
+
+# The same arithmetic trap as `launch`'s budget, and worse placed: `term open`
+# computes its deadline AFTER `open` has already put a window on the owner's
+# desktop, so a `20s` in the conf left that window behind with no recorded id —
+# unfocusable and uncloseable by this gate.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"' 'LV_UI_TERM_OPEN_TIMEOUT_SECONDS="20s"'
+run_gate 'term open ghostty lv-attach pane-9' STUB_PGREP_PID=$$
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
+(( GATE_STATUS == 0 )) \
+  || fail "a junk term-open budget in the conf broke term open: $GATE_STATUS ($GATE_STDERR)"
+[[ "$GATE_STDOUT" == "opened term-"* ]] \
+  || fail "term open opened a window but recorded no id: $GATE_STDOUT"
+JUNK_BUDGET_TERM="${GATE_STDOUT#opened }"
+JUNK_BUDGET_TERM="${JUNK_BUDGET_TERM%% *}"
+assert_allowed "term close $JUNK_BUDGET_TERM" 'closing the window opened under a junk budget'
+pass "a junk term-open budget in the conf falls back to the default, never opening without recording"
 
 assert_allowed 'term focus term-1' 'term focus on a window this gate opened'
 assert_allowed 'term close term-1' 'term close on a window this gate opened'
