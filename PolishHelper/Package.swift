@@ -52,3 +52,6 @@ let package = Package(
         ),
     ]
 )
+
+// CI probe (throwaway): touches PolishHelper only, so the polish unit lane
+// must run and the speech unit lane must stay skipped.
