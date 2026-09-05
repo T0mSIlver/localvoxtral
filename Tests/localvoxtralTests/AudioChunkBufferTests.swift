@@ -89,3 +89,6 @@ final class AudioChunkBufferTests: XCTestCase {
         XCTAssertEqual(result.count, chunkSize * taskCount)
     }
 }
+
+// CI probe (PR #TBD): a non-fast-path diff that touches neither helper.
+// Dropped before merge; the branch exists only to photograph the lane decision.
