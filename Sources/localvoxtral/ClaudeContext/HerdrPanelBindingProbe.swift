@@ -3,6 +3,7 @@ import Synchronization
 
 enum HerdrPanelBindingAbstention: String, Sendable, Equatable {
     case rowNotRendered = "row-not-rendered"
+    case rowTruncated = "row-truncated"
     case gridReadUnavailable = "ax-read-unavailable"
     case stampRefused = "stamp-refused"
     case settleTimeout = "settle-timeout"
@@ -111,25 +112,42 @@ struct HerdrPanelBindingProbe {
         }
 
         let startedAt = now()
+        var lastGrid = ""
         for readIndex in 0..<Self.maxGridReads {
             guard let grid = readGrid(target) else {
                 return .noMatch(.gridReadUnavailable)
             }
-            if grid.contains(token) {
+            switch Self.renderedMatch(grid: grid, token: token) {
+            case .full, .truncatedButSufficient:
                 return .matched(Match(token: token))
+            case .truncatedTooShort(let retainedDigits):
+                // Polling cannot grow a column budget. This is the row
+                // rendering CORRECTLY and being cut by herdr's own
+                // `truncate_end`, which is a different fault from "no token in
+                // the grid" and has a different fix, so it ends the attempt
+                // with its own cause instead of burning the settle budget.
+                //
+                // The retained count is the whole diagnostic: the shortfall
+                // against the floor is exactly how many more columns that row
+                // needs, and nothing else on this side can tell the user that.
+                Self.noteRowTruncated(retainedDigits: retainedDigits)
+                return .noMatch(.rowTruncated)
+            case .absent:
+                break
             }
 
             guard readIndex + 1 < Self.maxGridReads else {
-                Self.noteAbstention(.rowNotRendered)
+                Self.noteRowNotRendered(grid: grid)
                 return .noMatch(.settleTimeout)
             }
             await sleepFor(Self.settleDelay)
             guard now().timeIntervalSince(startedAt) <= Self.settleBudget else {
-                Self.noteAbstention(.rowNotRendered)
+                Self.noteRowNotRendered(grid: grid)
                 return .noMatch(.settleTimeout)
             }
+            lastGrid = grid
         }
-        Self.noteAbstention(.rowNotRendered)
+        Self.noteRowNotRendered(grid: lastGrid)
         return .noMatch(.settleTimeout)
     }
 
@@ -150,14 +168,155 @@ struct HerdrPanelBindingProbe {
         )
     }
 
+    /// The fixed, rendered prefix every token carries.
+    static let tokenPrefix = "lv-mic-"
+    /// Base-36 digits after the prefix. Ten of them retain log2(36^10) ~= 51.7
+    /// bits, so the whole token is 17 columns wide.
+    static let tokenNonceDigits = 10
+    /// The FEWEST nonce digits a rendered token may retain and still be
+    /// evidence: log2(36^8) ~= 41.4 bits, which keeps the "more than 40 random
+    /// bits" bound `docs/agent/invariants.md` states for this authorization.
+    /// Below it the probe abstains rather than accepting weaker proof.
+    static let minimumRenderedNonceDigits = 8
+
+    /// How much of a stamped token the focused grid actually carries.
+    ///
+    /// herdr renders an agents-panel row through `truncate_end(text, budget)`
+    /// (`src/ui/text.rs`), where the budget is the sidebar body width minus 1
+    /// for an entry's FIRST row and minus 3 for every continuation row
+    /// (`src/ui/sidebar.rs`, agent panel render). The sidebar width is the
+    /// user's — herdr's own default is 26 but it is drag-resizable down to
+    /// `sidebar_min_width` (18), and a scrollbar takes one more column. A
+    /// 17-column token therefore does NOT fit a continuation row on a sidebar
+    /// narrower than 21 columns, and herdr replaces the tail with `…`.
+    /// Measured on the owner's Mac 2026-09-05: sidebar width 20, the token
+    /// rendered as `lv-mic-<8 digits>…` and an exact-string match could never
+    /// succeed — the join abstained as "row-not-rendered" while the row was
+    /// visibly rendering.
+    ///
+    /// So the match is on the longest rendered PREFIX, floored at
+    /// `minimumRenderedNonceDigits`. That floor is what keeps the trust
+    /// argument intact: a shorter run is not accepted, it is refused with its
+    /// own cause.
+    enum RenderedTokenMatch: Sendable, Equatable {
+        case full
+        case truncatedButSufficient(retainedDigits: Int)
+        case truncatedTooShort(retainedDigits: Int)
+        case absent
+    }
+
+    /// Reads the WHOLE nonce run each `lv-mic-` occurrence carries, rather than
+    /// asking whether some prefix appears somewhere.
+    ///
+    /// The difference is not stylistic. A prefix search matches a DIFFERENT
+    /// token whenever the two share leading digits — `lv-mic-0000000005`'s
+    /// nine-digit prefix is inside `lv-mic-0000000006` — which would let one
+    /// socket's stamp be confirmed by another socket's rendering, exactly the
+    /// disambiguation `testTwoLiveSocketsResolveToTheOneWhoseNonceRenders`
+    /// exists to hold. Taking the maximal base-36 run after the prefix and
+    /// requiring it to be OUR nonce, or a proper prefix of it, cannot do that:
+    /// herdr's truncation ends the run with `…`, so a run that continues into
+    /// another digit is another token.
+    static func renderedMatch(grid: String, token: String) -> RenderedTokenMatch {
+        guard token.hasPrefix(tokenPrefix) else { return .absent }
+        let nonce = Array(token.dropFirst(tokenPrefix.count))
+        guard !nonce.isEmpty else { return .absent }
+
+        let characters = Array(grid)
+        let prefix = Array(tokenPrefix)
+        var best: RenderedTokenMatch = .absent
+        var bestRetained = 0
+        var start = 0
+        while start + prefix.count <= characters.count {
+            guard Array(characters[start..<(start + prefix.count)]) == prefix else {
+                start += 1
+                continue
+            }
+            var end = start + prefix.count
+            while end < characters.count, Self.isNonceCharacter(characters[end]) { end += 1 }
+            let run = Array(characters[(start + prefix.count)..<end])
+            if run.count <= nonce.count, run == Array(nonce.prefix(run.count)), !run.isEmpty {
+                if run.count == nonce.count { return .full }
+                if run.count > bestRetained {
+                    bestRetained = run.count
+                    best = run.count >= minimumRenderedNonceDigits
+                        ? .truncatedButSufficient(retainedDigits: run.count)
+                        : .truncatedTooShort(retainedDigits: run.count)
+                }
+            }
+            start += 1
+        }
+        return best
+    }
+
+    private static func isNonceCharacter(_ character: Character) -> Bool {
+        character.isASCII && (character.isNumber || ("a"..."z").contains(character))
+    }
+
+    /// The shape of the grid that was read, as two COUNTS.
+    ///
+    /// `row-not-rendered` has at least four causes on the remote side — the row
+    /// is not configured, the token was cut to the column budget, the agent
+    /// entry did not fit the panel body at this client's height, or the sidebar
+    /// is collapsed — and the Mac cannot tell them apart. herdr exposes no
+    /// client introspection and no config read, so every discriminator would be
+    /// a threshold guess over remote-influenceable text, which is exactly the
+    /// kind of confidently-wrong diagnostic this area has already paid for.
+    ///
+    /// What the app DOES have for free is the geometry of the grid it just
+    /// read, and two integers are usually the whole answer: an 80x24 client
+    /// cannot show a six-row agent entry below a workspace list, and a 133x50
+    /// one can (both measured on the owner's Mac, 2026-09-05, same config —
+    /// the small one abstained and the large one matched). Counts only, never
+    /// content, so this stays inside what the shipped app logs.
+    static func gridGeometry(_ grid: String) -> (rows: Int, columns: Int) {
+        let lines = grid.split(separator: "\n", omittingEmptySubsequences: false)
+        return (rows: lines.count, columns: lines.map(\.count).max() ?? 0)
+    }
+
     static func token(randomBits: UInt64) -> String {
         // Ten base-36 digits retain log2(36^10) ~= 51.7 bits. Keeping the low
-        // ten digits also makes the length fixed and leaves the complete
-        // `lv-mic-` token at 17 columns, under herdr's 22-column continuation
-        // row budget.
+        // ten digits also makes the length fixed, at 17 columns including the
+        // `lv-mic-` prefix. That fits an agent entry's FIRST panel row at
+        // herdr's default sidebar width; narrower sidebars and continuation
+        // rows truncate it, which `renderedMatch` is what handles.
         let digits = String(randomBits, radix: 36, uppercase: false)
-        let suffix = String(digits.suffix(10))
-        return "lv-mic-" + String(repeating: "0", count: 10 - suffix.count) + suffix
+        let suffix = String(digits.suffix(tokenNonceDigits))
+        return tokenPrefix
+            + String(repeating: "0", count: tokenNonceDigits - suffix.count)
+            + suffix
+    }
+
+    /// `row-not-rendered`, with the one fact that separates its causes in
+    /// practice and costs nothing to obtain.
+    static func noteRowNotRendered(grid: String) {
+        let geometry = gridGeometry(grid)
+        Log.claudeContext.info(
+            """
+            Remote herdr panel row not rendered in a \
+            \(geometry.columns, privacy: .public)x\(geometry.rows, privacy: .public) grid
+            """
+        )
+        noteAbstention(.rowNotRendered)
+    }
+
+    /// `row-truncated`, with the number of nonce digits that DID render.
+    ///
+    /// A count, not content — and the one number that turns "the panel row did
+    /// not work" into an instruction, because the shortfall against
+    /// `minimumRenderedNonceDigits` is exactly how many more columns that row
+    /// needs. Field verification 2026-09-05 wanted this number and the build
+    /// could not produce it.
+    static func noteRowTruncated(retainedDigits: Int) {
+        Log.claudeContext.info(
+            """
+            Remote herdr panel row rendered a TRUNCATED token: \
+            \(retainedDigits, privacy: .public) of \
+            \(Self.tokenNonceDigits, privacy: .public) nonce digits survived, \
+            \(Self.minimumRenderedNonceDigits, privacy: .public) required
+            """
+        )
+        noteAbstention(.rowTruncated)
     }
 
     static func noteAbstention(_ cause: HerdrPanelBindingAbstention) {

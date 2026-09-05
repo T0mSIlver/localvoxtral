@@ -95,9 +95,28 @@ Why a grid match is sufficient evidence, to the standard of review rounds 1–7:
 - **Failure direction.** Every failure mode is a NO-MATCH → abstain → argv
   fallback: sidebar collapsed (collapsed-compact renders 4 cols, no text),
   client width ≤ 64 (mobile layout, no sidebar), panel row not configured,
-  entry scrolled out of the panel body, modal overlay painted over the
+  the token cut to the row's column budget, entry scrolled out of or too tall
+  for the panel body at this client's height, modal overlay painted over the
   sidebar, AX read unavailable. The probe can only fail to join; it can never
   join a surface that is not displaying the stamped server.
+
+  **RESIDUAL, and it is a diagnosability one, not a safety one: this side
+  cannot tell those causes apart.** Only the column-budget case has its own
+  answer (`row-truncated`, since the rendered prefix is right there in the
+  grid); every other cause collapses into `row-not-rendered`. herdr exposes no
+  client introspection and no config read, so a discriminator would have to be
+  a threshold over remote-influenceable grid text — the kind of confidently
+  wrong diagnostic this area has already paid for. Measured on the owner's Mac
+  2026-09-05, same herdr config, same server, three outcomes: a 133x50 Ghostty
+  client MATCHED; an 80x24 Terminal.app client abstained because six agent
+  entries of six rows each do not fit a 24-row sidebar; and a
+  `sidebar_width = 20` client abstained because 17 columns do not fit a
+  16-column continuation row. So the log reports the GRID GEOMETRY it read
+  (two counts, no content) and names the candidates rather than asserting one.
+  Note the practical trap for anyone verifying this unattended: the UI gate's
+  `term open terminal lv-attach` opens Terminal.app at its 80x24 default,
+  which is structurally too small for the panel binding — such a run lands on
+  the argv fallback and proves nothing about the panel path.
 
 ## Join-time sequence (replaces argv classification + competing-view for the primary path)
 
@@ -154,11 +173,25 @@ mic indicator: refresh `pane.report_metadata` with the SAME token every ~4 s
 (`ttl_ms:8000` — TTL is the backstop, refresh keeps it lit), and clear
 explicitly (empty or null value) on dictation stop, session end, or join teardown.
 The rendered value may carry a short static prefix so the row reads as a mic
-indicator rather than line noise (e.g. `lv-mic-<nonce>` if ≤20 chars renders
-intact at herdr's default sidebar width 26 — verify against the row budget:
-24/22 cols first/continuation row, prefix-truncation only). Refresh timers
-must be injected-clock, never wall-clock, and must not outlive the session
-(see PR #66 timer debt — do not add more armed wall-clock timers).
+indicator rather than line noise (`lv-mic-<10 base36 digits>`, 17 columns).
+Refresh timers must be injected-clock, never wall-clock, and must not outlive
+the session (see PR #66 timer debt — do not add more armed wall-clock timers).
+
+**The 26-column sidebar this section originally assumed is not a given, and
+the match is on the rendered PREFIX because of it.** herdr renders every
+agents-panel row through `truncate_end(text, budget)` (`src/ui/text.rs`) with
+`budget = sidebar body width − 1` for an entry's FIRST row and `− 3` for every
+continuation row (`src/ui/sidebar.rs`, agent panel render), the body losing one
+more column to a scrollbar. `sidebar_width` defaults to 26 but is drag-resizable
+and persisted per session, down to `sidebar_min_width` (18). FIELD MEASUREMENT
+(owner's Mac, 2026-09-05, herdr 0.8.2, `sidebar_width = 20`): the same session
+matched when `$lvmark` was the entry's ONLY row and abstained
+`row-not-rendered` the moment it became a continuation row — 17 columns did not
+fit a 16-column budget and herdr rendered `lv-mic-<8 digits>…`. So the probe
+matches the longest rendered prefix, floored at 8 nonce digits
+(log2(36^8) ≈ 41.4 bits, keeping the "more than 40 random bits" bound), and a
+shorter run is refused with its own `row-truncated` cause rather than being
+reported as an unconfigured row — the opposite diagnosis.
 
 ## Enrollment-time config offer (owner decision)
 
