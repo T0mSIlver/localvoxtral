@@ -120,6 +120,7 @@ jobs:
           fi
           if grep -qF '[run-llm-eval]' <<<"$MARKER_TEXT" \
               || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
               || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
             full_run "explicit lane marker present in PR body / head commit"
           fi
@@ -178,6 +179,8 @@ jobs:
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
+          ./scripts/ci/test-herdr-lane-filter.sh
+          ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
 
       - name: Clean abandoned test processes in this workspace
@@ -204,6 +207,8 @@ jobs:
           ./scripts/ci/test-run-supervised-command.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-llm-lane-filter.sh
+          ./scripts/ci/test-herdr-lane-filter.sh
+          ./scripts/ci/test-herdr-fixture-recovery.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
@@ -333,6 +338,64 @@ jobs:
             echo "Speechd integration lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Decide herdr integration lane (path filter + [run-herdr-integration] marker)
+        # The lane starts a real herdr server, a real loopback sshd, and real
+        # herdr clients on ptys, and it takes over this account's herdr config
+        # and an ~/.ssh/config block for the duration of the run. Conditional
+        # for the same reason the model lanes are: it must run when the diff
+        # can change what we say to herdr or believe it said, and stay out of
+        # the way otherwise. Path list: scripts/ci/herdr-lane-filter.sh.
+        id: herdr_lane
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Same rationale as the model lanes: dispatch produces artifacts;
+            # the ref's own push/PR run decided this lane.
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Herdr integration lane: SKIPPED (manual dispatch — decided by the ref's own push/PR run)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          FILES="$RUNNER_TEMP/herdr-lane-changed-files.txt"
+          MARKER_TEXT="$RUNNER_TEMP/herdr-lane-marker-text.txt"
+
+          BASE=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            BASE="$(git merge-base "origin/$BASE_REF" HEAD || true)"
+          elif git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+            BASE="$PUSH_BEFORE_SHA"
+          fi
+          if [[ -z "$BASE" ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "Herdr integration lane: RUNNING (diff unavailable — failing open)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git diff --name-only "$BASE" HEAD > "$FILES"
+
+          printf '%s\n' "$PR_BODY" > "$MARKER_TEXT"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            git log -1 --format=%B "$PR_HEAD_SHA" >> "$MARKER_TEXT" || true
+          else
+            printf '%s\n' "$PUSH_HEAD_MESSAGE" >> "$MARKER_TEXT"
+          fi
+
+          DECISION="$(./scripts/ci/herdr-lane-filter.sh "$FILES" "$MARKER_TEXT")"
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$(sed -n 's/^run=//p' <<<"$DECISION")" == "true" ]]; then
+            echo "Herdr integration lane: RUNNING ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Herdr integration lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Decide dogfood artifact lane ([dogfood-package] marker / dispatch input)
         # The instrumented (LOCALVOXTRAL_DOGFOOD) app is packaged and uploaded
         # only on explicit opt-in: the literal marker [dogfood-package] in the
@@ -384,19 +447,42 @@ jobs:
             echo "Dogfood artifact lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Setup Swift
+      # No "Setup Swift" step here on purpose. A prior `swift-actions/setup-swift@v2`
+      # step (floating swift-version: "6.2") pinned the swift.org toolchain,
+      # which now resolves to 6.2.1 — built with assertions ON, and it asserts
+      # (signal 6) lowering this app's `@MainActor deinit` (isolated destructor,
+      # DictationViewModel.swift) to SIL. The self-hosted lane never hit this:
+      # it always builds with the Mac's Xcode toolchain, which ships
+      # assertions OFF. Fork PRs (the only jobs that land here — see the
+      # runs-on expression above) now build with the hosted runner image's
+      # Xcode toolchain too, matching the self-hosted lane's toolchain *kind*
+      # instead of diverging onto swift.org's. Which Xcode that is comes from
+      # the active developer directory (xcode-select / DEVELOPER_DIR), not
+      # PATH, and the image's default floats the same way the swift-version
+      # did — so the step below records it, both for the log and for the cache
+      # key. A toolchain that is too old fails loudly at compile time; the
+      # package needs swift-tools-version 6.2 to parse the manifest at all.
+      - name: Record hosted toolchain
+        id: hosted_toolchain
         if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
-        uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.2"
+        run: |
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+          # Cache-key component: a .build tree produced by one toolchain must
+          # never be restored into a build running under another.
+          SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
       - name: Cache SwiftPM build
         if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
         uses: actions/cache@v4
         with:
           path: .build
-          key: swiftpm-${{ runner.os }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-${{ runner.os }}-
+          # Keyed on the toolchain as well as Package.resolved: the old key
+          # (and its bare `swiftpm-macOS-` restore prefix) would happily
+          # restore a swift.org-6.2.1-built .build into an Xcode build.
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
 
       - name: Installer asset-resolution regression test (issue #131)
         # Pure bash against a stubbed curl — no network, sub-second.
@@ -437,6 +523,7 @@ jobs:
             --skip RealtimeAPIVLLMIntegrationTests \
             --skip SpeechHelperIntegrationTests \
             --skip AgentDictationE2EEvalTests \
+            --skip HerdrIntegrationTests \
             --enable-code-coverage
 
       - name: Upload complete unit-test log
@@ -503,6 +590,22 @@ jobs:
         # stale and recompiles the whole app+test module a second time
         # (~12 s per run for zero information).
         run: swift test --filter RealtimeAPIVLLMIntegrationTests --enable-code-coverage
+
+      - name: Live herdr integration (real server + real ssh -L forward)
+        # Drives the remote-herdr join machinery against a live herdr server
+        # over a forward the app's own coordinator opens, and pins the
+        # EXTERNAL herdr assumptions the surface-authorization argument rests
+        # on (docs/agent/remote-herdr-panel-binding.md). Self-hosted only, and
+        # not because of cost: the fixture provisions a loopback sshd and
+        # takes over the account's herdr config, which a hosted fork-PR runner
+        # must never be asked to do. Local equivalent:
+        # ./scripts/remote-build.sh integration-herdr
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
+        env:
+          HERDR_INTEGRATION_TEST_ENABLE: "1"
+        # --enable-code-coverage matches the unit step's build flags (same
+        # rationale as the STT integration step above).
+        run: swift test --filter HerdrIntegrationTests --enable-code-coverage
 
       - name: Polishing helper unit tests (PolishHelper package)
         # Self-hosted only: hosted runners would pay a cold Cmlx C++ compile

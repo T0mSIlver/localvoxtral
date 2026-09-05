@@ -34,3 +34,6 @@ DerivedData/
 # Never commit: its presence changes what the app is compiled to do.
 /.dogfood-capture-enable
 .fastcontext/
+
+# Transient enable marker for the live herdr integration lane
+/.herdr-integration-enable.json
