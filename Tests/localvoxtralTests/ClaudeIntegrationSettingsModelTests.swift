@@ -292,7 +292,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         try XCTUnwrap(stubs.byHost[hostID]).transition(to: .portUnavailable)
 
         let row = try XCTUnwrap(model.hosts.first)
-        XCTAssertEqual(row.forwardStatusText, "Port held — close ssh sessions to that host.")
+        XCTAssertEqual(row.forwardStatusText, "Port held by another program on that host.")
         XCTAssertTrue(row.forwardIsFailure)
         // Owner rule: a Settings status line is one short sentence; the ssh
         // stderr tail belongs in the log.
@@ -1697,7 +1697,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         let model = makeModel(registry: registry, listener: listener)
         XCTAssertNil(model.rejectionHint, "nothing rejected, nothing to say")
 
-        listener.rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot(missingToken: 42)
+        listener.rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 42)
         model.refreshHosts()
 
         let hint = try XCTUnwrap(model.rejectionHint)
@@ -1714,7 +1714,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         }
         XCTAssertNil(hint(ClaudeRemoteRejectionTally.Snapshot()))
         XCTAssertEqual(
-            hint(ClaudeRemoteRejectionTally.Snapshot(missingToken: 1)),
+            hint(ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1)),
             "Rejected connections detected — a host may have an outdated plugin — use Update Plugin."
         )
         XCTAssertEqual(
@@ -1722,7 +1722,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "Rejected connections detected — a host may have a stale token — rotate it and re-run setup."
         )
         XCTAssertEqual(
-            hint(ClaudeRemoteRejectionTally.Snapshot(missingToken: 1, unknownToken: 1)),
+            hint(ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1, unknownToken: 1)),
             "Rejected connections detected — a host may have an outdated plugin or a stale token."
         )
         XCTAssertEqual(
@@ -1730,13 +1730,37 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
             "Rejected connections detected — a host may have a malformed authorization header."
         )
         for snapshot in [
-            ClaudeRemoteRejectionTally.Snapshot(missingToken: 1),
+            ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1),
             ClaudeRemoteRejectionTally.Snapshot(unknownToken: 1),
-            ClaudeRemoteRejectionTally.Snapshot(missingToken: 1, unknownToken: 1),
+            ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1, unknownToken: 1),
             ClaudeRemoteRejectionTally.Snapshot(malformedAuthorization: 1),
         ] {
             XCTAssertLessThan(hint(snapshot)?.count ?? .max, 110)
         }
+    }
+
+    /// The hint's whole sentence is "a HOST may have <fault>", and a connection
+    /// that sent no credential is not a host's hook — the app's own verify probe
+    /// looks exactly like this. Raising a fault for it would put the log's old
+    /// phantom into the pane, where the user cannot even go read the detail.
+    func testAnUnauthenticatedProbeRaisesNoHintAtAll() throws {
+        let registry = try makeRegistry()
+        let listener = StubListener(hosts: registry)
+        let model = makeModel(registry: registry, listener: listener)
+
+        listener.rejectionSnapshot = ClaudeRemoteRejectionTally.Snapshot(absentAuthorization: 9)
+        model.refreshHosts()
+        XCTAssertNil(model.rejectionHint)
+
+        // A real fault alongside the probes still speaks, and still names only
+        // the fault: the probes never become part of the diagnosis.
+        listener.rejectionSnapshot =
+            ClaudeRemoteRejectionTally.Snapshot(absentAuthorization: 9, unknownToken: 1)
+        model.refreshHosts()
+        XCTAssertEqual(
+            model.rejectionHint,
+            "Rejected connections detected — a host may have a stale token — rotate it and re-run setup."
+        )
     }
 
     func testAModelWithNoListenerNeverInventsAHint() {

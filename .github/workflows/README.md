@@ -11,6 +11,17 @@ with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
 retention) for symbolicating field crashes. Same-repo branches run on the
 self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
 
+Both lanes build with whatever Xcode toolchain is already on the machine —
+no `Setup Swift` step. Fork PRs previously pinned a separate swift.org
+toolchain (`swift-actions/setup-swift@v2`, `swift-version: "6.2"`), but its
+6.2.1 resolution ships with assertions enabled and asserts compiling this
+app's `@MainActor deinit`; Xcode's bundled toolchain doesn't have that
+problem, so hosted runners now use it too, same as self-hosted. Neither
+lane pins a version, so the hosted job records `xcodebuild -version` and
+`swift --version` in its step summary and keys the SwiftPM cache on them —
+when the image's default Xcode moves, the log says which build ran and no
+`.build` tree crosses toolchains.
+
 Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
 PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
 the job packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle after
@@ -85,6 +96,33 @@ inside the owner's GUI session:
 When either grant is missing, the smoke script fails immediately with an
 actionable TCC message. Grant it once in System Settings > Privacy & Security,
 then rerun the workflow.
+
+## `hosted-tcc-probe.yml`
+
+Dispatch-only research probe on GitHub-**hosted** macOS (`macos-15` and
+`macos-26` matrix), answering whether the UI tier could leave the owner's Mac.
+It reports whether a hosted runner has a real GUI/WindowServer session, what
+`csrutil status` says, which TCC rows the image ships (`actions/runner-images`
+bakes Accessibility, Screen Recording, PostEvent and AppleEvents grants for
+`/bin/bash` and `/usr/bin/osascript` into both databases at image-build time),
+whether System Events UI scripting and `screencapture` actually work there, and
+whether a microphone device exists at all. It then packages the app and runs
+`ui-smoke.sh` for real.
+
+The decisive step runs first: `AXIsProcessTrusted()` /
+`CGPreflightScreenCaptureAccess()` under all three invocation shapes
+(interpreted `swift file.swift` — what `ui-smoke.sh` uses today — compiled, and
+`osascript`-spawned), printed adjacently, because TCC attributes a grant to the
+*responsible* process and it is unresolved whether a `swift`-spawned child
+inherits bash's.
+
+Every probe step is `continue-on-error: true` on purpose: a red step is a
+result, not a breakage. Only the hosted-only guard may fail the job — it aborts
+unless `runner.environment == github-hosted`, so the probe can never touch the
+owner's personal machine. Never add `self-hosted` to its matrix. Output lands in
+the `hosted-tcc-probe-<image>` artifact, including a full-screen PNG (whether
+the framebuffer is real is a question a screenshot answers better than a byte
+count).
 
 ## `capture-assets.yml`
 

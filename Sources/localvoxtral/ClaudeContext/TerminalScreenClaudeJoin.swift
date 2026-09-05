@@ -448,8 +448,20 @@ struct ClaudeSessionJoinResolver {
         Log.claudeContext.info(
             "Focused-pane tty matched no session (\(outcome, privacy: .public)); trying title marker"
         )
+        Self.noteAbstention("tty: \(outcome)")
+    }
+
+    /// Where an abstention cause leaves this resolver as a value rather than as
+    /// a log line (`HerdrPanelBindingProbe` has the one other such point).
+    ///
+    /// Both consumers are diagnostics — the dogfood capture record and
+    /// `--probe-surface` — and both need the SAME string, so they read it from
+    /// here rather than each deriving one. `cause` is already the content-free
+    /// category the log line above carries; nothing else may be passed in.
+    private static func noteAbstention(_ cause: String) {
+        ClaudeJoinAbstentionTap.note(cause)
         #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention("tty: \(outcome)")
+        DogfoodCaptureTap.shared.noteJoinAbstention(cause)
         #endif
     }
 
@@ -517,9 +529,7 @@ struct ClaudeSessionJoinResolver {
         Log.claudeContext.info(
             "Browser tab matched no session (\(outcome, privacy: .public)); Claude context withheld"
         )
-        #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention("browserTab: \(outcome)")
-        #endif
+        Self.noteAbstention("browserTab: \(outcome)")
     }
 
     private func resolveViaHerdr(target: TerminalScreenTarget) async -> ClaudeSessionJoin? {
@@ -1245,9 +1255,7 @@ struct ClaudeSessionJoinResolver {
         Log.claudeContext.info(
             "Remote herdr pane matched no session (\(outcome, privacy: .public)); Claude context withheld"
         )
-        #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention("remote-herdr: \(outcome)")
-        #endif
+        Self.noteAbstention("remote-herdr: \(outcome)")
     }
 
     /// The joined herdr pane's visible text, or nil on any refusal or failure.
@@ -1303,9 +1311,7 @@ struct ClaudeSessionJoinResolver {
         Log.claudeContext.info(
             "Herdr pane matched no session (\(outcome, privacy: .public)); Claude context withheld"
         )
-        #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention("herdr: \(outcome)")
-        #endif
+        Self.noteAbstention("herdr: \(outcome)")
     }
 
     /// The cmux arm: bind the FOCUSED cmux surface to a live session by the
@@ -1561,9 +1567,7 @@ struct ClaudeSessionJoinResolver {
         Log.claudeContext.info(
             "cmux surface matched no session (\(outcome, privacy: .public)); trying title marker"
         )
-        #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention("cmux: \(outcome)")
-        #endif
+        Self.noteAbstention("cmux: \(outcome)")
     }
 
     private func resolveViaMarker(target: TerminalScreenTarget) -> ClaudeSessionJoin? {
@@ -1571,9 +1575,7 @@ struct ClaudeSessionJoinResolver {
             // No marker on screen: this pane is not a joined Claude session, or
             // we cannot tell. Either way there is nothing to resolve.
             Log.claudeContext.info("Terminal pane carries no Claude session marker")
-            #if LOCALVOXTRAL_DOGFOOD
-            DogfoodCaptureTap.shared.noteJoinAbstention("marker: no marker in title")
-            #endif
+            Self.noteAbstention("marker: no marker in title")
             return nil
         }
 
@@ -1593,9 +1595,7 @@ struct ClaudeSessionJoinResolver {
             Log.claudeContext.info(
                 "Terminal pane not joined to a live Claude session; Claude context withheld"
             )
-            #if LOCALVOXTRAL_DOGFOOD
-            DogfoodCaptureTap.shared.noteJoinAbstention("marker: unknown/stale/ambiguous")
-            #endif
+            Self.noteAbstention("marker: unknown/stale/ambiguous")
             return nil
         }
     }

@@ -23,6 +23,7 @@ is machine-local config, set once per clone (never committed):
 ./scripts/remote-build.sh package         # build the .app bundle (also builds both MLX helpers)
 ./scripts/remote-build.sh integration-polishd [hf-repo]  # bundled polish helper vs real model + eval baseline (run package first)
 ./scripts/remote-build.sh integration-speechd [hf-repo]  # packaged speech helper vs real audio/model (run package first)
+./scripts/remote-build.sh integration-herdr [ssh-dest]   # remote-herdr join vs a LIVE herdr over a real ssh -L (hermetic by default)
 ./scripts/remote-build.sh eval-e2e [EvalRecordings/agent-dictation/<set>]  # agent-dictation E2E eval (run package first)
 ./scripts/remote-build.sh dogfood          # build the instrumented tree + run the context-capture suite
 ./scripts/remote-build.sh dogfood-package  # package an instrumented .app for hand-dogfooding
@@ -32,7 +33,10 @@ is machine-local config, set once per clone (never committed):
 
 On a Mac, just `swift build` / `swift test` (but only `package_app.sh` can
 produce working Metal kernels for the helpers — see `PolishHelper/AGENTS.md`
-/ `SpeechHelper/AGENTS.md` before touching either).
+/ `SpeechHelper/AGENTS.md` before touching either). Add
+`--skip HerdrIntegrationTests` to a bare `swift test`: that lane starts a live
+herdr and carries no `XCTSkip` by design, so every scripted lane skips it by
+name instead.
 
 - Before starting long remote work, `./scripts/mac-health.sh` — it fails fast
   when the Mac is asleep/unreachable instead of letting rsync hang.
@@ -74,9 +78,10 @@ This is a real app with daily users. Nothing ships on "it compiles".
 
 Tier 0 (unit suites + packaging + launch smoke) and the tier-1 speechd
 realtime integration run on every non-fast-path PR/push. The live-model LLM
-lanes are CONDITIONAL: they run only for lane-filter path matches
-(`scripts/ci/llm-lane-filter.sh` / `speechd-lane-filter.sh`) or the literal
-markers `[run-llm-eval]` / `[run-speechd-integration]` in the PR body or head
+lanes and the live-herdr lane are CONDITIONAL: they run only for lane-filter
+path matches (`scripts/ci/llm-lane-filter.sh` / `speechd-lane-filter.sh` /
+`herdr-lane-filter.sh`) or the literal markers `[run-llm-eval]` /
+`[run-speechd-integration]` / `[run-herdr-integration]` in the PR body or head
 commit — and the marker must be present when the run is created (rerun reuses
 the old payload; push after adding it). Tier 2 (UI smoke, nightly E2E eval)
 is scheduled, never per-PR.
@@ -85,7 +90,11 @@ The binding rule: changes to prompts, model pins/catalog, sampling, the
 polish request shape or anything that alters what reaches the model, the
 helper engines, or the eval corpus/scorer REQUIRE the matching lane, and the
 PR's Proof section carries either the scoreboard or a one-line justification
-for skipping. Model/prompt changes — and changes to the TTS→ASR→polish
+for skipping. Anything that changes what the app says to herdr, what it
+believes herdr answered, or how the ssh forward reaching it is opened
+REQUIRES `integration-herdr` on the same terms — that lane is what holds the
+EXTERNAL herdr assumptions in `docs/agent/remote-herdr-panel-binding.md` to a
+live server. Model/prompt changes — and changes to the TTS→ASR→polish
 harness itself — additionally paste the eval-e2e scoreboard
 (`remote-build.sh eval-e2e`) or justify skipping it; "tier 2 is scheduled"
 does not waive that duty. Full tier table, lane details, eval-recording and

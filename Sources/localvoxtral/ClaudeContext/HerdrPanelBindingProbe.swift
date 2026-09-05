@@ -164,8 +164,10 @@ struct HerdrPanelBindingProbe {
         Log.claudeContext.info(
             "Remote herdr panel binding abstained (\(cause.rawValue, privacy: .public))"
         )
+        let noted = "remoteHerdrPanel: \(cause.rawValue)"
+        ClaudeJoinAbstentionTap.note(noted)
         #if LOCALVOXTRAL_DOGFOOD
-        DogfoodCaptureTap.shared.noteJoinAbstention("remoteHerdrPanel: \(cause.rawValue)")
+        DogfoodCaptureTap.shared.noteJoinAbstention(noted)
         #endif
     }
 }

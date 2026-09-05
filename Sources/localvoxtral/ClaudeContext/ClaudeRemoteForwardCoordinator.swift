@@ -64,6 +64,9 @@ public final class ClaudeRemoteForwardCoordinator {
         listenerPort: UInt16 = ClaudeRemoteListenerLimits.default.port,
         isListenerBound: @escaping @MainActor () -> Bool,
         makeSupervisor: MakeSupervisor? = nil,
+        // Handed to every supervisor this coordinator builds itself. Nil keeps
+        // the fail-closed behaviour: a refused bind stays `portUnavailable`.
+        ownershipProbe: ClaudeRemoteForwardOwnershipProbe? = nil,
         pidLedger: ClaudeRemoteForwardPidLedger? = nil,
         reapOrphans: (@Sendable () async -> Void)? = nil,
         reconcileHerdrEnrollment: @escaping @MainActor (Set<String>) -> Void = { _ in }
@@ -94,7 +97,8 @@ public final class ClaudeRemoteForwardCoordinator {
                         pidLedger.remember(hostID: config.hostID, record: record)
                     }
                     return process
-                }
+                },
+                ownershipProbe: ownershipProbe
             )
         }
     }

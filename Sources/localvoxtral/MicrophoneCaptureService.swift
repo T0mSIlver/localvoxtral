@@ -42,7 +42,25 @@ enum MicrophoneCaptureError: LocalizedError {
 private final class RenderContext: @unchecked Sendable {
     weak var service: MicrophoneCaptureService?
     let auHAL: AudioUnit
+    /// The format the callback renders INTO — i.e. the AUHAL's client format
+    /// on the output scope of element 1. Equals the device format for mono and
+    /// stereo devices; for a multi-channel device narrowed by the AUHAL channel
+    /// map it is mono (see `configureInputBus`).
     var deviceAVFormat: AVAudioFormat
+    /// Descriptor of the DEVICE format behind `deviceAVFormat`. Kept apart
+    /// because the two diverge the moment the bus is narrowed: the client
+    /// format is mono while the device still reports 16 channels, and the
+    /// unchanged-format skip below must compare device against device.
+    var deviceFormatDescriptor: MicrophoneCaptureService.InputFormatDescriptor
+    /// What the USER picked, unclamped. Held separately from the resolved
+    /// channel so a device that briefly reports fewer channels doesn't
+    /// permanently collapse the choice to 0: each reconfigure resolves this
+    /// original index against the current count.
+    var requestedChannel: Int
+    /// Device channel actually in use: `requestedChannel` clamped to the live
+    /// format. Already applied by the AUHAL when the client format came back
+    /// mono; used by the converter otherwise.
+    var captureChannel: Int
     let outputFormat: AVAudioFormat
     let chunkHandler: MicrophoneCaptureService.ChunkHandler
     let converterState: MicrophoneCaptureService.ConverterState
@@ -54,6 +72,9 @@ private final class RenderContext: @unchecked Sendable {
         service: MicrophoneCaptureService,
         auHAL: AudioUnit,
         deviceFormat: AVAudioFormat,
+        deviceFormatDescriptor: MicrophoneCaptureService.InputFormatDescriptor,
+        requestedChannel: Int,
+        captureChannel: Int,
         outputFormat: AVAudioFormat,
         chunkHandler: @escaping MicrophoneCaptureService.ChunkHandler,
         processingQueue: DispatchQueue,
@@ -62,6 +83,9 @@ private final class RenderContext: @unchecked Sendable {
         self.service = service
         self.auHAL = auHAL
         self.deviceAVFormat = deviceFormat
+        self.deviceFormatDescriptor = deviceFormatDescriptor
+        self.requestedChannel = requestedChannel
+        self.captureChannel = captureChannel
         self.outputFormat = outputFormat
         self.chunkHandler = chunkHandler
         self.converterState = MicrophoneCaptureService.ConverterState()
@@ -69,8 +93,17 @@ private final class RenderContext: @unchecked Sendable {
         self.debugLoggingEnabled = debugLoggingEnabled
     }
 
-    func updateDeviceFormat(_ format: AVAudioFormat) {
+    /// INVARIANT: the AUHAL must be stopped before calling this. These fields
+    /// are read on the CoreAudio realtime thread with no lock; the only thing
+    /// excluding that reader is `AudioOutputUnitStop` having returned.
+    func updateDeviceFormat(
+        _ format: AVAudioFormat,
+        deviceDescriptor: MicrophoneCaptureService.InputFormatDescriptor,
+        captureChannel newChannel: Int
+    ) {
         deviceAVFormat = format
+        deviceFormatDescriptor = deviceDescriptor
+        captureChannel = newChannel
         converterState.converter = nil
         converterState.inputFormatDescriptor = nil
     }
@@ -119,7 +152,9 @@ private func auhalInputCallback(
     let inputFormatDescriptor = MicrophoneCaptureService.inputFormatDescriptor(for: inputFormat)
 
     if converterState.converter == nil || converterState.inputFormatDescriptor != inputFormatDescriptor {
-        guard let converter = AVAudioConverter(from: inputFormat, to: context.outputFormat) else {
+        guard let converter = MicrophoneCaptureService.makeTranscriptionConverter(
+            from: inputFormat, to: context.outputFormat, channel: context.captureChannel
+        ) else {
             if context.debugLoggingEnabled {
                 context.service?.debugLog(
                     "converter creation failed sampleRate=\(inputFormat.sampleRate) channels=\(inputFormat.channelCount)"
@@ -132,7 +167,6 @@ private func auhalInputCallback(
             }
             return noErr
         }
-        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
         converterState.converter = converter
         converterState.inputFormatDescriptor = inputFormatDescriptor
         converterState.consecutiveFailureCount = 0
@@ -350,10 +384,14 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         )
 
         if formatStatus == noErr, asbd.mSampleRate > 0,
-           let newFormat = AVAudioFormat(streamDescription: &asbd)
+           let newFormat = Self.makeDeviceFormat(&asbd)
         {
             let ctx = unmanagedCtx.takeUnretainedValue()
-            let currentDescriptor = Self.inputFormatDescriptor(for: ctx.deviceAVFormat)
+            // Device against device: `ctx.deviceAVFormat` is the CLIENT format,
+            // which is mono for a narrowed bus and so would never equal a
+            // 16-channel device format — the skip below would be dead code for
+            // exactly the devices this path exists to serve.
+            let currentDescriptor = ctx.deviceFormatDescriptor
             let newDescriptor = Self.inputFormatDescriptor(for: newFormat)
 
             guard currentDescriptor != newDescriptor else {
@@ -366,18 +404,30 @@ final class MicrophoneCaptureService: @unchecked Sendable {
             withState { $0.auHALRunning = false }
             AudioUnitUninitialize(auHAL)
 
-            ctx.updateDeviceFormat(newFormat)
-
-            // Mirror on output scope element 1 so the callback receives
-            // raw device samples without internal AUHAL conversion.
-            AudioUnitSetProperty(
-                auHAL,
-                kAudioUnitProperty_StreamFormat,
-                kAudioUnitScope_Output,
-                1,
-                &asbd,
-                UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-            )
+            // Reconfigure the bus the same way `start` did, so a format change
+            // keeps (or re-establishes) the AUHAL channel map instead of
+            // silently reverting a narrowed bus to the full device format.
+            // Resolved from the REQUESTED channel, not the last resolved one:
+            // a device that briefly reports stereo must not permanently
+            // collapse a channel-8 selection to channel 1.
+            let channel = Self.resolvedCaptureChannel(
+                ctx.requestedChannel, channelCount: asbd.mChannelsPerFrame)
+            do {
+                let clientFormat = try configureInputBus(
+                    auHAL: auHAL, deviceASBD: &asbd, channel: channel)
+                ctx.updateDeviceFormat(
+                    clientFormat, deviceDescriptor: newDescriptor, captureChannel: channel)
+            } catch {
+                // Both property sets failed, so the bus may hold a mono client
+                // format with no channel map. Restarting the unit in that state
+                // captures silence and mismatches the callback's buffer, so tear
+                // it down instead and let recovery rebuild from `start`.
+                debugLog(
+                    "refreshInputTapIfNeeded: input bus reconfigure failed (\(error)); tearing down for a clean rebuild"
+                )
+                stop()
+                return false
+            }
         } else {
             // Can't read format — do a full reinit to recover.
             AudioOutputUnitStop(auHAL)
@@ -399,8 +449,14 @@ final class MicrophoneCaptureService: @unchecked Sendable {
         return true
     }
 
-    func start(preferredDeviceID: String?, chunkHandler: @escaping ChunkHandler) throws {
-        debugLog("start preferredDeviceID=\(preferredDeviceID ?? "default")")
+    func start(
+        preferredDeviceID: String?,
+        preferredInputChannel: Int = 0,
+        chunkHandler: @escaping ChunkHandler
+    ) throws {
+        debugLog(
+            "start preferredDeviceID=\(preferredDeviceID ?? "default") channel=\(preferredInputChannel)"
+        )
 
         // Resolve the target input device without changing the system default.
         let deviceID = try resolveInputDevice(preferredDeviceID)
@@ -489,30 +545,25 @@ final class MicrophoneCaptureService: @unchecked Sendable {
                     "get device format", getFormatStatus)
             }
 
-            guard let deviceFormat = AVAudioFormat(streamDescription: &deviceASBD) else {
+            let captureChannel = Self.resolvedCaptureChannel(
+                preferredInputChannel, channelCount: deviceASBD.mChannelsPerFrame)
+
+            guard let deviceFormat = Self.makeDeviceFormat(&deviceASBD) else {
                 throw MicrophoneCaptureError.invalidInputFormat
             }
+            let deviceDescriptor = Self.inputFormatDescriptor(for: deviceFormat)
 
-            // Mirror the device format on the output scope of element 1
-            // so the callback receives raw device samples (no internal conversion).
-            let setFormatStatus = AudioUnitSetProperty(
-                auHAL,
-                kAudioUnitProperty_StreamFormat,
-                kAudioUnitScope_Output,
-                1,
-                &deviceASBD,
-                UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
-            )
-            guard setFormatStatus == noErr else {
-                throw MicrophoneCaptureError.auHALConfigurationFailed(
-                    "set output format", setFormatStatus)
-            }
+            let clientFormat = try configureInputBus(
+                auHAL: auHAL, deviceASBD: &deviceASBD, channel: captureChannel)
 
             // Create render context and register the input callback.
             let renderCtx = RenderContext(
                 service: self,
                 auHAL: auHAL,
-                deviceFormat: deviceFormat,
+                deviceFormat: clientFormat,
+                deviceFormatDescriptor: deviceDescriptor,
+                requestedChannel: preferredInputChannel,
+                captureChannel: captureChannel,
                 outputFormat: targetOutputFormat,
                 chunkHandler: chunkHandler,
                 processingQueue: processingQueue,
@@ -817,7 +868,195 @@ final class MicrophoneCaptureService: @unchecked Sendable {
 
     fileprivate func debugLog(_ message: String) {
         guard debugLoggingEnabled else { return }
-        Log.microphone.debug("\(message)")
+        // `privacy: .public` because an interpolated String defaults to
+        // PRIVATE in os_log, and every line here redacted to `<private>` —
+        // which made these diagnostics unreadable on the machines they exist
+        // to diagnose. Reading them otherwise needs the system-wide
+        // Enable-Private-Data profile, which is far too big a hammer for a
+        // capture log. Safe to publish: this carries device names, formats,
+        // channel indices, byte counts and OSStatus values, never audio or
+        // transcript content, and the whole function is already gated behind
+        // the LOCALVOXTRAL_DEBUG opt-in. Same posture as the delta log and
+        // the insertion scalar trace.
+        Log.microphone.debug("\(message, privacy: .public)")
+    }
+
+    /// Wraps a device ASBD in an AVAudioFormat, falling back to a discrete
+    /// channel layout for channel counts that have no standard layout.
+    /// Pro audio interfaces (e.g. a 16-input Universal Audio Thunderbolt)
+    /// report such formats natively, and the layout-less initializer returns
+    /// nil for them — which used to surface as "Microphone input format is
+    /// invalid" even though the device works fine.
+    /// Internal (not fileprivate) for the regression tests.
+    static func makeDeviceFormat(
+        _ asbd: inout AudioStreamBasicDescription
+    ) -> AVAudioFormat? {
+        if let format = AVAudioFormat(streamDescription: &asbd) { return format }
+        guard asbd.mChannelsPerFrame > 0 else { return nil }
+        let tag = kAudioChannelLayoutTag_DiscreteInOrder | asbd.mChannelsPerFrame
+        guard let layout = AVAudioChannelLayout(layoutTag: tag) else { return nil }
+        return AVAudioFormat(streamDescription: &asbd, channelLayout: layout)
+    }
+
+    /// Builds the capture converter for one client format. For channel counts
+    /// above stereo there is no downmix matrix to mono — AVAudioConverter
+    /// silently converts every frame to ZEROS — so one input channel is mapped
+    /// to the mono output instead. Reached only when the AUHAL declined to do
+    /// the same narrowing itself (see `configureInputBus`); when it accepted,
+    /// the format here is already mono and the map is unnecessary.
+    /// Internal (not fileprivate) for the regression tests.
+    static func makeTranscriptionConverter(
+        from inputFormat: AVAudioFormat,
+        to outputFormat: AVAudioFormat,
+        channel: Int = 0
+    ) -> AVAudioConverter? {
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+            return nil
+        }
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        if inputFormat.channelCount > 2 {
+            let source = resolvedCaptureChannel(channel, channelCount: inputFormat.channelCount)
+            converter.channelMap = [NSNumber(value: source)]
+        }
+        return converter
+    }
+
+    /// Clamps a stored channel index to what the device actually offers. The
+    /// selection persists across launches while devices come and go, so an
+    /// index left over from a 16-in interface must not address channel 9 of a
+    /// stereo one. Out of range falls back to the first channel.
+    static func resolvedCaptureChannel(_ channel: Int, channelCount: AVAudioChannelCount) -> Int {
+        guard channelCount > 0, channel >= 0, channel < Int(channelCount) else { return 0 }
+        return channel
+    }
+
+    /// The AUHAL client format for capturing ONE channel of a multi-channel
+    /// device: same sample rate and sample type, one channel. Returns nil for
+    /// mono and stereo devices, which keep the device format and the
+    /// converter's standard downmix.
+    /// Internal (not fileprivate) for the regression tests.
+    static func narrowedClientFormat(
+        from deviceASBD: AudioStreamBasicDescription,
+        channel: Int
+    ) -> AudioStreamBasicDescription? {
+        guard deviceASBD.mChannelsPerFrame > 2 else { return nil }
+        guard channel >= 0, channel < Int(deviceASBD.mChannelsPerFrame) else { return nil }
+
+        // Only formats whose per-sample storage is unambiguous. mBitsPerChannel
+        // is SIGNIFICANT bits, not the stride: 24-bit samples in 32-bit slots
+        // report 24 while occupying 4 bytes, and shrinking by bits/8 would
+        // declare a frame size that doesn't describe the samples. Everything
+        // else declines here and takes the wide fallback, which costs the
+        // optimization and keeps the behaviour #240 proved.
+        guard deviceASBD.mFormatID == kAudioFormatLinearPCM,
+            deviceASBD.mFormatFlags & kAudioFormatFlagIsPacked != 0,
+            deviceASBD.mFramesPerPacket == 1,
+            deviceASBD.mBitsPerChannel >= 8,
+            deviceASBD.mBitsPerChannel % 8 == 0
+        else { return nil }
+
+        // Interleaved: one frame holds every channel, so the per-sample stride
+        // is the frame size divided by the channel count. Non-interleaved:
+        // mBytesPerFrame already describes ONE channel's buffer.
+        let isInterleaved = deviceASBD.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+        let bytesPerSample: UInt32
+        if isInterleaved {
+            guard deviceASBD.mChannelsPerFrame > 0,
+                deviceASBD.mBytesPerFrame % deviceASBD.mChannelsPerFrame == 0
+            else { return nil }
+            bytesPerSample = deviceASBD.mBytesPerFrame / deviceASBD.mChannelsPerFrame
+        } else {
+            bytesPerSample = deviceASBD.mBytesPerFrame
+        }
+        guard bytesPerSample == deviceASBD.mBitsPerChannel / 8 else { return nil }
+
+        var narrowed = deviceASBD
+        narrowed.mChannelsPerFrame = 1
+        narrowed.mBytesPerFrame = bytesPerSample
+        narrowed.mBytesPerPacket = bytesPerSample
+        return narrowed
+    }
+
+    /// Configures the AUHAL's input bus and returns the format the callback
+    /// will render into.
+    ///
+    /// Preferred path for a multi-channel device: a MONO client format on the
+    /// output scope of element 1 plus `kAudioOutputUnitProperty_ChannelMap`
+    /// naming the device channel that feeds it, so the unit hands us one
+    /// channel and 15 of every 16 are never copied into the render buffer.
+    /// If the unit rejects either property we mirror the full device format
+    /// instead and let `makeTranscriptionConverter` pick the channel — the
+    /// behaviour that shipped in #240, kept as the fallback because it is the
+    /// one proven against the reporter's hardware.
+    /// Whether the narrowed bus survived both property calls. Pure so the
+    /// decision table is testable: the `AudioUnitSetProperty` calls themselves
+    /// need multi-channel hardware, but which way we branch on their results
+    /// is exactly the logic whose failure means silence.
+    enum ClientFormatChoice: Equatable {
+        /// Both properties took; the callback renders one channel.
+        case narrowed
+        /// Narrowing was declined or rejected; restore the full device format
+        /// and let the converter pick the channel (the #240 path).
+        case wide
+    }
+
+    static func clientFormatChoice(formatStatus: OSStatus, mapStatus: OSStatus)
+        -> ClientFormatChoice
+    {
+        // BOTH must succeed. A mono client format with no channel map is the
+        // worst state available: a discrete layout downmixes to silence.
+        (formatStatus == noErr && mapStatus == noErr) ? .narrowed : .wide
+    }
+
+    private func configureInputBus(
+        auHAL: AudioUnit,
+        deviceASBD: inout AudioStreamBasicDescription,
+        channel: Int
+    ) throws -> AVAudioFormat {
+        let asbdSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+
+        if var narrowed = Self.narrowedClientFormat(from: deviceASBD, channel: channel) {
+            let formatStatus = AudioUnitSetProperty(
+                auHAL, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+                &narrowed, asbdSize)
+            var map: [Int32] = [Int32(channel)]
+            let mapStatus =
+                formatStatus == noErr
+                ? AudioUnitSetProperty(
+                    auHAL, kAudioOutputUnitProperty_ChannelMap, kAudioUnitScope_Output, 1,
+                    &map, UInt32(MemoryLayout<Int32>.size * map.count))
+                : formatStatus
+
+            if Self.clientFormatChoice(formatStatus: formatStatus, mapStatus: mapStatus)
+                == .narrowed,
+                let clientFormat = Self.makeDeviceFormat(&narrowed)
+            {
+                debugLog(
+                    "input bus narrowed by AUHAL: channel \(channel) of \(deviceASBD.mChannelsPerFrame)"
+                )
+                return clientFormat
+            }
+
+            // One of the two was rejected. The unit may now hold a mono client
+            // format with NO channel map, which downmixes a discrete layout to
+            // silence — so the wide format below is set unconditionally rather
+            // than skipped, putting the bus back in a known-good state.
+            debugLog(
+                "AUHAL channel map unavailable (format=\(formatStatus) map=\(mapStatus)); using converter-side channel selection"
+            )
+        }
+
+        let setFormatStatus = AudioUnitSetProperty(
+            auHAL, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1,
+            &deviceASBD, asbdSize)
+        guard setFormatStatus == noErr else {
+            throw MicrophoneCaptureError.auHALConfigurationFailed(
+                "set output format", setFormatStatus)
+        }
+        guard let deviceFormat = Self.makeDeviceFormat(&deviceASBD) else {
+            throw MicrophoneCaptureError.invalidInputFormat
+        }
+        return deviceFormat
     }
 
     fileprivate static func inputFormatDescriptor(for format: AVAudioFormat) -> InputFormatDescriptor {
