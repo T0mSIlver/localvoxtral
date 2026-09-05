@@ -1242,6 +1242,41 @@ case "termaction":
 // It connects, writes, reads, prints, exits. It has no idea what the line
 // means; the shell side decided that (run_app) and the app's own socket
 // validates it again.
+// Is anything LISTENING on the control socket right now.
+//
+// `state` used to answer this with `[[ -S … ]]`, which is a question about a
+// FILE. A dogfood build that has quit leaves its socket behind (and a build
+// with no control socket compiled in never removes a predecessor's), so the
+// gate reported `"present":true` while every `app` command failed with
+// `could not connect (61)`. That is a diagnostic saying "armed" about
+// something that cannot answer — measured 2026-09-05, where the installed
+// dogfood build predated the control socket entirely and `state` still
+// claimed it was there.
+//
+// Connect and close, nothing sent. A refused connect is the answer, and it
+// costs one syscall round trip on a path `state` already had to stat.
+case "controlprobe":
+    guard argv.count >= 2 else { die("usage: controlprobe <socket-path>") }
+    let probePath = argv[1]
+    var probeAddress = sockaddr_un()
+    probeAddress.sun_family = sa_family_t(AF_UNIX)
+    let probeBytes = Array(probePath.utf8)
+    guard probeBytes.count < MemoryLayout.size(ofValue: probeAddress.sun_path) else { exit(1) }
+    withUnsafeMutableBytes(of: &probeAddress.sun_path) { raw in
+        raw.copyBytes(from: probeBytes)
+        raw[probeBytes.count] = 0
+    }
+    probeAddress.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+    let probeFD = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard probeFD >= 0 else { exit(1) }
+    defer { close(probeFD) }
+    let probeConnected = withUnsafePointer(to: &probeAddress) { pointer in
+        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
+            connect(probeFD, sockaddrPointer, socklen_t(MemoryLayout<sockaddr_un>.size))
+        }
+    }
+    exit(probeConnected == 0 ? 0 : 1)
+
 case "control":
     guard argv.count >= 3 else { die("usage: control <socket-path> <line>") }
     let socketPath = argv[1]
@@ -1583,6 +1618,24 @@ attach_check() {
   [[ "$session" == "configured" ]] && ATTACH_SESSION=1
 }
 
+# Whether the control socket ANSWERS, not whether its path exists.
+#
+# A dogfood build that quit leaves its socket file behind, and a build with no
+# control socket compiled in never removes a predecessor's — so the file test
+# this replaces reported `"present":true` for a socket that every `app` command
+# then failed to reach with `could not connect (61)`. Measured 2026-09-05: the
+# installed dogfood build predated the control socket entirely and `state`
+# still said it was there. `state` exists to answer "is it safe to drive"; a
+# field in it that cannot fail is not an answer.
+control_socket_live() {
+  [[ -S "$LV_UI_CONTROL_SOCKET" ]] || { printf 'false'; return; }
+  if helper controlprobe "$LV_UI_CONTROL_SOCKET" >/dev/null 2>&1; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
 setup_json() {
   local socket_consent gate_conf_present lock_probe_present
   local attach_installed attach_allowlisted
@@ -1618,7 +1671,7 @@ setup_json() {
     "$(json_string "$ATTACH_CONF_STATUS")" \
     "$([[ -n "$ATTACH_DESTINATION" ]] && json_string "$ATTACH_DESTINATION" || printf 'null')" \
     "$(json_bool "$ATTACH_SESSION")" \
-    "$([[ -S "$LV_UI_CONTROL_SOCKET" ]] && printf 'true' || printf 'false')" \
+    "$(control_socket_live)" \
     "$(json_string "$socket_consent")"
 }
 

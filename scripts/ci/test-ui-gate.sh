@@ -241,6 +241,14 @@ case "$2" in
     [[ -z "${STUB_DICTATE_FAIL:-}" ]] || exit 1
     echo "ok $5 trigger=$4 frontmost=7777 (Ghostty)"
     ;;
+  controlprobe)
+    # Connect-and-close, no payload: exit 0 when something is listening. The
+    # suite drives it with STUB_CONTROL_DEAD so that "a socket FILE exists but
+    # nothing answers" is expressible — the state field this replaced could not
+    # tell that apart from a live listener.
+    [[ -z "${STUB_CONTROL_DEAD:-}" ]] || exit 1
+    exit 0
+    ;;
   control)
     # $3 is the socket path, $4 the forwarded line. Echoed back so the suite
     # can assert exactly what crossed, and nothing more.
@@ -2636,6 +2644,25 @@ STATE="$(state_json 'the control socket, unbound' LV_UI_CONTROL_SOCKET="$NOT_A_S
 [[ "$(state_field "$STATE" 's["setup"]["control_socket"]["present"]')" == "False" ]] \
   || fail "a regular file read as a bound socket: $STATE"
 pass "state reports the control socket's consent and whether anything is bound"
+
+# A socket FILE that answers nothing is the case the file test could not see.
+# A dogfood build that quit leaves its socket behind, and a build with no
+# control socket compiled in never removes a predecessor's — so on 2026-09-05
+# `state` said `"present":true` while every `app` command came back
+# `could not connect to the control socket (61)`. `state` exists to answer
+# "is it safe to drive"; a field in it that cannot fail is not an answer.
+STATE="$(state_json 'a control socket file with nothing listening' \
+  STUB_DEFAULT_debug_dogfood_control_socket_enabled=1 \
+  STUB_CONTROL_DEAD=1 \
+  LV_UI_CONTROL_SOCKET="$CONTROL_SOCKET")"
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["present"]')" == "False" ]] \
+  || fail "a dead control socket still read as present: $STATE"
+# The consent is a SEPARATE fact and must survive: "armed but not running" is
+# exactly the state an operator needs to see, and collapsing it into one
+# boolean would say the runtime opt-in had been lost.
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["consent"]')" == "on" ]] \
+  || fail "a dead socket also lost the runtime consent: $STATE"
+pass "state reports a socket nothing is listening on as absent, keeping the consent separate"
 
 # 8. Facts, never contents. A conf is sourced by this gate and read by the
 #    wrapper; neither file's text may reach the caller.
