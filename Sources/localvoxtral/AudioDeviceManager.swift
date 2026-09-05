@@ -5,6 +5,13 @@ import Foundation
 struct MicrophoneInputDevice: Identifiable, Hashable {
     let id: String
     let name: String
+    /// Input channels the device reports. Above stereo there is no meaningful
+    /// downmix to mono — a microphone occupies ONE of these channels — so the
+    /// capture path picks a single channel and the UI offers the choice.
+    /// Defaults to 1 for devices whose stream format can't be read.
+    let channelCount: UInt32
+
+    var isMultiChannel: Bool { channelCount > 2 }
 }
 
 enum AudioDeviceManager {
@@ -13,8 +20,46 @@ enum AudioDeviceManager {
             guard isSelectableInputDevice(deviceID) else { return nil }
             guard let uid = deviceUID(for: deviceID) else { return nil }
             let name = deviceName(for: deviceID) ?? "Input \(uid)"
-            return MicrophoneInputDevice(id: uid, name: name)
+            return MicrophoneInputDevice(
+                id: uid,
+                name: name,
+                channelCount: inputChannelCount(for: deviceID) ?? 1
+            )
         }
+    }
+
+    /// Input channels the device offers, summed across ALL its input streams.
+    ///
+    /// Deliberately not `kAudioDevicePropertyStreamFormat`, which describes
+    /// stream 0 only: MADI/AVB-class interfaces and aggregate devices present
+    /// several input streams, and the AUHAL's element-1 format concatenates
+    /// them. Counting stream 0 alone would offer "Channel 1…8" on a device
+    /// whose channel 11 the capture path can address perfectly well.
+    static func inputChannelCount(for deviceID: AudioObjectID) -> UInt32? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &dataSize)
+        guard sizeStatus == noErr, dataSize > 0 else { return nil }
+
+        let rawPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(dataSize),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { rawPointer.deallocate() }
+
+        let dataStatus = AudioObjectGetPropertyData(
+            deviceID, &address, 0, nil, &dataSize, rawPointer)
+        guard dataStatus == noErr else { return nil }
+
+        let audioBufferList = rawPointer.assumingMemoryBound(to: AudioBufferList.self)
+        let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+        let channelCount = buffers.reduce(UInt32(0)) { $0 + $1.mNumberChannels }
+        return channelCount > 0 ? channelCount : nil
     }
 
     static func defaultInputDeviceObjectID() -> AudioObjectID? {
