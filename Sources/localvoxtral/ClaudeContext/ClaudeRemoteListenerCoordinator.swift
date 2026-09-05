@@ -44,7 +44,7 @@ public protocol ClaudeRemoteListenerControlling: AnyObject {
 /// It owns the SESSION registry for the same reason it owns the listener: a
 /// host that is revoked or removed must stop being a source of context, and
 /// closing the door on new records is only half of that — the records it
-/// already published are still cached, still joinable by marker, until TTL.
+/// already published are still cached, and still joinable, until TTL.
 /// Enrollment is the fact; both the port and the cache are consequences of it,
 /// so they are reconciled together rather than by two owners who can disagree.
 @MainActor

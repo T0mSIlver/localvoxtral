@@ -394,7 +394,8 @@ final class DictationViewModel {
     /// Read by three consumers — raw screen attachment, the session block, and
     /// repository collection — which is exactly why it is stored rather than
     /// re-derived: they must all describe the same session. Nil whenever the
-    /// pane did not positively join (no marker, unknown/stale/ambiguous), which
+    /// pane did not positively join (no arm answered, or unknown/stale/
+    /// ambiguous), which
     /// is the abstention that keeps an unrelated terminal's repo out of the
     /// prompt. Cleared on every session exit, like the screen capture.
     @ObservationIgnored
@@ -1056,7 +1057,7 @@ final class DictationViewModel {
         } else if isDictating {
             stopDictation(reason: "push-to-talk release")
         } else if isAwaitingMicrophonePermission {
-            // Keep the session marker until the permission callback resolves so we can
+            // Keep the pending-session flag until the permission callback resolves so we can
             // suppress starting if the key was released before permission was granted.
             statusText = StatusStrings.ready
             return
@@ -2197,7 +2198,7 @@ final class DictationViewModel {
     /// setting off or repoint the endpoint while they are speaking, and either
     /// is a withdrawal that must land before a single file is read. The order
     /// here is the point — every cheap, local check runs before the collector is
-    /// reached, so "no marker ⇒ no filesystem call" and "setting off ⇒ no
+    /// reached, so "no join ⇒ no filesystem call" and "setting off ⇒ no
     /// filesystem call" are properties of the control flow, not of the
     /// collector's manners.
     func claudeRepoSnapshotIfEnabled(

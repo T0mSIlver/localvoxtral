@@ -761,8 +761,10 @@ final class ClaudeRemoteEnrollmentServiceTests: XCTestCase {
 
     func testNotesCoverTheCaveatsThatBiteFirst() throws {
         let notes = try plan().notes.joined(separator: "\n").lowercased()
-        XCTAssertTrue(notes.contains("tmux"), "a multiplexer owns the title, so the marker does not arrive")
-        XCTAssertTrue(notes.contains("set-titles"), "and the fix for it")
+        XCTAssertFalse(
+            notes.contains("set-titles"),
+            "the tmux/screen title caveat went with the title marker (2026-09-05): no OSC 2 is written any more, so telling a user to configure their multiplexer's title passthrough would be advice for a mechanism that no longer exists"
+        )
         XCTAssertTrue(notes.contains("revok"), "the off switch")
         XCTAssertTrue(notes.contains("rotate"), "what to do when the token leaks into history")
         XCTAssertTrue(notes.contains("histcontrol") || notes.contains("hist_ignore_space"))

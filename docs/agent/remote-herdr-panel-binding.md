@@ -1,10 +1,18 @@
 # Remote herdr join: agents-panel binding (design)
 
-Status: approved by owner 2026-08-09 (token UX = live mic indicator; enrollment
-= enroll-time offer; fallback = argv path with the title-marker arm suppressed
-on unreadable-ssh abstentions). Supersedes the argv invocation signal as the
-PRIMARY binding for `.remoteHerdrPane` joins; the argv path (#228/#229)
-remains as fallback.
+Status: approved by owner 2026-08-09 (token UX = live mic indicator;
+enrollment = enroll-time offer; fallback = the argv path). Supersedes the argv
+invocation signal as the PRIMARY binding for `.remoteHerdrPane` joins; the argv
+path (#228/#229) remains as fallback.
+
+AMENDED 2026-09-05: the window-title marker mechanism was removed from the app
+entirely (owner decision). Two things in this document changed with it — the
+"Title-marker arm suppression" section is gone, and the pane-level confirmation
+in step 5 below no longer includes a broker marker. The trust argument for the
+panel binding is untouched: it never rested on the marker, and the marker never
+said anything about the local surface. See `invariants.md` for what the
+confirmation set now is and for the honest statement of what its fourth member
+used to buy.
 
 ## Problem
 
@@ -126,14 +134,18 @@ Why a grid match is sufficient evidence, to the standard of review rounds 1–7:
    terminal must render; ≤2 polls with injected clock — NO wall-clock sleeps
    in tests, use the `now:`/`sleepFor:` seam pattern of
    `OverlayBufferSessionCoordinator`).
-5. On match: proceed with the UNCHANGED downstream confirmations — broker
-   marker in the pane's `terminal_title`, `agent_session` claim agreement,
-   foreground process check. The panel token AUTHORIZES the surface binding;
-   it does not replace pane-level session confirmation.
+5. On match: proceed with the downstream confirmations — exactly one live
+   candidate of that socket claims the focused pane id, `agent_session` claim
+   agreement, foreground process check. (Until 2026-09-05 there was a fourth:
+   a broker-allocated marker in the pane's captured `terminal_title`. The
+   `terminal_title` field is not decoded any more.) The panel token
+   AUTHORIZES the surface binding; it does not replace pane-level session
+   confirmation.
 6. Two candidate hosts matching in one grid (distinct nonces both present):
    abstain. Should be impossible; abstention is the correct posture.
 7. On no-match after the bounded settle: fall through to the argv path with
-   #228/#229 semantics exactly.
+   #228/#229 semantics exactly. When THAT declines too, the dictation gets no
+   join — there is nothing under it since the title arm was removed.
 
 ## Live mic indicator (owner decision)
 
@@ -161,21 +173,6 @@ matches the longest rendered prefix, floored at 8 nonce digits
 (log2(36^8) ≈ 41.4 bits, keeping the "more than 40 random bits" bound), and a
 shorter run is refused with its own `row-truncated` cause rather than being
 reported as an unconfigured row — the opposite diagnosis.
-
-## Title-marker arm suppression (owner decision)
-
-When the ssh probe returns `.undeterminable` with a category that means "an
-ssh session is present on the surface but cannot be read" —
-`multipleForegroundClients`, `untrustedExecutable`, `unreadableArguments`,
-`refusedArguments` — the title-marker fallback arm is SKIPPED for that
-dictation. Rationale: an unreadable ssh means the surface may be a remote
-session, and the outer title marker may be stale from an earlier session on
-that host (the documented mis-join residual). `deviceUnreadable` /
-`tableUnreadable` / `probeUnavailable` do NOT suppress the marker arm: they
-mean we could not look at all, and suppressing there would break local marker
-joins on machines where the probe itself is unavailable. This needs a
-red/green regression test pair: stale-marker mis-join reproduced under an
-unreadable-ssh probe result before the change, refused after.
 
 ## Enrollment-time config offer (owner decision)
 
@@ -218,7 +215,6 @@ paths stay loud (`Log.backends` convention).
   now closed by the panel binding when the panel is visible; the residual is
   restated (collapsed sidebar / narrow client / unconfigured row fall back to
   argv, where the manual flow still gets no join).
-- The marker-arm suppression rule and its exact category set.
 
 ## Pinned against a live server
 
@@ -251,8 +247,11 @@ Measured against herdr 0.8.2 (protocol 20) while writing that lane:
   agent session id was reported through `herdr pane report-agent[-session]`,
   so `claimedClaudeSessionID` came back nil. The join's "herdr's own claim
   must not disagree" cross-check is therefore vacuous for panes in that
-  state — it can still catch a disagreement, but absence is the common case
-  and the pane-id plus broker-marker confirmations carry the weight.
+  state — it can still catch a disagreement, but absence is the common case,
+  and since the broker-marker confirmation was removed (2026-09-05) the pane-id
+  match and the FOREGROUND PROCESS check are what carry the weight there. That
+  makes re-verifying this field on herdr upgrades more valuable than it was,
+  not less.
 
 Unpinnable from the Mac side, and still documented hopes: that all App-mode
 clients share one server-global focus (a second whole-view client on the same

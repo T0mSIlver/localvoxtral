@@ -11,7 +11,6 @@ final class TerminalScreenContextTests: XCTestCase {
 
     override func tearDown() async throws {
         TerminalScreenAXReader.debugScreenReadOverride = nil
-        TerminalScreenAXReader.debugWindowTitleOverride = nil
         TerminalScreenContextSource.debugFrontmostTargetOverride = nil
         TerminalScreenContextSource.debugTargetForPIDOverride = nil
         TerminalScreenRawAttachmentPolicy.debugAuthorizationOverride = nil
@@ -329,20 +328,16 @@ final class TerminalScreenContextTests: XCTestCase {
     /// Pins the AX seam to a counting stub and returns a reader for the count,
     /// so "never touched the screen" is asserted as an observation rather than
     /// inferred from a nil return (which a broken gate could also produce).
-    /// Counts EVERY AX read the feature can make against a target — the screen
-    /// AND the window title. Both are round trips into a foreign process, so
-    /// "never reached AX" has to mean both; a counter that watched only the
-    /// screen let the join authorizer read titles behind a rejected gate (and
-    /// off a recycled PID) with these tests still green.
+    /// Counts the AX screen read — the one round trip into a foreign process
+    /// this feature can make against a target. (It used to count a window-title
+    /// read too, back when the join had a title arm; no arm reads a title any
+    /// more, and `focusedWindowIdentity` is reached only from an already
+    /// resolved join.)
     private func countingReadSeam() -> () -> Int {
         var count = 0
         TerminalScreenAXReader.debugScreenReadOverride = { _ in
             count += 1
             return "should never be read"
-        }
-        TerminalScreenAXReader.debugWindowTitleOverride = { _ in
-            count += 1
-            return "lvx-abcd should never be read"
         }
         return { count }
     }
@@ -959,7 +954,6 @@ final class TerminalScreenContextLifecycleTests: XCTestCase {
 
     override func tearDown() async throws {
         TerminalScreenAXReader.debugScreenReadOverride = nil
-        TerminalScreenAXReader.debugWindowTitleOverride = nil
         TerminalScreenContextSource.debugFrontmostTargetOverride = nil
         TerminalScreenContextSource.debugTargetForPIDOverride = nil
         TerminalScreenRawAttachmentPolicy.debugAuthorizationOverride = nil

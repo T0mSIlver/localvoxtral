@@ -32,19 +32,16 @@ private final class GateTabURLReadCounter: Sendable {
     func increment() { value.withLock { $0 += 1 } }
 }
 
-private final class GateTestMarkers: Sendable {
-    private let queue: Mutex<[String]>
-    init(_ values: [String]) { queue = Mutex(values) }
-    var allocate: @Sendable () -> String {
-        { [self] in queue.withLock { $0.isEmpty ? "lvx-exhausted" : $0.removeFirst() } }
-    }
-}
-
 /// The gates in front of repository collection, in the order they must fire:
 /// setting, loopback endpoint, live join, LOCAL workspace. Each one is asserted
 /// to prevent the filesystem call, not merely to discard its result.
 @MainActor
 final class ClaudeRepoContextGateTests: XCTestCase {
+    /// The device the focused pane reports AND the device the seeded session
+    /// publishes. The tty arm is the local join, and the only one — there is no
+    /// title fallback behind it.
+    private static let surfaceTTY = "/dev/ttys003"
+
     private static var retainedViewModels: [DictationViewModel] = []
 
     private let loopback = URL(string: "http://127.0.0.1:8472/v1/chat/completions")!
@@ -72,16 +69,14 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     private func registry(cwd: String? = "/repo") -> ClaudeSessionRegistry {
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
-        )
+            isProcessAlive: { _ in true })
         registry.ingest(
             ClaudeHookRecord(
                 event: .sessionStart,
                 sessionID: "s1",
                 timestamp: 0,
                 rawCwd: cwd,
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: Self.surfaceTTY)
             ),
             origin: .localAuthenticated(peerUID: 501)
         )
@@ -99,26 +94,21 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
-        )
+            isProcessAlive: { _ in true })
         registry.ingest(
             ClaudeHookRecord(
                 event: .sessionStart,
                 sessionID: "s1",
                 timestamp: 0,
                 rawCwd: cwd,
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: Self.surfaceTTY)
             ),
             origin: origin
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+            focusedTerminalTTY: { _ in Self.surfaceTTY },
+            focusedWindowID: { _ in 101 }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
@@ -227,7 +217,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
 
     // MARK: - Join gate
 
-    // The common case: a plain terminal with no marker. No join, no read.
+    // The common case: a plain terminal no arm can identify. No join, no read.
     func testNoJoinMakesNoFilesystemCall() async {
         let (viewModel, collector, _) = await wired()
         viewModel.settings.claudeRepoContextEnabled = true
@@ -237,7 +227,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         XCTAssertNil(snapshot)
         XCTAssertTrue(
             collector.collectedPaths.isEmpty,
-            "no marker means no session, and no session means no repository"
+            "no join means no session, and no session means no repository"
         )
     }
 
@@ -252,26 +242,21 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         let dead = Mutex(false)
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in !dead.withLock { $0 } },
-            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
-        )
+            isProcessAlive: { _ in !dead.withLock { $0 } })
         registry.ingest(
             ClaudeHookRecord(
                 event: .sessionStart,
                 sessionID: "s1",
                 timestamp: 0,
                 rawCwd: "/repo",
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: Self.surfaceTTY)
             ),
             origin: .localAuthenticated(peerUID: 501)
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+            focusedTerminalTTY: { _ in Self.surfaceTTY },
+            focusedWindowID: { _ in 101 }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
@@ -302,10 +287,40 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     // A remote session joins, but has no `localWorkspacePath` to hand the
     // collector — enforced by `ClaudeWorkspaceReference.make` never building one
     // for a remote origin, not by a check here.
+    //
+    // The join comes through the browser arm, because every TERMINAL arm is
+    // local-only (`resolve(tty:)` refuses remote candidates outright) and the
+    // window-title arm that used to be a remote session's way in is gone.
+    // The Remote Control bridge id is the arm that spans origins.
     func testRemoteSessionMakesNoFilesystemCall() async {
-        let (viewModel, collector, join) = await wired(
-            cwd: "/srv/repo", origin: .remote(channel: "ssh")
+        let viewModel = makeViewModel()
+        let collector = GateSpyCollector()
+        viewModel.claudeRepoCollector = collector
+
+        let registry = ClaudeSessionRegistry(
+            now: { Date(timeIntervalSince1970: 1_000) },
+            isProcessAlive: { _ in true })
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: "/srv/repo"
+            ),
+            origin: .remote(channel: "ssh"),
+            environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
         )
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in nil },
+            focusedBrowserTabURL: { _ in "https://claude.ai/code/session_abc123" },
+            focusedWindowID: { _ in 101 }
+        )
+        viewModel.claudeSessionJoinResolver = resolver
+        let join = await resolver.resolve(
+            target: TerminalScreenTarget(
+                pid: 4242, bundleID: BrowserTabAllowlist.chromeBundleID
+            )
+        )
+        viewModel.claudeSessionJoin = join
+
         viewModel.settings.claudeRepoContextEnabled = true
         XCTAssertNotNil(join, "precondition: a remote session still joins")
         XCTAssertNil(join?.localWorkspacePath)
@@ -366,16 +381,14 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         let viewModel = makeViewModel()
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
-        )
+            isProcessAlive: { _ in true })
         for record in [
             ClaudeHookRecord(
                 event: .sessionStart,
                 sessionID: "s1",
                 timestamp: 0,
                 rawCwd: "/repo",
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: Self.surfaceTTY)
             ),
             ClaudeHookRecord(
                 event: .userPromptSubmit,
@@ -383,18 +396,15 @@ final class ClaudeRepoContextGateTests: XCTestCase {
                 timestamp: 1,
                 rawCwd: "/repo",
                 prompt: "rewrite the migration script to be idempotent",
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: Self.surfaceTTY)
             ),
         ] {
             registry.ingest(record, origin: .localAuthenticated(peerUID: 501))
         }
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+            focusedTerminalTTY: { _ in Self.surfaceTTY },
+            focusedWindowID: { _ in 101 }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
@@ -464,9 +474,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         let dead = Mutex(false)
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in !dead.withLock { $0 } },
-            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
-        )
+            isProcessAlive: { _ in !dead.withLock { $0 } })
         registry.ingest(
             ClaudeHookRecord(
                 event: .userPromptSubmit,
@@ -474,17 +482,14 @@ final class ClaudeRepoContextGateTests: XCTestCase {
                 timestamp: 0,
                 rawCwd: "/repo",
                 prompt: "rewrite the migration script to be idempotent",
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001, tty: Self.surfaceTTY)
             ),
             origin: .localAuthenticated(peerUID: 501)
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+            focusedTerminalTTY: { _ in Self.surfaceTTY },
+            focusedWindowID: { _ in 101 }
         )
         viewModel.claudeSessionJoinResolver = resolver
         let join = await resolver.resolve(target: ghostty)
@@ -526,27 +531,29 @@ final class ClaudeRepoContextGateTests: XCTestCase {
     func testConsumingTheJoinClearsIt() async {
         let (viewModel, _, join) = await wired()
         viewModel.claudeSessionJoin = join
-        XCTAssertEqual(viewModel.consumeClaudeSessionJoin()?.marker, join?.marker)
+        XCTAssertEqual(
+            viewModel.consumeClaudeSessionJoin()?.snapshot.sessionID,
+            join?.snapshot.sessionID
+        )
         XCTAssertNil(viewModel.claudeSessionJoin)
         XCTAssertNil(viewModel.consumeClaudeSessionJoin())
     }
 
     // MARK: - Start-time resolution gating
 
-    // Resolving is not passive: it makes a live AX round trip for the window
-    // title. Every gate must sit in front of it, exactly as they do for the
-    // screen read.
-    func testStartResolutionNeverReadsTheTitleWhenBothFeaturesAreOff() async {
+    // Resolving is not passive: it sends a live Apple event to read the
+    // focused pane's tty. Every gate must sit in front of it, exactly as they
+    // do for the screen read.
+    func testStartResolutionNeverReadsTheSurfaceWhenBothFeaturesAreOff() async {
         let viewModel = makeViewModel()
         let reads = Mutex(0)
         viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry(),
-            markerInWindowTitle: { _ in
+            focusedTerminalTTY: { _ in
                 reads.withLock { $0 += 1 }
-                return TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+                return Self.surfaceTTY
+            },
+            focusedWindowID: { _ in 101 }
         )
         viewModel.settings.terminalScreenContextEnabled = false
         viewModel.settings.claudeRepoContextEnabled = false
@@ -555,7 +562,10 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         await viewModel.captureTerminalScreenContextForSession()
 
         XCTAssertNil(viewModel.claudeSessionJoin)
-        XCTAssertEqual(reads.withLock { $0 }, 0, "an opted-out user's title must never be read")
+        XCTAssertEqual(
+            reads.withLock { $0 }, 0,
+            "an opted-out user's terminal must never be asked anything"
+        )
     }
 
     // The trusted-endpoint opt-in also admits the START-TIME join resolution:
@@ -573,12 +583,11 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         let reads = Mutex(0)
         viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry(),
-            markerInWindowTitle: { _ in
+            focusedTerminalTTY: { _ in
                 reads.withLock { $0 += 1 }
-                return TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+                return Self.surfaceTTY
+            },
+            focusedWindowID: { _ in 101 }
         )
         TerminalScreenContextSource.debugFrontmostTargetOverride = { self.ghostty }
 
@@ -587,7 +596,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         XCTAssertNil(viewModel.claudeSessionJoin)
         XCTAssertEqual(
             reads.withLock { $0 }, 0,
-            "a remote endpoint without the opt-in must not even read the title"
+            "a remote endpoint without the opt-in must not even ask the terminal"
         )
 
         viewModel.settings.polishContextTrustedEndpointEnabled = true
@@ -610,9 +619,7 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         viewModel.claudeRepoCollector = collector
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: GateTestMarkers(["lvx-abcd"]).allocate
-        )
+            isProcessAlive: { _ in true })
         let isLocal = origin.isLocalAuthenticated
         registry.ingest(
             ClaudeHookRecord(
@@ -633,7 +640,6 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         )
         viewModel.claudeSessionJoinResolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in nil },
             focusedTerminalTTY: { _ in nil },
             focusedBrowserTabURL: { _ in
                 urlReads?.increment()
@@ -741,7 +747,6 @@ final class ClaudeRepoContextGateTests: XCTestCase {
         TerminalScreenContextSource.debugFrontmostTargetOverride = nil
         TerminalScreenContextSource.debugTargetForPIDOverride = nil
         TerminalScreenAXReader.debugScreenReadOverride = nil
-        TerminalScreenAXReader.debugWindowTitleOverride = nil
         try await super.tearDown()
     }
 }

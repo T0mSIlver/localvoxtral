@@ -71,8 +71,7 @@ final class SocketPaneScreenContextTests: XCTestCase {
     private func makeRegistry(liveness: ScreenTestLiveness) -> ClaudeSessionRegistry {
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 2_000_000) },
-            isProcessAlive: liveness.probe,
-            allocateMarkerValue: { "lvx-abcd" }
+            isProcessAlive: liveness.probe
         )
         registry.ingest(
             ClaudeHookRecord(
@@ -101,7 +100,6 @@ final class SocketPaneScreenContextTests: XCTestCase {
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: makeRegistry(liveness: liveness),
-            markerInWindowTitle: { _ in nil },
             focusedTerminalTTY: { _ in "/dev/ttys-outer" },
             focusedWindowID: { _ in 101 },
             herdrClientProbe: { _ in true },
@@ -364,7 +362,6 @@ final class SocketPaneScreenContextTests: XCTestCase {
         let registry = makeRegistry(liveness: liveness)
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in nil },
             focusedTerminalTTY: { _ in "/dev/ttys-inner" },
             focusedWindowID: { _ in 101 },
             herdrClientProbe: { _ in true },
@@ -448,8 +445,7 @@ final class CmuxSurfaceScreenContextTests: XCTestCase {
     ) -> ClaudeSessionJoinResolver {
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 2_000_000) },
-            isProcessAlive: liveness.probe,
-            allocateMarkerValue: { "lvx-abcd" }
+            isProcessAlive: liveness.probe
         )
         registry.ingest(
             ClaudeHookRecord(
@@ -470,7 +466,6 @@ final class CmuxSurfaceScreenContextTests: XCTestCase {
         )
         return ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in nil },
             focusedTerminalTTY: { _ in nil },
             focusedWindowID: { _ in 101 },
             cmuxSurfaces: surfaces,

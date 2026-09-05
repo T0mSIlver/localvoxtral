@@ -283,16 +283,16 @@ fi
 # must never be able to put a byte into the prompt. So printing fails CLOSED,
 # the mirror image of delivery failing open: stdout is either one single small
 # line matching EXACTLY the one body the listener can emit
-# (ClaudeRemoteHTTPCodec.markerResponseBody — sorted keys, suppressOutput
-# always true, optional OSC-2 terminalSequence whose marker obeys
-# ClaudeMarkerSequence's lvx- allowlist) or absolutely nothing. A forged
-# well-formed marker is inert: markers are broker-allocated, so an unknown one
-# joins nothing.
+# (ClaudeRemoteHTTPCodec.hookResponseBody — a CONSTANT: suppressOutput and
+# nothing else) or absolutely nothing. There is no variable part left to allow:
+# the listener answers an accepted record and a discarded one with the same
+# bytes, so no response of any shape can carry a terminal escape sequence, and
+# anything a squatter returns that is not the constant is dropped here.
 # The `{ …; } 2>/dev/null` grouping matters: `wc <file 2>/dev/null` lets the
 # SHELL's own "cannot open" reach stderr, because the input redirection fails
 # before the stderr one is applied — and a body file that never got written IS
 # the tunnel-down path, the one that must be silent (caught live 2026-07-27).
-BODY_GRAMMAR='[{]"suppressOutput":true(,"terminalSequence":"\\u001[bB]]2;lvx-[0-9a-flvx-]{1,28}\\u0007")?[}]'
+BODY_GRAMMAR='[{]"suppressOutput":true[}]'
 if [ "$STATUS" = "200" ] && [ -r "$WORK/body" ]; then
   SIZE="$({ wc -c <"$WORK/body"; } 2>/dev/null | tr -d '[:space:]')"; [ -n "$SIZE" ] || SIZE=9999
   LINES="$({ grep -c '' <"$WORK/body"; } 2>/dev/null)"; [ -n "$LINES" ] || LINES=0

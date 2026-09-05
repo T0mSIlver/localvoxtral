@@ -13,7 +13,6 @@ final class ClaudeSessionReducerTests: XCTestCase {
         ClaudeSessionSnapshot(
             sessionID: "s1",
             origin: origin ?? localOrigin,
-            marker: ClaudeSessionMarker(value: "lvx-test"),
             firstSeen: epoch
         )
     }

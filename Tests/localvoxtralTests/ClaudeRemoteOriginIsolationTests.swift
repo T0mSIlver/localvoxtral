@@ -32,16 +32,10 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
     private let remote = ClaudeTransportOrigin.remote(channel: "ssh:habc")
     private let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
 
-    private func makeRegistry(markers: [String] = []) -> ClaudeSessionRegistry {
-        let queue = Mutex(markers)
-        return ClaudeSessionRegistry(
+    private func makeRegistry() -> ClaudeSessionRegistry {
+        ClaudeSessionRegistry(
             now: { [now] in now },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: {
-                queue.withLock { queue in
-                    queue.isEmpty ? ClaudeSessionRegistry.defaultMarkerValue() : queue.removeFirst()
-                }
-            }
+            isProcessAlive: { _ in true }
         )
     }
 
@@ -229,14 +223,14 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
 
     // MARK: Host and session isolation
 
-    func testTwoHostsWithTheSameSessionIDGetSeparateSessionsAndMarkers() throws {
-        let registry = makeRegistry(markers: ["lvx-aaaa1111", "lvx-bbbb2222"])
+    func testTwoHostsWithTheSameSessionIDGetSeparateSessions() throws {
+        let registry = makeRegistry()
         let hostA = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hAAA"))
         let hostB = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hBBB"))
 
         // Both hosts happen to pick the same Claude session id. Scoping is what
         // keeps them apart — without it, the second would silently take over the
-        // first's session and its marker.
+        // first's session.
         let a = try XCTUnwrap(registry.ingest(
             record(
                 event: .userPromptSubmit,
@@ -257,7 +251,6 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
         ))
 
         XCTAssertNotEqual(a.sessionID, b.sessionID)
-        XCTAssertNotEqual(a.marker, b.marker)
         XCTAssertEqual(a.latestPriorUserPrompt, "alpha work")
         XCTAssertEqual(b.latestPriorUserPrompt, "beta work")
         XCTAssertEqual(a.workspace, .remoteOpaque(label: "alpha"))
@@ -265,46 +258,38 @@ final class ClaudeRemoteOriginIsolationTests: XCTestCase {
         XCTAssertEqual(registry.liveSessions().count, 2)
     }
 
-    func testEachHostsMarkerResolvesOnlyToItsOwnSession() throws {
-        let registry = makeRegistry(markers: ["lvx-aaaa1111", "lvx-bbbb2222"])
+    func testEachHostsScopedIDResolvesOnlyToItsOwnSession() throws {
+        let registry = makeRegistry()
         let hostA = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hAAA"))
         let hostB = ClaudeTransportOrigin.remote(channel: ClaudeRemoteSessionScope.channel(hostID: "hBBB"))
         _ = registry.ingest(record(sessionID: "remote:hAAA:s", cwd: "/srv/alpha"), origin: hostA)
         _ = registry.ingest(record(sessionID: "remote:hBBB:s", cwd: "/srv/beta"), origin: hostB)
 
-        guard case .resolved(let a) = registry.resolve(marker: ClaudeSessionMarker(value: "lvx-aaaa1111")) else {
-            return XCTFail("host A's marker must resolve")
-        }
-        guard case .resolved(let b) = registry.resolve(marker: ClaudeSessionMarker(value: "lvx-bbbb2222")) else {
-            return XCTFail("host B's marker must resolve")
-        }
-        XCTAssertEqual(a.sessionID, "remote:hAAA:s")
-        XCTAssertEqual(b.sessionID, "remote:hBBB:s")
+        let a = try XCTUnwrap(registry.snapshot(sessionID: "remote:hAAA:s"))
+        let b = try XCTUnwrap(registry.snapshot(sessionID: "remote:hBBB:s"))
+        XCTAssertEqual(a.workspace, .remoteOpaque(label: "alpha"))
+        XCTAssertEqual(b.workspace, .remoteOpaque(label: "beta"))
     }
 
-    func testAnUnknownMarkerAbstains() {
-        let registry = makeRegistry(markers: ["lvx-aaaa1111"])
+    func testAnUnknownSessionIDAbstains() {
+        let registry = makeRegistry()
         _ = registry.ingest(record(), origin: remote)
-        XCTAssertEqual(registry.resolve(marker: ClaudeSessionMarker(value: "lvx-9999ffff")), .unknown)
+        XCTAssertNil(registry.snapshot(sessionID: "remote:habc:nobody"))
     }
 
-    func testAStaleRemoteSessionAbstains() throws {
+    func testAStaleRemoteSessionAbstains() {
         // A remote pid names a process on another machine, where it could be
         // anything — so remote sessions rely on TTL alone, never on liveness.
         let clock = Mutex(now)
         let registry = ClaudeSessionRegistry(
             now: { clock.withLock { $0 } },
-            isProcessAlive: { _ in XCTFail("a remote pid must never be probed"); return true },
-            allocateMarkerValue: { "lvx-aaaa1111" }
+            isProcessAlive: { _ in XCTFail("a remote pid must never be probed"); return true }
         )
         _ = registry.ingest(record(), origin: remote)
-        XCTAssertEqual(
-            registry.resolve(marker: ClaudeSessionMarker(value: "lvx-aaaa1111")),
-            .resolved(try XCTUnwrap(registry.snapshot(sessionID: "remote:habc:s-1")))
-        )
+        XCTAssertNotNil(registry.snapshot(sessionID: "remote:habc:s-1"))
 
         clock.withLock { $0 = $0.addingTimeInterval(ClaudeRegistryLimits.default.sessionTTL + 1) }
-        XCTAssertEqual(registry.resolve(marker: ClaudeSessionMarker(value: "lvx-aaaa1111")), .stale)
+        XCTAssertNil(registry.snapshot(sessionID: "remote:habc:s-1"))
     }
 
     // MARK: Snippets

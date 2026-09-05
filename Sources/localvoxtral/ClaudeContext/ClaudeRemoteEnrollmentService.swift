@@ -457,11 +457,6 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 + "set to ignore space-prefixed commands (HISTCONTROL=ignorespace / setopt "
                 + "HIST_IGNORE_SPACE). If it landed there, rotate the token — that is what rotation "
                 + "is for.",
-            "tmux/screen: a multiplexer owns the window title, so the OSC 2 marker the hook writes "
-                + "does not reach Ghostty by default and the pane stays unjoined. `set -g "
-                + "set-titles on` in ~/.tmux.conf lets tmux pass the title through. Without it you "
-                + "still get the off-screen context (prompt, cwd, files) — you just do not get the "
-                + "screen join.",
             "Plain `ssh` with no enrollment keeps working exactly as before: no tunnel, no token, no "
                 + "hooks, and the pane stays screen-only and unjoined.",
             "The plugin needs only POSIX `sh` and `curl` on the remote host — no localvoxtral binary. "

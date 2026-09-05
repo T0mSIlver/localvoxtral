@@ -87,21 +87,6 @@ enum SSHProbeIndeterminacy: String, Sendable, Equatable {
     case probeUnavailable = "probe unavailable"
 }
 
-extension SSHProbeIndeterminacy {
-    /// An ssh process is present on the focused surface, but trusting its
-    /// destination would require guessing. A title there may be stale from the
-    /// pre-herdr outer session, so these categories suppress that arm too.
-    var suppressesTitleMarker: Bool {
-        switch self {
-        case .multipleForegroundClients, .untrustedExecutable,
-             .unreadableArguments, .refusedArguments:
-            return true
-        case .deviceUnreadable, .tableUnreadable, .probeUnavailable:
-            return false
-        }
-    }
-}
-
 /// What the process table says about ssh clients on ONE terminal device.
 ///
 /// Three answers, and the difference between the last two is the whole point:
@@ -664,8 +649,8 @@ enum SSHDestinationTTYProbe {
     /// Lowercased because hostnames are case-insensitive and an ssh config alias
     /// is matched the same way in practice. That makes the comparison WIDER,
     /// which is only safe because a match is a precondition of the arm, never
-    /// the join: the pane id, the marker, herdr's own session claim, and the
-    /// foreground process all still have to agree afterwards.
+    /// the join: the pane id, herdr's own session claim, and the foreground
+    /// process all still have to agree afterwards.
     static func normalizedDestination(_ operand: String) -> String? {
         guard !operand.isEmpty, operand.utf8.count <= 253 else { return nil }
         guard !operand.contains("://") else { return nil }

@@ -132,8 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// sessions; the broker is the socket that feeds it.
     ///
     /// Owned HERE rather than by `DictationViewModel` because the hooks fire on
-    /// Claude Code's schedule, not on dictation's: a session's marker and cwd
-    /// are published while the user is typing, long before they press the hotkey.
+    /// Claude Code's schedule, not on dictation's: a session's tty, pane and
+    /// cwd are published while the user is typing, long before they press the
+    /// hotkey.
     /// A broker that only listened during a dictation session would miss the very
     /// records it exists to collect.
     private let claudeSessionRegistry = ClaudeSessionRegistry()
@@ -407,9 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
-            registry: claudeSessionRegistry,
-            shouldEmitLocalTitleMarker:
-                settingsStore.makeClaudeLocalTitleMarkerFallbackProvider()
+            registry: claudeSessionRegistry
         )
         do {
             try broker.start()
@@ -545,7 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             browserConsentPrewarmObserver = browserPrewarmObserver
             browserPrewarmObserver.start()
             // The join gate for raw terminal screen attachment. Installed only
-            // now: without a running broker there are no markers to resolve, and
+            // now: without a running broker there are no sessions to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to
             // everything anyway — but making the dependency explicit is what
             // keeps "no broker ⇒ no raw attachment" true by construction rather

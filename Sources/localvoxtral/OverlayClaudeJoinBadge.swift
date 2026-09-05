@@ -15,12 +15,11 @@ import Foundation
 /// and the user finds out by reading text that mis-transcribed the filenames
 /// they just said.
 ///
-/// Three states, not a boolean, for a reason the marker arms make concrete: a
-/// checkmark cannot tell a correct join from a mis-join onto a stale session
-/// (a lingering title marker from an earlier session on the same host can win —
-/// see the residual documented on the remote herdr arm). Naming the joined
-/// workspace is what makes a wrong join recognizable at a glance, and a wrong
-/// join is worse than none.
+/// Three states, not a boolean: a checkmark cannot tell a correct join from a
+/// mis-join onto a session that is not the one on screen — every arm carries a
+/// residual, documented where it is paid. Naming the joined workspace is what
+/// makes a wrong join recognizable at a glance, and a wrong join is worse than
+/// none.
 enum OverlayClaudeJoinBadge: Equatable, Sendable {
     /// Nothing to say, so nothing is shown: neither context feature is on, or
     /// the app knows of no session that could have joined. Silence is the
