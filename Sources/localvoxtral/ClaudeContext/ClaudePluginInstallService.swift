@@ -223,7 +223,7 @@ public struct ClaudePluginInstallService: Sendable {
     /// first-ever install (uninstalling a not-installed plugin exits 1).
     public func updatePlugin() throws {
         try perform(.addMarketplace)
-        try? perform(.uninstall)
+        _ = try? perform(.uninstall)
         try perform(.install)
     }
 }
