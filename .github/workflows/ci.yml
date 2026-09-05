@@ -200,6 +200,7 @@ jobs:
           ./scripts/ci/test-clean-stale-outputs.sh
           ./scripts/ci/test-workflow-step-names.sh
           ./scripts/ci/test-agents-guide-budget.sh
+          ./scripts/ci/test-resolve-release-notes.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain
