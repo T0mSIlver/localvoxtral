@@ -32,6 +32,19 @@ final class DogfoodCaptureTap: Sendable {
         var generation: UInt64 = 0
         var joinAbstentions: [String] = []
         var repoVocabularyHarvest: [String]?
+        /// The last join this app RESOLVED, summarized at resolution time.
+        ///
+        /// Deliberately outside the consume/clear cycle above. `join report` on
+        /// the dogfood control socket has to answer after a dictation has
+        /// finished, and by then the commit path has consumed the abstentions
+        /// AND `DictationViewModel.claudeSessionJoin` — the commit path
+        /// consumes the join, by design (docs/agent/invariants.md). So the
+        /// summary is snapshotted the moment it is resolved and kept until the
+        /// next resolution replaces it. It is the same
+        /// `ClaudeSessionJoinSummary` the record and `--probe-surface` use, so
+        /// a report and a record cannot describe the same dictation
+        /// differently.
+        var lastResolvedJoin: ClaudeSessionJoinSummary?
     }
 
     private let state = Mutex(State())
@@ -94,6 +107,28 @@ final class DogfoodCaptureTap: Sendable {
             $0.joinAbstentions = []
             return causes
         }
+    }
+
+    /// The abstention causes so far WITHOUT clearing them.
+    ///
+    /// `consumeJoinAbstentions` is the commit path's, and it empties the slot.
+    /// The join summary is snapshotted at resolution time, long before that
+    /// commit, so it must be able to read the causes without stealing them.
+    func peekJoinAbstentions() -> [String] {
+        state.withLock { $0.joinAbstentions }
+    }
+
+    /// Snapshot the join this dictation resolved. Replaces the previous one;
+    /// never cleared by `beginSession`, so it survives the commit that consumes
+    /// the join itself.
+    func noteResolvedJoin(_ summary: ClaudeSessionJoinSummary) {
+        state.withLock { $0.lastResolvedJoin = summary }
+    }
+
+    /// The last resolved join, or nil when no dictation has resolved one in
+    /// this process. Non-consuming: two readers must see the same answer.
+    func lastResolvedJoin() -> ClaudeSessionJoinSummary? {
+        state.withLock { $0.lastResolvedJoin }
     }
 
     /// The noted harvest, if any, and clears it.

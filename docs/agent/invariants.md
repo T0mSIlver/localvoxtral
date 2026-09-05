@@ -712,3 +712,48 @@ there is not.
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.
+- **The dogfood control socket is an accepted tradeoff, and the acceptance was
+  bounded.** An instrumented build can expose a local AF_UNIX socket that
+  starts dictations and reports what the context pipeline resolved
+  (`DogfoodControlSocket`), because two things are unobservable from outside
+  the process: a dictation has no deterministic trigger, and
+  `ClaudeSessionRegistry` is per-process, so `--probe-surface` can only ever
+  resolve against an empty registry. What makes that acceptable is a set of
+  bounds, each of which is the whole argument for the one above it:
+  - **`#if LOCALVOXTRAL_DOGFOOD` and nothing else.** A shipped build compiles
+    none of it — no listener, no path, no code that could create one, and no
+    setting or argument that turns it on.
+    `DogfoodControlBuildBoundaryTests` runs in BOTH configurations (it is
+    deliberately not itself gated) and fails when any reference escapes the
+    flag; that is the only kind of test that can notice this leaking into a
+    release. Within an instrumented build there is a SECOND runtime gate,
+    `debug.dogfood_control_socket_enabled`, kept separate from the capture's:
+    writing records and accepting commands are different consents.
+  - **0700 directory, 0600 socket, and `getpeereid` before the first read.**
+    The permissions should already make another uid unable to reach the path.
+    The credential check is there because "should" is a claim about the
+    filesystem, not about this process.
+  - **Every value that crosses is a bool, a count, or a closed enum name.**
+    `ClaudeSessionJoinSummary` is reused rather than re-mapped (its third
+    consumer, after the dogfood record and `--probe-surface`), abstention
+    causes are the resolver's own content-free categories, and `registry list`
+    reports session SHAPES — never a session id, marker, workspace, tty, pane
+    id, socket path or host. Replies pass through `DogfoodCaptureRedaction` as
+    a backstop, not as the strategy.
+  - **`session start` reaches `handleModifierOnlyTap`, the gesture's own
+    handler.** It is subject to the Secure Keyboard Entry refusal, the
+    Accessibility state, the microphone gate and backend readiness exactly as a
+    real trigger is; a refusal is REPORTED, never overridden. The only thing
+    added on top is another refusal (a start while dictating would toggle the
+    session off). It is also CAPPED — auto-stopped after a bounded window on an
+    injected clock — so a client that disconnects mid-dictation cannot leave
+    the app recording, and every exit path releases the cap.
+  - **Nothing can be injected.** No command carries a surface, a session, a tty
+    or a join. Every verb observes real resolution; a socket that could
+    fabricate one would answer questions about itself.
+  - Unlike `--probe-surface`, `surface probe` wires the app's FULL-capability
+    resolver. That is deliberate and is the reason the socket exists: the
+    withholding in the one-shot verb is about a process that is a bad owner for
+    a supervised `ssh -L` and a nonce lease, and the app is the good one. A
+    probe that withheld them would answer a different question from the one a
+    dictation asks.
