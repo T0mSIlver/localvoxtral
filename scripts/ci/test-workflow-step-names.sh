@@ -55,7 +55,7 @@ for file in "$WORKFLOW_DIR"/*.yml; do
   duplicates="$(check_file "$file" | sort | uniq -d || true)"
   if [[ -n "$duplicates" ]]; then
     echo "FAIL: $(basename "$file") declares the same step name twice in one job:" >&2
-    printf '  %s\n' "$duplicates" >&2
+    sed 's/^/  /' <<<"$duplicates" >&2
     failures=$((failures + 1))
   fi
 done
