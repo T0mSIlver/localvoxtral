@@ -294,10 +294,27 @@ fi
 # widen the allowlist but can never re-add one of these. A blocklist is a poor
 # primary defence, which is why it is not the primary defence — it is here so
 # that a mistake in a machine-local file fails loudly instead of silently.
+#
+# Four classes, because "can run a child command" is wider than "is a shell":
+#   * shells and interpreters — the obvious ones;
+#   * coding-agent CLIs — each one IS a shell wearing a product name;
+#   * editors and pagers — `vi`, `less`, `man` all reach a shell at RUNTIME
+#     (`:!cmd`, `!cmd`, `v`). The admission test in the header ("read --help;
+#     if any flag takes a command it fails") does NOT catch these, and they are
+#     the names an owner is likeliest to allowlist meaning "just a viewer";
+#   * command wrappers and toolchains — `nice`, `watch`, `timeout`, `env`,
+#     `git` (hooks, GIT_SSH, its editor), `open` (`open -a Terminal`), `awk`
+#     (`system()`), `npx`/`cargo`/`go`, and the fetchers whose normal argv is
+#     someone else's code.
+# Adding a name here costs nothing; leaving one out costs the boundary.
 LV_UI_TERM_FORBIDDEN="bash sh zsh ksh csh tcsh fish dash ssh scp sftp telnet \
 osascript applescript python python2 python3 perl ruby node deno bun php lua \
 env xargs find sudo doas su nohup script screen tmux herdr expect make just \
-claude codex opencode aider goose amp cursor-agent gemini ollama"
+claude codex opencode aider goose amp cursor-agent gemini ollama \
+vi vim nvim view ex ed emacs nano pico less more most man info \
+awk sed git swift open watch nice caffeinate arch time timeout stdbuf \
+npm npx yarn pnpm cargo go rustc gcc clang cc ld dtrace lldb gdb \
+nc netcat curl wget rsync ftp"
 
 original_command="${SSH_ORIGINAL_COMMAND:-}"
 ARGV=()
@@ -326,6 +343,13 @@ log_command() {
   # exactly like a genuine ALLOW entry. Every non-printable byte becomes `?`,
   # so one invocation is always exactly one line.
   shown="$(printf '%s' "${shown:0:512}" | tr -c '[:print:]' '?')"
+  # The note gets the same treatment, and for the same reason. Today every note
+  # is built from already-charset-checked input, so there is no live injection
+  # — but "one invocation is always exactly one line" was enforced on only half
+  # the line, and the next caller to interpolate something new here would not
+  # know that. Bounded too: a denial's note can otherwise carry the whole
+  # 2048-byte command back into the file.
+  note="$(printf '%s' "${note:0:512}" | tr -c '[:print:]' '?')"
   if [[ -n "$note" ]]; then
     log_line "$verdict $shown (${note})"
   else
@@ -1688,10 +1712,29 @@ run_launch() {
 
   open -n "$bundle" || fail "open refused the bundle"
 
+  # `pgrep -f` matches its pattern as a PREFIX of the whole command line, and
+  # this bundle ships localvoxtral-speechd, localvoxtral-polishd and
+  # localvoxtral-claude-hook in the SAME directory (package_app.sh) — every one
+  # of them matches "<bundle>/Contents/MacOS/localvoxtral". The app starts its
+  # helpers during launch, and `pgrep -n` answers with the NEWEST match, so the
+  # bare prefix could record a helper's pid: `ax dump` then returns [] forever,
+  # `shot` never finds a window, and `quit` kills the helper while the real app
+  # keeps running — after which `launch` refuses beside "a localvoxtral this
+  # gate did not start" and only the owner can unwedge it. Timing-dependent,
+  # and invisible to a stub that answers with one pid.
+  #
+  # So the prefix only nominates candidates; the executable path decides. BSD
+  # `ps -o comm=` is the full path, which is the same fact `process_identity`
+  # already trusts for pid reuse.
+  local app_executable="$bundle/Contents/MacOS/localvoxtral" candidate
   deadline=$((SECONDS + 20))
   while (( SECONDS < deadline )); do
-    pid="$(pgrep -n -f "^$bundle/Contents/MacOS/localvoxtral" 2>/dev/null || true)"
-    [[ -n "$pid" ]] && break
+    for candidate in $(pgrep -f "^$app_executable" 2>/dev/null | sort -rn); do
+      [[ "$(ps -p "$candidate" -o comm= 2>/dev/null)" == "$app_executable" ]] || continue
+      pid="$candidate"
+      break
+    done
+    [[ -n "${pid:-}" ]] && break
     sleep 0.5
   done
   [[ -n "${pid:-}" ]] || fail "the app did not start within 20 seconds"

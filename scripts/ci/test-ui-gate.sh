@@ -118,17 +118,48 @@ if [[ "$last" == "localvoxtral" ]]; then
   exit 0
 fi
 [[ -n "${STUB_PGREP_PID:-}" ]] || exit 1
-printf '%s\n' "$STUB_PGREP_PID"
+# Space-separated, one per line: the real pgrep answers a bundle-path PREFIX
+# with EVERY match, and the bundle ships localvoxtral-speechd/-polishd beside
+# the app. A stub that could only answer with one pid is what hid that.
+#
+# `-n` is honoured, because it is the half of the bug that bites: it asks for
+# the NEWEST match, and a helper the app just spawned is newer than the app.
+# The list is read as start order, so `-n` is its last entry.
+stub_newest=0
+for stub_arg in "$@"; do [[ "$stub_arg" == "-n" ]] && stub_newest=1; done
+if (( stub_newest == 1 )); then
+  stub_last=""
+  for stub_last in $STUB_PGREP_PID; do :; done
+  printf '%s\n' "$stub_last"
+  exit 0
+fi
+for stub_pid in $STUB_PGREP_PID; do printf '%s\n' "$stub_pid"; done
 STUB
 
 # `ps -p <pid> -o lstart=` and `ps -p <pid> -o comm=` are the two halves of the
 # gate's pid-reuse defence.
 cat >"$STUB_BIN/ps" <<'STUB'
 #!/usr/bin/env bash
+# `-p <pid>` is remembered so `comm=` can answer PER PID: that is the fact that
+# separates the app from a helper of its own that shares the pgrep prefix.
+# STUB_PS_COMM_<pid> wins when set, STUB_PS_COMM is the fallback.
+stub_pid=""
+stub_want_pid=0
 for arg in "$@"; do
+  if (( stub_want_pid == 1 )); then stub_pid="$arg"; stub_want_pid=0; continue; fi
   case "$arg" in
+    -p) stub_want_pid=1 ;;
     lstart=) printf '%s\n' "${STUB_PS_LSTART:-Mon Aug 24 09:00:00 2026}"; exit 0 ;;
-    comm=) printf '%s\n' "${STUB_PS_COMM:-/nonexistent}"; exit 0 ;;
+    comm=)
+      # Indirect expansion is bash 2.0+, so this is safe on the Mac's 3.2.
+      stub_var="STUB_PS_COMM_${stub_pid}"
+      if [[ -n "${!stub_var:-}" ]]; then
+        printf '%s\n' "${!stub_var}"
+      else
+        printf '%s\n' "${STUB_PS_COMM:-/nonexistent}"
+      fi
+      exit 0
+      ;;
   esac
 done
 exit 1
@@ -566,7 +597,26 @@ for forbidden in bash sh zsh ssh osascript python3 claude codex opencode herdr a
   grep -qw "$forbidden" <<<"$FORBIDDEN_BLOCK" \
     || fail "$forbidden is no longer on the permanent denylist"
 done
+# The classes the header's own admission test does NOT catch. `vi`, `less` and
+# `man` expose no flag that takes a command — they reach a shell at RUNTIME
+# (`:!cmd`, `!cmd`, `v`), so reading `--help` clears them, and they are exactly
+# what an owner allowlists meaning "just a viewer". The wrappers below are the
+# opposite shape: running someone else's command IS their normal argv.
+for forbidden in vi vim nvim view ex ed less more man awk sed git swift open \
+  watch nice caffeinate timeout env xargs npx cargo go nc curl wget; do
+  grep -qw "$forbidden" <<<"$FORBIDDEN_BLOCK" \
+    || fail "$forbidden can run a child command and is not on the permanent denylist"
+done
 pass "the default allowlist is empty and the permanent denylist still names every shell and agent CLI"
+
+# The exploit that motivated widening it: an owner allowlists a pager, and
+# `!bash` inside the window is an interactive shell as the GUI user.
+write_conf 'LV_UI_TERM_COMMANDS="less vim git open"'
+assert_denied 'term open ghostty less /etc/hosts' 'conf-allowlisted less is STILL denied'
+assert_denied 'term open ghostty vim /etc/hosts' 'conf-allowlisted vim is STILL denied'
+assert_denied 'term open ghostty git log' 'conf-allowlisted git is STILL denied'
+assert_denied 'term open ghostty open -a Terminal' 'conf-allowlisted open is STILL denied'
+clear_conf
 
 echo "== 5. the screen lock is a hard refusal (fail closed) =="
 
@@ -583,7 +633,8 @@ for locked_command in \
   'ax type role=AXTextField -- hello' \
   'key escape' \
   'term open ghostty lv-attach' \
-  'term focus term-1'; do
+  'term focus term-1' \
+  'term close term-1'; do
   assert_denied "$locked_command" "locked screen refuses: $locked_command" \
     "${APP_ENV[@]}" STUB_PGREP_PID=4242 STUB_WINDOW_RESULT="7 4242"
 done
@@ -721,6 +772,45 @@ run_gate "launch --dogfood $DOGFOOD_APP" \
 grep -q 'debug.dogfood_capture_enabled' "$TMP_DIR/defaults.log" \
   || fail "launch --dogfood did not arm the capture opt-in"
 pass "allowed: launch --dogfood on a stamped bundle"
+
+# The bundle ships localvoxtral-speechd, localvoxtral-polishd and
+# localvoxtral-claude-hook in the SAME Contents/MacOS directory
+# (package_app.sh), so all of them match the pgrep prefix
+# "<bundle>/Contents/MacOS/localvoxtral" — and the app starts its helpers
+# during launch, so `pgrep -n` (newest) can hand back a helper. Recording a
+# helper is worse than failing: every verb then drives a windowless process,
+# and `quit` kills the helper while the real app keeps running, after which
+# `launch` refuses beside "a localvoxtral this gate did not start" and only the
+# owner can unwedge the machine. The executable path is what decides.
+clear_state
+run_gate "launch $CLEAN_APP" \
+  STUB_PS_LSTART="Mon Aug 24 09:00:00 2026" \
+  STUB_PGREP_PID="5000 5100 5200" \
+  STUB_PS_COMM_5000="$CLEAN_APP/Contents/MacOS/localvoxtral" \
+  STUB_PS_COMM_5100="$CLEAN_APP/Contents/MacOS/localvoxtral-speechd" \
+  STUB_PS_COMM_5200="$CLEAN_APP/Contents/MacOS/localvoxtral-polishd"
+(( GATE_STATUS == 0 )) || fail "launch failed while helpers shared the prefix: $GATE_STDERR"
+[[ "$GATE_STDOUT" == *"launched pid=5000"* ]] \
+  || fail "launch recorded a helper instead of the app: $GATE_STDOUT"
+grep -q "pid=5000" "$FAKE_HOME/.localvoxtral-ui-gate/app.state" \
+  || fail "app.state names a helper: $(cat "$FAKE_HOME/.localvoxtral-ui-gate/app.state")"
+grep -q "identity=Mon Aug 24 09:00:00 2026|$CLEAN_APP/Contents/MacOS/localvoxtral$" \
+  "$FAKE_HOME/.localvoxtral-ui-gate/app.state" \
+  || fail "the recorded identity is not the app executable"
+pass "launch records the APP, never a helper sharing the pgrep prefix"
+
+# And the other direction: if the ONLY thing matching the prefix is a helper,
+# there is no app under test and launch must say so rather than adopt it.
+clear_state
+run_gate "launch $CLEAN_APP" \
+  STUB_PS_LSTART="Mon Aug 24 09:00:00 2026" \
+  STUB_PGREP_PID="5100" \
+  STUB_PS_COMM_5100="$CLEAN_APP/Contents/MacOS/localvoxtral-speechd"
+(( GATE_STATUS != 0 )) || fail "launch adopted a helper as the app under test"
+[[ ! -f "$FAKE_HOME/.localvoxtral-ui-gate/app.state" ]] \
+  || fail "launch wrote app.state for a helper"
+pass "a helper alone is not an app under test"
+clear_state
 
 echo "== 8. ax and key verbs =="
 

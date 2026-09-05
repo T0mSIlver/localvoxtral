@@ -1025,6 +1025,18 @@ The test to apply before adding a name: read its `--help`. If any flag or
 subcommand takes a command, a script, a prompt, or a file to execute — `-c`,
 `-e`, `exec`, `run`, `--eval`, `-p`, an agent that runs tools — it fails.
 
+**That test is necessary and not sufficient, and the gap is the likely
+mistake.** An editor or a pager reaches a shell at *runtime*, not through a
+flag: `vi` and `vim` have `:!cmd`, `less` and `man` have `!cmd` and `v` (which
+opens `$EDITOR`), `awk` has `system()`, `git` runs your editor and your hooks.
+Every one of them passes a `--help` reading, and "I just want a viewer in that
+window" is exactly the reasoning that allowlists one. So does the wrapper class
+whose *normal* argv is somebody else's command — `nice`, `watch`, `timeout`,
+`env`, `xargs`, `open` (`open -a Terminal`), `npx`, `cargo`, `go` — and the
+fetchers that bring code to run, `curl` and `wget`. All of these are on the
+permanent denylist for that reason; if you find yourself wanting one, you want
+a wrapper instead.
+
 That rejects the obvious shells and **every coding-agent CLI**. `claude
 --dangerously-skip-permissions -p <prompt>`, `codex exec`, `opencode run` and
 `herdr agent start` each execute arbitrary code as the GUI user, and none of
