@@ -26,6 +26,13 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         marketplace = try XCTUnwrap(ClaudePluginAssets.developmentMarketplaceURL())
     }
 
+    /// The shared stub lives for the whole class, so it is removed once here
+    /// rather than by whichever case happened to run last.
+    override class func tearDown() {
+        try? FileManager.default.removeItem(at: stubCurlDirectory)
+        super.tearDown()
+    }
+
     private func json(at url: URL) throws -> [String: Any] {
         let data = try Data(contentsOf: url)
         return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -458,24 +465,95 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         var environment = ProcessInfo.processInfo.environment
         environment["XDG_RUNTIME_DIR"] = state.path
         process.environment = environment
-        let stdin = Pipe()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = stderr
+        return try Self.runToCompletion(process, stdin: Data(#"{"session_id":"s1"}"#.utf8))
+    }
+
+    /// Runs `process` to completion with `stdin` on its standard input, and
+    /// returns its exit status and both streams.
+    ///
+    /// `Process.waitUntilExit()` is deliberately NOT used. It spins the calling
+    /// thread's run loop and re-checks `isRunning` on a fixed interval, so
+    /// every spawn in this file paid that interval as pure latency AFTER the
+    /// script had already exited and both of its pipes had already closed —
+    /// for scripts whose own work is microseconds. With ~90 spawns across these
+    /// 55 cases that polling was most of the suite's runtime.
+    /// `terminationHandler` fires as soon as the kernel reports the exit, so
+    /// the wait costs what waiting should cost.
+    ///
+    /// The read order (stdout to EOF, then stderr) is the one this file already
+    /// used, and it is safe for the same reason it was before: both scripts are
+    /// contractually silent on stderr, and several cases here assert exactly
+    /// that.
+    private static func runToCompletion(
+        _ process: Process, stdin: Data
+    ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        stdin.fileHandleForWriting.write(Data(#"{"session_id":"s1"}"#.utf8))
-        stdin.fileHandleForWriting.closeFile()
-        let out = stdout.fileHandleForReading.readDataToEndOfFile()
-        let err = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        stdinPipe.fileHandleForWriting.write(stdin)
+        stdinPipe.fileHandleForWriting.closeFile()
+        let out = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let err = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        exited.wait()
         return (
             process.terminationStatus,
             String(decoding: out, as: UTF8.self),
             String(decoding: err, as: UTF8.self)
         )
     }
+
+    /// The stub `curl` every `runShimWithStubCurl` call puts first on PATH.
+    ///
+    /// Byte-identical on every call, so it is written ONCE for the whole class
+    /// instead of being created, chmodded and torn down on each of the ~40
+    /// calls. What varies per call — the body fixture, the status, the exit
+    /// code, the header dump — is passed in the environment and already was.
+    private static let stubCurlDirectory: URL = {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-stub-\(UUID().uuidString)")
+        let stub = directory.appendingPathComponent("curl")
+        let script = """
+        #!/bin/sh
+        out=""
+        previous=""
+        url=""
+        for argument in "$@"; do
+          [ "$previous" = "--output" ] && out="$argument"
+          if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
+            case "$argument" in
+            @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
+            esac
+          fi
+          url="$argument"
+          previous="$argument"
+        done
+        # One line per invocation, carrying the URL: proves both THAT curl was
+        # dialed (or was not, during backoff) and WHERE — the per-Mac port is
+        # only real if it reaches the wire.
+        [ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\\n' "$url" >>"$FAKE_CURL_LOG"
+        cat >/dev/null
+        [ -n "$out" ] && cp "$FAKE_CURL_BODY" "$out" 2>/dev/null
+        printf '%s' "$FAKE_CURL_STATUS"
+        exit "${FAKE_CURL_EXIT:-0}"
+        """
+        // A fixture this whole class depends on: if it cannot be written there
+        // is nothing to test, and a silent failure would look like the shim
+        // never dialing.
+        try! FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        try! script.write(to: stub, atomically: true, encoding: .utf8)
+        try! FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: stub.path
+        )
+        return directory
+    }()
 
     func testStatusLineRendererMapsEachStampStateToItsFixedString() throws {
         let esc = "\u{1B}"
@@ -584,23 +662,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         processEnvironment["XDG_RUNTIME_DIR"] = isolatedState.path
         processEnvironment.merge(environment) { _, new in new }
         process.environment = processEnvironment
-        let stdin = Pipe()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = stderr
-        try process.run()
-        stdin.fileHandleForWriting.write(Data("{}".utf8))
-        stdin.fileHandleForWriting.closeFile()
-        let out = stdout.fileHandleForReading.readDataToEndOfFile()
-        let err = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (
-            process.terminationStatus,
-            String(decoding: out, as: UTF8.self),
-            String(decoding: err, as: UTF8.self)
-        )
+        return try Self.runToCompletion(process, stdin: Data("{}".utf8))
     }
 
     // MARK: Shim stdout gate
@@ -710,39 +772,16 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         curlExitCode: Int32 = 0,
         extraEnvironment: [String: String] = [:]
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
-        let stubDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("shim-stub-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: stubDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: stubDirectory) }
-        let bodyFixture = stubDirectory.appendingPathComponent("body.fixture")
+        // The stub itself is shared (see `stubCurlDirectory`); the body fixture
+        // is the part that differs per call and keeps its own directory, so no
+        // case can read the answer the previous one staged.
+        let stubDirectory = Self.stubCurlDirectory
+        let bodyDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-body-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: bodyDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: bodyDirectory) }
+        let bodyFixture = bodyDirectory.appendingPathComponent("body.fixture")
         try body?.write(to: bodyFixture)
-        let stub = stubDirectory.appendingPathComponent("curl")
-        let script = """
-        #!/bin/sh
-        out=""
-        previous=""
-        url=""
-        for argument in "$@"; do
-          [ "$previous" = "--output" ] && out="$argument"
-          if [ "$previous" = "--header" ] && [ -n "${FAKE_CURL_HEADER_DUMP:-}" ]; then
-            case "$argument" in
-            @*) cat "${argument#@}" >>"$FAKE_CURL_HEADER_DUMP" 2>/dev/null ;;
-            esac
-          fi
-          url="$argument"
-          previous="$argument"
-        done
-        # One line per invocation, carrying the URL: proves both THAT curl was
-        # dialed (or was not, during backoff) and WHERE — the per-Mac port is
-        # only real if it reaches the wire.
-        [ -n "${FAKE_CURL_LOG:-}" ] && printf '%s\\n' "$url" >>"$FAKE_CURL_LOG"
-        cat >/dev/null
-        [ -n "$out" ] && cp "$FAKE_CURL_BODY" "$out" 2>/dev/null
-        printf '%s' "$FAKE_CURL_STATUS"
-        exit "${FAKE_CURL_EXIT:-0}"
-        """
-        try script.write(to: stub, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         let systemPath = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
         var environment = [
             "CLAUDE_PLUGIN_OPTION_TOKEN": "unit-test-token",
