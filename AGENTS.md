@@ -102,9 +102,11 @@ ablation workflows: `docs/agent/test-tiers.md`.
 
 ## CI / shipping
 
-- Same-repo branches run on the self-hosted Mac runner; fork PRs run on
-  GitHub-hosted macOS. Never move fork-PR jobs to the self-hosted runner —
-  it is a personal machine.
+- CI is two parallel jobs: `build-test` (tier 0, GitHub-hosted, EVERY event
+  and contributor, the required check) and `mac-lanes` (self-hosted, never
+  for fork PRs). A new lane goes in `build-test` unless you can name what on
+  the owner's Mac it needs — signing identity, STT service, Metal, herdr
+  fixture, GUI session. Never move fork-PR work to the self-hosted runner.
 - Docs-only diffs take a fast path (`scripts/ci/docs-only-filter.sh`,
   conservative allowlist; unknown paths fail open to the full run). Only
   `build-test` fast-paths; release and every other workflow stay fully gated.
