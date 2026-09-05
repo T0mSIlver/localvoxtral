@@ -1647,6 +1647,30 @@ final class DictationViewModel {
         startDictation()
     }
 
+    /// Channels the selected input device reports. Above 2 the capture path
+    /// picks ONE channel (there is no meaningful downmix), so the popover
+    /// offers the choice; at or below 2 the picker stays hidden.
+    var selectedInputDeviceChannelCount: UInt32 {
+        availableInputDevices.first { $0.id == selectedInputDeviceID }?.channelCount ?? 1
+    }
+
+    var selectedInputChannel: Int {
+        MicrophoneCaptureService.resolvedCaptureChannel(
+            settings.selectedInputChannel,
+            channelCount: AVAudioChannelCount(selectedInputDeviceChannelCount))
+    }
+
+    func selectMicrophoneInputChannel(_ channel: Int) {
+        guard channel >= 0, channel < Int(selectedInputDeviceChannelCount) else { return }
+        guard settings.selectedInputChannel != channel else { return }
+
+        settings.selectedInputChannel = channel
+
+        guard isDictating else { return }
+        stopDictation(reason: "input channel changed by user", finalizeRemainingAudio: false)
+        startDictation()
+    }
+
     func startDictation(outputMode: DictationOutputMode? = nil) {
         guard !isDictating else { return }
         guard !isConnectingRealtimeSession else {

@@ -386,7 +386,10 @@ extension DictationViewModel {
         let preferredInputID = selectedInputDeviceID.isEmpty ? nil : selectedInputDeviceID
         do {
             let chunkBuffer = audioChunkBuffer
-            try microphone.start(preferredDeviceID: preferredInputID) { chunk in
+            try microphone.start(
+                preferredDeviceID: preferredInputID,
+                preferredInputChannel: selectedInputChannel
+            ) { chunk in
                 chunkBuffer.append(chunk)
             }
 
@@ -451,8 +454,11 @@ extension DictationViewModel {
             setError: { [weak self] error in
                 self?.lastError = error
             },
-            restartMicrophone: { preferredInputID in
-                try mic.start(preferredDeviceID: preferredInputID) { chunk in
+            restartMicrophone: { [weak self] preferredInputID in
+                try mic.start(
+                    preferredDeviceID: preferredInputID,
+                    preferredInputChannel: self?.selectedInputChannel ?? 0
+                ) { chunk in
                     chunkBuffer.append(chunk)
                 }
             }

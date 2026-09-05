@@ -292,7 +292,7 @@ final class ClaudeIntegrationSettingsModelTests: XCTestCase {
         try XCTUnwrap(stubs.byHost[hostID]).transition(to: .portUnavailable)
 
         let row = try XCTUnwrap(model.hosts.first)
-        XCTAssertEqual(row.forwardStatusText, "Port held — close ssh sessions to that host.")
+        XCTAssertEqual(row.forwardStatusText, "Port held by another program on that host.")
         XCTAssertTrue(row.forwardIsFailure)
         // Owner rule: a Settings status line is one short sentence; the ssh
         // stderr tail belongs in the log.
