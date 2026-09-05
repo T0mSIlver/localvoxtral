@@ -197,10 +197,16 @@ final class ClaudeRemoteForwardOwnershipTests: XCTestCase {
         XCTAssertTrue(spy.recorded.isEmpty)
     }
 
-    /// The nonce is a short-lived secret while it is in flight: an argv is
-    /// world-readable on the remote host, so it goes down stdin like the
-    /// enrollment token does.
-    func testTheNonceTravelsOnStdinAndNeverInArgv() async throws {
+    /// The nonce is a short-lived secret while it is in flight, and this pins
+    /// exactly which process list it stays out of: THIS Mac's.
+    ///
+    /// Named for what it asserts. The old name claimed the nonce is never in
+    /// any argv, which the last assertion here shows is untrue on the far side
+    /// — `sh` runs `curl` with the header as a literal argument. That exposure
+    /// is deliberate and argued at `ClaudeRemoteForwardOwnershipCheck.script`;
+    /// it is asserted rather than merely tolerated so that changing it is a
+    /// decision someone makes, not a diff nobody notices.
+    func testTheNonceTravelsOnStdinAndNeverInTheSSHArgv() async throws {
         let witness = ClaudeRemoteForwardProbeWitness()
         let spy = RunnerSpy()
         let probe = ClaudeRemoteForwardOwnershipCheck.live(
@@ -221,6 +227,17 @@ final class ClaudeRemoteForwardOwnershipTests: XCTestCase {
         XCTAssertFalse(
             call.standardInput.lowercased().contains("authorization"),
             "the probe carries no credential — the refusal is the point"
+        )
+        // The known residual, pinned. On the REMOTE host the nonce is a curl
+        // argument for the --max-time window. `curl --header @file` would move
+        // it, needs curl >= 7.55 on an arbitrary host, and fails silently
+        // below it — so it is not used, and this assertion is what makes that
+        // a stated choice instead of an oversight.
+        XCTAssertTrue(
+            call.standardInput.contains(
+                "-H '\(ClaudeRemoteForwardProbeWitness.headerName): 0123456789abcdef0123456789abcdef'"
+            ),
+            "the header the far side sends; see the residual on `script`"
         )
     }
 
@@ -243,5 +260,36 @@ final class ClaudeRemoteForwardOwnershipTests: XCTestCase {
         XCTAssertTrue(argv.contains("--"))
         let terminator = try XCTUnwrap(argv.firstIndex(of: "--"))
         XCTAssertEqual(argv[terminator + 1], "builder", "the alias follows the terminator")
+    }
+
+    /// Both bounds on the probe, asserted rather than only stated.
+    ///
+    /// This runs inside the supervise loop the user is watching a status line
+    /// for, on a path the main actor awaits. Dropping `ConnectTimeout` lets a
+    /// black-holed route spend the entire outer budget in the TCP connect, and
+    /// raising the outer cap parks the loop for that long — neither shows up in
+    /// any other assertion here, so a regression in either would ship green.
+    func testTheProbeIsBoundedAtBothTheConnectAndTheWholeRun() async throws {
+        let witness = ClaudeRemoteForwardProbeWitness()
+        let spy = RunnerSpy()
+        let probe = ClaudeRemoteForwardOwnershipCheck.live(
+            witness: witness, runner: spy.runner
+        )
+
+        _ = await probe("builder", 28511)
+
+        let call = try XCTUnwrap(spy.recorded.first)
+        XCTAssertTrue(
+            call.argv.contains("ConnectTimeout=5"),
+            "a host that black-holes the port must not eat the whole budget in connect(): \(call.argv)"
+        )
+        XCTAssertEqual(
+            call.timeout, ClaudeRemoteForwardOwnershipCheck.defaultTimeout,
+            "the outer cap is what stops a wedged ssh parking the supervise loop"
+        )
+        XCTAssertEqual(ClaudeRemoteForwardOwnershipCheck.defaultTimeout, 10)
+        // curl's own ceiling, inside the outer cap, so the far side cannot hold
+        // the connection open for the full run either.
+        XCTAssertTrue(call.standardInput.contains("--max-time 5"))
     }
 }

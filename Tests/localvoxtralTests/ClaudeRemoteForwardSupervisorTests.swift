@@ -572,6 +572,15 @@ final class ClaudeRemoteForwardSupervisorTests: XCTestCase {
             harness.ownershipProbeCalls.count, 1,
             "a bind that succeeded asks nobody anything"
         )
+        // The re-check must not blink the row through "Connecting…". Claimed in
+        // the PR and previously pinned by nothing: reintroducing the blink
+        // regressed no assertion, and a status row that flickers back to
+        // "Connecting…" every 5 minutes reads as an unstable tunnel.
+        let afterProof = harness.states.drop { $0 != .externallyForwarded }.dropFirst()
+        XCTAssertFalse(
+            afterProof.contains(.connecting),
+            "the re-check re-dials silently; states after the proof were \(Array(afterProof))"
+        )
     }
 
     /// And the fail-closed half of the lifecycle: if the re-check can no longer

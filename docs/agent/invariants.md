@@ -604,14 +604,29 @@ there is not.
     would adopt both.
   - **The evidence is arrival.** The probe posts a fresh 128-bit nonce into the
     disputed port FROM the remote host (`ssh -o BatchMode=yes -o
-    ClearAllForwardings=yes`, bounded timeout, nonce on stdin so it is never in
-    a remote argv, and no token — the request is expected to be refused), and
-    the verdict is whether THIS process's own listener saw that nonce
+    ClearAllForwardings=yes`, bounded timeout, the script on stdin so the nonce
+    is never in the ssh argv on THIS Mac — which is also the CI runner — and no
+    token, since the request is expected to be refused), and the verdict is
+    whether THIS process's own listener saw that nonce
     (`ClaudeRemoteForwardProbeWitness`). A stranger receives the nonce and can
     do nothing with it: the listener binds `127.0.0.1` on the Mac and the only
-    route to it from that host is the forward the stranger is the reason we do
-    not have. Another Mac's listener has never heard of it. The probe's exit
-    status is deliberately not consulted in either direction.
+    route to it from that host is a `RemoteForward` terminating here — and the
+    disputed one is the forward the stranger is the reason we do not have.
+    Another Mac's listener has never heard of it. The probe's exit status is
+    deliberately not consulted in either direction.
+  - **Two residuals, stated because the next reader will otherwise assume they
+    are not there.** (1) Arrival identifies the LISTENER, not the port that
+    carried the nonce: every supervised `-R` ends at the same local listener, so
+    where a host has a SECOND live forward to this Mac (a legacy
+    `RemoteForward 8473` left in the user's own config block and carried by an
+    interactive session), a hostile holder of the disputed port can replay our
+    request down that other forward and forge a match. (2) The nonce is out of
+    the ssh argv but is in `curl`'s argv on the REMOTE host for the `--max-time`
+    window; `--header @file` would fix that and is not used because it needs
+    curl >= 7.55 on an arbitrary host and would fail silently below it. Both
+    residuals require code execution on the enrolled host, which already implies
+    possession of the plugin's bearer token — so `.ourListener` is a DIAGNOSIS
+    and never an authorization. Do not restate either claim absolutely.
   - **Every other outcome is `portUnavailable`.** No probe wired in, no `curl`
     on the host, ssh refused, a timeout, an unparseable anything — all
     `.unproved`, which is also the default when the seam is nil. Fail closed is

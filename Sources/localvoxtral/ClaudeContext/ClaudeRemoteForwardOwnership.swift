@@ -14,8 +14,13 @@ import Synchronization
 ///   actually ssh's to the host they enrolled, and the app was telling them to
 ///   close the session providing the working tunnel.
 public enum ClaudeRemoteForwardOwnership: Sendable, Equatable {
-    /// A nonce this process minted seconds ago came back in on this Mac's own
-    /// listener, through the port in question. Nothing else can produce that.
+    /// A nonce this process minted seconds ago, posted into the disputed port
+    /// on the remote host, came back in on this Mac's own listener.
+    ///
+    /// Read that literally: what is proved is that the nonce REACHED this
+    /// listener, not the route it took. See the residual in
+    /// `ClaudeRemoteForwardProbeWitness` — an arrival is attributable to the
+    /// disputed port only while that host has exactly one live forward to us.
     case ourListener
     /// Everything else, including every way the check could not be run.
     /// The only safe default: see `ClaudeRemoteForwardProbeWitness`.
@@ -45,12 +50,31 @@ public enum ClaudeRemoteForwardOwnership: Sendable, Equatable {
 /// * if the port is held by our own `RemoteForward`, the request travels the
 ///   tunnel and lands here — match;
 /// * if a stranger holds the port, it receives the nonce and can do nothing
-///   with it. The listener binds `127.0.0.1` on this Mac and the only route to
-///   it from that host is a forward — which, by hypothesis, the stranger is the
-///   reason we do not have. It cannot deliver the nonce, so it cannot be
-///   adopted;
+///   with it. The listener binds `127.0.0.1` on this Mac, so the only route to
+///   it from that host is a `RemoteForward` terminating here — and the disputed
+///   one, by hypothesis, is the forward the stranger is the reason we do not
+///   have. It cannot deliver the nonce, so it cannot be adopted;
 /// * if another Mac holds the port, the nonce lands on THAT Mac's listener,
 ///   which has never heard of it. No match here, which is the right answer.
+///
+/// ## The residual, stated rather than glossed
+///
+/// The step above is sound only while that host has ONE live forward to this
+/// Mac. Every `-R` this app supervises terminates at the same local listener
+/// (`-R <derived>:127.0.0.1:<listenerPort>`), so arrival identifies the
+/// LISTENER, never the remote port that carried it. Where a second live forward
+/// to us exists from the same host — a legacy `RemoteForward 8473` left in the
+/// user's own `~/.ssh/config` block and carried by an interactive session is
+/// the realistic one — a holder of the disputed port that is actively hostile
+/// can read our request off its own socket and replay it down that other
+/// forward, and the witness will match.
+///
+/// That is bounded, and is the reason this is a residual rather than a hole:
+/// the replay needs code execution on the enrolled host, and anything with code
+/// execution there already holds the plugin's bearer token and can already
+/// receive every hook — it gains a suppressed status row, not a credential.
+/// `.ourListener` is therefore a diagnosis, and must never be read as an
+/// authorization or as proof that the channel is private.
 ///
 /// Everything else — no `curl` on the host, ssh refused, a timeout, no probe
 /// wired in at all — produces `.unproved`, which keeps the old
@@ -89,10 +113,24 @@ public final class ClaudeRemoteForwardProbeWitness: Sendable {
 
     /// Start watching for `nonce`. Paired with exactly one `consume`.
     public func arm(_ nonce: String) {
-        state.withLock { state in
+        let evicted: Int = state.withLock { state in
             state.entries.removeAll { $0.nonce == nonce }
             state.entries.append((nonce: nonce, observed: false))
-            while state.entries.count > Self.maximumArmed { state.entries.removeFirst() }
+            var evicted = 0
+            while state.entries.count > Self.maximumArmed {
+                state.entries.removeFirst()
+                evicted += 1
+            }
+            return evicted
+        }
+        // Loud, because an eviction silently turns some OTHER host's probe into
+        // `.unproved` — and the supervisor then logs "bound by something that
+        // is not this Mac's listener", a negative that probe never established.
+        // Arm/disarm are paired by the one caller, so reaching this is a bug.
+        if evicted > 0 {
+            Log.claudeContext.error(
+                "Claude remote forward probe witness evicted \(evicted, privacy: .public) armed nonce(s) at the \(Self.maximumArmed, privacy: .public) cap; their probes will report unproved"
+            )
         }
     }
 
@@ -161,8 +199,23 @@ enum ClaudeRemoteForwardOwnershipCheck {
     /// would be accepted: the request is expected to be refused, and the
     /// refusal is not what is being read.
     ///
-    /// Sent over stdin rather than argv so the nonce never appears in a remote
-    /// process listing, the same rule the enrollment scripts follow for the
+    /// The script is sent over stdin rather than argv, the same rule the
+    /// enrollment scripts follow for the token. Read precisely: that keeps the
+    /// nonce out of the SSH argv on THIS Mac, which is the half that matters
+    /// here — this machine is also the self-hosted CI runner, so its process
+    /// list is readable by anything a PR can run.
+    ///
+    /// It does NOT keep the nonce out of the remote host's process list: `sh`
+    /// then runs `curl` with the header as a literal argument, so for up to the
+    /// `--max-time` window a local user there can read it. Left as it is, on
+    /// purpose. `curl --header @file` is the technique that would fix it (the
+    /// plugin shim uses exactly that), but it needs curl >= 7.55 on an
+    /// arbitrary enrolled host, and a host that lacks it would silently stop
+    /// producing arrivals — a probe that quietly degrades to "not ours" is a
+    /// worse failure than the exposure it removes. The exposure buys a reader
+    /// nothing on its own: spending the nonce still requires a live forward
+    /// from that host to this listener (see the residual on the witness), and
+    /// anyone with local execution there already holds the plugin's bearer
     /// token.
     ///
     /// The first line discards both streams on purpose. Whatever holds that
