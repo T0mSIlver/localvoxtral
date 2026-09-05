@@ -128,6 +128,95 @@ final class DogfoodControlServiceTests: XCTestCase {
         XCTAssertFalse(viewModel.isDictating, "the cap must end a session the client abandoned")
     }
 
+    /// The cap's whole promise is "a client that disconnects mid-dictation
+    /// cannot leave the app recording", and `session stop` used to be the way
+    /// through it.
+    ///
+    /// `session start` arms the cap for anything on its way up, including a
+    /// managed-backend warmup or an unanswered microphone prompt. A `stop`
+    /// arriving in that window found `isDictating == false`, released the cap
+    /// and refused — and the dictation that arrived moments later ran
+    /// UNBOUNDED, with no client, on a machine the operator by hypothesis
+    /// cannot see. Nothing else would ever stop it.
+    func testAStopWhileConnectingNeverLeavesAnUncappedSessionBehind() async {
+        let viewModel = makeViewModel()
+        viewModel.isConnectingRealtimeSession = true
+        let gate = SleepGate()
+        let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
+
+        let started = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        XCTAssertEqual(started["phase"] as? String, "connecting")
+        XCTAssertTrue(service.isAutoStopArmed)
+
+        // The stop lands while the backend is still warming.
+        let stopped = await expectSuccess(service, .sessionStop)
+
+        // `cancelDictation` takes the connecting case (`abortConnectingSession`),
+        // so this settles to idle and the cap is released ON EVIDENCE.
+        XCTAssertFalse(viewModel.isConnectingRealtimeSession, "the connect was not aborted")
+        XCTAssertEqual(stopped["phase"] as? String, "idle")
+        XCTAssertEqual(stopped["stopped"] as? Bool, true)
+        XCTAssertFalse(service.isAutoStopArmed)
+    }
+
+    /// And the half `cancelDictation` cannot take: only the user can answer the
+    /// microphone prompt, so the phase does not settle — and the cap must then
+    /// STAY armed rather than be released on the assumption that it did.
+    func testAStopThatCannotSettleThePhaseKeepsTheCapArmed() async {
+        let viewModel = makeViewModel()
+        viewModel.isAwaitingMicrophonePermission = true
+        let gate = SleepGate()
+        let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
+
+        let started = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        XCTAssertEqual(started["phase"] as? String, "awaitingMicrophonePermission")
+        XCTAssertTrue(service.isAutoStopArmed)
+
+        let stopped = await expectSuccess(service, .sessionStop)
+
+        XCTAssertEqual(stopped["stopped"] as? Bool, false, "nothing was actually stopped")
+        XCTAssertEqual(stopped["phase"] as? String, "awaitingMicrophonePermission")
+        XCTAssertTrue(
+            service.isAutoStopArmed,
+            "a session still on its way up must not be answered by disarming its only bound"
+        )
+    }
+
+    /// The cap is a bound on ONE session, not a timer on the clock.
+    ///
+    /// The socket verbs cannot see the owner's own hotkey, so a cap armed for
+    /// a socket-started dictation would still be waiting when the owner ends
+    /// it by hand and starts one of their own — and would then stop THEIRS
+    /// mid-thought. `beginSession`'s generation is the identity that survives
+    /// that, because it advances at every dictation start.
+    func testTheCapDoesNotStopADictationThatIsNotTheOneItArmedFor() async {
+        let viewModel = makeViewModel()
+        viewModel.isConnectingRealtimeSession = true
+        let gate = SleepGate()
+        let service = makeService(viewModel: viewModel, sleepFor: gate.sleep)
+
+        _ = await expectSuccess(service, .sessionStart(.overlayBuffer))
+        XCTAssertTrue(service.isAutoStopArmed)
+
+        // Ours begins and ends; the owner then starts one of their own. Two
+        // dictation starts, so two generations, and the cap owns neither the
+        // second nor anything after it.
+        DogfoodCaptureTap.shared.beginSession()
+        DogfoodCaptureTap.shared.beginSession()
+        viewModel.isConnectingRealtimeSession = false
+        viewModel.isDictating = true
+
+        gate.release()
+        await gate.waitForSleepToReturn()
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertTrue(
+            viewModel.isDictating,
+            "the cap ended a dictation it never armed for — the owner's own session"
+        )
+    }
+
     func testShutdownReleasesTheCapSoAQuitDoesNotLeaveItWaiting() async {
         let viewModel = makeViewModel()
         viewModel.isConnectingRealtimeSession = true
@@ -300,6 +389,28 @@ final class DogfoodControlServiceTests: XCTestCase {
         let reply = await expectSuccess(service, .registryList)
 
         XCTAssertEqual(reply["count"] as? Int, 0)
+    }
+
+    /// `surfaceProbe` refuses while a DICTATION is resolving. This is the same
+    /// hazard the other way round, and it was not covered: an abandoned probe
+    /// is still inside the non-reentrant `ClaudeJoinAbstentionTap.collecting`
+    /// and still holds its forward lease, so a dictation started now would
+    /// interleave two resolutions against one tap — the probe's late causes
+    /// landing in the dictation's capture record, the dictation's own causes
+    /// swallowed by the probe's collection, and both contending for the
+    /// remote-herdr lease.
+    func testASessionStartIsRefusedWhileAnAbandonedResolveIsStillRunning() async {
+        let service = makeWedgedProbeService()
+
+        let probe = await expectFailure(service, .surfaceProbe)
+        XCTAssertEqual(probe, .probeTimedOut)
+
+        let start = await expectFailure(service, .sessionStart(.overlayBuffer))
+        XCTAssertEqual(
+            start, .probeStillRunning,
+            "a dictation must not resolve its join alongside an abandoned probe"
+        )
+        XCTAssertFalse(service.isAutoStopArmed, "a refused start must not arm the cap")
     }
 
     private func makeWedgedProbeService() -> DogfoodControlService {

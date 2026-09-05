@@ -148,6 +148,17 @@ final class DogfoodControlService {
     private func startSession(mode: DictationOutputMode) -> Result<String, Refusal> {
         guard let viewModel else { return .failure(.noViewModel) }
         guard !viewModel.isDictating else { return .failure(.alreadyDictating) }
+        // The other direction of the hazard `surfaceProbe` already refuses.
+        // A probe is bounded by ABANDONMENT, so one that wedged and timed out
+        // is still running inside the non-reentrant
+        // `ClaudeJoinAbstentionTap.collecting` and still holds its forward
+        // lease. Starting a dictation now runs `resolveClaudeSessionJoin`
+        // concurrently with it: the probe's late causes land in the
+        // dictation's capture record after `beginSession` cleared it, the
+        // dictation's own causes are swallowed by the probe's still-armed
+        // collection, and the two contend for the remote-herdr lease. The
+        // `.dictationInProgress` refusal only covered probe-after-dictation.
+        guard !isResolvingSurface else { return .failure(.probeStillRunning) }
 
         Log.claudeContext.info(
             "Dogfood control: session start mode=\(mode.rawValue, privacy: .public)"
@@ -184,10 +195,44 @@ final class DogfoodControlService {
     private func stopSession() -> Result<String, Refusal> {
         guard let viewModel else { return .failure(.noViewModel) }
         guard viewModel.isDictating else {
-            // Release anyway: a start that never became a dictation (refused
-            // at the microphone prompt, say) can still have armed the cap.
-            releaseAutoStop()
-            return .failure(.notDictating)
+            let pending = phase(of: viewModel)
+            guard pending != .idle else {
+                // Nothing running and nothing on its way. This is the ONE case
+                // where releasing is right, because nothing can arm later: a
+                // start refused at the microphone prompt leaves `.idle` and
+                // `startSession` already released, but a caller may also be
+                // stopping something the owner ended by hand.
+                releaseAutoStop()
+                return .failure(.notDictating)
+            }
+            // Still on its way to being a live session — connecting, or
+            // waiting on the microphone prompt — which is exactly the state
+            // `startSession` ARMS the cap for. Releasing here (what this did)
+            // answered "stop" by removing the only bound on a dictation that
+            // then went live moments later, with no cap and no client, on a
+            // machine the operator by hypothesis cannot see. That is the
+            // unbounded-recording state the cap exists to prevent, reached
+            // through the stop verb itself.
+            //
+            // `cancelDictation` is the app's own escape hatch for it
+            // (`abortConnectingSession`); the tap cannot abort a connect by
+            // design. It does not cover the microphone prompt, which only the
+            // user can answer — so the cap is released on evidence (the phase
+            // actually settled) and never on assumption.
+            Log.claudeContext.info(
+                "Dogfood control: session stop while phase=\(pending.rawValue, privacy: .public)"
+            )
+            viewModel.cancelDictation()
+            let settled = phase(of: viewModel)
+            if settled == .idle { releaseAutoStop() }
+            return .success(DogfoodControlJSON.object([
+                ("stopped", DogfoodControlJSON.bool(settled == .idle)),
+                ("phase", DogfoodControlJSON.string(settled.rawValue)),
+                ("statusToken", DogfoodControlJSON.string(Self.name(viewModel.currentStatusToken))),
+                ("errorToken", DogfoodControlJSON.optionalString(
+                    viewModel.currentErrorToken.map(Self.name)
+                )),
+            ]))
         }
         Log.claudeContext.info("Dogfood control: session stop")
         // The stop half of the same gesture. A tap toggles, and the toggle's
@@ -207,6 +252,18 @@ final class DogfoodControlService {
 
     private func armAutoStop() {
         releaseAutoStop()
+        // Which dictation this cap is for. `beginSession` advances the
+        // generation at every dictation start, and the cap is armed either
+        // just before that (a start still connecting: generation is still G)
+        // or just after (a start that went live synchronously: already G+1) —
+        // so the session this cap owns is at most `armed + 1`.
+        //
+        // Without this the cap is a timer on the CLOCK rather than on a
+        // session: the owner stops the socket-started dictation with their own
+        // hotkey at T+60, starts one of their own at T+90, and the cap ends
+        // THEIR dictation mid-thought at T+120. The socket verbs cannot see a
+        // hotkey stop, so the identity has to be carried rather than observed.
+        let armedGeneration = DogfoodCaptureTap.shared.currentGeneration
         autoStopTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.sleepFor(self.autoStopAfter)
@@ -214,6 +271,13 @@ final class DogfoodControlService {
             self.autoStopTask = nil
             guard let viewModel = self.viewModel else { return }
             guard viewModel.isDictating || viewModel.isConnectingRealtimeSession else { return }
+            let running = DogfoodCaptureTap.shared.currentGeneration
+            guard running <= armedGeneration &+ 1 else {
+                Log.claudeContext.info(
+                    "Dogfood control: cap expired on a session that already ended; the dictation running now is not ours"
+                )
+                return
+            }
             Log.claudeContext.error(
                 "Dogfood control: auto-stopping a session that outlived the control-socket cap"
             )

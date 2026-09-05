@@ -102,19 +102,25 @@ final class DogfoodControlSocket: Sendable {
     /// Whole-connection read deadline in milliseconds. A peer that connects and
     /// says nothing must not hold the single serving slot.
     private let readTimeoutMillis: Int32
+    /// Whole-reply write deadline in milliseconds. Separate from the read
+    /// budget because they bound different peers' behaviour: a client that
+    /// never speaks, and a client that never listens.
+    private let writeTimeoutMillis: Int32
 
     init(
         socketPath: String,
         handler: @escaping Handler,
         peerUID: @escaping @Sendable (Int32) -> UInt32? = { ClaudeSocketGuard.peerUID(ofDescriptor: $0) },
         expectedUID: @escaping @Sendable () -> UInt32 = { UInt32(geteuid()) },
-        readTimeoutMillis: Int32 = 5_000
+        readTimeoutMillis: Int32 = 5_000,
+        writeTimeoutMillis: Int32 = 5_000
     ) {
         self.socketPath = socketPath
         self.handler = handler
         self.peerUID = peerUID
         self.expectedUID = expectedUID
         self.readTimeoutMillis = readTimeoutMillis
+        self.writeTimeoutMillis = writeTimeoutMillis
     }
 
     var isRunning: Bool { state.withLock { $0.isRunning } }
@@ -484,15 +490,53 @@ final class DogfoodControlSocket: Sendable {
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    /// Writes the reply, bounded.
+    ///
+    /// The read side has had a whole-connection deadline from the start; this
+    /// side had none, and it is the same hazard through the other half of the
+    /// connection. A same-uid client that asks a question and never reads the
+    /// answer blocks this thread in `write(2)` as soon as the reply outgrows
+    /// the socket send buffer — and because `serve` runs inline in the accept
+    /// loop, `stop()` then waits on that loop forever from
+    /// `applicationWillTerminate`. That is exactly the quit-hang the handler
+    /// poll was added to fix, resurrected on the write path.
+    ///
+    /// One monotonic budget for the whole write, like `readRequestLine`, and
+    /// O_NONBLOCK for the duration so a single `write` cannot outlast it
+    /// either. A truncated reply is the right failure: the client that caused
+    /// it is the one not reading.
     private func writeAll(fd: Int32, string: String) {
         let bytes = Array(string.utf8)
         var offset = 0
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(writeTimeoutMillis) * 1_000_000
+
+        let previousFlags = fcntl(fd, F_GETFL, 0)
+        if previousFlags >= 0 { _ = fcntl(fd, F_SETFL, previousFlags | O_NONBLOCK) }
+        defer { if previousFlags >= 0 { _ = fcntl(fd, F_SETFL, previousFlags) } }
+
         while offset < bytes.count {
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard now < deadline else {
+                Log.claudeContext.error(
+                    "Dogfood control: write deadline expired; the client stopped reading"
+                )
+                return
+            }
+            var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            let remaining = Int32(min((deadline - now) / 1_000_000, UInt64(Int32.max)))
+            let ready = poll(&descriptor, 1, max(remaining, 1))
+            if ready < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            if ready == 0 { continue }
+
             let written = bytes.withUnsafeBytes { raw -> Int in
                 write(fd, raw.baseAddress!.advanced(by: offset), bytes.count - offset)
             }
             if written <= 0 {
-                if written < 0, errno == EINTR { continue }
+                if written < 0, errno == EINTR || errno == EAGAIN { continue }
                 return
             }
             offset += written

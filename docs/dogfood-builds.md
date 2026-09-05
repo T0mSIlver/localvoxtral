@@ -141,7 +141,7 @@ $ printf 'registry list\n' | nc -U ~/Library/Application\ Support/localvoxtral/d
 | Command | Answers |
 | --- | --- |
 | `session start overlay` / `session start live` | starts a dictation through the app's own modifier-tap handler; reports the phase and any refusal |
-| `session stop` | ends it |
+| `session stop` | ends it — and while a start is still connecting, cancels that instead of walking away from it |
 | `join report` | the join the LAST dictation resolved, as `ClaudeSessionJoinSummary` |
 | `surface probe` | resolves the focused surface NOW, against the live in-process registry |
 | `registry list` | the live sessions, as shapes — so "nothing registered" is distinguishable from "resolution failed" |
@@ -149,7 +149,27 @@ $ printf 'registry list\n' | nc -U ~/Library/Application\ Support/localvoxtral/d
 Bounds worth knowing before touching it:
 
 - **`session start` is capped.** It auto-stops after two minutes, so a client
-  that disconnects mid-dictation cannot leave the app recording.
+  that disconnects mid-dictation cannot leave the app recording. The cap is
+  armed for anything on its way up — connecting, or waiting on the microphone
+  prompt — not just a live dictation, and it is released only on evidence that
+  the session actually ended. In particular `session stop` arriving mid-connect
+  does NOT simply disarm it: it cancels the connect (`cancelDictation`) and
+  releases the cap only if the phase settled. A stop that cannot settle the
+  phase — only the user can answer the microphone prompt — reports
+  `stopped: false` and leaves the cap armed, because disarming it there would
+  leave the dictation that arrives moments later unbounded and unowned.
+- **The cap belongs to ONE session, not to the clock.** It carries the capture
+  generation it armed at and refuses to fire on a dictation that is not the one
+  it opened, so a cap left over from a session the owner ended by hand cannot
+  stop the owner's next one. Residual: if the owner starts their own dictation
+  in the window between a socket start being cancelled and that session ever
+  beginning, the generations coincide and the cap can still end it.
+- **`session start` is refused while a probe's resolve is still outstanding**,
+  the mirror of `surface probe`'s refusal during a dictation. A probe is
+  bounded by abandonment, so a wedged one outlives its deadline inside the
+  non-reentrant `ClaudeJoinAbstentionTap.collecting` and still holds its
+  forward lease; a dictation started alongside it would interleave two
+  resolutions against one tap.
 - **It never bypasses a guard.** `session start` reaches
   `handleModifierOnlyTap`, the same function the HID gesture reaches, and is
   subject to the same Secure Keyboard Entry refusal, Accessibility state,
