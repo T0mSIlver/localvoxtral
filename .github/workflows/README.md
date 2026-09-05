@@ -59,6 +59,16 @@ control files, packaging inputs (`assets/icons/**`), and every path selected
 by the LLM/speechd lane filters; an explicit `[run-llm-eval]` /
 `[run-speechd-integration]` marker also forces the full run.
 
+One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
+guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
+Swift lane — including `AgentsGuideSizeTests`, whose entire job is guarding
+`AGENTS.md`'s 32 KiB Codex truncation budget — used to be skipped exactly on
+the diffs that can break it. `scripts/ci/test-agents-guide-budget.sh` is a
+shell port of that test, run in the ungated shell-test step. It parses the cap,
+the router targets and the anchors out of `AgentsGuideSizeTests.swift` rather
+than restating them, and fails if that file grows an assertion it has not
+ported — so the two cannot drift.
+
 ## `release.yml`
 
 One-command, gate-then-tag releases on the self-hosted runner:
