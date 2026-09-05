@@ -78,6 +78,16 @@ The two helper unit suites are additionally path-gated per helper
 diff touches that helper's directory or the shared CI plumbing, while
 dispatches and every push to main run both.
 
+One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
+guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
+Swift lane — including `AgentsGuideSizeTests`, whose entire job is guarding
+`AGENTS.md`'s 32 KiB Codex truncation budget — used to be skipped exactly on
+the diffs that can break it. `scripts/ci/test-agents-guide-budget.sh` is a
+shell port of that test, run in the ungated shell-test step. It parses the cap,
+the router targets and the anchors out of `AgentsGuideSizeTests.swift` rather
+than restating them, and fails if that file grows an assertion it has not
+ported — so the two cannot drift.
+
 ## `release.yml`
 
 One-command, gate-then-tag releases on the self-hosted runner:

@@ -199,6 +199,7 @@ jobs:
           ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
           ./scripts/ci/test-workflow-step-names.sh
+          ./scripts/ci/test-agents-guide-budget.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain
