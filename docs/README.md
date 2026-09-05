@@ -11,6 +11,8 @@ directory instead, never here.
   screenshots
 - [Terminals & coding agents](coding-agents.md) — dictating into Claude Code
   and other CLI agents, session joins, the SSH remote plugin
+- [Integration matrix](integration-matrix.md) — per harness and terminal:
+  what joins, what context is attached, and why the gaps are gaps
 - [Under the hood](under-the-hood.md) — privacy, the managed local engines
   and their pinned models, bring-your-own-server
 - [Roadmap](roadmap.md)

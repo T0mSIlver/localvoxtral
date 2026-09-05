@@ -244,11 +244,17 @@ final class BackendProcessSupervisorTests: XCTestCase {
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
+            // Same ordering rule as testStopHonorsTERMWithoutRestarting: arm
+            // the trap BEFORE announcing readiness. This script had it the
+            // other way round, so the supervisor could observe readiness and
+            // send TERM while the shell was still between the two lines, with
+            // the default disposition in force. Nothing asserted on the
+            // difference here, which is exactly why it went unnoticed.
             body: """
             #!/bin/sh
             if [ -f "\(succeedMarker.path)" ]; then
-              touch "\(readyMarker.path)"
               trap 'exit 0' TERM
+              : > "\(readyMarker.path)"
               while true; do sleep 1; done
             fi
             echo "intentional fast failure" >&2
@@ -296,10 +302,21 @@ final class BackendProcessSupervisorTests: XCTestCase {
         let script = try writeScript(
             in: directory,
             name: "backend.sh",
+            // `: > file`, not `touch file`. `touch` is /usr/bin/touch: a fork
+            // AND an exec inside the TERM handler, i.e. in the exact window
+            // where the supervisor is deciding whether to escalate to SIGKILL.
+            // A redirection creates the file in-process, so the child needs one
+            // scheduling slice rather than a whole process spawn.
+            //
+            // ORDER IS LOAD-BEARING: the trap is armed BEFORE the ready marker
+            // exists, so "ready" means "this shell will handle TERM itself".
+            // Reversed, the supervisor could see readiness and send TERM while
+            // the default disposition is still in force, and the child would
+            // die without ever running the handler.
             body: """
             #!/bin/sh
-            trap 'touch "\(termMarker.path)"; exit 0' TERM
-            touch "\(readyMarker.path)"
+            trap ': > "\(termMarker.path)"; exit 0' TERM
+            : > "\(readyMarker.path)"
             while true; do sleep 1 & wait $!; done
             """
         )
@@ -564,6 +581,14 @@ private final class LockedValue<Value>: @unchecked Sendable {
             lock.unlock()
         }
     }
+
+    /// Read-modify-write under one acquisition, for the check-then-set a
+    /// separate `get` and `set` cannot express atomically.
+    func withLock<Result>(_ body: (inout Value) -> Result) -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&storage)
+    }
 }
 
 private final class RecordingSleep: @unchecked Sendable {
@@ -715,28 +740,91 @@ private final class TerminationAwareSleep: @unchecked Sendable {
         self.readyMarker = readyMarker
     }
 
+    // Both arms stand in for a real sleep the supervisor performs while waiting
+    // on a REAL child process, so what they must express is "until the child
+    // did the thing", not "for a while".
+    //
+    // They used to spin `for _ in 0 ..< 1_000 { await Task.yield() }` and then
+    // RETURN whether or not the marker had appeared. That budget, not any
+    // clock, is what decided the test: the supervisor's grace loop is a single
+    // 100 ms slice, so when this returned early the very next statement was
+    // `if process.isRunning { SIGKILL }` — killing the child before it could
+    // run its TERM handler, and `termMarker` never appeared.
+    //
+    // And 1000 yields is not "a moment": `Task.yield()` only reschedules on the
+    // cooperative pool, so with nothing else runnable the whole budget elapses
+    // in about a millisecond of wall-clock while spinning a core the child
+    // needs. Measured on the hosted lane (3-core shared VM), that lost the race
+    // 14 times in 20.
+    //
+    // So: wait for the actual filesystem event instead. No polling, no spin, no
+    // budget to tune — it returns the moment the marker exists and not before.
+    // A child that genuinely never writes it hangs the test, which XCTest's own
+    // timeout turns into a failure with `run-supervised-command.sh`'s stack
+    // sample attached; that is the correct bound and the correct diagnostic,
+    // where the old budget silently converted "not yet" into "SIGKILL it".
     func sleep(_ duration: Duration) async throws {
         if duration == .milliseconds(10) {
-            for _ in 0 ..< 1_000 {
-                if FileManager.default.fileExists(atPath: readyMarker.path) {
-                    return
-                }
-                await Task.yield()
-            }
+            await Self.waitForFile(readyMarker)
             return
         }
 
         if duration == .milliseconds(100) {
-            for _ in 0 ..< 1_000 {
-                if FileManager.default.fileExists(atPath: termMarker.path) {
-                    return
-                }
+            await Self.waitForFile(termMarker)
+            return
+        }
+
+        try await controlledSleep.sleep(duration)
+    }
+
+    /// Returns once `url` exists, driven by a directory write event rather than
+    /// by polling.
+    private static func waitForFile(_ url: URL) async {
+        if FileManager.default.fileExists(atPath: url.path) { return }
+
+        let directory = url.deletingLastPathComponent()
+        let descriptor = open(directory.path, O_EVTONLY)
+        guard descriptor >= 0 else {
+            // No watch possible. Fall back to yielding rather than returning
+            // immediately, which would reinstate the early-SIGKILL bug.
+            while !FileManager.default.fileExists(atPath: url.path) {
                 await Task.yield()
             }
             return
         }
 
-        try await controlledSleep.sleep(duration)
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .attrib],
+            queue: .global()
+        )
+        let resumed = LockedValue(false)
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // One-shot: the event handler can fire more than once (any write to
+            // the directory), and the pre-arm check below can race with it.
+            let finish: @Sendable () -> Void = {
+                var shouldResume = false
+                resumed.withLock { alreadyResumed in
+                    if !alreadyResumed {
+                        alreadyResumed = true
+                        shouldResume = true
+                    }
+                }
+                if shouldResume {
+                    source.cancel()
+                    continuation.resume()
+                }
+            }
+            source.setEventHandler {
+                if FileManager.default.fileExists(atPath: url.path) { finish() }
+            }
+            source.setCancelHandler { close(descriptor) }
+            source.resume()
+            // The marker may have appeared between the check above and the
+            // source being armed; that event is gone, so look once more.
+            if FileManager.default.fileExists(atPath: url.path) { finish() }
+        }
     }
 
     func resumeAll() {
