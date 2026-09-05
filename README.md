@@ -54,6 +54,7 @@ Or download the latest `.dmg` from [Releases](https://github.com/T0mSIlver/local
 - [Install](docs/install.md) — one-liner, requirements, Gatekeeper notes
 - [Dictating](docs/dictation.md) — shortcuts, output modes, settings, screenshots
 - [Terminals & coding agents](docs/coding-agents.md) — Claude Code session joins, the SSH remote plugin, repo vocabulary
+- [Integration matrix](docs/integration-matrix.md) — what each harness and terminal gets (join, screen, repo, prompt) and why the gaps are gaps
 - [Under the hood](docs/under-the-hood.md) — privacy, the bundled engines and their pinned models, vLLM example
 - [Building from source](docs/building.md) · [Roadmap](docs/roadmap.md)
 
