@@ -208,6 +208,7 @@ jobs:
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
+          ./scripts/ci/test-helper-lane-filter.sh
           ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
           ./scripts/ci/test-workflow-step-names.sh
@@ -449,6 +450,65 @@ jobs:
             echo "Dogfood artifact lane: SKIPPED ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Decide helper unit lanes (path filter)
+        # The two helper UNIT suites (11 s + 20 s) ran on every self-hosted run,
+        # including diffs that could not change what they test. Both helpers are
+        # HERMETIC SwiftPM packages — only remote dependencies, no `path:` dep,
+        # no `..`, no symlink out, no source shared with the root package — so a
+        # suite's only inputs are its own directory (Package.swift and
+        # Package.resolved included) plus the CI plumbing that invokes it. The
+        # path list and the event rules live in scripts/ci/helper-lane-filter.sh
+        # so they are testable locally (scripts/ci/test-helper-lane-filter.sh).
+        #
+        # Unlike the live-model lanes this is not an "expensive, so opt in"
+        # gate and there is NO marker: a diff that can affect a suite runs it.
+        # workflow_dispatch and push-to-main run both unconditionally (the
+        # filter decides that, not this step), so a dispatch is the escape
+        # hatch and main stays the ungated parity reference.
+        id: helper_lanes
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        env:
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          FILES="$RUNNER_TEMP/helper-lane-changed-files.txt"
+
+          BASE=""
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            BASE="$(git merge-base "origin/$BASE_REF" HEAD || true)"
+          elif git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+            BASE="$PUSH_BEFORE_SHA"
+          fi
+          if [[ -z "$BASE" ]]; then
+            # Fail open: an uncomputable diff must never skip a suite. Same
+            # contract as every other lane-decide step here.
+            : >"$FILES"
+            echo "polish_run=true" >> "$GITHUB_OUTPUT"
+            echo "speech_run=true" >> "$GITHUB_OUTPUT"
+            echo "PolishHelper unit lane: RUNNING (diff unavailable — failing open)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "SpeechHelper unit lane: RUNNING (diff unavailable — failing open)" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git diff --name-only "$BASE" HEAD > "$FILES"
+
+          decide() {
+            local helper="$1" label="$2" output_key="$3" decision run reason
+            decision="$(./scripts/ci/helper-lane-filter.sh "$helper" "$FILES" "$GITHUB_EVENT_NAME")"
+            run="$(sed -n 's/^run=//p' <<<"$decision")"
+            reason="$(sed -n 's/^reason=//p' <<<"$decision")"
+            echo "$output_key=$run" >> "$GITHUB_OUTPUT"
+            if [[ "$run" == "true" ]]; then
+              echo "$label unit lane: RUNNING ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "$label unit lane: SKIPPED ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+          decide polish PolishHelper polish_run
+          decide speech SpeechHelper speech_run
+
       # No "Setup Swift" step here on purpose. A prior `swift-actions/setup-swift@v2`
       # step (floating swift-version: "6.2") pinned the swift.org toolchain,
       # which now resolves to 6.2.1 — built with assertions ON, and it asserts
@@ -613,14 +673,18 @@ jobs:
         # Self-hosted only: hosted runners would pay a cold Cmlx C++ compile
         # every fork PR. These tests are Metal-free (HTTP layer, router,
         # cache locator, watchdog); the Metal path is covered below.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        # Path-gated by the decide step above — see its comment for why that
+        # is sound and scripts/ci/helper-lane-filter.sh for the rules.
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.polish_run == 'true'
         run: swift test --package-path PolishHelper
 
       - name: Speech helper unit tests (SpeechHelper package)
         # Self-hosted only, matching PolishHelper: this is the per-push,
         # Metal-free codec/delta/watchdog suite. Real Metal inference is the
         # conditional post-packaging lane below.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        # Path-gated by the decide step above — see its comment for why that
+        # is sound and scripts/ci/helper-lane-filter.sh for the rules.
+        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.speech_run == 'true'
         run: swift test --package-path SpeechHelper
 
       - name: Dogfood capture suite (instrumented build)
