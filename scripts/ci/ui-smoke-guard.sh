@@ -104,18 +104,10 @@ lock_state() {
     echo "$UI_SMOKE_GUARD_LOCK_STATE"
     return
   fi
-  # CGSessionCopyCurrentDictionary needs a GUI session context (the runner is
-  # a LaunchAgent in the console session, so it has one). The lock key is only
-  # present, with value 1, while the screen is actually locked.
-  swift - <<'SWIFT' 2>/dev/null || echo "error"
-import CoreGraphics
-
-guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
-  print("no-session")
-  exit(0)
-}
-print(session["CGSSessionScreenIsLocked"] != nil ? "locked" : "unlocked")
-SWIFT
+  # The CGSessionCopyCurrentDictionary probe moved to screen-lock-state.sh so
+  # the SSH UI gate (scripts/mac/localvoxtral-ui-gate.sh) shares it. This lane
+  # keeps its own fail-OPEN policy below; the helper only reports.
+  "$SCRIPT_DIR/screen-lock-state.sh" 2>/dev/null || echo "error"
 }
 
 age="$(last_success_age_seconds)"
