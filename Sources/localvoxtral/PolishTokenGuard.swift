@@ -66,8 +66,16 @@ enum PolishTokenGuard {
     //     blocked starts never produced output;
     //   * a length bound on the run itself, where the first two still leave
     //     the engine re-scanning from many starts.
-    // The guard for this: `PolishContextPreparationTests
-    // .testPreparationOverAPathologicalRunCostsNoMoreThanOverRealSource`.
+    // Past a bound, recognition does not simply stop: the lookbehind and the
+    // bound together mean the next VIABLE start inside the run is used, so the
+    // token can be a SUFFIX of what the unbounded pattern matched (never a
+    // longer or unrelated one). On the shape that actually occurs — a pasted
+    // payload glued to a real URL — that suffix is the token worth having.
+    // `PolishTokenGuardTests.testRecognitionHoldsAtTheSchemeAndStemBounds` and
+    // `.testPastTheBoundsRecognitionFallsBackToASuffixNeverALongerToken` pin
+    // both halves; `PolishContextPreparationTests
+    // .testPreparationOverAPathologicalRunCostsNoMoreThanOverRealSource` guards
+    // the complexity.
     private static let backtickSpan = try! NSRegularExpression(pattern: "`[^`\\n]+`")
     // The scheme is length-bounded because `://` can never appear inside the
     // scheme class: unbounded, every letter of a long alphanumeric blob (a

@@ -261,7 +261,20 @@ final class PolishContextPreparationTests: XCTestCase {
         let benignStart = ContinuousClock.now
         let benignPrepared = preparedContext(benign)
         let benignCost = ContinuousClock.now - benignStart
-        XCTAssertFalse(benignPrepared.excerpt.isEmpty, "the baseline must do real work")
+        // A non-empty excerpt would only prove the SELECTOR ran. Grounding is
+        // what proves the recognizers and the matcher ran over this buffer —
+        // the work the pathological runs below are being compared against.
+        XCTAssertTrue(grounds(benignPrepared), "the baseline must exercise recognition, not just selection")
+        // The budget below is relative to this baseline, so a baseline that
+        // rots widens the budget instead of failing: a future super-linear
+        // recognizer would inflate BOTH sides and could slip through. Anchor it
+        // absolutely. Measured at ~0.1s here and on the CI runner, so this is
+        // ~30x headroom — loose enough never to flake on a contended host,
+        // tight enough that a super-linear baseline fails loudly.
+        XCTAssertLessThan(
+            benignCost, .seconds(3),
+            "preparing 40k characters of ordinary source is ~0.1s; a baseline this slow is itself the regression"
+        )
 
         // One unbroken run of each shape that starves a recognizer's trailing
         // literal: letters only, letters+digits (base64), and letter/hyphen

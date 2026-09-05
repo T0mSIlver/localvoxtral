@@ -140,6 +140,77 @@ final class PolishTokenGuardTests: XCTestCase {
         }
     }
 
+    // MARK: - Recognition bounds
+
+    /// The two length bounds are the ONLY intended behavior change from making
+    /// recognition linear in run length, so they are pinned here — nothing else
+    /// in this suite distinguishes the bounded patterns from the unbounded ones
+    /// they replaced, which would let a later "tidy-up" silently restore the
+    /// quadratic sweep.
+    ///
+    /// A scheme is bounded at 64 characters and a filename stem at NAME_MAX
+    /// (255) because `://` and `.` cannot appear inside their own character
+    /// classes — which is exactly what let an unbounded quantifier re-scan a
+    /// long run from every start position inside it.
+    func testRecognitionHoldsAtTheSchemeAndStemBounds() {
+        // One leading letter + 63 continuation characters: the longest scheme
+        // that still resolves.
+        let atSchemeBound = String(repeating: "s", count: 64) + "://x"
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "see \(atSchemeBound) now"),
+            [atSchemeBound],
+            "a 64-character scheme is inside the bound and must still be protected"
+        )
+        let pastSchemeBound = String(repeating: "s", count: 65) + "://x"
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "see \(pastSchemeBound) now"),
+            [],
+            "a 65-character scheme is not a URL any RFC allows; recognition declines it"
+        )
+
+        let atStemBound = String(repeating: "a", count: 255) + ".swift"
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "open \(atStemBound) now"),
+            [atStemBound],
+            "a 255-character stem is inside NAME_MAX and must still be protected"
+        )
+        let pastStemBound = String(repeating: "a", count: 256) + ".swift"
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "open \(pastStemBound) now"),
+            [],
+            "a 256-character stem is longer than any filesystem allows"
+        )
+    }
+
+    /// Past either bound, recognition may still emit a SUFFIX of what the
+    /// unbounded pattern matched — never a longer or unrelated token.
+    ///
+    /// That is the conservative direction (the guard protects less of a blob it
+    /// cannot parse, not more), and on the realistic shape — a pasted payload
+    /// glued to a real URL — the suffix is the token actually worth protecting.
+    /// Pinned because it is the one place the bounds change WHAT is protected
+    /// rather than merely whether anything is.
+    func testPastTheBoundsRecognitionFallsBackToASuffixNeverALongerToken() {
+        // A 101-character scheme-class run glued to a real URL. The run is past
+        // the bound; the URL inside it still resolves.
+        let glued = "a" + String(repeating: "0", count: 100) + "https://api.example.com/x"
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "paste \(glued) end"),
+            ["https://api.example.com/x"],
+            "the real URL inside an oversized scheme run stays protected"
+        )
+
+        // A stem past NAME_MAX whose hyphen offers a later word boundary: the
+        // remaining, in-bound stem is what gets protected.
+        let stem = String(repeating: "a", count: 200) + "-" + String(repeating: "a", count: 100)
+        let suffix = "-" + String(repeating: "a", count: 100) + ".swift"
+        XCTAssertEqual(
+            PolishTokenGuard.protectedTokens(in: "open \(stem).swift now"),
+            [suffix],
+            "an oversized stem degrades to its in-bound suffix, not to a longer token"
+        )
+    }
+
     // MARK: - verifyAndRepair
 
     func testVerifyAndRepairCleanPassThrough() {
