@@ -165,9 +165,15 @@ jobs:
         # Pure shell tests for the workspace selector, the SSH build gate's
         # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
         # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
-        # Deliberately NOT gated on the docs-only fast path: the gate script is
-        # fast-path-eligible, so these seconds-cheap tests are what still
-        # exercises a gate-only diff.
+        # Deliberately NOT gated on the docs-only fast path: the gate scripts
+        # are fast-path-eligible, so these tests are what still exercises a
+        # gate-only diff.
+        #
+        # No longer cheap: test-ui-gate.sh alone is ~80 s of the ~95 s here
+        # (measured 2026-09-05, PR #238's 105 assertions each re-running the
+        # gate). That makes this the second most expensive step in the job —
+        # keep it to ONE copy, and think before adding another gate suite that
+        # re-execs a shell script per assertion.
         run: |
           ./scripts/ci/test-cleanup-stale-test-processes.sh
           ./scripts/ci/test-build-gate-process-cleanup.sh
@@ -184,35 +190,7 @@ jobs:
           ./scripts/ci/test-herdr-lane-filter.sh
           ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
-
-      - name: Clean abandoned test processes in this workspace
-        # A cancelled self-hosted job can outlive the Actions process cookie
-        # and leave swift-package/xctest running in this persistent checkout.
-        # Scope by current user + lsof cwd/mapped text; never pkill globally
-        # because the owner and parallel worktrees may run legitimate tests.
-        if: runner.environment == 'self-hosted'
-        run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
-
-      - name: Process-cleanup regression tests
-        # Pure shell tests for the workspace selector, the SSH build gate's
-        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
-        # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
-        # Deliberately NOT gated on the docs-only fast path: the gate script is
-        # fast-path-eligible, so these seconds-cheap tests are what still
-        # exercises a gate-only diff.
-        run: |
-          ./scripts/ci/test-cleanup-stale-test-processes.sh
-          ./scripts/ci/test-build-gate-process-cleanup.sh
-          ./scripts/ci/test-build-gate-reap-command.sh
-          ./scripts/ci/test-build-gate-gc-command.sh
-          ./scripts/ci/test-remote-build-reap.sh
-          ./scripts/ci/test-remote-build-gc.sh
-          ./scripts/ci/test-run-supervised-command.sh
-          ./scripts/ci/test-ui-gate.sh
-          ./scripts/ci/test-runner-node-resign.sh
-          ./scripts/ci/test-llm-lane-filter.sh
-          ./scripts/ci/test-herdr-lane-filter.sh
-          ./scripts/ci/test-herdr-fixture-recovery.sh
+          ./scripts/ci/test-workflow-step-names.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
