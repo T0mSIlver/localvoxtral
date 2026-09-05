@@ -290,15 +290,14 @@ final class DogfoodControlServiceTests: XCTestCase {
         XCTAssertEqual(row?["remoteHerdrSocket"] as? Bool, false)
     }
 
-    /// Field by field: the registry holds a marker, a workspace path, a tty, a
-    /// pane id, a socket path and a session id, and NONE of them may cross.
+    /// Field by field: the registry holds a workspace path, a tty, a pane id,
+    /// a socket path and a session id, and NONE of them may cross.
     func testRegistryListNamesNothingThatIdentifiesASession() async {
         let service = makeService(viewModel: makeViewModel(), sessions: [Self.localSnapshot()])
         let raw = await expectSuccessRaw(service, .registryList)
 
         for secret in [
             Self.sessionID,
-            Self.markerValue,
             Self.workspacePath,
             Self.ttyPath,
             Self.paneID,
@@ -467,7 +466,6 @@ final class DogfoodControlServiceTests: XCTestCase {
     // MARK: - Fixtures
 
     private static let sessionID = "11111111-2222-3333-4444-555555555555"
-    private static let markerValue = "lvx-marker-abcdef0123456789"
     private static let workspacePath = "/Users/owner/work/secret-project"
     private static let ttyPath = "/dev/ttys004"
     private static let paneID = "pane-9f3c2a"
@@ -478,7 +476,6 @@ final class DogfoodControlServiceTests: XCTestCase {
         var snapshot = ClaudeSessionSnapshot(
             sessionID: sessionID,
             origin: .localAuthenticated(peerUID: 501),
-            marker: ClaudeSessionMarker(value: markerValue),
             firstSeen: Date(timeIntervalSince1970: 1_000)
         )
         snapshot.workspace = ClaudeWorkspaceReference.make(
@@ -505,7 +502,6 @@ final class DogfoodControlServiceTests: XCTestCase {
         var snapshot = ClaudeSessionSnapshot(
             sessionID: sessionID,
             origin: .remote(channel: "remote-listener"),
-            marker: ClaudeSessionMarker(value: markerValue),
             firstSeen: Date(timeIntervalSince1970: 1_000)
         )
         snapshot.remoteEnvironment = ClaudeRemoteSessionEnvironment(
