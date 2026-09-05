@@ -43,7 +43,7 @@ path cannot be built from a remote origin, so "remote cwd reaches the
 filesystem" is a compile error, not a setting. What a remote session
 contributes instead comes from its hooks: the prior prompt, the labels of
 recently touched files, and bounded excerpts of tool output. Collecting git
-state on the remote host over the app's own ssh is possible and unbuilt.
+state on the remote host over the app's own ssh is on the [roadmap](roadmap.md).
 
 **No screen context for a Remote Control session, by design.** The surface is
 a browser tab, not a terminal grid. Reading it would mean scraping a web
