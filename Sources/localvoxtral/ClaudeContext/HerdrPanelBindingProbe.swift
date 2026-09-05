@@ -120,13 +120,17 @@ struct HerdrPanelBindingProbe {
             switch Self.renderedMatch(grid: grid, token: token) {
             case .full, .truncatedButSufficient:
                 return .matched(Match(token: token))
-            case .truncatedTooShort:
+            case .truncatedTooShort(let retainedDigits):
                 // Polling cannot grow a column budget. This is the row
                 // rendering CORRECTLY and being cut by herdr's own
                 // `truncate_end`, which is a different fault from "no token in
                 // the grid" and has a different fix, so it ends the attempt
                 // with its own cause instead of burning the settle budget.
-                Self.noteAbstention(.rowTruncated)
+                //
+                // The retained count is the whole diagnostic: the shortfall
+                // against the floor is exactly how many more columns that row
+                // needs, and nothing else on this side can tell the user that.
+                Self.noteRowTruncated(retainedDigits: retainedDigits)
                 return .noMatch(.rowTruncated)
             case .absent:
                 break
@@ -294,6 +298,25 @@ struct HerdrPanelBindingProbe {
             """
         )
         noteAbstention(.rowNotRendered)
+    }
+
+    /// `row-truncated`, with the number of nonce digits that DID render.
+    ///
+    /// A count, not content — and the one number that turns "the panel row did
+    /// not work" into an instruction, because the shortfall against
+    /// `minimumRenderedNonceDigits` is exactly how many more columns that row
+    /// needs. Field verification 2026-09-05 wanted this number and the build
+    /// could not produce it.
+    static func noteRowTruncated(retainedDigits: Int) {
+        Log.claudeContext.info(
+            """
+            Remote herdr panel row rendered a TRUNCATED token: \
+            \(retainedDigits, privacy: .public) of \
+            \(Self.tokenNonceDigits, privacy: .public) nonce digits survived, \
+            \(Self.minimumRenderedNonceDigits, privacy: .public) required
+            """
+        )
+        noteAbstention(.rowTruncated)
     }
 
     static func noteAbstention(_ cause: HerdrPanelBindingAbstention) {

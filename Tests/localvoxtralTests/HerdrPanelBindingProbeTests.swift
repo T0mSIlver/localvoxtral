@@ -276,6 +276,17 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
 
         XCTAssertEqual(outcome, .noMatch(.rowTruncated))
         XCTAssertEqual(readCount, 1, "a too-short row ends the attempt on the first read")
+        // The count the operator needs is carried, not just the cause: the
+        // shortfall against the floor is how many more columns that row wants.
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(
+                grid: "claude  work\n   \(rendered)",
+                token: token
+            ),
+            .truncatedTooShort(
+                retainedDigits: HerdrPanelBindingProbe.minimumRenderedNonceDigits - 1
+            )
+        )
     }
 
     func testRenderedMatchGradesThePrefixItActuallyFound() {
