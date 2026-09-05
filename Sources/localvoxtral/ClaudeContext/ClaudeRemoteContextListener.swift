@@ -471,7 +471,18 @@ public final class ClaudeRemoteContextListener: Sendable {
                 for: shape, authenticated: authenticatedHost != nil
             ) ?? .unknownToken
             rejections.record(category)
-            Log.claudeContext.error("\(category.logLine, privacy: .public)")
+            // Same line either way, and always logged — but a connection that
+            // never offered a credential is not an error. The verify probe posts
+            // here without one on purpose and reads the 401 as success, so
+            // logging that at `.error` trains the reader to scroll past the
+            // category that means a host really is broken. `.notice` still
+            // persists to disk in the unified log, so nothing stops being
+            // findable later.
+            if category.isFault {
+                Log.claudeContext.error("\(category.logLine, privacy: .public)")
+            } else {
+                Log.claudeContext.notice("\(category.logLine, privacy: .public)")
+            }
             respond(fd: fd, status: 401)
             return
         }

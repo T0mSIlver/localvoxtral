@@ -567,6 +567,30 @@ there is not.
     budget.
   These paths are in `scripts/ci/llm-lane-filter.sh`: they change what reaches
   the model, so the LLM lanes run on them.
+- **A rejection's remedy is earned by its wire shape, and only one shape earns
+  the plugin remedy.** `ClaudeRemoteRejectionCategory` exists because one
+  undifferentiated "rejected unauthenticated connection" line cost a dispatched
+  log-collection workflow to diagnose (field report, 2026-07-26). Two of its
+  cases turn on a distinction that looks cosmetic and is not: a header that
+  ARRIVED carrying no credential (`Bearer `, from a `${…}` Claude Code never
+  expanded into an http hook) is the pre-1.1.0 plugin's exact signature and
+  keeps the full "update the plugin on the host" clause; NO `Authorization`
+  header at all cannot come from any plugin generation — the pre-1.1.0 manifest
+  declared the header statically, and the command shim that replaced it writes
+  the header before it dials and fails open without dialing when the token is
+  unset — so it is an unauthenticated caller, gets its own line with no host
+  remedy, logs at `.notice` rather than `.error`, and is excluded from
+  `Snapshot.isEmpty` so it raises no Settings hint. That last part is not
+  tidiness: the enrollment verify probe posts here WITHOUT a credential on
+  purpose and reads the 401 as its success signal, so collapsing the two shapes
+  made every setup check write a line accusing a healthy host — a phantom for
+  the next person reading this log, in the one subsystem whose documented
+  diagnostic route is reading the log later. Do not re-collapse them, and do not
+  soften the `.emptyCredential` clause into vagueness to cover both: losing the
+  pre-1.1.0 diagnosis is the worse failure of the two, which is why the split is
+  decided by the request's own bytes rather than by any state this app keeps —
+  there is no window to be outside of and nothing a caller can assert to land in
+  the quieter category that it could not already assert to land in another.
 - **Remote Claude context is opaque by construction.** The remote listener tags
   every accepted session `.remote` regardless of its payload; a local process
   connecting to that listener can only downgrade itself. Remote cwd values are
