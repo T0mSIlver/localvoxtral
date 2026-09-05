@@ -113,7 +113,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
 
         let enrollment = try hosts.enroll(label: "builder")
         try coordinator.reconcile()
-        handed.all.first?.record(.missingToken)
+        handed.all.first?.record(.emptyCredential)
 
         try hosts.revoke(hostID: enrollment.host.id)
         try coordinator.reconcile()
@@ -124,7 +124,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         XCTAssertTrue(handed.all[0] === handed.all[1], "and handed it the same counters")
         XCTAssertEqual(
             coordinator.rejectionSnapshot,
-            ClaudeRemoteRejectionTally.Snapshot(missingToken: 1)
+            ClaudeRemoteRejectionTally.Snapshot(emptyCredential: 1)
         )
     }
 

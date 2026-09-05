@@ -162,8 +162,9 @@ jobs:
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
 
       - name: Process-cleanup regression tests
-        # Pure shell tests for the workspace selector and the SSH build gate's
-        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        # Pure shell tests for the workspace selector, the SSH build gate's
+        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
+        # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
         # Deliberately NOT gated on the docs-only fast path: the gate script is
         # fast-path-eligible, so these seconds-cheap tests are what still
         # exercises a gate-only diff.
@@ -176,6 +177,7 @@ jobs:
           ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
           ./scripts/ci/test-ui-smoke-guard.sh
+          ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-ac-power-guard.sh
           ./scripts/ci/test-llm-lane-filter.sh
@@ -192,8 +194,9 @@ jobs:
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
 
       - name: Process-cleanup regression tests
-        # Pure shell tests for the workspace selector and the SSH build gate's
-        # TERM -> KILL process-group teardown. Runs on hosted fork PRs too.
+        # Pure shell tests for the workspace selector, the SSH build gate's
+        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
+        # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
         # Deliberately NOT gated on the docs-only fast path: the gate script is
         # fast-path-eligible, so these seconds-cheap tests are what still
         # exercises a gate-only diff.
@@ -205,6 +208,7 @@ jobs:
           ./scripts/ci/test-remote-build-reap.sh
           ./scripts/ci/test-remote-build-gc.sh
           ./scripts/ci/test-run-supervised-command.sh
+          ./scripts/ci/test-ui-gate.sh
           ./scripts/ci/test-runner-node-resign.sh
           ./scripts/ci/test-llm-lane-filter.sh
           ./scripts/ci/test-herdr-lane-filter.sh
@@ -840,6 +844,59 @@ jobs:
           name: localvoxtral-dsym-dogfood
           path: dist/localvoxtral-dsym-dogfood.zip
           retention-days: 30
+
+      - name: Install the dogfood build into the UI gate's artifact root
+        # An agent driving the SSH UI gate can BUILD but cannot INSTALL: there
+        # is no gate verb that runs try-pr.sh and no shell on that account. The
+        # runner closes that gap for free — it is a launchd agent in the
+        # owner's GUI session, so $HOME here IS the GUI account's home (proved
+        # by the workspace path, /Users/tom/actions-runner/...), which is where
+        # the gate's default artifact root lives. Dispatching a build is then
+        # the install, with no hand-copying and no new gate verb.
+        #
+        # workflow_dispatch + dogfood=true ONLY, deliberately narrower than the
+        # dogfood lane itself: the [dogfood-package] marker fires on ordinary
+        # PR pushes, and no PR run should write into the owner's home. The
+        # install destination is what moves here; the gate's roots are
+        # untouched and stay owner-writable only.
+        #
+        # `github.event.inputs.dogfood`, not `inputs.dogfood`: the input is
+        # declared `type: boolean`, and comparing a boolean to the string
+        # 'true' in an expression coerces both to numbers (1 vs NaN) and is
+        # therefore always false — a gate that silently never fires. The event
+        # payload's copy is a string, so it compares as written.
+        if: >-
+          runner.environment == 'self-hosted'
+          && github.event_name == 'workflow_dispatch'
+          && github.event.inputs.dogfood == 'true'
+          && steps.dogfood_lane.outputs.run == 'true'
+        run: |
+          set -uo pipefail
+          # dist/localvoxtral.app is the instrumented bundle at this point (the
+          # dogfood pass overwrote it); install-ui-artifact.sh reads the
+          # LVXDogfoodCapture stamp and picks the dogfood slot accordingly.
+          STATUS=0
+          INSTALLED="$(./scripts/mac/install-ui-artifact.sh dist/localvoxtral.app --no-hint \
+            --label "${GITHUB_REF_NAME} @ ${GITHUB_SHA:0:7} (run ${GITHUB_RUN_ID})")" || STATUS=$?
+          if (( STATUS == 3 )); then
+            # Exit 3 is the one refusal that is not a build problem: that slot
+            # is running, which only the operator can resolve.
+            echo "::warning::UI-gate install skipped — the target bundle is running. Quit it (ssh lv-ui 'quit') and re-dispatch."
+            echo "UI-gate install skipped: the target bundle is running." >>"$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if (( STATUS != 0 )); then
+            echo "::error::UI-gate install failed (exit $STATUS)."
+            exit "$STATUS"
+          fi
+          GATE_ARG="${INSTALLED#"$HOME"/}"
+          {
+            echo "### Installed for the UI gate"
+            echo
+            echo '```'
+            echo "ssh lv-ui 'launch --dogfood $GATE_ARG'"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Process leak check (informational)
         # ~15% of runs spend ~105 s in the runner's post-job "Cleaning up
