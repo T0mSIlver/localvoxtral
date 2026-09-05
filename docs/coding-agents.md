@@ -76,7 +76,7 @@ while the neighboring pane stays out of the prompt:
 
 https://github.com/user-attachments/assets/15e71c26-3d8b-490f-90d0-f5c507daf5eb
 
-Install is one click: **Settings → Text Processing → Claude Code plugin →
+Install is one click: **Settings → Context → Claude Code plugin →
 Install**. The app registers its bundled plugin marketplace through Claude
 Code's own CLI and never edits `~/.claude/settings.json` behind your back.
 

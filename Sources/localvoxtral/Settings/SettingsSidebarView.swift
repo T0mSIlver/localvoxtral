@@ -11,7 +11,7 @@ extension SettingsTab {
     /// Sidebar order, top group. Deliberately NOT the declaration order of the
     /// enum: raw values are frozen for the scripts, presentation order is not.
     static let primarySidebarItems: [SettingsTab] = [
-        .general, .dictation, .endpoints, .textProcessing,
+        .general, .dictation, .endpoints, .textProcessing, .context,
     ]
 
     /// Pinned to the bottom of the sidebar, under the spacer.
@@ -23,6 +23,7 @@ extension SettingsTab {
         case .dictation: return "Dictation"
         case .endpoints: return "Endpoints"
         case .textProcessing: return "Text Processing"
+        case .context: return "Context"
         case .about: return "About"
         }
     }
@@ -33,6 +34,7 @@ extension SettingsTab {
         case .dictation: return "How you start, stop, and see dictation."
         case .endpoints: return "Where speech recognition and polishing run."
         case .textProcessing: return "Replacements and LLM polishing of your transcript."
+        case .context: return "What the polisher and Claude Code integration may see."
         case .about: return "Version, project, and diagnostics."
         }
     }
@@ -43,6 +45,7 @@ extension SettingsTab {
         case .dictation: return "mic.fill"
         case .endpoints: return "cpu"
         case .textProcessing: return "text.badge.checkmark"
+        case .context: return "terminal.fill"
         case .about: return "info.circle.fill"
         }
     }
@@ -53,6 +56,7 @@ extension SettingsTab {
         case .dictation: return Color(nsColor: .systemRed)
         case .endpoints: return Color(nsColor: .systemBlue)
         case .textProcessing: return Color(nsColor: .systemPurple)
+        case .context: return Color(nsColor: .systemIndigo)
         case .about: return Color(nsColor: .systemGray)
         }
     }

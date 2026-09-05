@@ -75,7 +75,7 @@ default:
    and choose a socket password. (The default `cmuxOnly` mode admits only
    processes cmux itself started, which localvoxtral is not. `allowAll` is
    developer-only and is not required.)
-2. In localvoxtral, enable **Settings → Text Processing → Polishing → "Join
+2. In localvoxtral, enable **Settings → Context → Claude Code → "Join
    Claude Code sessions in cmux"** and enter the same password in **cmux
    socket password**. It is stored in your Keychain and sent only to cmux's
    local socket.
@@ -93,8 +93,8 @@ live `cmux ssh` workspace, so a stale surface id from an earlier remote session
 cannot attach itself to whatever you are looking at now.
 
 **Title marker (opt-in local fallback, always on for SSH).** For an older
-(stable-channel) Ghostty build, enable **Settings → Text Processing →
-Polishing → Local Claude title fallback** and export
+(stable-channel) Ghostty build, enable **Settings → Context →
+Claude Code → Local Claude title fallback** and export
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs.
 The app then replies to local hooks with
 the session marker, which Claude Code writes into the window title as an OSC 2
@@ -122,7 +122,7 @@ out on the session's next hook.
 Supported browsers are **Google Chrome, Brave, and Safari**, and each one needs
 its OWN Automation grant the first time it is used (System Settings → Privacy &
 Security → Automation → localvoxtral). The grant is requested only while
-**Settings → Text Processing → Polishing → Claude Code project context** is on
+**Settings → Context → "Use Claude Code project files as polish context"** is on
 — that is the only feature a browser join can serve. Firefox is not supported:
 it exposes no AppleScript surface for the focused tab's URL. A browser join
 never reads anything on your screen (a web page is not a terminal grid, and
@@ -137,7 +137,7 @@ the hook prints nothing at all.
 
 ## Install / update / uninstall
 
-The app way: **Settings → Text Processing → Polishing → "Claude Code plugin
+The app way: **Settings → Context → Claude Code → "Claude Code plugin
 (this Mac)" → Install or Update**. That button registers the bundled marketplace
 and installs the plugin, then reports one short line. Nothing is installed until
 you press it — the app never touches your Claude Code setup at launch or on a
@@ -361,7 +361,7 @@ exchange (any HTTP status, even a 401) clears the backoff for everything else.
 
 ## Set it up
 
-In **Settings → Text Processing → Polishing → "Remote Claude Code over SSH"**,
+In **Settings → Context → Remote hosts → "Remote Claude Code over SSH"**,
 type a name and your SSH host alias and press **Enroll…**. The app issues a
 token, shows it once alongside every command below with a Copy button on each,
 and binds the listener immediately — there is no relaunch step. The list in that

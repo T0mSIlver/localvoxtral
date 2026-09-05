@@ -7,6 +7,7 @@ set -euo pipefail
 #   assets/settings-endpoints.png          (Settings > Endpoints)
 #   assets/settings-dictation.png          (Settings > Dictation)
 #   assets/settings-text-processing.png    (Settings > Text Processing)
+#   assets/settings-context.png            (Settings > Context)
 #
 # Run ON A MAC from the repo root:
 #   ./scripts/capture-readme-assets.sh [path/to/localvoxtral.app]
@@ -34,12 +35,12 @@ BUNDLE_ID="com.localvoxtral.app"
 PERSISTENT_DEFAULTS_BACKUP="${HOME}/.localvoxtral-capture-assets.pre.plist"
 PERSISTENT_DEFAULTS_BACKUP_HAD_DOMAIN="${PERSISTENT_DEFAULTS_BACKUP}.had-domain"
 ASSETS_DIR="assets"
-TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing")
+TAB_NAMES=("General" "Endpoints" "Dictation" "Text Processing" "Context")
 # SettingsTab raw values — the sidebar rows carry them as AXIdentifiers
 # (settings.tab.<raw>). SettingsTabTests pins both the raw values and the
 # identifier scheme.
-TAB_IDS=("general" "endpoints" "dictation" "textProcessing")
-TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png")
+TAB_IDS=("general" "endpoints" "dictation" "textProcessing" "context")
+TAB_FILES=("settings-general.png" "settings-endpoints.png" "settings-dictation.png" "settings-text-processing.png" "settings-context.png")
 # The three arrays are indexed together below; a mismatch would silently capture
 # one tab's window into another tab's file.
 if (( ${#TAB_NAMES[@]} != ${#TAB_IDS[@]} || ${#TAB_NAMES[@]} != ${#TAB_FILES[@]} )); then

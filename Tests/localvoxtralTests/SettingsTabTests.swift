@@ -75,12 +75,105 @@ final class SettingsTabTests: XCTestCase {
         }
     }
 
+    /// The automation scripts press and scope by literal `settings.tab.<raw>`
+    /// strings. Reading the scripts here turns a divergence into a unit-test
+    /// failure on every push, instead of an AX drill failure that only surfaces
+    /// in the evening ui-smoke slot on the Mac.
+    func testAutomationScriptsDrillExactlyTheTabsTheEnumDefines() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()  // SettingsTabTests.swift
+            .deletingLastPathComponent()  // localvoxtralTests
+            .deletingLastPathComponent()  // Tests
+        let uiSmoke = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/ui-smoke.sh"),
+            encoding: .utf8
+        )
+        let capture = try String(
+            contentsOf: repoRoot.appendingPathComponent("scripts/capture-readme-assets.sh"),
+            encoding: .utf8
+        )
+        let rawValues = Set(SettingsTab.allCases.map(\.rawValue))
+
+        XCTAssertEqual(
+            Self.firstQuotedArguments(ofCalls: "assert_tab ", in: uiSmoke),
+            rawValues,
+            "ui-smoke.sh must drill exactly the tabs the enum defines"
+        )
+
+        // About is deliberately not captured for the README; every other pane
+        // must be, and nothing the enum does not define may appear.
+        let captureIDs = try Self.shellArrayEntries(named: "TAB_IDS", in: capture)
+        XCTAssertEqual(
+            Set(captureIDs),
+            rawValues.subtracting(["about"]),
+            "capture-readme-assets.sh TAB_IDS must list every captured pane by raw value"
+        )
+
+        // The script iterates the three arrays in lockstep under `set -u`, so
+        // a TAB_IDS entry without its TAB_NAMES/TAB_FILES sibling only fails
+        // at README-regen time on the Mac. Pin the alignment here instead.
+        let captureNames = try Self.shellArrayEntries(named: "TAB_NAMES", in: capture)
+        let captureFiles = try Self.shellArrayEntries(named: "TAB_FILES", in: capture)
+        XCTAssertEqual(
+            captureNames.count, captureIDs.count,
+            "TAB_NAMES and TAB_IDS must stay index-aligned"
+        )
+        XCTAssertEqual(
+            captureFiles.count, captureIDs.count,
+            "TAB_FILES and TAB_IDS must stay index-aligned"
+        )
+    }
+
+    /// First double-quoted argument of every top-level `<call> "<arg>" ...`
+    /// line. Skips the function's own definition line (`<call>() {`).
+    private static func firstQuotedArguments(ofCalls call: String, in script: String) -> Set<String> {
+        Set(
+            script.components(separatedBy: "\n")
+                .filter { $0.hasPrefix(call) }
+                .compactMap { line in
+                    let parts = line.components(separatedBy: "\"")
+                    return parts.count > 1 ? parts[1] : nil
+                }
+        )
+    }
+
+    /// Entries of a one-line bash array literal: `NAME=("a" "b" ...)`.
+    private static func shellArrayEntries(named name: String, in script: String) throws -> [String] {
+        let assignment = try XCTUnwrap(
+            script.components(separatedBy: "\n")
+                .first(where: { $0.hasPrefix("\(name)=(") }),
+            "\(name)=( … ) assignment not found"
+        )
+        let entries = assignment.components(separatedBy: "\"")
+            .enumerated()
+            .filter { $0.offset.isMultiple(of: 2) == false }
+            .map(\.element)
+        XCTAssertFalse(
+            entries.isEmpty,
+            "\(name) parsed as empty — this parser expects the whole array on one line; "
+                + "if the script was reformatted, teach the parser the new shape"
+        )
+        return entries
+    }
+
+    /// Presentation order is a UX contract of its own: the coverage tests
+    /// above compare Sets, so an accidental reorder (an alphabetical sort, a
+    /// careless merge) would pass every other test while moving rows the user
+    /// has already built muscle memory for.
+    func testSidebarOrderIsThePresentationContract() {
+        XCTAssertEqual(
+            SettingsTab.primarySidebarItems,
+            [.general, .dictation, .endpoints, .textProcessing, .context]
+        )
+        XCTAssertEqual(SettingsTab.metaSidebarItems, [.about])
+    }
+
     /// The scripts hardcode these strings; renaming a case silently breaks the
     /// AX drills, which is exactly the failure this pins.
     func testRawValuesAreStable() {
         XCTAssertEqual(
             Set(SettingsTab.allCases.map(\.rawValue)),
-            ["general", "endpoints", "dictation", "textProcessing", "about"]
+            ["general", "endpoints", "dictation", "textProcessing", "context", "about"]
         )
     }
 }
