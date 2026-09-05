@@ -2,14 +2,40 @@
 
 ## `ci.yml`
 
-Every non-fast-path PR and push to main: build, advisory format lint (`.swift-format`;
-flips to `--strict` after the one-shot tree reformat), unit tests with a
-coverage summary (`llvm-cov report` over Sources — visibility for the PR
-Proof section, not a gate), live STT-service integration tests, app packaging,
-launch smoke test, an installable app artifact (`localvoxtral-app`, fetch
-with `scripts/try-pr.sh`), and a `localvoxtral-dsym` artifact (30-day
-retention) for symbolicating field crashes. Same-repo branches run on the
-self-hosted Mac runner; fork PRs run on GitHub-hosted macOS.
+`ci.yml` runs **two jobs in parallel**, split by what actually needs the
+owner's Mac (owner decision 2026-09-05):
+
+**`build-test` — GitHub-hosted macOS (`macos-latest`), every event, every
+contributor.** The required status check on main, and the portable half of CI:
+the pure-shell gate/process-cleanup suites, the installer-resolution test,
+advisory format lint (`.swift-format`; flips to `--strict` after the one-shot
+tree reformat), the unit suite with a coverage summary (`llvm-cov report` over
+Sources — visibility for the PR Proof section, not a gate), and the complete
+unit-test log as an artifact. Same-repo PRs run here too, not just forks: the
+single self-hosted runner was 89 % busy during a four-agent burst and 3.4 h of
+work produced 8.95 h of queue, while a measured hosted run executed the
+identical 2769 test cases in the same wall-clock with an 8 s queue — and
+hosted runners are free for public repositories.
+
+A **fork PR gets only this job** (`mac-lanes` never runs untrusted code on the
+owner's machine), so on a fork it additionally packages, uploads and
+launch-smokes an ad-hoc-signed bundle. Same-repo runs skip those steps here
+because `mac-lanes` does them with the real signing identity.
+
+**`mac-lanes` — the self-hosted Mac, same-repo PRs / pushes to main /
+dispatches only.** Everything a hosted runner cannot supply: packaging and
+launch-smoking the bundle signed with the stable `localvoxtral-dev` identity
+(an ad-hoc signature would invalidate the owner's Accessibility grant on every
+`scripts/try-pr.sh` install), the installable `localvoxtral-app` artifact and
+`localvoxtral-dsym` (30-day retention) for symbolicating field crashes, the
+live STT-service integration, the conditional polishd/speechd/herdr live-model
+lanes, the two MLX helper unit suites (kept here for the warm Cmlx build), the
+dogfood capture suite and packaging, the UI-gate install, and the process leak
+check. It keeps `clean: false` — the persistent warm `.build` that makes those
+lanes affordable.
+
+The two jobs run in parallel and share no artifact; each computes the
+docs-only fast-path decision itself rather than serialising behind a `needs:`.
 
 Both lanes build with whatever Xcode toolchain is already on the machine —
 no `Setup Swift` step. Fork PRs previously pinned a separate swift.org
@@ -17,15 +43,15 @@ toolchain (`swift-actions/setup-swift@v2`, `swift-version: "6.2"`), but its
 6.2.1 resolution ships with assertions enabled and asserts compiling this
 app's `@MainActor deinit`; Xcode's bundled toolchain doesn't have that
 problem, so hosted runners now use it too, same as self-hosted. Neither
-lane pins a version, so the hosted job records `xcodebuild -version` and
+lane pins a version, so `build-test` records `xcodebuild -version` and
 `swift --version` in its step summary and keys the SwiftPM cache on them —
 when the image's default Xcode moves, the log says which build ran and no
 `.build` tree crosses toolchains.
 
 Opt-in dogfood artifact: with the literal marker `[dogfood-package]` in the
 PR body / head commit message, or a `workflow_dispatch` with `dogfood=true`,
-the job packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle after
-the launch smoke and uploads it as `localvoxtral-app-dogfood` (7-day
+`mac-lanes` packages a second, `LOCALVOXTRAL_DOGFOOD`-instrumented bundle
+after the launch smoke and uploads it as `localvoxtral-app-dogfood` (7-day
 retention) plus `localvoxtral-dsym-dogfood` (30-day — the instrumented
 binary's UUID differs from the clean dSYM's). Fetch and launch it with
 `scripts/try-pr.sh <pr|main> --dogfood`,
@@ -33,31 +59,34 @@ which also arms the runtime capture default. On manual dispatch the
 conditional live-model lanes (polishd/speechd) skip — the dispatched ref's
 own push/PR run already decided them.
 
-Forcing the hosted lane: `workflow_dispatch` with `hosted=true` runs
-`build-test` for a same-repo ref on `macos-latest` instead of the Mac —
+The `hosted` dispatch input is a **no-op** now: it existed to force
+`build-test` onto a hosted runner, which is where it always runs. It is kept
+for one release so a scripted `-f hosted=true` does not fail on an unknown
+input, and cannot be repurposed to move `mac-lanes` — that job exists
+precisely because its work needs that Mac.
 
-```bash
-gh workflow run CI --ref <branch> -f hosted=true
-```
-
-That is the only way to exercise the fork-PR lane without a fork, and it is
-also the switch for moving tier 0 off the personal Mac. Everything keyed on
-`runner.environment == 'self-hosted'` skips exactly as it does for a fork PR:
-the workspace process cleanup, all four lane-decide steps, the live STT /
-polishd / speechd / herdr lanes, both helper unit suites, the dogfood capture
-suite and packaging, the Metal-toolchain probe, and the process leak check.
-What remains is the shell-test step, the installer test, format lint, the unit
-suite, packaging (helpers skipped, ad-hoc signature), the artifacts, and the
-launch smoke. The input can only move a job toward `macos-latest`; no input
-value can pull a fork PR onto the self-hosted runner.
-
-The same `build-test` check takes a docs/scripts-only fast path when every
-changed file passes `scripts/ci/docs-only-filter.sh`; it then skips all Swift,
-helper, packaging, artifact, smoke, warm, and integration steps. The filter
-fails open to the full run for unknown or ambiguous diffs and excludes CI
-control files, packaging inputs (`assets/icons/**`), and every path selected
-by the LLM/speechd lane filters; an explicit `[run-llm-eval]` /
+The docs/scripts-only fast path applies to both jobs when every changed file
+passes `scripts/ci/docs-only-filter.sh`; they then skip all Swift, helper,
+packaging, artifact, smoke, warm, and integration steps. The filter fails open
+to the full run for unknown or ambiguous diffs and excludes CI control files,
+packaging inputs (`assets/icons/**`), and every path selected by the
+LLM/speechd lane filters; an explicit `[run-llm-eval]` /
 `[run-speechd-integration]` marker also forces the full run.
+
+The two helper unit suites are additionally path-gated per helper
+(`scripts/ci/helper-lane-filter.sh`): a PR runs a helper's suite only when the
+diff touches that helper's directory or the shared CI plumbing, while
+dispatches and every push to main run both.
+
+One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
+guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
+Swift lane — including `AgentsGuideSizeTests`, whose entire job is guarding
+`AGENTS.md`'s 32 KiB Codex truncation budget — used to be skipped exactly on
+the diffs that can break it. `scripts/ci/test-agents-guide-budget.sh` is a
+shell port of that test, run in the ungated shell-test step. It parses the cap,
+the router targets and the anchors out of `AgentsGuideSizeTests.swift` rather
+than restating them, and fails if that file grows an assertion it has not
+ported — so the two cannot drift.
 
 ## `release.yml`
 
