@@ -238,6 +238,66 @@ final class PolishContextPreparationTests: XCTestCase {
         )
     }
 
+    /// The regression this guards: `PolishTokenGuard`'s URL, path and filename
+    /// recognizers were quadratic in the length of ONE unbroken run of their
+    /// character class. Each has a greedy class followed by a literal the class
+    /// cannot hold (`://`, `/`, `.`), so on a run that never supplies that
+    /// literal the engine consumed the run, backed up character by character,
+    /// then repeated the whole exercise from the next start position inside it.
+    /// A pasted minified bundle, base64 payload or JWT is exactly that input,
+    /// and the retained buffer allows 2M characters of it.
+    ///
+    /// Asserted as a budget rather than a stopwatch: preparing a pathological
+    /// buffer must cost about what preparing an equally large REAL source
+    /// buffer costs — the same linear scans over the same number of
+    /// characters, minus the entity work real code legitimately triggers. The
+    /// old behavior cannot fit in any such multiple: against a 0.106s baseline
+    /// the three shapes below cost 41.6s, 30.8s and 131.2s (393x, 291x,
+    /// 1241x). The whole test now runs in under a second.
+    func testPreparationOverAPathologicalRunCostsNoMoreThanOverRealSource() {
+        let size = 40_000
+        // Real source of the same size: the work that legitimately must happen.
+        let benign = CodeHeavyFixture.buffer(minimumCharacters: size, target: target)
+        let benignStart = ContinuousClock.now
+        let benignPrepared = preparedContext(benign)
+        let benignCost = ContinuousClock.now - benignStart
+        XCTAssertFalse(benignPrepared.excerpt.isEmpty, "the baseline must do real work")
+
+        // One unbroken run of each shape that starves a recognizer's trailing
+        // literal: letters only, letters+digits (base64), and letter/hyphen
+        // (base64url, kebab identifiers — the worst of the three).
+        var mixed = ""
+        var dashed = ""
+        for index in 0..<size {
+            mixed.append(index % 3 == 0 ? "3" : "a")
+            dashed.append(index % 2 == 0 ? "-" : "a")
+        }
+        let pathological = [
+            ("letters", String(repeating: "a", count: size)),
+            ("alphanumeric", mixed),
+            ("hyphenated", dashed),
+        ]
+
+        for (shape, text) in pathological {
+            XCTAssertEqual(text.count, size, "\(shape)")
+            let start = ContinuousClock.now
+            _ = preparedContext(text)
+            let cost = ContinuousClock.now - start
+            // Generous multiple: a shape assertion (linear scans vs. a
+            // per-start-position re-scan of the whole run), not a benchmark.
+            XCTAssertLessThan(
+                cost, benignCost * 25,
+                "\(shape) run cost \(cost) vs \(benignCost) for real source of the same size — recognition is quadratic in run length again"
+            )
+        }
+    }
+
+    private func preparedContext(_ text: String) -> PolishContextPreparation {
+        PolishContextPreparation.prepare(
+            text: text, transcript: transcript, renderBudget: 500
+        )
+    }
+
     /// Selection must not need the recognizer at all: given the terms, scoring
     /// is literal/normalized containment plus word overlap.
     func testSelectionWithGroundingTermsKeepsTheRelevantLine() {

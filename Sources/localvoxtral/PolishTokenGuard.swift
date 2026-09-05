@@ -43,14 +43,53 @@ enum PolishTokenGuard {
 
     // Static literals: a bad pattern is a coding error we want to crash on
     // immediately (same rationale as TextMergingAlgorithms).
+    //
+    // LINEAR-TIME DISCIPLINE. Recognition runs over the COMPLETE retained
+    // context buffer — up to `PolishContextClipboardReader
+    // .retentionCharacterCap` (2M) characters — so a pattern that is quadratic
+    // in the length of one unbroken character run is a hang, not merely a slow
+    // test. Any recognizer whose greedy character class is followed by a
+    // literal that class CANNOT contain has exactly that shape: on a long run
+    // the engine consumes the run, fails, backs up one character at a time,
+    // fails again, then repeats the whole exercise from the next start
+    // position. Measured on the build host over 40k characters of unbroken
+    // run: `protectedTokens` cost 20.2s, or 130.8s when the run was
+    // hyphen-dense, scaling 4x per doubling. Three fixes apply, and each is either provably
+    // output-identical or a documented bound:
+    //   * possessive quantifiers (`++`, `{n,m}+`) where the following literal
+    //     is outside the class — every position the engine would back up to
+    //     holds a class character, so the backtracking cannot succeed and
+    //     removing it cannot change a match;
+    //   * a lookbehind rejecting start positions INSIDE such a run — a match
+    //     starting mid-run is always subsumed by the longer one starting at
+    //     the run boundary, which the leftmost rule already prefers, so the
+    //     blocked starts never produced output;
+    //   * a length bound on the run itself, where the first two still leave
+    //     the engine re-scanning from many starts.
+    // The guard for this: `PolishContextPreparationTests
+    // .testPreparationOverAPathologicalRunCostsNoMoreThanOverRealSource`.
     private static let backtickSpan = try! NSRegularExpression(pattern: "`[^`\\n]+`")
-    private static let url = try! NSRegularExpression(pattern: "[A-Za-z][A-Za-z0-9+.-]*://[^\\s]+")
+    // The scheme is length-bounded because `://` can never appear inside the
+    // scheme class: unbounded, every letter of a long alphanumeric blob (a
+    // base64 payload, a JWT) starts another full re-scan. RFC 3986 schemes are
+    // short — the longest IANA-registered one is under 40 characters — so 64
+    // is generous, and a longer "scheme" becoming a miss is the
+    // conservative-recognition principle working as intended.
+    private static let url = try! NSRegularExpression(
+        pattern: "(?<![A-Za-z])[A-Za-z][A-Za-z0-9+.-]{0,63}+://[^\\s]+"
+    )
     // A path is an optional leading `/` (absolute paths must protect it — a
     // dropped slash silently turns `/tmp/app.log` relative) plus one or more
     // "segment/" groups and a final segment. Segment chars include `.`, `~`,
     // `-` so `./scripts/foo.sh` and `~/Library/x` match. Inside a URL the
     // `/host/path` sub-span still matches but is dropped by containment.
-    private static let path = try! NSRegularExpression(pattern: "/?(?:[\\w.~-]+/)+[\\w.~-]+")
+    // Segments are possessive (`/` is outside the class, so a shorter segment
+    // can never find one) and starts inside a segment run are rejected; the
+    // OUTER `+` stays greedy, which is what still lets `a/b/` fall back to
+    // matching `a/b`.
+    private static let path = try! NSRegularExpression(
+        pattern: "(?<![\\w.~-])/?(?:[\\w.~-]++/)+[\\w.~-]+"
+    )
     // Standalone dotted filename: stem must be 2+ chars holding a letter/
     // underscore (rejects pure numbers like `3.14` and abbreviations `e.g`/
     // `i.e`), ext is 1–8 all-lowercase alphanumerics (rejects `works.Then` —
@@ -60,9 +99,13 @@ enum PolishTokenGuard {
     // `knownFileExtensions` — see that constant's comment. Accepted losses
     // per the conservative-recognition principle: uppercase-ext files
     // (`Makefile.AM`), single-letter stems (`a.txt`) and unlisted extensions
-    // go unprotected.
+    // go unprotected. The stem is bounded at NAME_MAX (255) — `.` is outside
+    // the stem class, so an unbounded stem re-scans the whole run from every
+    // word boundary in it, and a stem longer than a filesystem allows is not a
+    // filename anyway — and possessive, since a shorter stem always ends on a
+    // stem character, never on the required `.`.
     private static let filename = try! NSRegularExpression(
-        pattern: "\\b(?=[A-Za-z0-9_-]*[A-Za-z_])[A-Za-z0-9_-]{2,}\\.[a-z0-9]{1,8}\\b"
+        pattern: "\\b(?=[A-Za-z0-9_-]{0,255}[A-Za-z_])[A-Za-z0-9_-]{2,255}+\\.[a-z0-9]{1,8}\\b"
     )
     // Conservative allowlist of real file extensions for the standalone
     // dotted-filename recognizer. Lowercase STT glue like "works.then" /
