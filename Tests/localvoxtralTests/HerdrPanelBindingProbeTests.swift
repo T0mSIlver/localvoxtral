@@ -332,6 +332,26 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
         )
     }
 
+    /// `row-not-rendered` has four causes this side cannot tell apart, so the
+    /// log carries the one fact that separates them in practice — the shape of
+    /// the grid that was read, as counts. An 80x24 client cannot show a six-row
+    /// agent entry below a workspace list; a 133x50 one can.
+    func testGridGeometryReportsTheShapeThatExplainsAMissingRow() {
+        let small = ([String](repeating: String(repeating: "x", count: 80), count: 24))
+            .joined(separator: "\n")
+        XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry(small).rows, 24)
+        XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry(small).columns, 80)
+
+        // Ragged input is the normal case: a grid's lines are trimmed of their
+        // trailing blanks, so the width is the widest line, not the last one.
+        let ragged = "short\nthe widest line here\nmid"
+        XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry(ragged).rows, 3)
+        XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry(ragged).columns, 20)
+
+        XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry("").rows, 1)
+        XCTAssertEqual(HerdrPanelBindingProbe.gridGeometry("").columns, 0)
+    }
+
     func testMicIndicatorRefreshesAtFourSecondsThenClearsBeforeClosingForward() async {
         let metadata = PanelMetadataRecorder()
         let process = PanelIndicatorProcess()

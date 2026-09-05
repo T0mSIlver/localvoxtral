@@ -918,8 +918,18 @@ struct ClaudeSessionJoinResolver {
                     // is missing.
                     if cause == .settleTimeout, !speculative, socketPaths.count == 1 {
                         reportPanelStatus(.likelyNotConfigured)
+                        // Named as CANDIDATES, not as a finding. A stamped
+                        // token that did not render has at least four causes
+                        // and this side cannot tell them apart (herdr exposes
+                        // no client introspection and no config read), so
+                        // asserting the first one sends the user to change a
+                        // row that is often already correct — measured twice
+                        // on 2026-09-05, once where the real cause was column
+                        // truncation and once where the agent entry did not
+                        // fit an 80x24 client. The grid geometry logged by
+                        // `noteRowNotRendered` is the fact that separates them.
                         Log.claudeContext.info(
-                            "Remote herdr panel token was stamped but not rendered; agents-panel row likely not configured"
+                            "Remote herdr panel token was stamped but did not render; check the agents-panel row config, the sidebar width, and whether the entry fits this client's height"
                         )
                     }
                     // A truncated row is the OPPOSITE diagnosis: the row is

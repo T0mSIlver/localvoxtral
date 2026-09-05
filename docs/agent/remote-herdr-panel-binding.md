@@ -95,9 +95,28 @@ Why a grid match is sufficient evidence, to the standard of review rounds 1–7:
 - **Failure direction.** Every failure mode is a NO-MATCH → abstain → argv
   fallback: sidebar collapsed (collapsed-compact renders 4 cols, no text),
   client width ≤ 64 (mobile layout, no sidebar), panel row not configured,
-  entry scrolled out of the panel body, modal overlay painted over the
+  the token cut to the row's column budget, entry scrolled out of or too tall
+  for the panel body at this client's height, modal overlay painted over the
   sidebar, AX read unavailable. The probe can only fail to join; it can never
   join a surface that is not displaying the stamped server.
+
+  **RESIDUAL, and it is a diagnosability one, not a safety one: this side
+  cannot tell those causes apart.** Only the column-budget case has its own
+  answer (`row-truncated`, since the rendered prefix is right there in the
+  grid); every other cause collapses into `row-not-rendered`. herdr exposes no
+  client introspection and no config read, so a discriminator would have to be
+  a threshold over remote-influenceable grid text — the kind of confidently
+  wrong diagnostic this area has already paid for. Measured on the owner's Mac
+  2026-09-05, same herdr config, same server, three outcomes: a 133x50 Ghostty
+  client MATCHED; an 80x24 Terminal.app client abstained because six agent
+  entries of six rows each do not fit a 24-row sidebar; and a
+  `sidebar_width = 20` client abstained because 17 columns do not fit a
+  16-column continuation row. So the log reports the GRID GEOMETRY it read
+  (two counts, no content) and names the candidates rather than asserting one.
+  Note the practical trap for anyone verifying this unattended: the UI gate's
+  `term open terminal lv-attach` opens Terminal.app at its 80x24 default,
+  which is structurally too small for the panel binding — such a run lands on
+  the argv fallback and proves nothing about the panel path.
 
 ## Join-time sequence (replaces argv classification + competing-view for the primary path)
 

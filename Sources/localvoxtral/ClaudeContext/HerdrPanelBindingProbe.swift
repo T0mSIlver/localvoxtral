@@ -112,6 +112,7 @@ struct HerdrPanelBindingProbe {
         }
 
         let startedAt = now()
+        var lastGrid = ""
         for readIndex in 0..<Self.maxGridReads {
             guard let grid = readGrid(target) else {
                 return .noMatch(.gridReadUnavailable)
@@ -132,16 +133,17 @@ struct HerdrPanelBindingProbe {
             }
 
             guard readIndex + 1 < Self.maxGridReads else {
-                Self.noteAbstention(.rowNotRendered)
+                Self.noteRowNotRendered(grid: grid)
                 return .noMatch(.settleTimeout)
             }
             await sleepFor(Self.settleDelay)
             guard now().timeIntervalSince(startedAt) <= Self.settleBudget else {
-                Self.noteAbstention(.rowNotRendered)
+                Self.noteRowNotRendered(grid: grid)
                 return .noMatch(.settleTimeout)
             }
+            lastGrid = grid
         }
-        Self.noteAbstention(.rowNotRendered)
+        Self.noteRowNotRendered(grid: lastGrid)
         return .noMatch(.settleTimeout)
     }
 
@@ -247,6 +249,27 @@ struct HerdrPanelBindingProbe {
         character.isASCII && (character.isNumber || ("a"..."z").contains(character))
     }
 
+    /// The shape of the grid that was read, as two COUNTS.
+    ///
+    /// `row-not-rendered` has at least four causes on the remote side — the row
+    /// is not configured, the token was cut to the column budget, the agent
+    /// entry did not fit the panel body at this client's height, or the sidebar
+    /// is collapsed — and the Mac cannot tell them apart. herdr exposes no
+    /// client introspection and no config read, so every discriminator would be
+    /// a threshold guess over remote-influenceable text, which is exactly the
+    /// kind of confidently-wrong diagnostic this area has already paid for.
+    ///
+    /// What the app DOES have for free is the geometry of the grid it just
+    /// read, and two integers are usually the whole answer: an 80x24 client
+    /// cannot show a six-row agent entry below a workspace list, and a 133x50
+    /// one can (both measured on the owner's Mac, 2026-09-05, same config —
+    /// the small one abstained and the large one matched). Counts only, never
+    /// content, so this stays inside what the shipped app logs.
+    static func gridGeometry(_ grid: String) -> (rows: Int, columns: Int) {
+        let lines = grid.split(separator: "\n", omittingEmptySubsequences: false)
+        return (rows: lines.count, columns: lines.map(\.count).max() ?? 0)
+    }
+
     static func token(randomBits: UInt64) -> String {
         // Ten base-36 digits retain log2(36^10) ~= 51.7 bits. Keeping the low
         // ten digits also makes the length fixed, at 17 columns including the
@@ -258,6 +281,19 @@ struct HerdrPanelBindingProbe {
         return tokenPrefix
             + String(repeating: "0", count: tokenNonceDigits - suffix.count)
             + suffix
+    }
+
+    /// `row-not-rendered`, with the one fact that separates its causes in
+    /// practice and costs nothing to obtain.
+    static func noteRowNotRendered(grid: String) {
+        let geometry = gridGeometry(grid)
+        Log.claudeContext.info(
+            """
+            Remote herdr panel row not rendered in a \
+            \(geometry.columns, privacy: .public)x\(geometry.rows, privacy: .public) grid
+            """
+        )
+        noteAbstention(.rowNotRendered)
     }
 
     static func noteAbstention(_ cause: HerdrPanelBindingAbstention) {
