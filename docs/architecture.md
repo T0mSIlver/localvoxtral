@@ -89,7 +89,18 @@ Key subsystems:
     forces `ForkAfterAuthentication=no`, `ControlPath=none` and
     `PermitLocalCommand=no` so the user's own ssh config cannot detach,
     multiplex, or run a local command underneath it. A refused bind is
-    TERMINAL (no retry storm against a port somebody else holds); an ordinary
+    TERMINAL (no retry storm against a port somebody else holds) — unless the
+    port turns out to be OURS. A refused bind means only "somebody holds it",
+    and on a host the user actually ssh's to, that somebody is normally their
+    own session carrying the same `RemoteForward` out of `~/.ssh/config` — the
+    working tunnel. `ClaudeRemoteForwardOwnershipCheck` tells the two apart by
+    sending a fresh nonce down the disputed port from the remote host and
+    asking whether this Mac's own listener saw it arrive
+    (`ClaudeRemoteForwardProbeWitness`); a status code would prove nothing,
+    since a stranger can reproduce ours and a SECOND Mac answers an honest 401
+    of its own. Proof gives `externallyForwarded` — not a failure, re-proved on
+    a long park so a session that ends is noticed; anything unproved stays
+    `portUnavailable`. An ordinary
     drop backs off exponentially, and a run that stays up long enough to
     settle clears the failure count. Listener binds first, forwards start
     second — always; stopping is the mirror. After a

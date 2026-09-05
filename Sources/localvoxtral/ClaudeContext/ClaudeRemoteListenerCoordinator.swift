@@ -73,9 +73,15 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
         self.makeListener = makeListener
     }
 
+    /// - Parameter forwardProbes: shared with the forward supervisors, which
+    ///   mint the nonces this listener watches for. Passed in rather than owned
+    ///   for the same reason the tally is held here rather than in a listener:
+    ///   the object must survive a rebind, and a probe answered across one would
+    ///   otherwise be lost and read as contention.
     public convenience init(
         hosts: ClaudeRemoteHostRegistry,
         sessions: ClaudeSessionRegistry,
+        forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
     ) {
         self.init(hosts: hosts, sessions: sessions) { registry, rejections in
@@ -83,6 +89,7 @@ public final class ClaudeRemoteListenerCoordinator: ClaudeRemoteListenerControll
                 registry: sessions,
                 hosts: registry,
                 rejections: rejections,
+                forwardProbes: forwardProbes,
                 onRemoteHerdrActivity: onRemoteHerdrActivity
             )
         }
