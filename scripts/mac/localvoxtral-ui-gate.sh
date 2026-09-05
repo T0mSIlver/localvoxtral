@@ -2542,7 +2542,13 @@ run_term_open() {
       # take back what was opened.
       if (( status == 2 )); then
         ambiguous=1
-        [[ "$resolved" == ambiguous\ * ]] && ambiguous_ids="${resolved#ambiguous }"
+        # `ambiguous <ownerpid> <winid>...` — drop the verb AND the owner pid,
+        # which is already in `$pid`; leaving it in would record a window whose
+        # id is a process id.
+        if [[ "$resolved" == ambiguous\ * ]]; then
+          ambiguous_ids="${resolved#ambiguous }"
+          ambiguous_ids="${ambiguous_ids#* }"
+        fi
         break
       fi
     fi
