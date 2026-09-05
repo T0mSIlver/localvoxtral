@@ -431,7 +431,12 @@ final class ClaudeHookControllingTTYTests: XCTestCase {
             // cases stay covered by the sibling tests above.
             return
         }
-        let slavePath = String(cString: nameBuffer)
+        // `openpty` writes a NUL-terminated device path into the buffer;
+        // decode up to that terminator (the `[CChar]` `String(cString:)`
+        // overload is deprecated precisely because it hides this step).
+        let slavePath = String(
+            decoding: nameBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self
+        )
         defer {
             close(master)
             close(slave)
@@ -455,7 +460,7 @@ final class ClaudeHookControllingTTYTests: XCTestCase {
         posix_spawnattr_setflags(&attributes, Int16(0x0400))
 
         var childPID: pid_t = 0
-        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("30"), nil]
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("30"), nil]
         defer { argv.compactMap { $0 }.forEach { free($0) } }
         guard posix_spawn(&childPID, "/bin/sleep", &actions, &attributes, argv, nil) == 0 else {
             return // Same tolerance as openpty: nothing spawned, nothing to lie.
