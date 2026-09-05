@@ -1180,8 +1180,14 @@ jobs:
         # 'true' in an expression coerces both to numbers (1 vs NaN) and is
         # therefore always false — a gate that silently never fires. The event
         # payload's copy is a string, so it compares as written.
+        # `runner.environment == 'self-hosted'` is redundant now that this
+        # whole job is self-hosted, and it stays on purpose: this is the one
+        # step that writes into the OWNER'S HOME. A guard that costs nothing
+        # and would catch someone moving the step to the wrong job is worth
+        # keeping, and scripts/ci/test-ui-gate.sh asserts it by name.
         if: >-
-          github.event_name == 'workflow_dispatch'
+          runner.environment == 'self-hosted'
+          && github.event_name == 'workflow_dispatch'
           && github.event.inputs.dogfood == 'true'
           && steps.dogfood_lane.outputs.run == 'true'
         run: |
