@@ -139,6 +139,14 @@ over it mid-turn, herdr and cmux rewrite their pane titles, and you may rename
 a window yourself — so a marker sitting in a title said where a session used to
 be, not what your screen is showing now.
 
+That is measured, not assumed. On the owner's setup (2026-09-05) a herdr pane's
+captured title was polled at ~325 Hz for 69.4 s across a hook event: the marker
+was the title for 0.88 s in total, **1.26 %** of the window, and Claude Code's
+own conversation title held it the rest of the time. A remote-herdr join that
+had everything else right still failed on that check — unless the user had
+exported `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which made it succeed
+immediately. The check was a one-in-a-hundred lottery, not a second binding.
+
 **What this costs you:** a plain `ssh host` session with no herdr, no cmux and
 no Remote Control has no join any more. Its off-screen context (prior prompt,
 cwd, files) is no longer attached to your dictation. Everything else is

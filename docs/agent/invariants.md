@@ -82,7 +82,13 @@ there is not.
     mid-turn, field finding 2026-07-17), herdr and cmux their pane titles, the
     user their own — so a marker sitting in one is evidence about the past,
     not about what the surface displays now, and every arm it fell through
-    from had already refused for a reason. `TerminalScreenAXReader` retains
+    from had already refused for a reason.
+    That was MEASURED on the owner's setup before this removal shipped
+    (2026-09-05): polling a herdr pane's captured `terminal_title` at ~325 Hz
+    for 69.4 s across a hook event, the broker marker was the title for 0.88 s
+    in total — **1.26 % of the window**. The other 98.74 % it was Claude
+    Code's own conversation title. The numbers and what they cost the remote
+    arm are in the remote-herdr bullet below. `TerminalScreenAXReader` retains
     only `focusedWindowIdentity`, which reads no title: it exists so the
     authorizer can pair a screen capture with the join that authorized it.
     Precision matters in that sentence: no JOIN reads a title. One title read
@@ -390,9 +396,27 @@ there is not.
     `pane.current` — which is why the surface authorization above (panel nonce,
     or argv classification) has to come first.
 
-    **The pane confirmation used to have a fourth member, and losing it is the
-    one place this removal costs security rather than only reach. Read this
-    before touching the arm.** herdr captures an inner pane's OSC 2 into
+    **The pane confirmation used to have a fourth member. Losing it is the one
+    place this removal costs security rather than only reach — but the field
+    measurement below is why it had to go anyway. Read both halves before
+    touching the arm.**
+
+    MEASURED on the owner's setup, 2026-09-05, with the panel nonce matching
+    and everything else healthy: the join ended at `remote-herdr: panel-bound
+    pane marker confirmation failed`. Polling that pane's `terminal_title` at
+    ~325 Hz for 69.4 s across a hook event, the broker marker was the title
+    for **0.88 s total — 1.26 % of the window**; the rest of the time it was
+    Claude Code's own conversation title (`✳ …`), which clobbers the OSC 2
+    write. Restarting the same session with
+    `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` left the marker standing and the
+    join succeeded immediately. So the "fought-over channel" hazard this file
+    documents for LOCAL titles applies to a herdr PANE title too — herdr
+    captures whatever the inner program last wrote, and the inner program is
+    the one rewriting it. The confirmation was not a second binding in
+    practice; it was a ~1 % lottery that blocked the shipped feature for any
+    user who had not exported that variable. Removing it is the fix, not a
+    weakening of a working check. What follows is the honest accounting of
+    what the check would have bought had it fired. herdr captures an inner pane's OSC 2 into
     `PaneInfo.terminal_title`, and the remote listener returned a
     broker-allocated marker to every remote session, so the marker was sitting
     in the joined pane's captured title where the arm could require it. Its
