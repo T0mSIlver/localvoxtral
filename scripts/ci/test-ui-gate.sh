@@ -66,6 +66,11 @@ STUB
 cat >"$STUB_BIN/open" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_OPEN_LOG"
+# A flag the pgrep stub can see, so the suite can express "these processes did
+# not exist before `open` ran". That distinction is the whole basis of the
+# gate's instance reclaim, and a stub that answers the same list before and
+# after cannot test it.
+: >"$STUB_OPEN_LOG.opened"
 # With STUB_OPEN_SPAWN set, stand in for a terminal that actually ran the
 # launcher: a process that recorded its own pid the way the launcher's
 # `printf "$$" > <pidfile>` does before `exec`. That pid is the handle
@@ -116,6 +121,12 @@ if [[ "$last" == "localvoxtral" ]]; then
   [[ -n "${STUB_PGREP_RUNNING:-}" ]] || exit 1
   printf '%s\n' "$STUB_PGREP_RUNNING"
   exit 0
+fi
+# Once `open` has run, a terminal lookup may answer a DIFFERENT list: the
+# instance `open -n` just created did not exist a moment ago. Only the
+# terminal lookup, and only when the test asked for it.
+if [[ -n "${STUB_PGREP_PID_AFTER:-}" && -e "${STUB_OPEN_LOG:-}.opened" ]]; then
+  STUB_PGREP_PID="$STUB_PGREP_PID_AFTER"
 fi
 [[ -n "${STUB_PGREP_PID:-}" ]] || exit 1
 # Space-separated, one per line: the real pgrep answers a bundle-path PREFIX
@@ -201,6 +212,10 @@ case "$2" in
       ok) printf 'ok %s %s\n' "${STUB_TERMNEW_WINDOW:-9001}" "$3" ;;
       none) exit 1 ;;
       ambiguous)
+        # stdout carries the ids in the parseable form the real helper prints,
+        # so the gate can take back what it opened; the sentence stays on
+        # stderr for the operator.
+        printf 'ambiguous %s 9001 9002\n' "$3"
         printf 'helper: 2 windows of pid %s appeared since the snapshot (ids 9001 9002)\n' "$3" >&2
         exit 2
         ;;
@@ -225,6 +240,14 @@ case "$2" in
   dictate)
     [[ -z "${STUB_DICTATE_FAIL:-}" ]] || exit 1
     echo "ok $5 trigger=$4 frontmost=7777 (Ghostty)"
+    ;;
+  controlprobe)
+    # Connect-and-close, no payload: exit 0 when something is listening. The
+    # suite drives it with STUB_CONTROL_DEAD so that "a socket FILE exists but
+    # nothing answers" is expressible — the state field this replaced could not
+    # tell that apart from a live listener.
+    [[ -z "${STUB_CONTROL_DEAD:-}" ]] || exit 1
+    exit 0
     ;;
   control)
     # $3 is the socket path, $4 the forwarded line. Echoed back so the suite
@@ -1026,6 +1049,121 @@ run_gate 'term open ghostty lv-attach pane-7' \
 [[ -z "$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' 2>/dev/null || true)" ]] \
   || fail "the ambiguous case registered a terminal anyway"
 pass "term open refuses to guess between windows that appeared at the same moment"
+
+# --- the marker is HELD until this gate has read it -------------------------
+#
+# The tie-breaker used to be a race. `lv-attach` execs a whole-view herdr
+# client and herdr owns the terminal title from its first painted frame, so
+# the marker survived only for as long as `open` plus an ssh handshake
+# happened to take — and a poll arriving after herdr painted saw an untagged
+# window, which is how a real Ghostty open came back "several windows appeared
+# at once" twice in a row on 2026-09-05. The launcher now blocks on an ack the
+# gate writes when it resolves a window, so the tag is guaranteed to still be
+# there while the gate is looking.
+
+clear_state
+run_gate 'term open ghostty lv-attach pane-7' STUB_PGREP_PID=$$ STUB_OPEN_SPAWN=1
+(( GATE_STATUS == 0 )) || fail "term open failed: $GATE_STDERR"
+HELD_ID="${GATE_STDOUT#opened }"
+HELD_ID="${HELD_ID%% *}"
+HELD_MARKER="$(sed -n 's/^marker=//p' "$FAKE_HOME/.localvoxtral-ui-gate/terms/$HELD_ID.state")"
+HELD_SCRIPT="$FAKE_HOME/.localvoxtral-ui-gate/terms/$HELD_MARKER.command"
+[[ -f "$HELD_SCRIPT" ]] || fail "term open did not keep the launcher it generated"
+grep -q "$HELD_MARKER.ack" "$HELD_SCRIPT" \
+  || fail "the launcher does not wait for the gate's ack before exec: $(cat "$HELD_SCRIPT")"
+# The wait must sit BETWEEN the title write and the exec, or it holds nothing.
+HELD_TITLE_LINE="$(grep -n '033]0;' "$HELD_SCRIPT" | head -n 1 | cut -d: -f1)"
+HELD_WAIT_LINE="$(grep -n "$HELD_MARKER.ack" "$HELD_SCRIPT" | head -n 1 | cut -d: -f1)"
+HELD_EXEC_LINE="$(grep -n '^exec ' "$HELD_SCRIPT" | head -n 1 | cut -d: -f1)"
+(( HELD_TITLE_LINE < HELD_WAIT_LINE && HELD_WAIT_LINE < HELD_EXEC_LINE )) \
+  || fail "the ack wait is not between the title write and the exec: $(cat "$HELD_SCRIPT")"
+# And the gate released it, or the launcher would sit there after the gate
+# stopped looking.
+[[ -e "$FAKE_HOME/.localvoxtral-ui-gate/terms/$HELD_MARKER.ack" ]] \
+  || fail "term open never acked the marker it asked the launcher to hold"
+assert_allowed "term close $HELD_ID" 'term close after a held-marker open'
+[[ ! -e "$FAKE_HOME/.localvoxtral-ui-gate/terms/$HELD_MARKER.ack" ]] \
+  || fail "term close left the ack file behind"
+pass "the launcher holds its marker until the gate acks it, and the gate always does"
+
+# --- an instance this gate SPAWNED is reclaimed whole -----------------------
+#
+# Only the ghostty branch passes `open -n`, because `--args` reach an app only
+# when `open` LAUNCHES it — and a brand-new instance runs the whole macOS
+# launch path, state restoration included, so it can put the owner's saved
+# window set on screen beside the `-e` window. Killing the launcher closes ONE
+# of those. Every process of that name that was not in the pre-open snapshot
+# belongs to the instance this gate started, so the reclaim is all of them.
+
+clear_state
+: >"$TMP_DIR/open.log"
+rm -f "$TMP_DIR/open.log.opened"
+# Two live stand-ins for the instance `open -n` created: the `-e` window's
+# process and one macOS restored beside it.
+/bin/sh -c 'exec /bin/sleep 300' &
+INSTANCE_A=$!
+/bin/sh -c 'exec /bin/sleep 300' &
+INSTANCE_B=$!
+run_gate 'term open ghostty lv-attach pane-7' \
+  STUB_PGREP_PID="$$" STUB_PGREP_PID_AFTER="$$ $INSTANCE_A $INSTANCE_B" \
+  STUB_TERMNEW=ambiguous STUB_OPEN_SPAWN=1
+(( GATE_STATUS != 0 )) || fail "term open bound a window while several appeared at once"
+[[ "$GATE_STDERR" == *"terminated the Ghostty instance it started"* ]] \
+  || fail "the gate did not reclaim the instance it spawned: $GATE_STDERR"
+[[ "$GATE_STDERR" == *"nothing was left on the desktop"* ]] \
+  || fail "the gate did not say the desktop was left clean: $GATE_STDERR"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "$INSTANCE_A" 2>/dev/null || kill -0 "$INSTANCE_B" 2>/dev/null || break
+  /bin/sleep 0.1
+done
+kill -0 "$INSTANCE_A" 2>/dev/null \
+  && fail "the gate left a process of the instance it spawned running (pid $INSTANCE_A)"
+kill -0 "$INSTANCE_B" 2>/dev/null \
+  && fail "the gate left a window of the instance it spawned on the desktop (pid $INSTANCE_B)"
+# The pid that was there BEFORE is the owner's, and it is never signalled.
+kill -0 "$$" 2>/dev/null || fail "the gate reclaimed a process that predated it"
+pass "a failed term open terminates the whole instance it spawned, and only that"
+
+# --- a REUSED instance's windows are recorded, not killed -------------------
+#
+# Terminal and iTerm take the launcher as a document and reuse whatever is
+# already running, so an extra window there may be the owner's and must not be
+# closed on this gate's initiative. What it must not do either is what it did
+# on 2026-09-05: refuse, and leave windows it had just seen with no id, so no
+# verb could reach them and the owner closed them by hand.
+
+clear_state
+: >"$TMP_DIR/open.log"
+rm -f "$TMP_DIR/open.log.opened"
+run_gate 'term open terminal lv-attach pane-7' \
+  STUB_PGREP_PID=$$ STUB_TERMNEW=ambiguous STUB_OPEN_SPAWN=1
+(( GATE_STATUS != 0 )) || fail "term open bound a window while several appeared at once"
+[[ "$GATE_STDERR" == *"recorded UNCONFIRMED"* ]] \
+  || fail "the reused-instance ambiguity did not record what it saw: $GATE_STDERR"
+UNCONFIRMED_STATES="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name 'term-*.state' | sort)"
+[[ -n "$UNCONFIRMED_STATES" ]] \
+  || fail "the gate recorded no id for the windows it saw"
+UNCONFIRMED_COUNT="$(printf '%s\n' "$UNCONFIRMED_STATES" | grep -c .)"
+(( UNCONFIRMED_COUNT == 2 )) \
+  || fail "expected one record per window the helper named, got $UNCONFIRMED_COUNT"
+for state_file in $UNCONFIRMED_STATES; do
+  grep -q '^unconfirmed=1$' "$state_file" \
+    || fail "a recorded window is not marked unconfirmed: $state_file"
+done
+FIRST_UNCONFIRMED="$(basename "$(printf '%s\n' "$UNCONFIRMED_STATES" | head -n 1)" .state)"
+# Reachable to CLOSE, never to FOCUS: closing a window this gate may have
+# opened is recoverable; raising one in front of the owner is a takeover it
+# cannot justify without knowing whose window it is.
+assert_denied "term focus $FIRST_UNCONFIRMED" 'focusing an unconfirmed window' \
+  STUB_PGREP_PID=$$
+grep -q 'UNCONFIRMED' "$LOG_FILE" \
+  || fail "the unconfirmed refusal was not logged with its reason"
+run_gate 'state' STUB_PGREP_PID=$$
+[[ "$GATE_STDOUT" == *'"unconfirmed":true'* ]] \
+  || fail "state does not report an unconfirmed terminal as such: $GATE_STDOUT"
+assert_allowed "term close $FIRST_UNCONFIRMED" 'closing an unconfirmed window' \
+  STUB_PGREP_PID=$$
+pass "a reused instance's ambiguous windows are recorded, closeable, and never focusable"
 
 clear_state
 
@@ -2506,6 +2644,25 @@ STATE="$(state_json 'the control socket, unbound' LV_UI_CONTROL_SOCKET="$NOT_A_S
 [[ "$(state_field "$STATE" 's["setup"]["control_socket"]["present"]')" == "False" ]] \
   || fail "a regular file read as a bound socket: $STATE"
 pass "state reports the control socket's consent and whether anything is bound"
+
+# A socket FILE that answers nothing is the case the file test could not see.
+# A dogfood build that quit leaves its socket behind, and a build with no
+# control socket compiled in never removes a predecessor's — so on 2026-09-05
+# `state` said `"present":true` while every `app` command came back
+# `could not connect to the control socket (61)`. `state` exists to answer
+# "is it safe to drive"; a field in it that cannot fail is not an answer.
+STATE="$(state_json 'a control socket file with nothing listening' \
+  STUB_DEFAULT_debug_dogfood_control_socket_enabled=1 \
+  STUB_CONTROL_DEAD=1 \
+  LV_UI_CONTROL_SOCKET="$CONTROL_SOCKET")"
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["present"]')" == "False" ]] \
+  || fail "a dead control socket still read as present: $STATE"
+# The consent is a SEPARATE fact and must survive: "armed but not running" is
+# exactly the state an operator needs to see, and collapsing it into one
+# boolean would say the runtime opt-in had been lost.
+[[ "$(state_field "$STATE" 's["setup"]["control_socket"]["consent"]')" == "on" ]] \
+  || fail "a dead socket also lost the runtime consent: $STATE"
+pass "state reports a socket nothing is listening on as absent, keeping the consent separate"
 
 # 8. Facts, never contents. A conf is sourced by this gate and read by the
 #    wrapper; neither file's text may reach the caller.
