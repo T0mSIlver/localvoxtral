@@ -91,11 +91,16 @@ enum SSHProcessSocketReader {
     /// a syscall storm.
     static let maxDescriptors = 512
 
-    /// `tcp_sockinfo.tcpsi_state` for ESTABLISHED, from `<netinet/tcp_fsm.h>`'s
-    /// `TSI_S_ESTABLISHED`. Only established sockets are a connection anyone is
-    /// looking at: a half-open or listening socket (an `ssh -L` bind) has no
-    /// peer to match against.
-    static let tcpStateEstablished: Int32 = 1
+    /// `tcp_sockinfo.tcpsi_state` for ESTABLISHED. Only established sockets are
+    /// a connection anyone is looking at: a half-open or listening socket (an
+    /// `ssh -L` bind) has no peer to match against.
+    ///
+    /// Read from the SDK (`<sys/proc_info.h>`), never written out as a number.
+    /// The first draft hardcoded 1 — which is `TSI_S_LISTEN`; ESTABLISHED is 4
+    /// — and the whole reader returned an empty list for a process holding a
+    /// live connection. Nothing in the fixture tests could see that; the live
+    /// socket test in `SSHProcessSocketReaderTests` is what caught it.
+    static let tcpStateEstablished = Int32(TSI_S_ESTABLISHED)
 
     static let live: @Sendable (Int32) -> [SSHClientSocket]? = { pid in
         establishedTCPSockets(pid: pid)

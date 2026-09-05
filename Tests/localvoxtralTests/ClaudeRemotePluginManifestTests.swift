@@ -1598,14 +1598,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testReadmeDocumentsWhatTheTitleMarkerRemovalCost() throws {
         // The tmux/screen title-passthrough caveat that used to be asserted
-        // here is gone with the mechanism it described (2026-09-05). What
-        // replaces it is the honest statement of the loss, because a user
-        // whose plain-ssh session stopped attaching context deserves to find
-        // that out from the README rather than from a silent absence.
-        try assertReadmeHasLine(
-            containing: "has no join any more",
-            "the accepted cost has to be stated, not implied"
-        )
+        // here is gone with the mechanism it described (2026-09-05).
         try assertReadmeHasLine(
             containing: "from your shell profile",
             "tell the user what they can now delete from their setup"
@@ -1613,6 +1606,30 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertFalse(
             try readmeLines().contains { $0.contains("set-titles on") },
             "configuring a multiplexer's title passthrough is advice for a mechanism that no longer exists"
+        )
+    }
+
+    func testReadmeDocumentsThePlainSSHConnectionJoinAndItsRefusals() throws {
+        // A user whose plain-ssh session does or does not attach context has to
+        // be able to find out WHY from the README rather than from a silent
+        // absence. Each of these is a refusal the arm makes on purpose, and
+        // each one is invisible from the outside.
+        try assertReadmeHasLine(equalTo: "### A plain `ssh host` session")
+        try assertReadmeHasLine(
+            containing: "same connection — same client port",
+            "the binding is the connection, and the README has to say what is compared"
+        )
+        try assertReadmeHasLine(
+            containing: "**through a jump host**",
+            "ProxyJump is a documented non-join, not a bug report waiting to happen"
+        )
+        try assertReadmeHasLine(
+            containing: "**inside tmux**",
+            "the multiplexer refusal is the one users will hit and must be findable"
+        )
+        try assertReadmeHasLine(
+            containing: "1.6.0 or newer",
+            "a host on an older plugin publishes no connection; say which version fixes it"
         )
     }
 
@@ -1632,9 +1649,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         try assertReadmeHasLine(containing: "rotat")
     }
 
-    func testReadmeDocumentsThatPlainSSHIsUnchangedAndNothingIsOnByDefault() throws {
-        // A section heading — its own line — so anchor it exactly.
-        try assertReadmeHasLine(equalTo: "## Plain SSH still works exactly as before")
+    func testReadmeDocumentsThatNotEnrollingAHostCostsNothing() throws {
+        // A section heading — its own line — so anchor it exactly. It was
+        // "Plain SSH still works exactly as before" until the plain-ssh
+        // connection join shipped, at which point that title said the opposite
+        // of the truth for an ENROLLED host.
+        try assertReadmeHasLine(equalTo: "## SSH to a host you have NOT enrolled")
         try assertReadmeHasLine(
             containing: "binds no port at all",
             "a user must be able to confirm that not enrolling costs them nothing"
