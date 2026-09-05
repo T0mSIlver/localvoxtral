@@ -81,6 +81,31 @@ remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
 
+## Dispatching a run without deepening the queue
+
+There is ONE self-hosted runner (the owner's MacBook), so CI concurrency is 1
+and every extra run is paid by everything behind it. Measured 2026-09-05: in a
+3.6 h burst with four agents pushing, the runner was **89 % busy** — 26 jobs,
+19 minutes of total idle — and 3.4 h of work produced **8.95 h of accumulated
+queue**. At that utilization a queue is quadratically sensitive to load, so one
+avoidable run costs far more than its own duration.
+
+- **Never dispatch a build for a ref whose push/PR run is still queued.** The
+  dispatch lands in a DIFFERENT concurrency group — `ci-refs/heads/<branch>`
+  vs `ci-refs/pull/<n>/merge` — so `cancel-in-progress` does not deduplicate
+  them and both run to completion. Check first:
+  `gh run list --branch <ref>` (or `--workflow ci.yml`), and wait for the
+  existing run instead. Observed the same day: runs `33973422149` (dispatch)
+  and `33973420824` (PR) on one branch 20 s apart, and `33974946864`
+  (dispatch on main) alongside `33974943655` (that push's own run).
+- **The one exception** is a dispatch that produces something the queued run
+  cannot: `dogfood=true` for an instrumented artifact when the queued run
+  carries no `[dogfood-package]` marker, or any other artifact-only input. A
+  dispatch that would merely re-run the same lanes is never worth its slot.
+- Do not "just rerun" a red run to see if it is flaky before reading its log
+  either — the flake signatures are enumerated in
+  `docs/agent/field-debugging.md`, and a rerun is a full second run.
+
 ## The live herdr lane
 
 `HerdrIntegrationTests` (`remote-build.sh integration-herdr`) is the only

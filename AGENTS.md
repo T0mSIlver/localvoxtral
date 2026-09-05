@@ -111,6 +111,9 @@ ablation workflows: `docs/agent/test-tiers.md`.
 - Watch a PR's checks with `./scripts/watch-checks.sh <n>` (or `--run
   <run-id>` for a push/rerun) — unlike bare `gh`, it probes the build host
   and fail-fasts when the Mac stops answering.
+- One runner, so a dispatch behind a queued run costs everyone: check `gh run
+  list --branch <ref>` first — `docs/agent/test-tiers.md` "Dispatching a run
+  without deepening the queue".
 - Releases: `./scripts/release.sh [patch|minor|major|X.Y.Z]` — the pipeline
   gates and owns the tags. Never push release tags by hand.
 - NEVER patch SwiftPM-generated DerivedSources (regenerated clean every
