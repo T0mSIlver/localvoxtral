@@ -28,6 +28,11 @@ enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     /// A Claude Code session inside a herdr running on an ENROLLED REMOTE host,
     /// reached over an app-managed `ssh -L` to that herdr's socket.
     case remoteHerdrPane
+    /// A Claude Code session in a PLAIN `ssh host` shell on an enrolled remote
+    /// host — no herdr, no cmux, no Remote Control. Bound by the TCP connection
+    /// itself: the surface's ssh process's established socket and the session's
+    /// reported `$SSH_CONNECTION` name the same connection, ports included.
+    case remoteSSHConnection
 }
 
 /// The herdr pane a herdr join resolved to. Captured at resolution so the
@@ -128,7 +133,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         switch mechanism {
         case .herdrPane, .remoteHerdrPane: return herdrPane?.paneID
         case .cmuxSurface: return cmuxSurface?.surfaceID
-        case .ttyDevice, .browserTab: return nil
+        case .ttyDevice, .browserTab, .remoteSSHConnection: return nil
         }
     }
 
@@ -397,12 +402,29 @@ struct ClaudeSessionJoinResolver {
             }
 
             // The surface is not a local herdr client. It may still be an ssh
-            // session into an enrolled host that is running one.
-            switch await resolveViaRemoteHerdr(target: target, tty: tty) {
+            // session into an enrolled host. ONE process-table scan answers for
+            // both remote arms below — it is the same question ("what ssh is in
+            // this tty's foreground, and where does it go"), and scanning twice
+            // could answer it differently for two arms of one dictation.
+            let sshResult = sshDestinationProbe(tty)
+
+            switch await resolveViaRemoteHerdr(target: target, sshResult: sshResult) {
             case .joined(let join):
                 return join
             case .declined:
                 break
+            }
+
+            // Last, because it is the weakest surface claim of the three: the
+            // herdr arms prove what the terminal DISPLAYS (a nonce rendered in
+            // the grid, or an argv naming herdr as the remote command), while
+            // this one proves only which connection the terminal holds. A
+            // herdr-hosted session never gets here anyway — it carries a herdr
+            // label and this arm refuses those outright.
+            if let join = await resolveViaPlainSSHConnection(
+                target: target, sshResult: sshResult
+            ) {
+                return join
             }
         }
 
@@ -632,10 +654,8 @@ struct ClaudeSessionJoinResolver {
     /// it is the only one, the most recent, or the one whose cwd looks right.
     private func resolveViaRemoteHerdr(
         target: TerminalScreenTarget,
-        tty: String
+        sshResult: SSHDestinationTTYProbeResult
     ) async -> RemoteHerdrArmOutcome {
-        let sshResult = sshDestinationProbe(tty)
-
         // PRIMARY authorization: stamp each plausible server with a fresh
         // nonce and require that exact value in the focused terminal grid.
         // argv is consulted only after this direct surface proof fails.
@@ -1182,6 +1202,235 @@ struct ClaudeSessionJoinResolver {
         return false
     }
 
+    // MARK: - The plain-ssh arm
+
+    /// A Claude Code session in a PLAIN `ssh host` shell on an enrolled remote
+    /// host — the shape that lost its only join when the window-title marker
+    /// was removed (#250).
+    ///
+    /// The binding is the TCP CONNECTION, not a label either side chose. sshd
+    /// sets `$SSH_CONNECTION` in every session it spawns
+    /// (`"<client-ip> <client-port> <server-ip> <server-port>"`), the shim
+    /// publishes it, and this arm requires that the surface's own ssh PROCESS
+    /// hold an established socket whose local port IS that client port and
+    /// whose peer IS that server address and port. The client port is a 16-bit
+    /// ephemeral number picked by THIS Mac's kernel; the remote host learns it
+    /// only by being the other end of that connection.
+    ///
+    /// Why that is stronger than the marker it replaces: the marker was a value
+    /// we minted and handed back over a channel the remote host fully
+    /// controlled and Claude Code overwrote at will (measured present 1.26 % of
+    /// the time, 2026-09-05). This asks the remote host to name a number it can
+    /// only know by being the peer of a connection whose LOCAL end this process
+    /// reads out of its own kernel — and pins that answer to the enrolled host
+    /// the hook authenticated from, so a host can at most mis-describe its OWN
+    /// connection.
+    ///
+    /// Every requirement, all of them necessary:
+    /// 1. exactly one foreground ssh on the focused surface's tty, with a
+    ///    verified OpenSSH executable and an argv the parser accepts
+    ///    (`SSHDestinationTTYProbe` — unchanged, and the reason the surface
+    ///    claim is worth anything);
+    /// 2. no `-J`: with a jump host the local socket goes to the JUMP host
+    ///    while the destination's sshd sees the jump host's port, so the two
+    ///    halves describe different connections;
+    /// 3. that destination resolves to exactly one enrolled host (exact alias,
+    ///    then `ssh -G` canonicalization);
+    /// 4. the candidate session was registered by a hook AUTHENTICATED FROM
+    ///    THAT HOST (`liveRemoteSessions(hostID:)` is scoped to its channel);
+    /// 5. the candidate is a plain ssh shell: it reports `$SSH_TTY` and NO
+    ///    multiplexer label — see `isPlainSSHShellSession`;
+    /// 6. exactly one of this process's established sockets matches the
+    ///    reported tuple, and exactly one live session matches at all.
+    ///
+    /// Nothing here picks a session for being the only one, the newest, or the
+    /// one whose cwd looks plausible.
+    private func resolveViaPlainSSHConnection(
+        target: TerminalScreenTarget,
+        sshResult: SSHDestinationTTYProbeResult
+    ) async -> ClaudeSessionJoin? {
+        let connection: SSHSurfaceConnection
+        switch sshResult {
+        case .noSSHClient:
+            // A local shell — the overwhelmingly common surface. Not an
+            // abstention, the arm simply does not apply.
+            return nil
+        case .undeterminable(let cause):
+            Self.abstainedPlainSSHJoin(
+                outcome: "ssh session undeterminable (\(cause.rawValue))"
+            )
+            return nil
+        case .connection(let value):
+            connection = value
+        }
+
+        guard !connection.usesProxyJump else {
+            Self.abstainedPlainSSHJoin(outcome: "the connection goes through a jump host")
+            return nil
+        }
+        guard !connection.hasSocketlessSiblingToDestination else {
+            // The ControlMaster case: another ssh to this destination holds no
+            // TCP socket of its own, so one connection may be carrying several
+            // terminals' sessions and a truthful `$SSH_CONNECTION` no longer
+            // identifies a surface. See
+            // `SSHSurfaceConnection.hasSocketlessSiblingToDestination`.
+            Self.abstainedPlainSSHJoin(
+                outcome: "this destination may be carrying multiplexed ssh sessions"
+            )
+            return nil
+        }
+        guard let sockets = connection.sockets else {
+            // Nil is UNREADABLE. Treating it as "no sockets" would turn a
+            // failed syscall into a decline that looks exactly like a genuine
+            // mismatch.
+            Self.abstainedPlainSSHJoin(outcome: "socket table unreadable")
+            return nil
+        }
+        guard !sockets.isEmpty else {
+            // A `ProxyCommand` from ssh_config (invisible in argv) is the
+            // ordinary way to get here: the client talks over a pipe to a
+            // helper and holds no TCP socket of its own.
+            Self.abstainedPlainSSHJoin(outcome: "no established connection on this ssh")
+            return nil
+        }
+
+        var hosts = enrolledHosts(connection.destination)
+        if hosts.isEmpty {
+            hosts = await canonicalizedEnrolledHosts(connection.destination)
+        }
+        guard !hosts.isEmpty else {
+            // An ssh to a host the user never enrolled. No context exists.
+            return nil
+        }
+        guard hosts.count == 1, let host = hosts.first else {
+            Self.abstainedPlainSSHJoin(outcome: "ssh destination matches multiple enrolled hosts")
+            return nil
+        }
+
+        let live = registry.liveRemoteSessions(hostID: host.id)
+        guard !live.isEmpty else { return nil }
+        let plain = live.filter(Self.isPlainSSHShellSession)
+        guard !plain.isEmpty else {
+            Self.abstainedPlainSSHJoin(
+                outcome: "no live session on this host is a plain ssh shell"
+            )
+            return nil
+        }
+        let reported = plain.compactMap {
+            snapshot -> (ClaudeSessionSnapshot, ClaudeRemoteSSHConnectionReport)? in
+            guard let value = snapshot.remoteSessionEnvironment?.sshConnection,
+                  let report = ClaudeRemoteSSHConnectionReport.parse(value)
+            else { return nil }
+            return (snapshot, report)
+        }
+        guard !reported.isEmpty else {
+            // The actionable one: a host still running a remote plugin older
+            // than the release that publishes `$SSH_CONNECTION` looks exactly
+            // like this, and nothing else on either machine says so.
+            Self.abstainedPlainSSHJoin(
+                outcome: "no live session on this host reports its ssh connection"
+            )
+            return nil
+        }
+
+        let matches = reported.filter { _, report in
+            sockets.filter { Self.socket($0, matches: report) }.count == 1
+        }
+        guard matches.count == 1, let (snapshot, _) = matches.first else {
+            Self.abstainedPlainSSHJoin(
+                outcome: matches.isEmpty
+                    ? "no live session reports this surface's connection"
+                    : "several live sessions report this surface's connection"
+            )
+            return nil
+        }
+
+        Log.claudeContext.info(
+            "Terminal pane joined to a live Claude session via the ssh connection it holds"
+        )
+        return ClaudeSessionJoin(
+            target: target,
+            snapshot: snapshot,
+            // Read for parity with the other arms; the authorizer refuses raw
+            // AX attachment for this mechanism regardless.
+            windowID: focusedWindowID(target.pid),
+            mechanism: .remoteSSHConnection
+        )
+    }
+
+    /// Does this remote session look like a plain interactive ssh shell?
+    ///
+    /// Two conditions, and the second is the one that matters: it reports an
+    /// `$SSH_TTY` (so it is an interactive session on some connection's
+    /// terminal, not an `ssh host claude -p …` one-shot), and it reports NO
+    /// multiplexer label at all.
+    ///
+    /// The multiplexer exclusion is not tidiness. A multiplexer SERVER is
+    /// started by one connection and outlives it; every pane it later spawns
+    /// inherits that first connection's `$SSH_CONNECTION`. Measured on this
+    /// repo's dev box (tmux 3.x, 2026-09-05): connection A (client port 36878)
+    /// created the session, connection B (client port 36886) attached, and a
+    /// process inside the pane still read `SSH_CONNECTION=127.0.0.1 36878 …`.
+    /// So such a session's report describes whichever connection happened to
+    /// start the server — potentially a DIFFERENT surface, which is a
+    /// mis-join, not a missed one. herdr and cmux sessions have arms of their
+    /// own that bind the pane; tmux, screen and zellij have none, and this is
+    /// why. The labels are listed in `multiplexerLabels`.
+    static func isPlainSSHShellSession(_ snapshot: ClaudeSessionSnapshot) -> Bool {
+        guard let environment = snapshot.remoteSessionEnvironment else { return false }
+        guard environment.sshTTY != nil else { return false }
+        return Self.multiplexerLabels.allSatisfy { environment[$0] == nil }
+    }
+
+    /// The env labels that mean "a multiplexer server owns this session's
+    /// terminal". Written as a list over the wire allowlist rather than as a
+    /// chain of `==` so that ADDING a multiplexer label to
+    /// `ClaudeRemoteEnvironmentField` and forgetting it here is a visible
+    /// omission in one place instead of an invisible one in a boolean.
+    ///
+    /// `screenSession`/`zellijSession` were added by review (2026-09-05): the
+    /// first version checked herdr/cmux/tmux only, and `screen` — which
+    /// publishes `$STY`, is a server exactly like tmux, and was not on the
+    /// wire at all — reproduced the measured tmux mis-join with nothing able
+    /// to see it.
+    ///
+    /// `bridgeSessionID` is deliberately NOT here: a Remote Control session
+    /// has no multiplexer between it and its connection, its own arm runs on a
+    /// browser target rather than a terminal one, and excluding it would cost
+    /// a legitimate join for nothing.
+    static let multiplexerLabels: [ClaudeRemoteEnvironmentField] = [
+        .herdrPaneID, .herdrSocketPath, .herdrSession,
+        .cmuxSurfaceID, .cmuxSocketPath,
+        .tmux, .tmuxPane,
+        .screenSession, .zellijSession,
+    ]
+
+    /// Does a socket in THIS machine's kernel and a remote session's report
+    /// describe the same connection?
+    ///
+    /// Both ports and the server address, never the client address: the client
+    /// address is what the SERVER saw us come from, which after NAT is not a
+    /// value this side holds at all. The address is compared as bytes, because
+    /// a dual-stack peer is `::ffff:10.0.0.9` to our socket and `10.0.0.9` to
+    /// sshd, and both are right.
+    static func socket(
+        _ socket: SSHClientSocket, matches report: ClaudeRemoteSSHConnectionReport
+    ) -> Bool {
+        socket.localPort == report.clientPort
+            && socket.peerPort == report.serverPort
+            && SSHConnectionAddressMatch.sameAddress(socket.peerAddress, report.serverAddress)
+    }
+
+    /// Outcome only, never a port, address, host, or session id. The ports ARE
+    /// the live join material here — writing one to the unified log would
+    /// publish the number the whole binding rests on.
+    private static func abstainedPlainSSHJoin(outcome: String) {
+        Log.claudeContext.info(
+            "Plain ssh connection matched no session (\(outcome, privacy: .public)); Claude context withheld"
+        )
+        Self.noteAbstention("remote-ssh: \(outcome)")
+    }
+
     /// Outcome only. Pane ids, socket paths, ssh destinations, and titles are
     /// all live join material — and the destination additionally names the
     /// user's infrastructure, which the unified log is emphatically not the
@@ -1595,6 +1844,19 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
         switch join.mechanism {
         case .ttyDevice:
             break
+        case .remoteSSHConnection:
+            // The surface IS this machine's terminal grid, so unlike the
+            // multiplexer arms there is readable text here — and it is still
+            // refused. The connection binding says which ssh this window
+            // holds, not what the remote program drew into it, and a plain ssh
+            // shell's scrollback is the user's whole remote session: other
+            // commands, other repositories, whatever ran before. The title
+            // marker never authorized raw attachment for a remote session
+            // either, and its replacement inherits no more than it had.
+            Log.claudeContext.info(
+                "Plain ssh connection join cannot authorize raw screen attachment; withheld"
+            )
+            return false
         case .herdrPane, .cmuxSurface, .remoteHerdrPane:
             // AX sees herdr's composite TUI. Attaching it would let neighboring
             // panes — potentially other Claude sessions — ride into this

@@ -98,15 +98,12 @@ there is not.
     to extract local vocabulary. It selects no session, authorizes no capture,
     and reaches no `ClaudeSessionJoin`; a wrong answer there costs a few
     unhelpful vocabulary terms rather than another session's repository.
-    ACCEPTED CONSEQUENCE, stated plainly: a PLAIN ssh remote session — Claude
-    Code in `ssh host` with no herdr, no cmux, no Remote Control — has no join
-    arm at all any more. It was the only one the title marker uniquely served.
-    A transport-derived replacement (matching the focused surface's ssh
-    process's TCP source port against the remote session's `SSH_CONNECTION`)
-    is a recorded follow-up, deliberately not built here. Nothing else lost an
-    arm: a remote session still joins through `cmux ssh`'s round-tripped
-    surface id, the remote-herdr pane arm, or the bridge-allocated Remote
-    Control session id.
+    The one session shape the title marker uniquely served — a PLAIN ssh remote
+    session, Claude Code in `ssh host` with no herdr, no cmux, no Remote
+    Control — went armless for the length of one PR and is served again by the
+    CONNECTION arm below. Nothing else ever lost an arm: a remote session also
+    joins through `cmux ssh`'s round-tripped surface id, the remote-herdr pane
+    arm, or the bridge-allocated Remote Control session id.
     A remote TTY names another machine's device, and `resolve(tty:)` refuses
     remote candidates so an SSH host can never claim a local pane by echoing
     its TTY.
@@ -289,8 +286,9 @@ there is not.
     because several in a group cannot be told apart from here, and unioning
     them let a plain connection borrow a sibling's herdr signal. `SSHDestinationTTYProbe`
     is deliberately paranoid here, because every way an argv can name one host
-    while the connection goes elsewhere is a mis-join: it verifies the
-    EXECUTABLE against three EXACT absolute paths (`/usr/bin/ssh` and
+    while the connection goes elsewhere is a mis-join — and since 2026-09-05
+    it answers for the plain-ssh arm too, so a refusal here costs both: it
+    verifies the EXECUTABLE against three EXACT absolute paths (`/usr/bin/ssh` and
     Homebrew's two `bin/ssh`, via `proc_pidpath` — not `p_comm`, not argv[0],
     and never by directory prefix, since `/opt/homebrew` and `/usr/local` are
     user-writable and a prefix rule trusted `/opt/homebrew/tmp/ssh`; a symlink
@@ -383,8 +381,12 @@ there is not.
     panel binding whenever the agents sidebar and configured token row are
     visible. Its residual is narrow/collapsed/covered sidebar or an unconfigured
     row: panel authorization fails closed, then argv still cannot identify the
-    manually launched herdr, and since 2026-09-05 there is nothing under it —
-    the dictation gets no join. The whole "title-marker arm suppression" rule
+    manually launched herdr, and there is nothing under it — the dictation gets
+    no join. The plain-ssh arm does NOT rescue that flow and must not be made
+    to: those sessions carry `HERDR_PANE_ID`, so they are refused there by the
+    multiplexer rule (a herdr server keeps the FIRST connection's
+    `$SSH_CONNECTION`, exactly as tmux does), and joining them on a connection
+    would bind a pane's session to whichever window started the server. The whole "title-marker arm suppression" rule
     that used to live here (the exact `SSHProbeIndeterminacy` categories that
     did and did not suppress an outer title) is gone with the arm it protected;
     `SSHProbeIndeterminacy` remains as a content-free diagnostic category only.
@@ -610,6 +612,107 @@ there is not.
     join in iTerm2/Terminal.app authorizes attaching that focused pane's
     contents; herdr and cmux joins never attach AX surface text on any
     terminal.
+  - **The plain-ssh arm (`.remoteSSHConnection`, 2026-09-05).** A Claude Code
+    session in `ssh host` on an ENROLLED host, with no multiplexer and no
+    browser, joins on the TCP CONNECTION its surface holds. sshd sets
+    `$SSH_CONNECTION` in every session it spawns
+    (`"<client-ip> <client-port> <server-ip> <server-port>"`); the remote shim
+    publishes it as `X-Lvx-Env-Ssh-Connection`, with the four fields re-joined
+    by COMMAS because space is outside the env-header charset and that charset
+    is the whole header-injection defence — widening it for one field was
+    refused. `ClaudeRemoteSSHConnectionReport.parse` validates the shape on
+    arrival (exactly four fields, canonical decimal ports in 1…65535, addresses
+    in `[0-9a-fA-F.:]` within 45 bytes) and trusts nothing beyond it.
+
+    The confirmation set, ALL of it required: (1) the focused surface's tty
+    hosts exactly one foreground ssh with a verified OpenSSH executable and an
+    argv the parser accepts (`SSHDestinationTTYProbe`, unchanged); (2) that
+    argv carries no `-J`; (3) its destination resolves to exactly one enrolled
+    host (exact alias, then `ssh -G`); (4) no OTHER same-uid ssh to that
+    destination is socketless (the ControlMaster mux-client shape — see the
+    residuals); (5) the candidate was registered by a hook AUTHENTICATED FROM
+    THAT HOST (`liveRemoteSessions(hostID:)` is scoped to its channel); (6) the
+    candidate reports `$SSH_TTY` and NO multiplexer label
+    (`ClaudeSessionJoinResolver.multiplexerLabels` — herdr, cmux, tmux, screen
+    and zellij, walked over the wire allowlist so a label added there and
+    forgotten here is a visible omission); (7) exactly one established TCP
+    socket of that ssh PROCESS — read
+    from this Mac's own kernel via `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`,
+    same-uid, no privileges — has `localPort == client_port`,
+    `peerPort == server_port` and a peer address equal to `server_ip`
+    (compared as BYTES through `inet_pton`, since a dual-stack socket says
+    `::ffff:a.b.c.d` where sshd says `a.b.c.d`); and (8) exactly one live
+    session matches at all.
+
+    **The trust argument, and what it does not cover.** The marker was a value
+    we minted and handed back through a channel the remote host fully
+    controlled and Claude Code clobbered — measured present 1.26 % of the time
+    (above). This asks the remote host to name a 16-bit ephemeral port that
+    only the two kernels on the ends of ONE connection know, for a connection
+    whose local end this process reads out of its own kernel, and pins the
+    answer to the host the hook authenticated from. A compromised enrolled host
+    can still mis-describe its OWN connection — publish a second session under
+    the ports of the connection the user is really looking at, and join that
+    surface. It cannot claim a surface connected to a DIFFERENT host: it does
+    not know that connection's client port, and the origin-host filter rejects
+    it before the ports are ever compared. That is strictly more than the
+    marker had, which was no boundary at all against a host that had already
+    been compromised.
+
+    UNPROVED, say it plainly: this proves which CONNECTION the focused surface
+    holds, never what the remote program drew into it. A second Mac enrolled
+    on the same host, dictating into its own ssh to that host, is a different
+    connection with different ports and is not confused with this one — but two
+    agents inside ONE ssh session share its `$SSH_CONNECTION` and are refused
+    as ambiguous rather than told apart. Nothing here reads or authorizes a
+    screen: `TerminalScreenClaudeJoinAuthorizer` refuses raw AX attachment for
+    this mechanism (a plain ssh shell's grid is the user's whole remote
+    session), `SocketPaneScreenContext` has no route for it, and a remote
+    origin can never carry a `LocalWorkspacePath`. The join buys the session
+    block and repo context — exactly what the marker join bought.
+
+    RESIDUALS, none of them silent — every one has its own abstention cause:
+    `-J`/`-W` and any `ProxyCommand` from `~/.ssh/config` (the local socket
+    goes to the JUMP host while the destination's sshd sees the jump host's
+    port — `-J` abstains by name, a config-only ProxyCommand abstains because
+    the client then holds no TCP socket of its own); a host whose remote plugin
+    predates 1.6.0 (it publishes no connection at all, and the cause names
+    exactly that); and an unreadable fd table, which is UNREADABLE rather than
+    "no sockets" — `SSHSurfaceConnection.sockets` is optional for that one
+    reason.
+
+    Two more, and both are MIS-joins rather than missed ones, which is why
+    each has a positive check rather than a note:
+
+    * **Multiplexers.** A multiplexer SERVER outlives the connection that
+      started it and its panes keep that FIRST connection's `$SSH_CONNECTION`.
+      MEASURED on the dev box 2026-09-05, tmux 3.x: connection A (client port
+      36878) created the session, connection B (36886) attached, and a process
+      inside the pane still read `SSH_CONNECTION=127.0.0.1 36878 …`, so a
+      later attach would otherwise mis-join onto A's surface. The refusal is a
+      property of the ARCHITECTURE, not of tmux: `screen` (`$STY`, screen(1)
+      ENVIRONMENT) and `zellij` (`$ZELLIJ`) are servers in exactly the same
+      shape. The first version of this arm checked herdr/cmux/tmux only and
+      screen was not on the wire at all — a silent mis-join, found by review
+      (2026-09-05) and closed by publishing both labels in plugin 1.6.0.
+      Anything that multiplexes a terminal and does NOT publish a label the
+      shim carries is still a hole; adding a multiplexer means adding its
+      label, and `PlainSSHConnectionJoinTests` fails if the list and the wire
+      disagree.
+    * **OpenSSH ControlMaster.** `ControlMaster auto` in `~/.ssh/config` is
+      invisible in argv (the probe refuses `-M`/`-S` but does not read
+      config). Terminal A's ssh owns the TCP connection; terminal B's
+      `ssh host` is a mux CLIENT over an AF_UNIX control path with no TCP
+      socket. sshd derives `$SSH_CONNECTION` from the underlying CONNECTION,
+      so B's Claude session truthfully reports A's ports — and a dictation
+      into A, a plain shell with no agent in it, would join B's session. The
+      check is `SSHSurfaceConnection.hasSocketlessSiblingToDestination`: any
+      same-uid ssh CONNECTION to the same destination whose fd table is
+      readable-and-socketless (or unreadable) abstains the arm. It costs the
+      ordinary two-terminals-two-connections case nothing — those each hold a
+      socket and are told apart by their ports. Also found by review
+      (2026-09-05).
+
   - A Claude Code "Remote Control" session (the agent runs on a machine of the
     user's, `claude.ai/code` in a browser is the UI) has no pane, no TTY, and no
     title, so it joins from the FOCUSED BROWSER TAB: the tab's

@@ -652,7 +652,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// run ever reads or writes real per-user state under `~/.cache`.
     private func runShim(
         event: String = "Stop",
-        environment: [String: String]
+        environment: [String: String],
+        workingDirectory: URL? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let isolatedState = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-state-\(UUID().uuidString)")
@@ -672,6 +673,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         processEnvironment["XDG_RUNTIME_DIR"] = isolatedState.path
         processEnvironment.merge(environment) { _, new in new }
         process.environment = processEnvironment
+        // Only the glob case sets this: what the shim's cwd contains decides
+        // what an unsuppressed `*` would expand to.
+        if let workingDirectory { process.currentDirectoryURL = workingDirectory }
         return try Self.runToCompletion(process, stdin: Data("{}".utf8))
     }
 
@@ -780,7 +784,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         status: String,
         body: Data?,
         curlExitCode: Int32 = 0,
-        extraEnvironment: [String: String] = [:]
+        extraEnvironment: [String: String] = [:],
+        workingDirectory: URL? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         // The stub itself is shared (see `stubCurlDirectory`); the body fixture
         // is the part that differs per call and keeps its own directory, so no
@@ -801,7 +806,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "FAKE_CURL_EXIT": String(curlExitCode),
         ]
         environment.merge(extraEnvironment) { _, new in new }
-        return try runShim(event: event, environment: environment)
+        return try runShim(
+            event: event, environment: environment, workingDirectory: workingDirectory
+        )
     }
 
     // MARK: Shim environment enrichment
@@ -817,7 +824,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// file curl was handed, verbatim. This is the real artifact — not the
     /// shim's source, and not a reconstruction.
     private func capturedRequestHeaders(
-        environment: [String: String], event: String = "Stop"
+        environment: [String: String],
+        event: String = "Stop",
+        workingDirectory: URL? = nil
     ) throws -> String {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-headers-\(UUID().uuidString)")
@@ -830,7 +839,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             event: event,
             status: "200",
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
-            extraEnvironment: extra
+            extraEnvironment: extra,
+            workingDirectory: workingDirectory
         )
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.stderr, "", "enrichment must not make the shim noisy")
@@ -848,12 +858,22 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         return try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8)).request
     }
 
+    /// The two fields the generic round trip below cannot cover, and why:
+    /// `$PPID` is the shell's own (nothing can inject it), and
+    /// `$SSH_CONNECTION` is the one value the shim TRANSFORMS — its four
+    /// space-separated fields are re-joined with commas, so an opaque
+    /// `value-…` fixture would be correctly dropped. Each has a test of its
+    /// own below.
+    private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
+        [.hookParentPID, .sshConnection]
+
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
         // up as a swap rather than as a test that still passes.
         var environment: [String: String] = [:]
         var expected = ClaudeRemoteSessionEnvironment()
-        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+        for field in ClaudeRemoteEnvironmentField.allCases
+        where !Self.shimTransformedOrIntrinsicFields.contains(field) {
             let variable = String(field.shellSource.dropFirst())
             environment[variable] = "value-\(field.rawValue)"
             expected[field] = "value-\(field.rawValue)"
@@ -862,7 +882,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let request = try parseCapturedHeaders(captured)
         let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
 
-        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+        for field in ClaudeRemoteEnvironmentField.allCases
+        where !Self.shimTransformedOrIntrinsicFields.contains(field) {
             XCTAssertEqual(
                 parsed[field], expected[field],
                 "\(field.shellSource) did not arrive as \(field.headerName)"
@@ -1023,14 +1044,157 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // not, which would otherwise ship as a join arm that never joins.
         let source = try shimSource()
         for field in ClaudeRemoteEnvironmentField.allCases {
-            let expected = field == .hookParentPID
-                ? "'\(field.headerName)' \"${PPID:-}\""
-                : "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
+            let expected: String
+            switch field {
+            case .hookParentPID:
+                expected = "'\(field.headerName)' \"${PPID:-}\""
+            case .sshConnection:
+                // The one value the shim re-shapes rather than forwarding: its
+                // four space-separated fields are re-joined with commas, so the
+                // header carries the positional parameters the split produced.
+                // The VARIABLE still has to be read, and it is asserted
+                // separately just below.
+                expected = "'\(field.headerName)' \"$1,$2,$3,$4\""
+            default:
+                expected = "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
+            }
             XCTAssertTrue(
                 source.contains(expected),
                 "the shim must publish \(field.shellSource) as \(field.headerName): \(expected)"
             )
         }
+        XCTAssertTrue(
+            source.contains("set -- ${SSH_CONNECTION:-}"),
+            "the shim must read $SSH_CONNECTION through the shell's field splitting"
+        )
+        XCTAssertTrue(
+            source.contains("set -f"),
+            "the split must run with globbing off, or a value containing `*` expands"
+        )
+        XCTAssertTrue(
+            source.contains("IFS=' '"),
+            "the split must not inherit IFS from the remote host's profile"
+        )
+    }
+
+    func testShimRejoinsSSHConnectionWithCommasSoItSurvivesTheHeaderCharset() throws {
+        // The real value, in the exact spelling sshd writes it (measured on a
+        // live OpenSSH session, 2026-09-05:
+        // `SSH_CONNECTION=[127.0.0.1 51960 127.0.0.1 2222]`). Space is outside
+        // the header charset by design, so the shim re-joins the four fields —
+        // and the app's own parser has to accept what comes out.
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "10.0.0.2 51960 10.0.0.9 22",
+        ])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
+        let value = try XCTUnwrap(parsed.sshConnection)
+        XCTAssertEqual(value, "10.0.0.2,51960,10.0.0.9,22")
+        let report = try XCTUnwrap(ClaudeRemoteSSHConnectionReport.parse(value))
+        XCTAssertEqual(report.clientPort, 51_960)
+        XCTAssertEqual(report.serverPort, 22)
+    }
+
+    func testShimSendsAnIPv6SSHConnectionUnchangedApartFromTheSeparator() throws {
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "::1 51960 ::1 2222",
+        ])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
+        XCTAssertEqual(parsed?.sshConnection, "::1,51960,::1,2222")
+    }
+
+    func testShimDropsAnySSHConnectionThatIsNotExactlyFourFields() throws {
+        // Not four fields is not a connection. Dropping beats guessing: the
+        // Mac would refuse a malformed value anyway, and a shim that repairs
+        // one only moves the refusal.
+        let malformed = [
+            "three fields only",
+            "10.0.0.2 51960 10.0.0.9 22 extra",
+            "10.0.0.2",
+            "   ",
+        ]
+        for value in malformed {
+            let captured = try capturedRequestHeaders(environment: ["SSH_CONNECTION": value])
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Ssh-Connection"),
+                "must be dropped, not repaired: \(value)"
+            )
+        }
+    }
+
+    func testAHostileSSHConnectionCannotForgeAHeaderLine() throws {
+        // The split makes this one different from every other env value: the
+        // pieces are re-assembled by the shim, so the charset check has to run
+        // on what it ASSEMBLED. A CR/LF payload splits into more than four
+        // fields (dropped); a four-field one whose parts carry forbidden bytes
+        // is refused by the charset.
+        let hostile = [
+            "a\r\nAuthorization: Bearer stolen 1 b 2",
+            "a\" 1 b 2",
+            "a$(id) 1 b 2",
+            "a`id` 1 b 2",
+            "a\u{e9} 1 b 2",
+        ]
+        for value in hostile {
+            let captured = try capturedRequestHeaders(environment: ["SSH_CONNECTION": value])
+            XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"), "\(value)")
+            XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
+            XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(value)")
+        }
+    }
+
+    func testShimSplitsSSHConnectionWithGlobbingOFFSoAValueCannotExpand() throws {
+        // `set -- $VAR` performs PATHNAME EXPANSION as well as field
+        // splitting, so without `set -f` a value containing `*` expands
+        // against the shim's cwd — and the expansion is charset-clean
+        // filenames, which would sail through the validation.
+        //
+        // The cwd is what makes this test able to fail (review finding,
+        // 2026-09-05): the earlier version ran in the test runner's own
+        // directory, where the expansion produced far more than four fields
+        // and the value was dropped by the field COUNT, proving nothing about
+        // globbing. Here the cwd holds exactly one entry, so a missing
+        // `set -f` turns `* 1 b 2` into a well-formed four-field value and
+        // the header appears.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-glob-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("x".utf8).write(to: directory.appendingPathComponent("sole"))
+
+        let captured = try capturedRequestHeaders(
+            environment: ["SSH_CONNECTION": "* 1 b 2"],
+            workingDirectory: directory
+        )
+        XCTAssertFalse(
+            captured.contains("X-Lvx-Env-Ssh-Connection"),
+            "a glob must not expand against the host's filesystem: \(captured)"
+        )
+    }
+
+    func testShimDropsAnOversizedSSHConnection() throws {
+        // Four fields, each fine on its own, whose JOINED value is over the
+        // 200-byte cap: the cap must apply to what is written, not to what was
+        // read.
+        let chunk = String(repeating: "a", count: 60)
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "\(chunk) \(chunk) \(chunk) \(chunk)",
+        ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"))
+    }
+
+    func testShimKeepsPublishingItsOtherValuesWhenSSHConnectionIsMalformed() throws {
+        // Fail-open, per value: a broken connection variable costs its own
+        // header and nothing else.
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "nonsense",
+            "SSH_TTY": "/dev/pts/3",
+        ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"))
+        XCTAssertTrue(captured.contains("X-Lvx-Env-Ssh-Tty: /dev/pts/3"))
     }
 
     func testShimKeepsTheEnvHeadersOutOfArgvAndInThePrivateHeaderFile() throws {
@@ -1525,14 +1689,7 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
 
     func testReadmeDocumentsWhatTheTitleMarkerRemovalCost() throws {
         // The tmux/screen title-passthrough caveat that used to be asserted
-        // here is gone with the mechanism it described (2026-09-05). What
-        // replaces it is the honest statement of the loss, because a user
-        // whose plain-ssh session stopped attaching context deserves to find
-        // that out from the README rather than from a silent absence.
-        try assertReadmeHasLine(
-            containing: "has no join any more",
-            "the accepted cost has to be stated, not implied"
-        )
+        // here is gone with the mechanism it described (2026-09-05).
         try assertReadmeHasLine(
             containing: "from your shell profile",
             "tell the user what they can now delete from their setup"
@@ -1540,6 +1697,36 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         XCTAssertFalse(
             try readmeLines().contains { $0.contains("set-titles on") },
             "configuring a multiplexer's title passthrough is advice for a mechanism that no longer exists"
+        )
+    }
+
+    func testReadmeDocumentsThePlainSSHConnectionJoinAndItsRefusals() throws {
+        // A user whose plain-ssh session does or does not attach context has to
+        // be able to find out WHY from the README rather than from a silent
+        // absence. Each of these is a refusal the arm makes on purpose, and
+        // each one is invisible from the outside.
+        try assertReadmeHasLine(equalTo: "### A plain `ssh host` session")
+        try assertReadmeHasLine(
+            containing: "same connection — same client port",
+            "the binding is the connection, and the README has to say what is compared"
+        )
+        try assertReadmeHasLine(
+            containing: "**through a jump host**",
+            "ProxyJump is a documented non-join, not a bug report waiting to happen"
+        )
+        try assertReadmeHasLine(
+            containing: "**inside tmux, screen or zellij**",
+            "the multiplexer refusal is the one users will hit, and it has to name "
+                + "every multiplexer the arm actually refuses"
+        )
+        try assertReadmeHasLine(
+            containing: "`ControlMaster`",
+            "one shared connection across terminals is a mis-join the user cannot "
+                + "otherwise explain"
+        )
+        try assertReadmeHasLine(
+            containing: "1.6.0 or newer",
+            "a host on an older plugin publishes no connection; say which version fixes it"
         )
     }
 
@@ -1559,9 +1746,12 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         try assertReadmeHasLine(containing: "rotat")
     }
 
-    func testReadmeDocumentsThatPlainSSHIsUnchangedAndNothingIsOnByDefault() throws {
-        // A section heading — its own line — so anchor it exactly.
-        try assertReadmeHasLine(equalTo: "## Plain SSH still works exactly as before")
+    func testReadmeDocumentsThatNotEnrollingAHostCostsNothing() throws {
+        // A section heading — its own line — so anchor it exactly. It was
+        // "Plain SSH still works exactly as before" until the plain-ssh
+        // connection join shipped, at which point that title said the opposite
+        // of the truth for an ENROLLED host.
+        try assertReadmeHasLine(equalTo: "## SSH to a host you have NOT enrolled")
         try assertReadmeHasLine(
             containing: "binds no port at all",
             "a user must be able to confirm that not enrolling costs them nothing"

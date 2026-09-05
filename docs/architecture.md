@@ -69,8 +69,9 @@ Key subsystems:
     `port`, so it talks to exactly one Mac. The Mac-side listener stays on
     8473. The body
     stays Claude's verbatim JSON (no `jq` to rewrite it with), so the
-    allowlisted env enrichment — herdr/cmux/tmux/bridge handles, `SSH_TTY`,
-    the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
+    allowlisted env enrichment — herdr/cmux/tmux/screen/zellij/bridge handles,
+    `SSH_TTY`, `SSH_CONNECTION` (re-joined with commas, since space is outside
+    the charset), the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
     0600 header file as the token and charset-whitelisted
     (`[A-Za-z0-9._:/@+,=%-]`, ≤200 bytes) before a byte is written so CR/LF
     injection is impossible by construction; the listener re-validates and
@@ -137,7 +138,18 @@ Key subsystems:
     and the remote listener's body is a constant, so neither can put a byte on
     a terminal; the window-title marker that used to ride the PTY back into
     Ghostty was removed on 2026-09-05 (see
-    [agent/invariants.md](agent/invariants.md)).
+    [agent/invariants.md](agent/invariants.md)). The plain-ssh join arm
+    (`ClaudeSessionJoinMechanism.remoteSSHConnection`) is what replaced the one
+    session shape that marker uniquely served: the focused surface's foreground
+    ssh process's established TCP socket (`SSHProcessSocketReader`, read out of
+    this Mac's own kernel) must name the same client port, server address and
+    server port that the remote session reports through `$SSH_CONNECTION`, and
+    the session must have been registered by a hook authenticated from the very
+    host that ssh goes to. It authorizes session and repo context, never a
+    screen read, and abstains on `-J`, on any multiplexer label (a
+    tmux/screen/zellij/herdr server keeps the FIRST connection's
+    `$SSH_CONNECTION`), on a ControlMaster-shaped neighbour, and on any
+    ambiguity.
     See [agent/invariants.md](agent/invariants.md) for what is deliberately
     not wired up yet.
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed

@@ -21,7 +21,20 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     case bridgeSessionID
     case tmux
     case tmuxPane
+    /// `$STY`, GNU screen's session handle — `<pid>.<tty>.<host>`, set in every
+    /// window it spawns (screen(1), ENVIRONMENT). Published for exactly one
+    /// reason: screen is a multiplexer SERVER, so its windows inherit the
+    /// `$SSH_CONNECTION` of whichever connection started it, and the plain-ssh
+    /// arm must be able to see that this session is one of them.
+    case screenSession
+    /// `$ZELLIJ`, set inside a zellij session. Same architecture, same reason.
+    case zellijSession
     case sshTTY
+    /// `$SSH_CONNECTION`, re-joined with commas by the shim — see
+    /// `ClaudeRemoteSSHConnectionReport`. sshd sets it in every session it
+    /// spawns; it is the only value either side of an ssh connection can name
+    /// that the OTHER side's kernel also knows.
+    case sshConnection
     case hookParentPID
 
     /// The header the shim writes, in its canonical spelling.
@@ -39,7 +52,10 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .bridgeSessionID: return "X-Lvx-Env-Bridge-Session-Id"
         case .tmux: return "X-Lvx-Env-Tmux"
         case .tmuxPane: return "X-Lvx-Env-Tmux-Pane"
+        case .screenSession: return "X-Lvx-Env-Screen-Session"
+        case .zellijSession: return "X-Lvx-Env-Zellij-Session"
         case .sshTTY: return "X-Lvx-Env-Ssh-Tty"
+        case .sshConnection: return "X-Lvx-Env-Ssh-Connection"
         case .hookParentPID: return "X-Lvx-Env-Hook-Parent-Pid"
         }
     }
@@ -60,7 +76,10 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .bridgeSessionID: return "$CLAUDE_CODE_BRIDGE_SESSION_ID"
         case .tmux: return "$TMUX"
         case .tmuxPane: return "$TMUX_PANE"
+        case .screenSession: return "$STY"
+        case .zellijSession: return "$ZELLIJ"
         case .sshTTY: return "$SSH_TTY"
+        case .sshConnection: return "$SSH_CONNECTION"
         case .hookParentPID: return "$PPID"
         }
     }
@@ -78,14 +97,17 @@ public struct ClaudeRemoteEnvironmentLimits: Sendable, Equatable {
     public var maxValueBytes: Int
     /// Max values retained from one request. The allowlist is smaller than this
     /// today, which is the point: the cap is a belt that survives someone
-    /// growing the allowlist without revisiting the budget.
+    /// growing the allowlist without revisiting the budget. It has to STAY
+    /// above it — a cap at or below the field count silently drops whatever
+    /// sorts last in `allCases`, which is a join arm that quietly never fires.
+    /// `ClaudeRemoteSessionEnvironmentCodecTests` pins the relationship.
     public var maxFieldCount: Int
     /// Max total UTF-8 bytes across all retained values.
     public var maxTotalBytes: Int
 
     public init(
         maxValueBytes: Int = 200,
-        maxFieldCount: Int = 12,
+        maxFieldCount: Int = 16,
         maxTotalBytes: Int = 1024
     ) {
         self.maxValueBytes = maxValueBytes
@@ -127,7 +149,17 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
     public var bridgeSessionID: String?
     public var tmux: String?
     public var tmuxPane: String?
+    /// GNU screen's `$STY`. A multiplexer label like the tmux pair: never a
+    /// path, never dialed, and read only to REFUSE a join.
+    public var screenSession: String?
+    /// zellij's `$ZELLIJ`. Same.
+    public var zellijSession: String?
     public var sshTTY: String?
+    /// `$SSH_CONNECTION` with its four space-separated fields re-joined by
+    /// commas (space is deliberately outside the header charset). Parse it with
+    /// `ClaudeRemoteSSHConnectionReport.parse` — never split it by hand, and
+    /// never treat it as an address to dial.
+    public var sshConnection: String?
     /// The remote shim's `$PPID` — Claude Code's pid ON THAT HOST. Diagnostics
     /// and cross-checks against another remote report only; never a local pid.
     public var hookParentPID: String?
@@ -141,7 +173,10 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         bridgeSessionID: String? = nil,
         tmux: String? = nil,
         tmuxPane: String? = nil,
+        screenSession: String? = nil,
+        zellijSession: String? = nil,
         sshTTY: String? = nil,
+        sshConnection: String? = nil,
         hookParentPID: String? = nil
     ) {
         self.herdrPaneID = herdrPaneID
@@ -152,7 +187,10 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         self.bridgeSessionID = bridgeSessionID
         self.tmux = tmux
         self.tmuxPane = tmuxPane
+        self.screenSession = screenSession
+        self.zellijSession = zellijSession
         self.sshTTY = sshTTY
+        self.sshConnection = sshConnection
         self.hookParentPID = hookParentPID
     }
 
@@ -173,7 +211,10 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .bridgeSessionID: return bridgeSessionID
             case .tmux: return tmux
             case .tmuxPane: return tmuxPane
+            case .screenSession: return screenSession
+            case .zellijSession: return zellijSession
             case .sshTTY: return sshTTY
+            case .sshConnection: return sshConnection
             case .hookParentPID: return hookParentPID
             }
         }
@@ -187,7 +228,10 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .bridgeSessionID: bridgeSessionID = newValue
             case .tmux: tmux = newValue
             case .tmuxPane: tmuxPane = newValue
+            case .screenSession: screenSession = newValue
+            case .zellijSession: zellijSession = newValue
             case .sshTTY: sshTTY = newValue
+            case .sshConnection: sshConnection = newValue
             case .hookParentPID: hookParentPID = newValue
             }
         }

@@ -585,6 +585,34 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
+    /// Every live session from ONE enrolled remote host, most recently active
+    /// first — the plain-ssh arm's candidate set.
+    ///
+    /// Deliberately WIDER than `liveRemoteHerdrSessions(hostID:)`: the sessions
+    /// this arm is for report no multiplexer label at all, so there is no
+    /// second field to filter on here. The narrowing all happens in the arm,
+    /// against facts this registry cannot see — the ports of a socket in this
+    /// Mac's own kernel.
+    ///
+    /// Same origin discipline as its herdr sibling and for the same reason:
+    /// `.remote` only, scoped to one host's channel, and every value the caller
+    /// then reads comes from `remoteSessionEnvironment`, never `process`.
+    public func liveRemoteSessions(hostID: String) -> [ClaudeSessionSnapshot] {
+        let channel = ClaudeRemoteSessionScope.channel(hostID: hostID)
+        let timestamp = now()
+        return state.withLock { state in
+            state.sessions.values
+                .filter { snapshot in
+                    guard case .remote(let sessionChannel) = snapshot.origin,
+                          sessionChannel == channel,
+                          isFresh(snapshot, now: timestamp)
+                    else { return false }
+                    return true
+                }
+                .sorted { $0.lastActivity > $1.lastActivity }
+        }
+    }
+
     public func snapshot(sessionID: String) -> ClaudeSessionSnapshot? {
         let timestamp = now()
         return state.withLock { state in

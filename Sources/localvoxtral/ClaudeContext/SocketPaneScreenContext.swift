@@ -180,9 +180,13 @@ enum SocketPaneScreenContext {
             return await resolver.herdrPaneVisibleText(for: join)
         case .cmuxSurface:
             return await resolver.cmuxSurfaceVisibleText(for: join)
-        case .ttyDevice, .browserTab:
+        case .ttyDevice, .browserTab, .remoteSSHConnection:
             // A browser tab has no pane socket to read, and no verified screen
             // route of any kind — its join buys session/repository context only.
+            // A plain-ssh join has no socket route either: there is no
+            // multiplexer on the far side to ask for per-pane text, and the
+            // local grid it could otherwise read is exactly what the authorizer
+            // refuses for that mechanism.
             return nil
         }
     }
