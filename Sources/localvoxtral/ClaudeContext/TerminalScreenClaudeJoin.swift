@@ -973,6 +973,16 @@ struct ClaudeSessionJoinResolver {
                             "Remote herdr panel token was stamped but not rendered; agents-panel row likely not configured"
                         )
                     }
+                    // A truncated row is the OPPOSITE diagnosis: the row is
+                    // configured and rendering, and herdr cut the token to the
+                    // sidebar's column budget. Saying "likely not configured"
+                    // here sends the user to change the one thing that is
+                    // already right (field abstention 2026-09-05).
+                    if cause == .rowTruncated {
+                        Log.claudeContext.info(
+                            "Remote herdr panel row rendered a TRUNCATED token; widen the herdr sidebar or make the $lvmark row the agent entry's first row"
+                        )
+                    }
                     await HerdrPanelBindingProbe.clear(
                         metadata: herdrPanelMetadata,
                         socketPath: socketPath,

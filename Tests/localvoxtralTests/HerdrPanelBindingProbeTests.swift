@@ -223,6 +223,115 @@ final class HerdrPanelBindingProbeTests: XCTestCase {
         XCTAssertEqual(readCount, HerdrPanelBindingProbe.maxGridReads)
     }
 
+    /// herdr renders an agents-panel row through `truncate_end`, so a sidebar
+    /// narrower than the token is columns wide replaces its tail with `…`.
+    /// Measured on the owner's Mac 2026-09-05 at sidebar width 20: the row was
+    /// rendering and the join still abstained "row-not-rendered".
+    func testATruncatedRowStillMatchesWhileItCarriesTheEntropyFloor() async {
+        let metadata = PanelMetadataRecorder()
+        let token = HerdrPanelBindingProbe.token(randomBits: 0xDEAD_BEEF_CAFE_1234)
+        let nonce = token.dropFirst(HerdrPanelBindingProbe.tokenPrefix.count)
+        let rendered = HerdrPanelBindingProbe.tokenPrefix
+            + nonce.prefix(HerdrPanelBindingProbe.minimumRenderedNonceDigits)
+            + "…"
+        let probe = HerdrPanelBindingProbe(
+            metadata: metadata,
+            readGrid: { _ in "claude  work\n   \(rendered)" },
+            now: { Date(timeIntervalSince1970: 1_000) },
+            sleepFor: { _ in XCTFail("a first-read match must not sleep") },
+            randomBits: { 0xDEAD_BEEF_CAFE_1234 }
+        )
+
+        let outcome = await probe.probe(
+            target: target, socketPath: "/tmp/herdr.sock", paneID: "p1"
+        )
+
+        XCTAssertEqual(outcome, .matched(.init(token: token)))
+    }
+
+    /// One digit under the floor is refused, and refused with its OWN cause:
+    /// "the row is cut" and "there is no token in the grid" have opposite
+    /// fixes, and the join's diagnostics used to collapse them into
+    /// `row-not-rendered`, which points the user at the one thing that is
+    /// already configured correctly.
+    func testATooShortTruncationIsRefusedWithItsOwnCause() async {
+        let metadata = PanelMetadataRecorder()
+        let token = HerdrPanelBindingProbe.token(randomBits: 0x0123_4567_89AB_CDEF)
+        let nonce = token.dropFirst(HerdrPanelBindingProbe.tokenPrefix.count)
+        let rendered = HerdrPanelBindingProbe.tokenPrefix
+            + nonce.prefix(HerdrPanelBindingProbe.minimumRenderedNonceDigits - 1)
+            + "…"
+        var readCount = 0
+        let probe = HerdrPanelBindingProbe(
+            metadata: metadata,
+            readGrid: { _ in readCount += 1; return "claude  work\n   \(rendered)" },
+            now: { Date(timeIntervalSince1970: 1_000) },
+            sleepFor: { _ in XCTFail("a column budget cannot grow while we wait") },
+            randomBits: { 0x0123_4567_89AB_CDEF }
+        )
+
+        let outcome = await probe.probe(
+            target: target, socketPath: "/tmp/herdr.sock", paneID: "p1"
+        )
+
+        XCTAssertEqual(outcome, .noMatch(.rowTruncated))
+        XCTAssertEqual(readCount, 1, "a too-short row ends the attempt on the first read")
+    }
+
+    func testRenderedMatchGradesThePrefixItActuallyFound() {
+        let token = HerdrPanelBindingProbe.token(randomBits: 0xFEED_FACE_1234_5678)
+        let nonce = String(token.dropFirst(HerdrPanelBindingProbe.tokenPrefix.count))
+
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(grid: "x \(token) y", token: token),
+            .full
+        )
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(
+                grid: "x \(HerdrPanelBindingProbe.tokenPrefix)\(nonce.prefix(9))… y",
+                token: token
+            ),
+            .truncatedButSufficient(retainedDigits: 9)
+        )
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(
+                grid: "x \(HerdrPanelBindingProbe.tokenPrefix)\(nonce.prefix(3))… y",
+                token: token
+            ),
+            .truncatedTooShort(retainedDigits: 3)
+        )
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(grid: "no token here", token: token),
+            .absent
+        )
+        // A DIFFERENT token's rendering is not this token's evidence.
+        let other = HerdrPanelBindingProbe.token(randomBits: 0x1111_2222_3333_4444)
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(grid: "x \(other) y", token: token),
+            .absent
+        )
+        // Nor is one that merely SHARES a long prefix. This is the case a
+        // naive prefix search gets wrong: nine of ten digits agree, and
+        // accepting it would let one socket's stamp be confirmed by another
+        // socket's rendering.
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(
+                grid: "agents  \(HerdrPanelBindingProbe.token(randomBits: 6))",
+                token: HerdrPanelBindingProbe.token(randomBits: 5)
+            ),
+            .absent
+        )
+        // The same two tokens, this time genuinely truncated: the run ENDS
+        // after eight digits, so it is our token's row and it clears the floor.
+        XCTAssertEqual(
+            HerdrPanelBindingProbe.renderedMatch(
+                grid: "agents  lv-mic-00000000…",
+                token: HerdrPanelBindingProbe.token(randomBits: 5)
+            ),
+            .truncatedButSufficient(retainedDigits: 8)
+        )
+    }
+
     func testMicIndicatorRefreshesAtFourSecondsThenClearsBeforeClosingForward() async {
         let metadata = PanelMetadataRecorder()
         let process = PanelIndicatorProcess()

@@ -142,11 +142,25 @@ mic indicator: refresh `pane.report_metadata` with the SAME token every ~4 s
 (`ttl_ms:8000` — TTL is the backstop, refresh keeps it lit), and clear
 explicitly (empty or null value) on dictation stop, session end, or join teardown.
 The rendered value may carry a short static prefix so the row reads as a mic
-indicator rather than line noise (e.g. `lv-mic-<nonce>` if ≤20 chars renders
-intact at herdr's default sidebar width 26 — verify against the row budget:
-24/22 cols first/continuation row, prefix-truncation only). Refresh timers
-must be injected-clock, never wall-clock, and must not outlive the session
-(see PR #66 timer debt — do not add more armed wall-clock timers).
+indicator rather than line noise (`lv-mic-<10 base36 digits>`, 17 columns).
+Refresh timers must be injected-clock, never wall-clock, and must not outlive
+the session (see PR #66 timer debt — do not add more armed wall-clock timers).
+
+**The 26-column sidebar this section originally assumed is not a given, and
+the match is on the rendered PREFIX because of it.** herdr renders every
+agents-panel row through `truncate_end(text, budget)` (`src/ui/text.rs`) with
+`budget = sidebar body width − 1` for an entry's FIRST row and `− 3` for every
+continuation row (`src/ui/sidebar.rs`, agent panel render), the body losing one
+more column to a scrollbar. `sidebar_width` defaults to 26 but is drag-resizable
+and persisted per session, down to `sidebar_min_width` (18). FIELD MEASUREMENT
+(owner's Mac, 2026-09-05, herdr 0.8.2, `sidebar_width = 20`): the same session
+matched when `$lvmark` was the entry's ONLY row and abstained
+`row-not-rendered` the moment it became a continuation row — 17 columns did not
+fit a 16-column budget and herdr rendered `lv-mic-<8 digits>…`. So the probe
+matches the longest rendered prefix, floored at 8 nonce digits
+(log2(36^8) ≈ 41.4 bits, keeping the "more than 40 random bits" bound), and a
+shorter run is refused with its own `row-truncated` cause rather than being
+reported as an unconfigured row — the opposite diagnosis.
 
 ## Title-marker arm suppression (owner decision)
 

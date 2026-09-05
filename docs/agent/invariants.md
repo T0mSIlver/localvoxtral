@@ -198,8 +198,16 @@ there is not.
     single-socket rule, opens the forward, reads `pane.current`, and identifies
     the unique live session claiming that pane. It then stamps that pane through
     `pane.report_metadata` with a fresh `lv-mic-…` nonce (more than 40 random
-    bits, 8 s TTL) and requires that exact token in the focused terminal's
+    bits, 8 s TTL) and requires that token in the focused terminal's
     existing visible-grid route within a bounded injected-clock settle window.
+    Not the WHOLE token: herdr truncates an agents-panel row to the sidebar's
+    column budget, which the user's own sidebar width decides, so the match is
+    the longest rendered prefix with a FLOOR of 8 nonce digits
+    (log2(36^8) ~= 41.4 bits — the "more than 40 bits" bound is what the floor
+    exists to hold, and a shorter run is refused as `row-truncated`, never
+    accepted as weaker evidence). Field measurement 2026-09-05 is why: at
+    `sidebar_width = 20` the 17-column token rendered as `lv-mic-<8 digits>…`
+    and an exact match could never succeed while the row was visibly there.
     A whole-view
     App client renders the agents sidebar; `terminal_attach` and
     `terminal_observe` render only the raw pane and cannot render this token.
@@ -223,7 +231,8 @@ there is not.
     are still documented hopes.
 
     Any stamp refusal, unavailable grid, hidden/unconfigured/scrolled panel row,
-    or bounded settle timeout can only produce NO MATCH. It closes that attempt
+    a row cut below the entropy floor, or a bounded settle timeout can only
+    produce NO MATCH. It closes that attempt
     and falls through to the pre-existing argv authorization below; it never
     weakens the pane-level confirmations. The fallback first requires that the
     focused surface's own TTY host EXACTLY ONE FOREGROUND `ssh`
