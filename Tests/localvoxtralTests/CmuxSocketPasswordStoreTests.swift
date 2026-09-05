@@ -34,7 +34,7 @@ private final class FakeCmuxKeychain: CmuxKeychainBackend, @unchecked Sendable {
     }
 
     func delete(service: String, account: String) -> Bool {
-        items.withLock { $0.removeValue(forKey: Key(service: service, account: account)) }
+        items.withLock { _ = $0.removeValue(forKey: Key(service: service, account: account)) }
         return true
     }
 }

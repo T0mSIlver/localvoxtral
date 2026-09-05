@@ -176,11 +176,15 @@ jobs:
         # are fast-path-eligible, so these tests are what still exercises a
         # gate-only diff. That also makes them the bulk of a fast-path run.
         #
-        # Not cheap: test-ui-gate.sh alone is ~80 s of the ~95 s here
-        # (measured 2026-09-05, PR #238's 105 assertions each re-running the
-        # gate). Keep it to ONE copy — a duplicated pair of these steps went
-        # unnoticed for six weeks (#255) — and think before adding another
-        # gate suite that re-execs a shell script per assertion.
+        # Not cheap, and no longer dominated by one thing: test-ui-gate.sh was
+        # ~80 s of the ~95 s here (measured 2026-09-05) because FOUR of its
+        # ~360 assertions drove the gate's wall-clock waits to their deadline
+        # while its `sleep` stub turned each poll into a fork storm. Those
+        # budgets are seams now and the suite sets them short. What is left is
+        # ~360 fresh `bash` processes, so keep this to ONE copy — a duplicated
+        # pair of these steps went unnoticed for six weeks (#255) — and think
+        # before adding another gate suite that re-execs a script per
+        # assertion.
         run: |
           ./scripts/ci/test-cleanup-stale-test-processes.sh
           ./scripts/ci/test-build-gate-process-cleanup.sh
@@ -199,6 +203,8 @@ jobs:
           ./scripts/ci/test-herdr-fixture-recovery.sh
           ./scripts/ci/test-clean-stale-outputs.sh
           ./scripts/ci/test-workflow-step-names.sh
+          ./scripts/ci/test-agents-guide-budget.sh
+          ./scripts/ci/test-resolve-release-notes.sh
 
       - name: Record hosted toolchain
         id: hosted_toolchain

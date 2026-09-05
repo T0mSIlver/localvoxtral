@@ -206,6 +206,16 @@ LV_UI_TERM_COMMAND_DIRS="${LV_UI_TERM_COMMAND_DIRS:-$HOME/bin}"
 # suite drives the three failure paths below and a 20-second wall-clock wait
 # per case is most of the suite's runtime.
 LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${LV_UI_TERM_OPEN_TIMEOUT_SECONDS:-20}"
+
+# How long `launch` waits for the app to appear in the process table. The same
+# kind of seam as the one above, for the same reason and with the same evidence
+# behind it: the shell suite drives the "nothing but a helper ever appeared"
+# path, and under the suite's instant `sleep` stub the loop below stops being a
+# poll and becomes a fork storm that runs for the WHOLE budget. Measured
+# 2026-09-05: that single assertion was 19.2 s of the suite's 32.6 s. A shorter
+# budget can only make `launch` give up sooner, never admit anything, so this
+# is a knob no attacker has a use for.
+LV_UI_LAUNCH_WAIT_SECONDS="${LV_UI_LAUNCH_WAIT_SECONDS:-20}"
 # How many windows a refused `term open` may record as UNCONFIRMED so
 # `term close` can still reach them. Bounded because each record is a window
 # this gate could not prove is its own.
@@ -292,6 +302,22 @@ if [[ -f "$GATE_CONF" ]]; then
   fi
 fi
 
+# The two budgets that are consumed by `$(( ))`, normalised AFTER the conf has
+# had its say. A value that is not a plain non-negative integer is an
+# ARITHMETIC ERROR there, and under `set -euo pipefail` that kills the gate
+# mid-verb — in `launch` and `term open` alike, after `open` has already put a
+# window (or the app under test) on the owner's desktop and BEFORE the state
+# file that makes it addressable is written. That is exactly the wedge the
+# header warns about: a running instance this gate never recorded, after which
+# `launch` refuses beside "a localvoxtral this gate did not start" and only the
+# owner can unwedge the machine. A hand-edited machine-local file is where a
+# typo like `20s` comes from, so a bad value falls back to the default instead
+# of taking the gate down. (The other `$(( ))` knobs below have the same shape
+# and are worth the same treatment; these two are the ones whose failure lands
+# after something has already been opened.)
+case "$LV_UI_LAUNCH_WAIT_SECONDS" in "" | *[!0-9]*) LV_UI_LAUNCH_WAIT_SECONDS=20 ;; esac
+case "$LV_UI_TERM_OPEN_TIMEOUT_SECONDS" in "" | *[!0-9]*) LV_UI_TERM_OPEN_TIMEOUT_SECONDS=20 ;; esac
+
 # Second layer under the (empty by default) allowlist above: names that can run
 # a child command are refused even when the conf allowlists them. Deliberately
 # assigned AFTER the conf is sourced and NOT via ${VAR:-...}, so the conf can
@@ -330,7 +356,12 @@ timestamp() {
 }
 
 log_line() {
-  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  # Every invocation of this gate writes one line here, so the directory is
+  # derived without forking `dirname` and `mkdir` is only reached when the
+  # directory is actually missing — which is the first invocation and no other.
+  local dir="${LOG_FILE%/*}"
+  [[ "$dir" != "$LOG_FILE" ]] || dir="."
+  [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || true
   printf '%s %s\n' "$(timestamp)" "$*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
@@ -1803,17 +1834,26 @@ run_launch() {
   # `ps -o comm=` is the full path, which is the same fact `process_identity`
   # already trusts for pid reuse.
   local app_executable="$bundle/Contents/MacOS/localvoxtral" candidate
-  deadline=$((SECONDS + 20))
-  while (( SECONDS < deadline )); do
+  # Attempt-then-check, so a budget of 0 still makes exactly ONE attempt — that
+  # is what lets the suite drive the give-up path without spending the budget in
+  # wall clock. Against the check-then-attempt loop it replaces it is the same
+  # loop for every budget the field uses, and where it differs it is strictly
+  # more robust: the old form could make ZERO attempts if `SECONDS` happened to
+  # tick over between the assignment below and the first check, which at a
+  # budget of 1 is a real (if narrow) window.
+  deadline=$((SECONDS + LV_UI_LAUNCH_WAIT_SECONDS))
+  while :; do
     for candidate in $(pgrep -f "^$app_executable" 2>/dev/null | sort -rn); do
       [[ "$(ps -p "$candidate" -o comm= 2>/dev/null)" == "$app_executable" ]] || continue
       pid="$candidate"
       break
     done
     [[ -n "${pid:-}" ]] && break
+    (( SECONDS < deadline )) || break
     sleep 0.5
   done
-  [[ -n "${pid:-}" ]] || fail "the app did not start within 20 seconds"
+  [[ -n "${pid:-}" ]] \
+    || fail "the app did not start within $LV_UI_LAUNCH_WAIT_SECONDS seconds"
 
   mkdir -p "$STATE_DIR"
   chmod 0700 "$STATE_DIR" 2>/dev/null || true

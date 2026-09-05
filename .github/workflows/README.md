@@ -78,6 +78,16 @@ The two helper unit suites are additionally path-gated per helper
 diff touches that helper's directory or the shared CI plumbing, while
 dispatches and every push to main run both.
 
+One tier-0 guard deliberately survives the fast path: `AGENTS.md` and the deep
+guides are `*.md`, so a diff that touches only them is `docs_only=true` and the
+Swift lane — including `AgentsGuideSizeTests`, whose entire job is guarding
+`AGENTS.md`'s 32 KiB Codex truncation budget — used to be skipped exactly on
+the diffs that can break it. `scripts/ci/test-agents-guide-budget.sh` is a
+shell port of that test, run in the ungated shell-test step. It parses the cap,
+the router targets and the anchors out of `AgentsGuideSizeTests.swift` rather
+than restating them, and fails if that file grows an assertion it has not
+ported — so the two cannot drift.
+
 ## `release.yml`
 
 One-command, gate-then-tag releases on the self-hosted runner:
@@ -91,6 +101,16 @@ Pipeline: compute next version from the latest `v*` tag → release build →
 unit tests → live integration tests (speechd STT service) → package app bundle → launch
 smoke test → zip + dmg → **create tag** → publish GitHub release with
 auto-generated notes and both artifacts.
+
+Release notes: GitHub's generated PR list is always included, and a release
+may additionally ship a **hand-written summary** committed ahead of time at
+`docs/release-notes/<tag>.md` (e.g. `docs/release-notes/v0.9.0.md`, using the
+exact tag release.yml computes). When that file exists it becomes the top of
+the release body and the generated changelog is appended below it;
+`scripts/ci/resolve-release-notes.sh` decides, and its self-test runs in CI's
+shell-test step. The file is optional — with none, the release publishes with
+generated notes exactly as before — but a file that exists and is empty is a
+hard failure rather than a release with a blank human section.
 
 The tag is created only after every gate passes, so a failed release leaves
 no orphan tag. Releases are ad-hoc signed on purpose (a local signing cert
