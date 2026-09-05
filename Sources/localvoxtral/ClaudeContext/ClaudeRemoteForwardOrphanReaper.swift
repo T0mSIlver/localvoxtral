@@ -8,8 +8,7 @@ import Darwin
 /// run starts hook `-R` or herdr `-L` forwards.
 ///
 /// The bug this closes (field report, 2026-08-05): quit-and-reopen sometimes
-/// landed the pane on "Port held — close ssh sessions to that host." with a
-/// Retry that could only fail. The holder was this Mac's own orphan — an
+/// landed the pane on the port-held status with a Retry that could only fail. The holder was this Mac's own orphan — an
 /// `ssh -N -R` from a run that ended without `applicationWillTerminate`
 /// (crash, force-quit) or whose teardown outran the bounded quit drain. It
 /// reparents to launchd, keepalives keep it healthy forever, and nothing else

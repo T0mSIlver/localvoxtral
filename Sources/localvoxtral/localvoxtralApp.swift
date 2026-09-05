@@ -160,6 +160,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shared lifecycle for both remote-hook `-R` and remote-herdr `-L`
     /// children: one ledger/reaper sees every app-held SSH process.
     private let claudeRemoteForwardPidLedger = ClaudeRemoteForwardPidLedger()
+    /// Shared by the remote listener and the forward supervisors: one mints
+    /// ownership-probe nonces, the other reports the ones that arrive. It lives
+    /// here because both are rebuilt independently and neither may own it.
+    private let claudeRemoteForwardProbes = ClaudeRemoteForwardProbeWitness()
     private lazy var claudeRemoteHerdrForwards = ClaudeRemoteHerdrForwardService(
         spawner: ClaudeRemoteHerdrForwardSpawner(),
         workspaces: ClaudeRemoteHerdrForwardWorkspaces(),
@@ -478,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ClaudeRemoteListenerCoordinator(
                 hosts: hosts,
                 sessions: claudeSessionRegistry,
+                forwardProbes: claudeRemoteForwardProbes,
                 onRemoteHerdrActivity: { [weak self] hostID, remoteSocketPath in
                     Task { @MainActor [weak self] in
                         guard let self,
@@ -523,6 +528,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 hosts: hosts,
                 remoteForwardPort: remoteForwardPort,
                 isListenerBound: { coordinator?.isListening ?? false },
+                // Turns "the remote refused our bind" from one verdict into
+                // two: a stranger holds the port, or our own forward is already
+                // up because the user has an ssh session to that host. Only the
+                // nonce round-trip can tell them apart, and without it every
+                // refusal stays the pessimistic reading.
+                ownershipProbe: ClaudeRemoteForwardOwnershipCheck.live(
+                    witness: claudeRemoteForwardProbes
+                ),
                 pidLedger: claudeRemoteForwardPidLedger,
                 reapOrphans: { [weak self] in
                     await forwardOrphanReaper.reap()
