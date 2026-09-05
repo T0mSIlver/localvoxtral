@@ -176,12 +176,40 @@ jobs:
           git tag -a "$TAG" -m "localvoxtral $TAG"
           git push origin "$TAG"
 
+      - name: Resolve hand-written release notes (optional)
+        # A release can ship a human summary written ahead of time at
+        # docs/release-notes/<tag>.md. Optional: with no such file the release
+        # publishes with GitHub's generated notes exactly as before, so a
+        # forgotten file makes a duller release, never a failed one. The one
+        # hard failure is a file that exists and says nothing — see the script.
+        id: notes
+        run: |
+          set -euo pipefail
+          DECISION="$(./scripts/ci/resolve-release-notes.sh "${{ steps.meta.outputs.tag }}")"
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          echo "Release notes: $(sed -n 's/^reason=//p' <<<"$DECISION")" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: localvoxtral ${{ steps.meta.outputs.tag }}
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          # body_path + generate_release_notes, per action-gh-release v2's
+          # README: "If body is specified, the body will be pre-pended to the
+          # automatically generated notes", and "When providing a body and
+          # body_path at the same time, body_path will be attempted first,
+          # then falling back on body if the path can not be read from". So
+          # the hand-written notes lead and GitHub's PR list follows.
+          #
+          # NOT `append_body`: that input means "append to an EXISTING
+          # release's body" (an already-published release being updated), not
+          # "append the generated notes to mine". Setting it here would be a
+          # different feature that happens to sound right.
+          #
+          # An empty body_path is the no-notes case and is simply ignored.
+          body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true
           files: |
             dist/localvoxtral-${{ steps.meta.outputs.tag }}.zip

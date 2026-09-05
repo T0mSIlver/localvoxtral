@@ -73,6 +73,16 @@ unit tests → live integration tests (speechd STT service) → package app bund
 smoke test → zip + dmg → **create tag** → publish GitHub release with
 auto-generated notes and both artifacts.
 
+Release notes: GitHub's generated PR list is always included, and a release
+may additionally ship a **hand-written summary** committed ahead of time at
+`docs/release-notes/<tag>.md` (e.g. `docs/release-notes/v0.9.0.md`, using the
+exact tag release.yml computes). When that file exists it becomes the top of
+the release body and the generated changelog is appended below it;
+`scripts/ci/resolve-release-notes.sh` decides, and its self-test runs in CI's
+shell-test step. The file is optional — with none, the release publishes with
+generated notes exactly as before — but a file that exists and is empty is a
+hard failure rather than a release with a blank human section.
+
 The tag is created only after every gate passes, so a failed release leaves
 no orphan tag. Releases are ad-hoc signed on purpose (a local signing cert
 means nothing on users' machines); proper distribution signing needs a
