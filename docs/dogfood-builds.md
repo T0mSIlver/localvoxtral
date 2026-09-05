@@ -71,7 +71,7 @@ High level ([`DogfoodCaptureRecord.swift`](../Sources/localvoxtral/Dogfood/Dogfo
 - **Session**: target app kind, output mode, prompt profile, endpoint
   *class* only (`loopback`/`lan`/`remote` — never the URL).
 - **Join**: which arm resolved the Claude Code session (`tty` / `herdrPane` /
-  `remoteHerdrPane` / `cmuxSurface` / `browserTab` / `none`)
+  `remoteHerdrPane` / `remoteSSHConnection` / `cmuxSurface` / `browserTab` / `none`)
   and every abstention reason along the way. Same six fields, from the same
   mapper, that `localvoxtral --probe-surface` prints for the frontmost surface
   — so a probe run and a record can be compared directly

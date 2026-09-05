@@ -18,9 +18,9 @@ import Foundation
 /// resolver's own content-free outcome categories — the same strings it already
 /// writes to `Log.claudeContext`, which are audited for exactly this.
 struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
-    /// `tty`, `herdrPane`, `browserTab`, `cmuxSurface`,
-    /// `remoteHerdrPane`, or `none`. The resolver's mechanism vocabulary, not a
-    /// second naming of it.
+    /// `tty`, `herdrPane`, `browserTab`, `cmuxSurface`, `remoteHerdrPane`,
+    /// `remoteSSHConnection`, or `none`. The resolver's mechanism vocabulary,
+    /// not a second naming of it.
     var arm: String
     /// Every arm that declined, oldest first, joined by `; `. Present even when
     /// an arm ultimately answered: "the tty arm never answers" is invisible in
@@ -89,6 +89,7 @@ struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
         case .browserTab: return "browserTab"
         case .cmuxSurface: return "cmuxSurface"
         case .remoteHerdrPane: return "remoteHerdrPane"
+        case .remoteSSHConnection: return "remoteSSHConnection"
         }
     }
 

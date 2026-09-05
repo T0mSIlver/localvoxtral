@@ -119,6 +119,43 @@ there is no verified per-tab capture route) — it attaches the session's own
 off-screen context only, and for a local session its repository, exactly like a
 terminal join does.
 
+### A plain `ssh host` session
+
+A Claude Code session running in an ordinary `ssh` shell on an **enrolled**
+host — no herdr, no cmux, no Remote Control — joins on the **TCP connection**
+your terminal is holding.
+
+`sshd` puts `$SSH_CONNECTION` into every session it starts: the client address
+and port, then the server address and port. The remote plugin publishes it, and
+on your Mac the app looks at the `ssh` process running in your focused
+terminal, reads that process's own established socket out of the kernel, and
+requires the two to be the same connection — same client port, same server
+address, same server port. The client port is an ephemeral number your Mac's
+kernel picked; the only machine that learns it is the one on the other end of
+that connection.
+
+It attaches the session block and (for a local session) repository context. It
+never attaches your screen: a plain ssh shell's scrollback is your whole remote
+session, not one pane, so no raw capture is authorized for this join.
+
+It deliberately does **not** join in three cases:
+
+* **through a jump host** (`ssh -J`, `ProxyJump`, or a `ProxyCommand` in your
+  `~/.ssh/config`): your Mac's socket goes to the jump host, while the machine
+  you land on sees the jump host's port. They are two different connections and
+  the app will not pretend otherwise;
+* **inside tmux** (or any multiplexer): a tmux server keeps the
+  `$SSH_CONNECTION` of the connection that STARTED it, so a session in a pane
+  can report a connection that belongs to a different window of yours.
+  Measured, not assumed. herdr and cmux have their own joins, which bind the
+  pane rather than the connection;
+* **when anything is ambiguous**: two sessions reporting the same connection,
+  two enrolled hosts matching the destination, an unreadable process table.
+
+If nothing joins and you expect it to, check the remote plugin version: this
+needs **1.6.0 or newer** on the remote host (`claude plugin update
+localvoxtral-remote`). `localvoxtral --probe-surface` names the exact reason.
+
 ### What was removed (September 2026)
 
 Until then there was one more mechanism: the app allocated an `lvx-<hex>`
@@ -147,12 +184,12 @@ had everything else right still failed on that check — unless the user had
 exported `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which made it succeed
 immediately. The check was a one-in-a-hundred lottery, not a second binding.
 
-**What this costs you:** a plain `ssh host` session with no herdr, no cmux and
-no Remote Control has no join any more. Its off-screen context (prior prompt,
-cwd, files) is no longer attached to your dictation. Everything else is
-unaffected: local sessions join by tty, herdr panes by pane id (local and
-remote), cmux by surface id (local and remote), Remote Control by bridge
-session id.
+**What this cost you, and what replaced it:** for one release a plain
+`ssh host` session with no herdr, no cmux and no Remote Control had no join at
+all. It joins again, on the connection itself — see "A plain `ssh host`
+session" above. Everything else was unaffected throughout: local sessions join
+by tty, herdr panes by pane id (local and remote), cmux by surface id (local
+and remote), Remote Control by bridge session id.
 
 **If you had the setting on**, the stored value is simply ignored — there is
 nothing to migrate, and you can drop
@@ -341,6 +378,12 @@ remote host                            your Mac
                             └── ssh RemoteForward ────┘             │
         ◄──────────── {"suppressOutput":true} ───────────────────┘
 ```
+
+The remote plugin subscribes to `UserPromptSubmit`, `Stop`, `CwdChanged`,
+`PostToolUse` and `SessionEnd` — **not** `SessionStart`, which is why a remote
+session first becomes visible to the app on the prompt you submit, rather than
+when you start Claude Code. Everything else about the events matches the local
+table above.
 
 Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
 curls the hook's event JSON to `http://127.0.0.1:<your Mac's port>/v1/hook/<Event>`
@@ -676,11 +719,13 @@ somewhere else. That is true of every use of that file and is why the app only
 ever writes it after showing you the exact block and getting your confirmation
 — and only its own marker-delimited block, never the rest of the file.
 
-## Plain SSH still works exactly as before
+## SSH to a host you have NOT enrolled
 
 No enrollment, no tunnel, no token, no hooks. Your session is unchanged and the
 pane stays screen-only and unjoined. Nothing about this feature is on by default:
-with no enrolled host, the app binds no port at all.
+with no enrolled host, the app binds no port at all. (An ENROLLED host's plain
+`ssh` session does now join — on the connection itself; see "A plain `ssh host`
+session" near the top.)
 
 ## What crosses the tunnel
 
@@ -693,9 +738,13 @@ The same allowlist as the local plugin, plus two additions:
   byte-for-byte, because the host is not assumed to have `jq`):
   `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
   `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `TMUX`, `TMUX_PANE`,
-  `SSH_TTY`, and the shim's own parent pid. Each is sent only if it is
-  non-empty, at most 200 characters, and made purely of ASCII alphanumerics
-  plus `._:/@+,=%-`; anything else is dropped rather than escaped. They tell the
+  `SSH_TTY`, `SSH_CONNECTION`, and the shim's own parent pid. Each is sent only
+  if it is non-empty, at most 200 characters, and made purely of ASCII
+  alphanumerics plus `._:/@+,=%-`; anything else is dropped rather than
+  escaped. `SSH_CONNECTION` is the one value the shim reshapes: `sshd` writes
+  its four fields separated by spaces, and a space could end a header line, so
+  the shim re-joins them with commas — and drops the value entirely if it is
+  not exactly four fields. They tell the
   app WHERE the session runs so it can tell whether the pane you are dictating
   into is this one — never what it contains. The rest of the environment is not
   read, and these values are labels on the Mac: they can never become a local

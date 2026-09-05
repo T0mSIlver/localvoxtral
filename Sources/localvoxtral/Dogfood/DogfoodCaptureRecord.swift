@@ -88,7 +88,7 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
     /// the herdr and TTY arms fail into, and it is invisible without the reason.
     struct Join: Codable, Equatable, Sendable {
         /// `tty`, `herdrPane`, `cmuxSurface`, `browserTab`,
-        /// `remoteHerdrPane`, or `none`.
+        /// `remoteHerdrPane`, `remoteSSHConnection`, or `none`.
         var arm: String
         /// Populated when `arm == "none"`, or when an arm was attempted and
         /// abstained: the exact abstention cause, not a generic failure.

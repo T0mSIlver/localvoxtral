@@ -55,11 +55,32 @@ struct SSHSurfaceConnection: Sendable, Equatable {
     /// can — argv here is the exec-time vector of a VERIFIED OpenSSH binary,
     /// i.e. the command ssh actually ran, not a self-report.
     var herdr: HerdrInvocation
+    /// The argv named a jump host (`-J`). The connection this process opens
+    /// then goes to the JUMP host, while the destination's sshd sees the jump
+    /// host's source port — so the local socket and the remote
+    /// `$SSH_CONNECTION` describe two different connections and can never be
+    /// compared. Recorded rather than refused: the herdr arm has always
+    /// accepted `-J` (it never looks at a socket), and only the plain-ssh arm
+    /// must abstain on it.
+    var usesProxyJump: Bool
+    /// The ESTABLISHED TCP sockets of the surface's ssh process, or nil when
+    /// the fd table could not be read. Nil is UNREADABLE, never "none": an
+    /// empty array is a positive claim about a process and a failed syscall
+    /// is not one.
+    var sockets: [SSHClientSocket]?
 
-    init(destination: String, hasCompetingHerdrClient: Bool, herdr: HerdrInvocation) {
+    init(
+        destination: String,
+        hasCompetingHerdrClient: Bool,
+        herdr: HerdrInvocation,
+        usesProxyJump: Bool = false,
+        sockets: [SSHClientSocket]? = nil
+    ) {
         self.destination = destination
         self.hasCompetingHerdrClient = hasCompetingHerdrClient
         self.herdr = herdr
+        self.usesProxyJump = usesProxyJump
+        self.sockets = sockets
     }
 }
 
@@ -259,7 +280,8 @@ enum SSHDestinationTTYProbe {
         connection(
             onTTYDevicePath: path,
             deviceID: TTYProcessTable.liveDeviceID,
-            sshProcesses: liveSSHProcesses
+            sshProcesses: liveSSHProcesses,
+            readSockets: SSHProcessSocketReader.live
         )
     }
 
@@ -268,10 +290,16 @@ enum SSHDestinationTTYProbe {
     ///
     /// - Parameter sshProcesses: EVERY ssh process on the machine, not just this
     ///   device's — the uniqueness question is machine-wide by definition.
+    /// - Parameter readSockets: the surface ssh process's established TCP
+    ///   sockets. DEFAULTS TO UNREADABLE so a test that forgets to inject can
+    ///   never reach the kernel's fd tables, and so every caller that has no
+    ///   business with sockets keeps the pre-existing behaviour: the only arm
+    ///   that reads them treats nil as an abstention.
     static func connection(
         onTTYDevicePath path: String,
         deviceID: @Sendable (String) -> dev_t?,
-        sshProcesses: @Sendable () -> [SSHClientProcess]?
+        sshProcesses: @Sendable () -> [SSHClientProcess]?,
+        readSockets: @Sendable (Int32) -> [SSHClientSocket]? = { _ in nil }
     ) -> SSHDestinationTTYProbeResult {
         guard let device = deviceID(path) else {
             // A device we cannot resolve is not evidence of absence.
@@ -338,7 +366,11 @@ enum SSHDestinationTTYProbe {
                     surfaceUserID: surfaceProcess.effectiveUserID,
                     connections: connections
                 ),
-                herdr: parsed.herdr
+                herdr: parsed.herdr,
+                usesProxyJump: parsed.usesProxyJump,
+                // Read for the ONE process the surface rules just proved is
+                // the foreground ssh on the focused tty — never machine-wide.
+                sockets: readSockets(surfaceProcess.pid)
             )
         )
     }
@@ -447,6 +479,10 @@ enum SSHDestinationTTYProbe {
     struct ParsedInvocation: Sendable, Equatable {
         var destination: String
         var herdr: HerdrInvocation
+        /// A `-J` appeared before the destination operand. `-o ProxyJump=…`
+        /// needs no flag of its own: every `-o` but `SetEnv`/`SendEnv` already
+        /// refuses the whole parse.
+        var usesProxyJump: Bool = false
     }
 
     /// Options that take no argument, per ssh(1)'s synopsis
@@ -476,13 +512,15 @@ enum SSHDestinationTTYProbe {
         guard let executable = argv.first, isSSHArgumentZero(executable) else { return nil }
 
         var index = 1
+        var usesProxyJump = false
         while index < argv.count {
             let token = argv[index]
             if token == "--" {
                 guard index + 1 < argv.count else { return nil }
                 return invocation(
                     destinationOperand: argv[index + 1],
-                    remoteCommand: Array(argv.dropFirst(index + 2))
+                    remoteCommand: Array(argv.dropFirst(index + 2)),
+                    usesProxyJump: usesProxyJump
                 )
             }
             if token.hasPrefix("-"), token.count > 1 {
@@ -492,6 +530,7 @@ enum SSHDestinationTTYProbe {
                     index += consumed
                     continue
                 }
+                if namesProxyJump(optionToken: token) { usesProxyJump = true }
                 switch consumption(ofOptionToken: token) {
                 case .unrecognized, .refused:
                     return nil
@@ -504,20 +543,38 @@ enum SSHDestinationTTYProbe {
             }
             return invocation(
                 destinationOperand: token,
-                remoteCommand: Array(argv.dropFirst(index + 1))
+                remoteCommand: Array(argv.dropFirst(index + 1)),
+                usesProxyJump: usesProxyJump
             )
         }
         return nil
     }
 
+    /// Does this option token carry `-J` (a jump host)?
+    ///
+    /// Walks the cluster the way `consumption(ofOptionToken:)` does, so `-J`,
+    /// `-Jjump`, `-tJ jump` and `-4J jump` all count while a `J` that is part
+    /// of some OTHER option's glued argument (`-p22J`, `-i/tmp/J`) does not:
+    /// the walk stops at the first argument-taking letter, which is where the
+    /// option letters end.
+    static func namesProxyJump(optionToken token: String) -> Bool {
+        for character in token.dropFirst() {
+            if flagOptions.contains(character) { continue }
+            return character == "J"
+        }
+        return false
+    }
+
     private static func invocation(
         destinationOperand: String,
-        remoteCommand: [String]
+        remoteCommand: [String],
+        usesProxyJump: Bool
     ) -> ParsedInvocation? {
         guard let destination = normalizedDestination(destinationOperand) else { return nil }
         return ParsedInvocation(
             destination: destination,
-            herdr: classifyHerdrCommand(remoteCommand)
+            herdr: classifyHerdrCommand(remoteCommand),
+            usesProxyJump: usesProxyJump
         )
     }
 

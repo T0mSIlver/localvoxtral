@@ -108,10 +108,12 @@ fields and the threat model.
 > `password` mode; the
 > [plugin README](../integrations/claude-code/README.md) covers the
 > two-step setup. Joins are exact-or-nothing: any ambiguity attaches no
-> context at all. On stable (pre-1.4) Ghostty, an opt-in **window-title
-> marker fallback** is available — the
-> [plugin README](../integrations/claude-code/README.md) covers its setup. A
-> Claude Code **Remote Control** session — where the agent runs on a machine
+> context at all, and no join ever reads a window title — the TTY arm needs
+> Ghostty 1.4 or newer (or iTerm2 / Terminal.app), and there is no title
+> fallback under it. A Claude Code session in a plain `ssh host` shell on an
+> enrolled host joins through the **connection** instead: the ssh process on
+> your focused surface and the remote session have to name the same TCP
+> ports. A Claude Code **Remote Control** session — where the agent runs on a machine
 > of yours and [claude.ai/code](https://claude.ai/code) in a browser is the
 > UI — joins from the focused browser tab instead: its `session_…` URL is
 > matched exactly against the id the session's own hooks report (Chrome,

@@ -16,13 +16,37 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
 
     private func probe(
         deviceID: dev_t? = 42,
-        processes: [SSHClientProcess]?
+        processes: [SSHClientProcess]?,
+        sockets: [Int32: [SSHClientSocket]] = [:],
+        socketReads: SocketReadRecorder? = nil
     ) -> SSHDestinationTTYProbeResult {
         SSHDestinationTTYProbe.connection(
             onTTYDevicePath: "/dev/ttys003",
             deviceID: { _ in deviceID },
-            sshProcesses: { processes }
+            sshProcesses: { processes },
+            readSockets: { pid in
+                socketReads?.record(pid)
+                return sockets[pid]
+            }
         )
+    }
+
+    /// Which pids the socket reader was asked about. The answer must be
+    /// exactly one — the surface process — and never a machine-wide sweep.
+    final class SocketReadRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seen: [Int32] = []
+        func record(_ pid: Int32) {
+            lock.lock()
+            defer { lock.unlock() }
+            seen.append(pid)
+        }
+
+        var pids: [Int32] {
+            lock.lock()
+            defer { lock.unlock() }
+            return seen
+        }
     }
 
     /// A well-formed foreground ssh on the surface, unless told otherwise.
@@ -1257,5 +1281,102 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         let arguments = try XCTUnwrap(SSHDestinationTTYProbe.processArguments(pid: getpid()))
         XCTAssertFalse(arguments.isEmpty)
     }
+
+    // MARK: - Sockets and jump hosts (the plain-ssh arm's inputs)
+
+    func testTheSurfaceConnectionCarriesTheSocketsOfTheSurfaceProcessOnly() throws {
+        let recorder = SocketReadRecorder()
+        let socket = SSHClientSocket(
+            localPort: 51_960, peerPort: 22, peerAddress: "192.168.1.9"
+        )
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox"], pid: 501),
+                        // Another terminal's connection. Its sockets are not
+                        // this surface's and must never be read.
+                        ssh(["ssh", "sandbox"], pid: 777, device: otherTerminal),
+                    ],
+                    sockets: [
+                        501: [socket],
+                        777: [SSHClientSocket(
+                            localPort: 40_000, peerPort: 22, peerAddress: "192.168.1.9"
+                        )],
+                    ],
+                    socketReads: recorder
+                )
+            )
+        )
+        XCTAssertEqual(value.sockets, [socket])
+        XCTAssertEqual(recorder.pids, [501], "only the surface process may be read")
+    }
+
+    func testAnUnreadableSocketTableStaysNilRatherThanBecomingAnEmptyList() throws {
+        // The whole reason the field is optional: nil is "could not read", and
+        // the arm that consumes it abstains on nil while an empty list is a
+        // positive claim about the process.
+        let value = try XCTUnwrap(
+            connection(probe(processes: [ssh(["ssh", "sandbox"], pid: 501)], sockets: [:]))
+        )
+        XCTAssertNil(value.sockets)
+    }
+
+    func testTheProbeDefaultsToNoSocketReadAtAll() throws {
+        // The seam default must not reach the kernel: a caller that has no
+        // business with sockets, and a test that forgets to inject, both get
+        // "unreadable".
+        let processes = [ssh(["ssh", "sandbox"], pid: 501)]
+        let value = try XCTUnwrap(
+            connection(
+                SSHDestinationTTYProbe.connection(
+                    onTTYDevicePath: "/dev/ttys003",
+                    deviceID: { _ in 42 },
+                    sshProcesses: { processes }
+                )
+            )
+        )
+        XCTAssertNil(value.sockets)
+    }
+
+    func testAJumpHostIsRecordedRatherThanRefused() throws {
+        // `-J` still parses — the herdr arm has always accepted it and never
+        // looks at a socket. Only the plain-ssh arm, which compares ports
+        // across the connection, has to refuse it.
+        for argv in [
+            ["ssh", "-J", "bastion", "sandbox"],
+            ["ssh", "-Jbastion", "sandbox"],
+            ["ssh", "-tJ", "bastion", "sandbox"],
+            ["ssh", "-4J", "bastion", "sandbox"],
+        ] {
+            let value = try XCTUnwrap(connection(probe(processes: [ssh(argv)])), "\(argv)")
+            XCTAssertEqual(value.destination, "sandbox", "\(argv)")
+            XCTAssertTrue(value.usesProxyJump, "\(argv)")
+        }
+    }
+
+    func testAnOrdinaryConnectionDoesNotClaimAJumpHost() throws {
+        for argv in [
+            ["ssh", "sandbox"],
+            ["ssh", "-t", "sandbox"],
+            // A `J` inside another option's glued ARGUMENT is not an option
+            // letter: the walk stops at the first argument-taking letter.
+            ["ssh", "-i/tmp/J", "sandbox"],
+            ["ssh", "-p22", "sandbox"],
+        ] {
+            let value = try XCTUnwrap(connection(probe(processes: [ssh(argv)])), "\(argv)")
+            XCTAssertFalse(value.usesProxyJump, "\(argv)")
+        }
+    }
+
+    func testProxyJumpDetectionWalksAnOptionClusterTheSameWayConsumptionDoes() {
+        XCTAssertTrue(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-J"))
+        XCTAssertTrue(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-Jbastion"))
+        XCTAssertTrue(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-tJ"))
+        XCTAssertFalse(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-t"))
+        XCTAssertFalse(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-pJ"))
+        XCTAssertFalse(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-"))
+    }
+
 }
 #endif

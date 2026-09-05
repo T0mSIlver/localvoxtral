@@ -22,6 +22,11 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
     case tmux
     case tmuxPane
     case sshTTY
+    /// `$SSH_CONNECTION`, re-joined with commas by the shim — see
+    /// `ClaudeRemoteSSHConnectionReport`. sshd sets it in every session it
+    /// spawns; it is the only value either side of an ssh connection can name
+    /// that the OTHER side's kernel also knows.
+    case sshConnection
     case hookParentPID
 
     /// The header the shim writes, in its canonical spelling.
@@ -40,6 +45,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .tmux: return "X-Lvx-Env-Tmux"
         case .tmuxPane: return "X-Lvx-Env-Tmux-Pane"
         case .sshTTY: return "X-Lvx-Env-Ssh-Tty"
+        case .sshConnection: return "X-Lvx-Env-Ssh-Connection"
         case .hookParentPID: return "X-Lvx-Env-Hook-Parent-Pid"
         }
     }
@@ -61,6 +67,7 @@ public enum ClaudeRemoteEnvironmentField: String, CaseIterable, Sendable {
         case .tmux: return "$TMUX"
         case .tmuxPane: return "$TMUX_PANE"
         case .sshTTY: return "$SSH_TTY"
+        case .sshConnection: return "$SSH_CONNECTION"
         case .hookParentPID: return "$PPID"
         }
     }
@@ -128,6 +135,11 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
     public var tmux: String?
     public var tmuxPane: String?
     public var sshTTY: String?
+    /// `$SSH_CONNECTION` with its four space-separated fields re-joined by
+    /// commas (space is deliberately outside the header charset). Parse it with
+    /// `ClaudeRemoteSSHConnectionReport.parse` — never split it by hand, and
+    /// never treat it as an address to dial.
+    public var sshConnection: String?
     /// The remote shim's `$PPID` — Claude Code's pid ON THAT HOST. Diagnostics
     /// and cross-checks against another remote report only; never a local pid.
     public var hookParentPID: String?
@@ -142,6 +154,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         tmux: String? = nil,
         tmuxPane: String? = nil,
         sshTTY: String? = nil,
+        sshConnection: String? = nil,
         hookParentPID: String? = nil
     ) {
         self.herdrPaneID = herdrPaneID
@@ -153,6 +166,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
         self.tmux = tmux
         self.tmuxPane = tmuxPane
         self.sshTTY = sshTTY
+        self.sshConnection = sshConnection
         self.hookParentPID = hookParentPID
     }
 
@@ -174,6 +188,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .tmux: return tmux
             case .tmuxPane: return tmuxPane
             case .sshTTY: return sshTTY
+            case .sshConnection: return sshConnection
             case .hookParentPID: return hookParentPID
             }
         }
@@ -188,6 +203,7 @@ public struct ClaudeRemoteSessionEnvironment: Sendable, Equatable {
             case .tmux: tmux = newValue
             case .tmuxPane: tmuxPane = newValue
             case .sshTTY: sshTTY = newValue
+            case .sshConnection: sshConnection = newValue
             case .hookParentPID: hookParentPID = newValue
             }
         }

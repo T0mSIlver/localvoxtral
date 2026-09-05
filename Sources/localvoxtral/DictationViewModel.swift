@@ -2040,8 +2040,11 @@ final class DictationViewModel {
     /// what they meant.
     ///
     /// Every gate is checked BEFORE the resolver is asked, because asking is not
-    /// passive — it makes a live AX round trip for the window title. An opted-out
-    /// user, a remote endpoint, or a revoked Accessibility grant means no read.
+    /// passive: it sends an Apple event to the terminal for the focused pane's
+    /// TTY, walks the local process table, and may dial a multiplexer socket or
+    /// open an `ssh -L`. (It reads no window title — no join has since #250.)
+    /// An opted-out user, a remote endpoint, or a revoked Accessibility grant
+    /// means none of that happens.
     private func resolveClaudeSessionJoin(endpointURL: URL) async -> ClaudeSessionJoin? {
         guard let resolver = claudeSessionJoinResolver else {
             return dogfoodUnresolvedJoin(cause: "gate: no resolver installed")

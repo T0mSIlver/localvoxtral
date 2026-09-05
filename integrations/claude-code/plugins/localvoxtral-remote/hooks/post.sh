@@ -231,6 +231,26 @@ EOF
   lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
   lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
   lvx_env_header 'X-Lvx-Env-Ssh-Tty' "${SSH_TTY:-}"
+  # $SSH_CONNECTION is the one allowlisted value sshd writes with SPACES in it:
+  # "<client-ip> <client-port> <server-ip> <server-port>". Space is outside the
+  # charset above — deliberately, since that is what makes a value unable to end
+  # this header line — so the four fields are re-joined with commas, which IS in
+  # the charset. Widening the charset for one variable was the alternative and
+  # would have weakened every other one.
+  #
+  # The split is the shell's own field splitting: no fork, no external tool, and
+  # `set -f` first so a value containing a glob character cannot expand against
+  # this host's filesystem. Anything that is not EXACTLY four fields is dropped
+  # rather than guessed at — the Mac refuses a malformed value anyway
+  # (ClaudeRemoteSSHConnectionReport.parse), and a shim that guesses would just
+  # move the refusal.
+  set -f
+  # shellcheck disable=SC2086  # word splitting is the point
+  set -- ${SSH_CONNECTION:-}
+  if [ "$#" -eq 4 ]; then
+    lvx_env_header 'X-Lvx-Env-Ssh-Connection' "$1,$2,$3,$4"
+  fi
+  set +f
   # Best effort: the shim's parent is the Claude Code process on THIS host. It
   # is a pid in this machine's namespace and the Mac treats it as a label only.
   lvx_env_header 'X-Lvx-Env-Hook-Parent-Pid' "${PPID:-}"

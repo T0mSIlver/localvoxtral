@@ -749,6 +749,7 @@ final class TerminalScreenClaudeJoinTests: XCTestCase {
             [
                 "tty: no live session on this device",
                 "remote-herdr: ssh session undeterminable (probe unavailable)",
+                "remote-ssh: ssh session undeterminable (probe unavailable)",
             ],
             "the chain names only arms that still exist"
         )

@@ -799,12 +799,22 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         return try ClaudeRemoteHTTPCodec.parseRequestHead(Data(head.utf8)).request
     }
 
+    /// The two fields the generic round trip below cannot cover, and why:
+    /// `$PPID` is the shell's own (nothing can inject it), and
+    /// `$SSH_CONNECTION` is the one value the shim TRANSFORMS — its four
+    /// space-separated fields are re-joined with commas, so an opaque
+    /// `value-…` fixture would be correctly dropped. Each has a test of its
+    /// own below.
+    private static let shimTransformedOrIntrinsicFields: Set<ClaudeRemoteEnvironmentField> =
+        [.hookParentPID, .sshConnection]
+
     func testShimSendsEveryAllowlistedEnvValueUnderTheHeaderTheListenerReads() throws {
         // One distinct value per variable, so a copy-pasted header name shows
         // up as a swap rather than as a test that still passes.
         var environment: [String: String] = [:]
         var expected = ClaudeRemoteSessionEnvironment()
-        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+        for field in ClaudeRemoteEnvironmentField.allCases
+        where !Self.shimTransformedOrIntrinsicFields.contains(field) {
             let variable = String(field.shellSource.dropFirst())
             environment[variable] = "value-\(field.rawValue)"
             expected[field] = "value-\(field.rawValue)"
@@ -813,7 +823,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         let request = try parseCapturedHeaders(captured)
         let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
 
-        for field in ClaudeRemoteEnvironmentField.allCases where field != .hookParentPID {
+        for field in ClaudeRemoteEnvironmentField.allCases
+        where !Self.shimTransformedOrIntrinsicFields.contains(field) {
             XCTAssertEqual(
                 parsed[field], expected[field],
                 "\(field.shellSource) did not arrive as \(field.headerName)"
@@ -974,14 +985,125 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         // not, which would otherwise ship as a join arm that never joins.
         let source = try shimSource()
         for field in ClaudeRemoteEnvironmentField.allCases {
-            let expected = field == .hookParentPID
-                ? "'\(field.headerName)' \"${PPID:-}\""
-                : "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
+            let expected: String
+            switch field {
+            case .hookParentPID:
+                expected = "'\(field.headerName)' \"${PPID:-}\""
+            case .sshConnection:
+                // The one value the shim re-shapes rather than forwarding: its
+                // four space-separated fields are re-joined with commas, so the
+                // header carries the positional parameters the split produced.
+                // The VARIABLE still has to be read, and it is asserted
+                // separately just below.
+                expected = "'\(field.headerName)' \"$1,$2,$3,$4\""
+            default:
+                expected = "'\(field.headerName)' \"${\(field.shellSource.dropFirst()):-}\""
+            }
             XCTAssertTrue(
                 source.contains(expected),
                 "the shim must publish \(field.shellSource) as \(field.headerName): \(expected)"
             )
         }
+        XCTAssertTrue(
+            source.contains("set -- ${SSH_CONNECTION:-}"),
+            "the shim must read $SSH_CONNECTION through the shell's field splitting"
+        )
+        XCTAssertTrue(
+            source.contains("set -f"),
+            "the split must run with globbing off, or a value containing `*` expands"
+        )
+    }
+
+    func testShimRejoinsSSHConnectionWithCommasSoItSurvivesTheHeaderCharset() throws {
+        // The real value, in the exact spelling sshd writes it (measured on a
+        // live OpenSSH session, 2026-09-05:
+        // `SSH_CONNECTION=[127.0.0.1 51960 127.0.0.1 2222]`). Space is outside
+        // the header charset by design, so the shim re-joins the four fields —
+        // and the app's own parser has to accept what comes out.
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "10.0.0.2 51960 10.0.0.9 22",
+        ])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = try XCTUnwrap(ClaudeRemoteEnvironmentCodec.environment(in: request.headers))
+        let value = try XCTUnwrap(parsed.sshConnection)
+        XCTAssertEqual(value, "10.0.0.2,51960,10.0.0.9,22")
+        let report = try XCTUnwrap(ClaudeRemoteSSHConnectionReport.parse(value))
+        XCTAssertEqual(report.clientPort, 51_960)
+        XCTAssertEqual(report.serverPort, 22)
+    }
+
+    func testShimSendsAnIPv6SSHConnectionUnchangedApartFromTheSeparator() throws {
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "::1 51960 ::1 2222",
+        ])
+        let request = try parseCapturedHeaders(captured)
+        let parsed = ClaudeRemoteEnvironmentCodec.environment(in: request.headers)
+        XCTAssertEqual(parsed?.sshConnection, "::1,51960,::1,2222")
+    }
+
+    func testShimDropsAnySSHConnectionThatIsNotExactlyFourFields() throws {
+        // Not four fields is not a connection. Dropping beats guessing: the
+        // Mac would refuse a malformed value anyway, and a shim that repairs
+        // one only moves the refusal.
+        let malformed = [
+            "three fields only",
+            "10.0.0.2 51960 10.0.0.9 22 extra",
+            "10.0.0.2",
+            "   ",
+        ]
+        for value in malformed {
+            let captured = try capturedRequestHeaders(environment: ["SSH_CONNECTION": value])
+            XCTAssertFalse(
+                captured.contains("X-Lvx-Env-Ssh-Connection"),
+                "must be dropped, not repaired: \(value)"
+            )
+        }
+    }
+
+    func testAHostileSSHConnectionCannotForgeAHeaderLine() throws {
+        // The split makes this one different from every other env value: the
+        // pieces are re-assembled by the shim, so the charset check has to run
+        // on what it ASSEMBLED. A CR/LF payload splits into more than four
+        // fields (dropped); a four-field one whose parts carry forbidden bytes
+        // is refused by the charset.
+        let hostile = [
+            "a\r\nAuthorization: Bearer stolen 1 b 2",
+            "a\" 1 b 2",
+            "a$(id) 1 b 2",
+            "a`id` 1 b 2",
+            "* 1 * 2",
+            "a\u{e9} 1 b 2",
+        ]
+        for value in hostile {
+            let captured = try capturedRequestHeaders(environment: ["SSH_CONNECTION": value])
+            XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"), "\(value)")
+            XCTAssertFalse(captured.contains("X-Evil"), "\(value)")
+            XCTAssertFalse(captured.contains("Bearer stolen"), "\(value)")
+            let request = try parseCapturedHeaders(captured)
+            XCTAssertEqual(request.bearerToken, "unit-test-token", "\(value)")
+        }
+    }
+
+    func testShimDropsAnOversizedSSHConnection() throws {
+        // Four fields, each fine on its own, whose JOINED value is over the
+        // 200-byte cap: the cap must apply to what is written, not to what was
+        // read.
+        let chunk = String(repeating: "a", count: 60)
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "\(chunk) \(chunk) \(chunk) \(chunk)",
+        ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"))
+    }
+
+    func testShimKeepsPublishingItsOtherValuesWhenSSHConnectionIsMalformed() throws {
+        // Fail-open, per value: a broken connection variable costs its own
+        // header and nothing else.
+        let captured = try capturedRequestHeaders(environment: [
+            "SSH_CONNECTION": "nonsense",
+            "SSH_TTY": "/dev/pts/3",
+        ])
+        XCTAssertFalse(captured.contains("X-Lvx-Env-Ssh-Connection"))
+        XCTAssertTrue(captured.contains("X-Lvx-Env-Ssh-Tty: /dev/pts/3"))
     }
 
     func testShimKeepsTheEnvHeadersOutOfArgvAndInThePrivateHeaderFile() throws {
