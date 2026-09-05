@@ -232,8 +232,7 @@ final class ClaudeRemoteEnvironmentIsolationTests: XCTestCase {
         let epoch = epoch
         return ClaudeSessionRegistry(
             now: { epoch },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: { "lvx-\(UUID().uuidString.prefix(8).lowercased())" }
+            isProcessAlive: { _ in true }
         )
     }
 

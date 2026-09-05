@@ -32,9 +32,8 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
 
     override func tearDown() async throws {
         TerminalScreenAXReader.debugScreenReadOverride = nil
-        TerminalScreenAXReader.debugWindowTitleOverride = nil
         TerminalScreenAXReader.debugScreenWindowIDOverride = nil
-        TerminalScreenAXReader.debugTitleWindowIDOverride = nil
+        TerminalScreenAXReader.debugFocusedWindowIDOverride = nil
         TerminalScreenAppleScriptReader.debugContentsReadOverride = nil
         TerminalScreenContextSource.debugFrontmostTargetOverride = nil
         TerminalScreenContextSource.debugTargetForPIDOverride = nil
@@ -355,16 +354,12 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
 
     // MARK: - Session join: TTY arm and herdr probe for the new bundles
 
-    private func makeRegistry(markers: [String] = ["lvx-abcd"]) -> ClaudeSessionRegistry {
-        let markerQueue = Mutex(markers)
+    private func makeRegistry() -> ClaudeSessionRegistry {
         let epoch = self.epoch
         return ClaudeSessionRegistry(
             limits: .default,
             now: { epoch },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: {
-                markerQueue.withLock { $0.isEmpty ? "lvx-exhausted" : $0.removeFirst() }
-            }
+            isProcessAlive: { _ in true }
         )
     }
 
@@ -414,7 +409,6 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
             let askedBundles = Mutex<[String]>([])
             let resolver = ClaudeSessionJoinResolver(
                 registry: registry,
-                markerInWindowTitle: { _ in nil },
                 focusedTerminalTTY: { bundleID in
                     askedBundles.withLock { $0.append(bundleID) }
                     return "/dev/ttys042"
@@ -452,7 +446,6 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
             let probedTTYs = Mutex<[String]>([])
             let resolver = ClaudeSessionJoinResolver(
                 registry: registry,
-                markerInWindowTitle: { _ in nil },
                 focusedTerminalTTY: { _ in "/dev/ttys-outer" },
                 focusedWindowID: { _ in 101 },
                 herdrClientProbe: { tty in
@@ -482,10 +475,6 @@ final class TerminalScreenAppleScriptCaptureTests: XCTestCase {
         let seamCalls = Mutex(0)
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                seamCalls.withLock { $0 += 1 }
-                return nil
-            },
             focusedTerminalTTY: { _ in
                 seamCalls.withLock { $0 += 1 }
                 return "/dev/ttys042"

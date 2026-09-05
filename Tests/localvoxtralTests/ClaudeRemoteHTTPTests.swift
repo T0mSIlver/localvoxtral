@@ -316,51 +316,35 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
     // MARK: Responses
 
     /// The response-key allowlist. Claude Code EXECUTES what it finds here, so
-    /// an extra key is a control channel we did not mean to open.
-    func testMarkerResponseCarriesOnlyTheTwoAllowedKeys() throws {
-        for marker in ["lvx-abcd1234", nil] {
-            let body = ClaudeRemoteHTTPCodec.markerResponseBody(marker: marker)
-            let object = try XCTUnwrap(
-                try JSONSerialization.jsonObject(with: body) as? [String: Any]
-            )
-            XCTAssertTrue(
-                Set(object.keys).isSubset(of: ["terminalSequence", "suppressOutput"]),
-                "unexpected response keys: \(Set(object.keys))"
-            )
-        }
-    }
-
-    func testMarkerResponseCarriesTheOSC2Sequence() throws {
-        let body = ClaudeRemoteHTTPCodec.markerResponseBody(marker: "lvx-abcd1234")
-        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-        XCTAssertEqual(object["terminalSequence"] as? String, "\u{1B}]2;lvx-abcd1234\u{07}")
+    /// an extra key is a control channel we did not mean to open. There is
+    /// exactly ONE key, and the body is a constant — no request, and no
+    /// session, can vary a byte of it.
+    func testTheHookResponseBodyIsAConstantCarryingOnlySuppressOutput() throws {
+        let body = ClaudeRemoteHTTPCodec.hookResponseBody
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), ["suppressOutput"])
         XCTAssertEqual(object["suppressOutput"] as? Bool, true)
     }
 
-    /// A marker is written into a terminal, so it is code as much as data. The
-    /// response builder must inherit the OSC allowlist rather than restate it.
-    func testAnUnsafeMarkerProducesNoTerminalSequenceAtAll() throws {
-        let hostile = [
-            "lvx-\u{1B}]0;pwned\u{07}",
-            "lvx-abc\u{07}",
-            "lvx-abc\n",
-            "lvx-abc; rm -rf /",
-            "not-a-marker",
-            "lvx-" + String(repeating: "a", count: 64),
-        ]
-        for marker in hostile {
-            let body = ClaudeRemoteHTTPCodec.markerResponseBody(marker: marker)
-            let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
-            XCTAssertNil(
-                object["terminalSequence"],
-                "'\(marker)' must produce no sequence, got one"
-            )
-            XCTAssertEqual(object["suppressOutput"] as? Bool, true)
+    /// The regression that matters after the marker channel was removed: the
+    /// listener's only body must contain no escape byte, and in particular no
+    /// OSC introducer, whatever a caller does. It is a stored constant, so this
+    /// is a statement about every response the listener will ever send.
+    func testTheHookResponseBodyCarriesNoTerminalBytesAtAll() {
+        let body = ClaudeRemoteHTTPCodec.hookResponseBody
+        XCTAssertEqual(
+            String(decoding: body, as: UTF8.self), #"{"suppressOutput":true}"#
+        )
+        for byte in body {
+            XCTAssertGreaterThanOrEqual(byte, 0x20, "no control byte may reach a terminal")
+            XCTAssertLessThan(byte, 0x7F)
         }
     }
 
     func testResponseIsWellFormedAndAlwaysCloses() throws {
-        let body = ClaudeRemoteHTTPCodec.markerResponseBody(marker: "lvx-abcd1234")
+        let body = ClaudeRemoteHTTPCodec.hookResponseBody
         let data = ClaudeRemoteHTTPCodec.response(status: 200, body: body)
         let text = String(decoding: data, as: UTF8.self)
         XCTAssertTrue(text.hasPrefix("HTTP/1.1 200 OK\r\n"))

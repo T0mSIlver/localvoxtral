@@ -40,21 +40,6 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
     /// focus declarations, because the plugin runs inside that one process.
     private let opencodePID: Int32 = 4242
 
-    /// Endless distinct markers — these tests create many sessions and never
-    /// care which marker each one got.
-    private final class SequentialMarkers: Sendable {
-        private let counter = Mutex(0)
-
-        var allocate: @Sendable () -> String {
-            { [self] in
-                counter.withLock { value in
-                    value += 1
-                    return "lvx-" + String(format: "%08x", value)
-                }
-            }
-        }
-    }
-
     private func makeRegistry(
         limits: ClaudeRegistryLimits = .default,
         clock: TestClock? = nil,
@@ -63,9 +48,7 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         ClaudeSessionRegistry(
             limits: limits,
             now: (clock ?? TestClock(epoch)).now,
-            isProcessAlive: (liveness ?? TestLiveness()).probe,
-            allocateMarkerValue: SequentialMarkers().allocate
-        )
+            isProcessAlive: (liveness ?? TestLiveness()).probe)
     }
 
     /// An opencode session record as the plugin's server half publishes it:
@@ -130,7 +113,7 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         )
     }
 
-    private func resolvedSessionID(_ resolution: ClaudeMarkerResolution) -> String? {
+    private func resolvedSessionID(_ resolution: ClaudeSessionResolution) -> String? {
         if case .resolved(let snapshot) = resolution { return snapshot.sessionID }
         return nil
     }

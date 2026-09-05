@@ -208,25 +208,6 @@ enum DictationShortcutValidation {
     }
 }
 
-/// Sendable bridge from the main-actor settings model to the broker's POSIX
-/// connection threads. A reference wrapper is intentional: `Mutex` itself is
-/// noncopyable, while the broker predicate needs to retain shared state.
-private final class ClaudeLocalTitleMarkerFallbackState: Sendable {
-    private let enabled: Mutex<Bool>
-
-    init(_ enabled: Bool = false) {
-        self.enabled = Mutex(enabled)
-    }
-
-    func get() -> Bool {
-        enabled.withLock { $0 }
-    }
-
-    func set(_ value: Bool) {
-        enabled.withLock { $0 = value }
-    }
-}
-
 @MainActor
 @Observable
 final class SettingsStore {
@@ -279,8 +260,6 @@ final class SettingsStore {
         static let terminalScreenContextEnabled = "settings.terminal_screen_context_enabled"
         static let repoVocabularyEnabled = "settings.repo_vocabulary_enabled"
         static let claudeRepoContextEnabled = "settings.claude_repo_context_enabled"
-        static let claudeLocalTitleMarkerFallbackEnabled =
-            "settings.claude_local_title_marker_fallback_enabled"
         static let cmuxSurfaceJoinEnabled = "settings.cmux_surface_join_enabled"
         static let polishContextTrustedEndpointEnabled =
             "settings.polish_context_trusted_endpoint_enabled"
@@ -316,8 +295,6 @@ final class SettingsStore {
     }
 
     private let defaults: UserDefaults
-    @ObservationIgnored private let claudeLocalTitleMarkerFallbackState =
-        ClaudeLocalTitleMarkerFallbackState()
 
     static let defaultDictationShortcut = DictationShortcut(
         keyCode: UInt32(kVK_Space),
@@ -561,14 +538,6 @@ final class SettingsStore {
         }
     }
 
-    /// Whether LOCAL Claude Code hook responses may write the broker-allocated
-    /// session marker into the terminal window title. Opt-in (default false):
-    /// focused-pane TTY is the normal local join, while users on terminals
-    /// without that capability can explicitly restore the title fallback.
-    ///
-    /// This preference does not govern remote hook responses. SSH sessions can
-    /// only join through their title marker, so the remote listener always
-    /// emits one independently.
     /// Whether the cmux surface join arm may dial cmux's control socket.
     ///
     /// Off by default and separate from every other context toggle, because it
@@ -579,16 +548,6 @@ final class SettingsStore {
     var cmuxSurfaceJoinEnabled: Bool {
         didSet {
             defaults.set(cmuxSurfaceJoinEnabled, forKey: Keys.cmuxSurfaceJoinEnabled)
-        }
-    }
-
-    var claudeLocalTitleMarkerFallbackEnabled: Bool {
-        didSet {
-            claudeLocalTitleMarkerFallbackState.set(claudeLocalTitleMarkerFallbackEnabled)
-            defaults.set(
-                claudeLocalTitleMarkerFallbackEnabled,
-                forKey: Keys.claudeLocalTitleMarkerFallbackEnabled
-            )
         }
     }
 
@@ -607,15 +566,6 @@ final class SettingsStore {
         // `defaults` is passed only so an identity written by this feature's
         // first iteration migrates into that file instead of being replaced.
         ClaudeRemoteForwardPortAllocator(legacyDefaults: defaults).allocatedPort()
-    }
-
-    /// A sendable, live view of the preference for the broker's background
-    /// connection threads. The synchronized mirror keeps actor-isolated UI
-    /// state and non-Sendable `UserDefaults` out of the socket service, while a
-    /// Settings toggle still takes effect without restarting the app.
-    func makeClaudeLocalTitleMarkerFallbackProvider() -> @Sendable () -> Bool {
-        let state = claudeLocalTitleMarkerFallbackState
-        return { state.get() }
     }
 
     /// When true, the loopback-only endpoint gate that every polish-context
@@ -912,11 +862,6 @@ final class SettingsStore {
             defaults: defaults, key: Keys.repoVocabularyEnabled, fallback: false)
         claudeRepoContextEnabled = Self.loadBool(
             defaults: defaults, key: Keys.claudeRepoContextEnabled, fallback: false)
-        claudeLocalTitleMarkerFallbackEnabled = Self.loadBool(
-            defaults: defaults,
-            key: Keys.claudeLocalTitleMarkerFallbackEnabled,
-            fallback: false
-        )
         cmuxSurfaceJoinEnabled = Self.loadBool(
             defaults: defaults, key: Keys.cmuxSurfaceJoinEnabled, fallback: false)
         polishContextTrustedEndpointEnabled = Self.loadBool(
@@ -1013,8 +958,6 @@ final class SettingsStore {
                 forKey: Keys.overlayBufferShortcutModifiers)
             defaults.set(overlayBufferShortcutEnabled, forKey: Keys.overlayBufferShortcutEnabled)
         }
-
-        claudeLocalTitleMarkerFallbackState.set(claudeLocalTitleMarkerFallbackEnabled)
     }
 
     // MARK: - Init Helpers

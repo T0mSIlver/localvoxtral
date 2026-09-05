@@ -28,9 +28,10 @@ import Foundation
 ///
 /// Everything else the probe wires is a read: the AppleScript focused-pane tty,
 /// the herdr process-table binding, `pane.current`/`pane.process_info` on a
-/// local herdr socket, the AX window title. Nothing is written, nothing
-/// outlives the process, and the printed summary carries no token, nonce, host,
-/// pane id, marker, or path (see `ClaudeSessionJoinSummary`).
+/// local herdr socket, the AX focused-window identity. Nothing is written,
+/// nothing outlives the process, and the printed summary carries no token,
+/// nonce, host, pane id, session id, or path (see
+/// `ClaudeSessionJoinSummary`).
 ///
 /// ## What this process cannot know
 ///
@@ -111,11 +112,10 @@ enum ClaudeSurfaceProbe {
         hasLiveSessions: () -> Bool,
         resolve: (TerminalScreenTarget) async -> ClaudeSessionJoin?
     ) async -> ClaudeSessionJoinSummary {
-        // Refused before resolving, not after. Without the grant the marker arm
-        // cannot read a title and the window identity is unknowable, so a
-        // resolve would spend real Apple events to arrive at an answer whose
-        // abstentions would all be misattributed to the arms rather than to the
-        // missing permission.
+        // Refused before resolving, not after. Without the grant the window
+        // identity is unknowable, so a resolve would spend real Apple events to
+        // arrive at an answer whose abstentions would all be misattributed to
+        // the arms rather than to the missing permission.
         guard accessibilityTrusted else {
             return abstained(.accessibilityNotGranted)
         }

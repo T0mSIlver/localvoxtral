@@ -612,8 +612,7 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
         viewModel.managedStartupTaskID = UUID()
         let registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: { "lvx-successor" }
+            isProcessAlive: { _ in true }
         )
         registry.ingest(
             ClaudeHookRecord(
@@ -621,17 +620,16 @@ final class DictationViewModelFailFastUXTests: XCTestCase {
                 sessionID: "s-successor",
                 timestamp: 0,
                 rawCwd: "/repo",
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(
+                    hookPID: 777, claudePID: 9001, tty: "/dev/ttys003"
+                )
             ),
             origin: .localAuthenticated(peerUID: 501)
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-successor"), windowID: 7
-                )
-            }
+            focusedTerminalTTY: { _ in "/dev/ttys003" },
+            focusedWindowID: { _ in 101 }
         )
         let join = await resolver.resolve(
             target: TerminalScreenTarget(

@@ -117,9 +117,9 @@ Key subsystems:
     surface that receives `CLAUDE_PLUGIN_OPTION_TOKEN`. The shim keeps the
     token out of every argv (`curl --header @tempfile`, 0600, heredoc-written),
     and its stdout FAILS CLOSED — the mirror image of delivery failing open:
-    it prints a 200 body only when it matches exactly the one grammar the
-    listener can emit (`markerResponseBody` — `suppressOutput:true` plus an
-    optional lvx-marker `terminalSequence`), one line, size-capped; anything
+    it prints a 200 body only when it matches exactly the one body the
+    listener can emit (`hookResponseBody` — the constant
+    `{"suppressOutput":true}`), one line, size-capped; anything
     else prints nothing. Command-hook stdout is appended to the user's prompt
     when it is not control JSON (and `additionalContext` when it is), so
     whatever answers on 8473 must never be able to put a byte into the prompt
@@ -132,10 +132,12 @@ Key subsystems:
     the `claude plugin` commands; Settings can apply either only after a second,
     explicit confirmation that repeats the exact text.
   - Shared: `ClaudeSessionRegistry` (Mutex, injected clock) holds the prior
-    prompt, cwd, recent files, remote snippets, and a broker-allocated marker,
-    returned to the hook as an OSC 2 `terminalSequence` so the marker rides the
-    PTY back into Ghostty. Response keys are allowlisted to
-    `terminalSequence`/`suppressOutput` by `ClaudeHookOutput`'s shape.
+    prompt, cwd, recent files and remote snippets, keyed by session id — which
+    is the only handle there is. A hook reply is a RECEIPT (`v` + `accepted`)
+    and the remote listener's body is a constant, so neither can put a byte on
+    a terminal; the window-title marker that used to ride the PTY back into
+    Ghostty was removed on 2026-09-05 (see
+    [agent/invariants.md](agent/invariants.md)).
     See [agent/invariants.md](agent/invariants.md) for what is deliberately
     not wired up yet.
 - LLM polish: `LLMPolishingService` (chat/completions client) → in managed

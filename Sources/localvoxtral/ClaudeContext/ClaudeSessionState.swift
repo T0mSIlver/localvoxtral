@@ -1,20 +1,6 @@
 import ClaudeContextWire
 import Foundation
 
-/// A marker allocated by the broker to identify one Claude Code session.
-///
-/// The broker mints these; nothing on the wire can choose or influence one.
-/// The broker replies with the marker on the socket and the publisher writes it
-/// into the terminal title; reading it back out of the focused window is
-/// `ClaudeMarkerReading`, which currently abstains.
-public struct ClaudeSessionMarker: Sendable, Equatable, Hashable {
-    public let value: String
-
-    public init(value: String) {
-        self.value = value
-    }
-}
-
 /// Lifecycle of a session as the hooks describe it.
 public enum ClaudeSessionActivity: String, Sendable, Equatable {
     /// Between UserPromptSubmit and Stop — the model is working.
@@ -58,12 +44,9 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
     /// Assigned by the broker from peer credentials. Never from the record.
     public var origin: ClaudeTransportOrigin
     /// Which coding agent this session belongs to, fixed at first sight like
-    /// `origin`. Decides per-agent channel rules — most importantly, the
-    /// broker never returns a title marker to a non-Claude session, because
-    /// only Claude Code has a writable title channel (opencode rewrites its
-    /// own OSC titles mid-turn, like herdr does inside its panes).
+    /// `origin`. Decides session-id namespacing (`ClaudeAgentSessionScope`)
+    /// and any per-agent rule a join arm needs.
     public var agent: ClaudeHookAgent
-    public var marker: ClaudeSessionMarker
     /// Local path or opaque remote label — the type enforces which.
     public var workspace: ClaudeWorkspaceReference?
     /// The most recent prompt the user submitted. By the time dictation reads
@@ -159,13 +142,11 @@ public struct ClaudeSessionSnapshot: Sendable, Equatable {
         sessionID: String,
         origin: ClaudeTransportOrigin,
         agent: ClaudeHookAgent = .claude,
-        marker: ClaudeSessionMarker,
         firstSeen: Date
     ) {
         self.sessionID = sessionID
         self.origin = origin
         self.agent = agent
-        self.marker = marker
         self.workspace = nil
         self.latestPriorUserPrompt = nil
         self.latestPriorUserPromptAt = nil

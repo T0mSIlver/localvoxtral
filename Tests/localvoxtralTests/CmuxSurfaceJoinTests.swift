@@ -66,8 +66,7 @@ final class CmuxSurfaceJoinTests: XCTestCase {
     {
         ClaudeSessionRegistry(
             now: { [now] in now },
-            isProcessAlive: liveness.probe,
-            allocateMarkerValue: { "lvx-abcd" }
+            isProcessAlive: liveness.probe
         )
     }
 
@@ -127,12 +126,10 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         registry: ClaudeSessionRegistry,
         surfaces: JoinTestCmuxSurfaces?,
         enabled: Bool = true,
-        marker: TerminalScreenAXReader.FocusedWindowMarkerRead? = nil,
         statusSink: @escaping @MainActor (CmuxSocketStatus) -> Void = { _ in }
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in marker },
             // cmux has no AppleScript TTY reader; production passes nothing
             // through this seam for it and neither does this suite.
             focusedTerminalTTY: { _ in nil },
@@ -552,19 +549,22 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         }
     }
 
-    // MARK: - Falling through to the marker
+    // MARK: - What a cmux abstention leaves
 
-    /// Unlike herdr's, a cmux abstention is not terminal: cmux forwards the
-    /// inner OSC 2 to its window title, so a local session under the
-    /// title-fallback opt-in can still be joined the old way.
-    func testCmuxAbstentionStillTriesTheTitleMarker() async throws {
+    /// A cmux abstention used to fall through to the window-title marker arm:
+    /// cmux forwards an inner OSC 2 to its window title, so a local session
+    /// could still be joined the old way. That arm is gone (owner decision
+    /// 2026-09-05), and this is what its removal costs, pinned as behaviour:
+    /// a live LOCAL session that publishes no cmux surface id gets no join at
+    /// all when the socket cannot say which surface is focused.
+    func testCmuxAbstentionLeavesNoJoinForASessionWithNoSurfaceID() async {
         let registry = makeRegistry()
-        // A session with no cmux surface id at all — only a marker.
-        let snapshot = try XCTUnwrap(
+        // A session with no cmux surface id at all.
+        XCTAssertNotNil(
             registry.ingest(
                 ClaudeHookRecord(
                     event: .sessionStart,
-                    sessionID: "marker-1",
+                    sessionID: "surfaceless-1",
                     timestamp: 0,
                     rawCwd: "/repo",
                     prompt: nil,
@@ -576,15 +576,11 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         )
         let resolver = makeResolver(
             registry: registry,
-            surfaces: JoinTestCmuxSurfaces(focused: .unavailable),
-            marker: TerminalScreenAXReader.FocusedWindowMarkerRead(
-                marker: snapshot.marker, windowID: 101
-            )
+            surfaces: JoinTestCmuxSurfaces(focused: .unavailable)
         )
 
-        let resolvedJoin = await resolver.resolve(target: cmux)
-        let join = try XCTUnwrap(resolvedJoin)
-        XCTAssertEqual(join.mechanism, .titleMarker)
+        let join = await resolver.resolve(target: cmux)
+        XCTAssertNil(join)
     }
 
     // MARK: - Screen authorization
@@ -629,7 +625,6 @@ final class CmuxSurfaceJoinTests: XCTestCase {
         let join = try XCTUnwrap(resolvedJoin)
         let impostor = ClaudeSessionJoin(
             target: join.target,
-            marker: join.marker,
             snapshot: join.snapshot,
             windowID: join.windowID,
             mechanism: .herdrPane,

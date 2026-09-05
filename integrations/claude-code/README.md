@@ -40,9 +40,12 @@ model touches without watching your whole tree.
 
 ## Which terminal am I dictating into?
 
-Two mechanisms for a terminal, plus one for a browser. The resolver always
-tries the terminal pair in order; the opt-in setting only controls whether
-local sessions write the marker the second one looks for:
+Every mechanism below matches ONE identifier your session's own hooks
+published against the SAME identifier read off the surface you are looking at.
+There is no fallback that guesses, and in particular **no join reads your
+window title** — that mechanism was removed in September 2026 (see "What was
+removed" below). (Repo vocabulary, a separate opt-in feature, still reads a
+terminal title to find a git root; it never picks a Claude session.)
 
 **TTY join (the default — Ghostty ≥ 1.4 [currently the tip channel], iTerm2,
 and Terminal.app).** The hooks report
@@ -53,7 +56,7 @@ works mid-response, and tells two sessions in the same repo apart. Inside a
 [herdr](https://herdr.dev) multiplexer session the TTY can't match (herdr
 interposes its own PTY per pane), so the app instead binds the surface to
 herdr and asks herdr's own socket for the focused pane — an exact pane-id
-join, deliberately marker-free: any ambiguity, including two live herdr
+join: any ambiguity, including two live herdr
 sessions, attaches nothing. Other terminals abstain entirely rather than
 half-join.
 
@@ -63,8 +66,8 @@ accessible text and no scripting dictionary, so neither the TTY read nor any
 screen read above works there. Instead the app asks cmux's own automation
 socket which surface is focused, and matches that surface id against the one
 cmux injected into the session's environment — including into shells opened
-with `cmux ssh`, which is the one place a REMOTE session joins by something
-other than its title marker. That surface is also the only readable screen
+with `cmux ssh`, which is one of the ways a REMOTE session can
+join. That surface is also the only readable screen
 context, fetched per-surface (`surface.read_text`, the visible viewport, never
 the scrollback).
 
@@ -81,8 +84,8 @@ default:
    local socket.
 
 If the socket refuses the app, the settings row says
-`cmux socket requires password mode.` and the dictation simply falls back to
-the title marker — nothing is attached on a failed join.
+`cmux socket requires password mode.` and the dictation joins nothing —
+nothing is attached on a failed join.
 
 Two deliberate limits. The app cross-checks the surface's terminal device
 against the one your session reported, and **abstains when either side does not
@@ -91,20 +94,6 @@ pane), so opencode inside cmux does not join over this arm. And a session on a
 remote host joins only while cmux itself reports that surface's workspace as a
 live `cmux ssh` workspace, so a stale surface id from an earlier remote session
 cannot attach itself to whatever you are looking at now.
-
-**Title marker (opt-in local fallback, always on for SSH).** For an older
-(stable-channel) Ghostty build, enable **Settings → Text Processing →
-Polishing → Local Claude title fallback** and export
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` where Claude Code runs.
-The app then replies to local hooks with
-the session marker, which Claude Code writes into the window title as an OSC 2
-sequence; the environment variable stops Claude Code from overwriting it with
-its own conversation title mid-turn. The fallback exists for stable Ghostty
-only — iTerm2 and Terminal.app expose the TTY natively and never need it, and
-herdr-hosted sessions never receive a marker at all (herdr intercepts titles
-per pane, so a marker could only mis-join). Remote hooks always receive the
-marker regardless of this setting because it is the ONLY join for SSH
-sessions: their tty names a device on another machine.
 
 **Browser tab join (Claude Code "Remote Control").** A Remote Control session
 runs the `claude` process on one of your machines while
@@ -130,10 +119,44 @@ there is no verified per-tab capture route) — it attaches the session's own
 off-screen context only, and for a local session its repository, exactly like a
 terminal join does.
 
-The marker grammar is `lvx-<hex>` and nothing else is ever emitted — an escape
-sequence is code as much as data, so the marker is allowlist-validated and
-length-bounded before it goes anywhere near your terminal. If anything is off,
-the hook prints nothing at all.
+### What was removed (September 2026)
+
+Until then there was one more mechanism: the app allocated an `lvx-<hex>`
+marker per session, handed it back in the hook reply, and Claude Code wrote it
+into the window title as an OSC 2 escape sequence, where a focused-window read
+could find it. There was a **Local Claude title fallback** setting to turn it
+on for local sessions (default off), it asked you to export
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, and it was the only join an ordinary
+`ssh host` session had.
+
+It is gone, all of it — the marker, the setting, the escape sequence, the
+`terminalSequence` field in the hook reply, and the tmux/screen title
+passthrough advice that went with it. **The hooks now print nothing at all,
+ever**, and neither the local socket nor the remote listener has any field that
+could put a byte on your terminal. The reason is that a window title is a
+channel everything rewrites — Claude Code writes its own conversation titles
+over it mid-turn, herdr and cmux rewrite their pane titles, and you may rename
+a window yourself — so a marker sitting in a title said where a session used to
+be, not what your screen is showing now.
+
+That is measured, not assumed. On the owner's setup (2026-09-05) a herdr pane's
+captured title was polled at ~325 Hz for 69.4 s across a hook event: the marker
+was the title for 0.88 s in total, **1.26 %** of the window, and Claude Code's
+own conversation title held it the rest of the time. A remote-herdr join that
+had everything else right still failed on that check — unless the user had
+exported `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, which made it succeed
+immediately. The check was a one-in-a-hundred lottery, not a second binding.
+
+**What this costs you:** a plain `ssh host` session with no herdr, no cmux and
+no Remote Control has no join any more. Its off-screen context (prior prompt,
+cwd, files) is no longer attached to your dictation. Everything else is
+unaffected: local sessions join by tty, herdr panes by pane id (local and
+remote), cmux by surface id (local and remote), Remote Control by bridge
+session id.
+
+**If you had the setting on**, the stored value is simply ignored — there is
+nothing to migrate, and you can drop
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` from your shell profile.
 
 ## Install / update / uninstall
 
@@ -238,8 +261,8 @@ printf '%s' "$input" | ~/.claude/my-statusline.sh
 printf '%s' "$input" | /Applications/localvoxtral.app/Contents/MacOS/localvoxtral-claude-hook --statusline
 ```
 
-The query is read-only by construction: asking never creates a session,
-never refreshes one, and never carries a marker. The three strings above are
+The query is read-only by construction: asking never creates a session and
+never refreshes one. The three strings above are
 compile-time constants — nothing read off the socket is ever echoed into
 your terminal — and a payload without a usable `session_id` prints nothing
 rather than guessing.
@@ -316,7 +339,7 @@ remote host                            your Mac
 │   Bearer <token>      │   │          │              │             │
 └───────────────────────┘   │          │   ClaudeRemoteContextListener
                             └── ssh RemoteForward ────┘             │
-        ◄──── {"terminalSequence": "\e]2;lvx-…\a"} ────────────────┘
+        ◄──────────── {"suppressOutput":true} ───────────────────┘
 ```
 
 Each hook runs the plugin's bundled POSIX-sh shim (`hooks/post.sh`), which
@@ -335,10 +358,11 @@ the app does not answer within a second. (Declarative `http` hooks cannot do
 this: Claude Code expands their header `${VAR}`s from the process environment
 only and never injects plugin userConfig options there, so an http hook would
 always authenticate as an empty `Bearer` and be refused.)
-The app answers with the session's marker as a `terminalSequence`, which Claude
-Code writes to its terminal — so the marker rides the SSH PTY back into Ghostty
-and the pane identifies itself. Nothing else opens a port, and nothing is
-reachable from your LAN.
+The app answers every hook with the same fixed body, `{"suppressOutput":true}`
+— a constant, not a function of anything the request said, and carrying no
+field that could put a byte on your terminal. The shim refuses to print
+anything else. Nothing else opens a port, and nothing is reachable from your
+LAN.
 
 ## When the app is not running on your Mac
 
@@ -596,13 +620,6 @@ the host asking; revoking stops it being answered, immediately and without a
 restart. Rotating instead of revoking issues a new token and kills the old one
 with no grace period.
 
-## tmux / screen
-
-A multiplexer owns the window title, so the OSC 2 marker the hook writes does not
-reach Ghostty and the pane stays **unjoined** — you still get the off-screen
-context (prior prompt, cwd, recent files), you just do not get the screen join.
-`set -g set-titles on` in `~/.tmux.conf` lets tmux pass the title through.
-
 ## What the token can and cannot do
 
 A host presenting a valid token can give localvoxtral **remote context**. That is
@@ -613,8 +630,8 @@ that has no path accessor to hand a collector. A *local* process that connects t
 the listener gets the same treatment: connecting there can only downgrade you.
 
 Each host's sessions are namespaced under the host id its token authenticated,
-so two hosts can never collide on a session id, forge each other's sessions, or
-share a marker.
+so two hosts can never collide on a session id or forge each other's
+sessions.
 
 ## What this does not protect against
 

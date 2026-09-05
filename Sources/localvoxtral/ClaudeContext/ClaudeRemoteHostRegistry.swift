@@ -467,7 +467,8 @@ public final class ClaudeRemoteHostRegistry: Sendable {
     /// Compared case-insensitively, because a hostname is, and an ssh config
     /// alias is used as one in practice. That makes the comparison WIDER, which
     /// is safe only because a match is a precondition of the remote herdr arm
-    /// and never the join: the pane id, the marker, and the foreground process
+    /// and never the join: the pane id, herdr's own session claim, and the
+    /// foreground process
     /// all still have to agree afterwards.
     ///
     /// Returns the STORED alias, not the destination the user typed: that is
