@@ -68,27 +68,9 @@ struct SSHSurfaceConnection: Sendable, Equatable {
     /// empty array is a positive claim about a process and a failed syscall
     /// is not one.
     var sockets: [SSHClientSocket]?
-    /// Another same-uid ssh CONNECTION to this destination holds no
-    /// established TCP socket of its own — the shape of an OpenSSH
-    /// **ControlMaster mux client**, and the one way a session's
-    /// `$SSH_CONNECTION` can be honest and still describe a different
-    /// terminal's surface.
-    ///
-    /// With `ControlMaster auto` in `~/.ssh/config` (invisible in argv — the
-    /// probe refuses `-M`/`-S` but does not read config), terminal A's ssh
-    /// owns the TCP connection and terminal B's `ssh host` is a mux client
-    /// over an AF_UNIX control path with no TCP socket at all. sshd derives
-    /// `$SSH_CONNECTION` from the underlying CONNECTION, so a Claude session
-    /// started in B truthfully reports A's ports; dictating into A — a plain
-    /// shell with no agent in it — would then match and join B's session.
-    /// Found by review, 2026-09-05.
-    ///
-    /// So the flag is about a NEIGHBOR, not about this process: a socketless
-    /// (or unreadable) sibling to the same destination means connection
-    /// multiplexing cannot be ruled out, and the plain-ssh arm abstains. It
-    /// costs the ordinary two-terminals-two-connections case nothing — those
-    /// each hold their own socket and are told apart by their ports.
-    var hasSocketlessSiblingToDestination: Bool
+    /// What the OTHER ssh sessions to this destination look like — the
+    /// evidence for or against OpenSSH connection multiplexing.
+    var siblings: SSHSiblingSurvey
 
     init(
         destination: String,
@@ -96,15 +78,57 @@ struct SSHSurfaceConnection: Sendable, Equatable {
         herdr: HerdrInvocation,
         usesProxyJump: Bool = false,
         sockets: [SSHClientSocket]? = nil,
-        hasSocketlessSiblingToDestination: Bool = false
+        siblings: SSHSiblingSurvey = SSHSiblingSurvey()
     ) {
         self.destination = destination
         self.hasCompetingHerdrClient = hasCompetingHerdrClient
         self.herdr = herdr
         self.usesProxyJump = usesProxyJump
         self.sockets = sockets
-        self.hasSocketlessSiblingToDestination = hasSocketlessSiblingToDestination
+        self.siblings = siblings
     }
+}
+
+/// The OTHER interactive ssh sessions to one destination, counted by what the
+/// kernel could say about each.
+///
+/// This started life as a single `hasSocketlessSiblingToDestination: Bool` and
+/// the field immediately showed why that was not enough: a dictation on the
+/// owner's Mac reported `this destination may be carrying multiplexed ssh
+/// sessions` and there was NO WAY, from the abstention alone, to tell "a real
+/// ControlMaster client is open in another window" from "some ssh's fd table
+/// could not be read" (field report, 2026-09-06). Both abstain — that part was
+/// right — but they call for opposite fixes, and a diagnostic that cannot tell
+/// them apart costs a round trip to the owner's machine every time.
+///
+/// WHY EITHER ABSTAINS. With `ControlMaster auto` in `~/.ssh/config` (invisible
+/// in argv — the probe refuses `-M`/`-S` but does not read config), terminal
+/// A's ssh owns the TCP connection and terminal B's `ssh host` is a mux client
+/// over an AF_UNIX control path with no TCP socket at all. sshd derives
+/// `$SSH_CONNECTION` from the underlying CONNECTION, so a Claude session
+/// started in B truthfully reports A's ports; dictating into A — a plain shell
+/// with no agent in it — would otherwise match and join B's session. An
+/// UNREADABLE sibling is the same claim with less evidence, and an unreadable
+/// process cannot be ruled out.
+struct SSHSiblingSurvey: Sendable, Equatable {
+    /// Same-uid ssh CONNECTIONS, with a controlling terminal, whose argv parses
+    /// to this same destination, excluding this surface's own and excluding
+    /// ssh processes this app spawned.
+    var considered: Int
+    /// Of those, how many were readable and held no established TCP socket —
+    /// the ControlMaster mux-client shape.
+    var socketless: Int
+    /// Of those, how many had an fd table we could not read at all.
+    var unreadable: Int
+
+    init(considered: Int = 0, socketless: Int = 0, unreadable: Int = 0) {
+        self.considered = considered
+        self.socketless = socketless
+        self.unreadable = unreadable
+    }
+
+    /// Does any sibling leave connection multiplexing un-ruled-out?
+    var leavesMultiplexingPossible: Bool { socketless > 0 || unreadable > 0 }
 }
 
 /// WHY the probe could not pin an ssh session down. Deliberately content-free
@@ -318,11 +342,16 @@ enum SSHDestinationTTYProbe {
     ///   never reach the kernel's fd tables, and so every caller that has no
     ///   business with sockets keeps the pre-existing behaviour: the only arm
     ///   that reads them treats nil as an abstention.
+    /// - Parameter ownProcessID: this process, so ssh children the APP spawned
+    ///   (its `RemoteForward` supervisor, its herdr `ssh -L`) are never
+    ///   mistaken for somebody's terminal session. Injected rather than read
+    ///   here so the rule is testable without spawning anything.
     static func connection(
         onTTYDevicePath path: String,
         deviceID: @Sendable (String) -> dev_t?,
         sshProcesses: @Sendable () -> [SSHClientProcess]?,
-        readSockets: @Sendable (Int32) -> [SSHClientSocket]? = { _ in nil }
+        readSockets: @Sendable (Int32) -> [SSHClientSocket]? = { _ in nil },
+        ownProcessID: Int32 = getpid()
     ) -> SSHDestinationTTYProbeResult {
         guard let device = deviceID(path) else {
             // A device we cannot resolve is not evidence of absence.
@@ -394,12 +423,13 @@ enum SSHDestinationTTYProbe {
                 // Read for the ONE process the surface rules just proved is
                 // the foreground ssh on the focused tty — never machine-wide.
                 sockets: readSockets(surfaceProcess.pid),
-                hasSocketlessSiblingToDestination: hasSocketlessSibling(
+                siblings: surveySiblings(
                     destination: parsed.destination,
                     surfacePID: surfaceProcess.pid,
                     surfaceUserID: surfaceProcess.effectiveUserID,
                     connections: connections,
-                    readSockets: readSockets
+                    readSockets: readSockets,
+                    ownProcessID: ownProcessID
                 )
             )
         )
@@ -508,25 +538,45 @@ enum SSHDestinationTTYProbe {
     ///   competitor scan takes: a process we cannot describe cannot be ruled
     ///   out. The cost is one abstained dictation when a neighbor exits
     ///   between the scan and the read.
-    private static func hasSocketlessSibling(
+    static func surveySiblings(
         destination: String,
         surfacePID: Int32,
         surfaceUserID: uid_t,
         connections: [SSHClientProcess],
-        readSockets: @Sendable (Int32) -> [SSHClientSocket]?
-    ) -> Bool {
+        readSockets: @Sendable (Int32) -> [SSHClientSocket]?,
+        ownProcessID: Int32
+    ) -> SSHSiblingSurvey {
+        var survey = SSHSiblingSurvey()
         for process in connections
         where process.pid != surfacePID && process.effectiveUserID == surfaceUserID {
+            // OUR OWN ssh children are not somebody's terminal session. The
+            // app runs a `RemoteForward` supervisor and a herdr `ssh -L`, both
+            // to the very hosts this arm is about, and both are direct
+            // children of this process — kernel ppid, which no launcher gets
+            // to write. Their argv is refused by the parser today (`-N`), so
+            // this is belt and braces; it stops a future forward whose argv
+            // happens to parse from abstaining every dictation on that host.
+            guard process.parentPID != ownProcessID else { continue }
+            // A ControlMaster client that could mis-join is a session in
+            // ANOTHER WINDOW, so it holds a controlling terminal. A tty-less
+            // ssh is machinery (a `-N` forward, an `ssh host command` in a
+            // script): it is not a surface anyone runs an agent on, and
+            // counting it made transient helpers look like mux clients.
+            guard process.ttyDevice != nil else { continue }
             guard let executablePath = process.executablePath,
                   isTrustedSSHExecutable(executablePath),
                   let arguments = process.arguments,
                   let parsed = parse(arguments: arguments),
                   parsed.destination == destination
             else { continue }
-            guard let sockets = readSockets(process.pid) else { return true }
-            if sockets.isEmpty { return true }
+            survey.considered += 1
+            guard let sockets = readSockets(process.pid) else {
+                survey.unreadable += 1
+                continue
+            }
+            if sockets.isEmpty { survey.socketless += 1 }
         }
-        return false
+        return survey
     }
 
     /// Does any argv token mention herdr at all?

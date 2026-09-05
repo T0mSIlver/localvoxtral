@@ -14,11 +14,15 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
     private let surface: dev_t = 42
     private let otherTerminal: dev_t = 43
 
+    /// `ownProcessID` is a fixture value (1) rather than `getpid()`: the rule
+    /// it feeds is "this app's own ssh children are not somebody's terminal",
+    /// and a test has to be able to build a process that IS one.
     private func probe(
         deviceID: dev_t? = 42,
         processes: [SSHClientProcess]?,
         sockets: [Int32: [SSHClientSocket]] = [:],
-        socketReads: SocketReadRecorder? = nil
+        socketReads: SocketReadRecorder? = nil,
+        ownProcessID: Int32 = 1
     ) -> SSHDestinationTTYProbeResult {
         SSHDestinationTTYProbe.connection(
             onTTYDevicePath: "/dev/ttys003",
@@ -27,7 +31,8 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             readSockets: { pid in
                 socketReads?.record(pid)
                 return sockets[pid]
-            }
+            },
+            ownProcessID: ownProcessID
         )
     }
 
@@ -1395,10 +1400,16 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
 
     /// A neighbor ssh to the same destination whose fd table is readable and
     /// holds NO established TCP socket: an OpenSSH ControlMaster mux client.
-    private func muxClient(pid: Int32, argv: [String] = ["ssh", "sandbox"]) -> SSHClientProcess {
+    private func muxClient(
+        pid: Int32,
+        argv: [String] = ["ssh", "sandbox"],
+        parent: Int32 = 0,
+        device: dev_t? = 43
+    ) -> SSHClientProcess {
         SSHClientProcess(
             pid: pid,
-            ttyDevice: otherTerminal,
+            parentPID: parent,
+            ttyDevice: device,
             processGroupID: pid,
             terminalForegroundGroupID: pid,
             executablePath: "/usr/bin/ssh",
@@ -1408,6 +1419,80 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
 
     private var transportSocket: SSHClientSocket {
         SSHClientSocket(localPort: 51_960, peerPort: 22, peerAddress: "192.168.1.9")
+    }
+
+    func testTheSurveyCountsSocketlessAndUnreadableSiblingsSeparately() throws {
+        // The field could not tell a real ControlMaster client from an
+        // unreadable process (2026-09-06). They abstain alike and always did;
+        // they are different bugs, so they are different numbers.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox"], pid: 501),
+                        muxClient(pid: 777),
+                        muxClient(pid: 888),
+                        muxClient(pid: 999),
+                    ],
+                    sockets: [
+                        501: [transportSocket],
+                        777: [],
+                        888: [SSHClientSocket(
+                            localPort: 51_961, peerPort: 22, peerAddress: "192.168.1.9"
+                        )],
+                        // 999 absent from the map: unreadable.
+                    ]
+                )
+            )
+        )
+        XCTAssertEqual(value.siblings.considered, 3)
+        XCTAssertEqual(value.siblings.socketless, 1)
+        XCTAssertEqual(value.siblings.unreadable, 1)
+        XCTAssertTrue(value.siblings.leavesMultiplexingPossible)
+    }
+
+    func testAnSSHChildOfTHISProcessIsNeverASibling() throws {
+        // The app runs its own `ssh -N -R` RemoteForward and a herdr `ssh -L`
+        // to the very hosts this arm is about. They are OUR children by kernel
+        // ppid, they hold no interactive session, and counting one would
+        // abstain every dictation on that host. (Their argv is refused by the
+        // parser today; this stops a future forward whose argv happens to
+        // parse from resurrecting the bug.)
+        let ourPID: Int32 = 4242
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox"], pid: 501),
+                        muxClient(pid: 777, parent: ourPID),
+                    ],
+                    sockets: [501: [transportSocket], 777: []],
+                    ownProcessID: ourPID
+                )
+            )
+        )
+        XCTAssertEqual(value.siblings.considered, 0, "our own forward is not a sibling")
+        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
+    }
+
+    func testATTYLessSSHIsNotASibling() throws {
+        // Machinery: an `ssh -N` forward, or `ssh host command` in a script.
+        // A ControlMaster client that could mis-join is a session in another
+        // WINDOW, so it has a controlling terminal; a tty-less one is not a
+        // surface anyone runs an agent on.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox"], pid: 501),
+                        muxClient(pid: 777, device: nil),
+                    ],
+                    sockets: [501: [transportSocket], 777: []]
+                )
+            )
+        )
+        XCTAssertEqual(value.siblings.considered, 0)
+        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
     }
 
     func testASocketlessSiblingToTheSameDestinationIsReported() throws {
@@ -1423,7 +1508,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertTrue(value.hasSocketlessSiblingToDestination)
+        XCTAssertTrue(value.siblings.leavesMultiplexingPossible)
     }
 
     func testAnOrdinarySecondConnectionToTheSameDestinationIsNotASocketlessSibling() throws {
@@ -1442,7 +1527,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
     }
 
     func testASocketlessNeighborToANOTHERDestinationIsIrrelevant() throws {
@@ -1459,7 +1544,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
         XCTAssertEqual(
             recorder.pids, [501],
             "a connection to another host is not read at all — the destination "
@@ -1478,7 +1563,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertTrue(value.hasSocketlessSiblingToDestination)
+        XCTAssertTrue(value.siblings.leavesMultiplexingPossible)
     }
 
     func testANeighborWithUnparseableArgvIsSkippedRatherThanCounted() throws {
@@ -1495,7 +1580,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
     }
 
     func testACrossUIDSocketlessNeighborIsNotCounted() throws {
@@ -1513,7 +1598,7 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 )
             )
         )
-        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+        XCTAssertFalse(value.siblings.leavesMultiplexingPossible)
     }
 
 }

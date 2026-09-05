@@ -152,8 +152,10 @@ It deliberately does **not** join in three cases:
 * **when your `~/.ssh/config` may be sharing one connection**
   (`ControlMaster`): several terminals then run over one TCP connection and
   all report the same `$SSH_CONNECTION`, so it no longer identifies a window.
-  Detected by looking for a second `ssh` to the same host that holds no
-  connection of its own;
+  Detected two ways, each with its own reason in `--probe-surface`: the window
+  you are dictating into holds no connection of its own (it is a mux client),
+  or another `ssh` session to the same host does. If you use `ControlMaster`
+  and want this join, `ControlMaster no` for that host restores it;
 * **when anything is ambiguous**: two sessions reporting the same connection,
   two enrolled hosts matching the destination, an unreadable process table.
 

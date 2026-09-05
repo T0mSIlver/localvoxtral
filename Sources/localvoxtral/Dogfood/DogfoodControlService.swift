@@ -420,6 +420,20 @@ final class DogfoodControlService {
                 ("remoteHerdrPane", DogfoodControlJSON.bool(remote?.herdrPaneID != nil)),
                 ("remoteHerdrSocket", DogfoodControlJSON.bool(remote?.herdrSocketPath != nil)),
                 ("remoteCmuxSurface", DogfoodControlJSON.bool(remote?.cmuxSurfaceID != nil)),
+                // The plain-ssh arm's own header. Without it a field run could
+                // not tell "the host is on an old plugin" from "the ports did
+                // not match" — the first field report of that arm was exactly
+                // that ambiguity (2026-09-06). Bool, not the value: the tuple
+                // it carries is the join material.
+                ("remoteSSHConnection", DogfoodControlJSON.bool(remote?.sshConnection != nil)),
+                ("remoteSSHTTY", DogfoodControlJSON.bool(remote?.sshTTY != nil)),
+                ("remoteMultiplexerLabel", DogfoodControlJSON.bool(
+                    remote.map { environment in
+                        ClaudeSessionJoinResolver.multiplexerLabels.contains {
+                            environment[$0] != nil
+                        }
+                    } ?? false
+                )),
                 ("recentFiles", DogfoodControlJSON.int(snapshot.recentFiles.count)),
                 ("hasPriorPrompt", DogfoodControlJSON.bool(
                     snapshot.latestPriorUserPrompt != nil
