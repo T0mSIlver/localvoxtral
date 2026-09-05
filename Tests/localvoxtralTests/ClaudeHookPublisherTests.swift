@@ -217,12 +217,15 @@ final class ClaudeHookPublisherTests: XCTestCase {
         XCTAssertEqual(outcome, .droppedTransport(.notListening))
     }
 
-    // MARK: stdout — every non-marker path must print nothing
+    // MARK: stdout — a hook run has nothing to print, on any path
 
-    func testNoOutcomeOtherThanAMarkerEverPrintsAnything() {
-        // The fail-open contract in one assertion. Claude Code appends a
-        // UserPromptSubmit hook's non-JSON stdout to the user's prompt, so a
-        // stray byte from any of these paths would land in their context.
+    func testNoOutcomeCanCarryAnythingToPrint() {
+        // The fail-open contract as a property of the TYPE. Claude Code appends
+        // a UserPromptSubmit hook's non-JSON stdout to the user's prompt, so a
+        // stray byte from any of these paths would land in their context. The
+        // enum having no payload-bearing case is what makes that unreachable
+        // rather than merely unlikely — a case with bytes in it would fail to
+        // compile against this exhaustive switch.
         let outcomes: [ClaudeHookPublisher.Outcome] = [
             .published,
             .droppedUnparseable,
@@ -233,32 +236,31 @@ final class ClaudeHookPublisherTests: XCTestCase {
             .droppedTransport(.socketPathTooLong),
         ]
         for outcome in outcomes {
-            XCTAssertNil(outcome.stdout, "\(outcome) must print nothing")
+            switch outcome {
+            case .published, .droppedUnparseable, .droppedNoSocketPath:
+                break
+            case .droppedTransport:
+                break
+            }
         }
+        XCTAssertEqual(outcomes.count, 7, "every case is represented above")
     }
 
-    func testMarkerOutcomePrintsValidHookJSON() throws {
-        let data = try XCTUnwrap(ClaudeHookPublisher.Outcome.publishedWithMarker("lvx-abcd1234").stdout)
-        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(object["suppressOutput"] as? Bool, true)
-        XCTAssertEqual(object["terminalSequence"] as? String, "\u{1B}]2;lvx-abcd1234\u{07}")
-    }
-
-    func testMarkerOutcomeWithAnUnsafeMarkerPrintsNothing() {
-        // Defence in depth: the broker mints markers, but if a malformed one
-        // ever reached here it must not become terminal bytes.
-        XCTAssertNil(ClaudeHookPublisher.Outcome.publishedWithMarker("lvx-\u{1B}]0;x\u{07}").stdout)
-    }
-
-    func testUnreachableBrokerPrintsNothing() {
-        // Fail-open end to end: no broker, no marker, no output, no error.
-        let json = #"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/repo"}"#
-        let outcome = ClaudeHookPublisher(
+    func testAnAcceptedReplyStillProducesTheSilentOutcome() {
+        // The reply the broker sends is a receipt, not a channel: whatever it
+        // says, the run lands on `.published` and the binary prints nothing.
+        // Regression for the marker channel that used to live here — a reply
+        // carrying an extra key must not resurrect it.
+        let publisher = ClaudeHookPublisher(
             environment: makeEnvironment(
                 variables: [ClaudeHookSocketPath.environmentKey: "/tmp/absent-\(UUID().uuidString).sock"]
             )
-        ).run(stdin: Data(json.utf8), fallbackEvent: nil)
-        XCTAssertNil(outcome.stdout)
+        )
+        let json = #"{"hook_event_name":"SessionStart","session_id":"s1","cwd":"/repo"}"#
+        XCTAssertEqual(
+            publisher.run(stdin: Data(json.utf8), fallbackEvent: nil),
+            .droppedTransport(.notListening)
+        )
     }
 
     func testOverlongSocketPathFailsClosedNotCrashed() {

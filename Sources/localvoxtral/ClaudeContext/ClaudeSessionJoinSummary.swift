@@ -9,8 +9,8 @@ import Foundation
 /// and a captured record disagree about the same dictation, which is exactly
 /// the drift a diagnostic must never introduce.
 ///
-/// What is deliberately NOT here is the point. A join knows the session id, the
-/// marker, the workspace path, the herdr socket path, the remote host, and (for
+/// What is deliberately NOT here is the point. A join knows the session id,
+/// the workspace path, the herdr socket path, the remote host, and (for
 /// a panel-authorized remote join) a live nonce. None of those may cross this
 /// boundary: `workspaceIsLocal` is a Bool rather than the path, `origin` is a
 /// class rather than a host, and `terminal` is the app's name rather than
@@ -18,7 +18,7 @@ import Foundation
 /// resolver's own content-free outcome categories — the same strings it already
 /// writes to `Log.claudeContext`, which are audited for exactly this.
 struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
-    /// `tty`, `titleMarker`, `herdrPane`, `browserTab`, `cmuxSurface`,
+    /// `tty`, `herdrPane`, `browserTab`, `cmuxSurface`,
     /// `remoteHerdrPane`, or `none`. The resolver's mechanism vocabulary, not a
     /// second naming of it.
     var arm: String
@@ -85,7 +85,6 @@ struct ClaudeSessionJoinSummary: Codable, Equatable, Sendable {
     static func armName(_ mechanism: ClaudeSessionJoinMechanism) -> String {
         switch mechanism {
         case .ttyDevice: return "tty"
-        case .titleMarker: return "titleMarker"
         case .herdrPane: return "herdrPane"
         case .browserTab: return "browserTab"
         case .cmuxSurface: return "cmuxSurface"

@@ -5,24 +5,25 @@ import Observation
 /// Reads the controlling TTY of the FOCUSED terminal pane, so the Claude join
 /// can resolve from the process table instead of the window title.
 ///
-/// The title is a fought-over channel: Claude Code writes its own
-/// conversation-derived titles and clobbers the `lvx-` marker whenever it is
-/// responding (field finding, 2026-07-17), so a title read mid-turn abstains
-/// even though the session is right there. A pane's TTY has no such war: the
-/// hook publisher already reports the session's controlling TTY
-/// (`ClaudeHookProcessInfo.tty`), the supported terminals expose the focused
-/// pane's TTY over AppleScript (Ghostty ≥ 1.4 via ghostty-org/ghostty#11922;
-/// iTerm2 sessions and Terminal.app tabs natively), and equality is exact —
-/// two sessions in the same repo sit on different TTYs, which is precisely the
-/// case the workspace lookup abstains on. The marker join stays as the
-/// fallback for older Ghostty and as the ONLY join for SSH-remote sessions,
-/// whose TTY names a device on another machine.
+/// The title is a fought-over channel — Claude Code writes its own
+/// conversation-derived titles mid-turn (field finding, 2026-07-17), herdr and
+/// cmux rewrite theirs — which is why nothing joins on one any more. A pane's
+/// TTY has no such war: the hook publisher already reports the session's
+/// controlling TTY (`ClaudeHookProcessInfo.tty`), the supported terminals
+/// expose the focused pane's TTY over AppleScript (Ghostty ≥ 1.4 via
+/// ghostty-org/ghostty#11922; iTerm2 sessions and Terminal.app tabs natively),
+/// and equality is exact — two sessions in the same repo sit on different
+/// TTYs, which is precisely the case the workspace lookup abstains on.
+///
+/// LOCAL sessions only: an SSH-remote session's TTY names a device on another
+/// machine, so `resolve(tty:)` refuses remote candidates outright and a remote
+/// session joins only through an arm that proves the remote binding itself.
 @MainActor
 protocol TerminalFocusedTTYReading {
     /// The `/dev/ttysNNN` path of the focused pane of `bundleID`'s frontmost
     /// window, or nil when the app is unsupported, too old to expose `tty`,
-    /// Automation is denied, or the read failed. Nil means "fall back to the
-    /// marker", never "guess".
+    /// Automation is denied, or the read failed. Nil means "we do not know",
+    /// never "guess".
     func focusedTerminalTTY(bundleID: String) async -> String?
 }
 

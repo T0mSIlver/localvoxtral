@@ -63,9 +63,7 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         ClaudeSessionRegistry(
             limits: limits,
             now: (clock ?? TestClock(epoch)).now,
-            isProcessAlive: (liveness ?? TestLiveness()).probe,
-            allocateMarkerValue: SequentialMarkers().allocate
-        )
+            isProcessAlive: (liveness ?? TestLiveness()).probe)
     }
 
     /// An opencode session record as the plugin's server half publishes it:
@@ -130,7 +128,7 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
         )
     }
 
-    private func resolvedSessionID(_ resolution: ClaudeMarkerResolution) -> String? {
+    private func resolvedSessionID(_ resolution: ClaudeSessionResolution) -> String? {
         if case .resolved(let snapshot) = resolution { return snapshot.sessionID }
         return nil
     }

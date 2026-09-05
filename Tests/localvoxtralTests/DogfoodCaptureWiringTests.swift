@@ -503,7 +503,6 @@ final class DogfoodCaptureWiringTests: XCTestCase {
         let snapshot = ClaudeSessionSnapshot(
             sessionID: "s1",
             origin: .localAuthenticated(peerUID: 501),
-            marker: ClaudeSessionMarker(value: "lvx-abcd"),
             firstSeen: Date(timeIntervalSince1970: 1_000_000)
         )
         let cmuxJoin = DogfoodCaptureBuilder.join(
@@ -511,7 +510,6 @@ final class DogfoodCaptureWiringTests: XCTestCase {
                 target: TerminalScreenTarget(
                     pid: 4242, bundleID: TerminalScreenAllowlist.cmuxBundleID
                 ),
-                marker: snapshot.marker,
                 snapshot: snapshot,
                 windowID: 101,
                 mechanism: .cmuxSurface,

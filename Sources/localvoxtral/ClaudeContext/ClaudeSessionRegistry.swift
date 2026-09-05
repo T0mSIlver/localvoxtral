@@ -6,17 +6,21 @@ import Synchronization
 import Darwin
 #endif
 
-/// Result of a marker lookup.
+/// Result of a session lookup, shared by every join arm.
+///
+/// Arm-neutral on purpose: the tty, herdr pane, cmux surface, browser bridge
+/// and remote-herdr arms all ask a different question and all get this answer
+/// back, so nothing here names the evidence that was used.
 ///
 /// Every non-`resolved` case is an ABSTENTION, and callers must treat it as
 /// "we do not know" — never as "pick the most likely one". A wrong session's
 /// context silently poisons dictation grounding; no context merely fails to
 /// help it.
-public enum ClaudeMarkerResolution: Sendable, Equatable {
+public enum ClaudeSessionResolution: Sendable, Equatable {
     case resolved(ClaudeSessionSnapshot)
-    /// No session carries this marker.
+    /// No session matches the query.
     case unknown
-    /// A session carries it, but it is past TTL or its process is gone.
+    /// A session matches, but it is past TTL or its process is gone.
     case stale
     /// More than one live session matches the query.
     case ambiguous
@@ -79,7 +83,7 @@ public struct ClaudeRegistryLimits: Sendable, Equatable {
     public static let `default` = ClaudeRegistryLimits()
 }
 
-/// Sessions the broker knows about, keyed by session id, with markers.
+/// Sessions the broker knows about, keyed by session id.
 ///
 /// `Mutex` + `Sendable` per repo convention (no custom actors): the broker's
 /// accept thread writes, the main actor reads, and neither should await.
@@ -99,7 +103,6 @@ public final class ClaudeSessionRegistry: Sendable {
 
     private struct State {
         var sessions: [String: ClaudeSessionSnapshot] = [:]
-        var markerIndex: [String: String] = [:] // marker value -> session id
         var focusByTTY: [String: FocusDeclaration] = [:]
     }
 
@@ -107,25 +110,20 @@ public final class ClaudeSessionRegistry: Sendable {
     private let limits: ClaudeRegistryLimits
     private let now: @Sendable () -> Date
     private let isProcessAlive: @Sendable (Int32) -> Bool
-    private let allocateMarkerValue: @Sendable () -> String
 
     /// - Parameters:
     ///   - now: injected clock. Nothing here reads the wall clock directly, so
     ///     TTL/staleness is testable without sleeping (AGENTS: no wall-clock in
     ///     tests).
     ///   - isProcessAlive: liveness probe for a session's hook pid.
-    ///   - allocateMarkerValue: marker minting, injectable so tests can force
-    ///     collisions.
     public init(
         limits: ClaudeRegistryLimits = .default,
         now: @escaping @Sendable () -> Date = { Date() },
-        isProcessAlive: @escaping @Sendable (Int32) -> Bool = ClaudeSessionRegistry.defaultLivenessProbe,
-        allocateMarkerValue: @escaping @Sendable () -> String = ClaudeSessionRegistry.defaultMarkerValue
+        isProcessAlive: @escaping @Sendable (Int32) -> Bool = ClaudeSessionRegistry.defaultLivenessProbe
     ) {
         self.limits = limits
         self.now = now
         self.isProcessAlive = isProcessAlive
-        self.allocateMarkerValue = allocateMarkerValue
     }
 
     /// Fold an authenticated record into the registry.
@@ -233,15 +231,12 @@ public final class ClaudeSessionRegistry: Sendable {
                 if snapshot.agent != record.agent { return nil }
             } else {
                 if record.event == .sessionEnd { return nil } // nothing to start
-                let marker = ClaudeSessionMarker(value: allocateUniqueMarkerLocked(&state))
                 snapshot = ClaudeSessionSnapshot(
                     sessionID: record.sessionID,
                     origin: origin,
                     agent: record.agent,
-                    marker: marker,
                     firstSeen: timestamp
                 )
-                state.markerIndex[marker.value] = record.sessionID
             }
 
             ClaudeSessionReducer.reduce(
@@ -266,27 +261,13 @@ public final class ClaudeSessionRegistry: Sendable {
         }
     }
 
-    /// Look up by marker. Abstains on unknown and on stale.
-    public func resolve(marker: ClaudeSessionMarker) -> ClaudeMarkerResolution {
-        let timestamp = now()
-        return state.withLock { state in
-            guard let sessionID = state.markerIndex[marker.value],
-                  let snapshot = state.sessions[sessionID]
-            else {
-                return .unknown
-            }
-            guard isFresh(snapshot, now: timestamp) else { return .stale }
-            return .resolved(snapshot)
-        }
-    }
-
-    /// Look up the marker for a local workspace path.
+    /// Look up a local workspace path.
     ///
     /// Abstains as `.ambiguous` when two live sessions share a workspace —
     /// which is exactly what happens with two terminal tabs in one repo, so it
     /// is the common case, not an edge case. Resolving it needs the focus join
     /// that is deliberately not built yet.
-    public func resolve(workspace: LocalWorkspacePath) -> ClaudeMarkerResolution {
+    public func resolve(workspace: LocalWorkspacePath) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
@@ -319,8 +300,8 @@ public final class ClaudeSessionRegistry: Sendable {
     /// * **Per-session claims** (Claude Code): each hook record carries the
     ///   session's controlling TTY, so a device usually maps to one session.
     ///   Two live claims on one TTY (a suspended Claude beneath a new one in
-    ///   the same pane) abstain `.ambiguous`; the caller's marker fallback may
-    ///   still disambiguate.
+    ///   the same pane) abstain `.ambiguous` — no later arm reads a TTY, so
+    ///   that abstention is the dictation's answer.
     /// * **Focus declarations** (opencode): one opencode process hosts many
     ///   sessions on one TTY and its TUI shows one at a time, so its sessions
     ///   carry no TTY at all — the TUI half instead declares which session the
@@ -334,7 +315,7 @@ public final class ClaudeSessionRegistry: Sendable {
     /// per-session claim next to a fresh focus declaration naming a different
     /// session — that is two agents each positively claiming the same pane,
     /// and the only safe answer is `.ambiguous`.
-    public func resolve(tty: String) -> ClaudeMarkerResolution {
+    public func resolve(tty: String) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
@@ -389,7 +370,7 @@ public final class ClaudeSessionRegistry: Sendable {
     /// panes the same way they arbitrate a TTY: a verified declaration
     /// (fresh, pid-matched) naming EXACTLY ONE of the pane's candidates
     /// resolves to it; anything else stays `.ambiguous`.
-    public func resolve(herdrPaneID: String) -> ClaudeMarkerResolution {
+    public func resolve(herdrPaneID: String) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
@@ -443,7 +424,7 @@ public final class ClaudeSessionRegistry: Sendable {
     ///
     /// Exact equality, and zero or several matches abstain: two sessions
     /// reporting one bridge id means we cannot tell which the tab belongs to.
-    public func resolve(bridgeSessionID: String) -> ClaudeMarkerResolution {
+    public func resolve(bridgeSessionID: String) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
@@ -477,7 +458,7 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Multi-candidate panes get the same focus-declaration arbitration as
     /// herdr: one opencode TUI hosts many sessions on one surface, and without
     /// it the arm would silently stop joining those panes (review C3).
-    public func resolve(cmuxSurfaceID: String) -> ClaudeMarkerResolution {
+    public func resolve(cmuxSurfaceID: String) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
@@ -511,9 +492,9 @@ public final class ClaudeSessionRegistry: Sendable {
 
     /// Look up by cmux surface id among REMOTE sessions — the `cmux ssh` half.
     ///
-    /// This is the one join where a remote session may be selected by something
-    /// other than a broker-allocated marker, and it is sound for a specific
-    /// reason: the surface id was MINTED by the cmux app on this Mac and pushed
+    /// A remote session is selected here by a label the REMOTE host reported,
+    /// which is sound for a specific reason: the surface id was MINTED by the
+    /// cmux app on this Mac and pushed
     /// into the remote shell's environment by cmux's own ssh relay. The remote
     /// hook then reports it back over the authenticated listener. So the value
     /// is ours, travelling out and back, and the equality test is between two
@@ -532,7 +513,7 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Mirrors the local method's shape, minus focus arbitration: focus
     /// declarations are a LOCAL opencode mechanism keyed by a local TTY, and a
     /// remote candidate must never be resolvable by one.
-    public func resolveRemote(cmuxSurfaceID: String) -> ClaudeMarkerResolution {
+    public func resolveRemote(cmuxSurfaceID: String) -> ClaudeSessionResolution {
         let timestamp = now()
         return state.withLock { state in
             let matches = state.sessions.values.filter { snapshot in
@@ -647,7 +628,7 @@ public final class ClaudeSessionRegistry: Sendable {
     /// Revocation is immediate at the door — `ClaudeRemoteHostRegistry` refuses
     /// the token on the next request — but that only stops NEW records; whatever
     /// the host already published would otherwise sit in this registry until TTL
-    /// expired it, joinable by its marker the whole time. A user who revokes a
+    /// expired it, joinable the whole time. A user who revokes a
     /// host means "that machine's context is no longer mine to use", not "no
     /// more of it, but keep the last four hours".
     ///
@@ -659,10 +640,8 @@ public final class ClaudeSessionRegistry: Sendable {
     /// transport are never candidates, whatever `channels` says. Their trust
     /// and lifecycle have nothing to do with SSH host enrollment.
     ///
-    /// Eviction of a session and of its marker index entry happens under one
-    /// hold of the state mutex — a reader must never observe a marker pointing
-    /// at a session that is already gone, nor a session reachable by a marker
-    /// that was supposed to die with it.
+    /// Eviction happens under one hold of the state mutex, so a reader can
+    /// never observe half of it.
     ///
     /// - Returns: how many sessions were evicted.
     @discardableResult
@@ -683,7 +662,6 @@ public final class ClaudeSessionRegistry: Sendable {
     public func removeAll() {
         state.withLock { state in
             state.sessions.removeAll()
-            state.markerIndex.removeAll()
             state.focusByTTY.removeAll()
         }
     }
@@ -779,8 +757,7 @@ public final class ClaudeSessionRegistry: Sendable {
     }
 
     private func removeLocked(_ state: inout State, sessionID: String) {
-        guard let snapshot = state.sessions.removeValue(forKey: sessionID) else { return }
-        state.markerIndex.removeValue(forKey: snapshot.marker.value)
+        state.sessions.removeValue(forKey: sessionID)
     }
 
     /// `upserted` is the sessionID this upsert just wrote: on a lastActivity
@@ -829,35 +806,6 @@ public final class ClaudeSessionRegistry: Sendable {
         return lhs.sessionID < rhs.sessionID
     }
 
-    /// Never hand out a marker that is already indexed. The allocator is random
-    /// by default, so a collision is vanishingly unlikely — but "unlikely"
-    /// aliasing of two sessions is the exact failure that would silently feed
-    /// the wrong context into someone's dictation, so we check.
-    private func allocateUniqueMarkerLocked(_ state: inout State) -> String {
-        for _ in 0..<16 {
-            let candidate = allocateMarkerValue()
-            if state.markerIndex[candidate] == nil { return candidate }
-        }
-        // Exhausted: fall back to a value that cannot collide with the index.
-        //
-        // Hex-only, because the fallback must satisfy the SAME grammar the
-        // random allocator emits (`lvx-` + lowercase hex —
-        // `ClaudeMarkerSequence.isValidMarker`). The old `lvx-fallback-<n>`
-        // could not: `k` is not in the allowlist, so the marker was minted and
-        // indexed but `ClaudeMarkerSequence` refused to write it to a title,
-        // leaving that session permanently unjoinable — the marker join is
-        // positive-only, so it would silently never get context again.
-        //
-        // Terminating: each candidate is checked against the index, and the
-        // counter's space is vastly larger than the number of live sessions.
-        var counter = 0
-        while true {
-            let candidate = "lvx-" + String(format: "%08x", counter)
-            if state.markerIndex[candidate] == nil { return candidate }
-            counter += 1
-        }
-    }
-
     // MARK: - Defaults
 
     /// `kill(pid, 0)` — the standard liveness probe. EPERM means the process
@@ -866,10 +814,5 @@ public final class ClaudeSessionRegistry: Sendable {
         guard pid > 0 else { return false }
         if kill(pid, 0) == 0 { return true }
         return errno == EPERM
-    }
-
-    public static let defaultMarkerValue: @Sendable () -> String = {
-        let hex = (0..<4).map { _ in String(format: "%02x", Int.random(in: 0...255)) }.joined()
-        return "lvx-\(hex)"
     }
 }

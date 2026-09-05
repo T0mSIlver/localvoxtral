@@ -301,21 +301,21 @@ public enum ClaudeRemoteHTTPCodec {
         return data
     }
 
-    /// The ONLY body shape this listener ever returns.
+    /// The ONE body shape this listener ever returns — a constant, not a
+    /// function of anything the request said.
     ///
-    /// `ClaudeHookOutput` has exactly two properties, so the response key
-    /// allowlist (`terminalSequence`, `suppressOutput`) is a property of the
-    /// type rather than of a filter someone has to remember to apply. Claude
-    /// Code executes what it finds here — an extra key would at best be ignored
-    /// and at worst be a control channel we did not mean to open.
-    public static func markerResponseBody(marker: String?) -> Data {
-        if let line = ClaudeHookOutput.markerOutputLine(marker: marker) { return line }
-        // No marker, or a marker we are not willing to emit: still answer, but
-        // with nothing for the terminal to execute.
+    /// `ClaudeHookOutput` has exactly one property, so the response key
+    /// allowlist (`suppressOutput`) is a property of the type rather than of a
+    /// filter someone has to remember to apply. Claude Code executes what it
+    /// finds here — an extra key would at best be ignored and at worst be a
+    /// control channel we did not mean to open — and being a CONSTANT is the
+    /// stronger statement: no accepted record, and no rejected one, can vary
+    /// what the remote shim is allowed to print.
+    public static let hookResponseBody: Data = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        return (try? encoder.encode(ClaudeHookOutput(terminalSequence: nil))) ?? Data("{}".utf8)
-    }
+        return (try? encoder.encode(ClaudeHookOutput())) ?? Data("{\"suppressOutput\":true}".utf8)
+    }()
 
     static func reasonPhrase(for status: Int) -> String {
         switch status {

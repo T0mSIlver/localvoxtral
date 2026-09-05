@@ -87,7 +87,8 @@ struct DogfoodCaptureRecord: Codable, Equatable, Sendable {
     /// abstention is as interesting as a join: "never joins" is the failure mode
     /// the herdr and TTY arms fail into, and it is invisible without the reason.
     struct Join: Codable, Equatable, Sendable {
-        /// `tty`, `herdrPane`, `titleMarker`, or `none`.
+        /// `tty`, `herdrPane`, `cmuxSurface`, `browserTab`,
+        /// `remoteHerdrPane`, or `none`.
         var arm: String
         /// Populated when `arm == "none"`, or when an arm was attempted and
         /// abstained: the exact abstention cause, not a generic failure.

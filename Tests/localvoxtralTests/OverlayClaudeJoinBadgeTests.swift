@@ -4,14 +4,6 @@ import Synchronization
 import XCTest
 @testable import localvoxtral
 
-private final class BadgeTestMarkers: Sendable {
-    private let queue: Mutex<[String]>
-    init(_ values: [String]) { queue = Mutex(values) }
-    var allocate: @Sendable () -> String {
-        { [self] in queue.withLock { $0.isEmpty ? "lvx-exhausted" : $0.removeFirst() } }
-    }
-}
-
 /// The overlay's join badge: what it says, when it says nothing, and what it
 /// refuses to render.
 ///
@@ -27,19 +19,16 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     private let local = ClaudeTransportOrigin.localAuthenticated(peerUID: 501)
     private let remote = ClaudeTransportOrigin.remote(channel: "c1")
 
-    private func registry(markers: [String] = ["lvx-abcd"]) -> ClaudeSessionRegistry {
+    private static let tty = "/dev/ttys003"
+
+    private func registry() -> ClaudeSessionRegistry {
         ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 1_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: BadgeTestMarkers(markers).allocate
-        )
+            isProcessAlive: { _ in true })
     }
 
-    /// A resolved join for a session whose cwd is `cwd`, via the marker arm.
-    private func join(
-        cwd: String?,
-        origin: ClaudeTransportOrigin? = nil
-    ) async -> ClaudeSessionJoin? {
+    /// A resolved LOCAL join for a session whose cwd is `cwd`, via the tty arm.
+    private func join(cwd: String?) async -> ClaudeSessionJoin? {
         let registry = registry()
         registry.ingest(
             ClaudeHookRecord(
@@ -47,19 +36,45 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
                 sessionID: "s1",
                 timestamp: 0,
                 rawCwd: cwd,
-                process: ClaudeHookProcessInfo(hookPID: 777, claudePID: 9001)
+                process: ClaudeHookProcessInfo(
+                    hookPID: 777, claudePID: 9001, tty: Self.tty
+                )
             ),
-            origin: origin ?? local
+            origin: local
         )
         let resolver = ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in
-                TerminalScreenAXReader.FocusedWindowMarkerRead(
-                    marker: ClaudeSessionMarker(value: "lvx-abcd"), windowID: 101
-                )
-            }
+            focusedTerminalTTY: { _ in Self.tty }
         )
         return await resolver.resolve(target: ghostty)
+    }
+
+    /// A resolved REMOTE join, via the browser-tab arm.
+    ///
+    /// Every TERMINAL arm is local-only — `resolve(tty:)` refuses remote
+    /// candidates outright — so the Remote Control bridge id is the arm that
+    /// spans origins, and it is what produces a remote join here rather than a
+    /// hand-built `ClaudeSessionJoin`. The point of the test is the label the
+    /// wire path actually derives for a remote origin, so the join has to come
+    /// through a real arm.
+    private func remoteJoin(cwd: String?) async -> ClaudeSessionJoin? {
+        let registry = registry()
+        registry.ingest(
+            ClaudeHookRecord(
+                event: .sessionStart, sessionID: "s1", timestamp: 0, rawCwd: cwd
+            ),
+            origin: remote,
+            environment: ClaudeRemoteSessionEnvironment(bridgeSessionID: "session_abc123")
+        )
+        let resolver = ClaudeSessionJoinResolver(
+            registry: registry,
+            focusedTerminalTTY: { _ in nil },
+            focusedBrowserTabURL: { _ in "https://claude.ai/code/session_abc123" },
+            focusedWindowID: { _ in 101 }
+        )
+        return await resolver.resolve(
+            target: TerminalScreenTarget(pid: 4242, bundleID: BrowserTabAllowlist.chromeBundleID)
+        )
     }
 
     // MARK: - What the badge says
@@ -80,7 +95,8 @@ final class OverlayClaudeJoinBadgeTests: XCTestCase {
     // A remote session's cwd never survives as a path — `opaqueLabel` reduces it
     // to a bare name. The badge shows that name and nothing else.
     func testAResolvedRemoteJoinNamesItsOpaqueLabel() async {
-        let join = await join(cwd: "/srv/checkouts/api-gateway", origin: remote)
+        let join = await remoteJoin(cwd: "/srv/checkouts/api-gateway")
+        XCTAssertNotNil(join, "positive control: the label below means nothing without a join")
         XCTAssertEqual(
             OverlayClaudeJoinBadge.resolve(
                 join: join,

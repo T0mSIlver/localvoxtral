@@ -219,7 +219,7 @@ final class OpencodePluginContractTests: XCTestCase {
     private func deliverBrokerReply(accepted: Bool? = nil) {
         let line = String(
             decoding: ClaudeBrokerResponse.encodeLine(
-                ClaudeBrokerResponse(marker: nil, accepted: accepted)
+                ClaudeBrokerResponse(accepted: accepted)
             )!,
             as: UTF8.self
         ).replacingOccurrences(of: "\n", with: "\\n")

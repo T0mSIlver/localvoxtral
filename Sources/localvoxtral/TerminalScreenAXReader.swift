@@ -55,13 +55,6 @@ enum TerminalScreenAXReader {
         let windowID: CGWindowID?
     }
 
-    /// One focused-window title read: the parsed marker plus the identity of
-    /// the window the title was read from. Same rationale as
-    /// `VisibleScreenRead.windowID`.
-    struct FocusedWindowMarkerRead: Sendable, Equatable {
-        let marker: ClaudeSessionMarker
-        let windowID: CGWindowID?
-    }
     /// Absolute character cap on a screen read. A tall Ghostty window on a
     /// 6K display is ~200×80 ≈ 16k characters, so this admits the full visible
     /// screen with headroom while bounding both the AX payload we retain and
@@ -130,63 +123,35 @@ enum TerminalScreenAXReader {
         return VisibleScreenRead(text: text, windowID: raw.windowID)
     }
 
-    /// The marker Claude Code wrote into the focused window's title for `pid`,
-    /// or nil when there is no window, no title, no marker, or more than one
-    /// marker.
-    ///
-    /// This is the INBOUND half of the focus join (see `ClaudeMarkerPresentation`).
-    /// It reads `AXTitle`, not screen content: a title is a few dozen characters
-    /// the terminal already advertises, and reading it is what tells us whether
-    /// this pane is a Claude session at all. Distinct from `readVisibleScreen`
-    /// on purpose — this is the cheap question that gates the expensive answer.
-    ///
-    /// PID-pinned exactly like the screen read: the window is reached from
-    /// `AXUIElementCreateApplication(pid)` and the element's own PID is
-    /// re-verified before its title is trusted, so a recycled PID or a window
-    /// that changed owners yields nil instead of another app's title.
-    ///
-    /// Callers must treat nil as "we do not know", never as a cue to guess.
-    static func markerInFocusedWindowTitle(applicationPID pid: pid_t) -> FocusedWindowMarkerRead? {
-        #if DEBUG
-        if let override = debugWindowTitleOverride {
-            guard let marker = override(pid).flatMap({ ClaudeMarkerTitleParser.marker(inTitle: $0) })
-            else { return nil }
-            return FocusedWindowMarkerRead(
-                marker: marker, windowID: debugTitleWindowIDOverride?(pid)
-            )
-        }
-        if TerminalTargetDetector.isRunningUnderXCTest { return nil }
-        #endif
-        guard AXIsProcessTrusted() else { return nil }
-        guard let read = copyFocusedWindowTitle(applicationPID: pid),
-              let marker = ClaudeMarkerTitleParser.marker(inTitle: read.title)
-        else { return nil }
-        return FocusedWindowMarkerRead(marker: marker, windowID: read.windowID)
-    }
-
     /// The identity of `pid`'s focused window, or nil when it cannot be
     /// established.
     ///
-    /// This exists for the TTY join: the marker read reports the window it
-    /// parsed the marker from, but a tty-resolved join never touches the
-    /// marker — the title has typically been clobbered by Claude Code's own
-    /// conversation title — so the window the user was focused on is
-    /// identified by this separate bounded AX read. Nil abstains at the
-    /// authorizer, exactly like a nil marker-read identity (review F2).
+    /// Nothing here reads what the window is CALLED. A window title is a
+    /// fought-over channel — Claude Code writes its own conversation titles,
+    /// herdr and cmux rewrite theirs — and no join arm consults one; this is
+    /// purely the identity that pairs a screen capture with the join that
+    /// authorized it, so a focus change between those two AX reads cannot pair
+    /// one window's screen with another window's session (review F2). Nil
+    /// abstains at the authorizer.
+    ///
+    /// PID-pinned exactly like the screen read: the window is reached from
+    /// `AXUIElementCreateApplication(pid)` and the element's own PID is
+    /// re-verified, so a recycled PID or a window that changed owners yields
+    /// nil instead of another app's identity.
     static func focusedWindowIdentity(applicationPID pid: pid_t) -> CGWindowID? {
         #if DEBUG
-        if let override = debugTitleWindowIDOverride { return override(pid) }
+        if let override = debugFocusedWindowIDOverride { return override(pid) }
         if TerminalTargetDetector.isRunningUnderXCTest { return nil }
         #endif
         guard AXIsProcessTrusted() else { return nil }
-        return copyFocusedWindowTitle(applicationPID: pid)?.windowID
+        return copyFocusedWindowIdentity(applicationPID: pid)
     }
 
-    /// The AX round trip for the title. Returns the focused window's `AXTitle`
-    /// and window identity, only if that window is still owned by `pid`.
-    private static func copyFocusedWindowTitle(
+    /// The AX round trip for the focused window's identity, only if that
+    /// window is still owned by `pid`.
+    private static func copyFocusedWindowIdentity(
         applicationPID pid: pid_t
-    ) -> (title: String, windowID: CGWindowID?)? {
+    ) -> CGWindowID? {
         let appElement = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appElement, messagingTimeoutSeconds)
 
@@ -211,14 +176,14 @@ enum TerminalScreenAXReader {
             return nil
         }
 
-        var titleObject: AnyObject?
-        let titleStatus = AXUIElementCopyAttributeValue(
-            window,
-            kAXTitleAttribute as CFString,
-            &titleObject
-        )
-        guard titleStatus == .success, let title = titleObject as? String else { return nil }
-        return (title: title, windowID: windowID(ofWindow: window))
+        // No `kAXTitle` round trip: the title is not read anywhere any more,
+        // and requiring one here would make identity depend on a string this
+        // code does not consult. Consequence, stated because it is a change:
+        // a focused window with no readable title now yields an identity where
+        // it used to abstain. That can only make the authorizer's
+        // join-window == capture-window comparison MORE precise — it compares
+        // two established ids and never treats an unknown as a match.
+        return windowID(ofWindow: window)
     }
 
     /// Sanitizes and caps a raw AX string. Split out so tests can exercise the
@@ -448,16 +413,12 @@ enum TerminalScreenAXReader {
     /// unit tests; mirrors `TerminalTargetDetector.debugFocusedElementProbeOverride`.
     static var debugScreenReadOverride: ((pid_t) -> String?)?
 
-    /// Test seam for the focused window's raw title. Canned titles take the
-    /// same parse path as live ones, so a test cannot assert against a form
-    /// production never produces.
-    static var debugWindowTitleOverride: ((pid_t) -> String?)?
-
     /// Window-identity seams, one per read path so a test can script the F2
-    /// race: the screen read and the title read landing on DIFFERENT windows
-    /// of one process. Defaulting to nil mirrors live identity failure, which
-    /// every consumer must treat as "not provably the same window".
+    /// race: the screen read and the focused-window read landing on DIFFERENT
+    /// windows of one process. Defaulting to nil mirrors live identity
+    /// failure, which every consumer must treat as "not provably the same
+    /// window".
     static var debugScreenWindowIDOverride: ((pid_t) -> CGWindowID?)?
-    static var debugTitleWindowIDOverride: ((pid_t) -> CGWindowID?)?
+    static var debugFocusedWindowIDOverride: ((pid_t) -> CGWindowID?)?
     #endif
 }

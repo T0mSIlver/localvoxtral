@@ -92,9 +92,7 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
         ClaudeSessionRegistry(
             limits: .default,
             now: ProbeTestClock(epoch).now,
-            isProcessAlive: ProbeTestLiveness().probe,
-            allocateMarkerValue: ProbeTestMarkers(markers).allocate
-        )
+            isProcessAlive: ProbeTestLiveness().probe)
     }
 
     private func resolver(
@@ -105,7 +103,6 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in nil },
             focusedTerminalTTY: { _ in focusedTTY },
             focusedWindowID: { _ in 101 },
             herdrClientProbe: { _ in herdrClient },
@@ -261,7 +258,6 @@ final class ClaudeSurfaceProbeTests: XCTestCase {
             summary.abstentionReason,
             "tty: no live session on this device"
                 + "; remote-herdr: ssh session undeterminable (probe unavailable)"
-                + "; marker: no marker in title"
         )
     }
 
@@ -403,12 +399,11 @@ final class ClaudeSessionJoinSummaryJSONTests: XCTestCase {
         // Two arms sharing a name would make a probe run and a dogfood record
         // agree on a lie.
         let mechanisms: [ClaudeSessionJoinMechanism] = [
-            .ttyDevice, .titleMarker, .herdrPane, .browserTab, .cmuxSurface, .remoteHerdrPane,
+            .ttyDevice, .herdrPane, .browserTab, .cmuxSurface, .remoteHerdrPane,
         ]
         let names = mechanisms.map(ClaudeSessionJoinSummary.armName)
         XCTAssertEqual(
-            names, ["tty", "titleMarker", "herdrPane", "browserTab", "cmuxSurface",
-                    "remoteHerdrPane"]
+            names, ["tty", "herdrPane", "browserTab", "cmuxSurface", "remoteHerdrPane"]
         )
         XCTAssertFalse(names.contains("none"), "`none` means no arm answered at all")
         XCTAssertEqual(Set(names).count, names.count)

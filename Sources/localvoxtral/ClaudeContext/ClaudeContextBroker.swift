@@ -71,7 +71,6 @@ public final class ClaudeContextBroker: Sendable {
     private let registry: ClaudeSessionRegistry
     private let limits: ClaudeBrokerLimits
     private let uptimeNanos: @Sendable () -> UInt64
-    private let shouldEmitLocalTitleMarker: @Sendable () -> Bool
 
     #if DEBUG
     /// Test seam: fires after each record is accepted or rejected, so a socket
@@ -101,14 +100,12 @@ public final class ClaudeContextBroker: Sendable {
         socketPath: String,
         registry: ClaudeSessionRegistry,
         limits: ClaudeBrokerLimits = .default,
-        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
-        shouldEmitLocalTitleMarker: @escaping @Sendable () -> Bool = { true }
+        uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }
     ) {
         self.socketPath = socketPath
         self.registry = registry
         self.limits = limits
         self.uptimeNanos = uptimeNanos
-        self.shouldEmitLocalTitleMarker = shouldEmitLocalTitleMarker
     }
 
     public enum StartFailure: Error, Equatable {
@@ -512,13 +509,7 @@ public final class ClaudeContextBroker: Sendable {
                     return
                 }
                 let handled = handle(line: line, origin: origin, peerPID: peerPID)
-                reply(
-                    to: fd,
-                    marker: handled.marker,
-                    accepted: handled.accepted,
-                    isHerdrHosted: handled.isHerdrHosted,
-                    version: handled.replyVersion
-                )
+                reply(to: fd, accepted: handled.accepted, version: handled.replyVersion)
             }
         }
     }
@@ -569,34 +560,24 @@ public final class ClaudeContextBroker: Sendable {
         return true
     }
 
-    /// Optionally send the LOCAL session's marker back to the publisher.
+    /// Send the receipt back to the publisher.
     ///
-    /// Focused-pane TTY is the default local join. The publisher only receives
-    /// a marker to turn into a terminal title sequence when the user opted into
-    /// that fallback. Registry ingestion and marker allocation are unchanged,
-    /// so TTY joins keep the same marker-keyed liveness checks either way.
-    /// herdr records never receive one: herdr intercepts OSC 2 inside its pane,
-    /// so the marker cannot describe the outer Ghostty surface and would only
-    /// contaminate herdr's own pane-title state.
+    /// The reply is a RECEIPT and nothing more: which wire version we answered
+    /// in, and whether the record was committed. It carries no channel that
+    /// could put bytes on the caller's terminal, which is why no per-agent or
+    /// per-surface rule needs to gate it — there is nothing here to withhold.
     ///
     /// Best-effort by design — a publisher that has already exited is normal,
     /// not an error.
-    private func reply(
-        to fd: Int32,
-        marker: ClaudeSessionMarker?,
-        accepted: Bool,
-        isHerdrHosted: Bool,
-        version: Int
-    ) {
-        let responseMarker = shouldEmitLocalTitleMarker() && !isHerdrHosted ? marker?.value : nil
+    private func reply(to fd: Int32, accepted: Bool, version: Int) {
         guard let line = ClaudeBrokerResponse.encodeLine(
             // Echo the REQUEST's wire version (review C4): an already-installed
             // v1 publisher rejects any reply that does not say v1, so replying
-            // with the broker's own version would silently kill the marker
-            // channel for every stale plugin install until it updated.
+            // with the broker's own version would make its `--statusline` read
+            // "not connected" for every stale plugin install until it updated.
             // `accepted` rides along in every reply shape — old decoders
             // ignore the unknown key (synthesized Codable), so no bump.
-            ClaudeBrokerResponse(version: version, marker: responseMarker, accepted: accepted)
+            ClaudeBrokerResponse(version: version, accepted: accepted)
         ) else { return }
         _ = line.withUnsafeBytes { raw -> Int in
             guard let base = raw.baseAddress else { return 0 }
@@ -612,11 +593,10 @@ public final class ClaudeContextBroker: Sendable {
         }
     }
 
-    /// - Returns: the marker for the session this record belongs to, whether
-    ///   the record was committed to the registry (`accepted` — carried back
-    ///   in the reply so a publisher can distinguish "read" from "took
-    ///   effect"), whether herdr must intercept title changes, and the wire
-    ///   version to shape the reply as (the request's own — see `reply`).
+    /// - Returns: whether the record was committed to the registry
+    ///   (`accepted` — carried back in the reply so a publisher can
+    ///   distinguish "read" from "took effect"), and the wire version to shape
+    ///   the reply as (the request's own — see `reply`).
     ///
     /// `accepted` is truthful for every layer that still produces a reply. A
     /// reply is per complete LINE, so exactly three rejection layers can
@@ -634,22 +614,20 @@ public final class ClaudeContextBroker: Sendable {
     ///
     /// The one line that is not an ingest at all: a `StatusQuery` record is a
     /// read-only probe whose reply reuses `accepted` to mean "that session is
-    /// live in the registry right now". It never reaches `ingest` and never
-    /// carries a marker back.
+    /// live in the registry right now". It never reaches `ingest`.
     @discardableResult
     private func handle(
         line: Data,
         origin: ClaudeTransportOrigin,
         peerPID: pid_t?
-    ) -> (marker: ClaudeSessionMarker?, accepted: Bool, isHerdrHosted: Bool, replyVersion: Int) {
+    ) -> (accepted: Bool, replyVersion: Int) {
         do {
             let record = try ClaudeHookWireCodec.decodeLine(line, limits: limits.wire)
             // A status probe (`--statusline` mode) is answered here and NEVER
             // ingested: `accepted` carries "is that session live in the
-            // registry", nothing is created or refreshed by asking, and no
-            // marker ever rides a probe reply — a probe is not a hook, so it
-            // has no terminal to write a title into. `snapshot(sessionID:)`
-            // applies the same TTL + pid-liveness answer every join uses.
+            // registry", and nothing is created or refreshed by asking.
+            // `snapshot(sessionID:)` applies the same TTL + pid-liveness
+            // answer every join uses.
             if record.event == .statusQuery {
                 let scopedID = ClaudeAgentSessionScope.scopedSessionID(
                     agent: record.agent, sessionID: record.sessionID
@@ -660,7 +638,7 @@ public final class ClaudeContextBroker: Sendable {
                 // ingested or rejected", and a probe is neither — status-line
                 // traffic firing it would inflate any test counting real
                 // ingestions.
-                return (nil, live, false, record.version)
+                return (live, record.version)
             }
             // Per-agent pid cross-check against the KERNEL's answer. The
             // opencode plugin runs inside the agent process and dials this
@@ -682,7 +660,7 @@ public final class ClaudeContextBroker: Sendable {
                     #if DEBUG
                     debugNotify(.failure(.malformed))
                     #endif
-                    return (nil, false, false, record.version)
+                    return (false, record.version)
                 }
             }
             let snapshot = registry.ingest(record, origin: origin)
@@ -697,29 +675,21 @@ public final class ClaudeContextBroker: Sendable {
             #if DEBUG
             debugNotify(.success(record))
             #endif
-            // Only Claude Code has a writable title channel, so only Claude
-            // sessions ever receive their marker back — the herdr rule,
-            // generalized per agent: opencode rewrites its own OSC titles
-            // mid-turn (and clears them on exit), so a marker sent there could
-            // never survive to identify a pane, and its plugin deliberately
-            // never writes to the terminal at all. Allocation is unchanged —
-            // the registry marker remains every join's liveness handle.
-            let marker = snapshot?.agent == .claude ? snapshot?.marker : nil
-            return (marker, accepted, record.process?.herdrPaneID != nil, record.version)
+            return (accepted, record.version)
         } catch let error as ClaudeHookWireError {
             Log.claudeContext.error("Rejected record: \(String(describing: error), privacy: .public)")
             #if DEBUG
             debugNotify(.failure(error))
             #endif
-            // A rejected record carries no marker; the current version is as
-            // good as any guess for the reply shape.
-            return (nil, false, false, ClaudeHookWire.version)
+            // The current version is as good as any guess for the reply
+            // shape of a record we could not decode a version out of.
+            return (false, ClaudeHookWire.version)
         } catch {
             Log.claudeContext.error("Rejected record: undecodable")
             #if DEBUG
             debugNotify(.failure(.malformed))
             #endif
-            return (nil, false, false, ClaudeHookWire.version)
+            return (false, ClaudeHookWire.version)
         }
     }
 }

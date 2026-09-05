@@ -29,14 +29,9 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         directory = URL(fileURLWithPath: "/tmp/lvx-\(UUID().uuidString.prefix(8))")
         registry = ClaudeSessionRegistry(
             now: { Date(timeIntervalSince1970: 5_000_000) },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: { "lvx-deadbeef" }
+            isProcessAlive: { _ in true }
         )
-        broker = ClaudeContextBroker(
-            socketPath: socketPath,
-            registry: registry,
-            shouldEmitLocalTitleMarker: { true }
-        )
+        broker = ClaudeContextBroker(socketPath: socketPath, registry: registry)
     }
 
     override func tearDownWithError() throws {
@@ -142,9 +137,13 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
     }
 
-    // MARK: Marker roundtrip — the focus join
+    // MARK: Reply shape — a receipt, never a channel
 
-    func testBrokerRepliesWithTheAllocatedMarkerForANonHerdrRecord() throws {
+    func testTheReplyToAnAcceptedRecordCarriesOnlyAVersionAndAcceptance() throws {
+        // The reply is what the publisher reads back, so its KEY SET is the
+        // whole surface a broker can steer a hook with. It must be exactly
+        // `v` + `accepted`: no field that could carry an escape sequence, a
+        // session handle, or anything else a hook might print.
         try broker.start()
         let record = ClaudeHookRecord(
             event: .sessionStart, sessionID: "joined", timestamp: 1, rawCwd: "/repo"
@@ -156,21 +155,26 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         guard case .success(let reply) = result else {
             return XCTFail("publish failed: \(result)")
         }
-        let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
-        XCTAssertEqual(response.marker, "lvx-deadbeef", "the reply carries the marker the BROKER minted")
+        let raw = try XCTUnwrap(reply)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(
+                with: raw.last == 0x0A ? raw.dropLast() : raw
+            ) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), ["v", "accepted"])
+        XCTAssertEqual(object["accepted"] as? Bool, true)
 
-        // And it is the same marker the registry indexed — that identity is the
-        // whole focus join.
-        let snapshot = try XCTUnwrap(registry.snapshot(sessionID: "joined"))
-        XCTAssertEqual(snapshot.marker.value, response.marker)
-        guard case .resolved = registry.resolve(marker: ClaudeSessionMarker(value: "lvx-deadbeef")) else {
-            return XCTFail("the replied marker must resolve back to the session")
-        }
+        // The record itself landed, and the session is reachable by the only
+        // handle there is — its own id.
+        XCTAssertNotNil(registry.snapshot(sessionID: "joined"))
     }
 
-    func testBrokerWithholdsTheMarkerForAHerdrHostedRecord() throws {
-        // Even with title fallback opted in, herdr intercepts OSC 2 inside the
-        // pane, so emitting this marker could never identify Ghostty's surface.
+    func testAHerdrHostedRecordGetsTheSameReplyAsAnyOther() throws {
+        // There used to be a per-surface rule here (herdr intercepts OSC 2
+        // inside its pane, so a title written from there could never describe
+        // Ghostty's outer surface). With no channel in the reply at all there
+        // is nothing left to withhold,
+        // and the reply is byte-identical to a plain local session's.
         try broker.start()
         let record = ClaudeHookRecord(
             event: .sessionStart,
@@ -193,19 +197,14 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
 
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
-        XCTAssertNil(response.marker)
-        XCTAssertEqual(
-            registry.snapshot(sessionID: "herdr-hosted")?.marker,
-            ClaudeSessionMarker(value: "lvx-deadbeef"),
-            "herdr changes reply emission only; registry identity remains allocated"
-        )
+        XCTAssertEqual(response, ClaudeBrokerResponse(version: 2, accepted: true))
+        XCTAssertNotNil(registry.snapshot(sessionID: "herdr-hosted"))
     }
 
-    func testBrokerWithholdsTheMarkerForAnOpencodeRecord() throws {
-        // The herdr rule, per agent: opencode rewrites its own OSC titles
-        // mid-turn (and clears them on exit), so a marker sent there could
-        // never survive in a title — and the plugin never writes to the
-        // terminal anyway. Allocation is unchanged; only emission is gated.
+    func testAnOpencodeRecordGetsTheSameReplyAsAClaudeRecord() throws {
+        // The per-agent reply rule is likewise gone: what the agent tag still
+        // decides is session-id namespacing, which this asserts through the
+        // scoped id.
         try broker.start()
         let record = ClaudeHookRecord(
             event: .sessionStart,
@@ -224,20 +223,16 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
 
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
-        XCTAssertNil(response.marker)
-        XCTAssertEqual(
-            registry.snapshot(sessionID: "opencode:ses_1")?.marker,
-            ClaudeSessionMarker(value: "lvx-deadbeef"),
-            "agent gating changes reply emission only; the scoped session keeps its registry marker"
-        )
+        XCTAssertEqual(response, ClaudeBrokerResponse(version: 2, accepted: true))
+        XCTAssertNotNil(registry.snapshot(sessionID: "opencode:ses_1"))
     }
 
-    func testBrokerEchoesAV1RequestsVersionSoAStalePublisherKeepsItsMarker() throws {
+    func testBrokerEchoesAV1RequestsVersion() throws {
         // Mixed-version end-to-end (review C4): a machine can run an OLD
         // installed plugin (v1 publisher binary) against a NEW app. The old
         // publisher rejects any reply that does not say v1, so the broker must
-        // shape each reply as the REQUEST's version — or every stale install
-        // silently loses the marker channel until it updates.
+        // shape each reply as the REQUEST's version — or the stale install's
+        // `--statusline` reads "not connected" until it updates.
         try broker.start()
         let v1Line = Data(
             (#"{"v":1,"event":"SessionStart","session_id":"old-publisher","ts":1,"cwd":"/repo"}"# + "\n").utf8
@@ -252,10 +247,9 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
             String(decoding: raw, as: UTF8.self).contains(#""v":1"#),
             "the reply must be v1-shaped for a v1 request"
         )
-        // And it still round-trips through the response codec with the marker.
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(raw))
         XCTAssertEqual(response.version, 1)
-        XCTAssertEqual(response.marker, "lvx-deadbeef")
+        XCTAssertEqual(response.accepted, true)
 
         // A v2 request gets a v2-shaped reply.
         let v2Record = ClaudeHookRecord(event: .stop, sessionID: "old-publisher", timestamp: 2)
@@ -292,7 +286,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
             return XCTFail("publish failed: \(result)")
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
-        XCTAssertNil(response.marker)
         XCTAssertEqual(response.accepted, false, "the pid cross-check is a rejection and must say so")
         XCTAssertNil(
             registry.snapshot(sessionID: "opencode:ses_forged"),
@@ -300,9 +293,8 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         )
     }
 
-    func testRejectedRecordRepliesWithNoMarker() throws {
-        // A reply still comes back so the publisher is not left waiting, but it
-        // carries nothing to put in a title — and says the record was refused.
+    func testRejectedRecordStillGetsAReplySayingItWasRefused() throws {
+        // A reply still comes back so the publisher is not left waiting.
         try broker.start()
         let result = UnixSocketPublisher(timeout: 2.0)
             .publishAndReadReply(line: Data("{not json}\n".utf8), to: socketPath)
@@ -310,7 +302,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
             return XCTFail("publish failed: \(result)")
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
-        XCTAssertNil(response.marker)
         XCTAssertEqual(response.accepted, false)
     }
 
@@ -405,11 +396,10 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
         XCTAssertEqual(response.accepted, false)
-        XCTAssertNil(response.marker)
         XCTAssertTrue(registry.liveSessions().isEmpty, "an unknown event must not create a session")
     }
 
-    func testStatusQueryForALiveSessionRepliesAcceptedWithoutAMarker() throws {
+    func testStatusQueryForALiveSessionRepliesAccepted() throws {
         try broker.start()
         // Seed a live session through the front door.
         let start = ClaudeHookRecord(
@@ -432,10 +422,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
         XCTAssertEqual(response.accepted, true, "a live session must read as connected")
-        // This broker is constructed with the title fallback ON — the one
-        // configuration where a hook reply WOULD carry the marker. A probe is
-        // not a hook and has no terminal, so it must never get one.
-        XCTAssertNil(response.marker, "a probe reply must never carry a marker")
     }
 
     func testStatusQueryForAnUnknownSessionRepliesNotAcceptedAndCreatesNothing() throws {
@@ -449,7 +435,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         }
         let response = try XCTUnwrap(ClaudeBrokerResponse.decodeLine(try XCTUnwrap(reply)))
         XCTAssertEqual(response.accepted, false)
-        XCTAssertNil(response.marker)
         // The probe must not have created the session it asked after —
         // otherwise the second probe for any id would answer "connected".
         XCTAssertNil(registry.snapshot(sessionID: "never-hooked"))
@@ -485,38 +470,14 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         )
     }
 
-    func testPublisherEmitsMarkerOutputWhenLocalTitleFallbackIsEnabled() throws {
-        // The end-to-end join through the production publisher entry point.
+    func testThePublisherIngestsEndToEndAndPrintsNothing() throws {
+        // The end-to-end path through the production publisher entry point:
+        // the record lands, and the run produces no stdout for Claude Code to
+        // interpret. There is no setting, no reply shape and no session shape
+        // that can change the second half — the Outcome type has no case that
+        // carries bytes to print.
         try broker.start()
         let json = #"{"hook_event_name":"SessionStart","session_id":"e2e","cwd":"/repo"}"#
-        let outcome = ClaudeHookPublisher(
-            environment: ClaudeHookPublisher.Environment(
-                now: { 1 },
-                pid: { 31_337 },
-                ppid: { getpid() },
-                ttyName: { _ in nil },
-                variables: [ClaudeHookSocketPath.environmentKey: socketPath]
-            )
-        ).run(stdin: Data(json.utf8), fallbackEvent: nil)
-
-        XCTAssertEqual(outcome, .publishedWithMarker("lvx-deadbeef"))
-        let stdout = try XCTUnwrap(outcome.stdout)
-        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: stdout) as? [String: Any])
-        XCTAssertEqual(object["terminalSequence"] as? String, "\u{1B}]2;lvx-deadbeef\u{07}")
-        XCTAssertEqual(object["suppressOutput"] as? Bool, true)
-    }
-
-    func testPublisherEmitsNoMarkerOutputWhenLocalTitleFallbackIsDisabled() throws {
-        // The broker still ingests and allocates a marker: only the outbound
-        // local hook response is gated, so TTY joins retain marker-keyed
-        // liveness and the registry remains otherwise unchanged.
-        broker = ClaudeContextBroker(
-            socketPath: socketPath,
-            registry: registry,
-            shouldEmitLocalTitleMarker: { false }
-        )
-        try broker.start()
-        let json = #"{"hook_event_name":"SessionStart","session_id":"tty-only","cwd":"/repo"}"#
         let outcome = ClaudeHookPublisher(
             environment: ClaudeHookPublisher.Environment(
                 now: { 1 },
@@ -528,11 +489,8 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         ).run(stdin: Data(json.utf8), fallbackEvent: nil)
 
         XCTAssertEqual(outcome, .published)
-        XCTAssertNil(outcome.stdout, "OFF must produce no terminalSequence for a local hook")
-        XCTAssertEqual(
-            registry.snapshot(sessionID: "tty-only")?.marker,
-            ClaudeSessionMarker(value: "lvx-deadbeef")
-        )
+        let snapshot = try XCTUnwrap(registry.snapshot(sessionID: "e2e"))
+        XCTAssertEqual(snapshot.process?.tty, "/dev/ttys003")
     }
 
     func testStartRebindsOverAStaleSocketFile() throws {
@@ -583,7 +541,6 @@ final class ClaudeContextBrokerIntegrationTests: XCTestCase {
         // Origin came from getpeereid on the connection, not from the record.
         XCTAssertEqual(snapshot.origin, .localAuthenticated(peerUID: UInt32(geteuid())))
         XCTAssertEqual(snapshot.localWorkspacePath?.path, "/repo")
-        XCTAssertEqual(snapshot.marker, ClaudeSessionMarker(value: "lvx-deadbeef"))
     }
 
     func testWireOriginFieldCannotForgeTrustOverTheSocket() throws {
@@ -829,8 +786,7 @@ final class ClaudeContextBrokerLifecycleTests: XCTestCase {
             socketPath: socketPath,
             registry: ClaudeSessionRegistry(
                 now: { Date(timeIntervalSince1970: 5_000_000) },
-                isProcessAlive: { _ in true },
-                allocateMarkerValue: { "lvx-deadbeef" }
+                isProcessAlive: { _ in true }
             )
         )
         brokers.append(broker)

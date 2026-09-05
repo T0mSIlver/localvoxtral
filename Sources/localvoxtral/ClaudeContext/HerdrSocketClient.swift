@@ -9,21 +9,17 @@ struct HerdrFocusedPane: Sendable, Equatable {
     /// herdr's own Claude-session claim for the pane, when its integration is
     /// installed: (kind "id" → sessionID). nil when absent or kind == "path".
     var claimedClaudeSessionID: String?
-    /// The OSC 2 title of the INNER pane, as herdr captured it.
-    ///
-    /// herdr intercepts a pane's title writes rather than passing them out to
-    /// the surrounding terminal — which is why a title marker is useless for a
-    /// local herdr join, and precisely why it works for a REMOTE one: the
-    /// marker the remote listener hands back to every remote session rides the
-    /// SSH PTY into the inner pane and lands HERE, where the pane it describes
-    /// is the pane being reported. Untrusted text like any other wire field;
-    /// only the marker grammar is ever read out of it.
-    var terminalTitle: String?
 
-    init(paneID: String, claimedClaudeSessionID: String?, terminalTitle: String? = nil) {
+    // Deliberately no `terminal_title`. herdr does report the inner pane's
+    // captured OSC 2 title, and the remote arm used to require a
+    // broker-allocated marker in it as a second binding. Nothing reads a
+    // window title for a join any more (owner decision 2026-09-05), so the
+    // field is not decoded at all — an undecoded field cannot become an
+    // accidental input.
+
+    init(paneID: String, claimedClaudeSessionID: String?) {
         self.paneID = paneID
         self.claimedClaudeSessionID = claimedClaudeSessionID
-        self.terminalTitle = terminalTitle
     }
 }
 
@@ -126,13 +122,7 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             }
             return HerdrFocusedPane(
                 paneID: result.pane.paneID,
-                claimedClaudeSessionID: claim,
-                // A title longer than any title is not a title. Dropped rather
-                // than truncated: a cut string can only make marker parsing
-                // answer a question about bytes nobody sent.
-                terminalTitle: result.pane.terminalTitle.flatMap {
-                    $0.utf8.count <= Self.maxTerminalTitleBytes ? $0 : nil
-                }
+                claimedClaudeSessionID: claim
             )
         }.value
     }
@@ -499,13 +489,11 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         var paneID: String
         var focused: Bool
         var agentSession: AgentSession?
-        var terminalTitle: String?
 
         enum CodingKeys: String, CodingKey {
             case paneID = "pane_id"
             case focused
             case agentSession = "agent_session"
-            case terminalTitle = "terminal_title"
         }
 
         init(from decoder: Decoder) throws {
@@ -515,9 +503,6 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
             agentSession = container.contains(.agentSession)
                 ? try container.decode(AgentSession.self, forKey: .agentSession)
                 : nil
-            // Absent and null are the same thing for a title, unlike for
-            // `foreground_processes` below where presence is the signal.
-            terminalTitle = try container.decodeIfPresent(String.self, forKey: .terminalTitle)
         }
     }
 
@@ -567,11 +552,6 @@ struct HerdrSocketClient: HerdrPaneQuerying, HerdrPanelMetadataReporting {
         /// number in another machine's namespace.
         var name: String?
     }
-
-    /// Ceiling on a retained `terminal_title`. A window title is a handful of
-    /// bytes; this is three orders of magnitude of headroom and still bounds
-    /// what marker parsing ever walks.
-    private static let maxTerminalTitleBytes = 1024
 
     /// `pane.read` success — herdr c234f221, `src/api/schema/response.rs`
     /// (`ResponseResult::PaneRead`, tag `pane_read`) wrapping

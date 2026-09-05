@@ -13,20 +13,6 @@ private final class CoordinatorMemoryStore: ClaudeRemoteHostStoreIO {
     func write(_ data: Data, to url: URL) throws { contents.withLock { $0 = data } }
 }
 
-private final class CoordinatorMarkerQueue: Sendable {
-    private let values: Mutex<[String]>
-
-    init(_ values: [String]) {
-        self.values = Mutex(values)
-    }
-
-    func next() -> String {
-        values.withLock {
-            $0.isEmpty ? ClaudeSessionRegistry.defaultMarkerValue() : $0.removeFirst()
-        }
-    }
-}
-
 /// Every tally the coordinator handed a listener, in order. A local `var`
 /// cannot be captured by the escaping factory closure.
 @MainActor
@@ -47,12 +33,10 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         )
     }
 
-    private func makeSessions(markers: [String]) -> ClaudeSessionRegistry {
-        let queue = CoordinatorMarkerQueue(markers)
-        return ClaudeSessionRegistry(
+    private func makeSessions() -> ClaudeSessionRegistry {
+        ClaudeSessionRegistry(
             now: { [epoch] in epoch },
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: { queue.next() }
+            isProcessAlive: { _ in true }
         )
     }
 
@@ -144,9 +128,9 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         )
     }
 
-    func testRevokingAHostEvictsItsCachedSessionsAndMarkers() throws {
+    func testRevokingAHostEvictsItsCachedSessions() throws {
         let hosts = try makeHosts()
-        let sessions = makeSessions(markers: ["lvx-gone", "lvx-kept"])
+        let sessions = makeSessions()
         let coordinator = makeCoordinator(hosts: hosts, sessions: sessions)
         defer { coordinator.shutdown() }
 
@@ -168,21 +152,21 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         try coordinator.reconcile()
 
         // Refusing the revoked host's next request is only half of revocation.
-        // What it already published is cached here, joinable by its marker, and
-        // would otherwise sit for the TTL — four hours of context from a machine
-        // the user just disowned.
+        // What it already published is cached here, joinable, and would
+        // otherwise sit for the TTL — four hours of context from a machine the
+        // user just disowned.
         let doomedID = ClaudeRemoteSessionScope.scopedSessionID(hostID: doomed.host.id, sessionID: "s1")
         XCTAssertNil(sessions.snapshot(sessionID: doomedID))
-        XCTAssertEqual(sessions.resolve(marker: ClaudeSessionMarker(value: "lvx-gone")), .unknown)
+        XCTAssertFalse(sessions.liveSessions().contains { $0.sessionID == doomedID })
 
         let keptID = ClaudeRemoteSessionScope.scopedSessionID(hostID: kept.host.id, sessionID: "s1")
         XCTAssertNotNil(sessions.snapshot(sessionID: keptID), "the sibling host was not revoked")
         XCTAssertTrue(coordinator.isListening, "and it still has a host to listen for")
     }
 
-    func testRemovingAHostEvictsItsCachedSessionsAndMarkers() throws {
+    func testRemovingAHostEvictsItsCachedSessions() throws {
         let hosts = try makeHosts()
-        let sessions = makeSessions(markers: ["lvx-gone", "lvx-kept"])
+        let sessions = makeSessions()
         let coordinator = makeCoordinator(hosts: hosts, sessions: sessions)
         defer { coordinator.shutdown() }
 
@@ -201,10 +185,19 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         XCTAssertEqual(sessions.liveSessions().map(\.sessionID), [
             ClaudeRemoteSessionScope.scopedSessionID(hostID: kept.host.id, sessionID: "s1"),
         ])
-        XCTAssertEqual(sessions.resolve(marker: ClaudeSessionMarker(value: "lvx-gone")), .unknown)
-        XCTAssertEqual(
-            sessions.resolve(marker: ClaudeSessionMarker(value: "lvx-kept")),
-            .resolved(try XCTUnwrap(sessions.liveSessions().first))
+        XCTAssertNil(
+            sessions.snapshot(
+                sessionID: ClaudeRemoteSessionScope.scopedSessionID(
+                    hostID: doomed.host.id, sessionID: "s1"
+                )
+            )
+        )
+        XCTAssertNotNil(
+            sessions.snapshot(
+                sessionID: ClaudeRemoteSessionScope.scopedSessionID(
+                    hostID: kept.host.id, sessionID: "s1"
+                )
+            )
         )
     }
 
@@ -213,7 +206,7 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         // It must survive every enrollment state, including "no hosts at all",
         // which is the state of every user who never set the remote half up.
         let hosts = try makeHosts()
-        let sessions = makeSessions(markers: ["lvx-local"])
+        let sessions = makeSessions()
         let coordinator = makeCoordinator(hosts: hosts, sessions: sessions)
         defer { coordinator.shutdown() }
 
@@ -229,14 +222,14 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         try coordinator.reconcile()
 
         XCTAssertEqual(sessions.liveSessions().map(\.sessionID), ["local-1"])
-        XCTAssertNotEqual(sessions.resolve(marker: ClaudeSessionMarker(value: "lvx-local")), .unknown)
+        XCTAssertNotNil(sessions.snapshot(sessionID: "local-1"))
     }
 
     func testEnrollingASecondHostEvictsNothing() throws {
         // The listener authenticates live, so adding a host rebinds nothing —
         // and it must not disturb the first host's cached context either.
         let hosts = try makeHosts()
-        let sessions = makeSessions(markers: ["lvx-first"])
+        let sessions = makeSessions()
         let coordinator = makeCoordinator(hosts: hosts, sessions: sessions)
         defer { coordinator.shutdown() }
 
@@ -251,7 +244,13 @@ final class ClaudeRemoteListenerCoordinatorTests: XCTestCase {
         try coordinator.reconcile()
 
         XCTAssertEqual(sessions.liveSessions().count, 1)
-        XCTAssertNotEqual(sessions.resolve(marker: ClaudeSessionMarker(value: "lvx-first")), .unknown)
+        XCTAssertNotNil(
+            sessions.snapshot(
+                sessionID: ClaudeRemoteSessionScope.scopedSessionID(
+                    hostID: first.host.id, sessionID: "s1"
+                )
+            )
+        )
     }
 }
 

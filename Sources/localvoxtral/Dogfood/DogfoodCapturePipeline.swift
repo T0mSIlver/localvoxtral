@@ -64,8 +64,8 @@ final class DogfoodCaptureTap: Sendable {
     }
 
     /// One arm's abstention cause, e.g. `"tty: stale"`. Accumulated: a single
-    /// resolve can abstain on the tty arm and then again on the marker arm, and
-    /// the record wants the whole story, not the last chapter.
+    /// resolve can abstain on the tty arm and then again on the remote-herdr
+    /// arm, and the record wants the whole story, not the last chapter.
     ///
     /// No generation check, deliberately: abstentions are noted synchronously
     /// on the main actor during session start, and overlapping session starts
@@ -162,8 +162,8 @@ enum DogfoodCaptureBuilder {
         abstentions: [String]
     ) -> DogfoodCaptureRecord.Join {
         // A resolved join can still have earlier arms' abstentions (tty
-        // abstained, marker answered) — kept, because "the tty arm never
-        // answers" is invisible in a record that only names the winner.
+        // abstained, the herdr pane arm answered) — kept, because "the tty arm
+        // never answers" is invisible in a record that only names the winner.
         let summary = ClaudeSessionJoinSummary.summarize(join: join, abstentions: abstentions)
         return DogfoodCaptureRecord.Join(
             arm: summary.arm,
