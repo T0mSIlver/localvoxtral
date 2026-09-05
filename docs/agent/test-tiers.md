@@ -2,7 +2,8 @@
 
 | Tier | What | When | Cost |
 |---|---|---|---|
-| 0 | Unit suite (500+ tests) + PolishHelper/SpeechHelper unit suites + packaging + launch smoke | every non-fast-path PR/push, CI (helper unit suites: self-hosted lanes only) | ~1 min |
+| 0 | Unit suite (500+ tests) + packaging + launch smoke | every non-fast-path PR/push, CI | ~1 min |
+| 0 | PolishHelper / SpeechHelper unit suites (Metal-free: router, cache locator, watchdog; codec/delta contract) | self-hosted lanes only, and path-gated per helper — a PR runs a helper's suite only when the diff touches that helper's directory or the shared CI plumbing; `workflow_dispatch` and every push to main run both (`scripts/ci/helper-lane-filter.sh`, no marker). Locally: `remote-build.sh test --package-path PolishHelper` / `SpeechHelper` | 11 s + 20 s |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every non-fast-path PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
 | 1 | `SpeechHelperIntegrationTests`: packaged speechd vs real spoken audio/model through the production realtime client — word accuracy, append-only delta/done parity, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches speechd-relevant paths or the PR opts in with `[run-speechd-integration]`; locally via `remote-build.sh integration-speechd` | minutes (4B weights + live inference) |
@@ -80,6 +81,32 @@ filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
 remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
+
+## Why the helper unit suites are path-gated
+
+Owner decision 2026-09-05. The two helper UNIT suites ran on every self-hosted
+run — 11 s + 20 s — including on diffs that could not possibly change what they
+test. They are gated per helper by `scripts/ci/helper-lane-filter.sh`, which is
+sound because **both helpers are hermetic SwiftPM packages**:
+`PolishHelper/Package.swift` and `SpeechHelper/Package.swift` declare only
+REMOTE dependencies — no `path:` dependency, no `..` reference, no symlink out
+of the directory, no source shared with the root package. A helper suite's only
+inputs are therefore its own directory (`Package.swift` and `Package.resolved`
+included — that is the dependency-pin surface), the Xcode toolchain (not a
+diff), and the CI plumbing that invokes it.
+
+So: `PolishHelper/**` → the polish suite; `SpeechHelper/**` → the speech suite;
+`.github/workflows/ci.yml`, `scripts/ci/**` or `scripts/package_app.sh` → BOTH;
+`workflow_dispatch` → BOTH; every push to main → BOTH (main is the parity
+reference and is never gated); an uncomputable diff or an unrecognized event →
+BOTH, failing open exactly like `docs-only-filter.sh`.
+
+**This is not the live-model lanes' "expensive, so opt in" pattern and there is
+no marker.** Nothing here is a judgment call: a diff that can affect a suite
+runs it, and a dispatch is the escape hatch if you ever want both anyway. If
+you make a helper depend on something outside its directory — a local `path:`
+dependency, a shared source directory — the premise breaks and the shared list
+in the filter has to grow in the same PR.
 
 ## Dispatching a run without deepening the queue
 
