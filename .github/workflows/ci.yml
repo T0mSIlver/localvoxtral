@@ -14,8 +14,15 @@ on:
         description: "Also package the dogfood-instrumented app (artifact: localvoxtral-app-dogfood)"
         type: boolean
         default: false
+      # REDUNDANT since build-test moved to hosted runners for every event
+      # (this PR): the job it used to redirect is now always on macos-latest,
+      # so this input has no effect on anything. Kept for one release so a
+      # scripted `gh workflow run CI -f hosted=true` does not start failing on
+      # an unknown input; delete it once nothing passes it. It cannot be
+      # repurposed to move mac-lanes — that job exists precisely because its
+      # work needs THAT Mac.
       hosted:
-        description: "Run build-test on a GitHub-hosted macOS runner instead of the Mac (the fork-PR lane)"
+        description: "No-op since build-test always runs on GitHub-hosted macOS. Retained for compatibility."
         type: boolean
         default: false
 
@@ -24,27 +31,391 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # TIER 0 — GitHub-hosted macOS, for every event and every contributor.
+  #
+  # This is the required status check on main, and it is deliberately the
+  # portable half of CI: shell tests, format lint, the unit suite, coverage.
+  # It runs on hosted runners for SAME-REPO PRs too (owner decision
+  # 2026-09-05, "option 1"), which is what took tier 0 off the owner's
+  # personal MacBook — the single self-hosted runner was 89 % busy during a
+  # four-agent burst and 3.4 h of work produced 8.95 h of queue. Hosted
+  # runners are free for public repositories and start in seconds; the
+  # measured hosted lane (run 33981779091) executed the identical 2769 test
+  # cases in the same wall-clock a warm Mac run took, with an 8 s queue.
+  #
+  # A fork PR gets ONLY this job (mac-lanes refuses to run untrusted code on
+  # the owner's machine), so on a fork PR it also packages, uploads and
+  # launch-smokes an ad-hoc-signed bundle — the coverage a fork would
+  # otherwise lose. For same-repo runs mac-lanes does that with the real
+  # signing identity, so those steps are skipped here rather than duplicated.
   build-test:
-    # Same-repo branches run on the self-hosted Mac (persistent workspace, warm
-    # incremental builds). Fork PRs run on GitHub-hosted macOS so untrusted code
-    # never executes on the build machine.
-    #
-    # `workflow_dispatch` with hosted=true sends a SAME-REPO ref onto the hosted
-    # lane instead. Two uses: it is the only way to exercise the fork-PR lane
-    # without a fork (that lane's last real run predates #244's toolchain fix
-    # and nothing has proved it since), and it is the switch a decision to move
-    # tier 0 off the personal Mac would flip. The term only ever moves a job
-    # TOWARD macos-latest — a fork PR can never be pulled onto the self-hosted
-    # runner by an input, whatever it is set to.
-    #
-    # `github.event.inputs.hosted`, not `inputs.hosted`: the input is declared
-    # `type: boolean`, and comparing a boolean to the string 'true' in an
-    # expression coerces both to numbers (1 vs NaN) and is therefore always
-    # false. The event payload's copy is a string, so it compares as written.
-    # (Same trap as the dogfood UI-gate install step below; it cost a silently
-    # dead gate once already.) For push/pull_request the field is absent, which
-    # compares as '' and leaves the original routing untouched.
-    runs-on: ${{ (github.event.inputs.hosted != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && fromJSON('["self-hosted", "macOS", "ARM64"]') || 'macos-latest' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      # Step-level `if:` can read `env`; job-level `if:` cannot. Computed once
+      # here so every fork-only step reads the same expression.
+      IS_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history + tags so package_app.sh can git-describe the
+          # artifact version (shallow clones can't, and fall back to 0.0.0-dev).
+          fetch-depth: 0
+          # No `clean: false` here: hosted runners are ephemeral, so there
+          # is no warm .build to preserve and nothing a previous run left
+          # behind. The persistent-workspace machinery lives in mac-lanes.
+
+      - name: Decide CI fast path
+        id: ci_scope
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.event.after }}
+          # env indirection, not inline ${{ }} in the script body: PR bodies
+          # and commit messages are attacker-shaped strings (same discipline as
+          # the lane-decide steps below).
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          FILES="$RUNNER_TEMP/ci-fast-path-changed-files.txt"
+
+          full_run() {
+            local reason="$1"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            echo "CI fast path: full run ($reason)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+
+          # Both runner types use the same job. Fetch the event's exact diff
+          # endpoints explicitly: the persistent checkout uses clean: false,
+          # and checkout/history behavior must never be trusted as a skip gate.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            if [[ -z "$PR_BASE_SHA" ]] \
+                || ! git fetch --no-tags origin "$PR_BASE_SHA" \
+                || ! git cat-file -e "$PR_BASE_SHA^{commit}" 2>/dev/null; then
+              full_run "PR base unavailable — failing open"
+            fi
+            BASE="$PR_BASE_SHA"
+            TARGET="HEAD"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            if [[ -z "$PUSH_BEFORE_SHA" || "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+              full_run "push before SHA is empty/all-zero — failing open"
+            fi
+            if [[ -z "$PUSH_AFTER_SHA" ]] \
+                || ! git fetch --no-tags origin "$PUSH_AFTER_SHA" \
+                || ! git cat-file -e "$PUSH_AFTER_SHA^{commit}" 2>/dev/null; then
+              full_run "push after SHA unavailable — failing open"
+            fi
+            if ! git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null \
+                && ! git fetch --no-tags origin "$PUSH_BEFORE_SHA"; then
+              full_run "push before SHA unavailable — failing open"
+            fi
+            if ! git cat-file -e "$PUSH_BEFORE_SHA^{commit}" 2>/dev/null; then
+              full_run "push before SHA is not a commit — failing open"
+            fi
+            BASE="$PUSH_BEFORE_SHA"
+            TARGET="$PUSH_AFTER_SHA"
+          else
+            full_run "unsupported event $GITHUB_EVENT_NAME — failing open"
+          fi
+
+          if ! git diff --name-only "$BASE" "$TARGET" -- > "$FILES"; then
+            full_run "changed-file diff failed — failing open"
+          fi
+          # The explicit lane markers are an opt-in contract (docs/agent/test-tiers.md "When
+          # must the LLM lanes run?"): they must keep working even when the
+          # diff itself is docs-only, so they force the full path BEFORE the
+          # filter can decide otherwise.
+          MARKER_TEXT="${PR_BODY}"$'\n'"${PUSH_HEAD_MESSAGE}"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -n "$PR_HEAD_SHA" ]]; then
+            # On PRs, head_commit.message is empty and HEAD is the synthetic
+            # merge commit. The marker contract includes the PR's real head
+            # commit message (the lane decide steps below read it), so this
+            # fast-path escape hatch must read it too — otherwise a marker
+            # carried only by the head commit of a docs-only diff would be
+            # skipped straight past the lane it asked for.
+            MARKER_TEXT+=$'\n'"$(git log -1 --format=%B "$PR_HEAD_SHA" 2>/dev/null || true)"
+          fi
+          if grep -qF '[run-llm-eval]' <<<"$MARKER_TEXT" \
+              || grep -qF '[run-speechd-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[run-herdr-integration]' <<<"$MARKER_TEXT" \
+              || grep -qF '[dogfood-package]' <<<"$MARKER_TEXT"; then
+            full_run "explicit lane marker present in PR body / head commit"
+          fi
+
+          if ! DECISION="$(./scripts/ci/docs-only-filter.sh "$FILES")"; then
+            full_run "docs-only filter failed — failing open"
+          fi
+
+          DOCS_ONLY="$(sed -n 's/^docs_only=//p' <<<"$DECISION")"
+          COUNT="$(sed -n 's/^count=//p' <<<"$DECISION")"
+          REASON="$(sed -n 's/^reason=//p' <<<"$DECISION")"
+          if [[ "$DOCS_ONLY" != "true" && "$DOCS_ONLY" != "false" ]] \
+              || [[ ! "$COUNT" =~ ^[0-9]+$ ]] || [[ -z "$REASON" ]]; then
+            full_run "docs-only filter returned an ambiguous decision — failing open"
+          fi
+
+          echo "$DECISION" >> "$GITHUB_OUTPUT"
+          if [[ "$DOCS_ONLY" == "true" ]]; then
+            echo "CI fast path: docs/scripts-only diff — Swift lanes skipped ($COUNT changed file(s))" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "CI fast path: full run ($REASON)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Process-cleanup regression tests
+        # Pure shell tests for the workspace selector, the SSH build gate's
+        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
+        # lock refusal / window-ownership rules. Pure shell against PATH stubs,
+        # so it needs no Mac and no GUI — which is why it belongs here rather
+        # than on the runner whose gates it is testing.
+        # Deliberately NOT gated on the docs-only fast path: the gate scripts
+        # are fast-path-eligible, so these tests are what still exercises a
+        # gate-only diff. That also makes them the bulk of a fast-path run.
+        #
+        # Not cheap: test-ui-gate.sh alone is ~80 s of the ~95 s here
+        # (measured 2026-09-05, PR #238's 105 assertions each re-running the
+        # gate). Keep it to ONE copy — a duplicated pair of these steps went
+        # unnoticed for six weeks (#255) — and think before adding another
+        # gate suite that re-execs a shell script per assertion.
+        run: |
+          ./scripts/ci/test-cleanup-stale-test-processes.sh
+          ./scripts/ci/test-build-gate-process-cleanup.sh
+          ./scripts/ci/test-build-gate-reap-command.sh
+          ./scripts/ci/test-build-gate-gc-command.sh
+          ./scripts/ci/test-remote-build-reap.sh
+          ./scripts/ci/test-remote-build-gc.sh
+          ./scripts/ci/test-run-supervised-command.sh
+          ./scripts/ci/test-ui-smoke-guard.sh
+          ./scripts/ci/test-ui-gate.sh
+          ./scripts/ci/test-runner-node-resign.sh
+          ./scripts/ci/test-ac-power-guard.sh
+          ./scripts/ci/test-llm-lane-filter.sh
+          ./scripts/ci/test-herdr-lane-filter.sh
+          ./scripts/ci/test-helper-lane-filter.sh
+          ./scripts/ci/test-herdr-fixture-recovery.sh
+          ./scripts/ci/test-clean-stale-outputs.sh
+          ./scripts/ci/test-workflow-step-names.sh
+
+      - name: Record hosted toolchain
+        id: hosted_toolchain
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
+          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
+          # Cache-key component: a .build tree produced by one toolchain must
+          # never be restored into a build running under another.
+          SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Cache SwiftPM build
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        uses: actions/cache@v4
+        with:
+          path: .build
+          # Keyed on the toolchain as well as Package.resolved: the old key
+          # (and its bare `swiftpm-macOS-` restore prefix) would happily
+          # restore a swift.org-6.2.1-built .build into an Xcode build.
+          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}
+          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
+
+      - name: Installer asset-resolution regression test (issue #131)
+        # Pure bash against a stubbed curl — no network, sub-second.
+        run: ./scripts/ci/test-install-resolve.sh
+
+      - name: Format lint (advisory)
+        # Advisory until the one-shot tree reformat lands: swift-format exits 0
+        # on findings without --strict. After the reformat, add --strict here
+        # to make style regressions block.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          swift format lint --recursive --parallel Sources Tests Package.swift 2>&1 \
+            | tee format-lint.txt | tail -n 5
+          echo "format-lint findings: $(wc -l < format-lint.txt | tr -d ' ')"
+
+      - name: Test (unit suite)
+        # The integration suite needs a live inference backend and is exercised
+        # manually; see CLAUDE.md. This is also the job's compile gate: the
+        # old standalone `swift build` step built plain-debug products that
+        # nothing downstream consumed (tests rebuild with coverage flags,
+        # packaging builds release), so it was pure duplicate compilation.
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          # AgentDictationE2EEvalTests is skipped explicitly (belt) on top of
+          # the marker cleanup above (suspenders): it is the nightly
+          # eval-e2e.yml lane, never tier 0, and a leftover enable marker must
+          # not turn the unit step into a many-minute live-inference run.
+          #
+          # 900 s flat. This step used to pick 300 s on the self-hosted runner
+          # and 900 s on hosted; it now only ever runs hosted, where the build
+          # is cold (~70 s) and the machine is a 3-core shared VM, so the
+          # generous bound is the right one. The point of the supervisor is
+          # forensics on a HANG (it samples the wedged xctest before killing
+          # it), not a tight performance budget.
+          ./scripts/ci/run-supervised-command.sh \
+            900 "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
+            swift test \
+            --skip RealtimeAPIVLLMIntegrationTests \
+            --skip SpeechHelperIntegrationTests \
+            --skip AgentDictationE2EEvalTests \
+            --skip HerdrIntegrationTests \
+            --enable-code-coverage
+
+      - name: Upload complete unit-test log
+        if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-log-${{ runner.os }}
+          path: ${{ runner.temp }}/localvoxtral-unit-tests.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Coverage summary
+        # Visibility, not a gate: lets a PR's Proof section cite real coverage
+        # of the changed files instead of "a test exists".
+        if: steps.ci_scope.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          BIN="$(find .build -type f -name localvoxtralPackageTests -path '*.xctest/Contents/MacOS/*' | head -n 1)"
+          PROF="$(find .build -type f -name default.profdata -path '*debug*' | head -n 1)"
+          if [[ -z "$BIN" || -z "$PROF" ]]; then
+            echo "coverage data not found under .build"; exit 1
+          fi
+          xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
+            -ignore-filename-regex '(Tests|\.build)/'
+
+      - name: Package app bundle
+        # FORK PRs ONLY. A fork gets no mac-lanes job, so this is the only
+        # place its change is packaged, launch-smoked and turned into a
+        # downloadable artifact — without it a fork would lose that coverage
+        # entirely. Same-repo runs skip it because mac-lanes packages with the
+        # real localvoxtral-dev identity a few minutes later, and building the
+        # bundle twice per run would be pure waste.
+        #
+        # Ad-hoc signature and no MLX helpers, both unavoidable here: the
+        # signing cert lives in the owner's keychain, and a hosted runner has
+        # no MetalToolchain component (a cold MLX C++ build would dominate
+        # fork-PR CI anyway). The helpers' real Metal build is a mac-lanes job.
+        if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
+        env:
+          LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
+          LOCALVOXTRAL_SKIP_POLISHD: "1"
+          LOCALVOXTRAL_SKIP_SPEECHD: "1"
+          # Self-hosted lanes (same-repo PRs, main) MUST ship an identity-signed
+          # bundle so try-pr.sh leaves the signature untouched and the owner's
+          # Accessibility (TCC) grant survives across builds. Fail the build
+          # loudly rather than silently upload an ad-hoc artifact if the runner
+          # user's keychain has lost the cert. Hosted fork-PR runners have no
+          # cert and are expected to be ad-hoc, so the requirement is off there.
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "0"
+        run: ./scripts/package_app.sh release
+
+      - name: Zip app for artifact upload
+        # upload-artifact mangles symlinks/exec bits in .app bundles; ditto-zip
+        # first so the downloaded app keeps a valid signature.
+        if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/localvoxtral.app dist/localvoxtral-app.zip
+
+      - name: Upload app artifact
+        if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-app
+          path: dist/localvoxtral-app.zip
+          retention-days: 7
+
+      - name: Zip dSYM for artifact upload
+        # Includes helper dSYMs when present (self-hosted lanes) — helper
+        # crashes (MLX C++/Metal) are the likeliest field
+        # crashes, and a dSYM that never leaves the runner symbolizes nothing.
+        if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
+        run: |
+          ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dSYM.zip
+          if [[ -d dist/localvoxtral-polishd.dSYM ]]; then
+            ditto -c -k --keepParent dist/localvoxtral-polishd.dSYM dist/localvoxtral-polishd-dSYM.zip
+          fi
+          if [[ -d dist/localvoxtral-speechd.dSYM ]]; then
+            ditto -c -k --keepParent dist/localvoxtral-speechd.dSYM dist/localvoxtral-speechd-dSYM.zip
+          fi
+
+      - name: Upload dSYM artifact
+        # Longer retention than the app: field crashes surface days after the
+        # try-pr build that produced them.
+        if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: localvoxtral-dsym
+          path: |
+            dist/localvoxtral-dSYM.zip
+            dist/localvoxtral-polishd-dSYM.zip
+            dist/localvoxtral-speechd-dSYM.zip
+          retention-days: 30
+
+      - name: Smoke test packaged app launch (end-user simulation)
+        if: steps.ci_scope.outputs.docs_only != 'true' && env.IS_FORK_PR == 'true'
+        env:
+          # TCC attributes the launched app's permission checks to the
+          # runner's bundled node (the service's responsible process). A
+          # runner auto-update swaps that node and invalidates its
+          # Accessibility grant, so the app's startup prompt pops a REAL
+          # dialog on the runner's GUI session on every run (2026-07-24).
+          # Suppress only the startup prompts; the launch path stays
+          # production-shaped.
+          LOCALVOXTRAL_SUPPRESS_STARTUP_PERMISSION_PROMPTS: "1"
+        run: |
+          # Launch a COPY of the packaged app from outside the workspace with
+          # the workspace .build renamed away. A same-tree launch silently
+          # passes even when the binary's resource lookup depends on the
+          # builder's absolute .build path (SwiftPM's generated Bundle.module
+          # accessor falls back to it) — which crashes at launch on every
+          # OTHER machine. That masking shipped launch-broken artifacts (#87).
+          SMOKE_DIR="$(mktemp -d)"
+          ditto dist/localvoxtral.app "$SMOKE_DIR/localvoxtral.app"
+          mv .build .build.smoke-hidden
+          trap 'mv .build.smoke-hidden .build' EXIT
+          SMOKE_APP="$SMOKE_DIR/localvoxtral.app" python3 - <<'PY'
+          import os
+          import subprocess
+          import time
+
+          app_binary = os.environ["SMOKE_APP"] + "/Contents/MacOS/localvoxtral"
+          process = subprocess.Popen([app_binary])
+          time.sleep(2)
+
+          exit_code = process.poll()
+          if exit_code is not None:
+            raise SystemExit(f"packaged app exited during smoke test: {exit_code}")
+
+          process.terminate()
+          try:
+            process.wait(timeout=5)
+          except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+          PY
+
+  # EVERYTHING THAT NEEDS THIS PARTICULAR MAC, and nothing else.
+  #
+  # The owner's personal MacBook holds the things a hosted runner cannot
+  # supply: the stable `localvoxtral-dev` signing identity (an ad-hoc
+  # signature would invalidate the owner's Accessibility grant on every
+  # try-pr.sh install), the launch-on-demand speechd STT service and the
+  # multi-GB model weights the live lanes need, a real Metal toolchain for
+  # the two MLX helpers, the herdr/sshd fixture, and the GUI session the
+  # UI-gate artifact root lives in.
+  #
+  # Runs in PARALLEL with build-test, not after it: they share no artifact,
+  # and each computes the fast-path decision itself (a sub-second step)
+  # rather than serialising behind a `needs:`.
+  #
+  # NEVER runs for a fork PR — the whole point of the split above.
+  mac-lanes:
+    if: >-
+      github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -178,40 +549,7 @@ jobs:
         # and leave swift-package/xctest running in this persistent checkout.
         # Scope by current user + lsof cwd/mapped text; never pkill globally
         # because the owner and parallel worktrees may run legitimate tests.
-        if: runner.environment == 'self-hosted'
         run: ./scripts/ci/cleanup-stale-test-processes.sh "$GITHUB_WORKSPACE"
-
-      - name: Process-cleanup regression tests
-        # Pure shell tests for the workspace selector, the SSH build gate's
-        # TERM -> KILL process-group teardown, and the SSH UI gate's allowlist /
-        # lock refusal / window-ownership rules. Runs on hosted fork PRs too.
-        # Deliberately NOT gated on the docs-only fast path: the gate scripts
-        # are fast-path-eligible, so these tests are what still exercises a
-        # gate-only diff.
-        #
-        # No longer cheap: test-ui-gate.sh alone is ~80 s of the ~95 s here
-        # (measured 2026-09-05, PR #238's 105 assertions each re-running the
-        # gate). That makes this the second most expensive step in the job —
-        # keep it to ONE copy, and think before adding another gate suite that
-        # re-execs a shell script per assertion.
-        run: |
-          ./scripts/ci/test-cleanup-stale-test-processes.sh
-          ./scripts/ci/test-build-gate-process-cleanup.sh
-          ./scripts/ci/test-build-gate-reap-command.sh
-          ./scripts/ci/test-build-gate-gc-command.sh
-          ./scripts/ci/test-remote-build-reap.sh
-          ./scripts/ci/test-remote-build-gc.sh
-          ./scripts/ci/test-run-supervised-command.sh
-          ./scripts/ci/test-ui-smoke-guard.sh
-          ./scripts/ci/test-ui-gate.sh
-          ./scripts/ci/test-runner-node-resign.sh
-          ./scripts/ci/test-ac-power-guard.sh
-          ./scripts/ci/test-llm-lane-filter.sh
-          ./scripts/ci/test-herdr-lane-filter.sh
-          ./scripts/ci/test-helper-lane-filter.sh
-          ./scripts/ci/test-herdr-fixture-recovery.sh
-          ./scripts/ci/test-clean-stale-outputs.sh
-          ./scripts/ci/test-workflow-step-names.sh
 
       - name: Decide LLM eval lane (path filter + [run-llm-eval] marker)
         # CI must not pay ~8 min of 4B weight-loading + live inference on
@@ -224,7 +562,7 @@ jobs:
         # "When must the LLM lanes run?". The PolishHelper UNIT suite and the
         # tier-1 speechd realtime integration stay per-push.
         id: llm_lane
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           # env indirection, not inline ${{ }} in the script body: PR bodies
           # and commit messages are attacker-shaped strings.
@@ -291,7 +629,7 @@ jobs:
         # Real speechd inference loads the multi-GB Voxtral model on the
         # personal-Mac runner, so keep it conditional just like polishd.
         id: speechd_lane
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
@@ -349,7 +687,7 @@ jobs:
         # can change what we say to herdr or believe it said, and stay out of
         # the way otherwise. Path list: scripts/ci/herdr-lane-filter.sh.
         id: herdr_lane
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
           PUSH_HEAD_MESSAGE: ${{ github.event.head_commit.message }}
@@ -409,7 +747,7 @@ jobs:
         # NEXT clean run recompiles it back. No path filter: dogfooding is a
         # human decision, not a diff property.
         id: dogfood_lane
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           # env indirection, not inline ${{ }} in the script body: PR bodies
           # and commit messages are attacker-shaped strings.
@@ -466,7 +804,7 @@ jobs:
         # filter decides that, not this step), so a dispatch is the escape
         # hatch and main stays the ungated parity reference.
         id: helper_lanes
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ github.base_ref }}
@@ -524,92 +862,6 @@ jobs:
       # did — so the step below records it, both for the log and for the cache
       # key. A toolchain that is too old fails loudly at compile time; the
       # package needs swift-tools-version 6.2 to parse the manifest at all.
-      - name: Record hosted toolchain
-        id: hosted_toolchain
-        if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
-        run: |
-          xcodebuild -version | tee -a "$GITHUB_STEP_SUMMARY"
-          swift --version | tee -a "$GITHUB_STEP_SUMMARY"
-          # Cache-key component: a .build tree produced by one toolchain must
-          # never be restored into a build running under another.
-          SLUG="$(swift --version | head -1 | tr -cs 'a-zA-Z0-9.' '-' | cut -c1-48)"
-          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
-
-      - name: Cache SwiftPM build
-        if: runner.environment == 'github-hosted' && steps.ci_scope.outputs.docs_only != 'true'
-        uses: actions/cache@v4
-        with:
-          path: .build
-          # Keyed on the toolchain as well as Package.resolved: the old key
-          # (and its bare `swiftpm-macOS-` restore prefix) would happily
-          # restore a swift.org-6.2.1-built .build into an Xcode build.
-          key: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-${{ runner.os }}-${{ runner.arch }}-${{ steps.hosted_toolchain.outputs.slug }}-
-
-      - name: Installer asset-resolution regression test (issue #131)
-        # Pure bash against a stubbed curl — no network, sub-second.
-        run: ./scripts/ci/test-install-resolve.sh
-
-      - name: Format lint (advisory)
-        # Advisory until the one-shot tree reformat lands: swift-format exits 0
-        # on findings without --strict. After the reformat, add --strict here
-        # to make style regressions block.
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        run: |
-          swift format lint --recursive --parallel Sources Tests Package.swift 2>&1 \
-            | tee format-lint.txt | tail -n 5
-          echo "format-lint findings: $(wc -l < format-lint.txt | tr -d ' ')"
-
-      - name: Test (unit suite)
-        # The integration suite needs a live inference backend and is exercised
-        # manually; see CLAUDE.md. This is also the job's compile gate: the
-        # old standalone `swift build` step built plain-debug products that
-        # nothing downstream consumed (tests rebuild with coverage flags,
-        # packaging builds release), so it was pure duplicate compilation.
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        env:
-          RUNNER_ENVIRONMENT: ${{ runner.environment }}
-        run: |
-          # AgentDictationE2EEvalTests is skipped explicitly (belt) on top of
-          # the marker cleanup above (suspenders): it is the nightly
-          # eval-e2e.yml lane, never tier 0, and a leftover enable marker in
-          # this persistent workspace must not turn the unit step into a
-          # many-minute live-inference run.
-          timeout_seconds=900
-          if [[ "$RUNNER_ENVIRONMENT" == "self-hosted" ]]; then
-            timeout_seconds=300
-          fi
-          ./scripts/ci/run-supervised-command.sh \
-            "$timeout_seconds" "$RUNNER_TEMP/localvoxtral-unit-tests.log" -- \
-            swift test \
-            --skip RealtimeAPIVLLMIntegrationTests \
-            --skip SpeechHelperIntegrationTests \
-            --skip AgentDictationE2EEvalTests \
-            --skip HerdrIntegrationTests \
-            --enable-code-coverage
-
-      - name: Upload complete unit-test log
-        if: ${{ always() && steps.ci_scope.outputs.docs_only != 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-log-${{ runner.os }}
-          path: ${{ runner.temp }}/localvoxtral-unit-tests.log
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Coverage summary
-        # Visibility, not a gate: lets a PR's Proof section cite real coverage
-        # of the changed files instead of "a test exists".
-        if: steps.ci_scope.outputs.docs_only != 'true'
-        run: |
-          set -euo pipefail
-          BIN="$(find .build -type f -name localvoxtralPackageTests -path '*.xctest/Contents/MacOS/*' | head -n 1)"
-          PROF="$(find .build -type f -name default.profdata -path '*debug*' | head -n 1)"
-          if [[ -z "$BIN" || -z "$PROF" ]]; then
-            echo "coverage data not found under .build"; exit 1
-          fi
-          xcrun llvm-cov report "$BIN" -instr-profile "$PROF" \
-            -ignore-filename-regex '(Tests|\.build)/'
 
       - name: Warm on-demand speechd server
         # The build host's speechd STT test service is launch-on-demand (its
@@ -617,8 +869,8 @@ jobs:
         # Touch its trigger and block until port 8000 is healthy so the
         # integration suite below hits warm weights; this also resets the idle
         # window, so a burst of CI runs reuses one warm process and the reaper
-        # frees the RAM only after the machine goes quiet. Self-hosted only —
-        # hosted runners have no backend and the suite self-skips.
+        # frees the RAM only after the machine goes quiet. This service is the
+        # reason the live-STT lane cannot leave this machine.
         #
         # The `ensure speechd` name works whether the host still runs the retired
         # Python voxmlx plist or the swapped-in Swift speechd plist: both are
@@ -629,7 +881,7 @@ jobs:
         # run dir is absent and there is nothing to warm — the still-resident
         # STT service serves the suite, so skip cleanly instead of failing CI.
         # The integration step below is the real gate on the STT service.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
           if [ -d /Users/Shared/localvoxtral/run ]; then
             ./scripts/mac/lv-test-servers.sh ensure speechd
@@ -641,9 +893,9 @@ jobs:
       - name: Integration tests (live STT service)
         # The self-hosted runner has the STT test service serving locally
         # (launchd service com.localvoxtral.testspeechd, warmed on-demand by the
-        # step above). On GitHub-hosted runners there is no backend and the suite
-        # self-skips, so this step is self-hosted only.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        # step above). Nowhere else has that backend, which is why this lane
+        # stayed behind when tier 0 moved to hosted runners.
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           VLLM_REALTIME_TEST_ENABLE: "1"
           VLLM_REALTIME_TEST_MODEL: T0mSIlver/Voxtral-Mini-4B-Realtime-2602-4bit-qhead
@@ -662,7 +914,7 @@ jobs:
         # takes over the account's herdr config, which a hosted fork-PR runner
         # must never be asked to do. Local equivalent:
         # ./scripts/remote-build.sh integration-herdr
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.herdr_lane.outputs.run == 'true'
         env:
           HERDR_INTEGRATION_TEST_ENABLE: "1"
         # --enable-code-coverage matches the unit step's build flags (same
@@ -670,21 +922,22 @@ jobs:
         run: swift test --filter HerdrIntegrationTests --enable-code-coverage
 
       - name: Polishing helper unit tests (PolishHelper package)
-        # Self-hosted only: hosted runners would pay a cold Cmlx C++ compile
-        # every fork PR. These tests are Metal-free (HTTP layer, router,
-        # cache locator, watchdog); the Metal path is covered below.
+        # Metal-free (HTTP layer, router, cache locator, watchdog); the Metal
+        # path is the packaging step below. Kept on the Mac rather than moved
+        # to build-test because a hosted runner would pay a cold Cmlx C++
+        # compile for it on every single run, warm here via clean: false.
         # Path-gated by the decide step above — see its comment for why that
         # is sound and scripts/ci/helper-lane-filter.sh for the rules.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.polish_run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.polish_run == 'true'
         run: swift test --package-path PolishHelper
 
       - name: Speech helper unit tests (SpeechHelper package)
-        # Self-hosted only, matching PolishHelper: this is the per-push,
-        # Metal-free codec/delta/watchdog suite. Real Metal inference is the
+        # Matching PolishHelper: the Metal-free codec/delta/watchdog suite,
+        # kept here for the same warm-Cmlx reason. Real Metal inference is the
         # conditional post-packaging lane below.
         # Path-gated by the decide step above — see its comment for why that
         # is sound and scripts/ci/helper-lane-filter.sh for the rules.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.speech_run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.helper_lanes.outputs.speech_run == 'true'
         run: swift test --package-path SpeechHelper
 
       - name: Dogfood capture suite (instrumented build)
@@ -694,9 +947,10 @@ jobs:
         # this step the capture would rot silently: nothing else in CI ever
         # builds it, and it is only ever exercised by hand.
         #
-        # Self-hosted only, matching the helper suites: it is a second full
-        # compile of the app target, which a fork PR should not pay for.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        # Kept on the Mac, matching the helper suites: it is a second full
+        # compile of the app target against a warm .build, which a cold hosted
+        # runner would pay from scratch.
+        if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           LOCALVOXTRAL_DOGFOOD: "1"
         run: swift test --filter 'Dogfood'
@@ -708,7 +962,7 @@ jobs:
         # (`xcrun --find metal` succeeds even when the component is missing)
         # and self-provision loudly; the asset is cached system-wide, so a
         # re-activation here is quick.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true'
         run: |
           if ! xcrun metal --version >/dev/null 2>&1; then
             echo "Metal toolchain not active for $(whoami); installing component..."
@@ -723,31 +977,30 @@ jobs:
           fi
 
       - name: Package app bundle
-        # The self-hosted runner's keychain holds the stable localvoxtral-dev
-        # signing cert, keeping TCC grants valid across builds; anywhere the
-        # identity is absent (hosted runners), packaging falls back to ad-hoc.
-        # Hosted runners skip both bundled MLX helpers (no MetalToolchain
-        # component + cold MLX C++ builds would dominate fork-PR CI); every
-        # self-hosted lane (same-repo PRs, main, releases) builds them.
+        # THE SIGNED bundle, and the reason this job cannot move: the runner's
+        # keychain holds the stable localvoxtral-dev cert, which is what keeps
+        # the owner's Accessibility (TCC) grant valid across try-pr.sh installs.
+        # An ad-hoc signature would break it on every build. Both bundled MLX
+        # helpers are built here for real (Metal kernels via xcodebuild).
         if: steps.ci_scope.outputs.docs_only != 'true'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
-          LOCALVOXTRAL_SKIP_POLISHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
-          LOCALVOXTRAL_SKIP_SPEECHD: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
+          LOCALVOXTRAL_SKIP_POLISHD: "0"
+          LOCALVOXTRAL_SKIP_SPEECHD: "0"
           # Self-hosted lanes (same-repo PRs, main) MUST ship an identity-signed
           # bundle so try-pr.sh leaves the signature untouched and the owner's
           # Accessibility (TCC) grant survives across builds. Fail the build
           # loudly rather than silently upload an ad-hoc artifact if the runner
           # user's keychain has lost the cert. Hosted fork-PR runners have no
           # cert and are expected to be ad-hoc, so the requirement is off there.
-          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: ${{ runner.environment == 'github-hosted' && '0' || '1' }}
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "1"
         run: ./scripts/package_app.sh release
 
       - name: Speech helper integration (real audio + live model)
         # Runs packaged speechd through RealtimeAPIWebSocketClient with the
         # tier-1 spoken fixture. Conditional because it loads the multi-GB
         # Voxtral model. Local equivalent: remote-build.sh integration-speechd.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.speechd_lane.outputs.run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.speechd_lane.outputs.run == 'true'
         env:
           SPEECHD_INTEGRATION_TEST_ENABLE: "1"
           SPEECHD_INTEGRATION_TEST_PATH: dist/localvoxtral.app/Contents/MacOS/localvoxtral-speechd
@@ -765,7 +1018,7 @@ jobs:
         # above (path filter + [run-llm-eval] marker) says whether this
         # change can affect what the lane measures. Local equivalent:
         # ./scripts/remote-build.sh integration-polishd
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.llm_lane.outputs.run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.llm_lane.outputs.run == 'true'
         env:
           LOCALVOXTRAL_POLISHD_TEST_ENABLE: "1"
           LOCALVOXTRAL_POLISHD_TEST_PATH: PolishHelper/.build/xcode/Build/Products/Release/localvoxtral-polishd
@@ -874,7 +1127,7 @@ jobs:
         #   grant — is identical when switching between the two.
         # - package_app.sh self-verifies the LVXDogfoodCapture Info.plist
         #   stamp and fails loudly on mismatch; no re-check needed here.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
         env:
           LOCALVOXTRAL_CODESIGN_IDENTITY: localvoxtral-dev
           LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "1"
@@ -890,7 +1143,7 @@ jobs:
           ditto -c -k --keepParent dist/localvoxtral.dSYM dist/localvoxtral-dsym-dogfood.zip
 
       - name: Upload dogfood app artifact
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: localvoxtral-app-dogfood
@@ -900,7 +1153,7 @@ jobs:
       - name: Upload dogfood dSYM artifact
         # Same longer retention rationale as localvoxtral-dsym: field crashes
         # surface days after the build that produced them.
-        if: runner.environment == 'self-hosted' && steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
+        if: steps.ci_scope.outputs.docs_only != 'true' && steps.dogfood_lane.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: localvoxtral-dsym-dogfood
@@ -927,6 +1180,11 @@ jobs:
         # 'true' in an expression coerces both to numbers (1 vs NaN) and is
         # therefore always false — a gate that silently never fires. The event
         # payload's copy is a string, so it compares as written.
+        # `runner.environment == 'self-hosted'` is redundant now that this
+        # whole job is self-hosted, and it stays on purpose: this is the one
+        # step that writes into the OWNER'S HOME. A guard that costs nothing
+        # and would catch someone moving the step to the wrong job is worth
+        # keeping, and scripts/ci/test-ui-gate.sh asserts it by name.
         if: >-
           runner.environment == 'self-hosted'
           && github.event_name == 'workflow_dispatch'
@@ -967,7 +1225,7 @@ jobs:
         # occurrence identifies itself. UID/state distinguish another account
         # and harmless zombies; names stay ucomm-only (no paths or arguments)
         # because this log is public. Informational — never fails the job.
-        if: ${{ always() && runner.environment == 'self-hosted' }}
+        if: always()
         run: |
           survivors="$(ps -axo pid,uid,etime,state,ucomm \
             | grep -iE 'localvoxtral|polishd|speechd|xctest|swiftpm-testing|XCBBuildService' \
