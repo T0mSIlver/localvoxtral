@@ -251,8 +251,9 @@ final class ClaudeHookWireCodecTests: XCTestCase {
     }
 
     func testRejectsUnknownAgentPreciselyRatherThanDefaultingToClaude() {
-        // Defaulting would hand a future agent Claude's channel rules (title
-        // markers, bare session-id namespace). Ignored, precisely.
+        // Defaulting would hand a future agent Claude's rules (the bare
+        // session-id namespace, and which arms may speak for it). Ignored,
+        // precisely.
         XCTAssertThrowsError(
             try ClaudeHookWireCodec.decodeLine(line(validJSON(extra: #","agent":"aider""#)))
         ) { error in

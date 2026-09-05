@@ -191,7 +191,7 @@ public struct UnixSocketPublisher: Sendable {
     ///
     /// Returns nil for absolutely everything unexpected. A missing or malformed
     /// reply is not an error worth surfacing: the record was already delivered,
-    /// and the only consequence is that we emit no marker.
+    /// and there is no consequence at all: the hook prints nothing either way.
     private func readReply(fd: Int32) -> Data? {
         let deadline = monotonicNow() + timeout
         var buffer = Data()

@@ -11,12 +11,11 @@ import Foundation
 /// model that the user was working in one repo while showing it another one's
 /// screen. Three independent resolutions cannot promise that: the user can
 /// switch tabs mid-sentence, and each read would then answer honestly about a
-/// different moment. So the marker is read at START, from the pane the user was
-/// looking at when they began speaking, and that answer is what every consumer
-/// gets.
+/// different moment. So the surface is read at START, from the pane the user
+/// was looking at when they began speaking, and that answer is what every
+/// consumer gets.
 enum ClaudeSessionJoinMechanism: Sendable, Equatable {
     case ttyDevice
-    case titleMarker
     case herdrPane
     /// The focused browser tab's `claude.ai/code/session_…` URL matched a live
     /// session's Remote Control bridge session id. No screen is ever read for
@@ -62,12 +61,11 @@ struct ClaudeSessionJoin: Sendable, Equatable {
     /// The pane the join was resolved for. Consumers re-check this rather than
     /// assuming the join is about whatever target they happen to hold.
     let target: TerminalScreenTarget
-    /// The broker-allocated marker used for commit-time liveness. A title join
-    /// reads it from AX; TTY and herdr joins take it from the resolved snapshot.
-    let marker: ClaudeSessionMarker
-    /// The session as the registry described it at start.
+    /// The session as the registry described it at start. Its `sessionID` is
+    /// the handle commit-time liveness re-checks (`isStillLive`).
     let snapshot: ClaudeSessionSnapshot
-    /// The identity of the WINDOW the marker was read from. `target` cannot
+    /// The identity of the WINDOW that was focused when the join resolved.
+    /// `target` cannot
     /// tell two windows of one Ghostty process apart, and the screen capture is
     /// a SEPARATE read that can land on a different window if focus moves
     /// between the two — so authorization compares windows, not just targets
@@ -103,7 +101,6 @@ struct ClaudeSessionJoin: Sendable, Equatable {
 
     init(
         target: TerminalScreenTarget,
-        marker: ClaudeSessionMarker,
         snapshot: ClaudeSessionSnapshot,
         windowID: CGWindowID?,
         mechanism: ClaudeSessionJoinMechanism,
@@ -114,7 +111,6 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         remoteHerdrIndicator: HerdrPanelMicIndicator? = nil
     ) {
         self.target = target
-        self.marker = marker
         self.snapshot = snapshot
         self.windowID = windowID
         self.mechanism = mechanism
@@ -132,7 +128,7 @@ struct ClaudeSessionJoin: Sendable, Equatable {
         switch mechanism {
         case .herdrPane, .remoteHerdrPane: return herdrPane?.paneID
         case .cmuxSurface: return cmuxSurface?.surfaceID
-        case .ttyDevice, .titleMarker, .browserTab: return nil
+        case .ttyDevice, .browserTab: return nil
         }
     }
 
@@ -153,39 +149,39 @@ struct ClaudeSessionJoin: Sendable, Equatable {
 /// screen attachment only when that join is unambiguous.
 ///
 /// This is the positive gate `TerminalScreenRawAttachmentPolicy` was written to
-/// wait for. The chain it requires is deliberately end-to-end, with no step
-/// inferred from another:
+/// wait for. Every arm below is the same shape, and the shape is what makes it
+/// a gate rather than a guess:
 ///
-/// 1. The broker allocated a marker for a session it authenticated from PEER
-///    CREDENTIALS (`ClaudeTransportOrigin`), so a marker existing at all means
-///    a local process running as this user reported that session.
-/// 2. Claude Code wrote that marker into its window title (`ClaudeMarkerSequence`).
-/// 3. We read the title back from the PID we captured — never system-wide focus
-///    — and parse exactly one marker out of it (`ClaudeMarkerTitleParser`).
-/// 4. The registry still resolves that marker to ONE live session.
+/// 1. A session was authenticated by its TRANSPORT — peer credentials for a
+///    local one (`ClaudeTransportOrigin`), an enrolled host's token for a
+///    remote one — so a candidate existing at all means someone we trust
+///    reported it.
+/// 2. That session's own hooks published a HANDLE to where it lives: a
+///    controlling TTY, a herdr pane id, a cmux surface id, a Remote Control
+///    bridge session id.
+/// 3. We read the SAME KIND of handle off the surface the user is actually
+///    looking at, from the PID we captured — never system-wide focus.
+/// 4. The two are compared for exact equality, and the registry still resolves
+///    the match to ONE live session.
 ///
 /// Every link abstains rather than guesses, because the failure modes are not
 /// symmetric: a wrong `true` renders an unrelated terminal's scrollback into
 /// someone's prompt, while a wrong `false` costs only an excerpt whose terms the
-/// vocabulary matcher already extracted. So:
+/// vocabulary matcher already extracted. So a surface that publishes no handle
+/// we can read (a plain shell, an editor, a terminal the user opened
+/// themselves) joins nothing, and so does `unknown`, `stale` (past TTL, or the
+/// agent process is gone) or `ambiguous` (more than one live session matches).
 ///
-/// - a title with no marker (plain Ghostty, an editor, a shell the user opened
-///   themselves) → no join. This is what keeps arbitrary scrollback out.
-/// - a title with TWO markers → the parser abstains → no join.
-/// - `unknown` (marker we never issued, or a stale title left behind after the
-///   session ended and the registry evicted it) → no join.
-/// - `stale` (past TTL, or the Claude process is gone) → no join.
-/// - `ambiguous` (more than one live session matches) → no join.
-///
-/// Note what is NOT here: any inference from the cwd, the window title text, or
-/// "there is only one live session so it must be that one". A sole-session
-/// heuristic is wrong precisely when it matters — the user has one Claude
-/// session open and is dictating into an unrelated shell — and it would attach
-/// that session's repo to a prompt that has nothing to do with it.
+/// Note what is NOT here: any inference from the cwd, the window title, or
+/// "there is only one live session so it must be that one". No window title is
+/// read for a join at all — it is a fought-over channel that every party in the
+/// stack rewrites. A sole-session heuristic is wrong precisely when it matters
+/// — the user has one Claude session open and is dictating into an unrelated
+/// shell — and it would attach that session's repo to a prompt that has nothing
+/// to do with it.
 @MainActor
 struct ClaudeSessionJoinResolver {
     private let registry: ClaudeSessionRegistry
-    private let markerInWindowTitle: (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead?
     private let focusedTerminalTTY: (String) async -> String?
     private let focusedBrowserTabURL: (String) async -> String?
     private let focusedWindowID: (pid_t) -> CGWindowID?
@@ -208,11 +204,6 @@ struct ClaudeSessionJoinResolver {
     private let reportPanelStatus: @MainActor (HerdrPanelConfigurationStatus) -> Void
 
     /// - Parameters:
-    ///   - markerInWindowTitle: reads the PID-pinned focused window title,
-    ///     parses a marker out of it, and reports which WINDOW it read.
-    ///     Injected so the whole truth table is unit-testable without a live
-    ///     AX tree — the same reason every other live read in this feature is
-    ///     a seam.
     ///   - focusedTerminalTTY: reads the focused pane's controlling TTY for a
     ///     bundle id over AppleScript (Ghostty ≥ 1.4's focused terminal,
     ///     iTerm2's current session, Terminal.app's selected tab). Unlike the
@@ -229,12 +220,10 @@ struct ClaudeSessionJoinResolver {
     ///     because a browser tab URL is user CONTENT: no test may reach the
     ///     live reader by forgetting an injection. The app wires
     ///     `AppleScriptFocusedBrowserTabURLReader` explicitly.
-    ///   - focusedWindowID: the tty join's window identity. A marker join
-    ///     learns its window from the marker read itself, but a tty join never
-    ///     consults the title — so the focused window is identified by this
-    ///     separate PID-pinned AX read. Nil means unknown, which the
-    ///     authorizer refuses, exactly like a nil marker-read identity
-    ///     (review F2).
+    ///   - focusedWindowID: the join's window identity, from its own
+    ///     PID-pinned AX read. It exists to pair a screen capture with the
+    ///     join that authorized it; nil means unknown, which the authorizer
+    ///     refuses rather than treats as a match (review F2).
     ///   - herdrClientProbe: reads the local process table to bind the focused
     ///     Ghostty surface to a herdr client. It DEFAULTS TO ABSTAIN: a test
     ///     that forgets to inject must never consult the live process table.
@@ -269,9 +258,6 @@ struct ClaudeSessionJoinResolver {
     ///     inject must get.
     init(
         registry: ClaudeSessionRegistry,
-        markerInWindowTitle: @escaping (pid_t) -> TerminalScreenAXReader.FocusedWindowMarkerRead? = {
-            TerminalScreenAXReader.markerInFocusedWindowTitle(applicationPID: $0)
-        },
         focusedTerminalTTY: @escaping (String) async -> String? = { _ in nil },
         focusedBrowserTabURL: @escaping (String) async -> String? = { _ in nil },
         focusedWindowID: @escaping (pid_t) -> CGWindowID? = {
@@ -307,7 +293,6 @@ struct ClaudeSessionJoinResolver {
         reportPanelStatus: @escaping @MainActor (HerdrPanelConfigurationStatus) -> Void = { _ in }
     ) {
         self.registry = registry
-        self.markerInWindowTitle = markerInWindowTitle
         self.focusedTerminalTTY = focusedTerminalTTY
         self.focusedBrowserTabURL = focusedBrowserTabURL
         self.focusedWindowID = focusedWindowID
@@ -332,17 +317,24 @@ struct ClaudeSessionJoinResolver {
 
     /// The join for `target`, or nil on any abstention.
     ///
-    /// TTY first, then herdr when that TTY belongs to an attached client, then
-    /// marker. The TTY compares the focused pane's device
-    /// against what the hook publisher reported from inside the session — the
-    /// process table cannot be clobbered by whoever wrote the window title
-    /// last, so it keeps joining while Claude Code's own conversation titles
-    /// own the visible one. A TTY non-answer falls through to the marker path
-    /// unless the outer surface is positively bound to herdr; that path is
-    /// herdr-or-nothing because Ghostty's title cannot identify an inner pane.
-    /// No TTY answer at all still uses the marker unchanged. Remote sessions
-    /// can ONLY join via marker, because their TTY names another machine's
-    /// device and `resolve(tty:)` refuses remote candidates outright.
+    /// TTY first, then — on that same surface TTY — herdr when a herdr client
+    /// holds it, and otherwise the remote-herdr arm. The TTY arm compares the
+    /// focused pane's device against what the hook publisher reported from
+    /// inside the session; the process table cannot be clobbered by whoever
+    /// wrote the window title last, which is exactly why it, and not a title,
+    /// is the primary evidence. A TTY non-answer does not fall through to some
+    /// weaker reading of the same surface — there is no such reading — so the
+    /// arms below it are the ones that ask a DIFFERENT question (an inner
+    /// herdr pane, a cmux surface, a browser tab), and when none of them
+    /// answers, the dictation gets no join.
+    ///
+    /// LOCAL sessions only, for every terminal arm: a remote session's TTY,
+    /// pane id, or surface id names something on another machine, and
+    /// `resolve(tty:)` refuses remote candidates outright so an SSH host can
+    /// never claim a local pane by echoing its device. A remote session joins
+    /// only through an arm that proves the remote binding itself — the
+    /// remote-herdr pane arm, `cmux ssh`'s round-tripped surface id, or the
+    /// bridge-allocated Remote Control session id.
     ///
     /// Whether the registry currently holds ANY live session.
     ///
@@ -380,13 +372,11 @@ struct ClaudeSessionJoinResolver {
                 Log.claudeContext.info(
                     "Terminal pane joined to a live Claude session via focused-pane tty"
                 )
-                // The tty join carries a window identity exactly like the
-                // marker join: without one, the authorizer cannot tell two
+                // Without a window identity the authorizer cannot tell two
                 // windows of one Ghostty process apart and must refuse raw
                 // attachment (review F2). Read here, once, at join time.
                 return ClaudeSessionJoin(
                     target: target,
-                    marker: snapshot.marker,
                     snapshot: snapshot,
                     windowID: focusedWindowID(target.pid),
                     mechanism: .ttyDevice
@@ -399,9 +389,9 @@ struct ClaudeSessionJoinResolver {
                 abstainedTTYJoin(outcome: "ambiguous")
             }
 
-            // A focused surface positively bound to herdr is herdr-or-nothing.
-            // Ghostty's title describes the outer client, not an inner pane; a
-            // lingering marker there could only mis-join the pane now visible.
+            // A focused surface positively bound to herdr describes an inner
+            // pane, so only herdr can say which one: the arms below ask about
+            // the outer surface and would answer about the wrong thing.
             if herdrClientProbe(tty) {
                 return await resolveViaHerdr(target: target)
             }
@@ -411,42 +401,33 @@ struct ClaudeSessionJoinResolver {
             switch await resolveViaRemoteHerdr(target: target, tty: tty) {
             case .joined(let join):
                 return join
-            case .abstained:
-                // Herdr-or-nothing, for the local arm's reason transposed: the
-                // remote pane's marker lives in herdr's captured pane title,
-                // and any marker in the OUTER window belongs to something else
-                // — most likely this same host BEFORE the user attached herdr.
-                return nil
-            case .notApplicable:
+            case .declined:
                 break
-            case .suppressMarker:
-                return nil
             }
         }
 
         // cmux has no AppleScript TTY reader, so the block above never answers
-        // for it and this is where its surface arm runs. Unlike herdr's, an
-        // abstention here FALLS THROUGH to the marker: cmux forwards an inner
-        // OSC 2 to the window title, so a local session under the title-fallback
-        // opt-in can still be joined the old way. (It is not reliable — a custom
-        // workspace name or cmux's AI auto-naming replaces the title — which is
-        // exactly why the surface arm exists, and exactly why it must not be the
-        // only chance.)
+        // for it and this is where its surface arm runs.
         if TerminalScreenAllowlist.isSocketCaptureSupported(target.bundleID),
            let join = await resolveViaCmux(target: target) {
             return join
         }
 
-        return resolveViaMarker(target: target)
+        // Nothing identified the surface. There is no weaker reading to fall
+        // back to, and that is the design: the alternative was a marker in the
+        // window title, which every party in the stack (Claude Code, herdr,
+        // cmux, the user) rewrites at will, so a lingering one could only
+        // describe a session other than the one on screen.
+        return nil
     }
 
     /// Outcome only, never the device path. A silent abstention here made a
     /// broken hook-side tty capture indistinguishable from a failed pane read
-    /// in the field (2026-07-20) — the marker fallback may still answer, but
-    /// the non-answer must say which side of the join went missing.
+    /// in the field (2026-07-20): later arms may still answer, but the
+    /// non-answer must say which side of the join went missing.
     private func abstainedTTYJoin(outcome: String) {
         Log.claudeContext.info(
-            "Focused-pane tty matched no session (\(outcome, privacy: .public)); trying title marker"
+            "Focused-pane tty matched no session (\(outcome, privacy: .public))"
         )
         Self.noteAbstention("tty: \(outcome)")
     }
@@ -500,7 +481,6 @@ struct ClaudeSessionJoinResolver {
             )
             return ClaudeSessionJoin(
                 target: target,
-                marker: snapshot.marker,
                 snapshot: snapshot,
                 // Deliberately nil. A window identity exists to pair a SCREEN
                 // capture with the join that authorized it, and there is no
@@ -595,7 +575,6 @@ struct ClaudeSessionJoinResolver {
         Log.claudeContext.info("Terminal pane joined to a live Claude session via herdr pane")
         return ClaudeSessionJoin(
             target: target,
-            marker: snapshot.marker,
             snapshot: snapshot,
             windowID: focusedWindowID(target.pid),
             mechanism: .herdrPane,
@@ -605,18 +584,18 @@ struct ClaudeSessionJoinResolver {
 
     /// What the remote herdr arm concluded.
     ///
-    /// `notApplicable` and `abstained` are NOT the same answer and the
-    /// difference is the whole safety argument: the arm falls through to the
-    /// title marker only while nothing has bound it to a remote herdr, and
-    /// stops the dictation's join dead once something has.
+    /// One decline, not three. The arm used to distinguish "nothing here is
+    /// about a remote herdr" from "this surface IS an enrolled host's herdr
+    /// and the join still failed" (and a third case for an ssh present but
+    /// unreadable) because those three chose differently between falling
+    /// through to a window-title marker and stopping the dictation's join
+    /// dead. With no title arm left there is nothing to fall through TO, so
+    /// every non-join is one answer: this arm has no session for you. The
+    /// CAUSES stay distinct — each decline still logs and taps its own
+    /// content-free string, which is what the dogfood record and
+    /// `--probe-surface` read.
     enum RemoteHerdrArmOutcome {
-        /// Nothing here is about a remote herdr; other arms may still answer.
-        case notApplicable
-        /// An unreadable ssh is present on the surface. Its outer marker may be
-        /// stale from before herdr started, so no later arm may consume it.
-        case suppressMarker
-        /// This surface IS an enrolled host's herdr and the join still failed.
-        case abstained
+        case declined
         case joined(ClaudeSessionJoin)
     }
 
@@ -645,19 +624,12 @@ struct ClaudeSessionJoinResolver {
     ///    one herdr are expected and fine — panes are what a multiplexer is for
     ///    — and it is two herdr SERVERS that leave the surface ambiguous;
     /// 4. over the forward, exactly ONE of those candidates claims that herdr's
-    ///    FOCUSED pane id (two claiming the same pane id abstain), and that
-    ///    pane's captured title carries exactly that session's broker-allocated
-    ///    marker;
+    ///    FOCUSED pane id (two claiming the same pane id abstain);
     /// 5. herdr's own session claim for the pane does not disagree, and the pane
     ///    is running that session's agent.
     ///
     /// Every one of these can only ever CONFIRM. No step picks a session because
     /// it is the only one, the most recent, or the one whose cwd looks right.
-    ///
-    /// The `notApplicable`/`abstained` split is exactly steps 1–3 vs 4–5: until
-    /// this terminal's connection is bound to a herdr that has candidates, a
-    /// non-answer must leave the title-marker arm alone — an unrelated herdr on
-    /// the host must not cost a plain remote session the join it has always had.
     private func resolveViaRemoteHerdr(
         target: TerminalScreenTarget,
         tty: String
@@ -679,14 +651,14 @@ struct ClaudeSessionJoinResolver {
         case .noSSHClient:
             // The overwhelmingly common case: a local shell. Not logged — this
             // is not an abstention, it is the arm not applying.
-            return .notApplicable
+            return .declined
         case .undeterminable(let cause):
             // The category is content-free by type (`SSHProbeIndeterminacy` —
             // never a host, path, or option), so it may ride into the log and
             // the dogfood record. Three field dictations were diagnosed blind
             // without it (2026-08-06).
             Self.abstainedRemoteHerdrJoin(outcome: "ssh session undeterminable (\(cause.rawValue))")
-            return cause.suppressesTitleMarker ? .suppressMarker : .notApplicable
+            return .declined
         case .connection(let value):
             connection = value
         }
@@ -697,27 +669,26 @@ struct ClaudeSessionJoinResolver {
         }
         guard !hosts.isEmpty else {
             // An ssh session to a host the user never enrolled. There is no
-            // context to join, and the title marker still deserves its chance:
-            // a plain remote session joins that way and always has.
-            return .notApplicable
+            // context to join.
+            return .declined
         }
         guard hosts.count == 1, let host = hosts.first, let alias = host.sshHostAlias else {
             Self.abstainedRemoteHerdrJoin(outcome: "ssh destination matches multiple enrolled hosts")
-            return .notApplicable
+            return .declined
         }
 
         let candidates = registry.liveRemoteHerdrSessions(hostID: host.id)
         guard !candidates.isEmpty else {
             // Enrolled, but nothing on it reported a herdr pane — a plain
-            // remote Claude session. Marker arm, exactly as before.
-            return .notApplicable
+            // remote Claude session, which this arm cannot speak for.
+            return .declined
         }
         let socketPaths = Set(candidates.compactMap { $0.remoteSessionEnvironment?.herdrSocketPath })
         guard socketPaths.count == 1, let remoteSocketPath = socketPaths.first else {
             // Mirror of the local single-socket rule: two herdr servers on one
             // host, and no way to tell which one the surface is attached to.
             Self.abstainedRemoteHerdrJoin(outcome: "multiple live herdr sockets on this host")
-            return .notApplicable
+            return .declined
         }
 
         // The connection-level bind: this connection's own argv must be a
@@ -725,8 +696,8 @@ struct ClaudeSessionJoinResolver {
         // competing herdr view of the same destination.
         //
         // The invocation requirement is the round-5b lesson unchanged: a herdr
-        // whose client detached — or whose pane still carries a marker and a
-        // running agent inside the registry TTL — keeps answering
+        // whose client detached — or whose pane still runs an agent inside the
+        // registry TTL — keeps answering
         // `pane.current`, so being the sole `ssh builder` proves nothing about
         // what this terminal DISPLAYS. herdr exposes no read-only attachment
         // signal (re-verified at v0.8.0 / protocol 19, 2026-08-06: the only
@@ -743,15 +714,11 @@ struct ClaudeSessionJoinResolver {
         // focused pane — joining is correct for both. What still blocks is a
         // possible client of a DIFFERENT herdr view: another session selector,
         // a single-pane attach, or an argv unreadable enough to be either.
-        // Blanket uniqueness was also not free: its abstention returns
-        // `.notApplicable`, which falls through to the title marker, where a
-        // stale marker left by an earlier session could win.
         //
         // The residual cost after panel fallback: a manual `ssh host`, then
-        // `herdr` flow still gets no HERDR join when the sidebar row cannot
+        // `herdr` flow still gets no join at all when the sidebar row cannot
         // render (collapsed/narrow/covered/unconfigured), because its argv has
-        // no remote command. Marker fallback is separately suppressed for the
-        // four present-but-unreadable ssh categories above.
+        // no remote command and no other arm can see inside that connection.
         // The surface's own classification first: when the surface argv is the
         // problem, the log must say so — a competing neighbor may exist too,
         // and reporting it instead buried the actionable cause (review nit,
@@ -761,7 +728,7 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedRemoteHerdrJoin(
                 outcome: "the ssh command on this terminal is not herdr itself"
             )
-            return .notApplicable
+            return .declined
         case .otherHerdrSubcommand:
             // `herdr terminal attach <id>` renders ONE pane and
             // `herdr --session <x>` in a shape we could not normalize may be
@@ -771,7 +738,7 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedRemoteHerdrJoin(
                 outcome: "this terminal attaches a partial or different herdr view"
             )
-            return .notApplicable
+            return .declined
         case .plainClient:
             break
         }
@@ -779,56 +746,38 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedRemoteHerdrJoin(
                 outcome: "another terminal may hold a different herdr view of this destination"
             )
-            return .notApplicable
+            return .declined
         }
 
-        // NOT yet herdr-or-nothing. Registry candidates existing on the host is
-        // not a binding for THIS connection — a detached herdr, or one whose
-        // sessions are merely still inside their TTL, would otherwise cost a
-        // sole plain ssh session the outer marker join it has always had
-        // (review round 3, blocker 1b). Everything up to and including the
-        // pane-id + marker confirmation therefore still falls through.
         guard let remoteHerdrForwards else {
             Self.abstainedRemoteHerdrJoin(outcome: "forward capability unavailable")
-            return .notApplicable
+            return .declined
         }
         guard let herdrPanes else {
             Self.abstainedRemoteHerdrJoin(outcome: "pane query capability unavailable")
-            return .notApplicable
+            return .declined
         }
         guard let forward = await remoteHerdrForwards.open(
             alias: alias, remoteSocketPath: remoteSocketPath
         ) else {
             Self.abstainedRemoteHerdrJoin(outcome: "forward unavailable")
-            return .notApplicable
+            return .declined
         }
 
-        switch await resolveRemoteHerdrPane(
+        if let join = await resolveRemoteHerdrPane(
             target: target,
             hostID: host.id,
             candidates: candidates,
             forward: forward,
             herdrPanes: herdrPanes
         ) {
-        case .joined(let join):
             Log.claudeContext.info(
                 "Terminal pane joined to a live Claude session via remote herdr pane"
             )
             return .joined(join)
-        case .unconfirmed:
-            // The herdr on the other end never confirmed that THIS connection
-            // displays one of our sessions. Nothing was established, so the
-            // marker arm keeps its chance.
-            forward.close()
-            return .notApplicable
-        case .refusedAfterConfirmation:
-            // The focused pane IS this session's — pane id and the
-            // broker-allocated marker both said so — and a later fail-closed
-            // check refused it. NOW a marker in the outer window could only
-            // describe something else, so the dictation joins nothing.
-            forward.close()
-            return .abstained
         }
+        forward.close()
+        return .declined
     }
 
     private struct PanelCandidateMatch {
@@ -994,7 +943,7 @@ struct ClaudeSessionJoinResolver {
                 )
                 match.forward.close()
             }
-            return .abstained
+            return .declined
         }
         guard let match = matches.first else { return nil }
 
@@ -1024,14 +973,17 @@ struct ClaudeSessionJoinResolver {
                 paneID: pane.paneID
             )
             match.forward.close()
-            return .abstained
+            return .declined
         }
 
-        guard let title = pane.terminalTitle,
-              let marker = ClaudeMarkerTitleParser.marker(inTitle: title),
-              marker == snapshot.marker
-        else { return await refuse("panel-bound pane marker confirmation failed") }
-
+        // The pane-level confirmation set, unchanged in substance now that the
+        // pane title is not consulted: the caller already established that
+        // EXACTLY ONE live candidate of this socket claims the focused pane id
+        // (`paneMatches.count == 1` above), and the two fail-closed
+        // cross-checks below are what stop a REUSED pane — a session that died
+        // without a SessionEnd leaves a live registry entry and its pane id
+        // behind, and herdr, which watches the pane, is the party that can
+        // contradict it.
         if let claimed = pane.claimedClaudeSessionID,
            Self.scopedRemoteSessionID(
                claimed: claimed, hostID: match.host.id, agent: snapshot.agent
@@ -1062,7 +1014,6 @@ struct ClaudeSessionJoinResolver {
         )
         return .joined(ClaudeSessionJoin(
             target: target,
-            marker: snapshot.marker,
             snapshot: snapshot,
             windowID: focusedWindowID(target.pid),
             mechanism: .remoteHerdrPane,
@@ -1072,32 +1023,22 @@ struct ClaudeSessionJoinResolver {
         ))
     }
 
-    /// What the over-the-forward half concluded.
-    ///
-    /// The `unconfirmed`/`refusedAfterConfirmation` split is where
-    /// herdr-or-nothing begins: only a pane id AND marker match prove this
-    /// connection is displaying one of our sessions.
-    private enum RemoteHerdrPaneOutcome {
-        case joined(ClaudeSessionJoin)
-        case unconfirmed
-        case refusedAfterConfirmation
-    }
-
-    /// The over-the-forward half: focused pane, marker, then the fail-closed
-    /// cross-checks. Split out so the failure paths have exactly one
-    /// `forward.close()` and one place deciding which side of the
-    /// herdr-or-nothing line each failure falls on.
+    /// The over-the-forward half: the focused pane, then the fail-closed
+    /// cross-checks. Split out so the caller has exactly one `forward.close()`
+    /// on the failure path. Nil is the only failure answer — with no title arm
+    /// underneath, "nothing was established yet" and "something was, and a
+    /// later check refused it" reach the same place.
     private func resolveRemoteHerdrPane(
         target: TerminalScreenTarget,
         hostID: String,
         candidates: [ClaudeSessionSnapshot],
         forward: ClaudeRemoteHerdrForwardHandle,
         herdrPanes: HerdrPaneQuerying
-    ) async -> RemoteHerdrPaneOutcome {
+    ) async -> ClaudeSessionJoin? {
         let socketPath = forward.localSocketPath
         guard let pane = await herdrPanes.focusedPane(socketPath: socketPath) else {
             Self.abstainedRemoteHerdrJoin(outcome: "focused pane unavailable")
-            return .unconfirmed
+            return nil
         }
         // The precondition, stated precisely because a loose reading of it drew
         // a review finding: exactly one candidate for the FOCUSED PANE ID —
@@ -1105,9 +1046,8 @@ struct ClaudeSessionJoinResolver {
         // expected and fine; that is what a multiplexer is for, and it is the
         // case this arm exists to serve. What abstains is two candidates
         // claiming the SAME pane id, which is the only shape that would force a
-        // choice. Nothing here picks: the survivor still has to be confirmed by
-        // the marker, by herdr's own session claim, and by the foreground
-        // process below.
+        // choice. Nothing here picks: the survivor still has to be confirmed
+        // by herdr's own session claim and by the foreground process below.
         let matches = candidates.filter {
             $0.remoteSessionEnvironment?.herdrPaneID == pane.paneID
         }
@@ -1117,39 +1057,15 @@ struct ClaudeSessionJoinResolver {
                     ? "focused pane has no live session"
                     : "two live sessions claim the focused pane id"
             )
-            return .unconfirmed
+            return nil
         }
-
-        // The marker is the second, independent binding — pane id equality
-        // alone rests entirely on labels the host chose. This marker was
-        // ALLOCATED HERE, handed to that session over its own authenticated
-        // request, and written into the pane by Claude Code itself; a host
-        // cannot invent one, and a marker from another session cannot match.
-        guard let title = pane.terminalTitle else {
-            Self.abstainedRemoteHerdrJoin(outcome: "focused pane reported no title")
-            return .unconfirmed
-        }
-        guard let marker = ClaudeMarkerTitleParser.marker(inTitle: title) else {
-            // Zero markers (a plain title) or two (the parser abstains) —
-            // both are "this pane does not name one session".
-            Self.abstainedRemoteHerdrJoin(outcome: "focused pane title carries no single marker")
-            return .unconfirmed
-        }
-        guard marker == snapshot.marker else {
-            Self.abstainedRemoteHerdrJoin(outcome: "focused pane title marker names another session")
-            return .unconfirmed
-        }
-
-        // CONFIRMED: the focused pane of the herdr this connection reaches is
-        // this session's, proven by a pane id AND a marker we allocated
-        // ourselves. Failures from here are herdr-or-nothing.
 
         // herdr's OWN claim about the pane, fail-closed exactly like the local
         // arm's (`resolveViaHerdr`). This is the check that catches a reused
-        // pane: session A dies without a SessionEnd, leaving a fresh marker and
-        // pane id in the registry; session B starts in that same pane. Pane id
-        // and even a stale title can still name A, and herdr — which watches the
-        // pane — says B. A disagreement resolves to NEITHER (review finding 3).
+        // pane: session A dies without a SessionEnd, leaving a live registry
+        // entry and its pane id behind; session B starts in that same pane.
+        // The pane id still names A, and herdr — which watches the pane —
+        // says B. A disagreement resolves to NEITHER (review finding 3).
         //
         // Scoped by the session's own host and agent before comparing, never by
         // anything herdr says, so a claim can only ever CONFIRM the pane-id
@@ -1159,32 +1075,31 @@ struct ClaudeSessionJoinResolver {
                claimed: claimed, hostID: hostID, agent: snapshot.agent
            ) != snapshot.sessionID {
             Self.abstainedRemoteHerdrJoin(outcome: "pane session claim disagrees")
-            return .refusedAfterConfirmation
+            return nil
         }
 
         guard let foreground = await herdrPanes.paneForegroundInfo(
             socketPath: socketPath, paneID: pane.paneID
         ) else {
             Self.abstainedRemoteHerdrJoin(outcome: "foreground process query unavailable")
-            return .refusedAfterConfirmation
+            return nil
         }
         guard let processes = foreground.foregroundProcesses else {
             Self.abstainedRemoteHerdrJoin(outcome: "foreground process detection unavailable")
-            return .refusedAfterConfirmation
+            return nil
         }
         guard Self.remoteAgentIsForeground(snapshot: snapshot, foregroundProcesses: processes) else {
-            return .refusedAfterConfirmation
+            return nil
         }
 
-        return .joined(ClaudeSessionJoin(
+        return ClaudeSessionJoin(
             target: target,
-            marker: snapshot.marker,
             snapshot: snapshot,
             windowID: focusedWindowID(target.pid),
             mechanism: .remoteHerdrPane,
             herdrPane: ClaudeHerdrPaneBinding(paneID: pane.paneID, socketPath: socketPath),
             remoteHerdrForward: forward
-        ))
+        )
     }
 
     /// A raw session id as herdr reports it, in the registry's namespace.
@@ -1330,8 +1245,8 @@ struct ClaudeSessionJoinResolver {
     ///   only unlocks that session's own prompt/excerpts, and
     ///   `localWorkspacePath` still refuses to hand a remote cwd to the
     ///   filesystem. A compromised enrolled host could replay a surface id and
-    ///   claim the focused pane — the same trust class as the existing remote
-    ///   marker join, no worse, and bounded by enrollment the user can revoke.
+    ///   claim the focused pane — bounded by enrollment the user can revoke,
+    ///   and additionally by the fresh remote-hosted evidence below.
     ///
     /// `CMUX_WORKSPACE_ID` is deliberately never consulted: cmux regenerates it
     /// when a workspace is restored, so a join keyed on it would silently start
@@ -1402,10 +1317,9 @@ struct ClaudeSessionJoinResolver {
             // Cost, stated plainly: a session whose publisher reports no tty
             // cannot join over this arm. That is every opencode session (its
             // server half deliberately publishes no tty, because it cannot
-            // prove it owns a pane), and opencode never receives a title
-            // marker either — so opencode inside cmux gets no join at all. A
-            // missed join costs an excerpt; a wrong one puts another session's
-            // screen in this prompt.
+            // prove it owns a pane), so opencode inside cmux gets no join at
+            // all. A missed join costs an excerpt; a wrong one puts another
+            // session's screen in this prompt.
             guard let sessionTTY = snapshot.process?.tty else {
                 Self.abstainedCmuxJoin(outcome: "session published no tty to cross-check")
                 return nil
@@ -1444,9 +1358,7 @@ struct ClaudeSessionJoinResolver {
     /// during an earlier `cmux ssh` session, and once that surface has gone
     /// back to a local shell the replayed claim is the sole remote candidate
     /// and joins — pairing attacker-chosen context with whatever the user is
-    /// now looking at. That made this arm strictly weaker than the title
-    /// marker, which at least has to ride the PTY the session presently
-    /// controls.
+    /// now looking at.
     ///
     /// cmux exposes no remote-ness on the surface itself (a `cmux ssh` surface
     /// is an ordinary `type: "terminal"`; the state lives on the workspace), so
@@ -1457,8 +1369,8 @@ struct ClaudeSessionJoinResolver {
     /// What this does NOT prove, stated plainly: that the remote session
     /// claiming the surface is the one on the other end of THAT ssh link. With
     /// two enrolled hosts, a compromised one can still claim a surface hosted
-    /// by the other. It is bounded to genuinely-remote surfaces and to enrolled
-    /// hosts, which is the same bound the remote marker join has.
+    /// by the other. It is bounded to genuinely-remote surfaces and to
+    /// enrolled hosts.
     private static func remoteClaimIsCurrentlyHosted(surface: CmuxFocusedSurface) -> Bool {
         switch surface.workspaceIsRemote {
         case true:
@@ -1479,8 +1391,8 @@ struct ClaudeSessionJoinResolver {
     /// One side resolved to exactly one session, and the other side had no
     /// candidate whatsoever.
     private static func isCleanlyResolved(
-        _ resolution: ClaudeMarkerResolution,
-        other: ClaudeMarkerResolution
+        _ resolution: ClaudeSessionResolution,
+        other: ClaudeSessionResolution
     ) -> Bool {
         guard case .resolved = resolution else { return false }
         guard case .unknown = other else { return false }
@@ -1494,7 +1406,6 @@ struct ClaudeSessionJoinResolver {
     ) -> ClaudeSessionJoin {
         ClaudeSessionJoin(
             target: target,
-            marker: snapshot.marker,
             snapshot: snapshot,
             windowID: focusedWindowID(target.pid),
             mechanism: .cmuxSurface,
@@ -1506,8 +1417,8 @@ struct ClaudeSessionJoinResolver {
     /// id is distinguishable from an ambiguous registry — the herdr arm's
     /// silent abstention cost a field afternoon (2026-07-20).
     private static func cmuxOutcome(
-        local: ClaudeMarkerResolution,
-        remote: ClaudeMarkerResolution
+        local: ClaudeSessionResolution,
+        remote: ClaudeSessionResolution
     ) -> String {
         switch (local, remote) {
         case (.resolved, .resolved):
@@ -1565,50 +1476,22 @@ struct ClaudeSessionJoinResolver {
     /// never belong in the unified log.
     private static func abstainedCmuxJoin(outcome: String) {
         Log.claudeContext.info(
-            "cmux surface matched no session (\(outcome, privacy: .public)); trying title marker"
+            "cmux surface matched no session (\(outcome, privacy: .public))"
         )
         Self.noteAbstention("cmux: \(outcome)")
     }
 
-    private func resolveViaMarker(target: TerminalScreenTarget) -> ClaudeSessionJoin? {
-        guard let read = markerInWindowTitle(target.pid) else {
-            // No marker on screen: this pane is not a joined Claude session, or
-            // we cannot tell. Either way there is nothing to resolve.
-            Log.claudeContext.info("Terminal pane carries no Claude session marker")
-            Self.noteAbstention("marker: no marker in title")
-            return nil
-        }
-
-        switch registry.resolve(marker: read.marker) {
-        case .resolved(let snapshot):
-            Log.claudeContext.info("Terminal pane joined to a live Claude session via title marker")
-            return ClaudeSessionJoin(
-                target: target,
-                marker: read.marker,
-                snapshot: snapshot,
-                windowID: read.windowID,
-                mechanism: .titleMarker
-            )
-        case .unknown, .stale, .ambiguous:
-            // Count-only: the marker itself is not logged. It is a live handle
-            // to a session's context, and a log is the wrong place for it.
-            Log.claudeContext.info(
-                "Terminal pane not joined to a live Claude session; Claude context withheld"
-            )
-            Self.noteAbstention("marker: unknown/stale/ambiguous")
-            return nil
-        }
-    }
-
     /// Re-checks at commit that the join resolved at start still names one live
-    /// session, WITHOUT reading the title again.
+    /// session, WITHOUT asking any surface a second question.
     ///
-    /// The marker is fixed by the start read — that is the point of resolving
-    /// once. What can still change between start and stop is the session: it
-    /// can end, its process can die, or the registry can evict it. Those make
-    /// the join stale, and a stale join must not attach. So this asks the
-    /// registry about the SAME marker rather than asking the screen a second
-    /// question, which would let the answer drift to a different pane.
+    /// The SESSION is fixed by the start resolution — that is the point of
+    /// resolving once. What can still change between start and stop is that
+    /// session: it can end, its process can die, or the registry can evict it.
+    /// Those make the join stale, and a stale join must not attach. So this
+    /// asks the registry about the SAME session id (`snapshot(sessionID:)`,
+    /// the same TTL-plus-pid-liveness answer every arm resolves through)
+    /// rather than re-reading a surface, which would let the answer drift to a
+    /// different pane.
     /// A `.browserTab` join additionally re-checks its BINDING: the session
     /// must still report the bridge session id the tab named at start.
     ///
@@ -1631,9 +1514,7 @@ struct ClaudeSessionJoinResolver {
     ///   existing freshness (TTL plus, locally, process liveness), exactly like
     ///   every other arm — on the registry's injected clock.
     func isStillLive(_ join: ClaudeSessionJoin) -> Bool {
-        guard case .resolved(let snapshot) = registry.resolve(marker: join.marker),
-              snapshot.sessionID == join.snapshot.sessionID
-        else { return false }
+        guard registry.snapshot(sessionID: join.snapshot.sessionID) != nil else { return false }
         guard join.mechanism == .browserTab else { return true }
         guard let binding = join.browserTab else {
             // Unreachable through `resolveViaBrowserTab`, which always binds.
@@ -1692,7 +1573,7 @@ struct TerminalScreenClaudeJoinAuthorizer: TerminalScreenRawAttachmentAuthorizin
         // Exhaustive on purpose: a new join mechanism must DECIDE here rather
         // than inherit authorization from whichever arm was written first.
         switch join.mechanism {
-        case .ttyDevice, .titleMarker:
+        case .ttyDevice:
             break
         case .herdrPane, .cmuxSurface, .remoteHerdrPane:
             // AX sees herdr's composite TUI. Attaching it would let neighboring

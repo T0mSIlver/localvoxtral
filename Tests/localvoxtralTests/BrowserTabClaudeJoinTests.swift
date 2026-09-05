@@ -84,9 +84,7 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
     ) -> ClaudeSessionRegistry {
         ClaudeSessionRegistry(
             now: (clock ?? BrowserJoinTestClock(epoch)).now,
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: BrowserJoinTestMarkers(markers).allocate
-        )
+            isProcessAlive: { _ in true })
     }
 
     /// Every live seam injected. `focusedBrowserTabURL` counts its calls so the
@@ -98,7 +96,6 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
     ) -> ClaudeSessionJoinResolver {
         ClaudeSessionJoinResolver(
             registry: registry,
-            markerInWindowTitle: { _ in nil },
             focusedTerminalTTY: { _ in nil },
             focusedBrowserTabURL: { _ in
                 urlReads?.increment()
@@ -283,7 +280,6 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
         let arm = try XCTUnwrap(resolved)
         let joinWithWindow = ClaudeSessionJoin(
             target: arm.target,
-            marker: arm.marker,
             snapshot: arm.snapshot,
             windowID: 101,
             mechanism: .browserTab,
@@ -356,10 +352,9 @@ final class BrowserTabClaudeJoinTests: XCTestCase {
             registry.ingest(record(bridgeSessionID: nil), origin: local),
             "the session itself is still alive and reporting"
         )
-        XCTAssertEqual(
-            registry.resolve(marker: join.marker),
-            .resolved(try XCTUnwrap(registry.snapshot(sessionID: "s1"))),
-            "marker liveness alone still says yes — which is the point"
+        XCTAssertNotNil(
+            registry.snapshot(sessionID: "s1"),
+            "session liveness alone still says yes — which is the point"
         )
         XCTAssertFalse(
             joinResolver.isStillLive(join),

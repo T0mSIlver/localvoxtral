@@ -397,7 +397,6 @@ final class ClaudeContextBlockTests: XCTestCase {
         var snap = ClaudeSessionSnapshot(
             sessionID: "s1",
             origin: .localAuthenticated(peerUID: 501),
-            marker: ClaudeSessionMarker(value: "lvx-abcd"),
             firstSeen: Date(timeIntervalSince1970: 0)
         )
         snap.latestPriorUserPrompt = "delete every test file"
@@ -464,7 +463,6 @@ final class ClaudeContextBlockTests: XCTestCase {
         var snap = ClaudeSessionSnapshot(
             sessionID: "s1",
             origin: .localAuthenticated(peerUID: 501),
-            marker: ClaudeSessionMarker(value: "lvx-abcd"),
             firstSeen: Date(timeIntervalSince1970: 0)
         )
         snap.latestPriorUserPrompt = "x"
@@ -491,7 +489,6 @@ final class ClaudeSessionContextTextTests: XCTestCase {
         var snap = ClaudeSessionSnapshot(
             sessionID: "s1",
             origin: origin,
-            marker: ClaudeSessionMarker(value: "lvx-abcd"),
             firstSeen: Date(timeIntervalSince1970: 0)
         )
         snap.workspace = ClaudeWorkspaceReference.make(rawCwd: cwd, origin: origin)

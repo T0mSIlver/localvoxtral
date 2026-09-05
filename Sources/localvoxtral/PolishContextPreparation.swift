@@ -43,6 +43,13 @@ struct PolishContextPreparation: Sendable, Equatable {
     /// in-memory string with a hard size cap, and it now checks
     /// `Task.isCancelled` between batches, so cancelling the commit abandons it
     /// promptly. Boundedness comes from the cap; timeliness from cancellation.
+    ///
+    /// One caveat on "promptly": the batched checks live in the SELECTOR, and
+    /// entity recognition runs before it, inside single `NSRegularExpression`
+    /// sweeps that cannot be interrupted. Those are linear in the buffer, so
+    /// the wait is bounded — but on a hyphen-dense 2M-character paste (the
+    /// residual noted on `PolishTokenGuard`'s filename recognizer) cancellation
+    /// still waits out the sweep.
     nonisolated static func prepared(
         text: String,
         transcript: String,

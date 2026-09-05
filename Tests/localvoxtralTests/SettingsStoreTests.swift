@@ -27,21 +27,17 @@ final class SettingsStoreTests: XCTestCase {
         SettingsStore(defaults: defaults, environment: [:])
     }
 
-    // MARK: - Claude Code local title fallback
-
-    func testClaudeLocalTitleMarkerFallback_defaultsOff() {
-        XCTAssertFalse(makeStore().claudeLocalTitleMarkerFallbackEnabled)
-    }
-
-    func testClaudeLocalTitleMarkerFallback_providerTracksBothSettingStates() {
-        let store = makeStore()
-        let provider = store.makeClaudeLocalTitleMarkerFallbackProvider()
-
-        XCTAssertFalse(provider())
-        store.claudeLocalTitleMarkerFallbackEnabled = true
-        XCTAssertTrue(provider())
-        store.claudeLocalTitleMarkerFallbackEnabled = false
-        XCTAssertFalse(provider())
+    // A stored value for the removed "Local Claude title fallback" toggle is
+    // simply IGNORED — there is no migration, because there is no longer any
+    // behaviour for it to select. Pinned so a future reader does not go looking
+    // for the migration that is deliberately absent.
+    func testAStoredTitleFallbackPreferenceIsIgnored() {
+        defaults.set(true, forKey: "settings.claude_local_title_marker_fallback_enabled")
+        XCTAssertNoThrow(makeStore())
+        XCTAssertTrue(
+            defaults.bool(forKey: "settings.claude_local_title_marker_fallback_enabled"),
+            "left where it is: nothing reads it, and rewriting a user's defaults to erase a dead key is not our business"
+        )
     }
 
     // MARK: - Overlay Buffer session reachability

@@ -8,8 +8,9 @@ import XCTest
 /// The listener, driven over a real loopback socket with real HTTP bytes.
 ///
 /// A unit test over the parser proves the parser; this proves the thing that
-/// actually binds a port — the ordering of auth against body reads, the caps, the
-/// deadline, and the marker coming back out. The client below is deliberately a
+/// actually binds a port — the ordering of auth against body reads, the caps,
+/// the deadline, and the one constant body that comes back out. The client
+/// below is deliberately a
 /// raw POSIX socket rather than URLSession: half these cases are requests
 /// URLSession would refuse to send.
 final class ClaudeRemoteContextListenerTests: XCTestCase {
@@ -34,8 +35,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     override func setUpWithError() throws {
         try super.setUpWithError()
         sessions = ClaudeSessionRegistry(
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: { "lvx-abcd1234" }
+            isProcessAlive: { _ in true }
         )
         hosts = try ClaudeRemoteHostRegistry(
             fileURL: URL(fileURLWithPath: "/tmp/lvx-listener-test/hosts.json"),
@@ -245,29 +245,31 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         )
 
         XCTAssertEqual(response.status, 401)
-        XCTAssertTrue(sessions.liveSessions().isEmpty, "no record, no marker, no session")
+        XCTAssertTrue(sessions.liveSessions().isEmpty, "no record, no session")
     }
 
     // MARK: - Happy path
 
-    func testRemoteHookAlwaysGetsItsMarkerBecauseTheLocalFallbackSettingDoesNotGateIt() throws {
-        // The local title-fallback preference is injected only into the UNIX
-        // broker. This remote listener deliberately has no such dependency:
-        // the title marker is the ONLY SSH join and must always be returned.
+    func testAnAcceptedHookGetsTheOneConstantBodyAndTheRecordLands() throws {
+        // The listener answers every hook with the SAME bytes. That is the
+        // whole response surface: Claude Code executes what it finds in a
+        // hook's stdout, and a body that varied with the request would be a
+        // channel from an enrolled host into the user's terminal. It used to
+        // carry a broker-allocated marker as an OSC 2 sequence; it carries
+        // nothing now (owner decision 2026-09-05).
         try startListener()
         let response = try XCTUnwrap(try send(hookRequest(token: token)))
         XCTAssertEqual(response.status, 200)
 
+        XCTAssertEqual(
+            Data(response.body.utf8), ClaudeRemoteHTTPCodec.hookResponseBody,
+            "byte-for-byte the listener's single body"
+        )
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
         )
-        // The marker rides this response down the SSH PTY and into the title.
-        XCTAssertEqual(object["terminalSequence"] as? String, "\u{1B}]2;lvx-abcd1234\u{07}")
+        XCTAssertEqual(Set(object.keys), ["suppressOutput"])
         XCTAssertEqual(object["suppressOutput"] as? Bool, true)
-        XCTAssertTrue(
-            Set(object.keys).isSubset(of: ["terminalSequence", "suppressOutput"]),
-            "the response is executed by Claude Code; only these two keys may appear"
-        )
 
         let snapshot = try XCTUnwrap(sessions.liveSessions().first)
         XCTAssertEqual(
@@ -830,8 +832,9 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     }
 
     func testAnUnparseablePayloadIsAcceptedButIngestsNothing() throws {
-        // Authenticated, so we answer 200 — but there is no session to make and
-        // no marker to hand back. The hook prints nothing and the turn goes on.
+        // Authenticated, so we answer 200 — with the SAME constant body an
+        // accepted record gets, because the body is not a function of anything
+        // the request said. The hook prints it inertly and the turn goes on.
         try startListener()
         let body = Data("not json at all".utf8)
         var text = "POST /v1/hook/SessionStart HTTP/1.1\r\nAuthorization: Bearer \(token!)\r\n"
@@ -841,7 +844,11 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
         )
-        XCTAssertNil(object["terminalSequence"], "no session, no marker, nothing to write")
+        XCTAssertEqual(
+            Data(response.body.utf8), ClaudeRemoteHTTPCodec.hookResponseBody,
+            "a discarded record is byte-identical on the wire to an accepted one"
+        )
+        XCTAssertEqual(Set(object.keys), ["suppressOutput"])
         XCTAssertTrue(sessions.liveSessions().isEmpty)
     }
 
@@ -920,16 +927,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
 
     func testTwoHostsSharingASessionIDStayIsolated() throws {
         let second = try hosts.enroll(label: "otherhost")
-        let counter = Mutex(0)
-        sessions = ClaudeSessionRegistry(
-            isProcessAlive: { _ in true },
-            allocateMarkerValue: {
-                counter.withLock { value in
-                    value += 1
-                    return "lvx-0000000\(value)"
-                }
-            }
-        )
+        sessions = ClaudeSessionRegistry(isProcessAlive: { _ in true })
         try startListener()
 
         // Both hosts report the same Claude session id.
@@ -945,7 +943,6 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
                 ClaudeRemoteSessionScope.scopedSessionID(hostID: second.host.id, sessionID: "same-id"),
             ]
         )
-        XCTAssertEqual(Set(live.map(\.marker.value)).count, 2, "and never one shared marker")
         XCTAssertEqual(Set(live.compactMap(\.workspace)), [
             .remoteOpaque(label: "alpha"), .remoteOpaque(label: "beta"),
         ])

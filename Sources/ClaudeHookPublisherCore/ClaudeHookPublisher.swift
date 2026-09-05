@@ -51,25 +51,19 @@ public struct ClaudeHookPublisher: Sendable {
         }
     }
 
-    /// What a run did, and what (if anything) to print.
+    /// What a run did.
     ///
-    /// `stdout` is nil on every path except a successful marker roundtrip. That
-    /// is the fail-open contract in one field: silence is always a valid hook
-    /// result.
+    /// Deliberately carries no "and print this" case. A hook run prints
+    /// NOTHING on every path — the outcome exists for tests and for the
+    /// unified log, never for stdout. That is the fail-open contract stated as
+    /// a type: silence is always a valid hook result, and there is no shape of
+    /// broker reply that can make this binary write to the user's terminal.
     public enum Outcome: Equatable, Sendable {
-        /// Published, and the broker returned a marker to emit.
-        case publishedWithMarker(String)
-        /// Published, but no usable marker came back — nothing to print.
+        /// Published; whatever the broker replied changes nothing we do.
         case published
         case droppedUnparseable
         case droppedNoSocketPath
         case droppedTransport(ClaudeHookPublishFailure)
-
-        /// The exact bytes for stdout, or nil to print nothing at all.
-        public var stdout: Data? {
-            guard case .publishedWithMarker(let marker) = self else { return nil }
-            return ClaudeHookOutput.markerOutputLine(marker: marker)
-        }
     }
 
     public var environment: Environment
@@ -110,18 +104,13 @@ public struct ClaudeHookPublisher: Sendable {
         switch publisher.publishAndReadReply(line: line, to: socketPath) {
         case .failure(let failure):
             return .droppedTransport(failure)
-        case .success(let reply):
-            // Every step from here is "or emit nothing": a missing reply,
-            // an undecodable one, an absent marker, or a marker we would not
-            // put in a terminal all land on `.published`.
-            guard let reply,
-                  let response = ClaudeBrokerResponse.decodeLine(reply, limits: limits),
-                  let marker = response.marker,
-                  ClaudeMarkerSequence.isValidMarker(marker)
-            else {
-                return .published
-            }
-            return .publishedWithMarker(marker)
+        case .success:
+            // The reply is read (and discarded) rather than skipped: the
+            // socket is request/response, and a publisher that wrote its line
+            // and walked away would leave the broker writing into a closed
+            // peer. Nothing in the reply steers this path — a hook run has one
+            // observable effect, and it is on the app's registry.
+            return .published
         }
     }
 
@@ -199,7 +188,7 @@ public struct ClaudeHookPublisher: Sendable {
     }
 
     /// The one line to print, or nil for nothing. FIXED strings only, chosen
-    /// by outcome — no wire byte, marker, path, or id is ever interpolated,
+    /// by outcome — no wire byte, path, or id is ever interpolated,
     /// so nothing that crossed a socket can put a byte on the terminal.
     /// ANSI SGR is deliberate: Claude Code renders it in the status line.
     public static func statusLineText(for outcome: StatusOutcome) -> String? {
@@ -339,7 +328,8 @@ public struct ClaudeHookPublisher: Sendable {
     /// uncatchable ObjC exception on descriptor errors and aborts the process
     /// (the PR #60 class of field crash). A hook that crashes is a hook that
     /// breaks the user's turn, which is precisely what all of this exists to
-    /// avoid. A closed or broken stdout here is simply "no marker today".
+    /// avoid. A closed or broken stdout here is simply a status line that does
+    /// not render today.
     public static func writeStdout(_ data: Data) {
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }

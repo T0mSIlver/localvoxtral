@@ -1,7 +1,7 @@
 {
   "name": "localvoxtral-remote",
   "description": "Publishes Claude Code session context from a REMOTE host to localvoxtral on your Mac, over an SSH RemoteForward tunnel. Command hooks running a bundled POSIX-sh shim that POSTs via curl — needs only sh and curl on the remote host, and fails open silently when either is missing.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "author": {
     "name": "localvoxtral"
   },

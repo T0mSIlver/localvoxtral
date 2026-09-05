@@ -132,8 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// sessions; the broker is the socket that feeds it.
     ///
     /// Owned HERE rather than by `DictationViewModel` because the hooks fire on
-    /// Claude Code's schedule, not on dictation's: a session's marker and cwd
-    /// are published while the user is typing, long before they press the hotkey.
+    /// Claude Code's schedule, not on dictation's: a session's tty, pane and
+    /// cwd are published while the user is typing, long before they press the
+    /// hotkey.
     /// A broker that only listened during a dictation session would miss the very
     /// records it exists to collect.
     private let claudeSessionRegistry = ClaudeSessionRegistry()
@@ -180,6 +181,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// update-or-keep decision; held here while onboarding is on screen.
     private var pendingConfigDefaultsPromptFileNames: [String]?
 
+    #if LOCALVOXTRAL_DOGFOOD
+    /// The dogfood-only local control socket and the service behind it.
+    ///
+    /// Owned here for the same reason the broker is: the socket answers
+    /// questions about the registry and the resolver, both of which live at
+    /// this level, and it must be stopped on the app's own terminate path so no
+    /// listener outlives the process that bound it.
+    private var dogfoodControlSocket: DogfoodControlSocket?
+    private var dogfoodControlService: DogfoodControlService?
+    #endif
+
     override init() {
         let settings = SettingsStore()
         let manager = BackendManager(
@@ -204,6 +216,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         startClaudeContextBroker()
         startClaudeRemoteListener()
+        #if LOCALVOXTRAL_DOGFOOD
+        // After the broker, because the control service's `surface probe` uses
+        // the resolver the broker installs on the view model.
+        startDogfoodControlSocket()
+        #endif
         reconcileBundledConfigDefaults()
         viewModel.preflightConfiguredLocalNetworkEndpoints()
         guard !settingsStore.onboardingCompleted else { return }
@@ -211,6 +228,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        #if LOCALVOXTRAL_DOGFOOD
+        // First: `stop()` does not return until the accept loop has unlinked
+        // the socket, so nothing that follows can race a client connecting to
+        // an app that is halfway through quitting. The service's bounded
+        // auto-stop is released with it.
+        dogfoodControlSocket?.stop()
+        dogfoodControlSocket = nil
+        dogfoodControlService?.shutdown()
+        dogfoodControlService = nil
+        #endif
         // Unlinks the socket, so a publisher from a surviving Claude Code
         // session fails open (silent exit 0) instead of blocking on a path
         // nothing is accepting on.
@@ -277,6 +304,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    #if LOCALVOXTRAL_DOGFOOD
+    /// Binds the dogfood-only control socket, if the owner armed it.
+    ///
+    /// Two gates, both required, exactly like the capture: this file is only
+    /// compiled under `LOCALVOXTRAL_DOGFOOD`, and even then the socket binds
+    /// only when `debug.dogfood_control_socket_enabled` is set. A shipped build
+    /// contains none of this.
+    ///
+    /// Failure is non-fatal and LOUD (AGENTS: keep new paths loud). Nothing the
+    /// app does for the user depends on this socket; an operator who cannot
+    /// reach it needs to know why, and a bind refused because the directory is
+    /// not private is precisely the case that must never be papered over.
+    private func startDogfoodControlSocket() {
+        guard settingsStore.dogfoodControlSocketEnabled else {
+            Log.claudeContext.info(
+                "Dogfood control socket disarmed (debug.dogfood_control_socket_enabled)"
+            )
+            return
+        }
+        let service = DogfoodControlService(
+            viewModel: viewModel,
+            liveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.liveSessions() },
+            hasLiveSessions: { [claudeSessionRegistry] in claudeSessionRegistry.hasLiveSessions() },
+            accessibilityTrusted: { [weak viewModel] in
+                viewModel?.isAccessibilityTrusted ?? false
+            },
+            // The context source's version, not the probe verb's: this process
+            // HAS windows (the overlay), and a dictation must never ground
+            // itself in our own panel — so the same self-exclusion the real
+            // dictation path uses applies here.
+            frontmostTarget: { TerminalScreenContextSource.frontmostTarget() },
+            // Read at call time, not captured: the resolver is installed by
+            // `startClaudeContextBroker` and is nil when the broker never
+            // bound. And deliberately the app's FULL-capability resolver —
+            // unlike `--probe-surface`, which withholds the forward and the
+            // panel nonce because a one-shot process is a bad owner for
+            // either. This process is the owner: the forward service is
+            // supervised and reaped at quit, and the nonce lease is cleared.
+            // Withholding them here would make the probe answer a different
+            // question from the one a dictation asks, which is the whole
+            // reason this verb exists.
+            resolveSurface: { [weak viewModel] target in
+                guard let resolver = viewModel?.claudeSessionJoinResolver else { return nil }
+                return await resolver.resolve(target: target)
+            }
+        )
+        dogfoodControlService = service
+        let socket = DogfoodControlSocket(
+            socketPath: DogfoodControlSocket.defaultSocketPath(),
+            handler: { line in
+                switch DogfoodControlProtocol.parse(request: line) {
+                case .failure(let error):
+                    return DogfoodControlProtocol.reply(
+                        command: nil,
+                        result: nil,
+                        error: error.rawValue
+                    )
+                case .success(let command):
+                    let outcome = await service.execute(command)
+                    switch outcome {
+                    case .success(let result):
+                        return DogfoodControlProtocol.reply(
+                            command: command,
+                            result: result,
+                            error: nil
+                        )
+                    case .failure(let refusal):
+                        return DogfoodControlProtocol.reply(
+                            command: command,
+                            result: nil,
+                            error: refusal.rawValue
+                        )
+                    }
+                }
+            }
+        )
+        do {
+            try socket.start()
+            dogfoodControlSocket = socket
+        } catch {
+            dogfoodControlService = nil
+            Log.claudeContext.error(
+                "Dogfood control socket failed to start: \(String(describing: error), privacy: .public)"
+            )
+        }
+    }
+    #endif
+
     /// Binds the hook socket and installs the pane authorizer that depends on it.
     ///
     /// Failure is non-fatal by design: the app's own dictation does not need the
@@ -293,9 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let broker = ClaudeContextBroker(
             socketPath: socketPath,
-            registry: claudeSessionRegistry,
-            shouldEmitLocalTitleMarker:
-                settingsStore.makeClaudeLocalTitleMarkerFallbackProvider()
+            registry: claudeSessionRegistry
         )
         do {
             try broker.start()
@@ -431,7 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             browserConsentPrewarmObserver = browserPrewarmObserver
             browserPrewarmObserver.start()
             // The join gate for raw terminal screen attachment. Installed only
-            // now: without a running broker there are no markers to resolve, and
+            // now: without a running broker there are no sessions to resolve, and
             // an authorizer over an empty registry would answer `.unknown` to
             // everything anyway — but making the dependency explicit is what
             // keeps "no broker ⇒ no raw attachment" true by construction rather

@@ -71,7 +71,7 @@ High level ([`DogfoodCaptureRecord.swift`](../Sources/localvoxtral/Dogfood/Dogfo
 - **Session**: target app kind, output mode, prompt profile, endpoint
   *class* only (`loopback`/`lan`/`remote` — never the URL).
 - **Join**: which arm resolved the Claude Code session (`tty` / `herdrPane` /
-  `remoteHerdrPane` / `cmuxSurface` / `browserTab` / `titleMarker` / `none`)
+  `remoteHerdrPane` / `cmuxSurface` / `browserTab` / `none`)
   and every abstention reason along the way. Same six fields, from the same
   mapper, that `localvoxtral --probe-surface` prints for the frontmost surface
   — so a probe run and a record can be compared directly
@@ -103,6 +103,83 @@ Not recorded: key content, text, or anything about any other key. The
 there is no denominator. It is a global `NSEvent` keyDown observer (no new
 permission beyond the Accessibility trust insertion already requires),
 installed only while a window is open and torn down the instant it closes.
+
+## The control socket
+
+An instrumented build can also expose a local AF_UNIX control socket, so an
+operator on the same machine can run a dictation and ask the app what it
+joined and why
+([`DogfoodControlSocket.swift`](../Sources/localvoxtral/Dogfood/DogfoodControlSocket.swift)).
+It exists because two things cannot be observed from outside the process: a
+dictation has no deterministic trigger (the real one is a modifier *gesture*),
+and `ClaudeSessionRegistry` is per-process with no persistence — so
+`localvoxtral --probe-surface` always resolves against an empty registry and
+can never report a real join arm.
+
+**Two gates, both required**, and the second is NOT the capture's:
+
+```
+defaults write com.localvoxtral.app debug.dogfood_control_socket_enabled -bool true
+```
+
+Writing capture records and accepting commands are different consents, so
+arming one never arms the other. Read once at launch: turning it on needs a
+relaunch, because a listener must not appear under a running app.
+
+Socket at `~/Library/Application Support/localvoxtral/dogfood/control/control.sock`,
+0600 inside a 0700 directory, and the peer's uid is verified (`getpeereid`)
+before a single byte is read.
+
+Wire: one printable-ASCII line in (≤ 256 bytes), one line of JSON out, then
+the server closes.
+
+```
+$ printf 'registry list\n' | nc -U ~/Library/Application\ Support/localvoxtral/dogfood/control/control.sock
+{"ok":true,"command":"registry list","error":null,"result":{"count":1,"sessions":[…]}}
+```
+
+| Command | Answers |
+| --- | --- |
+| `session start overlay` / `session start live` | starts a dictation through the app's own modifier-tap handler; reports the phase and any refusal |
+| `session stop` | ends it — and while a start is still connecting, cancels that instead of walking away from it |
+| `join report` | the join the LAST dictation resolved, as `ClaudeSessionJoinSummary` |
+| `surface probe` | resolves the focused surface NOW, against the live in-process registry |
+| `registry list` | the live sessions, as shapes — so "nothing registered" is distinguishable from "resolution failed" |
+
+Bounds worth knowing before touching it:
+
+- **`session start` is capped.** It auto-stops after two minutes, so a client
+  that disconnects mid-dictation cannot leave the app recording. The cap is
+  armed for anything on its way up — connecting, or waiting on the microphone
+  prompt — not just a live dictation, and it is released only on evidence that
+  the session actually ended. In particular `session stop` arriving mid-connect
+  does NOT simply disarm it: it cancels the connect (`cancelDictation`) and
+  releases the cap only if the phase settled. A stop that cannot settle the
+  phase — only the user can answer the microphone prompt — reports
+  `stopped: false` and leaves the cap armed, because disarming it there would
+  leave the dictation that arrives moments later unbounded and unowned.
+- **The cap belongs to ONE session, not to the clock.** It carries the capture
+  generation it armed at and refuses to fire on a dictation that is not the one
+  it opened, so a cap left over from a session the owner ended by hand cannot
+  stop the owner's next one. Residual: if the owner starts their own dictation
+  in the window between a socket start being cancelled and that session ever
+  beginning, the generations coincide and the cap can still end it.
+- **`session start` is refused while a probe's resolve is still outstanding**,
+  the mirror of `surface probe`'s refusal during a dictation. A probe is
+  bounded by abandonment, so a wedged one outlives its deadline inside the
+  non-reentrant `ClaudeJoinAbstentionTap.collecting` and still holds its
+  forward lease; a dictation started alongside it would interleave two
+  resolutions against one tap.
+- **It never bypasses a guard.** `session start` reaches
+  `handleModifierOnlyTap`, the same function the HID gesture reaches, and is
+  subject to the same Secure Keyboard Entry refusal, Accessibility state,
+  microphone gate and backend readiness. A refusal is reported, never
+  overridden.
+- **Nothing identifying crosses.** Every reply value is a bool, a count or a
+  closed enum name; no field is built from a token, nonce, marker, host, path,
+  tty, pane id or session id.
+- **Nothing can be injected.** No command carries a surface, a session or a
+  join. Every verb observes real resolution.
 
 ## What it deliberately does not do
 

@@ -65,9 +65,12 @@ and remove the line from `~/.config/opencode/tui.json`.
   blocks a hook on IO: one lazily reconnected, `unref()`ed socket,
   fire-and-forget writes, every handler wrapped in try/catch, all fields
   bounded before they cross the wire. It never writes to the terminal.
-- **No title markers.** opencode owns and rewrites its window title mid-turn,
-  so the title channel Claude Code uses cannot work here; localvoxtral never
-  sends this plugin one.
+- **Nothing is ever written to your terminal.** The plugin publishes to a
+  socket and prints nothing. localvoxtral has no channel back into a terminal
+  at all: it used to hand Claude Code a window-title marker over OSC 2, and
+  that mechanism was removed entirely on 2026-09-05 — opencode, which owns and
+  rewrites its own window title mid-turn, never received one even before
+  that.
 - **Subagent sessions are filtered, fail-closed.** The plugin publishes a
   session's activity only while it is in a bounded allowlist of known
   top-level sessions, so a child (task-tool) session — or any session whose

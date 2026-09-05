@@ -9,10 +9,11 @@ import Foundation
 // metadata, and fires one NDJSON line at the app's socket under a ~250ms
 // deadline.
 //
-// It exits 0 on every path and prints nothing, ever. Claude Code interprets a
-// hook's stdout and surfaces its failures; a dictation nicety must never be
-// able to interfere with the user's turn. All error handling above is
-// "return a reason no one reads".
+// It exits 0 on every path and prints nothing, ever (the `--statusline` mode
+// below is a different verb with the opposite contract: it EXISTS to render
+// one fixed line). Claude Code interprets a hook's stdout and surfaces its
+// failures; a dictation nicety must never be able to interfere with the user's
+// turn. All error handling above is "return a reason no one reads".
 //
 // The target is named for the binary because SwiftPM names the built
 // executable after the TARGET, not the product — same reason
@@ -44,16 +45,14 @@ if arguments.contains("--statusline") {
 
 let event = parsedEvent(from: arguments)
 let stdin = ClaudeHookPublisher.readBoundedStdin()
-let outcome = ClaudeHookPublisher().run(stdin: stdin, fallbackEvent: event)
+ClaudeHookPublisher().run(stdin: stdin, fallbackEvent: event)
 
-// The ONLY thing this process ever prints: a complete, valid hook JSON object
-// carrying the marker's terminal sequence. `stdout` is nil on every other path,
-// and nil means print nothing — not an empty object, not a newline.
+// A hook run prints NOTHING — not an object, not a newline, on any path. The
+// app learns about the session over the socket; there is nothing left for this
+// process to say, and no reply shape that could give it something.
 //
 // This matters most for UserPromptSubmit, whose non-JSON stdout Claude Code
-// appends to the user's prompt. Half-written or malformed output would land in
-// their context as garbage, so it is emitted in one write or not at all.
-if let output = outcome.stdout {
-    ClaudeHookPublisher.writeStdout(output)
-}
+// appends to the user's prompt: an empty stdout is the one output that cannot
+// land in the user's context as garbage, and it is what every install has
+// produced by default since the title fallback shipped switched off.
 exit(0)

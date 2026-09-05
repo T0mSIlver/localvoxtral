@@ -28,14 +28,12 @@ public enum ClaudeHookWire {
 /// Which coding agent published a record. Content, not trust: trust stays a
 /// property of the transport (`ClaudeTransportOrigin`), and every local agent
 /// publishes over the same peer-authenticated socket. What the agent tag
-/// decides is session-id namespacing (`ClaudeAgentSessionScope`) and
-/// per-agent channel rules — e.g. the broker never returns a title marker to
-/// an opencode session, because opencode owns its window title the way herdr
-/// owns its pane titles.
+/// decides is session-id namespacing (`ClaudeAgentSessionScope`) and any
+/// per-agent rule a join arm needs.
 ///
 /// Decoding an unknown agent name is a drop, mirroring unknown events: a
 /// newer plugin talking to an older app degrades to "ignored", and an agent
-/// whose channel rules we do not know must not inherit another's.
+/// whose rules we do not know must not inherit another's.
 public enum ClaudeHookAgent: String, Sendable, Equatable, CaseIterable, Codable {
     case claude
     case opencode
@@ -353,9 +351,9 @@ public enum ClaudeHookWireError: Error, Equatable {
     /// Event name we do not know (e.g. from a newer plugin).
     case unknownEvent(String?)
     /// Agent name we do not know. Dropped for the same reason as an unknown
-    /// event — and additionally because per-agent channel rules (marker
-    /// emission, session namespacing) cannot be applied to an agent this build
-    /// has never heard of.
+    /// event — and additionally because per-agent rules (session namespacing,
+    /// and which arms may speak for it) cannot be applied to an agent this
+    /// build has never heard of.
     case unknownAgent(String?)
     /// Malformed JSON, or a required field missing.
     case malformed

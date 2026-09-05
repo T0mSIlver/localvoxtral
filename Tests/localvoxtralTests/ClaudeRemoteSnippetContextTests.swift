@@ -49,7 +49,6 @@ final class ClaudeRemoteSnippetContextTests: XCTestCase {
         var snapshot = ClaudeSessionSnapshot(
             sessionID: "abc-123",
             origin: origin,
-            marker: ClaudeSessionMarker(value: "lvx-abcd"),
             firstSeen: epoch
         )
         ClaudeSessionReducer.reduce(
