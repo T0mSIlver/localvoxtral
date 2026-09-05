@@ -249,15 +249,15 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
 
     // MARK: Authorization shape
 
-    /// Why a header yielded no credential, which decides which of two fixes the
-    /// user needs: update the plugin, or re-run enrollment.
+    /// Why a header yielded no credential, which decides which fix the user
+    /// needs: update the plugin, re-run enrollment, or nothing at all.
     func testAuthorizationShapeSeparatesAMissingCredentialFromAMalformedHeader() {
-        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: nil), .missing)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: nil), .absent)
         // The pre-1.1.0 plugin's exact wire shape. The head parser trims the
         // trailing space, so this arrives as a bare scheme.
-        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer"), .missing)
-        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer   "), .missing)
-        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: ""), .missing)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer"), .empty)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Bearer   "), .empty)
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: ""), .empty)
         XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "Basic abc"), .malformed)
         XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "abc"), .malformed)
         XCTAssertEqual(
@@ -266,6 +266,23 @@ final class ClaudeRemoteHTTPTests: XCTestCase {
             "an oversized header is refused, not classified as a credential we failed to read"
         )
         XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: "bearer abc"), .bearer("abc"))
+    }
+
+    /// "Sent no header" and "sent a header carrying nothing" have opposite
+    /// diagnoses, so they may never collapse into one answer.
+    ///
+    /// A hook whose credential template expanded to nothing still SENDS the
+    /// field — that is the pre-1.1.0 signature, and every shape of it belongs to
+    /// `.empty`. Only a caller that is not a hook omits the field entirely.
+    func testAnAbsentHeaderIsNotTheSameShapeAsAnEmptyCredential() {
+        XCTAssertEqual(ClaudeRemoteHTTPCodec.authorizationShape(in: nil), .absent)
+        for present in ["", " ", "Bearer", "Bearer ", "bearer   "] {
+            XCTAssertEqual(
+                ClaudeRemoteHTTPCodec.authorizationShape(in: present),
+                .empty,
+                "a header that arrived and carried nothing is a sender that tried: \(present.debugDescription)"
+            )
+        }
     }
 
     /// The classifier IS the bearer path, so the two can never disagree about

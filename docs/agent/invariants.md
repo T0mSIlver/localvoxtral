@@ -567,6 +567,30 @@ there is not.
     budget.
   These paths are in `scripts/ci/llm-lane-filter.sh`: they change what reaches
   the model, so the LLM lanes run on them.
+- **A rejection's remedy is earned by its wire shape, and only one shape earns
+  the plugin remedy.** `ClaudeRemoteRejectionCategory` exists because one
+  undifferentiated "rejected unauthenticated connection" line cost a dispatched
+  log-collection workflow to diagnose (field report, 2026-07-26). Two of its
+  cases turn on a distinction that looks cosmetic and is not: a header that
+  ARRIVED carrying no credential (`Bearer `, from a `${…}` Claude Code never
+  expanded into an http hook) is the pre-1.1.0 plugin's exact signature and
+  keeps the full "update the plugin on the host" clause; NO `Authorization`
+  header at all cannot come from any plugin generation — the pre-1.1.0 manifest
+  declared the header statically, and the command shim that replaced it writes
+  the header before it dials and fails open without dialing when the token is
+  unset — so it is an unauthenticated caller, gets its own line with no host
+  remedy, logs at `.notice` rather than `.error`, and is excluded from
+  `Snapshot.isEmpty` so it raises no Settings hint. That last part is not
+  tidiness: the enrollment verify probe posts here WITHOUT a credential on
+  purpose and reads the 401 as its success signal, so collapsing the two shapes
+  made every setup check write a line accusing a healthy host — a phantom for
+  the next person reading this log, in the one subsystem whose documented
+  diagnostic route is reading the log later. Do not re-collapse them, and do not
+  soften the `.emptyCredential` clause into vagueness to cover both: losing the
+  pre-1.1.0 diagnosis is the worse failure of the two, which is why the split is
+  decided by the request's own bytes rather than by any state this app keeps —
+  there is no window to be outside of and nothing a caller can assert to land in
+  the quieter category that it could not already assert to land in another.
 - **Remote Claude context is opaque by construction.** The remote listener tags
   every accepted session `.remote` regardless of its payload; a local process
   connecting to that listener can only downgrade itself. Remote cwd values are
@@ -587,6 +611,68 @@ there is not.
   `hookParentPID` is a String on purpose: a pid in another host's namespace is
   not a number this process may probe, only a label to compare against another
   label.
+- **A refused `RemoteForward` bind is not a diagnosis, and only a nonce
+  round-trip may upgrade it to one.** OpenSSH's `remote port forwarding failed`
+  says a port is held, never by whom, and the two holders want opposite things
+  from the user: a stranger is a failure they must clear, while their own ssh
+  session carrying the enrollment block's `RemoteForward` IS the working
+  channel — the normal state for anyone who ssh's to the host they enrolled.
+  Reporting the second as contention told them to close the session providing
+  the tunnel (field report, 2026-08-29). `ClaudeRemoteForwardOwnershipCheck`
+  separates them, and the rule about HOW is load-bearing:
+  - **The remote host's answer is never the evidence.** Our 401 (and the 411 an
+    empty POST gets) is public in this repository, so any process that binds
+    that port can reproduce it byte for byte; and a SECOND Mac enrolled against
+    the same host returns a genuine 401 of its own, which is exactly the
+    contention `ClaudeRemoteForwardPort` exists to surface. A status-code probe
+    would adopt both.
+  - **The evidence is arrival.** The probe posts a fresh 128-bit nonce into the
+    disputed port FROM the remote host (`ssh -o BatchMode=yes -o
+    ClearAllForwardings=yes`, bounded timeout, the script on stdin so the nonce
+    is never in the ssh argv on THIS Mac — which is also the CI runner — and no
+    token, since the request is expected to be refused), and the verdict is
+    whether THIS process's own listener saw that nonce
+    (`ClaudeRemoteForwardProbeWitness`). A stranger receives the nonce and can
+    do nothing with it: the listener binds `127.0.0.1` on the Mac and the only
+    route to it from that host is a `RemoteForward` terminating here — and the
+    disputed one is the forward the stranger is the reason we do not have.
+    Another Mac's listener has never heard of it. The probe's exit status is
+    deliberately not consulted in either direction.
+  - **Two residuals, stated because the next reader will otherwise assume they
+    are not there.** (1) Arrival identifies the LISTENER, not the port that
+    carried the nonce: every supervised `-R` ends at the same local listener, so
+    where a host has a SECOND live forward to this Mac (a legacy
+    `RemoteForward 8473` left in the user's own config block and carried by an
+    interactive session), a hostile holder of the disputed port can replay our
+    request down that other forward and forge a match. (2) The nonce is out of
+    the ssh argv but is in `curl`'s argv on the REMOTE host for the `--max-time`
+    window; `--header @file` would fix that and is not used because it needs
+    curl >= 7.55 on an arbitrary host and would fail silently below it. Both
+    residuals require code execution on the enrolled host, which already implies
+    possession of the plugin's bearer token — so `.ourListener` is a DIAGNOSIS
+    and never an authorization. Do not restate either claim absolutely.
+  - **Every other outcome is `portUnavailable`.** No probe wired in, no `curl`
+    on the host, ssh refused, a timeout, an unparseable anything — all
+    `.unproved`, which is also the default when the seam is nil. Fail closed is
+    not a branch here, it is the absence of one, because the alternative is
+    telling the user everything is fine while a stranger collects the remote
+    plugin's bearer token from every hook.
+  - **The listener's one pre-auth look is not an oracle.** The nonce check runs
+    before the token because a self-probe must not land in the rejection tally
+    the user reads for "which of three fixes do I need". It compares only a
+    value this process minted and is still waiting for, it returns the same 401
+    with the same headers and the same empty body either way, and a match
+    short-circuits — so a matching nonce cannot carry a payload past
+    authentication even when a valid token rides with it.
+  - **A proved channel is a claim with an expiry.** `externallyForwarded` is
+    held by a session the app does not own and cannot be notified about, so the
+    supervisor re-attempts its own `-R` on a long injected-clock park
+    (5 minutes): the session ending means the bind now succeeds and the app
+    takes the tunnel over, and a holder that stops proving ownership drops back
+    to `portUnavailable`. This is the ONE relaxation of "a refused bind is
+    terminal" and it is bounded by that interval; a state that claims a channel
+    must be able to stop claiming it.
+
 - **Remote enrollment execution is opt-in, preview-first, and keeps the token
   out of process arguments.** `ClaudeRemoteEnrollmentService` generates a
   copyable plan (idempotent ssh config block, `claude plugin` commands,

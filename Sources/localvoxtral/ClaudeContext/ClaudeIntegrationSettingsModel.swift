@@ -621,16 +621,19 @@ public final class ClaudeIntegrationSettingsModel {
     /// noise (a busy session produces one every few minutes), while WHICH KIND
     /// they were is the whole diagnosis. The detail stays in the log.
     ///
-    /// The hedge in "a host MAY have" is deliberate. The listener counts every
-    /// rejected connection, and an enrolled host is not the only thing that can
-    /// reach a loopback port: a probe or a curl with no `Authorization` header
-    /// lands in `.missingToken` exactly like a pre-1.1.0 plugin does. Naming a
-    /// cause with certainty would sometimes accuse a host of a fault it does
-    /// not have.
+    /// The hedge in "a host MAY have" is deliberate. An enrolled host is not the
+    /// only thing that can reach a loopback port, and a rejection carries no
+    /// identity — only a shape.
+    ///
+    /// What the hedge no longer has to cover is the anonymous caller. A probe or
+    /// a `curl` with no `Authorization` header used to land in the same category
+    /// as a pre-1.1.0 plugin, so checking your own setup raised a hint accusing
+    /// a healthy host; those are now `.absentAuthorization`, which
+    /// `Snapshot.isEmpty` excludes and this sentence therefore never describes.
     static func rejectionHint(for snapshot: ClaudeRemoteRejectionTally.Snapshot) -> String? {
         guard !snapshot.isEmpty else { return nil }
         let cause: String
-        switch (snapshot.missingToken > 0, snapshot.unknownToken > 0) {
+        switch (snapshot.emptyCredential > 0, snapshot.unknownToken > 0) {
         case (true, true):
             cause = "an outdated plugin or a stale token"
         case (true, false):

@@ -262,6 +262,7 @@ final class SettingsStore {
         static let dictationShortcutMode = "settings.dictation_shortcut_mode"
         static let autoCopyEnabled = "settings.auto_copy_enabled"
         static let selectedInputDeviceUID = "settings.selected_input_device_uid"
+        static let selectedInputChannel = "settings.selected_input_channel"
         static let dictationShortcutEnabled = "settings.dictation_shortcut_enabled"
         static let dictationShortcutKeyCode = "settings.dictation_shortcut_key_code"
         static let dictationShortcutCarbonModifierFlags =
@@ -388,6 +389,15 @@ final class SettingsStore {
 
     var selectedInputDeviceUID: String {
         didSet { defaults.set(selectedInputDeviceUID, forKey: Keys.selectedInputDeviceUID) }
+    }
+
+    /// Which input channel of a multi-channel device carries the microphone,
+    /// zero-based. Only consulted for devices above stereo, where there is no
+    /// meaningful downmix to mono (see `MicrophoneCaptureService`). Kept as a
+    /// single global rather than per-device: users have one interface, and a
+    /// stale index for another device is clamped away at capture start.
+    var selectedInputChannel: Int {
+        didSet { defaults.set(selectedInputChannel, forKey: Keys.selectedInputChannel) }
     }
 
     var dictationShortcutEnabled: Bool {
@@ -937,6 +947,11 @@ final class SettingsStore {
             ? defaults.double(forKey: Keys.overlayBufferFontSize)
             : OverlayLayoutMetrics.defaultBodyFontSize
         overlayBufferFontSize = OverlayLayoutMetrics.clampedBodyFontSize(storedOverlayFontSize)
+
+        // Zero-based; negatives are meaningless and an index past the device's
+        // channel count is clamped again at capture start (the device can
+        // change between launches).
+        selectedInputChannel = max(0, defaults.integer(forKey: Keys.selectedInputChannel))
 
         // --- Dual shortcut keys ---
         let hasExistingOverlayKeys = defaults.object(forKey: Keys.overlayBufferShortcutKeyCode) != nil

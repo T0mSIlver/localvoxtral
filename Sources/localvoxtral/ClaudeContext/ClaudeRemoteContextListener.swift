@@ -103,6 +103,11 @@ public final class ClaudeRemoteContextListener: Sendable {
     /// listener on every rebind, and evidence the user has not read yet must not
     /// be erased by enrolling a second host.
     private let rejections: ClaudeRemoteRejectionTally
+    /// Nonces the forward supervisor minted for an in-flight ownership probe.
+    /// Injected for the same reason the tally is: the coordinator rebuilds the
+    /// listener on every rebind, and a probe in flight across one must not be
+    /// lost. See `ClaudeRemoteForwardProbeWitness` for why this exists at all.
+    private let forwardProbes: ClaudeRemoteForwardProbeWitness
     /// Authenticated host activity can pre-start a slow herdr `-L` away from
     /// dictation latency. The path remains an opaque remote label.
     private let onRemoteHerdrActivity: @Sendable (String, String) -> Void
@@ -143,6 +148,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         hosts: ClaudeRemoteHostRegistry,
         limits: ClaudeRemoteListenerLimits = .default,
         rejections: ClaudeRemoteRejectionTally = ClaudeRemoteRejectionTally(),
+        forwardProbes: ClaudeRemoteForwardProbeWitness = ClaudeRemoteForwardProbeWitness(),
         now: @escaping @Sendable () -> Date = { Date() },
         uptimeNanos: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
         onRemoteHerdrActivity: @escaping @Sendable (String, String) -> Void = { _, _ in }
@@ -151,6 +157,7 @@ public final class ClaudeRemoteContextListener: Sendable {
         self.hosts = hosts
         self.limits = limits
         self.rejections = rejections
+        self.forwardProbes = forwardProbes
         self.now = now
         self.uptimeNanos = uptimeNanos
         self.onRemoteHerdrActivity = onRemoteHerdrActivity
@@ -427,6 +434,26 @@ public final class ClaudeRemoteContextListener: Sendable {
         // re-running its enrollment (field report, 2026-07-26). The category is
         // derived from the header's shape and the authentication result only —
         // no token material reaches the log, the tally, or the UI.
+
+        // The ONE thing looked at before the token, and the exception proves
+        // the rule above rather than weakening it: the value compared is a
+        // random nonce THIS process minted moments ago and is still waiting
+        // for, so a peer that did not receive it cannot produce a match, and a
+        // peer that did learns nothing from having produced one. The response
+        // is byte-for-byte the same 401 either way — this branch exists to keep
+        // our own probe out of the rejection tally, whose whole job is telling
+        // the user which of three real fixes to apply. Nothing is ingested,
+        // nothing is authorized: the arrival itself is the entire signal.
+        if forwardProbes.note(
+            headerValue: request.headers[ClaudeRemoteForwardProbeWitness.headerName]
+        ) {
+            Log.claudeContext.info(
+                "Claude remote forward ownership probe arrived on this listener"
+            )
+            respond(fd: fd, status: 401)
+            return
+        }
+
         let shape = ClaudeRemoteHTTPCodec.authorizationShape(
             in: request.headers["authorization"], limits: limits.http
         )
@@ -444,7 +471,18 @@ public final class ClaudeRemoteContextListener: Sendable {
                 for: shape, authenticated: authenticatedHost != nil
             ) ?? .unknownToken
             rejections.record(category)
-            Log.claudeContext.error("\(category.logLine, privacy: .public)")
+            // Same line either way, and always logged — but a connection that
+            // never offered a credential is not an error. The verify probe posts
+            // here without one on purpose and reads the 401 as success, so
+            // logging that at `.error` trains the reader to scroll past the
+            // category that means a host really is broken. `.notice` still
+            // persists to disk in the unified log, so nothing stops being
+            // findable later.
+            if category.isFault {
+                Log.claudeContext.error("\(category.logLine, privacy: .public)")
+            } else {
+                Log.claudeContext.notice("\(category.logLine, privacy: .public)")
+            }
             respond(fd: fd, status: 401)
             return
         }
