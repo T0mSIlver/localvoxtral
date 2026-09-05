@@ -12,6 +12,18 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   a `workflow_dispatch` with `dogfood=true`); when the target run lacks it,
   the script offers to trigger a dispatch build and shows the latest run
   that has one.
+  `--ui-gate` (composable with `--dogfood`) installs the bundle into the SSH
+  UI gate's artifact root instead of leaving it in `/tmp`, and stops short of
+  launching it — `ssh lv-ui 'launch ...'` is what starts it, and what records
+  the pid every other gate verb addresses. The gate's roots are owner-writable
+  only on purpose, so the install destination moves rather than the roots
+  (`scripts/mac/install-ui-artifact.sh`, runbook `scripts/mac/README.md`).
+  An agent driving the gate has no shell on that account: for it, the install
+  is `gh workflow run CI --ref <branch> -f dogfood=true`. The self-hosted
+  runner is a launchd agent in the owner's GUI session, so its `$HOME` is the
+  artifact root's home, and that dispatch (and ONLY a dispatch — the
+  `[dogfood-package]` marker must never write into the owner's home) installs
+  the bundle and prints the `launch` command in the run summary.
 - **Code signing (why TCC used to reset)**: `package_app.sh` signs with
   `$LOCALVOXTRAL_CODESIGN_IDENTITY` when set, else ad-hoc. The owner's Mac
   has a self-signed code-signing cert `localvoxtral-dev`; the identity env
@@ -93,6 +105,16 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
   `forward capability unavailable` and stops. Same reasoning withholds the cmux
   arm (Keychain prompt), the browser arm (reads the address bar), and every
   screen read.
+
+  Both of those limits are gone in a **dogfood build with the control socket
+  armed** (`docs/dogfood-builds.md`): `surface probe` runs the same
+  `ClaudeSurfaceProbe.summarize` decision INSIDE the app, so it resolves
+  against the registry the broker has been filling since launch and against
+  the app's full-capability resolver. `registry list` beside it answers the
+  question the one-shot probe cannot — whether the chain reads that way
+  because the registry is empty or because the surface was not identified. Use
+  the verb here when you have the shipping binary and the socket when you are
+  dogfooding; they print the same six fields from the same mapper.
 - **README demo video**: `./scripts/record-demo.sh` on the Mac (GUI session)
   stages the scene, drives the real Right-Command tap/hold gesture with
   synthetic CGEvents, records, and encodes `dist/demo/demo.mp4`; the operator

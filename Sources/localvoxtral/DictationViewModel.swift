@@ -1973,6 +1973,12 @@ final class DictationViewModel {
             // session" here would be true and useless — nothing would have used
             // one.
             sessionClaudeJoinBadge = .hidden
+            #if LOCALVOXTRAL_DOGFOOD
+            // Recorded even though no arm ran: `join report` answering with the
+            // PREVIOUS dictation's join would be the worst possible answer here
+            // — a stale arm name for a dictation that never resolved one.
+            dogfoodNoteResolvedJoin(nil, extraCause: "gate: no polishing endpoint")
+            #endif
             return
         }
         terminalScreenStartCapture = TerminalScreenContextSource.captureAtStart(
@@ -1982,6 +1988,13 @@ final class DictationViewModel {
             trustedEndpointEnabled: settings.polishContextTrustedEndpointEnabled
         )
         claudeSessionJoin = await resolveClaudeSessionJoin(endpointURL: endpointURL)
+        #if LOCALVOXTRAL_DOGFOOD
+        // Snapshotted HERE, at the single resolution, because the commit path
+        // consumes both the join and the tap's abstention causes — by the time
+        // anything could ask afterwards, neither exists. Same summary type as
+        // the capture record and `--probe-surface`.
+        dogfoodNoteResolvedJoin(claudeSessionJoin, extraCause: nil)
+        #endif
         // Ownership of the join's `ssh -L` is taken HERE, at the one place a
         // join is ever assigned, and never given back to whoever happens to
         // hold the join later. The commit path CONSUMES the join, so an owner
@@ -2501,6 +2514,41 @@ extension DictationViewModel {
 
     var debugCurrentHotKeyRegistrationKindForTesting: HotKeyManager.DebugRegistrationKind {
         hotKeyManager.debugCurrentRegistrationKind
+    }
+}
+#endif
+
+#if LOCALVOXTRAL_DOGFOOD
+extension DictationViewModel {
+    /// The dogfood control socket's entry into the dictation trigger.
+    ///
+    /// Deliberately the app's OWN modifier-only tap handler, not a shortcut
+    /// past it: the socket must be subject to everything a real gesture is
+    /// subject to — the Secure Keyboard Entry refusal, the Accessibility state,
+    /// the microphone gate, managed-backend readiness — and must report a
+    /// refusal rather than override one. It mirrors
+    /// `debugHandleModifierOnlyTapForTesting`, which cannot be reused here: a
+    /// dogfood bundle is built `-c release`, so `#if DEBUG` is off in exactly
+    /// the binary the owner runs.
+    ///
+    /// The handler is `private` to this file, which is why the seam lives here
+    /// rather than beside the rest of the control-socket code.
+    func dogfoodHandleModifierOnlyTap(mode: DictationOutputMode) {
+        handleModifierOnlyTap(mode: mode)
+    }
+
+    /// Snapshot the resolved join for `join report`, with the abstention chain
+    /// as it stands at resolution time.
+    ///
+    /// `extraCause` names a refusal that happened BEFORE any arm ran, which the
+    /// resolver's own vocabulary has no way to express — it never saw the
+    /// dictation.
+    func dogfoodNoteResolvedJoin(_ join: ClaudeSessionJoin?, extraCause: String?) {
+        var causes = DogfoodCaptureTap.shared.peekJoinAbstentions()
+        if let extraCause { causes.append(extraCause) }
+        DogfoodCaptureTap.shared.noteResolvedJoin(
+            ClaudeSessionJoinSummary.summarize(join: join, abstentions: causes)
+        )
     }
 }
 #endif
