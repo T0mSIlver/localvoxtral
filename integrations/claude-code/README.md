@@ -144,11 +144,16 @@ It deliberately does **not** join in three cases:
   `~/.ssh/config`): your Mac's socket goes to the jump host, while the machine
   you land on sees the jump host's port. They are two different connections and
   the app will not pretend otherwise;
-* **inside tmux** (or any multiplexer): a tmux server keeps the
+* **inside tmux, screen or zellij**: a multiplexer server keeps the
   `$SSH_CONNECTION` of the connection that STARTED it, so a session in a pane
   can report a connection that belongs to a different window of yours.
   Measured, not assumed. herdr and cmux have their own joins, which bind the
-  pane rather than the connection;
+  pane rather than the connection; tmux, screen and zellij have none;
+* **when your `~/.ssh/config` may be sharing one connection**
+  (`ControlMaster`): several terminals then run over one TCP connection and
+  all report the same `$SSH_CONNECTION`, so it no longer identifies a window.
+  Detected by looking for a second `ssh` to the same host that holds no
+  connection of its own;
 * **when anything is ambiguous**: two sessions reporting the same connection,
   two enrolled hosts matching the destination, an unreadable process table.
 
@@ -738,7 +743,7 @@ The same allowlist as the local plugin, plus two additions:
   byte-for-byte, because the host is not assumed to have `jq`):
   `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`, `HERDR_SESSION`, `CMUX_SURFACE_ID`,
   `CMUX_SOCKET_PATH`, `CLAUDE_CODE_BRIDGE_SESSION_ID`, `TMUX`, `TMUX_PANE`,
-  `SSH_TTY`, `SSH_CONNECTION`, and the shim's own parent pid. Each is sent only
+  `STY`, `ZELLIJ`, `SSH_TTY`, `SSH_CONNECTION`, and the shim's own parent pid. Each is sent only
   if it is non-empty, at most 200 characters, and made purely of ASCII
   alphanumerics plus `._:/@+,=%-`; anything else is dropped rather than
   escaped. `SSH_CONNECTION` is the one value the shim reshapes: `sshd` writes

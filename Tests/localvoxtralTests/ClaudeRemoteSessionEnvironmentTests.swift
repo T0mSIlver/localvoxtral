@@ -37,7 +37,15 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
         }
         // The allowlist itself: it grows only deliberately, so a silent addition
         // (or removal, which would break a join arm) fails here first.
-        XCTAssertEqual(ClaudeRemoteEnvironmentField.allCases.count, 11)
+        XCTAssertEqual(ClaudeRemoteEnvironmentField.allCases.count, 13)
+        // The cap must stay ABOVE the allowlist. At or below it, whatever
+        // sorts last in `allCases` is silently dropped on arrival — a join arm
+        // that quietly never fires, with nothing anywhere saying why.
+        XCTAssertGreaterThan(
+            ClaudeRemoteEnvironmentLimits.default.maxFieldCount,
+            ClaudeRemoteEnvironmentField.allCases.count,
+            "growing the allowlist past the field cap silently disables its tail"
+        )
     }
 
     func testEachFieldRoundTripsThroughItsOwnHeader() throws {
@@ -115,6 +123,7 @@ final class ClaudeRemoteSessionEnvironmentCodecTests: XCTestCase {
             "user@host", "v1.2.3+build", "12345",
             "10.0.0.2,51960,10.0.0.9,22",          // $SSH_CONNECTION, re-joined
             "::1,51960,::1,22",                    // and its IPv6 shape
+            "3721.pts-0.sandbox",                  // $STY
         ]
         for value in realistic {
             XCTAssertTrue(

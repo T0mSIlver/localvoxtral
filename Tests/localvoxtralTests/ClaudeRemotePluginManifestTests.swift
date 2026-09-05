@@ -564,7 +564,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// run ever reads or writes real per-user state under `~/.cache`.
     private func runShim(
         event: String = "Stop",
-        environment: [String: String]
+        environment: [String: String],
+        workingDirectory: URL? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let isolatedState = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-state-\(UUID().uuidString)")
@@ -584,6 +585,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         processEnvironment["XDG_RUNTIME_DIR"] = isolatedState.path
         processEnvironment.merge(environment) { _, new in new }
         process.environment = processEnvironment
+        // Only the glob case sets this: what the shim's cwd contains decides
+        // what an unsuppressed `*` would expand to.
+        if let workingDirectory { process.currentDirectoryURL = workingDirectory }
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()
@@ -708,7 +712,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         status: String,
         body: Data?,
         curlExitCode: Int32 = 0,
-        extraEnvironment: [String: String] = [:]
+        extraEnvironment: [String: String] = [:],
+        workingDirectory: URL? = nil
     ) throws -> (exitCode: Int32, stdout: String, stderr: String) {
         let stubDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-stub-\(UUID().uuidString)")
@@ -752,7 +757,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "FAKE_CURL_EXIT": String(curlExitCode),
         ]
         environment.merge(extraEnvironment) { _, new in new }
-        return try runShim(event: event, environment: environment)
+        return try runShim(
+            event: event, environment: environment, workingDirectory: workingDirectory
+        )
     }
 
     // MARK: Shim environment enrichment
@@ -768,7 +775,9 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
     /// file curl was handed, verbatim. This is the real artifact — not the
     /// shim's source, and not a reconstruction.
     private func capturedRequestHeaders(
-        environment: [String: String], event: String = "Stop"
+        environment: [String: String],
+        event: String = "Stop",
+        workingDirectory: URL? = nil
     ) throws -> String {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("shim-headers-\(UUID().uuidString)")
@@ -781,7 +790,8 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             event: event,
             status: "200",
             body: ClaudeRemoteHTTPCodec.hookResponseBody,
-            extraEnvironment: extra
+            extraEnvironment: extra,
+            workingDirectory: workingDirectory
         )
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(result.stderr, "", "enrichment must not make the shim noisy")
@@ -1012,6 +1022,10 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             source.contains("set -f"),
             "the split must run with globbing off, or a value containing `*` expands"
         )
+        XCTAssertTrue(
+            source.contains("IFS=' '"),
+            "the split must not inherit IFS from the remote host's profile"
+        )
     }
 
     func testShimRejoinsSSHConnectionWithCommasSoItSurvivesTheHeaderCharset() throws {
@@ -1071,7 +1085,6 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "a\" 1 b 2",
             "a$(id) 1 b 2",
             "a`id` 1 b 2",
-            "* 1 * 2",
             "a\u{e9} 1 b 2",
         ]
         for value in hostile {
@@ -1082,6 +1095,35 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             let request = try parseCapturedHeaders(captured)
             XCTAssertEqual(request.bearerToken, "unit-test-token", "\(value)")
         }
+    }
+
+    func testShimSplitsSSHConnectionWithGlobbingOFFSoAValueCannotExpand() throws {
+        // `set -- $VAR` performs PATHNAME EXPANSION as well as field
+        // splitting, so without `set -f` a value containing `*` expands
+        // against the shim's cwd — and the expansion is charset-clean
+        // filenames, which would sail through the validation.
+        //
+        // The cwd is what makes this test able to fail (review finding,
+        // 2026-09-05): the earlier version ran in the test runner's own
+        // directory, where the expansion produced far more than four fields
+        // and the value was dropped by the field COUNT, proving nothing about
+        // globbing. Here the cwd holds exactly one entry, so a missing
+        // `set -f` turns `* 1 b 2` into a well-formed four-field value and
+        // the header appears.
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("shim-glob-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("x".utf8).write(to: directory.appendingPathComponent("sole"))
+
+        let captured = try capturedRequestHeaders(
+            environment: ["SSH_CONNECTION": "* 1 b 2"],
+            workingDirectory: directory
+        )
+        XCTAssertFalse(
+            captured.contains("X-Lvx-Env-Ssh-Connection"),
+            "a glob must not expand against the host's filesystem: \(captured)"
+        )
     }
 
     func testShimDropsAnOversizedSSHConnection() throws {
@@ -1624,8 +1666,14 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
             "ProxyJump is a documented non-join, not a bug report waiting to happen"
         )
         try assertReadmeHasLine(
-            containing: "**inside tmux**",
-            "the multiplexer refusal is the one users will hit and must be findable"
+            containing: "**inside tmux, screen or zellij**",
+            "the multiplexer refusal is the one users will hit, and it has to name "
+                + "every multiplexer the arm actually refuses"
+        )
+        try assertReadmeHasLine(
+            containing: "`ControlMaster`",
+            "one shared connection across terminals is a mis-join the user cannot "
+                + "otherwise explain"
         )
         try assertReadmeHasLine(
             containing: "1.6.0 or newer",

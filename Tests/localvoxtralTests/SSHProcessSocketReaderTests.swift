@@ -142,6 +142,66 @@ final class SSHProcessSocketReaderTests: XCTestCase {
         XCTAssertNil(SSHProcessSocketReader.establishedTCPSockets(pid: 0))
     }
 
+    func testASocketThatHasLEFTEstablishedIsNoLongerReported() throws {
+        // The state filter's LOOSE direction, which nothing else pins (review
+        // finding, 2026-09-05): a listening socket is already excluded by the
+        // peer-port guard whatever the state check does, so deleting the state
+        // check broke no test. A half-closed socket has NONZERO ports and a
+        // real peer, so only the state check can exclude it.
+        //
+        // Deterministic, no wall-clock: `shutdown(SHUT_WR)` moves the socket
+        // out of ESTABLISHED (to FIN_WAIT_1) inside the syscall, before it
+        // returns. Which of FIN_WAIT_1/FIN_WAIT_2 it has reached by the time
+        // we look does not matter — the assertion is only that it is no longer
+        // ESTABLISHED.
+        let (listener, listenPort) = try makeListener()
+        defer { Darwin.close(listener) }
+        let rawClient = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        let client = try XCTUnwrap(rawClient >= 0 ? rawClient : nil, "socket() failed: \(errno)")
+        defer { Darwin.close(client) }
+
+        var target = sockaddr_in()
+        target.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        target.sin_family = sa_family_t(AF_INET)
+        target.sin_port = listenPort.bigEndian
+        target.sin_addr.s_addr = Darwin.inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &target) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(connected, 0, "connect failed: \(errno)")
+
+        var local = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &local) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.getsockname(client, $0, &length)
+            }
+        }
+        let clientPort = UInt16(bigEndian: local.sin_port)
+
+        // Positive control: it IS reported while established, so the negative
+        // below is about the state and not about a socket nothing ever saw.
+        let before = try XCTUnwrap(
+            SSHProcessSocketReader.establishedTCPSockets(pid: getpid())
+        )
+        XCTAssertTrue(
+            before.contains { $0.localPort == clientPort && $0.peerPort == listenPort },
+            "saw \(before)"
+        )
+
+        XCTAssertEqual(Darwin.shutdown(client, SHUT_WR), 0, "shutdown failed: \(errno)")
+
+        let after = try XCTUnwrap(
+            SSHProcessSocketReader.establishedTCPSockets(pid: getpid())
+        )
+        XCTAssertFalse(
+            after.contains { $0.localPort == clientPort && $0.peerPort == listenPort },
+            "a half-closed socket is not established: \(after)"
+        )
+    }
+
     func testAListeningSocketIsNotReportedAsAConnection() throws {
         // An `ssh -L` binds one. It has no peer, so it is not a connection any
         // report could name — and including it would put a zero-port entry

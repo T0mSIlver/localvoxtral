@@ -1294,9 +1294,12 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
                 probe(
                     processes: [
                         ssh(["ssh", "sandbox"], pid: 501),
-                        // Another terminal's connection. Its sockets are not
-                        // this surface's and must never be read.
-                        ssh(["ssh", "sandbox"], pid: 777, device: otherTerminal),
+                        // Another terminal's connection, to a DIFFERENT host.
+                        // Its sockets are not this surface's, it cannot be a
+                        // mux sibling of this destination, and it must never
+                        // be read. (A same-destination neighbor IS read — that
+                        // is the ControlMaster rule, covered below.)
+                        ssh(["ssh", "elsewhere"], pid: 777, device: otherTerminal),
                     ],
                     sockets: [
                         501: [socket],
@@ -1309,7 +1312,10 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
             )
         )
         XCTAssertEqual(value.sockets, [socket])
-        XCTAssertEqual(recorder.pids, [501], "only the surface process may be read")
+        XCTAssertEqual(
+            recorder.pids, [501],
+            "the surface process, and no unrelated connection's fd table"
+        )
     }
 
     func testAnUnreadableSocketTableStaysNilRatherThanBecomingAnEmptyList() throws {
@@ -1326,7 +1332,13 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         // The seam default must not reach the kernel: a caller that has no
         // business with sockets, and a test that forgets to inject, both get
         // "unreadable".
-        let processes = [ssh(["ssh", "sandbox"], pid: 501)]
+        //
+        // The fixture pid is THIS PROCESS's, deliberately (review finding,
+        // 2026-09-05). With an invented pid the live reader would return nil
+        // too, so the assertion below passed whether the default read the
+        // kernel or not; `getpid()`'s fd table IS readable, so a default that
+        // reached the kernel returns a non-nil list and this fails.
+        let processes = [ssh(["ssh", "sandbox"], pid: getpid())]
         let value = try XCTUnwrap(
             connection(
                 SSHDestinationTTYProbe.connection(
@@ -1376,6 +1388,132 @@ final class SSHDestinationTTYProbeTests: XCTestCase {
         XCTAssertFalse(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-t"))
         XCTAssertFalse(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-pJ"))
         XCTAssertFalse(SSHDestinationTTYProbe.namesProxyJump(optionToken: "-"))
+    }
+
+
+    // MARK: - ControlMaster mux clients
+
+    /// A neighbor ssh to the same destination whose fd table is readable and
+    /// holds NO established TCP socket: an OpenSSH ControlMaster mux client.
+    private func muxClient(pid: Int32, argv: [String] = ["ssh", "sandbox"]) -> SSHClientProcess {
+        SSHClientProcess(
+            pid: pid,
+            ttyDevice: otherTerminal,
+            processGroupID: pid,
+            terminalForegroundGroupID: pid,
+            executablePath: "/usr/bin/ssh",
+            arguments: argv
+        )
+    }
+
+    private var transportSocket: SSHClientSocket {
+        SSHClientSocket(localPort: 51_960, peerPort: 22, peerAddress: "192.168.1.9")
+    }
+
+    func testASocketlessSiblingToTheSameDestinationIsReported() throws {
+        // Terminal A holds the master (and the only TCP socket); terminal B's
+        // `ssh sandbox` is a mux client over an AF_UNIX control path. sshd
+        // gives B's session A's `$SSH_CONNECTION`, so without this flag a
+        // dictation into A would join B's session.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [ssh(["ssh", "sandbox"], pid: 501), muxClient(pid: 777)],
+                    sockets: [501: [transportSocket], 777: []]
+                )
+            )
+        )
+        XCTAssertTrue(value.hasSocketlessSiblingToDestination)
+    }
+
+    func testAnOrdinarySecondConnectionToTheSameDestinationIsNotASocketlessSibling() throws {
+        // Two real connections to one host are the case the ports were built
+        // to tell apart. They must keep working.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [ssh(["ssh", "sandbox"], pid: 501), muxClient(pid: 777)],
+                    sockets: [
+                        501: [transportSocket],
+                        777: [SSHClientSocket(
+                            localPort: 51_961, peerPort: 22, peerAddress: "192.168.1.9"
+                        )],
+                    ]
+                )
+            )
+        )
+        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+    }
+
+    func testASocketlessNeighborToANOTHERDestinationIsIrrelevant() throws {
+        let recorder = SocketReadRecorder()
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox"], pid: 501),
+                        muxClient(pid: 777, argv: ["ssh", "elsewhere"]),
+                    ],
+                    sockets: [501: [transportSocket], 777: []],
+                    socketReads: recorder
+                )
+            )
+        )
+        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+        XCTAssertEqual(
+            recorder.pids, [501],
+            "a connection to another host is not read at all — the destination "
+                + "filter comes before the fd read"
+        )
+    }
+
+    func testANeighborWithAnUnreadableFdTableCountsAsSocketless() throws {
+        // The same posture the herdr competitor scan takes: a process we
+        // cannot describe cannot be ruled out.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [ssh(["ssh", "sandbox"], pid: 501), muxClient(pid: 777)],
+                    sockets: [501: [transportSocket]]
+                )
+            )
+        )
+        XCTAssertTrue(value.hasSocketlessSiblingToDestination)
+    }
+
+    func testANeighborWithUnparseableArgvIsSkippedRatherThanCounted() throws {
+        // A mux client's argv is by definition an ordinary `ssh host`.
+        // Counting every wrapper on the machine would abstain constantly.
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [
+                        ssh(["ssh", "sandbox"], pid: 501),
+                        muxClient(pid: 777, argv: ["ssh", "-N", "sandbox"]),
+                    ],
+                    sockets: [501: [transportSocket], 777: []]
+                )
+            )
+        )
+        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
+    }
+
+    func testACrossUIDSocketlessNeighborIsNotCounted() throws {
+        // Another user's `ControlPath` is not shared with ours, and their fd
+        // table is not ours to read.
+        var stranger = muxClient(pid: 777)
+        stranger.effectiveUserID = 99
+        stranger.executablePath = nil
+        stranger.arguments = nil
+        let value = try XCTUnwrap(
+            connection(
+                probe(
+                    processes: [ssh(["ssh", "sandbox"], pid: 501), stranger],
+                    sockets: [501: [transportSocket]]
+                )
+            )
+        )
+        XCTAssertFalse(value.hasSocketlessSiblingToDestination)
     }
 
 }

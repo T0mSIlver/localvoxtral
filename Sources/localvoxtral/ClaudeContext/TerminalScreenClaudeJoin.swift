@@ -1268,6 +1268,17 @@ struct ClaudeSessionJoinResolver {
             Self.abstainedPlainSSHJoin(outcome: "the connection goes through a jump host")
             return nil
         }
+        guard !connection.hasSocketlessSiblingToDestination else {
+            // The ControlMaster case: another ssh to this destination holds no
+            // TCP socket of its own, so one connection may be carrying several
+            // terminals' sessions and a truthful `$SSH_CONNECTION` no longer
+            // identifies a surface. See
+            // `SSHSurfaceConnection.hasSocketlessSiblingToDestination`.
+            Self.abstainedPlainSSHJoin(
+                outcome: "this destination may be carrying multiplexed ssh sessions"
+            )
+            return nil
+        }
         guard let sockets = connection.sockets else {
             // Nil is UNREADABLE. Treating it as "no sockets" would turn a
             // failed syscall into a decline that looks exactly like a genuine
@@ -1360,21 +1371,39 @@ struct ClaudeSessionJoinResolver {
     /// repo's dev box (tmux 3.x, 2026-09-05): connection A (client port 36878)
     /// created the session, connection B (client port 36886) attached, and a
     /// process inside the pane still read `SSH_CONNECTION=127.0.0.1 36878 …`.
-    /// So a tmux/herdr/cmux session's report describes whichever connection
-    /// happened to start the server — potentially a DIFFERENT surface, which
-    /// is a mis-join, not a missed one. herdr and cmux sessions have arms of
-    /// their own that bind the pane itself; tmux has none, and this is why.
+    /// So such a session's report describes whichever connection happened to
+    /// start the server — potentially a DIFFERENT surface, which is a
+    /// mis-join, not a missed one. herdr and cmux sessions have arms of their
+    /// own that bind the pane; tmux, screen and zellij have none, and this is
+    /// why. The labels are listed in `multiplexerLabels`.
     static func isPlainSSHShellSession(_ snapshot: ClaudeSessionSnapshot) -> Bool {
         guard let environment = snapshot.remoteSessionEnvironment else { return false }
         guard environment.sshTTY != nil else { return false }
-        return environment.herdrPaneID == nil
-            && environment.herdrSocketPath == nil
-            && environment.herdrSession == nil
-            && environment.cmuxSurfaceID == nil
-            && environment.cmuxSocketPath == nil
-            && environment.tmux == nil
-            && environment.tmuxPane == nil
+        return Self.multiplexerLabels.allSatisfy { environment[$0] == nil }
     }
+
+    /// The env labels that mean "a multiplexer server owns this session's
+    /// terminal". Written as a list over the wire allowlist rather than as a
+    /// chain of `==` so that ADDING a multiplexer label to
+    /// `ClaudeRemoteEnvironmentField` and forgetting it here is a visible
+    /// omission in one place instead of an invisible one in a boolean.
+    ///
+    /// `screenSession`/`zellijSession` were added by review (2026-09-05): the
+    /// first version checked herdr/cmux/tmux only, and `screen` — which
+    /// publishes `$STY`, is a server exactly like tmux, and was not on the
+    /// wire at all — reproduced the measured tmux mis-join with nothing able
+    /// to see it.
+    ///
+    /// `bridgeSessionID` is deliberately NOT here: a Remote Control session
+    /// has no multiplexer between it and its connection, its own arm runs on a
+    /// browser target rather than a terminal one, and excluding it would cost
+    /// a legitimate join for nothing.
+    static let multiplexerLabels: [ClaudeRemoteEnvironmentField] = [
+        .herdrPaneID, .herdrSocketPath, .herdrSession,
+        .cmuxSurfaceID, .cmuxSocketPath,
+        .tmux, .tmuxPane,
+        .screenSession, .zellijSession,
+    ]
 
     /// Does a socket in THIS machine's kernel and a remote session's report
     /// describe the same connection?

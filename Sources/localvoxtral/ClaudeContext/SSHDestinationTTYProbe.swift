@@ -68,19 +68,42 @@ struct SSHSurfaceConnection: Sendable, Equatable {
     /// empty array is a positive claim about a process and a failed syscall
     /// is not one.
     var sockets: [SSHClientSocket]?
+    /// Another same-uid ssh CONNECTION to this destination holds no
+    /// established TCP socket of its own — the shape of an OpenSSH
+    /// **ControlMaster mux client**, and the one way a session's
+    /// `$SSH_CONNECTION` can be honest and still describe a different
+    /// terminal's surface.
+    ///
+    /// With `ControlMaster auto` in `~/.ssh/config` (invisible in argv — the
+    /// probe refuses `-M`/`-S` but does not read config), terminal A's ssh
+    /// owns the TCP connection and terminal B's `ssh host` is a mux client
+    /// over an AF_UNIX control path with no TCP socket at all. sshd derives
+    /// `$SSH_CONNECTION` from the underlying CONNECTION, so a Claude session
+    /// started in B truthfully reports A's ports; dictating into A — a plain
+    /// shell with no agent in it — would then match and join B's session.
+    /// Found by review, 2026-09-05.
+    ///
+    /// So the flag is about a NEIGHBOR, not about this process: a socketless
+    /// (or unreadable) sibling to the same destination means connection
+    /// multiplexing cannot be ruled out, and the plain-ssh arm abstains. It
+    /// costs the ordinary two-terminals-two-connections case nothing — those
+    /// each hold their own socket and are told apart by their ports.
+    var hasSocketlessSiblingToDestination: Bool
 
     init(
         destination: String,
         hasCompetingHerdrClient: Bool,
         herdr: HerdrInvocation,
         usesProxyJump: Bool = false,
-        sockets: [SSHClientSocket]? = nil
+        sockets: [SSHClientSocket]? = nil,
+        hasSocketlessSiblingToDestination: Bool = false
     ) {
         self.destination = destination
         self.hasCompetingHerdrClient = hasCompetingHerdrClient
         self.herdr = herdr
         self.usesProxyJump = usesProxyJump
         self.sockets = sockets
+        self.hasSocketlessSiblingToDestination = hasSocketlessSiblingToDestination
     }
 }
 
@@ -370,7 +393,14 @@ enum SSHDestinationTTYProbe {
                 usesProxyJump: parsed.usesProxyJump,
                 // Read for the ONE process the surface rules just proved is
                 // the foreground ssh on the focused tty — never machine-wide.
-                sockets: readSockets(surfaceProcess.pid)
+                sockets: readSockets(surfaceProcess.pid),
+                hasSocketlessSiblingToDestination: hasSocketlessSibling(
+                    destination: parsed.destination,
+                    surfacePID: surfaceProcess.pid,
+                    surfaceUserID: surfaceProcess.effectiveUserID,
+                    connections: connections,
+                    readSockets: readSockets
+                )
             )
         )
     }
@@ -456,6 +486,45 @@ enum SSHDestinationTTYProbe {
             case .otherHerdrSubcommand:
                 return true
             }
+        }
+        return false
+    }
+
+    /// Is there another same-uid ssh CONNECTION to this destination that holds
+    /// no established TCP socket of its own?
+    ///
+    /// That is the ControlMaster mux-client shape (see
+    /// `SSHSurfaceConnection.hasSocketlessSiblingToDestination`). Scoped as
+    /// tightly as the question allows, so an ordinary second terminal to the
+    /// same host does not pay for it:
+    ///
+    /// * same uid only — a `ControlPath` is per-user, and another user's fd
+    ///   table is not ours to read;
+    /// * the argv must PARSE to the same destination. A neighbor we cannot
+    ///   parse is skipped rather than counted: a mux client's argv is by
+    ///   definition an ordinary `ssh host`, and counting unparseable ones
+    ///   would abstain on every wrapper anywhere on the machine;
+    /// * an UNREADABLE fd table counts, matching the posture the herdr
+    ///   competitor scan takes: a process we cannot describe cannot be ruled
+    ///   out. The cost is one abstained dictation when a neighbor exits
+    ///   between the scan and the read.
+    private static func hasSocketlessSibling(
+        destination: String,
+        surfacePID: Int32,
+        surfaceUserID: uid_t,
+        connections: [SSHClientProcess],
+        readSockets: @Sendable (Int32) -> [SSHClientSocket]?
+    ) -> Bool {
+        for process in connections
+        where process.pid != surfacePID && process.effectiveUserID == surfaceUserID {
+            guard let executablePath = process.executablePath,
+                  isTrustedSSHExecutable(executablePath),
+                  let arguments = process.arguments,
+                  let parsed = parse(arguments: arguments),
+                  parsed.destination == destination
+            else { continue }
+            guard let sockets = readSockets(process.pid) else { return true }
+            if sockets.isEmpty { return true }
         }
         return false
     }

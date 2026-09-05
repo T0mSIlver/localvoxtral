@@ -628,15 +628,20 @@ there is not.
     hosts exactly one foreground ssh with a verified OpenSSH executable and an
     argv the parser accepts (`SSHDestinationTTYProbe`, unchanged); (2) that
     argv carries no `-J`; (3) its destination resolves to exactly one enrolled
-    host (exact alias, then `ssh -G`); (4) the candidate was registered by a
-    hook AUTHENTICATED FROM THAT HOST (`liveRemoteSessions(hostID:)` is scoped
-    to its channel); (5) the candidate reports `$SSH_TTY` and NO multiplexer
-    label; (6) exactly one established TCP socket of that ssh PROCESS — read
+    host (exact alias, then `ssh -G`); (4) no OTHER same-uid ssh to that
+    destination is socketless (the ControlMaster mux-client shape — see the
+    residuals); (5) the candidate was registered by a hook AUTHENTICATED FROM
+    THAT HOST (`liveRemoteSessions(hostID:)` is scoped to its channel); (6) the
+    candidate reports `$SSH_TTY` and NO multiplexer label
+    (`ClaudeSessionJoinResolver.multiplexerLabels` — herdr, cmux, tmux, screen
+    and zellij, walked over the wire allowlist so a label added there and
+    forgotten here is a visible omission); (7) exactly one established TCP
+    socket of that ssh PROCESS — read
     from this Mac's own kernel via `proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`,
     same-uid, no privileges — has `localPort == client_port`,
     `peerPort == server_port` and a peer address equal to `server_ip`
     (compared as BYTES through `inet_pton`, since a dual-stack socket says
-    `::ffff:a.b.c.d` where sshd says `a.b.c.d`); and (7) exactly one live
+    `::ffff:a.b.c.d` where sshd says `a.b.c.d`); and (8) exactly one live
     session matches at all.
 
     **The trust argument, and what it does not cover.** The marker was a value
@@ -666,20 +671,47 @@ there is not.
     origin can never carry a `LocalWorkspacePath`. The join buys the session
     block and repo context — exactly what the marker join bought.
 
-    RESIDUALS, none of them silent: `-J`/`-W` and any `ProxyCommand` from
-    `~/.ssh/config` (the local socket goes to the JUMP host while the
-    destination's sshd sees the jump host's port — `-J` abstains by name, a
-    config-only ProxyCommand abstains because the client holds no TCP socket
-    of its own); any multiplexer, because a multiplexer SERVER outlives the
-    connection that started it and its panes keep that FIRST connection's
-    `$SSH_CONNECTION` — MEASURED on the dev box 2026-09-05, tmux 3.x:
-    connection A (client port 36878) created the session, connection B (36886)
-    attached, and a process inside the pane still read
-    `SSH_CONNECTION=127.0.0.1 36878 …`, so a later attach would otherwise
-    mis-join onto A's surface; a host whose remote plugin predates 1.6.0 (it
-    publishes no connection at all, and the abstention cause names exactly
-    that); and an unreadable fd table, which is UNREADABLE rather than "no
-    sockets" — `SSHSurfaceConnection.sockets` is optional for that one reason.
+    RESIDUALS, none of them silent — every one has its own abstention cause:
+    `-J`/`-W` and any `ProxyCommand` from `~/.ssh/config` (the local socket
+    goes to the JUMP host while the destination's sshd sees the jump host's
+    port — `-J` abstains by name, a config-only ProxyCommand abstains because
+    the client then holds no TCP socket of its own); a host whose remote plugin
+    predates 1.6.0 (it publishes no connection at all, and the cause names
+    exactly that); and an unreadable fd table, which is UNREADABLE rather than
+    "no sockets" — `SSHSurfaceConnection.sockets` is optional for that one
+    reason.
+
+    Two more, and both are MIS-joins rather than missed ones, which is why
+    each has a positive check rather than a note:
+
+    * **Multiplexers.** A multiplexer SERVER outlives the connection that
+      started it and its panes keep that FIRST connection's `$SSH_CONNECTION`.
+      MEASURED on the dev box 2026-09-05, tmux 3.x: connection A (client port
+      36878) created the session, connection B (36886) attached, and a process
+      inside the pane still read `SSH_CONNECTION=127.0.0.1 36878 …`, so a
+      later attach would otherwise mis-join onto A's surface. The refusal is a
+      property of the ARCHITECTURE, not of tmux: `screen` (`$STY`, screen(1)
+      ENVIRONMENT) and `zellij` (`$ZELLIJ`) are servers in exactly the same
+      shape. The first version of this arm checked herdr/cmux/tmux only and
+      screen was not on the wire at all — a silent mis-join, found by review
+      (2026-09-05) and closed by publishing both labels in plugin 1.6.0.
+      Anything that multiplexes a terminal and does NOT publish a label the
+      shim carries is still a hole; adding a multiplexer means adding its
+      label, and `PlainSSHConnectionJoinTests` fails if the list and the wire
+      disagree.
+    * **OpenSSH ControlMaster.** `ControlMaster auto` in `~/.ssh/config` is
+      invisible in argv (the probe refuses `-M`/`-S` but does not read
+      config). Terminal A's ssh owns the TCP connection; terminal B's
+      `ssh host` is a mux CLIENT over an AF_UNIX control path with no TCP
+      socket. sshd derives `$SSH_CONNECTION` from the underlying CONNECTION,
+      so B's Claude session truthfully reports A's ports — and a dictation
+      into A, a plain shell with no agent in it, would join B's session. The
+      check is `SSHSurfaceConnection.hasSocketlessSiblingToDestination`: any
+      same-uid ssh CONNECTION to the same destination whose fd table is
+      readable-and-socketless (or unreadable) abstains the arm. It costs the
+      ordinary two-terminals-two-connections case nothing — those each hold a
+      socket and are told apart by their ports. Also found by review
+      (2026-09-05).
 
   - A Claude Code "Remote Control" session (the agent runs on a machine of the
     user's, `claude.ai/code` in a browser is the UI) has no pane, no TTY, and no

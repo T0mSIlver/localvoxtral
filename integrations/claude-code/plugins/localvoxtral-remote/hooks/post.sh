@@ -230,6 +230,12 @@ EOF
   lvx_env_header 'X-Lvx-Env-Bridge-Session-Id' "${CLAUDE_CODE_BRIDGE_SESSION_ID:-}"
   lvx_env_header 'X-Lvx-Env-Tmux' "${TMUX:-}"
   lvx_env_header 'X-Lvx-Env-Tmux-Pane' "${TMUX_PANE:-}"
+  # GNU screen and zellij, for the same reason as TMUX: both are multiplexer
+  # SERVERS whose windows inherit the $SSH_CONNECTION of whichever connection
+  # started the server, so the Mac has to be able to see that this session is
+  # one of them and refuse to join it on the connection.
+  lvx_env_header 'X-Lvx-Env-Screen-Session' "${STY:-}"
+  lvx_env_header 'X-Lvx-Env-Zellij-Session' "${ZELLIJ:-}"
   lvx_env_header 'X-Lvx-Env-Ssh-Tty' "${SSH_TTY:-}"
   # $SSH_CONNECTION is the one allowlisted value sshd writes with SPACES in it:
   # "<client-ip> <client-port> <server-ip> <server-port>". Space is outside the
@@ -245,6 +251,10 @@ EOF
   # (ClaudeRemoteSSHConnectionReport.parse), and a shim that guesses would just
   # move the refusal.
   set -f
+  # IFS pinned to a single space, not inherited: a remote profile that exports
+  # its own IFS would otherwise decide how this value splits. sshd writes
+  # spaces, so a space is the whole separator.
+  IFS=' '
   # shellcheck disable=SC2086  # word splitting is the point
   set -- ${SSH_CONNECTION:-}
   if [ "$#" -eq 4 ]; then

@@ -108,7 +108,8 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
         destination: String = "sandbox",
         usesProxyJump: Bool = false,
         sockets: [SSHClientSocket]? = nil,
-        unreadableSockets: Bool = false
+        unreadableSockets: Bool = false,
+        socketlessSibling: Bool = false
     ) -> SSHDestinationTTYProbeResult {
         .connection(
             SSHSurfaceConnection(
@@ -116,7 +117,8 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
                 hasCompetingHerdrClient: false,
                 herdr: .notHerdr,
                 usesProxyJump: usesProxyJump,
-                sockets: unreadableSockets ? nil : (sockets ?? [surfaceSocket])
+                sockets: unreadableSockets ? nil : (sockets ?? [surfaceSocket]),
+                hasSocketlessSiblingToDestination: socketlessSibling
             )
         )
     }
@@ -511,6 +513,102 @@ final class PlainSSHConnectionJoinTests: XCTestCase {
             expectedCause: "no live session on this host reports its ssh connection"
         )
     }
+
+    func testAControlMasterMuxSiblingAbstainsEvenWhenThePortsAgree() async {
+        // Terminal A holds the master and its TCP socket; terminal B's
+        // `ssh sandbox` is a mux client with no socket of its own. sshd derives
+        // `$SSH_CONNECTION` from the CONNECTION, so B's Claude session
+        // truthfully reports A's ports — and joining would attach B's session
+        // to a dictation into A, where no agent is running. Fixtured so the
+        // ports DO agree: without the guard this is a mis-join. Found by
+        // review, 2026-09-05.
+        let registry = makeRegistry()
+        ingestRemoteSession(into: registry)
+        await assertNoJoin(
+            surfaceConnection(socketlessSibling: true), registry: registry,
+            expectedCause: "this destination may be carrying multiplexed ssh sessions"
+        )
+    }
+
+    func testASessionInsideScreenDoesNotJoinThroughThisArm() async {
+        // screen is a multiplexer SERVER with tmux's inheritance property and
+        // publishes `$STY` (screen(1), ENVIRONMENT). Until the review it was
+        // not on the wire at all, so this exact fixture JOINED.
+        let registry = makeRegistry()
+        ingestRemoteSession(
+            into: registry,
+            environment: ClaudeRemoteSessionEnvironment(
+                screenSession: "3721.pts-0.sandbox",
+                sshTTY: "/dev/pts/3",
+                sshConnection: reportedConnection()
+            )
+        )
+        await assertNoJoin(
+            surfaceConnection(), registry: registry,
+            expectedCause: "no live session on this host is a plain ssh shell"
+        )
+    }
+
+    func testASessionInsideZellijDoesNotJoinThroughThisArm() async {
+        let registry = makeRegistry()
+        ingestRemoteSession(
+            into: registry,
+            environment: ClaudeRemoteSessionEnvironment(
+                zellijSession: "0",
+                sshTTY: "/dev/pts/3",
+                sshConnection: reportedConnection()
+            )
+        )
+        await assertNoJoin(
+            surfaceConnection(), registry: registry,
+            expectedCause: "no live session on this host is a plain ssh shell"
+        )
+    }
+
+    func testEveryMultiplexerLabelOnTheWireRefusesTheJoinOnItsOwn() async {
+        // The exclusion is a LIST over the wire allowlist, so this walks it
+        // instead of restating it: a label added to `multiplexerLabels` that
+        // the arm does not actually honour fails here, and a multiplexer field
+        // added to the wire and forgotten in the list fails the companion
+        // assertion below.
+        for label in ClaudeSessionJoinResolver.multiplexerLabels {
+            let registry = makeRegistry()
+            var environment = ClaudeRemoteSessionEnvironment(
+                sshTTY: "/dev/pts/3", sshConnection: reportedConnection()
+            )
+            environment[label] = "x"
+            ingestRemoteSession(into: registry, environment: environment)
+            let (join, _) = await ClaudeJoinAbstentionTap.collecting {
+                await self.resolver(registry: registry, sshResult: self.surfaceConnection())
+                    .resolve(target: self.ghostty)
+            }
+            XCTAssertNil(join, "\(label) must refuse the join on its own")
+        }
+    }
+
+    func testTheMultiplexerLabelListCoversEveryMultiplexerFieldOnTheWire() {
+        // A wire field naming a multiplexer that is NOT in the list is a
+        // silent mis-join waiting to happen — that is exactly how screen got
+        // missed. Anything matching these names must be in the list or
+        // deliberately excluded here with a reason.
+        let deliberatelyOutside: Set<ClaudeRemoteEnvironmentField> = [
+            // A Remote Control session has no multiplexer between it and its
+            // connection, and its own arm runs on a browser target.
+            .bridgeSessionID,
+        ]
+        let multiplexerNamed = ClaudeRemoteEnvironmentField.allCases.filter { field in
+            let name = field.rawValue.lowercased()
+            return ["herdr", "cmux", "tmux", "screen", "zellij", "bridge"]
+                .contains { name.contains($0) }
+        }
+        for field in multiplexerNamed where !deliberatelyOutside.contains(field) {
+            XCTAssertTrue(
+                ClaudeSessionJoinResolver.multiplexerLabels.contains(field),
+                "\(field) names a multiplexer and must refuse a plain-ssh join"
+            )
+        }
+    }
+
 }
 
 /// The value grammar and the address comparison, away from the resolver.

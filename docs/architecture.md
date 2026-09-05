@@ -69,9 +69,9 @@ Key subsystems:
     `port`, so it talks to exactly one Mac. The Mac-side listener stays on
     8473. The body
     stays Claude's verbatim JSON (no `jq` to rewrite it with), so the
-    allowlisted env enrichment — herdr/cmux/tmux/bridge handles, `SSH_TTY`,
-    `SSH_CONNECTION` (re-joined with commas, since space is outside the
-    charset), the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
+    allowlisted env enrichment — herdr/cmux/tmux/screen/zellij/bridge handles,
+    `SSH_TTY`, `SSH_CONNECTION` (re-joined with commas, since space is outside
+    the charset), the shim's `$PPID` — rides as `X-Lvx-Env-*` HEADERS, written into the same
     0600 header file as the token and charset-whitelisted
     (`[A-Za-z0-9._:/@+,=%-]`, ≤200 bytes) before a byte is written so CR/LF
     injection is impossible by construction; the listener re-validates and
@@ -146,8 +146,9 @@ Key subsystems:
     server port that the remote session reports through `$SSH_CONNECTION`, and
     the session must have been registered by a hook authenticated from the very
     host that ssh goes to. It authorizes session and repo context, never a
-    screen read, and abstains on `-J`, on any multiplexer label (a tmux/herdr
-    server keeps the FIRST connection's `$SSH_CONNECTION`), and on any
+    screen read, and abstains on `-J`, on any multiplexer label (a
+    tmux/screen/zellij/herdr server keeps the FIRST connection's
+    `$SSH_CONNECTION`), on a ControlMaster-shaped neighbour, and on any
     ambiguity.
     See [agent/invariants.md](agent/invariants.md) for what is deliberately
     not wired up yet.
