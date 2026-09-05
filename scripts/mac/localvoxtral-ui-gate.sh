@@ -206,6 +206,16 @@ LV_UI_TERM_COMMAND_DIRS="${LV_UI_TERM_COMMAND_DIRS:-$HOME/bin}"
 # suite drives the three failure paths below and a 20-second wall-clock wait
 # per case is most of the suite's runtime.
 LV_UI_TERM_OPEN_TIMEOUT_SECONDS="${LV_UI_TERM_OPEN_TIMEOUT_SECONDS:-20}"
+
+# How long `launch` waits for the app to appear in the process table. The same
+# kind of seam as the one above, for the same reason and with the same evidence
+# behind it: the shell suite drives the "nothing but a helper ever appeared"
+# path, and under the suite's instant `sleep` stub the loop below stops being a
+# poll and becomes a fork storm that runs for the WHOLE budget. Measured
+# 2026-09-05: that single assertion was 19.2 s of the suite's 32.6 s. A shorter
+# budget can only make `launch` give up sooner, never admit anything, so this
+# is a knob no attacker has a use for.
+LV_UI_LAUNCH_WAIT_SECONDS="${LV_UI_LAUNCH_WAIT_SECONDS:-20}"
 # How many windows a refused `term open` may record as UNCONFIRMED so
 # `term close` can still reach them. Bounded because each record is a window
 # this gate could not prove is its own.
@@ -330,7 +340,12 @@ timestamp() {
 }
 
 log_line() {
-  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  # Every invocation of this gate writes one line here, so the directory is
+  # derived without forking `dirname` and `mkdir` is only reached when the
+  # directory is actually missing — which is the first invocation and no other.
+  local dir="${LOG_FILE%/*}"
+  [[ "$dir" != "$LOG_FILE" ]] || dir="."
+  [[ -d "$dir" ]] || mkdir -p "$dir" 2>/dev/null || true
   printf '%s %s\n' "$(timestamp)" "$*" >>"$LOG_FILE" 2>/dev/null || true
 }
 
@@ -1803,17 +1818,24 @@ run_launch() {
   # `ps -o comm=` is the full path, which is the same fact `process_identity`
   # already trusts for pid reuse.
   local app_executable="$bundle/Contents/MacOS/localvoxtral" candidate
-  deadline=$((SECONDS + 20))
-  while (( SECONDS < deadline )); do
+  # Attempt-then-check, so a budget of 0 still makes exactly ONE attempt. With
+  # any budget >= 1 this is identical to the check-then-attempt loop it
+  # replaces (the deadline is computed from SECONDS immediately above, so the
+  # first check always passed); 0 is what lets the suite drive the give-up path
+  # without spending the budget in wall clock.
+  deadline=$((SECONDS + LV_UI_LAUNCH_WAIT_SECONDS))
+  while :; do
     for candidate in $(pgrep -f "^$app_executable" 2>/dev/null | sort -rn); do
       [[ "$(ps -p "$candidate" -o comm= 2>/dev/null)" == "$app_executable" ]] || continue
       pid="$candidate"
       break
     done
     [[ -n "${pid:-}" ]] && break
+    (( SECONDS < deadline )) || break
     sleep 0.5
   done
-  [[ -n "${pid:-}" ]] || fail "the app did not start within 20 seconds"
+  [[ -n "${pid:-}" ]] \
+    || fail "the app did not start within $LV_UI_LAUNCH_WAIT_SECONDS seconds"
 
   mkdir -p "$STATE_DIR"
   chmod 0700 "$STATE_DIR" 2>/dev/null || true
