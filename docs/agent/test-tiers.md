@@ -2,7 +2,8 @@
 
 | Tier | What | When | Cost |
 |---|---|---|---|
-| 0 | Unit suite (500+ tests) + packaging + launch smoke | every non-fast-path PR/push, CI | ~1 min |
+| 0 | Unit suite (500+ tests) + shell gate suites + format lint + coverage | every non-fast-path PR/push, in CI's `build-test` job on **GitHub-hosted macOS** (owner decision 2026-09-05 — same-repo PRs too, not just forks; the Mac is the queue bottleneck and hosted runners are free for public repos) | ~4 min hosted, ~0 s queue |
+| 0 | Packaging + launch smoke of the **signed** bundle, and the installable artifact | every non-fast-path PR/push, in CI's `mac-lanes` job on the self-hosted Mac — the `localvoxtral-dev` identity is what keeps the owner's TCC grant valid across `try-pr.sh` installs. Fork PRs get an ad-hoc-signed equivalent inside `build-test` instead, since `mac-lanes` never runs for them | ~1 min |
 | 0 | PolishHelper / SpeechHelper unit suites (Metal-free: router, cache locator, watchdog; codec/delta contract) | self-hosted lanes only, and path-gated per helper — a PR runs a helper's suite only when the diff touches that helper's directory or the shared CI plumbing; `workflow_dispatch` and every push to main run both (`scripts/ci/helper-lane-filter.sh`, no marker). Locally: `remote-build.sh test --package-path PolishHelper` / `SpeechHelper` | 11 s + 20 s |
 | 1 | `RealtimeAPIVLLMIntegrationTests` vs the live local speechd STT test service: real inference through the production websocket client, word-accuracy asserted | every non-fast-path PR/push on the self-hosted runner; locally via `remote-build.sh integration` | ~20 s |
 | 1 | `PolishHelperIntegrationTests`: the packaged polishing helper vs the real pinned model — production request path, shared eval baseline, parent-pid tether | conditional in CI (self-hosted, after packaging): only when the diff touches LLM-relevant paths or the PR opts in with `[run-llm-eval]` — see "When must the LLM lanes run?"; locally via `remote-build.sh integration-polishd` | minutes (4B weights + live inference) |
@@ -81,6 +82,28 @@ filter list in the same PR. `./scripts/remote-build.sh integration-polishd`
 remains the local equivalent. The nightly `eval-e2e.yml` lane is the only
 scheduled eval; the per-PR polishd lane skipped by the filter runs again only
 when a matching change (or the marker) triggers it.
+
+## Which runner a lane lands on
+
+`ci.yml` is two parallel jobs, and which one a lane is in is a statement about
+what it needs, not about cost:
+
+- **`build-test`, GitHub-hosted `macos-latest`, every event and every
+  contributor** — the required status check on main. Anything that needs only
+  a macOS toolchain: the pure-shell gate suites, the installer test, format
+  lint, the unit suite, coverage. A fork PR gets ONLY this job, so it also
+  packages/uploads/smokes an ad-hoc-signed bundle there.
+- **`mac-lanes`, the self-hosted Mac, same-repo PRs + pushes + dispatches** —
+  anything that needs THAT machine: the `localvoxtral-dev` signing identity
+  (an ad-hoc signature invalidates the owner's Accessibility grant on every
+  `try-pr.sh` install), the launch-on-demand speechd STT service and the
+  multi-GB weights, a real Metal toolchain for the two MLX helpers, the
+  herdr/sshd fixture, the GUI session the UI-gate artifact root lives in, and
+  the warm `clean: false` `.build` the helper suites depend on.
+
+**Adding a lane: put it in `build-test` unless you can name the thing on the
+owner's Mac that it needs.** The Mac is a single runner and a personal machine;
+`build-test` is free and starts in seconds.
 
 ## Why the helper unit suites are path-gated
 
