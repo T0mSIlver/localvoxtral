@@ -857,6 +857,23 @@ unset LAUNCH_WAIT
 pass "a helper alone is not an app under test"
 clear_state
 
+# A hand-edited conf is where `20s` comes from, and the wait budget is consumed
+# by `$(( ))`: a non-numeric value there is an arithmetic error, which under
+# `set -e` kills the gate AFTER `open` has started the app and BEFORE app.state
+# records it — the unrecorded-instance wedge the gate header warns about,
+# reached by a typo. It must degrade to the built-in default instead.
+clear_state
+: >"$TMP_DIR/open.log"
+write_conf 'LV_UI_LAUNCH_WAIT_SECONDS="20s"'
+run_gate "launch $CLEAN_APP" "${APP_ENV[@]}" STUB_PGREP_PID=4242
+clear_conf
+(( GATE_STATUS == 0 )) \
+  || fail "a junk launch budget in the conf broke launch: $GATE_STATUS ($GATE_STDERR)"
+grep -q "pid=4242" "$FAKE_HOME/.localvoxtral-ui-gate/app.state" \
+  || fail "launch opened the app but recorded nothing — the unrecorded-instance wedge"
+pass "a junk launch budget in the conf falls back to the default, never opening without recording"
+clear_state
+
 echo "== 8. ax and key verbs =="
 
 clear_state
@@ -901,6 +918,22 @@ SCRIPT_FILE="$(find "$FAKE_HOME/.localvoxtral-ui-gate/terms" -name '*.command' |
 grep -q "^exec $FAKE_HOME/bin/lv-attach pane-7\$" "$SCRIPT_FILE" \
   || fail "launcher script does not exec exactly the validated argv: $(cat "$SCRIPT_FILE")"
 pass "allowed: term open runs an opted-in wrapper, by absolute path, and logs the command in full"
+
+# The same arithmetic trap as `launch`'s budget, and worse placed: `term open`
+# computes its deadline AFTER `open` has already put a window on the owner's
+# desktop, so a `20s` in the conf left that window behind with no recorded id —
+# unfocusable and uncloseable by this gate.
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"' 'LV_UI_TERM_OPEN_TIMEOUT_SECONDS="20s"'
+run_gate 'term open ghostty lv-attach pane-9' STUB_PGREP_PID=$$
+write_conf 'LV_UI_TERM_COMMANDS="lv-attach"'
+(( GATE_STATUS == 0 )) \
+  || fail "a junk term-open budget in the conf broke term open: $GATE_STATUS ($GATE_STDERR)"
+[[ "$GATE_STDOUT" == "opened term-"* ]] \
+  || fail "term open opened a window but recorded no id: $GATE_STDOUT"
+JUNK_BUDGET_TERM="${GATE_STDOUT#opened }"
+JUNK_BUDGET_TERM="${JUNK_BUDGET_TERM%% *}"
+assert_allowed "term close $JUNK_BUDGET_TERM" 'closing the window opened under a junk budget'
+pass "a junk term-open budget in the conf falls back to the default, never opening without recording"
 
 assert_allowed 'term focus term-1' 'term focus on a window this gate opened'
 assert_allowed 'term close term-1' 'term close on a window this gate opened'

@@ -302,6 +302,22 @@ if [[ -f "$GATE_CONF" ]]; then
   fi
 fi
 
+# The two budgets that are consumed by `$(( ))`, normalised AFTER the conf has
+# had its say. A value that is not a plain non-negative integer is an
+# ARITHMETIC ERROR there, and under `set -euo pipefail` that kills the gate
+# mid-verb — in `launch` and `term open` alike, after `open` has already put a
+# window (or the app under test) on the owner's desktop and BEFORE the state
+# file that makes it addressable is written. That is exactly the wedge the
+# header warns about: a running instance this gate never recorded, after which
+# `launch` refuses beside "a localvoxtral this gate did not start" and only the
+# owner can unwedge the machine. A hand-edited machine-local file is where a
+# typo like `20s` comes from, so a bad value falls back to the default instead
+# of taking the gate down. (The other `$(( ))` knobs below have the same shape
+# and are worth the same treatment; these two are the ones whose failure lands
+# after something has already been opened.)
+case "$LV_UI_LAUNCH_WAIT_SECONDS" in "" | *[!0-9]*) LV_UI_LAUNCH_WAIT_SECONDS=20 ;; esac
+case "$LV_UI_TERM_OPEN_TIMEOUT_SECONDS" in "" | *[!0-9]*) LV_UI_TERM_OPEN_TIMEOUT_SECONDS=20 ;; esac
+
 # Second layer under the (empty by default) allowlist above: names that can run
 # a child command are refused even when the conf allowlists them. Deliberately
 # assigned AFTER the conf is sourced and NOT via ${VAR:-...}, so the conf can
@@ -1818,11 +1834,13 @@ run_launch() {
   # `ps -o comm=` is the full path, which is the same fact `process_identity`
   # already trusts for pid reuse.
   local app_executable="$bundle/Contents/MacOS/localvoxtral" candidate
-  # Attempt-then-check, so a budget of 0 still makes exactly ONE attempt. With
-  # any budget >= 1 this is identical to the check-then-attempt loop it
-  # replaces (the deadline is computed from SECONDS immediately above, so the
-  # first check always passed); 0 is what lets the suite drive the give-up path
-  # without spending the budget in wall clock.
+  # Attempt-then-check, so a budget of 0 still makes exactly ONE attempt — that
+  # is what lets the suite drive the give-up path without spending the budget in
+  # wall clock. Against the check-then-attempt loop it replaces it is the same
+  # loop for every budget the field uses, and where it differs it is strictly
+  # more robust: the old form could make ZERO attempts if `SECONDS` happened to
+  # tick over between the assignment below and the first check, which at a
+  # budget of 1 is a real (if narrow) window.
   deadline=$((SECONDS + LV_UI_LAUNCH_WAIT_SECONDS))
   while :; do
     for candidate in $(pgrep -f "^$app_executable" 2>/dev/null | sort -rn); do
