@@ -74,8 +74,8 @@ Learned the hard way (2026-07-04) — use these instead of manual steps:
 
   **`abstentionReason` is the diagnostic**, not `arm`. It is the resolver's own
   cause chain, oldest arm first — `tty: no live session on this device;
-  remote-herdr: ssh session undeterminable (unreadableArguments); marker: no
-  marker in title` says the tty read worked and the ssh probe could not read
+  remote-herdr: ssh session undeterminable (unreadableArguments)` says the tty
+  read worked and the ssh probe could not read
   the client's arguments, which is a completely different bug from an empty
   chain (the surface was never identified at all). This is the signal that was
   missing when a Ghostty ssh wrapper made every remote probe report

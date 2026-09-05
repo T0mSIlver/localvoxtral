@@ -40,21 +40,6 @@ final class ClaudeSessionFocusResolutionTests: XCTestCase {
     /// focus declarations, because the plugin runs inside that one process.
     private let opencodePID: Int32 = 4242
 
-    /// Endless distinct markers — these tests create many sessions and never
-    /// care which marker each one got.
-    private final class SequentialMarkers: Sendable {
-        private let counter = Mutex(0)
-
-        var allocate: @Sendable () -> String {
-            { [self] in
-                counter.withLock { value in
-                    value += 1
-                    return "lvx-" + String(format: "%08x", value)
-                }
-            }
-        }
-    }
-
     private func makeRegistry(
         limits: ClaudeRegistryLimits = .default,
         clock: TestClock? = nil,

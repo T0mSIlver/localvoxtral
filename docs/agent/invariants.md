@@ -44,8 +44,8 @@ there is not.
   used by clipboard vocabulary and by focused unit coverage; do not infer that
   it runs at commit.
 
-- **Claude Code context reaches the prompt only through a positive marker
-  join.** The joined session's repository (status, uncommitted diffs, contents
+- **Claude Code context reaches the prompt only through a positive join.**
+  The joined session's repository (status, uncommitted diffs, contents
   of files the agent just touched) and its prior user prompt are attached as
   untrusted reference blocks, behind `claudeRepoContextEnabled` (default off)
   and loopback endpoints only. Invariants to keep:
@@ -66,29 +66,49 @@ there is not.
     AppleScript (`AppleScriptTerminalTTYReader` — Ghostty ≥ 1.4's focused
     terminal, iTerm2's current session, Terminal.app's selected tab; sdef- or
     docs-confirmed, any error abstains) matched exactly against the
-    hook-reported session TTY,
-    LOCAL sessions only — the title is a fought-over channel (Claude Code's
-    own conversation titles clobber the marker mid-turn), the process table is
-    not. Any TTY non-answer falls through to the marker in the PID-pinned
-    window title — but LOCAL sessions only carry that marker when the user
-    enabled the opt-in title fallback (default off; the broker still allocates
-    markers either way, it just withholds them from local hook responses). The
-    title marker remains the ONLY join for SSH-remote sessions, emitted for
-    them unconditionally: a remote TTY names another machine's device, and
-    `resolve(tty:)` refuses remote candidates so an SSH host can never claim a
-    local pane by echoing its TTY.
+    hook-reported session TTY, LOCAL sessions only. A TTY non-answer does not
+    fall through to a weaker reading of the same surface; the arms after it
+    (herdr pane, remote herdr, cmux surface, browser tab) each ask a DIFFERENT
+    question, and when none answers, the dictation gets no join.
+  - **NO JOIN EVER READS A WINDOW TITLE** (owner decision 2026-09-05). Until
+    then the broker allocated an `lvx-…` marker per session, returned it in
+    the hook reply, and Claude Code wrote it into the window title over OSC 2;
+    a PID-pinned `AXTitle` read joined on it. All of it is gone — the marker,
+    the reply field, the `terminalSequence` the local and remote hooks
+    printed, the opt-in "Local Claude title fallback" setting, and the
+    title-arm suppression rules that had accreted around it. The reason is one
+    sentence: a window title is a channel every party in the stack rewrites at
+    will — Claude Code its conversation titles (which clobbered the marker
+    mid-turn, field finding 2026-07-17), herdr and cmux their pane titles, the
+    user their own — so a marker sitting in one is evidence about the past,
+    not about what the surface displays now, and every arm it fell through
+    from had already refused for a reason. `TerminalScreenAXReader` retains
+    only `focusedWindowIdentity`, which reads no title: it exists so the
+    authorizer can pair a screen capture with the join that authorized it.
+    ACCEPTED CONSEQUENCE, stated plainly: a PLAIN ssh remote session — Claude
+    Code in `ssh host` with no herdr, no cmux, no Remote Control — has no join
+    arm at all any more. It was the only one the title marker uniquely served.
+    A transport-derived replacement (matching the focused surface's ssh
+    process's TCP source port against the remote session's `SSH_CONNECTION`)
+    is a recorded follow-up, deliberately not built here. Nothing else lost an
+    arm: a remote session still joins through `cmux ssh`'s round-tripped
+    surface id, the remote-herdr pane arm, or the bridge-allocated Remote
+    Control session id.
+    A remote TTY names another machine's device, and `resolve(tty:)` refuses
+    remote candidates so an SSH host can never claim a local pane by echoing
+    its TTY.
   - herdr (the tmux-like agent multiplexer) is a first-class join target with
-    its own arm, and it is MARKER-FREE by design (owner decision 2026-07-21):
-    herdr intercepts OSC 2 per pane, so a title marker can neither reach
-    Ghostty's title nor describe an inner pane — the broker never emits one to
-    a herdr-hosted session, even under the title-fallback opt-in. The arm runs
+    its own arm. It was the first arm to be marker-free (owner decision
+    2026-07-21, for the reason the whole mechanism was later removed for:
+    herdr intercepts OSC 2 per pane, so a title marker could neither reach
+    Ghostty's title nor describe an inner pane). The arm runs
     only after the surface TTY positively binds to herdr (a `herdr` client
     process on the focused terminal surface's TTY, `HerdrClientTTYProbe` —
     herdr's socket has no client introspection, so the process table is the
     only binding; the probe needs only the surface TTY string, so the herdr
     arm works on all three supported terminals), and from that point the join
-    is herdr-or-nothing: no
-    marker fallback, because a lingering title marker could only mis-join.
+    is herdr-or-nothing: a surface showing an inner pane is a surface no other
+    arm can describe.
     The hook publishes `HERDR_PANE_ID`/`HERDR_SOCKET_PATH` from the pane env;
     `HerdrSocketClient` (hand-written and capability-bounded — reads are only
     `pane.current`, `pane.process_info`, and `pane.read`; its sole mutation is
@@ -143,17 +163,14 @@ there is not.
     `SecCode`'s signing identifier is not guaranteed to equal the bundle id, so
     requiring equality could kill the feature against a legitimately signed
     cmux, and the pid binding is the stronger claim anyway.
-    Both origins join here, and only here does a REMOTE session join by
-    something other than a marker: cmux's ssh relay puts the surface id into a
+    Both origins join here: cmux's ssh relay puts the surface id into a
     `cmux ssh` shell's environment, so the id is ours travelling out and back
     (`resolveRemote(cmuxSurfaceID:)`). But a remembered label is NOT evidence
     that the session still holds the surface — a compromised enrolled host can
     replay an id from an earlier `cmux ssh` session after that surface returned
     to a local shell, and as sole remote candidate it would join, pairing
-    attacker-chosen context with the user's current local screen. That is
-    strictly weaker than the marker fallback, which at least has to ride the
-    PTY the session presently controls. So a remote claim additionally requires
-    FRESH evidence from cmux that the focused surface is currently
+    attacker-chosen context with the user's current local screen. So a remote
+    claim additionally requires FRESH evidence from cmux that the focused surface is currently
     remote-hosted. cmux exposes none of that on the surface (a `cmux ssh`
     surface is an ordinary `type: "terminal"`; remoteness lives on the
     WORKSPACE), so the client reads `workspace.remote.status` for the focused
@@ -167,7 +184,7 @@ there is not.
     process that inherited a stale surface id and moved panes publishes no tty
     to contradict. The cost is stated where it is paid — an opencode session
     inside cmux never joins over this arm (its server half publishes no tty by
-    design, and opencode receives no title marker either).
+    design), so opencode inside cmux gets no join at all.
     Ambiguity on EITHER origin abstains: exactly one side may resolve, and the
     other must have no candidate at all. Rejecting only resolved/resolved made
     it asymmetric — two local claimants plus one remote used to join the
@@ -175,9 +192,12 @@ there is not.
     consulted (regenerated on restore), and `CMUX_SURFACE_ID` is itself
     session-scoped — cmux re-mints it on restore, which is safe here only
     because both sides of the match come from the same cmux run and stale
-    UUIDs cannot collide. Unlike herdr's, a cmux abstention DOES fall through
-    to the marker arm: cmux forwards inner OSC 2 to the window title (defeated
-    by custom names and AI auto-naming, which is why the surface arm exists).
+    UUIDs cannot collide. A cmux abstention used to fall through to the
+    window-title marker arm — cmux forwards an inner OSC 2 to its window title
+    — and since that arm was removed (2026-09-05) an abstention here is the
+    dictation's answer. The title was never reliable anyway: a custom
+    workspace name or cmux's AI auto-naming replaces it, which is why the
+    surface arm exists.
     cmux exposes no AX text at all, so the join never authorizes raw AX
     attachment and its screen context is `surface.read_text` through the same
     `SocketPaneScreenContext` gate as herdr's `pane.read`.
@@ -309,8 +329,8 @@ there is not.
     exported can attach two bare `herdr` invocations to DIFFERENT servers,
     which this rule cannot see from the Mac (the argv is all it has). The
     residual is bounded downstream — candidates spanning two sockets abstain
-    at the single-socket rule, and the pane-id + broker-marker confirmation
-    still has to agree — but a candidate set living entirely on the OTHER
+    at the single-socket rule, and the pane-level confirmations still have to
+    agree — but a candidate set living entirely on the OTHER
     server confirms against that server, so the honest statement is: env
     divergence on the remote defeats the selector comparison, and we accept
     that because the divergence is the user's own deliberate configuration.
@@ -322,9 +342,9 @@ there is not.
     shell wrapper goes on to run is not something any argv can promise. The
     invocation requirement exists because being the sole connection proves
     nothing about what the terminal DISPLAYS: a herdr whose client detached,
-    or whose pane still carries a marker and a running agent inside the
-    registry TTL, keeps answering `pane.current`, so a plain `ssh builder`
-    must never reach the join no matter how alone it is.
+    or whose pane still runs an agent inside the registry TTL, keeps answering
+    `pane.current`, so a plain `ssh builder` must never reach the join no
+    matter how alone it is.
     The argv fallback remains necessary when the direct panel proof cannot
     render. Its historical limitation is:
     herdr exposes NO read-only attachment signal — re-verified at v0.8.0 /
@@ -336,14 +356,11 @@ there is not.
     panel binding whenever the agents sidebar and configured token row are
     visible. Its residual is narrow/collapsed/covered sidebar or an unconfigured
     row: panel authorization fails closed, then argv still cannot identify the
-    manually launched herdr. In that residual the title arm is NOT universally
-    allowed. When `SSHDestinationTTYProbe` reports an ssh present but unreadable
-    as exactly `multipleForegroundClients`, `untrustedExecutable`,
-    `unreadableArguments`, or `refusedArguments`, the title arm is suppressed;
-    its outer marker may be stale from before herdr started. `deviceUnreadable`,
-    `tableUnreadable`, and `probeUnavailable` do not suppress it because those
-    mean the probe could not inspect the surface at all and may describe an
-    ordinary local marker join.
+    manually launched herdr, and since 2026-09-05 there is nothing under it —
+    the dictation gets no join. The whole "title-marker arm suppression" rule
+    that used to live here (the exact `SSHProbeIndeterminacy` categories that
+    did and did not suppress an outer title) is gone with the arm it protected;
+    `SSHProbeIndeterminacy` remains as a content-free diagnostic category only.
 
     Both surface-authorization paths retain the remaining bounds: the host has
     live remote sessions reporting a herdr pane, all from ONE
@@ -353,34 +370,61 @@ there is not.
     multiplexer is for, and serving that workflow is the point of this arm — so
     only two herdr SERVERS leave the surface ambiguous;
     over the forward, exactly ONE of those candidates claims that herdr's
-    FOCUSED pane id (two candidates claiming the same pane id abstain), and that
-    pane's captured `terminal_title` carries exactly that session's
-    broker-allocated marker;
-    and herdr's own `agent_session` claim for the pane does not disagree, and
-    the pane is running that session's agent.
-    Herdr-or-nothing begins as soon as the panel nonce matches: that match binds
-    this focused surface to the stamped server, so any later broker-marker,
-    `agent_session`, or foreground refusal suppresses the unrelated outer title.
-    On the argv fallback, the older boundary remains at pane-id plus broker-marker
-    confirmation: earlier failures can fall through to the title (subject to the
-    exact unreadable-ssh suppression above), and later failures abstain. Registry
-    candidates existing on the host is not a
-    binding for this connection — a detached herdr, or one whose sessions are
-    merely still inside their TTL, would otherwise cost a sole plain ssh session
-    the outer marker join it has always had. Once the pane id AND our own
-    broker-allocated marker both match, the connection IS displaying that
-    session, and from there a marker in the outer window could only describe
-    something else, so a later fail-closed refusal joins nothing at all. The
-    residual: while the arm has not confirmed, a marker left in the outer title
-    by a pre-herdr session on the same host can still win — exactly the behavior
-    that predates this arm.
-    Note WHY the marker works here and not locally: herdr captures an inner
-    pane's OSC 2 into `PaneInfo.terminal_title`, and the remote listener
-    already returns a marker to every remote session unconditionally — so the
-    marker is sitting in the joined pane's title, invisible to the outer
-    terminal. The `agent_session` cross-check is fail-closed exactly like the
+    FOCUSED pane id (two candidates claiming the same pane id abstain);
+    herdr's own `agent_session` claim for the pane does not disagree; and the
+    pane is running that session's agent. Registry candidates existing on the
+    host is NOT itself a binding for this connection — a detached herdr, or one
+    whose sessions are merely still inside their TTL, keeps answering
+    `pane.current` — which is why the surface authorization above (panel nonce,
+    or argv classification) has to come first.
+
+    **The pane confirmation used to have a fourth member, and losing it is the
+    one place this removal costs security rather than only reach. Read this
+    before touching the arm.** herdr captures an inner pane's OSC 2 into
+    `PaneInfo.terminal_title`, and the remote listener returned a
+    broker-allocated marker to every remote session, so the marker was sitting
+    in the joined pane's captured title where the arm could require it. Its
+    value was that a pane id is a LABEL THE ENROLLED HOST CHOSE, while a marker
+    is a value WE minted and handed to exactly one authenticated session: a
+    compromised enrolled host could publish another session's `HERDR_PANE_ID`,
+    but it could not make that pane's title carry its own marker.
+
+    What a compromised enrolled host could do BEFORE: publish a pane id it does
+    not own, and be refused at the marker check (unless it could also write
+    that other session's marker into the pane title — which it could, since
+    both sessions run on the host it controls and OSC 2 is just bytes on a pty.
+    So the marker was never a boundary against a host that had ALREADY been
+    compromised; it was a boundary against a host that was merely CONFUSED, and
+    against a session lying about a pane it never occupied).
+    AFTER: the same host publishes the same forged pane id and is refused by
+    herdr's own `agent_session` claim when herdr has one, and by the pane's
+    foreground process list when it does not — both of which are answers from
+    herdr, the party that actually watches the pane, rather than from the
+    session making the claim. The honest residual, which the old marker did not
+    close either: a forger on a pane herdr claims nothing about, running a
+    process named for the agent, is indistinguishable from the real occupant.
+    That is pinned by
+    `testASessionForgingAnotherPaneIDIsRefusedByHerdrsOwnClaim` and its
+    foreground sibling, and it is bounded by enrollment the user can revoke.
+    Note also what the lane measured (`remote-herdr-panel-binding.md`, "Pinned
+    against a live server"): `pane.current` did NOT carry `agent_session` for a
+    pane whose agent session id had been reported, so the CLAIM is often
+    absent and the foreground check carries most of the weight in practice.
+
+    What the panel nonce still proves, and it is the load-bearing half: that
+    the FOCUSED LOCAL SURFACE — the window the user is looking at, read through
+    our own AX capture — is displaying a whole-view client of the specific
+    herdr server we just stamped, within an ~8 s TTL, with a token of more than
+    40 random bits that travelled only over an owner- and mode-checked
+    forwarded socket. That is a statement about THIS Mac's screen, which no
+    remote host can forge and which the marker never made: the marker said
+    "this pane belongs to this session", never "this window shows this
+    server". Surface authorization and pane confirmation answer different
+    questions, and removing the marker removed a second answer to the second
+    question, not the first.
+    The `agent_session` cross-check is fail-closed exactly like the
     local arm's and is what catches a REUSED pane (a session that died without
-    a SessionEnd leaves a live entry, its marker and its pane id behind).
+    a SessionEnd leaves a live entry and its pane id behind).
     The foreground check takes EITHER a `hookParentPID` (the shim's `$PPID`,
     compared as a STRING — a remote pid is another machine's number) or a
     process named for the agent; requiring both would fail closed forever on
@@ -480,8 +524,8 @@ there is not.
     What the verb PRINTS is bounded by `ClaudeSessionJoinSummary`, the single
     mapper the dogfood record also uses: an arm name, the resolver's own
     content-free abstention categories, an origin CLASS, a terminal NAME, and
-    two Bools — never a marker, session id, pane id, socket path, host, nonce,
-    or workspace path. The registry is per-process and therefore empty in that
+    two Bools — never a session id, pane id, socket path, host, nonce, or
+    workspace path. The registry is per-process and therefore empty in that
     process; the verb says so as its first cause rather than letting the arms'
     resulting declines read as a surface failure.
   - Screen capture is split by ROUTE (`TerminalScreenAllowlist`): raw AX grid
@@ -545,15 +589,14 @@ there is not.
     runs into a directory name the user does not have — while Cf (bidi
     overrides, zero-width joiners) is dropped, being zero-width already.
     It names the joined workspace rather than showing a checkmark because a
-    mis-join — a stale marker winning, the residual documented on the marker and
-    remote-herdr arms — is invisible to a boolean and obvious next to the wrong
-    repo's name.
+    mis-join — the residuals documented on the cmux and remote-herdr arms — is
+    invisible to a boolean and obvious next to the wrong repo's name.
     The badge travels as a PARAMETER of `startSession`, never a later setter:
     starting a session resets the panel, so a badge pushed before it was wiped
     and one pushed after depended on an order nothing enforced. It is always
     already known there — the join resolves before the realtime socket connects,
     and the panel opens after it.
-  - Lookups abstain rather than guess: no marker, unknown, stale, or ambiguous
+  - Lookups abstain rather than guess: no match, unknown, stale, or ambiguous
     means no context. There is deliberately no sole-session or cwd heuristic —
     it is wrong precisely when it matters.
   - Transcripts are never scraped (the publisher drops `transcript_path`), and a
@@ -615,9 +658,10 @@ there is not.
   squatter on 8473 receives the remote's bearer token before anything rejects
   it, so the user must learn it is there. What the squatter does NOT get is a
   path into the prompt: the remote shim's stdout gate (post.sh) rejects any
-  200 body that is not exactly the listener's allowlisted control JSON, and a
-  forged well-formed marker is inert because markers are broker-allocated —
-  an unknown one joins nothing. Note also what is NOT defensible: a
+  200 body that is not exactly the listener's one control JSON body — which
+  since 2026-09-05 is a CONSTANT (`{"suppressOutput":true}`) carrying no field
+  that could put a byte on a terminal, so there is no variable part left for a
+  squatter to aim at. Note also what is NOT defensible: a
   malicious process running as the user on the REMOTE host can still read
   `~/.claude/` and therefore the plugin's token no matter what we do. Say so
   rather than implying the token bounds it.

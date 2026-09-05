@@ -1474,12 +1474,23 @@ final class ClaudeRemotePluginManifestTests: XCTestCase {
         )
     }
 
-    func testReadmeDocumentsTheTmuxTitlePassthroughCaveat() throws {
-        try assertReadmeHasLine(containing: "tmux")
-        try assertReadmeHasLine(containing: "set-titles on", "the fix, not just the symptom")
+    func testReadmeDocumentsWhatTheTitleMarkerRemovalCost() throws {
+        // The tmux/screen title-passthrough caveat that used to be asserted
+        // here is gone with the mechanism it described (2026-09-05). What
+        // replaces it is the honest statement of the loss, because a user
+        // whose plain-ssh session stopped attaching context deserves to find
+        // that out from the README rather than from a silent absence.
         try assertReadmeHasLine(
-            containing: "unjoined",
-            "and what you lose without it: the screen join, not the off-screen context"
+            containing: "has no join any more",
+            "the accepted cost has to be stated, not implied"
+        )
+        try assertReadmeHasLine(
+            containing: "from your shell profile",
+            "tell the user what they can now delete from their setup"
+        )
+        XCTAssertFalse(
+            try readmeLines().contains { $0.contains("set-titles on") },
+            "configuring a multiplexer's title passthrough is advice for a mechanism that no longer exists"
         )
     }
 

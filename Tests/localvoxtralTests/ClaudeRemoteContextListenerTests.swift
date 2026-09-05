@@ -8,8 +8,9 @@ import XCTest
 /// The listener, driven over a real loopback socket with real HTTP bytes.
 ///
 /// A unit test over the parser proves the parser; this proves the thing that
-/// actually binds a port — the ordering of auth against body reads, the caps, the
-/// deadline, and the marker coming back out. The client below is deliberately a
+/// actually binds a port — the ordering of auth against body reads, the caps,
+/// the deadline, and the one constant body that comes back out. The client
+/// below is deliberately a
 /// raw POSIX socket rather than URLSession: half these cases are requests
 /// URLSession would refuse to send.
 final class ClaudeRemoteContextListenerTests: XCTestCase {
