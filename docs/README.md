@@ -22,6 +22,9 @@ directory instead, never here.
 - [Architecture](architecture.md) — the subsystem map
 - [Dogfood builds](dogfood-builds.md) — the instrumented build variant: what
   it captures, how to install and identify one
+- [Remote Claude Code context over SSH](remote-claude-context.md) — enrolling
+  a host, what the token does and does not authorize, the per-Mac forward
+  port, manual checks, and uninstalling.
 
 ## Agent-facing deep guides (`docs/agent/`)
 

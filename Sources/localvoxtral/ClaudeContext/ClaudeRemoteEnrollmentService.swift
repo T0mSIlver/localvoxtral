@@ -42,7 +42,19 @@ public protocol ClaudeRemoteSSHConfigFileSystem: Sendable {
 /// remote Claude Code host. Both mutation paths are injected so tests cannot
 /// reach the real home directory or a real SSH host.
 public struct ClaudeRemoteEnrollmentService: Sendable {
-    /// Everything the user needs, in the order they need it.
+    /// The text the user actually has to apply, and nothing else.
+    ///
+    /// Everything here is comment-free (owner rule, 2026-08-04: "commands you
+    /// have to copy-paste have comments, that's just dumb — display it in the
+    /// app or not at all"). The explanations that used to ride along as `#`
+    /// lines are now either decided by the app (verification — see
+    /// `executeVerification`) or written as prose in
+    /// `docs/remote-claude-context.md`. The only `#` lines that survive are the
+    /// snippet's BEGIN/END delimiters, which are functional: the idempotent
+    /// replace and `sshConfigForwardsPort` both key on them.
+    ///
+    /// `verifyCommands`, `uninstallCommands` and `notes` are gone with them —
+    /// the first became an in-app action, the other two are documentation.
     public struct SetupPlan: Sendable, Equatable {
         /// Idempotent `~/.ssh/config` block. Contains NO token — the credential
         /// belongs to the Claude plugin's userConfig on the remote host, not to
@@ -50,16 +62,80 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         public var sshConfigSnippet: String
         /// Run on the REMOTE host, once.
         public var remoteCommands: [String]
-        /// Run to check the setup without changing it.
-        public var verifyCommands: [String]
         /// Bring an already-enrolled host to the plugin version this app ships.
         /// Carries no token: `claude plugin update` keeps the config the install
         /// already stored.
         public var updateCommands: [String]
-        /// Undo, in order: remote first, then local revocation.
-        public var uninstallCommands: [String]
-        /// Caveats worth reading before the first surprise.
-        public var notes: [String]
+    }
+
+    /// One interpreted verdict from `executeVerification`.
+    ///
+    /// The interpretation IS the deliverable. The old flow shipped three
+    /// copy-paste commands wrapped in a dozen `#` lines explaining how to read
+    /// their output — including that HTTP 401 is the success signal — and the
+    /// field failure (2026-07-26) was a person reading healthy output as broken
+    /// anyway. Anything the app can decide, the app decides.
+    ///
+    /// `detail` is DERIVED, never captured: see `executeVerification` for why
+    /// no byte of a probe's output may travel in it.
+    public struct VerificationCheck: Sendable, Equatable, Identifiable {
+        public enum Kind: String, Sendable, Equatable {
+            /// The `RemoteForward` is live and our listener answered through it.
+            case tunnel
+            /// The remote plugin is installed under the host's `claude`.
+            case plugin
+        }
+
+        /// Which fact produced this verdict.
+        ///
+        /// Only a verdict decided by the LOCAL listener may be re-evaluated
+        /// after the probes return: a listener that rebinds mid-probe makes our
+        /// own squatter call wrong, but it cannot turn "the host said nothing"
+        /// into "the host answered" (review finding, round 3).
+        public enum Decider: String, Sendable, Equatable {
+            /// The host's answer decided it — the code, the sentinel, or ssh.
+            case remote
+            /// This Mac's listener state decided it, and only that.
+            case localListener
+        }
+
+        public var kind: Kind
+        public var passed: Bool
+        public var decidedBy: Decider = .remote
+        /// One short sentence for the sheet. Never command output.
+        public var summary: String
+        /// The actionable half, when there is one. Also short — a second line
+        /// in the sheet, not a paragraph.
+        public var hint: String?
+        /// Synthesized diagnostics for the alert and the log. Contains only
+        /// strings this process composed: exit codes, status codes, and
+        /// constants we own.
+        public var detail: String
+
+        public init(
+            kind: Kind,
+            passed: Bool,
+            summary: String,
+            hint: String? = nil,
+            detail: String = "",
+            decidedBy: Decider = .remote
+        ) {
+            self.kind = kind
+            self.passed = passed
+            self.summary = summary
+            self.hint = hint
+            self.detail = detail
+            self.decidedBy = decidedBy
+        }
+
+        public var id: String { kind.rawValue }
+
+        public var title: String {
+            switch kind {
+            case .tunnel: return "Connection & tunnel"
+            case .plugin: return "Claude plugin on the host"
+            }
+        }
     }
 
     public struct RunResult: Sendable, Equatable {
@@ -229,14 +305,9 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
                 remoteForwardPort: remoteForwardPort
             ),
             remoteCommands: remoteCommands(token: token, remoteForwardPort: remoteForwardPort),
-            verifyCommands: verifyCommands(
-                sshHostAlias: sshHostAlias, remoteForwardPort: remoteForwardPort
-            ),
             updateCommands: updateCommands(
                 sshHostAlias: sshHostAlias, remoteForwardPort: remoteForwardPort
-            ),
-            uninstallCommands: uninstallCommands(host: host, sshHostAlias: sshHostAlias),
-            notes: notes(listenerPort: listenerPort, remoteForwardPort: remoteForwardPort)
+            )
         )
     }
 
@@ -276,6 +347,17 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// The marked ssh-config block for one host. Token-free by construction,
     /// which is what lets the plugin-update path regenerate it for a host whose
     /// one-time token is long gone.
+    ///
+    /// Comment-free apart from the two delimiters, which are load-bearing:
+    /// `applySSHConfigSnippet` and `sshConfigForwardsPort` both find the block
+    /// by them, which is what makes a second apply a no-op instead of a
+    /// duplicate `Host` stanza. Everything the twelve deleted `#` lines said —
+    /// that `remoteForwardPort` is THIS Mac's allocation and must equal the
+    /// plugin's `port` option, that another Mac gets a different one so the two
+    /// can never fight over one bind, and why `ExitOnForwardFailure` stays `no`
+    /// at the cost of a silently absent tunnel — is prose in
+    /// `docs/remote-claude-context.md`, and the silence it warns about is what
+    /// `executeVerification` exists to break.
     public static func sshConfigSnippet(
         host: ClaudeRemoteHost,
         sshHostAlias: String,
@@ -285,19 +367,7 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         """
         \(blockBegin(hostID: host.id))
         Host \(sshHostAlias)
-            # \(remoteForwardPort) is THIS Mac's allocated port on the remote host, and
-            # it must match the plugin's `port` option there. Another Mac gets a
-            # different one, so the two can never fight over one bind — the fight
-            # nobody wins twice: the first connection keeps the forward and the
-            # second delivers this host's events, and its token, to the wrong Mac.
             RemoteForward \(remoteForwardPort) 127.0.0.1:\(listenerPort)
-            # ExitOnForwardFailure no (the default) is deliberate: if the remote
-            # already has \(remoteForwardPort) bound — now only by another session from
-            # this same Mac — `yes` would refuse to open the SSH session at all.
-            # A dictation nicety must never cost you the shell. The cost of `no`
-            # is that a failed forward is silent: the hooks get connection
-            # refused, fail open, and you simply get no context. The verify step
-            # below is how you check.
             ExitOnForwardFailure no
         \(blockEnd(hostID: host.id))
         """
@@ -324,51 +394,6 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             // history. See `notes` — it is a habit, not a guarantee.
             " claude plugin install \(remotePluginReference) --config '\(tokenConfigKey)=\(token)'"
                 + " --config '\(portConfigKey)=\(remoteForwardPort)'",
-        ]
-    }
-
-    /// The comments are part of the deliverable: these commands are run by a
-    /// person, and the field failure was a person reading healthy output as
-    /// broken — a forward "failure" that just means another session already
-    /// holds the tunnel, and a 401 that is the success signal. Say so in the
-    /// output they are pasting, not in a note they have scrolled past.
-    static func verifyCommands(sshHostAlias: String, remoteForwardPort: UInt16) -> [String] {
-        [
-            // -v because a failed RemoteForward is otherwise invisible when
-            // ExitOnForwardFailure is `no`. The `grep -q … && echo` shape is
-            // deliberate: a person pasting this must be told the FIX, not handed
-            // an OpenSSH debug line to interpret. The message is deliberately
-            // apostrophe-free so it survives single-quoted shell.
-            "# Forward check — does this Mac actually own port \(remoteForwardPort) over there?",
-            "# THREE outcomes, not two. A one-line grep for the forwarding warning",
-            "# gets both edges wrong, which was measured rather than assumed",
-            "# (2026-08-04, OpenSSH 10.0p2 against a live sshd):",
-            "#   * your own live session to this host already holds the port, so a",
-            "#     fresh probe requesting it fails to bind — a healthy setup that a",
-            "#     grep reports as contention (ssh still exits 0),",
-            "#   * an unreachable host, bad key or host-key change never gets far",
-            "#     enough to request a forward, so the grep finds nothing and a",
-            "#     naive check calls it clean (ssh exits 255).",
-            "# So: exit status first, warning second.",
-            "out=$(ssh -v \(sshHostAlias) true 2>&1); rc=$?; "
-                + "if [ $rc -ne 0 ]; then "
-                + "echo \"localvoxtral: could not reach \(sshHostAlias) at all (ssh exit $rc) — fix the connection first; "
-                + "this says nothing about the port.\"; "
-                + "elif echo \"$out\" | grep -q '\(ClaudeRemoteForwardPort.forwardFailureSignature)'; then "
-                + "echo \"localvoxtral: port \(remoteForwardPort) is already bound on \(sshHostAlias). "
-                + "If you have another session open to \(sshHostAlias) from THIS Mac, that is expected and healthy — "
-                + "the first one keeps the forward. If you do not, "
-                + "\(ClaudeRemoteForwardPort.contentionMessage(port: remoteForwardPort, host: sshHostAlias)) "
-                + "and this Mac is getting no context from it.\"; "
-                + "else echo \"localvoxtral: port \(remoteForwardPort) forwards cleanly to this Mac.\"; fi",
-            "# Non-interactive SSH skips your shell rc, so claude can be off PATH",
-            "# here even though it runs fine when you are logged in.",
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)claude plugin list'",
-            "# 401 = SUCCESS: the tunnel is up and localvoxtral answered (an",
-            "# unauthenticated probe must be refused). A connection error means",
-            "# no live session holds the forward right now.",
-            "ssh \(sshHostAlias) 'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST "
-                + "-H \"Content-Type: application/json\" -d \"{}\" http://127.0.0.1:\(remoteForwardPort)/v1/hook/SessionStart'",
         ]
     }
 
@@ -401,91 +426,20 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         ]
     }
 
-    /// Bring an enrolled host to the plugin version this app ships.
+    /// Bring an enrolled host to the plugin version this app ships, as a
+    /// copyable set.
     ///
-    /// The comments are part of the deliverable, as in `verifyCommands`: nothing
-    /// else in the product tells the user that re-running setup is not an
-    /// update, and a host silently left on an old plugin fails open — i.e. it
-    /// looks like nothing at all.
+    /// Comment-free like everything else the user pastes. What the seven `#`
+    /// lines used to say is on the docs page and in one short line beside the
+    /// panel: re-running setup is NOT an update (on Claude Code 2.1.220
+    /// `plugin install` exits 0 with "already installed" and `marketplace add`
+    /// does not refresh a clone it has), the stored token is preserved, and the
+    /// third command only points this host at THIS Mac's allocated port —
+    /// required once for a host enrolled before per-Mac ports, harmless after.
     static func updateCommands(sshHostAlias: String, remoteForwardPort: UInt16) -> [String] {
-        let commands = remotePluginUpdateCommands(remoteForwardPort: remoteForwardPort)
-        return [
-            "# Run after updating localvoxtral on this Mac. This set is the ONLY",
-            "# way a plugin fix reaches a host that is already enrolled: on Claude",
-            "# Code 2.1.220, re-running `plugin install` exits 0 with \"already",
-            "# installed\" and leaves the old version in place, and `marketplace",
-            "# add` does not refresh a clone it already has. Your token is kept —",
-            "# `plugin update` preserves the stored config, and the third command",
-            "# below sets only the port (install merges config per key).",
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(commands[0])'",
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(commands[1])'",
-            "# Point this host at THIS Mac's allocated port \(remoteForwardPort). Required once",
-            "# for a host enrolled before per-Mac ports; harmless every time after.",
-            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\(commands[2])'",
-        ]
-    }
-
-    static func uninstallCommands(host: ClaudeRemoteHost, sshHostAlias: String) -> [String] {
-        [
-            "ssh \(sshHostAlias) 'claude plugin uninstall \(remotePluginReference)'",
-            "ssh \(sshHostAlias) 'claude plugin marketplace remove \(ClaudePluginAssets.marketplaceName)'",
-            "# then remove the \(blockBegin(hostID: host.id)) block from ~/.ssh/config",
-            "# and revoke \(host.id) in localvoxtral — revocation is what actually",
-            "# stops the host: the token dies here, not on the remote.",
-        ]
-    }
-
-    static func notes(listenerPort: UInt16, remoteForwardPort: UInt16) -> [String] {
-        [
-            "This Mac forwards port \(remoteForwardPort) on the remote host to localvoxtral on "
-                + "127.0.0.1:\(listenerPort) here. The ssh-config block and the plugin's `port` option "
-                + "must name the same \(remoteForwardPort): change one without the other and the hooks "
-                + "post into a port nothing forwards — which fails open, i.e. looks like nothing at "
-                + "all. The setup commands always carry both halves.",
-            "The port is allocated per Mac, so a second Mac enrolled against this same host gets a "
-                + "different one and the two can never contend for one bind. What they still share is "
-                + "the host: one Claude Code install stores one `port`, so the most recently installed "
-                + "config is the Mac that receives events. The other simply sees no traffic — no "
-                + "longer someone else's events, and never someone else's token.",
-            "The token authorizes remote context only. A host that presents it can never "
-                + "make localvoxtral read a local file: the listener tags every session it accepts "
-                + "as remote regardless of what the payload says, and a remote cwd cannot be turned "
-                + "into a local path.",
-            "Revoking the host in localvoxtral is the real off switch and takes effect immediately. "
-                + "Uninstalling the remote plugin only stops it asking.",
-            "The copied install command puts the token in the remote shell's history unless your shell is "
-                + "set to ignore space-prefixed commands (HISTCONTROL=ignorespace / setopt "
-                + "HIST_IGNORE_SPACE). If it landed there, rotate the token — that is what rotation "
-                + "is for.",
-            "tmux/screen: a multiplexer owns the window title, so the OSC 2 marker the hook writes "
-                + "does not reach Ghostty by default and the pane stays unjoined. `set -g "
-                + "set-titles on` in ~/.tmux.conf lets tmux pass the title through. Without it you "
-                + "still get the off-screen context (prompt, cwd, files) — you just do not get the "
-                + "screen join.",
-            "Plain `ssh` with no enrollment keeps working exactly as before: no tunnel, no token, no "
-                + "hooks, and the pane stays screen-only and unjoined.",
-            "The plugin needs only POSIX `sh` and `curl` on the remote host — no localvoxtral binary. "
-                + "Its hooks fail open silently when either is missing, the tunnel is down, or the app "
-                + "is not answering: you simply get no context, never a blocked Claude turn.",
-            "While a session holds the tunnel and localvoxtral is not running, ssh itself — on this "
-                + "Mac — prints `connect_to 127.0.0.1 port \(listenerPort): failed.` into the remote "
-                + "terminal on every dial; the plugin cannot silence another process. So after a "
-                + "failed dial its hooks back off for five minutes; prompt submits still try, so "
-                + "context returns with your first prompt once the app is back.",
-            "A second concurrent SSH session from this Mac to the same host will fail to bind "
-                + "\(remoteForwardPort) on the remote and — because ExitOnForwardFailure is `no` — will "
-                + "connect anyway with no tunnel. The first session keeps the forward, and the verify "
-                + "step above is how you tell that apart from a broken setup.",
-            "Hook events only reach this Mac while something holds the tunnel — normally one of "
-                + "your own SSH sessions. Sessions a harness starts on the host (t3 code, "
-                + "`claude remote-control` services, any headless runner) have no such terminal, so "
-                + "their context goes nowhere. Turn on \"Keep the tunnel open\" in this host's row "
-                + "and the app holds the forward itself, reconnecting as needed.",
-            "One-click setup connects with forwarding disabled (the tunnel belongs to your real "
-                + "sessions, not setup) and first resolves `claude` from common install locations — "
-                + "non-interactive SSH shells often lack the user-local PATH entries an interactive "
-                + "login has.",
-        ]
+        remotePluginUpdateCommands(remoteForwardPort: remoteForwardPort).map {
+            "ssh \(sshHostAlias) '\(nonInteractiveClaudePathPrefix)\($0)'"
+        }
     }
 
     // MARK: - SSH config editing
@@ -618,8 +572,67 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
     /// never as "fine": assuming a block is current is exactly how a plugin
     /// gets a port this Mac does not forward.
     public func sshConfigForwardsPort(_ port: UInt16, hostID: String) -> Bool? {
-        guard let sshConfigFileSystem else { return nil }
-        guard let state = try? sshConfigFileSystem.readState(),
+        guard let lines = markedBlockLines(hostID: hostID) else {
+            // Two different nils, deliberately: no seam (or unreadable config)
+            // is "cannot tell"; a readable config with no block for this host
+            // is a definite "does not forward it".
+            return sshConfigFileSystem == nil ? nil : configIsReadable() ? false : nil
+        }
+        return lines.contains { line in
+            forwardedPort(inLine: line) == port
+        }
+    }
+
+    /// What this host's block currently forwards, as three distinguishable
+    /// answers — because "cannot tell", "no block yet" and "forwards 8473" lead
+    /// to three different things a user should do (review finding, round 3).
+    public enum SSHConfigForwardState: Sendable, Equatable {
+        /// No filesystem seam, or the config could not be read.
+        case unknown
+        /// The config is readable and has no block for this host.
+        case absent
+        /// The block's first `RemoteForward` binds this port on the remote.
+        case forwards(UInt16)
+    }
+
+    /// Read-only: what `~/.ssh/config` says THIS host's tunnel is, right now.
+    ///
+    /// The check needs this because the plan in front of the user names this
+    /// Mac's CURRENT allocation, while the config on disk may still forward the
+    /// port an earlier install (or the pre-#215 shared 8473) wrote. Probing the
+    /// plan's port in that state reports "no tunnel is live" about a tunnel that
+    /// is perfectly alive on the other port — a misdiagnosis of a setup that
+    /// merely needs step 1 re-run.
+    public func sshConfigForwardState(hostID: String) -> SSHConfigForwardState {
+        guard let lines = markedBlockLines(hostID: hostID) else {
+            return sshConfigFileSystem != nil && configIsReadable() ? .absent : .unknown
+        }
+        // The FIRST one wins, exactly like OpenSSH's own first-match-wins.
+        for line in lines {
+            if let port = forwardedPort(inLine: line) { return .forwards(port) }
+        }
+        return .absent
+    }
+
+    /// Whether we actually READ a config, as opposed to failing to find one.
+    ///
+    /// Strict on purpose, and unchanged from the behavior this refactor
+    /// replaced: a config that does not exist yet, or does not decode, is
+    /// "cannot tell" rather than "does not forward it". Callers regenerate on
+    /// cannot-tell, and a redundant idempotent rewrite costs nothing while a
+    /// wrong "already current" costs a silently dead host.
+    private func configIsReadable() -> Bool {
+        guard let sshConfigFileSystem,
+              let state = try? sshConfigFileSystem.readState(),
+              let data = state.configData
+        else { return false }
+        return String(data: data, encoding: .utf8) != nil
+    }
+
+    /// This host's delimited block, or nil when there is none to read.
+    private func markedBlockLines(hostID: String) -> ArraySlice<String>? {
+        guard let sshConfigFileSystem,
+              let state = try? sshConfigFileSystem.readState(),
               let data = state.configData,
               let text = String(data: data, encoding: .utf8)
         else { return nil }
@@ -630,13 +643,15 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
             $0.trimmingCharacters(in: .whitespaces) == begin
         }), let endIndex = lines[beginIndex...].firstIndex(where: {
             $0.trimmingCharacters(in: .whitespaces) == end
-        }) else { return false }
-        return lines[beginIndex...endIndex].contains { line in
-            let fields = line.trimmingCharacters(in: .whitespaces)
-                .split(separator: " ", omittingEmptySubsequences: true)
-            guard fields.count >= 2, fields[0] == "RemoteForward" else { return false }
-            return fields[1] == "\(port)"
-        }
+        }) else { return nil }
+        return lines[beginIndex...endIndex]
+    }
+
+    private func forwardedPort(inLine line: String) -> UInt16? {
+        let fields = line.trimmingCharacters(in: .whitespaces)
+            .split(separator: " ", omittingEmptySubsequences: true)
+        guard fields.count >= 2, fields[0] == "RemoteForward" else { return nil }
+        return UInt16(fields[1])
     }
 
     // MARK: - Execution (opt-in only)
@@ -896,6 +911,442 @@ public struct ClaudeRemoteEnrollmentService: Sendable {
         }
         Log.claudeContext.info("Claude remote \(label, privacy: .public) execution completed")
         return completed
+    }
+
+    // MARK: - Verification (read-only, opt-in only)
+
+    /// Per PROBE, not for the run as a whole.
+    ///
+    /// A shared deadline starved the second probe: a host that stalls the
+    /// tunnel check to its limit left the plugin check with zero budget, so one
+    /// slow answer silently became two failures and the user learned nothing
+    /// about the plugin (review finding, round 1).
+    public static let defaultVerificationTimeout: TimeInterval = 20
+
+    /// Check an enrolled host's setup and return interpreted verdicts.
+    ///
+    /// Read-only by construction: it writes nothing locally (no filesystem seam
+    /// is touched) and runs nothing on the host that changes state — one curl
+    /// against the forwarded port and one `claude plugin list`.
+    ///
+    /// **No probe output ever leaves this method.** Not in `summary`, not in
+    /// `hint`, not in `detail` — every string returned is composed here from
+    /// exit codes, the HTTP status code, and constants we own. The reason is
+    /// specific and was a review finding: `claude plugin list` prints the
+    /// plugin's stored userConfig, which after a rotation is the host's OLD
+    /// token — a value this process no longer knows and therefore cannot
+    /// redact. A redactor cannot save a secret it has never seen, so the output
+    /// simply does not travel. Matching against it is free (that is input, not
+    /// output); emitting any part of it is not, which is why even the matched
+    /// plugin line is reported as the constant name we searched for.
+    ///
+    /// - Parameters:
+    ///   - remoteForwardPort: the port the hooks post to ON THE HOST — this
+    ///     Mac's allocation, the same number the snippet's `RemoteForward`
+    ///     binds and the plugin's `port` option stores. Probing 8473 here would
+    ///     check a tunnel that no longer exists on a per-Mac install.
+    ///   - listenerIsBound: whether localvoxtral itself is listening on this
+    ///     Mac right now. A 401 proves only that SOMETHING on this Mac answered
+    ///     through the tunnel: when our own bind failed, a squatter on the
+    ///     listener port receives the forwarded request and its 401 would
+    ///     otherwise read as a pass (review finding, round 1).
+    ///
+    /// Throws only `.executionNotConfigured` (no runner injected — the default)
+    /// and `.invalidHostAlias`. Everything else becomes a failed check, so one
+    /// broken probe cannot hide the other's answer.
+    /// - Parameter staleAllocatedPort: pass this Mac's allocation when
+    ///   `remoteForwardPort` came from `~/.ssh/config` and the two disagree.
+    ///   The probe follows the CONFIG — that is the tunnel that exists — and
+    ///   every tunnel verdict names the mismatch instead of reporting a healthy
+    ///   old tunnel as a dead new one.
+    public func executeVerification(
+        sshHostAlias: String,
+        remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort,
+        listenerIsBound: Bool,
+        staleAllocatedPort: UInt16? = nil,
+        timeout: TimeInterval = defaultVerificationTimeout
+    ) throws -> [VerificationCheck] {
+        Log.claudeContext.info("Claude remote verification requested")
+        guard let runner else {
+            Log.claudeContext.error("Claude remote verification failed: runner not configured")
+            throw ServiceError.executionNotConfigured
+        }
+        guard Self.isValidHostAlias(sshHostAlias) else {
+            Log.claudeContext.error("Claude remote verification failed: invalid host alias")
+            throw ServiceError.invalidHostAlias
+        }
+
+        let tunnel = runCheck(
+            kind: .tunnel,
+            runner: runner,
+            timeout: timeout,
+            // NO ClearAllForwardings, unlike every other connection this type
+            // opens: this probe's whole point is that the alias's own `Host`
+            // block asks for the RemoteForward. Clearing it would test a tunnel
+            // the probe itself just disabled — and pass or fail for the wrong
+            // reason.
+            argv: ["ssh", "-o", "BatchMode=yes", "--", sshHostAlias, "/bin/sh", "-s"],
+            standardInput: Self.tunnelProbeScript(remoteForwardPort: remoteForwardPort)
+        ) {
+            Self.tunnelCheck(
+                result: $0,
+                sshHostAlias: sshHostAlias,
+                remoteForwardPort: remoteForwardPort,
+                listenerIsBound: listenerIsBound,
+                staleAllocatedPort: staleAllocatedPort
+            )
+        }
+
+        let plugin = runCheck(
+            kind: .plugin,
+            runner: runner,
+            timeout: timeout,
+            // ClearAllForwardings here for the same reason `execute` uses it:
+            // this connection has no use for the tunnel, and competing for a
+            // port the user's own session already holds only produces a scary
+            // warning (field report 2026-07-26).
+            argv: [
+                "ssh", "-o", "BatchMode=yes", "-o", "ClearAllForwardings=yes", "--",
+                sshHostAlias, "/bin/sh", "-s",
+            ],
+            standardInput: Self.remoteScript(command: "claude plugin list")
+        ) { Self.pluginCheck(result: $0, sshHostAlias: sshHostAlias) }
+
+        Log.claudeContext.info(
+            "Claude remote verification completed: tunnel=\(tunnel.passed, privacy: .public) plugin=\(plugin.passed, privacy: .public)"
+        )
+        return [tunnel, plugin]
+    }
+
+    private func runCheck(
+        kind: VerificationCheck.Kind,
+        runner: Runner,
+        timeout: TimeInterval,
+        argv: [String],
+        standardInput: Data,
+        interpret: (RunResult) -> VerificationCheck
+    ) -> VerificationCheck {
+        do {
+            return interpret(
+                try runner(
+                    Invocation(argv: argv, standardInput: standardInput, timeout: max(timeout, 0))
+                )
+            )
+        } catch let failure as RunnerFailure {
+            switch failure {
+            case .timedOut(let seconds, _):
+                return VerificationCheck(
+                    kind: kind,
+                    passed: false,
+                    summary: "The check timed out after \(Int(seconds))s.",
+                    hint: "The host did not answer in time.",
+                    detail: "Probe timed out after \(Int(seconds))s."
+                )
+            case .outputTooLarge(let capBytes, _):
+                return VerificationCheck(
+                    kind: kind,
+                    passed: false,
+                    summary: "The host produced too much output to read.",
+                    detail: "Probe output exceeded \(capBytes / 1024) KB and was stopped."
+                )
+            }
+        } catch {
+            // Deliberately not `String(describing: error)`: a runner's error is
+            // not this method's output to vouch for, and the invariant above is
+            // absolute.
+            return VerificationCheck(
+                kind: kind,
+                passed: false,
+                summary: "The check could not run.",
+                detail: "The probe could not be started."
+            )
+        }
+    }
+
+    /// Unauthenticated probe of the forwarded listener.
+    ///
+    /// The script always exits 0 and prints one token, so a non-zero exit can
+    /// only mean SSH itself failed. Without that, curl's connect failure (exit
+    /// 7) and ssh's own failure (255) would be the same observation, and "no
+    /// tunnel" would be reported as "cannot reach the host".
+    /// Prefix that FRAMES the probe's own output.
+    ///
+    /// The probe's answer is one line this script printed, and nothing else on
+    /// the connection may be mistaken for it: a login banner, an rc-file echo,
+    /// or a MOTD ending in `401` would otherwise decide a verdict. Parsing takes
+    /// the FIRST `LVX_`-framed line and ignores every other byte.
+    ///
+    /// The residual, stated plainly: a HOSTILE host can print the frame itself
+    /// and say whatever it likes about its own reachability. That is accepted —
+    /// it is a machine the user enrolled, lying about whether it can reach them,
+    /// with no mutation and no credential consequence on either side (the probe
+    /// sends none and writes nothing). Framing exists to stop ACCIDENTS, not to
+    /// authenticate the host.
+    static let probeFramePrefix = "LVX_"
+    /// Framed answer carrying the HTTP status code the host observed.
+    static let httpFramePrefix = "LVX_HTTP:"
+    /// Printed when the host has no `curl`. A missing curl and a refused
+    /// connection both produce "nothing came back" otherwise, and they have
+    /// completely different fixes — the plugin's shim IS curl, so a host
+    /// without it can never deliver context no matter how healthy the tunnel.
+    static let missingCurlSentinel = "LVX_NO_CURL"
+
+    static func tunnelProbeScript(remoteForwardPort: UInt16) -> Data {
+        Data("""
+        set -u
+        command -v curl >/dev/null 2>&1 || { printf '%s\\n' '\(missingCurlSentinel)'; exit 0; }
+        code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:\(remoteForwardPort)/v1/hook/SessionStart 2>/dev/null) || code=000
+        [ -n "$code" ] || code=000
+        printf '\(httpFramePrefix)%s\\n' "$code"
+
+        """.utf8)
+    }
+
+    /// The first framed line, or nil when the probe never spoke.
+    static func framedProbeAnswer(in output: String) -> String? {
+        output
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix(probeFramePrefix) }
+    }
+
+    /// The local half of the tunnel verdict, as its own value.
+    ///
+    /// Shared by the capture-time check and the interpretation-time
+    /// reconciliation so the two can never drift into different copy for the
+    /// same situation.
+    static func squatterTunnelCheck(remoteForwardPort: UInt16) -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: false,
+            summary: "Something else answered on port \(remoteForwardPort).",
+            hint: "localvoxtral is not listening on this Mac, so the reply came from "
+                + "whatever holds the port. Fix that first, then check again.",
+            detail: "HTTP 401 arrived while this Mac's listener was not bound.",
+            // The ONLY verdict this Mac decides by itself, and therefore the
+            // only one a later listener read may revisit.
+            decidedBy: .localListener
+        )
+    }
+
+    /// The 401 pass, as its own value — the counterpart `reconciled` restores
+    /// when the listener turns out to have been ours after all.
+    static func passingTunnelCheck() -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: true,
+            summary: "Tunnel is up and localvoxtral answered.",
+            detail: "HTTP 401 (the expected refusal of an unauthenticated probe).",
+            decidedBy: .localListener
+        )
+    }
+
+    /// Re-apply the local half of the tunnel verdict after the probes returned.
+    ///
+    /// `listenerIsBound` is read TWICE on purpose — once before the probes are
+    /// launched and once here, after up to a full timeout of detached ssh work
+    /// (review finding, round 2). The window cuts BOTH ways, which is why this
+    /// is not a one-way downgrade (review finding, round 3):
+    ///
+    /// - bound at launch, gone by the time it answers → the 401 came from
+    ///   whoever took the port, so a pass becomes the squatter verdict;
+    /// - unbound at launch, bound by the time it answers (a Retry that
+    ///   succeeded, the squatter quitting) → the 401 was genuinely ours, and
+    ///   pinning the squatter call would tell a user to fix something they
+    ///   already fixed.
+    ///
+    /// Only `decidedBy == .localListener` verdicts move. Everything else
+    /// described what the HOST said, and this Mac's listener cannot make "curl
+    /// is missing over there" or "the host said nothing" any less true.
+    public static func reconciled(
+        _ checks: [VerificationCheck],
+        remoteForwardPort: UInt16,
+        listenerIsBound: Bool
+    ) -> [VerificationCheck] {
+        checks.map { check in
+            guard check.kind == .tunnel, check.decidedBy == .localListener else { return check }
+            return listenerIsBound
+                ? passingTunnelCheck()
+                : squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
+        }
+    }
+
+    /// The tunnel exists on a port this Mac no longer allocates.
+    ///
+    /// Not a pass: the enrollment in front of the user names `allocatedPort`,
+    /// and half of the setup is on the other one. Not a failure of the tunnel
+    /// either — it says what is actually true over there, then names the one
+    /// step that fixes it (review finding, round 3).
+    static func staleConfigTunnelCheck(
+        probedPort: UInt16,
+        allocatedPort: UInt16,
+        tunnelIsUp: Bool
+    ) -> VerificationCheck {
+        VerificationCheck(
+            kind: .tunnel,
+            passed: false,
+            summary: tunnelIsUp
+                ? "Tunnel is up on port \(probedPort), which is no longer this Mac's port."
+                : "No tunnel is live on port \(probedPort), and that is not this Mac's port either.",
+            hint: "Your ~/.ssh/config still forwards \(probedPort). Re-run step 1 to move it to "
+                + "\(allocatedPort), then step 2 so the host posts there too.",
+            detail: "The check followed ~/.ssh/config (port \(probedPort)) rather than this "
+                + "install's allocation (port \(allocatedPort))."
+        )
+    }
+
+    /// - Parameter staleAllocatedPort: non-nil when the probe followed
+    ///   `~/.ssh/config` to a port that is NOT this Mac's allocation. Every
+    ///   verdict then says so, because "the tunnel on 8473 is fine" is the
+    ///   right answer to the wrong question until step 1 is re-run.
+    static func tunnelCheck(
+        result: RunResult,
+        sshHostAlias: String,
+        remoteForwardPort: UInt16,
+        listenerIsBound: Bool,
+        staleAllocatedPort: UInt16? = nil
+    ) -> VerificationCheck {
+        guard result.succeeded else {
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: false,
+                summary: "Could not reach \(sshHostAlias) over SSH.",
+                hint: "Run `ssh \(sshHostAlias) true` in a terminal to see why.",
+                detail: "ssh exited with code \(result.exitCode)."
+            )
+        }
+
+        // Only our own framed line decides anything; everything else the
+        // connection printed is ignored by construction.
+        let answer = framedProbeAnswer(in: result.message)
+
+        if answer == missingCurlSentinel {
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: false,
+                summary: "curl is missing on \(sshHostAlias).",
+                hint: "The plugin's hooks are a curl one-liner. Install curl there.",
+                detail: "The probe reported no curl on the host."
+            )
+        }
+
+        // A code is three digits or it is not a code. Anything else — including
+        // no framed line at all, which means the script never got to print one
+        // — is "nothing answered", not a status.
+        let code = answer
+            .flatMap { $0.hasPrefix(httpFramePrefix) ? String($0.dropFirst(httpFramePrefix.count)) : nil }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .flatMap { $0.count == 3 && $0.allSatisfy(\.isNumber) ? $0 : nil }
+
+        // A tunnel on a port this Mac no longer allocates is its own answer,
+        // whichever way the probe came back: reporting only "up" or "nothing"
+        // would describe a port the enrollment in front of the user does not
+        // name.
+        if let staleAllocatedPort {
+            switch code {
+            case "401":
+                return staleConfigTunnelCheck(
+                    probedPort: remoteForwardPort,
+                    allocatedPort: staleAllocatedPort,
+                    tunnelIsUp: listenerIsBound
+                )
+            case "000", nil:
+                return staleConfigTunnelCheck(
+                    probedPort: remoteForwardPort,
+                    allocatedPort: staleAllocatedPort,
+                    tunnelIsUp: false
+                )
+            default:
+                break
+            }
+        }
+
+        switch code {
+        case "401":
+            // 401 is the pass — an unauthenticated probe MUST be refused — but
+            // only half of it. It proves the request crossed the tunnel and
+            // something on this Mac answered; that the something was us is the
+            // caller's fact, not the host's, and `reconciled` re-checks it after
+            // the probes return.
+            guard listenerIsBound else {
+                return squatterTunnelCheck(remoteForwardPort: remoteForwardPort)
+            }
+            return passingTunnelCheck()
+        case "000", nil:
+            return listenerIsBound
+                ? VerificationCheck(
+                    kind: .tunnel,
+                    passed: false,
+                    summary: "No tunnel is live right now.",
+                    hint: "The forward exists only while an SSH session to \(sshHostAlias) is open.",
+                    detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort)."
+                )
+                : VerificationCheck(
+                    kind: .tunnel,
+                    passed: false,
+                    summary: "Nothing answered, and localvoxtral is not listening here.",
+                    hint: "Fix the listener on this Mac first — this check cannot tell you "
+                        + "anything about the tunnel until it is bound.",
+                    detail: "Nothing answered on the host's 127.0.0.1:\(remoteForwardPort), "
+                        + "and this Mac's listener was not bound."
+                )
+        case .some(let code):
+            return VerificationCheck(
+                kind: .tunnel,
+                passed: false,
+                summary: "Something else answered on port \(remoteForwardPort).",
+                hint: "Only localvoxtral should answer there. Find what holds the port and quit it.",
+                // Three digits this process validated, not remote text passed
+                // through.
+                detail: "The reply was HTTP \(code)."
+            )
+        }
+    }
+
+    static func pluginCheck(result: RunResult, sshHostAlias: String) -> VerificationCheck {
+        // `contains` reads the output; nothing below emits it. See
+        // `executeVerification` for why that line is absolute here.
+        // BOTH halves, not either: 127 is the shell's generic "command not
+        // found" and any command in a future probe could produce it, while the
+        // message is OUR preamble speaking. Claiming "Claude Code is not
+        // installed" off a bare 127 sends the user to install something that is
+        // already there (review finding, round 3).
+        if result.exitCode == 127, result.message.contains("'claude' was not found") {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "Claude Code was not found on \(sshHostAlias).",
+                hint: "Install Claude Code there, or put it on the non-interactive SSH PATH.",
+                detail: "The host's non-interactive shell could not resolve `claude` "
+                    + "(the probe's own PATH resolver reported it and exited 127)."
+            )
+        }
+        guard result.succeeded else {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "Could not list plugins on \(sshHostAlias).",
+                hint: "Run `ssh \(sshHostAlias) true` in a terminal to see whether the host is reachable.",
+                detail: "`claude plugin list` exited with code \(result.exitCode)."
+            )
+        }
+        guard result.message.contains(ClaudePluginAssets.remotePluginName) else {
+            return VerificationCheck(
+                kind: .plugin,
+                passed: false,
+                summary: "The plugin is not installed on \(sshHostAlias).",
+                hint: "Run step 2 on the host.",
+                detail: "`claude plugin list` did not name \(ClaudePluginAssets.remotePluginName)."
+            )
+        }
+        return VerificationCheck(
+            kind: .plugin,
+            passed: true,
+            summary: "The plugin is installed.",
+            // The constant we searched for, never the line we found it in: that
+            // line can carry the plugin's stored token.
+            detail: "`claude plugin list` named \(ClaudePluginAssets.remotePluginName)."
+        )
     }
 
     /// PATH resolution for `claude` under `ssh <host> /bin/sh -s`.

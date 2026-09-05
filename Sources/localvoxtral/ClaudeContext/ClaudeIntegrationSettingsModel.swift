@@ -47,6 +47,22 @@ public struct ClaudeEnrollmentActionFailure: Sendable, Equatable {
     }
 }
 
+/// The verification counterpart of `ClaudeEnrollmentActionAttempt`: verdicts,
+/// or the reason there are none. Same shape for the same reason — `any Error`
+/// is not Sendable and cannot come back out of the detached task.
+public struct ClaudeVerificationAttempt: Sendable, Equatable {
+    public var checks: [ClaudeRemoteEnrollmentService.VerificationCheck]
+    public var failure: ClaudeEnrollmentActionFailure?
+
+    public init(
+        checks: [ClaudeRemoteEnrollmentService.VerificationCheck],
+        failure: ClaudeEnrollmentActionFailure?
+    ) {
+        self.checks = checks
+        self.failure = failure
+    }
+}
+
 public struct ClaudeEnrollmentActionAttempt: Sendable, Equatable {
     public var steps: [ClaudeRemoteEnrollmentService.ExecutionStep]
     public var failure: ClaudeEnrollmentActionFailure?
@@ -200,6 +216,14 @@ public final class ClaudeIntegrationSettingsModel {
         /// one-click execution, which would otherwise hand a fresh token to
         /// whichever machine happened to answer to a guessed name.
         public var canRunRemoteSetup: Bool = true
+        /// The port the snippet forwards ON THE HOST — this Mac's allocation.
+        /// Carried here rather than re-read at check time so verification can
+        /// only ever probe the port the config in front of the user names.
+        public var remoteForwardPort: UInt16 = ClaudeRemoteForwardPort.legacyPort
+        /// Sample sheet for screenshots. Every mutating entry point refuses a
+        /// preview presentation, so it can neither write ~/.ssh/config, spawn
+        /// ssh, nor touch the registry — see `presentPreviewPlan`.
+        public var isPreview: Bool = false
     }
 
     /// The two commands that bring one enrolled host to the plugin version this
@@ -307,7 +331,27 @@ public final class ClaudeIntegrationSettingsModel {
     /// and got re-confirmed (field report 2026-07-26).
     public private(set) var enrollmentResultsAction: EnrollmentAction?
     public private(set) var isPerformingEnrollmentAction = false
+    /// Step 3's verdicts. Empty until the user presses Check Setup — a check
+    /// nobody asked for would spawn ssh on opening a sheet.
+    public private(set) var verificationChecks: [ClaudeRemoteEnrollmentService.VerificationCheck] = []
+    public private(set) var isPerformingVerification = false
     public var alert: DetailAlert?
+
+    /// One busy flag for the sheet, so no two actions can interleave: an
+    /// insertion, a remote setup, a plugin update, and a check all drive the
+    /// same seams and the same result rows.
+    public var isEnrollmentBusy: Bool { isPerformingEnrollmentAction || isPerformingVerification }
+
+    /// Whether THIS Mac currently holds the listener port.
+    ///
+    /// `.listening` and nothing else: `.portConflict` and `.failed` both mean
+    /// the port is not ours, which is exactly the case a forwarded 401 must not
+    /// pass. Read at two different moments by `runVerification`, so it is one
+    /// property rather than two copies of the same expression.
+    var listenerIsBound: Bool {
+        guard let listener, listener.isListening else { return false }
+        return listenerStatus == .listening(port: listener.boundPort)
+    }
 
     /// What the cmux control socket last told us, as one short sentence in the
     /// pane. Written by the join resolver on every attempt, so a user who
@@ -363,6 +407,9 @@ public final class ClaudeIntegrationSettingsModel {
     private let performEnrollmentAsync:
         @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]) async
             -> ClaudeEnrollmentActionAttempt
+    private let performVerificationAsync:
+        @Sendable (@escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]) async
+            -> ClaudeVerificationAttempt
     /// Injected wall clock, read once per refresh to age the host rows. No
     /// `Date()` in the view, and no timer: the rows are rebuilt when the pane
     /// appears and after every action that touches a host.
@@ -418,6 +465,20 @@ public final class ClaudeIntegrationSettingsModel {
                 }
             }.value
         },
+        performVerificationAsync: @escaping @Sendable (
+            @escaping @Sendable () throws -> [ClaudeRemoteEnrollmentService.VerificationCheck]
+        ) async -> ClaudeVerificationAttempt = { body in
+            await Task.detached(priority: .userInitiated) {
+                do {
+                    return ClaudeVerificationAttempt(checks: try body(), failure: nil)
+                } catch {
+                    return ClaudeVerificationAttempt(
+                        checks: [],
+                        failure: ClaudeEnrollmentActionFailure(error)
+                    )
+                }
+            }.value
+        },
         now: @escaping @Sendable () -> Date = { Date() },
         // Defaults to the legacy shared port: a caller that has not been taught
         // about per-Mac allocation describes exactly the pre-#215 setup, which
@@ -432,6 +493,7 @@ public final class ClaudeIntegrationSettingsModel {
         self.enrollmentService = enrollmentService
         self.performAsync = performAsync
         self.performEnrollmentAsync = performEnrollmentAsync
+        self.performVerificationAsync = performVerificationAsync
         self.now = now
         self.remoteForwardPort = remoteForwardPort
         self.cmuxPasswords = cmuxPasswords
@@ -693,12 +755,14 @@ public final class ClaudeIntegrationSettingsModel {
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
             enrollmentResultsAction = nil
+            verificationChecks = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
                 sshHostAlias: alias,
                 plan: plan,
-                isRotation: false
+                isRotation: false,
+                remoteForwardPort: remoteForwardPort
             )
             enrollLabel = ""
             enrollSSHAlias = ""
@@ -731,13 +795,15 @@ public final class ClaudeIntegrationSettingsModel {
             enrollmentConfirmation = nil
             enrollmentStepStatuses = []
             enrollmentResultsAction = nil
+            verificationChecks = []
             presentedPlan = EnrollmentPresentation(
                 host: enrollment.host,
                 token: enrollment.token,
                 sshHostAlias: alias ?? Self.unknownAliasPlaceholder,
                 plan: plan,
                 isRotation: true,
-                canRunRemoteSetup: alias != nil
+                canRunRemoteSetup: alias != nil,
+                remoteForwardPort: remoteForwardPort
             )
             refreshHosts()
             // Rotation reinstates a revoked host, so it can be a 0→1 transition.
@@ -814,6 +880,7 @@ public final class ClaudeIntegrationSettingsModel {
         enrollmentConfirmation = nil
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+        verificationChecks = []
     }
 
     /// Show one host's plugin-update commands in its row.
@@ -823,7 +890,7 @@ public final class ClaudeIntegrationSettingsModel {
     /// 2.1.220), so re-running enrollment does nothing and a host stays on a
     /// plugin the app has since fixed — silently, because the hooks fail open.
     public func requestPluginUpdate(hostID: String) {
-        guard !isPerformingEnrollmentAction,
+        guard !isEnrollmentBusy,
               let host = hosts.first(where: { $0.id == hostID })
         else { return }
         // The ENROLLED alias, never the label: a host named `prod` may be
@@ -892,10 +959,11 @@ public final class ClaudeIntegrationSettingsModel {
     public func requestPluginUpdateRun() {
         guard let presentation = presentedPluginUpdate,
               presentation.canRun,
-              !isPerformingEnrollmentAction
+              !isEnrollmentBusy
         else { return }
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+        verificationChecks = []
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .updateRemotePlugin(hostID: presentation.hostID),
             title: presentation.sshConfigSnippet == nil
@@ -911,8 +979,12 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     public func requestSSHConfigInsertion() {
-        guard let presentation = presentedPlan, !isPerformingEnrollmentAction else { return }
+        guard let presentation = presentedPlan, !isEnrollmentBusy, !presentation.isPreview else { return }
         enrollmentStepStatuses = []
+        // The verdicts described the setup BEFORE this change. Leaving them up
+        // beside a fresh result reads as if they described the state after it
+        // (review finding, round 3).
+        verificationChecks = []
         enrollmentResultsAction = nil
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .insertSSHConfig,
@@ -928,10 +1000,12 @@ public final class ClaudeIntegrationSettingsModel {
               // A placeholder alias must not reach ssh: one-click would hand
               // the new token to whatever answers to a name we invented.
               presentation.canRunRemoteSetup,
-              !isPerformingEnrollmentAction
+              !isEnrollmentBusy,
+              !presentation.isPreview
         else { return }
         enrollmentStepStatuses = []
         enrollmentResultsAction = nil
+        verificationChecks = []
         enrollmentConfirmation = EnrollmentConfirmation(
             action: .runRemoteSetup,
             title: "Run these commands on the SSH host?",
@@ -962,7 +1036,7 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     public func confirmEnrollmentAction() async {
-        guard let confirmation = enrollmentConfirmation, !isPerformingEnrollmentAction else { return }
+        guard let confirmation = enrollmentConfirmation, !isEnrollmentBusy else { return }
         switch confirmation.action {
         case .insertSSHConfig, .runRemoteSetup:
             await performPlanAction(confirmation)
@@ -974,7 +1048,10 @@ public final class ClaudeIntegrationSettingsModel {
     }
 
     private func performPlanAction(_ confirmation: EnrollmentConfirmation) async {
-        guard let presentation = presentedPlan else { return }
+        // Belt and braces: a preview sheet cannot raise a confirmation in the
+        // first place, and if one somehow existed it would run against a host
+        // the registry has never heard of.
+        guard let presentation = presentedPlan, !presentation.isPreview else { return }
         let service = enrollmentService
         let work: @Sendable () throws -> [ClaudeRemoteEnrollmentService.ExecutionStep]
         switch confirmation.action {
@@ -1126,6 +1203,200 @@ public final class ClaudeIntegrationSettingsModel {
         case .updateRemotePlugin: return "Remote Claude Code plugin"
         case .configureHerdrPanel: return "Remote herdr panel"
         }
+    }
+
+    // MARK: - Step 3: check the setup
+
+    /// Run the read-only checks and publish their verdicts.
+    ///
+    /// This replaced three copy-paste commands wrapped in a dozen comment lines
+    /// telling the user how to read their output. It needs no confirmation
+    /// step, unlike step 1 and step 2: it writes nothing, on either machine.
+    ///
+    /// The local half of the tunnel verdict is decided HERE, because it is a
+    /// fact about this Mac: a 401 arriving through the forward proves only that
+    /// something on this side answered, and when our own bind failed that
+    /// something is the squatter holding the port (review finding, round 1).
+    public func runVerification() async {
+        guard let presentation = presentedPlan,
+              !isEnrollmentBusy,
+              !presentation.isPreview,
+              // Same gate as one-click setup, for the same reason: with no
+              // alias on file the sheet shows a placeholder, and checking
+              // `your-ssh-host` would report on whatever machine happens to
+              // answer to that name — a wrong answer that looks like an answer
+              // (review finding, round 2).
+              presentation.canRunRemoteSetup
+        else { return }
+        isPerformingVerification = true
+        verificationChecks = []
+        defer { isPerformingVerification = false }
+
+        let service = enrollmentService
+        let alias = presentation.sshHostAlias
+        // Probe the tunnel that EXISTS, not the one the plan describes.
+        //
+        // The plan names this install's current allocation, but `~/.ssh/config`
+        // may still forward what an earlier install — or the pre-#215 shared
+        // 8473 — wrote there, and that is the port the user's live sessions are
+        // actually binding. Probing the plan's port in that state answers "no
+        // tunnel is live" about a tunnel that is perfectly alive, turning a
+        // one-step fix into a mystery (review finding, round 3). A read-only
+        // scan of this host's own block settles it; when the config is absent
+        // or unreadable there is nothing better than the plan's port.
+        let allocated = presentation.remoteForwardPort
+        let configured = service.sshConfigForwardState(hostID: presentation.host.id)
+        let port: UInt16
+        let staleAllocatedPort: UInt16?
+        switch configured {
+        case .forwards(let configuredPort) where configuredPort != allocated:
+            port = configuredPort
+            staleAllocatedPort = allocated
+        case .forwards, .absent, .unknown:
+            port = allocated
+            staleAllocatedPort = nil
+        }
+        let listenerWasBoundAtLaunch = listenerIsBound
+        let attempt = await performVerificationAsync {
+            try service.executeVerification(
+                sshHostAlias: alias,
+                remoteForwardPort: port,
+                listenerIsBound: listenerWasBoundAtLaunch,
+                staleAllocatedPort: staleAllocatedPort
+            )
+        }
+
+        // Same late-result guard as `performPlanAction`, for the same reason:
+        // the sheet can be dismissed — and replaced by a rotation that REUSES
+        // the host id — while ssh is still running.
+        guard presentedPlan == presentation else { return }
+
+        if let failure = attempt.failure {
+            verificationChecks = []
+            alert = DetailAlert(
+                title: "Check setup",
+                detail: Self.verificationFailureDetail(failure)
+            )
+            Log.claudeContext.error(
+                "Claude remote verification failed: \(failure.describedError, privacy: .public)"
+            )
+            return
+        }
+
+        // No redaction step, and none is possible: after a rotation the token a
+        // host still has configured is one this process no longer knows. The
+        // service therefore never puts probe output in a check at all, which is
+        // the only form of that guarantee that survives rotation.
+        //
+        // The listener fact is read again HERE, on the main actor, after the
+        // probes returned: the value handed to the service is up to a full
+        // timeout old, and a listener that died in the meantime leaves the port
+        // to whoever takes it next — whose 401 is indistinguishable from ours
+        // over the wire. The ✓ requires bound at both moments (review finding,
+        // round 2).
+        verificationChecks = ClaudeRemoteEnrollmentService.reconciled(
+            attempt.checks,
+            remoteForwardPort: port,
+            listenerIsBound: listenerIsBound
+        )
+
+        let failed = verificationChecks.filter { !$0.passed }
+        guard !failed.isEmpty else { return }
+        // Owner rule: the sheet shows one short line per check; the diagnostics
+        // belong in the alert and the log.
+        alert = DetailAlert(
+            title: "Check setup",
+            detail: failed
+                .map { check in
+                    let hint = check.hint.map { " \($0)" } ?? ""
+                    return check.detail.isEmpty
+                        ? "\(check.title): \(check.summary)\(hint)"
+                        : "\(check.title): \(check.summary)\(hint)\n\n\(check.detail)"
+                }
+                .joined(separator: "\n\n")
+        )
+        Log.claudeContext.error(
+            "Claude remote verification reported \(failed.count, privacy: .public) failed check(s)"
+        )
+    }
+
+    /// Why a check could not run at all.
+    ///
+    /// Deliberately NOT routed through `enrollmentFailureDetail`: that one is
+    /// written for an action that writes ("SSH setup exited with…"), and it is
+    /// keyed on an `EnrollmentAction` a check does not have. Verification can
+    /// only throw two things, and everything else here is a "should not happen"
+    /// that must still say something true.
+    static func verificationFailureDetail(_ failure: ClaudeEnrollmentActionFailure) -> String {
+        switch failure.serviceError {
+        case .executionNotConfigured:
+            return "Checking the setup is not available in this build."
+        case .invalidHostAlias:
+            return "This host has no usable SSH alias, so there is nothing to check."
+        default:
+            return "The check could not run."
+        }
+    }
+
+    // MARK: - Screenshot preview
+
+    /// Hidden debug default that arms the sample enrollment sheet.
+    ///
+    /// `debug.` prefixed like `debug.log_realtime_deltas`: not a product
+    /// preference, no UI, and never surfaced in Settings. It exists so
+    /// `scripts/capture-readme-assets.sh` can photograph a sheet that would
+    /// otherwise require enrolling a real host and burning a real token.
+    public static let enrollmentSheetPreviewDefaultsKey = "debug.enrollment_sheet_preview"
+
+    public static func isEnrollmentSheetPreviewArmed(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        defaults.bool(forKey: Self.enrollmentSheetPreviewDefaultsKey)
+    }
+
+    /// Present a sample sheet for screenshots.
+    ///
+    /// Nothing here is real: the host is not in the registry, the token is
+    /// visibly fake, and `isPreview` makes every mutating entry point refuse.
+    /// A preview therefore cannot write `~/.ssh/config`, spawn ssh, or change
+    /// the enrolled-host list — the guards are in the model, so the view cannot
+    /// forget one.
+    public func presentPreviewPlan() {
+        guard presentedPlan == nil else { return }
+        let host = ClaudeRemoteHost(
+            id: "preview0",
+            label: "build-host",
+            sshHostAlias: "build-host",
+            createdAt: Date(timeIntervalSince1970: 0),
+            lastSeenAt: nil,
+            revokedAt: nil
+        )
+        // Token-shaped so the sheet's layout is honest, and unmistakably not a
+        // credential. It is long enough for `ClaudeRemoteTokenRedaction` to
+        // treat it as one, so the step-2 preview redacts it exactly as it would
+        // redact a real token.
+        let token = "lvx-preview-" + String(repeating: "0", count: 31)
+        guard let plan = try? ClaudeRemoteEnrollmentService.plan(
+            host: host,
+            sshHostAlias: "build-host",
+            token: token,
+            listenerPort: listener?.boundPort ?? ClaudeRemoteListenerLimits.default.port,
+            remoteForwardPort: remoteForwardPort
+        ) else { return }
+        enrollmentConfirmation = nil
+        enrollmentStepStatuses = []
+        enrollmentResultsAction = nil
+        verificationChecks = []
+        presentedPlan = EnrollmentPresentation(
+            host: host,
+            token: token,
+            sshHostAlias: "build-host",
+            plan: plan,
+            isRotation: false,
+            remoteForwardPort: remoteForwardPort,
+            isPreview: true
+        )
+        Log.claudeContext.info("Claude remote enrollment sheet presented in preview mode")
     }
 
     public static func redactedRemoteCommands(for presentation: EnrollmentPresentation) -> String {
