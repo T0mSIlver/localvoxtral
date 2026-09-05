@@ -1,0 +1,267 @@
+name: Hosted TCC Probe
+
+# One-shot RESEARCH PROBE, not a lane. It answers a single question: can the UI
+# tier (scripts/ui-smoke.sh, scripts/capture-readme-assets.sh) run on an
+# ephemeral GitHub-HOSTED macOS runner instead of the owner's personal MacBook,
+# whose self-hosted runner needs the machine awake, unlocked, on AC, and
+# hand-granted Accessibility + Screen Recording in System Settings.
+#
+# Background (read out of actions/runner-images@main, not inferred):
+#   - images/macos/scripts/build/configure-tccdb-macos.sh bakes auth_value=2
+#     rows into BOTH TCC databases for /bin/bash and /usr/bin/osascript:
+#     kTCCServiceAccessibility, kTCCServiceScreenCapture, kTCCServicePostEvent,
+#     kTCCServiceAppleEvents (-> com.apple.systemevents), and (system db, bash
+#     only) kTCCServiceSystemPolicyAllFiles, i.e. Full Disk Access.
+#   - configure-autologin.sh auto-logs-in a console user with
+#     autoLoginUserScreenLocked=false; configure-machine.sh sets
+#     `pmset -a sleep 0 disksleep 0 displaysleep 0` and runs
+#     `automationmodetool enable-automationmode-without-authentication`.
+#   - kTCCServiceMicrophone is granted ONLY to the hosted-compute agent and the
+#     provisioner, never to bash/osascript, so the dictation half of the tier is
+#     expected to be out of reach. The runtime-TCC-write step measures how far.
+#
+# WHAT EACH STEP DECIDES
+#   1  Hosted-only guard ..... aborts if this ever lands on the owner's Mac.
+#   2  TCC preflight ......... THE DECISIVE ONE. ui-smoke.sh preflights with
+#                              `swift file.swift` (interpreted). TCC attributes a
+#                              grant to the RESPONSIBLE process, and whether a
+#                              swift-spawned child inherits /bin/bash's grant is
+#                              unresolved, so all three invocation shapes print
+#                              adjacently: interpreted, compiled, osascript-
+#                              spawned. If the interpreted shape reports true,
+#                              ui-smoke.sh runs unmodified.
+#   3  Environment facts ..... GUI/Aqua session, WindowServer, console user,
+#                              autologin, and `csrutil status` (SIP status is
+#                              quoted nowhere public for the macOS 14+ images).
+#   4  TCC contents .......... proves the baked rows are present on the LIVE
+#                              image, not merely in the build script.
+#   5  System Events ......... AppleEvents + Accessibility + PostEvent end to
+#                              end, the way ui-smoke.sh drives the menu bar.
+#   6  screencapture ......... whether the framebuffer is real. Uploads the PNG:
+#                              a byte count is a proxy, the image is the answer.
+#   7  Audio inventory ....... whether an input device exists at all (upstream
+#                              reports an empty list on a large share of runs).
+#   8  Runtime TCC write ..... whether Full Disk Access on /bin/bash lets a
+#                              `run:` step add its own row. Research only.
+#   9  Package + ui-smoke .... the real drill, end to end.
+#
+# READING THE RESULT: every probe step carries `continue-on-error: true` on
+# purpose. A red step is a RESULT, not a breakage. This workflow collects
+# answers; it gates nothing. Do not "fix" it to go green -- read the log and the
+# uploaded artifact. Only the hosted-only guard may fail the job.
+
+on:
+  # Dispatch only, deliberately. No push, no pull_request, no schedule: someone
+  # runs this on purpose and reads it by hand.
+  workflow_dispatch:
+
+concurrency:
+  group: hosted-tcc-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [macos-15, macos-26]
+    # HOSTED RUNNERS ONLY -- never add `self-hosted` to this matrix.
+    # The self-hosted macOS runner is a launchd agent inside the OWNER'S
+    # PERSONAL GUI session (see .github/workflows/README.md). This workflow
+    # exists to find out whether the tier can escape that machine, and it reads
+    # TCC databases, posts synthetic events, screenshots the desktop and
+    # launches the packaged app -- none of which belongs on someone's personal
+    # Mac. The guard step below enforces this at runtime so the invariant
+    # survives a careless edit to this list.
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 25
+
+    steps:
+      # The ONLY step permitted to fail the job.
+      - name: Hosted-only guard
+        run: |
+          set -euo pipefail
+          if [[ "${RUNNER_ENVIRONMENT:-}" != "github-hosted" ]]; then
+            echo "::error::This probe must never run on a self-hosted runner. runner.environment=${RUNNER_ENVIRONMENT:-unset}"
+            exit 1
+          fi
+          echo "runner.environment=github-hosted, label=${{ matrix.image }}"
+
+      # ---------------------------------------------------------------------
+      # THE DECISIVE STEP. Deliberately first -- it needs nothing from the repo,
+      # so checkout comes later and this lands near the top of the log.
+      # ---------------------------------------------------------------------
+      - name: TCC preflight across all three invocation shapes
+        continue-on-error: true
+        run: |
+          set -x
+          cat > /tmp/lv-preflight.swift <<'SWIFT'
+          import ApplicationServices
+          import CoreGraphics
+          let ax = AXIsProcessTrusted()
+          let sc = CGPreflightScreenCaptureAccess()
+          print("AXIsProcessTrusted=\(ax) CGPreflightScreenCaptureAccess=\(sc)")
+          SWIFT
+          swiftc -O /tmp/lv-preflight.swift -o /tmp/lv-preflight
+
+          # Capture each shape's output, then print all three adjacently: the
+          # whole point is that the diff between them is unmissable.
+          interpreted="$(swift /tmp/lv-preflight.swift 2>&1)" || interpreted="FAILED: $interpreted"
+          compiled="$(/tmp/lv-preflight 2>&1)" || compiled="FAILED: $compiled"
+          viaosa="$(osascript -e 'do shell script "/tmp/lv-preflight"' 2>&1)" || viaosa="FAILED: $viaosa"
+
+          set +x
+          {
+            echo "=================== TCC PREFLIGHT RESULT ==================="
+            printf '  interpreted (swift file.swift -- what ui-smoke.sh does today)\n    %s\n' "$interpreted"
+            printf '  compiled    (swiftc, then run the binary)\n    %s\n' "$compiled"
+            printf '  osascript   (do shell script)\n    %s\n' "$viaosa"
+            echo "==========================================================="
+            echo "Both true on the interpreted line => scripts/ui-smoke.sh runs"
+            echo "unmodified. True only on the compiled line => ui-smoke.sh's"
+            echo "preflight must swiftc instead of interpret."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Environment facts (GUI session, WindowServer, SIP)
+        continue-on-error: true
+        run: |
+          set -x
+          sw_vers
+          uname -m
+          whoami
+          id
+          csrutil status || echo "csrutil unavailable"
+          automationmodetool || echo "automationmodetool unavailable"
+          # Is there an Aqua (GUI) launchd domain for this uid, or only a
+          # background session? AX and screencapture are dead without one.
+          launchctl print "gui/$(id -u)" 2>&1 | head -40 || echo "NO GUI DOMAIN"
+          pgrep -lx WindowServer || echo "NO WindowServer PROCESS VISIBLE"
+          stat -f%Su /dev/console
+          defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser || true
+          pmset -g | head -20 || true
+
+      - name: TCC database contents
+        continue-on-error: true
+        run: |
+          set -x
+          USER_DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          SYS_DB="/Library/Application Support/com.apple.TCC/TCC.db"
+          echo "--- user db schema ---"
+          sqlite3 "$USER_DB" ".schema access" || echo "USER DB UNREADABLE"
+          echo "--- user db rows ---"
+          sqlite3 "$USER_DB" "select service, client, client_type, auth_value from access order by service, client;" || echo "USER DB UNREADABLE"
+          echo "--- system db rows (sudo) ---"
+          sudo sqlite3 "$SYS_DB" "select service, client, client_type, auth_value from access order by service, client;" || echo "SYSTEM DB UNREADABLE"
+          echo "--- replayd approvals (macOS 15+ window-picker alert suppression) ---"
+          defaults read "$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist" || echo "NO APPROVALS PLIST"
+
+      - name: System Events UI scripting
+        continue-on-error: true
+        run: |
+          set -x
+          osascript -e 'tell application "System Events" to get name of every process whose background only is false'
+          osascript -e 'tell application "System Events" to count menu bar items of menu bar 1 of process "Finder"'
+          # Synthetic key event: this is the one that needs kTCCServicePostEvent.
+          osascript -e 'tell application "System Events" to key code 53'
+
+      - name: screencapture produces real pixels
+        continue-on-error: true
+        run: |
+          set -x
+          mkdir -p probe-out
+          # Captures land in the workspace, not /tmp: upload-artifact derives a
+          # common ancestor across its path list, and mixing /tmp with workspace
+          # paths buries the files under a synthetic root.
+          screencapture -x probe-out/full.png
+          ls -l probe-out/full.png
+          sips -g pixelWidth -g pixelHeight probe-out/full.png
+          # Weak proxy only -- a blank framebuffer compresses to near nothing.
+          # The uploaded PNG is the real answer; look at it.
+          if [[ "$(stat -f%z probe-out/full.png)" -lt 50000 ]]; then
+            echo "SUSPICIOUS: capture may be blank -- inspect the artifact"
+          fi
+          # Window-scoped capture, the route capture-readme-assets.sh uses.
+          osascript -e 'tell application "Finder" to activate'
+          sleep 2
+          cat > /tmp/lv-windows.swift <<'SWIFT'
+          import CoreGraphics
+          let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+          print("on-screen window count: \(list.count)")
+          for entry in list.prefix(20) {
+              let number = entry[kCGWindowNumber as String] ?? "?"
+              let owner = entry[kCGWindowOwnerName as String] ?? "?"
+              // A window NAME requires Screen Recording on macOS 15+. Owners
+              // present but every name missing means the grant did not land.
+              let name = entry[kCGWindowName as String] ?? "<no name>"
+              print("  \(number) \(owner) \(name)")
+          }
+          SWIFT
+          swift /tmp/lv-windows.swift
+
+      - name: Audio input inventory
+        continue-on-error: true
+        run: |
+          set -x
+          system_profiler SPAudioDataType
+          if command -v SwitchAudioSource >/dev/null 2>&1; then
+            SwitchAudioSource -a -t input
+          else
+            echo "switchaudio-osx not installed"
+          fi
+
+      - name: Runtime TCC write (research only, never a gate)
+        continue-on-error: true
+        run: |
+          set -x
+          # Does Full Disk Access on /bin/bash (kTCCServiceSystemPolicyAllFiles
+          # in the system db) let a `run:` step add its own row to the USER
+          # TCC.db? Answering that is the only purpose here.
+          #
+          # This is a MEASUREMENT, not a technique we are adopting. Even if it
+          # works it is undocumented, version-fragile (the access table's column
+          # set moves between macOS releases -- hence the explicit column list
+          # rather than a positional VALUES tuple), and tccd may cache the old
+          # answer. Nothing in a shipped lane should lean on it without a
+          # separate decision. A failure here is a clean "no", not a build break.
+          USER_DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          sqlite3 "$USER_DB" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified) VALUES ('kTCCServiceMicrophone', 'com.localvoxtral.app', 0, 2, 0, 1, 0, strftime('%s','now'));" || echo "USER TCC WRITE FAILED"
+          sqlite3 "$USER_DB" "select service, client, auth_value from access where client like '%localvoxtral%';" || true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package app bundle
+        continue-on-error: true
+        env:
+          # Hosted runners have no signing identity and no Metal toolchain, so
+          # the bundle is ad-hoc signed with both MLX helpers skipped -- exactly
+          # what ci.yml already does for fork PRs. ui-smoke.sh forces
+          # external_url mode, so it never needs a managed backend.
+          LOCALVOXTRAL_SKIP_POLISHD: "1"
+          LOCALVOXTRAL_SKIP_SPEECHD: "1"
+          LOCALVOXTRAL_REQUIRE_CODESIGN_IDENTITY: "0"
+        run: ./scripts/package_app.sh release
+
+      - name: Run the actual AX UI smoke
+        continue-on-error: true
+        run: |
+          mkdir -p logs probe-out
+          set -o pipefail
+          ./scripts/ui-smoke.sh 2>&1 | tee logs/ui-smoke.log
+
+      - name: Collect outputs
+        continue-on-error: true
+        if: always()
+        run: |
+          mkdir -p probe-out
+          if [[ -f logs/ui-smoke.log ]]; then cp logs/ui-smoke.log probe-out/ui-smoke.log; fi
+          ls -l probe-out || true
+
+      - name: Upload probe artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hosted-tcc-probe-${{ matrix.image }}
+          path: probe-out/
+          if-no-files-found: warn
+          retention-days: 14
