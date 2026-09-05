@@ -237,7 +237,7 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         )
 
         XCTAssertEqual(response.status, 401)
-        XCTAssertTrue(sessions.liveSessions().isEmpty, "no record, no marker, no session")
+        XCTAssertTrue(sessions.liveSessions().isEmpty, "no record, no session")
     }
 
     // MARK: - Happy path
@@ -726,8 +726,9 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
     }
 
     func testAnUnparseablePayloadIsAcceptedButIngestsNothing() throws {
-        // Authenticated, so we answer 200 — but there is no session to make and
-        // no marker to hand back. The hook prints nothing and the turn goes on.
+        // Authenticated, so we answer 200 — with the SAME constant body an
+        // accepted record gets, because the body is not a function of anything
+        // the request said. The hook prints it inertly and the turn goes on.
         try startListener()
         let body = Data("not json at all".utf8)
         var text = "POST /v1/hook/SessionStart HTTP/1.1\r\nAuthorization: Bearer \(token!)\r\n"
@@ -737,7 +738,11 @@ final class ClaudeRemoteContextListenerTests: XCTestCase {
         let object = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
         )
-        XCTAssertNil(object["terminalSequence"], "no session, no marker, nothing to write")
+        XCTAssertEqual(
+            Data(response.body.utf8), ClaudeRemoteHTTPCodec.hookResponseBody,
+            "a discarded record is byte-identical on the wire to an accepted one"
+        )
+        XCTAssertEqual(Set(object.keys), ["suppressOutput"])
         XCTAssertTrue(sessions.liveSessions().isEmpty)
     }
 
