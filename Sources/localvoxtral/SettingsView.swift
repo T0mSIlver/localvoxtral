@@ -144,27 +144,28 @@ private struct GeneralSettingsPane: View {
     var body: some View {
         SettingsPage(tab: .general) {
             SettingsGroup(title: "Permissions") {
-                PermissionRowsView(viewModel: viewModel)
+                // Wrapped rather than given the row insets itself: this view is
+                // shared verbatim with the onboarding wizard.
+                SettingsGroupRow {
+                    PermissionRowsView(viewModel: viewModel)
+                }
             }
 
             SettingsGroup(title: "App") {
-                SettingsFieldRow(title: "Copy final segment") {
+                SettingsFieldRow(
+                    title: "Copy final segment",
+                    help: "Copies to the clipboard on stop."
+                ) {
                     Toggle("", isOn: $settings.autoCopyEnabled)
                         .labelsHidden()
-                        .toggleStyle(.switch)
-
-                    SettingsHelpText("Copies to the clipboard on stop.")
                 }
 
-                SettingsFieldRow(title: "Setup") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button("Re-run Setup…") {
-                            viewModel.reRunOnboarding()
-                        }
-
-                        SettingsHelpText(
-                            "Reopen the first-launch setup wizard for permissions and downloads."
-                        )
+                SettingsFieldRow(
+                    title: "Setup",
+                    help: "Reopen the first-launch setup wizard for permissions and downloads."
+                ) {
+                    Button("Re-run Setup…") {
+                        viewModel.reRunOnboarding()
                     }
                 }
             }
@@ -176,11 +177,31 @@ private enum SettingsLayout {
     static let pageSpacing: CGFloat = 16
     static let pagePadding: CGFloat = 18
     static let sectionSpacing: CGFloat = 10
-    static let cardSpacing: CGFloat = 14
-    static let cardPadding: CGFloat = 16
+    /// Horizontal inset of a row inside its group card. Owned by the ROW, not
+    /// by the card: the dividers between rows have to run the full card width.
+    static let rowHorizontalPadding: CGFloat = 14
+    /// Keep this above 4pt. `SettingsGroup` hides the last row's trailing
+    /// divider by making the card 1pt shorter than its content and clipping;
+    /// with a smaller inset the last row's focus ring would reach into that
+    /// clipped pixel and be cut off.
+    static let rowVerticalPadding: CGFloat = 11
+    /// Gap between a row's label and its control.
     static let rowSpacing: CGFloat = 14
-    static let labelWidth: CGFloat = 128
-    static let cornerRadius: CGFloat = 18
+    /// Sliders report no intrinsic width, so a trailing control column has to
+    /// give them one.
+    static let sliderWidth: CGFloat = 190
+    /// Text fields are worse than sliders: no intrinsic width AND greedy, so in
+    /// an inline row's trailing column (`layoutPriority(1)`) an unbounded field
+    /// takes the whole card and starves the label to zero width (field report,
+    /// PR #201 review — the External URL rows rendered as tall empty bands).
+    ///
+    /// A CAP, not a fixed width: apply it as `.frame(maxWidth:)`. A greedy field
+    /// still fills to the cap wherever the card is wide enough (which, at the
+    /// Settings window's fixed 780pt, is everywhere), so the look is unchanged —
+    /// but a rigid width would crumple the label instead of the field if the
+    /// card ever got narrower.
+    static let textFieldWidth: CGFloat = 280
+    static let cornerRadius: CGFloat = 8
 }
 
 private struct ConnectionSettingsPane: View {
@@ -240,21 +261,38 @@ private struct ConnectionSettingsPane: View {
         PolishModelPickerSupport.entries(storedRepoID: settings.resolvedManagedLLMPolishingModel)
     }
 
+    /// Nil when the stored repo is not one of the offered entries — the row then
+    /// renders without an explanation, exactly as it did before.
+    private var managedPolishingModelHelp: String? {
+        guard
+            let selectedEntry = managedPolishingModelEntries.first(
+                where: { $0.repoID == settings.resolvedManagedLLMPolishingModel }
+            )
+        else { return nil }
+
+        return PolishModelPickerSupport.helpText(
+            for: selectedEntry,
+            isDownloaded: PolishModelCache.isDownloaded(
+                repoID: selectedEntry.repoID,
+                revision: selectedEntry.option?.revision
+            )
+        )
+    }
+
     var body: some View {
         SettingsPage(tab: .endpoints) {
             SettingsGroup(title: "Dictation") {
-                SettingsFieldRow(title: "Mode") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: dictationBackendModeBinding) {
-                            ForEach(BackendMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
+                SettingsFieldRow(
+                    title: "Mode",
+                    help: settings.dictationBackendMode.dictationDescription
+                ) {
+                    Picker("", selection: dictationBackendModeBinding) {
+                        ForEach(BackendMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-
-                        SettingsHelpText(settings.dictationBackendMode.dictationDescription)
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 switch settings.dictationBackendMode {
@@ -262,16 +300,19 @@ private struct ConnectionSettingsPane: View {
                     SettingsFieldRow(title: "Endpoint") {
                         TextField(settings.endpointPlaceholder, text: endpointBinding)
                             .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "Model") {
                         TextField(settings.modelPlaceholder, text: modelBinding)
                             .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "API key") {
                         SecureField("Required for remote providers", text: $settings.apiKey)
                             .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
                     SettingsFieldRow(title: "Memory limit") {
@@ -284,20 +325,17 @@ private struct ConnectionSettingsPane: View {
                         .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Step interval") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Picker("", selection: speechdStepCadenceBinding) {
-                                ForEach(SpeechdStepCadence.allCases) { cadence in
-                                    Text(cadence.displayName).tag(cadence)
-                                }
+                    SettingsFieldRow(
+                        title: "Step interval",
+                        help: "Lower values show words sooner; higher values use less compute."
+                    ) {
+                        Picker("", selection: speechdStepCadenceBinding) {
+                            ForEach(SpeechdStepCadence.allCases) { cadence in
+                                Text(cadence.displayName).tag(cadence)
                             }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-
-                            SettingsHelpText(
-                                "Lower values show words sooner; higher values use less compute."
-                            )
                         }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
                     }
 
                     ManagedBackendStatusRow(
@@ -308,34 +346,33 @@ private struct ConnectionSettingsPane: View {
             }
 
             SettingsGroup(title: "Polishing") {
-                SettingsFieldRow(title: "Mode") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: polishingBackendModeBinding) {
-                            ForEach(BackendMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
+                SettingsFieldRow(
+                    title: "Mode",
+                    help: settings.polishingBackendMode.polishingDescription
+                ) {
+                    Picker("", selection: polishingBackendModeBinding) {
+                        ForEach(BackendMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-
-                        SettingsHelpText(settings.polishingBackendMode.polishingDescription)
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
 
                 switch settings.polishingBackendMode {
                 case .externalURL:
-                    SettingsFieldRow(title: "Endpoint") {
+                    SettingsFieldRow(
+                        title: "Endpoint",
+                        help: "Enter a base URL (e.g. http://127.0.0.1:8080); "
+                            + "/v1/chat/completions is appended automatically. "
+                            + "A full …/v1/chat/completions URL still works."
+                    ) {
                         TextField(
                             "http://127.0.0.1:8080",
                             text: polishingEndpointBinding
                         )
                         .textFieldStyle(.roundedBorder)
-
-                        SettingsHelpText(
-                            "Enter a base URL (e.g. http://127.0.0.1:8080); "
-                                + "/v1/chat/completions is appended automatically. "
-                                + "A full …/v1/chat/completions URL still works."
-                        )
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "API key") {
@@ -344,6 +381,7 @@ private struct ConnectionSettingsPane: View {
                             text: $settings.llmPolishingAPIKey
                         )
                         .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
 
                     SettingsFieldRow(title: "Model") {
@@ -352,32 +390,17 @@ private struct ConnectionSettingsPane: View {
                             text: $settings.llmPolishingModel
                         )
                         .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: SettingsLayout.textFieldWidth)
                     }
                 case .managedLocal:
-                    SettingsFieldRow(title: "Model") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Picker("", selection: managedPolishingModelBinding) {
-                                ForEach(managedPolishingModelEntries) { entry in
-                                    Text(entry.label).tag(entry.repoID)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-
-                            if let selectedEntry = managedPolishingModelEntries.first(
-                                where: { $0.repoID == settings.resolvedManagedLLMPolishingModel }
-                            ) {
-                                SettingsHelpText(
-                                    PolishModelPickerSupport.helpText(
-                                        for: selectedEntry,
-                                        isDownloaded: PolishModelCache.isDownloaded(
-                                            repoID: selectedEntry.repoID,
-                                            revision: selectedEntry.option?.revision
-                                        )
-                                    )
-                                )
+                    SettingsFieldRow(title: "Model", help: managedPolishingModelHelp) {
+                        Picker("", selection: managedPolishingModelBinding) {
+                            ForEach(managedPolishingModelEntries) { entry in
+                                Text(entry.label).tag(entry.repoID)
                             }
                         }
+                        .pickerStyle(.menu)
+                        .labelsHidden()
                     }
 
                     ManagedBackendStatusRow(
@@ -569,6 +592,11 @@ private struct DictationSettingsPane: View {
                                 in: 0.1...0.8,
                                 step: 0.05
                             )
+                            // A Slider has no intrinsic width; in a trailing
+                            // control column it would collapse, so both sliders
+                            // in this pane are given the same explicit track.
+                            .frame(width: SettingsLayout.sliderWidth)
+
                             Text("\(Int(settings.modifierOnlyHoldDelay * 1000))ms")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.secondary)
@@ -576,7 +604,12 @@ private struct DictationSettingsPane: View {
                         }
                     }
                 } else {
-                    SettingsFieldRow(title: "Overlay Buffer") {
+                    // `.top`: the recorder is a 24pt bordered field with a button
+                    // beside it, the tallest inline control in the pane.
+                    SettingsFieldRow(
+                        title: "Overlay Buffer",
+                        controlAlignment: .top
+                    ) {
                         HStack(alignment: .center, spacing: 8) {
                             ShortcutRecorderField(
                                 shortcut: overlayBufferShortcutBinding,
@@ -593,7 +626,10 @@ private struct DictationSettingsPane: View {
                             .disabled(
                                 settings.overlayBufferShortcut == SettingsStore.defaultDictationShortcut)
                         }
-
+                    } footer: {
+                        // A footer, not a third item in the control column: a
+                        // validation sentence right-aligned under the recorder
+                        // wraps in a 200pt column and reads as unattached.
                         if let overlayValidationError {
                             SettingsInlineMessage(overlayValidationError, color: .red)
                         } else if settings.overlayBufferShortcut == nil {
@@ -604,7 +640,10 @@ private struct DictationSettingsPane: View {
                         }
                     }
 
-                    SettingsFieldRow(title: "Live Auto-Paste") {
+                    SettingsFieldRow(
+                        title: "Live Auto-Paste",
+                        controlAlignment: .top
+                    ) {
                         HStack(alignment: .center, spacing: 8) {
                             ShortcutRecorderField(
                                 shortcut: livePasteShortcutBinding,
@@ -621,7 +660,7 @@ private struct DictationSettingsPane: View {
                             }
                             .disabled(settings.livePasteShortcut == nil)
                         }
-
+                    } footer: {
                         if let livePasteValidationError {
                             SettingsInlineMessage(livePasteValidationError, color: .red)
                         } else if settings.livePasteShortcut == nil {
@@ -632,56 +671,55 @@ private struct DictationSettingsPane: View {
                         }
                     }
 
-                    SettingsFieldRow(title: "Shortcut behavior") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Picker("", selection: $settings.dictationShortcutMode) {
-                                ForEach(DictationShortcutMode.allCases) { mode in
-                                    Text(mode.displayName).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .labelsHidden()
-
-                            SettingsHelpText(settings.dictationShortcutMode.description)
-                        }
-                    }
-                }
-            }
-
-            SettingsGroup(title: "Overlay Buffer") {
-                SettingsFieldRow(title: "Font size") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 8) {
-                            Slider(
-                                value: $settings.overlayBufferFontSize,
-                                in: OverlayLayoutMetrics.minimumBodyFontSize
-                                    ... OverlayLayoutMetrics.maximumBodyFontSize,
-                                step: 1
-                            )
-                            Text("\(Int(settings.overlayBufferFontSize))pt")
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 44, alignment: .trailing)
-                        }
-
-                        SettingsHelpText("Scales the whole dictation overlay panel.")
-                    }
-                }
-            }
-
-            SettingsGroup(title: "Menu bar") {
-                SettingsFieldRow(title: "Output mode") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Picker("", selection: dictationOutputModeBinding) {
-                            ForEach(DictationOutputMode.allCases) { mode in
+                    SettingsFieldRow(
+                        title: "Shortcut behavior",
+                        help: settings.dictationShortcutMode.description
+                    ) {
+                        Picker("", selection: $settings.dictationShortcutMode) {
+                            ForEach(DictationShortcutMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-
-                        SettingsHelpText(settings.dictationOutputMode.description)
                     }
+                }
+            }
+
+            SettingsGroup(title: "Overlay Buffer") {
+                SettingsFieldRow(
+                    title: "Font size",
+                    help: "Scales the whole dictation overlay panel."
+                ) {
+                    HStack(spacing: 8) {
+                        Slider(
+                            value: $settings.overlayBufferFontSize,
+                            in: OverlayLayoutMetrics.minimumBodyFontSize
+                                ... OverlayLayoutMetrics.maximumBodyFontSize,
+                            step: 1
+                        )
+                        .frame(width: SettingsLayout.sliderWidth)
+
+                        Text("\(Int(settings.overlayBufferFontSize))pt")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+
+            SettingsGroup(title: "Menu bar") {
+                SettingsFieldRow(
+                    title: "Output mode",
+                    help: settings.dictationOutputMode.description
+                ) {
+                    Picker("", selection: dictationOutputModeBinding) {
+                        ForEach(DictationOutputMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
                 }
             }
         }
@@ -720,7 +758,6 @@ private struct TextProcessingSettingsPane: View {
                 SettingsFieldRow(title: "Exact match") {
                     Toggle("", isOn: $settings.replacementDictionaryEnabled)
                         .labelsHidden()
-                        .toggleStyle(.switch)
                         .help(
                             "In Live Auto-Paste, corrections briefly retype the last word in place. In apps that don't report the cursor position, avoid clicking elsewhere mid-dictation — a correction landing after the cursor moved can overwrite a few characters at the new position."
                         )
@@ -739,129 +776,104 @@ private struct TextProcessingSettingsPane: View {
                 }
 
                 Group {
-                    SettingsFieldRow(title: "Enable") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: llmPolishingEnabledBinding)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText("Overlay Buffer dictations only.")
-                        }
+                    SettingsFieldRow(
+                        title: "Enable",
+                        help: "Overlay Buffer dictations only."
+                    ) {
+                        Toggle("", isOn: llmPolishingEnabledBinding)
+                            .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Agent prompt profile in terminals") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.agentPolishProfileEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Agent-tuned instructions that trust the model's technical formatting. Clipboard safety checks remain active."
-                            )
-                        }
+                    SettingsFieldRow(
+                        title: "Agent prompt profile in terminals",
+                        help:
+                            "Agent-tuned instructions that trust the model's technical formatting. Clipboard safety checks remain active."
+                    ) {
+                        Toggle("", isOn: $settings.agentPolishProfileEnabled)
+                            .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Repo vocabulary from terminal") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.repoVocabularyEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
-                            )
-                        }
+                    SettingsFieldRow(
+                        title: "Repo vocabulary from terminal",
+                        help:
+                            "Reads file names from the git repo in your terminal to fix technical spellings. Local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.repoVocabularyEnabled)
+                            .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Use Claude Code terminal screen as polish context") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.terminalScreenContextEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            // Names the send, not just the benefit: when the
-                            // pane is joined to a live Claude Code session, part
-                            // of what is on screen is attached to the prompt
-                            // verbatim. "Fixes spellings" describes only the
-                            // matcher and would be consent obtained for the
-                            // smaller half.
-                            SettingsHelpText(
-                                "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Ghostty only, local polishing endpoints only."
-                            )
-                        }
+                    // Names the send, not just the benefit: when the pane is
+                    // joined to a live Claude Code session, part of what is on
+                    // screen is attached to the prompt verbatim. "Fixes
+                    // spellings" describes only the matcher and would be consent
+                    // obtained for the smaller half.
+                    SettingsFieldRow(
+                        title: "Use Claude Code terminal screen as polish context",
+                        help:
+                            "Reads file names and identifiers from your Claude Code terminal to fix technical spellings. When the terminal is running a Claude Code session, part of the text on screen is also sent to the polisher. Ghostty only, local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.terminalScreenContextEnabled)
+                            .labelsHidden()
                     }
 
                     // A row in the EXISTING group, never a new group: pane group
                     // structure is constant (owner rule, 2026-07-04).
-                    SettingsFieldRow(title: "Use Claude Code project files as polish context") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.claudeRepoContextEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            // Says what is SENT, not just what is gained: this
-                            // toggle attaches file contents and diffs, which the
-                            // vocabulary toggle above does not. Someone who
-                            // agreed to "spell my filenames right" has not
-                            // thereby agreed to this.
-                            //
-                            // All four things the toggle actually sends are
-                            // named. The prior request is the one a user would
-                            // least expect from a label about "project files",
-                            // and it is their own typed words. The remote clause
-                            // is worded to describe what the SESSION carries, not
-                            // a second behavior: a remote session sends the
-                            // excerpts its hooks already reported, and never
-                            // causes anything on this machine to be read.
-                            SettingsHelpText(
-                                "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in a supported terminal, or a Remote Control session in the focused browser tab; local polishing endpoints only."
-                            )
-                        }
+                    //
+                    // Says what is SENT, not just what is gained: this toggle
+                    // attaches file contents and diffs, which the vocabulary
+                    // toggle above does not. Someone who agreed to "spell my
+                    // filenames right" has not thereby agreed to this.
+                    //
+                    // All four things the toggle actually sends are named. The
+                    // prior request is the one a user would least expect from a
+                    // label about "project files", and it is their own typed
+                    // words. The remote clause is worded to describe what the
+                    // SESSION carries, not a second behavior: a remote session
+                    // sends the excerpts its hooks already reported, and never
+                    // causes anything on this machine to be read.
+                    SettingsFieldRow(
+                        title: "Use Claude Code project files as polish context",
+                        help:
+                            "Sends your uncommitted changes, the contents of files Claude Code recently touched, and the last request you sent that session to the polisher, so it can spell code and file names exactly. For a session on a remote host, only the session's own request and the short excerpts its hooks report are sent — no files are read from that host. Requires a Claude Code session in a supported terminal, or a Remote Control session in the focused browser tab; local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.claudeRepoContextEnabled)
+                            .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Use clipboard as polish context") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.polishClipboardContextEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Grounds technical terms against your clipboard. Local polishing endpoints only."
-                            )
-                        }
+                    SettingsFieldRow(
+                        title: "Use clipboard as polish context",
+                        help:
+                            "Grounds technical terms against your clipboard. Local polishing endpoints only."
+                    ) {
+                        Toggle("", isOn: $settings.polishClipboardContextEnabled)
+                            .labelsHidden()
                     }
 
                     // A row in the EXISTING group, never a new group: pane group
                     // structure is constant (owner rule, 2026-07-04).
-                    SettingsFieldRow(title: "Send polish context to non-local endpoints") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            // Names the trade in full: every "local polishing
-                            // endpoints only" promise above is exactly what
-                            // this toggle relaxes, so the help text says which
-                            // content classes ride and where they go. "You
-                            // trust" puts the judgment where it now lives —
-                            // with the user — instead of implying the app can
-                            // vouch for their endpoint.
-                            SettingsHelpText(
-                                "Off: clipboard, screen, and project context are only ever sent to a polisher on this Mac. On: the context enabled above is also sent to the polishing endpoint you configured — enable only for an endpoint you trust, such as a server on your own network."
-                            )
-                        }
+                    //
+                    // Names the trade in full: every "local polishing endpoints
+                    // only" promise above is exactly what this toggle relaxes,
+                    // so the help text says which content classes ride and where
+                    // they go. "You trust" puts the judgment where it now lives
+                    // — with the user — instead of implying the app can vouch
+                    // for their endpoint.
+                    SettingsFieldRow(
+                        title: "Send polish context to non-local endpoints",
+                        help:
+                            "Off: clipboard, screen, and project context are only ever sent to a polisher on this Mac. On: the context enabled above is also sent to the polishing endpoint you configured — enable only for an endpoint you trust, such as a server on your own network."
+                    ) {
+                        Toggle("", isOn: $settings.polishContextTrustedEndpointEnabled)
+                            .labelsHidden()
                     }
 
-                    SettingsFieldRow(title: "Spoken clipboard paste") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-
-                            SettingsHelpText(
-                                "Say “paste clipboard” to insert your clipboard as a code block on commit."
-                            )
-                        }
+                    SettingsFieldRow(
+                        title: "Spoken clipboard paste",
+                        help:
+                            "Say “paste clipboard” to insert your clipboard as a code block on commit."
+                    ) {
+                        Toggle("", isOn: $settings.clipboardPayloadMacroEnabled)
+                            .labelsHidden()
                     }
                 }
                 .disabled(!isLLMPolishingReachable)
@@ -872,38 +884,32 @@ private struct TextProcessingSettingsPane: View {
                 // listener, and plugin/session setup is independent of the
                 // current hotkey configuration. They are still rows in the same
                 // constant Polishing group.
-                SettingsFieldRow(title: "Local Claude title fallback") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle("", isOn: $settings.claudeLocalTitleMarkerFallbackEnabled)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-
-                        SettingsHelpText(
-                            settings.claudeLocalTitleMarkerFallbackEnabled
-                                ? "Writes a window-title marker for local sessions; also export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code does not overwrite it."
-                                : "Uses the focused TTY to join local sessions and requires Ghostty 1.4 or a tip build."
-                        )
-                    }
+                SettingsFieldRow(
+                    title: "Local Claude title fallback",
+                    help: settings.claudeLocalTitleMarkerFallbackEnabled
+                        ? "Writes a window-title marker for local sessions; also export CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code does not overwrite it."
+                        : "Uses the focused TTY to join local sessions and requires Ghostty 1.4 or a tip build."
+                ) {
+                    Toggle("", isOn: $settings.claudeLocalTitleMarkerFallbackEnabled)
+                        .labelsHidden()
                 }
 
                 // A row in the EXISTING group, never a new group: pane group
                 // structure is constant (owner rule, 2026-07-04).
-                SettingsFieldRow(title: "Join Claude Code sessions in cmux") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-
-                        // Names the prerequisite AND the send. cmux exposes no
-                        // accessible text, so the socket is the only way to
-                        // read the pane the user is dictating into — and that
-                        // socket refuses everyone by default, which is a setup
-                        // step in ANOTHER app that the user has to know about
-                        // or this toggle will look broken.
-                        SettingsHelpText(
-                            "Uses cmux's automation socket to tell which session you are dictating into, and to read that one surface as context. In cmux, set Settings → Automation socket mode to Password and choose a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
-                        )
-                    }
+                //
+                // Names the prerequisite AND the send. cmux exposes no
+                // accessible text, so the socket is the only way to read the
+                // pane the user is dictating into — and that socket refuses
+                // everyone by default, which is a setup step in ANOTHER app
+                // that the user has to know about or this toggle will look
+                // broken.
+                SettingsFieldRow(
+                    title: "Join Claude Code sessions in cmux",
+                    help:
+                        "Uses cmux's automation socket to tell which session you are dictating into, and to read that one surface as context. In cmux, set Settings → Automation socket mode to Password and choose a socket password, then enter the same password below. Works for local surfaces and for sessions opened with cmux ssh."
+                ) {
+                    Toggle("", isOn: $settings.cmuxSurfaceJoinEnabled)
+                        .labelsHidden()
                 }
 
                 if let claude = viewModel.claudeIntegrationSettings {
@@ -920,7 +926,9 @@ private struct TextProcessingSettingsPane: View {
                     }
                 }
 
-                SettingsFieldRow(title: "Included files") {
+                // Stacked: a list of file names with descriptions is a
+                // full-width block, not a control.
+                SettingsFieldRow(title: "Included files", layout: .stacked) {
                     SettingsFileNotes(notes: [
                         SettingsFileNote(
                             name: "replacement_dictionary.toml",
@@ -965,34 +973,35 @@ private struct ClaudePluginSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        SettingsFieldRow(title: "Claude Code plugin (this Mac)") {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    Button("Install or Update") {
-                        Task { await model.updatePlugin() }
-                    }
-                    .disabled(model.isPerformingPluginAction)
+        // Stacked: the row's controls are a full button bar plus a result line,
+        // which would squeeze the label to a three-line stub beside them.
+        SettingsFieldRow(
+            title: "Claude Code plugin (this Mac)",
+            help:
+                "Lets localvoxtral see which Claude Code session owns your terminal, so dictation lands in the right one. Runs `claude plugin` — nothing is installed until you press this.",
+            layout: .stacked
+        ) {
+            HStack(spacing: 8) {
+                Button("Install or Update") {
+                    Task { await model.updatePlugin() }
+                }
+                .disabled(model.isPerformingPluginAction)
 
-                    Button("Remove") {
-                        Task { await model.uninstallPlugin() }
-                    }
-                    .disabled(model.isPerformingPluginAction)
+                Button("Remove") {
+                    Task { await model.uninstallPlugin() }
+                }
+                .disabled(model.isPerformingPluginAction)
 
-                    if model.isPerformingPluginAction {
-                        ProgressView().controlSize(.small)
-                    }
-
-                    if let result = model.pluginResult {
-                        Text(result)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
+                if model.isPerformingPluginAction {
+                    ProgressView().controlSize(.small)
                 }
 
-                SettingsHelpText(
-                    "Lets localvoxtral see which Claude Code session owns your terminal, so dictation lands in the right one. Runs `claude plugin` — nothing is installed until you press this."
-                )
+                if let result = model.pluginResult {
+                    Text(result)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
     }
@@ -1007,28 +1016,31 @@ private struct ClaudeCmuxPasswordSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        SettingsFieldRow(title: "cmux socket password") {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 8) {
-                    SecureField("cmux socket password", text: $model.cmuxPasswordField)
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 220)
+        SettingsFieldRow(
+            title: "cmux socket password",
+            help:
+                "Stored in your Keychain and sent only to cmux's local socket. Save an empty field to remove it."
+        ) {
+            HStack(alignment: .center, spacing: 8) {
+                SecureField("cmux socket password", text: $model.cmuxPasswordField)
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    // Bounded like every other inline field: unbounded, it
+                    // takes the whole card and starves the label (PR #201).
+                    .frame(maxWidth: SettingsLayout.textFieldWidth)
 
-                    Button("Save") {
-                        model.saveCmuxPassword()
-                    }
-
-                    Text(model.cmuxStatusText)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                Button("Save") {
+                    model.saveCmuxPassword()
                 }
-
-                SettingsHelpText(
-                    "Stored in your Keychain and sent only to cmux's local socket. Save an empty field to remove it."
-                )
             }
+        } footer: {
+            // The footer, not a trailing item in the control column: the status
+            // is a sentence about the row, and in that trailing column it hung
+            // flush-right under the Save button.
+            Text(model.cmuxStatusText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 }
@@ -1038,7 +1050,13 @@ private struct ClaudeRemoteHostsSettingsRow: View {
     @Bindable var model: ClaudeIntegrationSettingsModel
 
     var body: some View {
-        SettingsFieldRow(title: "Remote Claude Code over SSH") {
+        // Stacked: host rows and the enrollment form are full-width composites.
+        SettingsFieldRow(
+            title: "Remote Claude Code over SSH",
+            help:
+                "Dictate into Claude Code running on another machine. Each host gets its own token; revoking one takes effect immediately.",
+            layout: .stacked
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 if !model.isRemoteAvailable {
                     SettingsInlineMessage(
@@ -1057,10 +1075,6 @@ private struct ClaudeRemoteHostsSettingsRow: View {
                     listenerStatus
                     herdrPanelSetup
                 }
-
-                SettingsHelpText(
-                    "Dictate into Claude Code running on another machine. Each host gets its own token; revoking one takes effect immediately."
-                )
             }
         }
         .sheet(item: Binding(get: { model.presentedPlan }, set: { if $0 == nil { model.dismissPlan() } })) { plan in
@@ -1566,23 +1580,20 @@ private struct AboutSettingsPane: View {
                 // time before (docs/agent/field-debugging.md), and version
                 // alone can't answer it —
                 // dogfood builds keep the same version and bundle id.
-                SettingsFieldRow(title: "Build") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(
-                            DogfoodBuildStatus.label(
-                                isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
-                                captureArmed: dogfoodCaptureArmed
-                            )
-                        )
-                        .foregroundStyle(DogfoodBuildStatus.isDogfoodBuild ? Color.orange : Color.primary)
-
-                        if let detail = DogfoodBuildStatus.detail(
+                SettingsFieldRow(
+                    title: "Build",
+                    help: DogfoodBuildStatus.detail(
+                        isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
+                        captureArmed: dogfoodCaptureArmed
+                    )
+                ) {
+                    Text(
+                        DogfoodBuildStatus.label(
                             isDogfoodBuild: DogfoodBuildStatus.isDogfoodBuild,
                             captureArmed: dogfoodCaptureArmed
-                        ) {
-                            SettingsHelpText(detail)
-                        }
-                    }
+                        )
+                    )
+                    .foregroundStyle(DogfoodBuildStatus.isDogfoodBuild ? Color.orange : Color.primary)
                 }
 
                 SettingsFieldRow(title: "Project") {
@@ -1594,15 +1605,12 @@ private struct AboutSettingsPane: View {
             }
 
             SettingsGroup(title: "Diagnostics") {
-                SettingsFieldRow(title: "Export") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Button("Export Diagnostics…") {
-                            viewModel.exportDiagnostics()
-                        }
-
-                        SettingsHelpText(
-                            "Writes a redacted report to the Desktop; review before sharing."
-                        )
+                SettingsFieldRow(
+                    title: "Export",
+                    help: "Writes a redacted report to the Desktop; review before sharing."
+                ) {
+                    Button("Export Diagnostics…") {
+                        viewModel.exportDiagnostics()
                     }
                 }
             }
@@ -1624,6 +1632,9 @@ private struct SettingsPage<Content: View>: View {
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(SettingsLayout.pagePadding)
+            // One place decides how a switch looks, instead of every call site
+            // repeating `.toggleStyle(.switch)`.
+            .toggleStyle(.switch)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1639,29 +1650,58 @@ private struct SettingsGroup<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: SettingsLayout.sectionSpacing) {
             Text(title)
-                .font(.system(size: 17, weight: .semibold))
+                .font(.headline)
 
-            VStack(alignment: .leading, spacing: SettingsLayout.cardSpacing) {
+            VStack(alignment: .leading, spacing: 0) {
                 content
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(SettingsLayout.cardPadding)
+            // Every row draws a trailing divider, which makes the LAST one a
+            // stray line above the card's bottom edge. Rather than teach the
+            // card to enumerate its children (they are heterogeneous, and some
+            // arrive wrapped in `Group`/`if` branches), the container is made
+            // 1pt shorter than its content and clipped: the final divider hangs
+            // outside the clip and is never drawn.
+            .padding(.bottom, -1)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: SettingsLayout.cornerRadius,
+                    style: .continuous
+                )
+            )
             .background {
                 RoundedRectangle(
                     cornerRadius: SettingsLayout.cornerRadius,
                     style: .continuous
                 )
-                .fill(Color(nsColor: .quaternarySystemFill))
-                .overlay {
-                    RoundedRectangle(
-                        cornerRadius: SettingsLayout.cornerRadius,
-                        style: .continuous
-                    )
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.35), lineWidth: 1)
-                }
+                .fill(.quinary)
+            }
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: SettingsLayout.cornerRadius,
+                    style: .continuous
+                )
+                .strokeBorder(.quaternary, lineWidth: 1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Insets + trailing divider shared by everything that is a row of a
+/// `SettingsGroup`. Rows own their insets so the dividers span the card.
+private struct SettingsGroupRow<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+                .padding(.horizontal, SettingsLayout.rowHorizontalPadding)
+                .padding(.vertical, SettingsLayout.rowVerticalPadding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Divider()
+        }
     }
 }
 
@@ -1671,11 +1711,19 @@ private struct SettingsAvailabilityCard: View {
     let systemImage: String
     let tint: Color
 
-    private let cornerRadius: CGFloat = 16
-    private let horizontalPadding: CGFloat = 14
-    private let verticalPadding: CGFloat = 12
+    private let cornerRadius: CGFloat = 8
+    private let horizontalPadding: CGFloat = 12
+    private let verticalPadding: CGFloat = 10
 
     var body: some View {
+        SettingsGroupRow {
+            card
+        }
+    }
+
+    /// It is a row of its group like any other (same insets, same trailing
+    /// divider) — only its own fill is different.
+    private var card: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: systemImage)
                 .font(.system(size: 13, weight: .semibold))
@@ -1712,22 +1760,144 @@ private struct SettingsAvailabilityCard: View {
     }
 }
 
-private struct SettingsFieldRow<Content: View>: View {
+/// Label leading, control trailing, explanation on its own full-width line
+/// underneath — the macOS System Settings idiom.
+///
+/// The label no longer sits in a fixed 128pt column: long labels used to wrap
+/// inside it while short ones left a gutter, and the explanation started at the
+/// column's edge, which made every card's text a ragged second column. The label
+/// now takes the leftover width (`layoutPriority(0)`, so the control keeps its
+/// intrinsic size) and the explanation is a row of its own, aligned to the
+/// label's leading edge.
+private enum SettingsFieldRowLayout {
+    /// Label leading, control trailing on the same line. The default.
+    case inline
+    /// Label on its own line, control full-width beneath it. For rows whose
+    /// control is a composite (button bar, host list, file list): beside a
+    /// 400pt-wide control the label would be squeezed into a wrapped stub.
+    case stacked
+}
+
+private struct SettingsFieldRow<Content: View, Footer: View>: View {
     let title: String
+    /// The secondary explanation. A parameter rather than a view inside
+    /// `content`: a row cannot pull a nested view out of its control column, and
+    /// the whole point is that this text is NOT in that column.
+    ///
+    /// This is the STATIC explanation of what the row does. Anything that
+    /// changes with the row's state — "Not set.", a validation error, "Password
+    /// saved." — belongs in `footer:` instead, which is the same shape of line
+    /// but built from a view rather than a string.
+    var help: String?
+    var layout: SettingsFieldRowLayout
+    /// How the label sits against the control in an `.inline` row. See
+    /// `inlineRow` for why the default is `.center`.
+    var controlAlignment: VerticalAlignment
     @ViewBuilder var content: Content
+    /// Dynamic per-row status, rendered full-width and LEADING-aligned on its
+    /// own line under the control. Not a member of `content`: the control column
+    /// is trailing-aligned and only ~200pt wide, so a status sentence placed
+    /// there is right-aligned, wraps early, and reads as detached from the row
+    /// it describes (PR #201 review).
+    @ViewBuilder var footer: Footer
+    /// Whether `footer` is a real view. `EmptyView` renders nothing but would
+    /// still be a child of the stack; rows built without a footer must lay out
+    /// exactly as they did before this slot existed.
+    private let hasFooter: Bool
+
+    init(
+        title: String,
+        help: String? = nil,
+        layout: SettingsFieldRowLayout = .inline,
+        controlAlignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder footer: () -> Footer
+    ) {
+        self.title = title
+        self.help = help
+        self.layout = layout
+        self.controlAlignment = controlAlignment
+        self.content = content()
+        self.footer = footer()
+        self.hasFooter = true
+    }
+
+    init(
+        title: String,
+        help: String? = nil,
+        layout: SettingsFieldRowLayout = .inline,
+        controlAlignment: VerticalAlignment = .center,
+        @ViewBuilder content: () -> Content
+    ) where Footer == EmptyView {
+        self.title = title
+        self.help = help
+        self.layout = layout
+        self.controlAlignment = controlAlignment
+        self.content = content()
+        self.footer = EmptyView()
+        self.hasFooter = false
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: SettingsLayout.rowSpacing) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .frame(width: SettingsLayout.labelWidth, alignment: .leading)
+        SettingsGroupRow {
+            VStack(alignment: .leading, spacing: 6) {
+                switch layout {
+                case .inline:
+                    inlineRow
+                case .stacked:
+                    stackedRow
+                }
+
+                // Status first, explanation last: the footer reports what the
+                // control above it currently is, so it belongs next to it; the
+                // help text explains the row as a whole and closes it.
+                if hasFooter {
+                    footer
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                if let help {
+                    SettingsHelpText(help)
+                }
+            }
+        }
+    }
+
+    private var label: some View {
+        Text(title)
+            .font(.system(size: 13, weight: .medium))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var inlineRow: some View {
+        // Centered by default, top-aligned only where a row asks for it. The
+        // default used to be `.top`, which is right for a tall composite control
+        // but wrong for the ~10 rows whose control is a lone switch or picker:
+        // the 13pt label's cap then sits above the switch's centerline and reads
+        // misaligned against System Settings (PR #201 review). A row with a
+        // genuinely tall control passes `controlAlignment: .top`.
+        HStack(alignment: controlAlignment, spacing: SettingsLayout.rowSpacing) {
+            label
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(0)
+
+            VStack(alignment: .trailing, spacing: 6) {
+                content
+            }
+            .layoutPriority(1)
+        }
+    }
+
+    private var stackedRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            label
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 6) {
                 content
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -1743,6 +1913,7 @@ private struct SettingsHelpText: View {
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
